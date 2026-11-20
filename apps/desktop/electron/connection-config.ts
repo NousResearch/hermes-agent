@@ -546,6 +546,56 @@ function profileHasRemoteConnection(config, profile) {
   return Boolean(profileRemoteOverride(config, profile) || profileSshOverride(config, profile))
 }
 
+// Plugin ids follow the profile id grammar (`hermes_constants.PROFILE_ID_RE`).
+const LAUNCHER_PLUGIN_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/**
+ * The launcher marker on a per-profile remote entry: `{ plugin }` names the
+ * desktop plugin whose host-side launcher runs this profile's backend (a
+ * sandbox behind a loopback reverse proxy). Null for anything else. The entry
+ * keeps `mode: 'remote'` because an unknown mode normalizes to local, which
+ * would start the profile unsandboxed on this host.
+ */
+function normalizeProfileLauncher(value): null | { plugin: string } {
+  const plugin = String(value && typeof value === 'object' ? value.plugin || '' : '').trim()
+
+  return LAUNCHER_PLUGIN_RE.test(plugin) ? { plugin } : null
+}
+
+/** The profile's launcher marker, or null when a plugin does not run it. */
+function profileLauncher(config, profile): null | { plugin: string } {
+  return profileRemoteOverride(config, profile)?.launcher ?? null
+}
+
+/** True when a desktop plugin's launcher runs this profile's backend. */
+function profileIsLaunched(config, profile): boolean {
+  return Boolean(profileLauncher(config, profile))
+}
+
+/** The `launcher` field a stored per-profile entry keeps: only on a URL-remote entry. */
+function profileLauncherField(mode, value): { launcher?: { plugin: string } } {
+  const launcher = mode === 'remote' ? normalizeProfileLauncher(value) : null
+
+  return launcher ? { launcher } : {}
+}
+
+/**
+ * Validate a launcher URL a plugin hands over: http(s) on a loopback address
+ * only. A launcher is a host process; anything else would route a profile to
+ * another machine under the plugin's say-so. Returns the normalized base URL.
+ */
+function normalizeLauncherUrl(rawUrl): string {
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const { hostname } = new URL(baseUrl)
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+
+  if (host !== 'localhost' && host !== '::1' && !/^127(?:\.\d{1,3}){3}$/.test(host)) {
+    throw new Error(`A profile backend must be on this computer (127.0.0.1 or localhost), got ${hostname}.`)
+  }
+
+  return baseUrl
+}
+
 function localProfileEntry(existing) {
   const ssh = normalizeSshConfig(existing) || normalizeSshConfig(existing?.savedSsh)
 
@@ -581,7 +631,8 @@ function hostLabelFromBaseUrl(baseUrl) {
  * The config may carry a `profiles` map keyed by name; an entry counts as an
  * override only with a remote-like `mode` (remote or cloud) and a non-empty
  * `url`. Pure: `token` and `headers` are raw stored secrets; main.ts decrypts
- * them. Returns `{ url, authMode, token, headers } | null`.
+ * them. Returns `{ url, authMode, token, headers, launcher? } | null`, where
+ * `launcher` marks an entry a desktop plugin's host launcher serves.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
@@ -604,6 +655,7 @@ function profileRemoteOverride(config, profile) {
     authMode: normAuthMode(entry.authMode),
     token: entry.token,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...profileLauncherField(entry.mode, entry.launcher),
     // A URL-remote/cloud host serves every profile via ?profile=, so a Desktop
     // profile that is only a routing label (e.g. `gris` for the backend's
     // `main-gris`) can map its explicit self-profile scope into the backend's
@@ -634,6 +686,9 @@ export interface ProfileRouteOptions {
   profileRemoteOverride?: boolean
   /** The primary profile's own backend resolves to a remote host. */
   primaryRemoteActive?: boolean
+  /** A desktop plugin's launcher runs the primary profile (a sandbox serving
+   *  only that profile's home), so it cannot host any other profile. */
+  primaryLaunched?: boolean
   /** A stored per-profile entry exists for this profile (local or remote). */
   ownEntry?: boolean
   /** `HERMES_DESKTOP_ISOLATED_BACKEND=1`: opt out of the host singleton. */
@@ -763,6 +818,8 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
   // Every current /api/tools handler accepts `profile`; every /api/profiles
   // handler either aggregates profiles or names its target in the path/body.
   // These are the only whole families safe to route through the primary.
+  // A launched profile's listing never reaches here: the host answers it
+  // first (launched-profile-host.ts).
   if (pathname === '/api/tools' || pathname.startsWith('/api/tools/')) {
     return true
   }
@@ -854,6 +911,9 @@ export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boole
  *     one keeps a pooled backend whose HERMES_HOME does the scoping, so a
  *     destructive call can never fall through to the primary's home.
  *
+ * A launched primary (a plugin's sandbox) serves only its own home, so under
+ * one every other local profile takes the pooled route of cases 5 and 6.
+ *
  * Routing used to be spread across three overlapping predicates that each
  * re-derived part of this table, which is how case 3 ended up registering
  * reapable pool entries for backends it never owned.
@@ -894,6 +954,13 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
   if (opts.globalRemote) {
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  // A launched primary serves only its own home, though it resolves remote:
+  // every other local profile gets this host's own backend, the pooled route
+  // HERMES_DESKTOP_ISOLATED_BACKEND also takes.
+  if (opts.primaryLaunched) {
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 
   if (opts.primaryRemoteActive) {
@@ -1211,6 +1278,8 @@ export {
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
+  normalizeLauncherUrl,
+  normalizeProfileLauncher,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
   normalizeRemoteProfileName,
@@ -1220,6 +1289,9 @@ export {
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   profileHasRemoteConnection,
+  profileIsLaunched,
+  profileLauncher,
+  profileLauncherField,
   profileRemoteOverride,
   profileSshOverride,
   remoteRequestMatchesBaseUrl,

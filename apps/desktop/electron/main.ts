@@ -161,12 +161,13 @@ import {
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
-  normalizeRemoteProfileName,
   normalizeSshConfig,
   normAuthMode,
   pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
+  profileIsLaunched,
+  profileLauncher,
   profileRemoteOverride,
   type ProfileRouteOptions,
   profileSshOverride,
@@ -182,6 +183,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { sanitizeConnectionProfiles } from './connection-profiles'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -334,6 +336,7 @@ import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
+import { createLaunchedProfileHost } from './launched-profile-host'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -456,6 +459,7 @@ import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { connectPrimaryRemote } from './primary-remote-startup'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
+import { registerProfileBackendIpc } from './profile-backend-ipc'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -8172,109 +8176,6 @@ function installRemoteHeaderRules() {
   installRemoteHeaderRulesOnSession(session.defaultSession)
 }
 
-// Validate + normalize the per-profile remote overrides map read from disk.
-// Drops malformed names/entries and keeps only the recognized fields so a
-// hand-edited or stale connection.json can't inject junk into resolution.
-function sanitizeConnectionProfiles(raw: Record<string, any>) {
-  if (!raw || typeof raw !== 'object') {
-    return {}
-  }
-
-  const out = {}
-
-  for (const [name, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry !== 'object') {
-      continue
-    }
-
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
-      continue
-    }
-
-    if (entry.mode === 'ssh') {
-      const ssh = normalizeSshConfig(entry)
-
-      if (ssh) {
-        if (entry.token && typeof entry.token === 'object') {
-          ssh.token = entry.token
-        }
-
-        out[name] = ssh
-      }
-
-      continue
-    }
-
-    const cleaned: {
-      mode: 'remote' | 'local' | 'cloud'
-      url?: string
-      authMode?: string
-      token?: object
-      headers?: object
-      org?: string
-      name?: string
-      remoteProfile?: string
-      savedSsh?: object
-    } = {
-      mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
-    }
-
-    if (cleaned.mode === 'local') {
-      const savedSsh = normalizeSshConfig(entry.savedSsh)
-
-      if (savedSsh) {
-        cleaned.savedSsh = savedSsh
-      }
-    }
-
-    const url = String(entry.url || '').trim()
-
-    if (url) {
-      cleaned.url = url
-    }
-
-    cleaned.authMode = normAuthMode(entry.authMode)
-
-    if ((entry as any).token && typeof entry.token === 'object') {
-      cleaned.token = entry.token
-    }
-
-    // A URL-remote/cloud per-profile override can map its Desktop routing label
-    // onto the backend's profile namespace (same contract as SSH remoteProfile).
-    const remoteProfileName = normalizeRemoteProfileName((entry as any).remoteProfile)
-
-    if (remoteProfileName) {
-      cleaned.remoteProfile = remoteProfileName.remoteProfile
-    }
-
-    const headers = normalizeRemoteHeaders((entry as any).headers)
-
-    if (Object.keys(headers).length > 0) {
-      cleaned.headers = headers
-    }
-
-    // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
-    // reopen into the same org for a per-profile cloud connection.
-    if (cleaned.mode === 'cloud') {
-      const cloudName = String(entry.name || '').trim()
-
-      if (cloudName) {
-        cleaned.name = cloudName
-      }
-
-      const org = String(entry.org || '').trim()
-
-      if (org) {
-        cleaned.org = org
-      }
-    }
-
-    out[name] = cleaned
-  }
-
-  return out
-}
-
 function readDesktopConnectionConfig() {
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
@@ -8660,7 +8561,8 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride
+    envOverride,
+    launcher: profileLauncher(config, key)
   }
 }
 
@@ -9743,6 +9645,8 @@ async function resolveRemoteBackend(
       undefined,
       route.headers
     )
+    // A plugin's launcher serves this route: the renderer lists the host's profiles, not its own.
+    connection.launcher = route.launcher
   }
 
   return route.connectionId ? { ...connection, connectionId: route.connectionId } : connection
@@ -10088,6 +9992,18 @@ function primaryProfileKey() {
   return primaryProfilePin.resolve(readActiveDesktopProfile)
 }
 
+// Profiles a desktop plugin runs elsewhere (host.setProfileBackend): the host
+// answers their profile listing and refuses to start them locally.
+const launchedProfiles = createLaunchedProfileHost({
+  ensureProfileBackend: profile => ensureBackend(profile),
+  fetchJson: (backend, requestPath, opts) => fetchJsonForBackend(backend, requestPath, opts),
+  hermesHome: HERMES_HOME,
+  isProfileName: name => PROFILE_NAME_RE.test(name),
+  primaryProfile: primaryProfileKey,
+  readConfig: readDesktopConnectionConfig,
+  startPrimary: () => startHermes()
+})
+
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(
   profile: string | null | undefined,
@@ -10110,6 +10026,8 @@ function profileRouteOptions(
     // per-profile override, env, or global). Unknown sub-profiles on that
     // gateway must route THROUGH it, not spawn local backends (#88296).
     primaryRemoteActive: primaryBackendIsRemote(),
+    // A plugin's launcher runs the primary: it serves only its own profile's home.
+    primaryLaunched: profileIsLaunched(config, primaryProfileKey()),
     // A stored per-profile entry (local or remote) — pins this profile to
     // its own backend; absent entries inherit the primary's remote.
     ownEntry: Boolean((config.profiles || {})[key]),
@@ -10184,6 +10102,8 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
+    launchedProfiles.assertScopeMayRunLocally(key, routeOpts)
+
     const joined = await joinPrimaryBoot(request, route, {
       primaryKey: primaryProfileKey,
       resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
@@ -11084,6 +11004,7 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
   assertLocalProfileCanStart(profile, profileDeletionGate, key =>
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
+  launchedProfiles.assertMayRunLocally(profile)
 
   const connection = await ensureLocalGateway(async () => {
     const backend = await ensureRuntime(
@@ -11514,6 +11435,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
+        launchedProfiles.assertMayRunLocally(activeProfile || primaryProfile)
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
         return resolveHermesBackend(backendArgs, advanceBootProgress)
@@ -14521,7 +14443,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             const descriptor: any = await withEnumerationDeadline(
               Promise.resolve(
                 backendDialClaims.run(backendScopeKey(connection.id, null), () =>
-                  ensureRegistryBackend(connection.id, null)
+                  launchedProfiles.rosterBackend(connection.kind, () => ensureRegistryBackend(connection.id, null))
                 )
               ),
               rosterSourceEnumerationTimeoutMs(connection)
@@ -15045,6 +14967,21 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
+})
+// Plugin SDK host.setProfileBackend / clearProfileBackend — see profile-backend-ipc.ts.
+registerProfileBackendIpc(ipcMain, {
+  assertCanMutateRouting: assertCanMutateManagedPrimaryRouting,
+  cancelAndWait: scope => sshBootstrapCoordinator.cancelAndWait(scope),
+  encryptToken: token => encryptDesktopSecret(token, { allowPlainText: true }),
+  forgetDial: claimKey => backendDialClaims.forget(claimKey),
+  mainWindow: () => mainWindow,
+  primaryProfile: primaryProfileKey,
+  profileExists: profile => PROFILE_NAME_RE.test(profile) && directoryExists(path.join(HERMES_HOME, 'profiles', profile)),
+  readConfig: readDesktopConnectionConfig,
+  stopPool: stopPoolBackend,
+  teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+  teardownSsh: scope => teardownSshConnection(scope || null),
+  writeConfig: writeDesktopConnectionConfig
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
@@ -15633,6 +15570,22 @@ async function handleHermesApiRequest(request) {
   // An absent/empty id falls through to the byte-identical v1 route below.
   // Explicit `local` stays registry-pinned so it cannot inherit a v1 remote.
   const registryConnectionId = apiRequestRegistryConnectionId(request)
+
+  // A launched profile's listing is this computer's to answer, also when the
+  // request is pinned to "This device"; a pinned remote gateway answers its own.
+  const launchedAnswer = await launchedProfiles.answer(
+    request,
+    registryConnectionId
+      ? {
+          dial: () => ensureRegistryBackend(registryConnectionId, null),
+          kind: () => registryConnectionKind(registryConnectionId)
+        }
+      : undefined
+  )
+
+  if (launchedAnswer !== undefined) {
+    return launchedAnswer
+  }
 
   if (registryConnectionId) {
     if (isAllProfilesSessionListRequest(request?.method, request?.path)) {
@@ -16678,6 +16631,7 @@ ipcMain.on('hermes:logs:renderer-line', (_event, line) => {
 // Local filesystem + plugin-root IPC (readDir/reveal/rename/trash/…) — see fs-ipc.ts.
 registerFsIpc({
   hermesHome: HERMES_HOME,
+  isLaunchedProfile: launchedProfiles.homeIsSandboxed,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,

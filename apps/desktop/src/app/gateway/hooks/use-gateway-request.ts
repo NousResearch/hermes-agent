@@ -6,6 +6,11 @@ import type { HermesGateway } from '@/hermes'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
+  BACKEND_TRANSITION_MAX_MS,
+  backendTransitionFor,
+  waitForBackendTransitionEnd
+} from '@/store/backend-transition'
+import {
   $gateway,
   activeGateway,
   activeGatewayConnectionId,
@@ -14,6 +19,7 @@ import {
   gatewayActivationEpoch,
   isActivePrimary
 } from '@/store/gateway'
+import { probeLauncherTransition } from '@/store/launcher-transition'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -181,6 +187,15 @@ export function useGatewayRequest() {
           throw error
         }
 
+        // A plugin-run profile whose sandbox is restarting (or switching) on
+        // purpose: wait for its backend to come back, then send this request
+        // on the new socket, instead of failing it ("WebSocket heartbeat
+        // acknowledgement timed out", "Restore failed"). An unplanned drop, or a
+        // transition that does not end as planned, takes the path below.
+        if (!(await sentAgainAfterReconnect(error, profile))) {
+          throw error
+        }
+
         // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
         // single-use ticket). Background profiles stay on the registry's
         // connection-owned reconnect path, including composite remote/SSH
@@ -239,10 +254,34 @@ function errorCode(value: unknown): string | null {
   return typeof code === 'string' ? code.toUpperCase() : null
 }
 
+const HEARTBEAT_TIMEOUT_RE = /heartbeat acknowledgement timed out/i
+
+/**
+ * Whether a request the transport failed is sent again once the connection is
+ * back. During a planned transition of the profile's backend (a plugin
+ * restarting or switching it): yes, when the transition ends as planned; the
+ * backend that held the request is gone. Otherwise a closed or refused
+ * connection is retried as before, and a heartbeat timeout is not: the socket
+ * went silent, so the backend may be alive and may have run the request (a
+ * turn, a paid generation), and the caller gets the error to decide.
+ */
+async function sentAgainAfterReconnect(error: unknown, profile: string): Promise<boolean> {
+  if (backendTransitionFor(profile) || (await probeLauncherTransition(profile))) {
+    return waitForBackendTransitionEnd(profile, BACKEND_TRANSITION_MAX_MS)
+  }
+
+  return !HEARTBEAT_TIMEOUT_RE.test(error instanceof Error ? error.message : String(error))
+}
+
 function isGatewayTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
-  if (/not connected|connection closed|connection reset|ECONNRESET/i.test(message)) {
+  // A heartbeat timeout invalidated the socket: a transport loss like a close (sentAgainAfterReconnect
+  // decides whether its request is sent again).
+  if (
+    /not connected|connection closed|connection reset|ECONNRESET/i.test(message) ||
+    HEARTBEAT_TIMEOUT_RE.test(message)
+  ) {
     return true
   }
 

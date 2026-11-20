@@ -7,6 +7,7 @@ import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isTouchInteraction } from '@/lib/touch-interaction'
+import { type BackendTransitionKind, changesBackend } from '@/store/backend-transition'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
@@ -32,8 +33,17 @@ import { composerPlainText } from '../rich-editor'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
+import { freezeQueuedDraftText } from './use-composer-queue'
+
 const sameOccurrence = (a: ComposerAttachment, b: ComposerAttachment) =>
   a.id === b.id && a.occurrenceId === b.occurrenceId
+
+// A request another surface sends through the composer (the review pane's ship button, a reply's
+// Continue, a preview widget, a plugin) is not taken while the input is off, nor while the profile moves
+// to another backend (store/backend-transition.ts): sent or steered now it would run on the backend about
+// to go away, and nothing is queued across the change. Like a typed message, it is not sent later by itself.
+const refusesExternalSubmit = (inputDisabled: boolean, backendTransition: BackendTransitionKind | null) =>
+  inputDisabled || changesBackend(backendTransition)
 
 // Whether `scope`'s stashed draft is still the message just sent. By the time
 // the send is accepted the user may have typed the next one and the debounce
@@ -51,6 +61,8 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKey: string | null
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
+  /** The planned transition of the composer's profile, if any (use-composer-connection). */
+  backendTransition?: BackendTransitionKind | null
   busy: boolean
   busyInputMode?: BusyInputMode | null
   clearDraft: () => void
@@ -92,6 +104,7 @@ export function useComposerSubmit({
   activeQueueSessionKey,
   activeQueueSessionKeyRef,
   attachments,
+  backendTransition = null,
   busy,
   busyInputMode = 'interrupt',
   clearDraft,
@@ -237,7 +250,7 @@ export function useComposerSubmit({
           surfaceId !== null &&
           requestedSurfaceId === surfaceId &&
           paneVisible &&
-          !inputDisabled
+          !refusesExternalSubmit(inputDisabled, backendTransition)
         ) {
           const current = externalSubmitRef.current
           const queueKey = activeQueueSessionKeyRef.current
@@ -303,7 +316,7 @@ export function useComposerSubmit({
           }
         }
       }),
-    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
+    [activeQueueSessionKeyRef, backendTransition, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   // A phone keyboard the user put away stays down after a send, so the reply
@@ -327,6 +340,48 @@ export function useComposerSubmit({
         rememberDraftRetry?.(scope, retry)
       }
     })
+  }
+
+  // The profile is moving to another backend (it starts or stops: store/backend-transition.ts). A message
+  // stays in the composer until that is done: sent now it would start on the backend about to go away, and
+  // nothing is queued across the change (queueDraft). A slash command still runs.
+  const staysInComposer = (text: string, payloadPresent: boolean) =>
+    changesBackend(backendTransition) && payloadPresent && (attachments.length > 0 || !isSlashCommandText(text))
+
+  // The profile's backend restarts (the same backend and sessions come back): a message waits in the
+  // chat's LOCAL queue, also with the connection down, and drains once the backend is back
+  // (use-composer-queue). A slash command still runs at once.
+  const sendOrHold = (text: string, sent: ComposerAttachment[], retry?: ComposerDraftRetry) => {
+    if (backendTransition !== 'restarting' || isSlashCommandText(text)) {
+      dispatchSubmit(text, sent, undefined, retry && { submission_id: retry.id })
+
+      return
+    }
+
+    if (!holdForRestart(text, sent, retry?.id)) {
+      // Not held (a terminal selection is gone, or no queue yet): nothing went out, so the words come back.
+      stashAt(draftScopeRef.current, text, sent)
+      loadIntoComposer(text, sent)
+
+      if (retry) {
+        rememberDraftRetry?.(draftScopeRef.current, retry)
+      }
+    }
+  }
+
+  const holdForRestart = (text: string, sent: ComposerAttachment[], id?: string) => {
+    const frozen = freezeQueuedDraftText(text, t.composer)
+
+    return Boolean(
+      frozen &&
+      enqueueQueuedPrompt(activeQueueSessionKey, {
+        ...(id ? { id } : {}),
+        text: frozen.text,
+        attachments: sent,
+        ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+        ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
+      })
+    )
   }
 
   // Returns false when the submit was refused and must not refocus the input.
@@ -504,7 +559,7 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (refusedDuringSetup(text)) {
+    if (refusedDuringSetup(text) || staysInComposer(text, payloadPresent)) {
       return
     }
 
@@ -543,7 +598,7 @@ export function useComposerSubmit({
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
-      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
+      sendOrHold(text, submittedAttachments, retry)
     }
 
     refocusAfterSend(editorHadFocus)
@@ -630,6 +685,11 @@ export function useComposerSubmit({
 
   const queueDraft = () => {
     if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
+      return
+    }
+
+    // Nothing is queued across a backend change either (staysInComposer).
+    if (changesBackend(backendTransition)) {
       return
     }
 

@@ -3305,6 +3305,7 @@ export const deOverrides = {
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
       badge: (host: string) => `Läuft auf ${host}`,
+      sandboxed: 'In der Sandbox',
       title: (profile: string) => `${profile} mit einem Remote-Host verbinden`,
       description:
         'Sessions in diesem Profil laufen auf dem von Ihnen festgelegten Remote-Hermes statt auf diesem Computer.',

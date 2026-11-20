@@ -112,6 +112,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { clearProfileBackend, profileBackendFeatures, setProfileBackend } from './profile-backend'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
@@ -128,6 +129,7 @@ import { $viewport, type ViewportRect } from './viewport'
 export * from './areas'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
+export type { ClearProfileBackendInput, SetProfileBackendInput } from './profile-backend'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -748,6 +750,11 @@ export const host = {
       setActiveProfile('default')
     }
   },
+
+  /** Route a profile to a backend this plugin runs on this computer (e.g. a sandbox), and back. See profile-backend.ts. */
+  setProfileBackend,
+  clearProfileBackend,
+  profileBackendFeatures,
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 

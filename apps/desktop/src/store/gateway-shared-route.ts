@@ -1,3 +1,4 @@
+import type { HermesConnection } from '@/global'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
 // True when `profile`'s backend route resolves to the SHARED primary backend
@@ -10,10 +11,15 @@ import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
 export async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+  return (await sharedPrimaryConnection(profile)) !== null
+}
+
+/** `profile`'s descriptor when it rides the shared primary backend, else null. */
+export async function sharedPrimaryConnection(profile: string): Promise<HermesConnection | null> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
-    return false
+    return null
   }
 
   try {
@@ -27,9 +33,9 @@ export async function sharedPrimaryRoute(profile: string): Promise<boolean> {
       `Timed out resolving the shared-primary route for profile "${profile}"`
     )
 
-    return Boolean(conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true)
+    return conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true ? conn : null
   } catch {
-    return false
+    return null
   }
 }
 

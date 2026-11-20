@@ -2776,6 +2776,7 @@ export const zhOverrides = {
     remoteOverride: {
       menuItem: '连接到远程主机…',
       badge: (host: string) => `运行于 ${host}`,
+      sandboxed: '已沙盒化',
       title: (profile: string) => `将 ${profile} 连接到远程主机`,
       description: '此配置档案中的会话将在你指定的远程 Hermes 上运行，而不是这台电脑。',
       urlLabel: '远程地址',

@@ -58,6 +58,13 @@ import '@/store/session-states'
 import type * as HermesModule from '@/hermes'
 import type { HermesGateway } from '@/hermes'
 import {
+  backendTransitionFor,
+  beginBackendTransition,
+  endBackendTransition,
+  resetBackendTransitionsForTests
+} from '@/store/backend-transition'
+import {
+  $activeGatewayRoute,
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -65,6 +72,7 @@ import {
   setPrimaryGateway
 } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $profileRemoteOverrides } from '@/store/profile-remote-override'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { useGatewayRequest } from './use-gateway-request'
@@ -227,6 +235,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  resetBackendTransitionsForTests()
+  $profileRemoteOverrides.set({})
   closeSecondaryGateways()
   setPrimaryGateway(null)
   $gateway.set(null)
@@ -610,5 +620,93 @@ describe('useGatewayRequest', () => {
     // settling.
     await vi.advanceTimersByTimeAsync(20_000)
     await pending
+  })
+})
+
+describe('a planned sandbox restart of a plugin-run profile', () => {
+  afterEach(() => $activeGatewayRoute.set('default'))
+
+  function launchedPrimary() {
+    const primary = makePrimaryGateway()
+
+    $profileRemoteOverrides.set({
+      work: { host: '127.0.0.1:47972', launcher: { plugin: 'openshell' }, url: 'http://127.0.0.1:47972' }
+    })
+    setPrimaryGateway(primary as unknown as HermesGateway, 'work')
+    $activeGatewayRoute.set('work')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    return primary
+  }
+
+  it('holds a request the restart cut off and sends it once the backend is back', async () => {
+    const primary = launchedPrimary()
+    primary.request
+      .mockRejectedValueOnce(new Error('WebSocket heartbeat acknowledgement timed out'))
+      .mockResolvedValueOnce({ status: 'started' })
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    let settled: unknown = 'pending'
+    const sent = result.current.requestGateway('prompt.submit', { text: 'try again' }).then(value => (settled = value))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(settled).toBe('pending')
+    expect(primary.request).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      endBackendTransition('work', { source: 'launcher' })
+      await sent
+    })
+    expect(settled).toEqual({ status: 'started' })
+    expect(primary.request).toHaveBeenCalledTimes(2)
+    expect(primary.request).toHaveBeenLastCalledWith('prompt.submit', { text: 'try again' }, undefined, undefined)
+  })
+
+  it('a restart that does not come back fails the request with its real error', async () => {
+    const primary = launchedPrimary()
+    const cut = new Error('WebSocket heartbeat acknowledgement timed out')
+    primary.request.mockRejectedValueOnce(cut)
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    const sent = result.current.requestGateway('prompt.submit', { text: 'try again' }).catch(error => error)
+
+    await act(async () => {
+      await Promise.resolve()
+      endBackendTransition('work', { ok: false, source: 'launcher' })
+    })
+    await expect(sent).resolves.toBe(cut)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(backendTransitionFor('work')).toBeNull()
+  })
+
+  // With no planned transition a heartbeat timeout says the socket went silent, not that the backend
+  // is gone: it may already have run the request (a turn, a paid generation), so it is not sent again.
+  it.each([
+    { label: 'a profile no plugin runs', launched: false },
+    { label: 'a plugin-run profile whose launcher reports no restart', launched: true }
+  ])('a heartbeat timeout outside a planned transition is not sent again ($label)', async ({ launched }) => {
+    const primary = launched ? launchedPrimary() : makePrimaryGateway()
+    const silent = new Error('WebSocket heartbeat acknowledgement timed out')
+    primary.request.mockRejectedValueOnce(silent).mockResolvedValueOnce({ token: 'a second run' })
+
+    if (!launched) {
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('open')
+    }
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    await act(async () => {
+      await expect(result.current.requestGateway('pet.generate', { prompt: 'a fox' })).rejects.toBe(silent)
+    })
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(primary.connect).not.toHaveBeenCalled()
   })
 })

@@ -337,7 +337,54 @@ def test_restoring_from_archive_clears_timestamp(skills_home):
     set_state("x", STATE_ARCHIVED)
     assert get_record("x")["archived_at"] is not None
     set_state("x", STATE_ACTIVE)
-    assert get_record("x")["archived_at"] is None
+    rec = get_record("x")
+    assert rec["archived_at"] is None
+    assert rec["restored_at"] is not None
+
+
+def test_stale_reactivation_does_not_stamp_restored_at(skills_home):
+    from tools.skill_usage import set_state, get_record, STATE_STALE, STATE_ACTIVE
+    set_state("x", STATE_STALE)
+    set_state("x", STATE_ACTIVE)
+    assert get_record("x")["restored_at"] is None
+
+
+def test_restore_skill_stamps_restored_at_when_record_out_of_sync(skills_home):
+    from tools.skill_usage import get_record, restore_skill, save_usage, STATE_ACTIVE
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir / ".archive", "desynced")
+    save_usage({
+        "desynced": {
+            "created_by": "agent",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "last_used_at": "2026-01-10T00:00:00+00:00",
+            "state": STATE_ACTIVE,
+            "archived_at": "2026-02-01T00:00:00+00:00",
+        }
+    })
+    ok, msg = restore_skill("desynced")
+    assert ok, msg
+    rec = get_record("desynced")
+    assert rec["archived_at"] is None
+    assert rec["restored_at"] is not None
+
+
+def test_latest_activity_at_handles_restored_at_and_legacy_records():
+    from tools.skill_usage import latest_activity_at
+    # Legacy record without restored_at; created_at remains excluded.
+    assert latest_activity_at({"created_at": "2026-01-01T00:00:00+00:00"}) is None
+    assert latest_activity_at({
+        "last_used_at": "2026-01-10T00:00:00+00:00",
+        "restored_at": "not-a-timestamp",
+    }) == "2026-01-10T00:00:00+00:00"
+    assert latest_activity_at({
+        "last_used_at": "2026-01-10T00:00:00+00:00",
+        "restored_at": "2026-03-01T00:00:00+00:00",
+    }) == "2026-03-01T00:00:00+00:00"
+    assert latest_activity_at({
+        "last_used_at": "2026-03-05T00:00:00+00:00",
+        "restored_at": "2026-03-01T00:00:00+00:00",
+    }) == "2026-03-05T00:00:00+00:00"
 
 
 def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):

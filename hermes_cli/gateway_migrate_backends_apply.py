@@ -283,6 +283,8 @@ def gateway_serving(host, manifest: dict) -> Optional[str]:
     if before and before["auth_required"] and not manifest.get("keep_webapp_address"):  # same address only
         if not status.get("auth_required"):
             return "sign-in was required before and is not now"
+        if before["providers"] is None:  # refused by the apply's preflight; a record from elsewhere is unknown
+            return "the sign-in providers the old backend listed are unknown, so they cannot be compared"
         missing = set(before["providers"]) - set(provider_names(status.get("auth_providers")))
         if missing:
             return f"sign-in provider(s) {', '.join(sorted(missing))} are no longer listed"
@@ -1114,6 +1116,13 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
         plan.blockers.append(f"{BACKEND_ENV}={backend.name} keeps the settings outside config.yaml, but the migration "
                              f"backs up, rolls back and restores only config.yaml, so it needs the file config "
                              f"backend. Move this home by hand with the steps in the docs. Nothing changed.")
+    auth = plan.auth_before
+    if auth and auth["auth_required"] and auth["providers"] is None and not plan.keep_webapp:
+        # The post-move check compares the gateway's sign-in providers with this list: unknown is no proof.
+        plan.blockers.append(f"The old backend requires sign-in but its sign-in providers could not be read "
+                             f"({format_address(plan.old_probe_host, plan.old_port)}/api/auth/providers did not "
+                             f"answer), so the move could not check that the gateway offers the same ones. Check "
+                             f"that the old backend answers there, then run this again. Nothing changed.")
     if (other := host.foreign_gateway_home()) is not None:
         unit = (plan.gateway or {}).get("unit") or "the gateway service"
         plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "

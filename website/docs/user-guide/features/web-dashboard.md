@@ -561,7 +561,9 @@ exactly (for example a `linked` unit), when a hand-started backend's start time 
 `config.yaml` or `.env` is a symbolic link (replace it with a copy first), when the gateway's unit or
 LaunchAgent of the same name belongs to another Hermes home, when a legacy `hermes.service` is installed
 (run `hermes gateway migrate-legacy` first), when a config backend other than the file one is selected
-(`HERMES_CONFIG_BACKEND`, for example `remote`: the backups and the undo cover `config.yaml` only), when the command runs inside
+(`HERMES_CONFIG_BACKEND`, for example `remote`: the backups and the undo cover `config.yaml` only), when the
+old backend requires sign-in but its `/api/auth/providers` list cannot be read (the check after the move compares
+it), when the command runs inside
 the gateway's own service (also for the rollback of an unfinished run), or when `backend_migration.json`
 exists but cannot be read (move it aside after checking the home by hand; the backups are in
 `backend_migration/`). While a migration is `done`, `--apply` reports nothing to migrate and never

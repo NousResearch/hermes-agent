@@ -263,6 +263,49 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    @pytest.mark.parametrize("present_at_start", [False, True])
+    @pytest.mark.parametrize("clear_memory", [False, True])
+    def test_rolled_back_skill_is_absent_on_next_read(
+        self, tmp_path, monkeypatch, present_at_start, clear_memory
+    ):
+        """临时技能在冷构建期间被撤销，下一次读内存或磁盘都应得到最终目录。"""
+        from agent import prompt_builder, skill_utils
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        root = tmp_path / "skills"
+        stable = root / "stable-example" / "SKILL.md"
+        stable.parent.mkdir(parents=True)
+        stable.write_text("---\ndescription: 稳定技能\n---\n", encoding="utf-8")
+        transient = root / "transient-example" / "SKILL.md"
+        transient.parent.mkdir()
+        content = "---\ndescription: 临时技能\n---\n"
+        if present_at_start:
+            transient.write_text(content, encoding="utf-8")
+
+        load_snapshot = prompt_builder._load_skills_snapshot
+        resolve_catalog = skill_utils.resolve_skill_catalog
+
+        def load_during_write(*args):
+            snapshot = load_snapshot(*args)
+            if not present_at_start:
+                transient.write_text(content, encoding="utf-8")
+            return snapshot
+
+        def resolve_after_rollback(rows):
+            transient.unlink()
+            return resolve_catalog(rows)
+
+        with monkeypatch.context() as interleaved:
+            interleaved.setattr(prompt_builder, "_load_skills_snapshot", load_during_write)
+            interleaved.setattr(skill_utils, "resolve_skill_catalog", resolve_after_rollback)
+            build_skills_system_prompt()
+
+        if clear_memory:
+            prompt_builder.clear_skills_system_prompt_cache()
+        prompt = build_skills_system_prompt()
+        assert "stable-example" in prompt
+        assert "transient-example" not in prompt
+
 
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):

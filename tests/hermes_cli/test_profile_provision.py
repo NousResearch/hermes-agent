@@ -96,6 +96,45 @@ def test_a_named_launch_profiles_subscription_login_is_not_copied_and_says_so(la
     assert any("anthropic" in w for w in rpc["warnings"])
 
 
+def _named_source(launch, name="src"):
+    src = launch / "profiles" / name
+    src.mkdir(parents=True)
+    (src / "config.yaml").write_text("model:\n  default: m\n  provider: openrouter\n")
+    (src / ".env").write_text("OPENROUTER_API_KEY=sk-or-src\n")
+    (src / "auth.json").write_text(
+        '{"version": 1, "providers": {}, "credential_pool": {"openrouter": [{"id": "src-key", "auth_type": '
+        '"api_key", "access_token": "sk-or-src"}], "anthropic": [{"id": "g", "auth_type": "oauth", '
+        '"refresh_token": "rt-src", "access_token": "at-src"}]}}')
+    return src
+
+
+@pytest.mark.parametrize("launch_from_source", [False, True], ids=["clone-from", "p-src-clone"])
+def test_a_clone_of_a_named_profile_copies_its_logins_not_the_roots(launch, monkeypatch, launch_from_source):
+    """``--clone-from src`` (and ``-p src ... --clone``) copies src's keys; reading the root's auth.json
+    would pair them with the root's logins, so src's auth.json is copied, single-use grants dropped."""
+    _named_source(launch)
+    if launch_from_source:
+        monkeypatch.setenv("HERMES_HOME", str(launch / "profiles" / "src"))
+    result = provision_profile(ProfileCreateRequest(
+        name="c", clone_from=None if launch_from_source else "src", clone_config=True))
+    auth = (result.path / "auth.json").read_text()
+    assert "src-key" in auth and "rt-src" not in auth
+    assert result.mirrored["auth"] is True
+    assert any("subscription logins not carried over (anthropic)" in w for w in result.warnings)
+    from hermes_cli.auth import read_credential_pool
+    monkeypatch.setenv("HERMES_HOME", str(result.path))
+    assert [e["id"] for e in read_credential_pool("openrouter")] == ["src-key"]
+
+
+def test_a_clone_of_the_root_still_shares_its_logins(launch, monkeypatch):
+    _named_source(launch)
+    monkeypatch.setenv("HERMES_HOME", str(launch / "profiles" / "src"))
+    result = provision_profile(ProfileCreateRequest(name="c", clone_from="default", clone_config=True))
+    assert not (result.path / "auth.json").exists()
+    assert result.mirrored["auth"] == "shared"
+    assert result.warnings == []
+
+
 def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     (launch / "auth.json").unlink(missing_ok=True)
     result = provision_profile(ProfileCreateRequest(name="work", share_auth=False))

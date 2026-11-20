@@ -511,12 +511,11 @@ Inside one run:
   outputs. The matching `… result` job collapses them.
 - `smoke-*` call **`desktop-bundle-smoke.yml`**. It needs a staged SHA and
   skips after a failed `validate`.
-- `publish-win32-updater` / `publish-darwin-updater` require
-  `upload_release=true` and no `build_commit`/`channel`.
 - `stage-receipt-*` run only for `release-phase=candidate`. `stable-*` jobs
   run only for `release-phase=publish`.
-- `builds-table` runs only for a plain uploading tag build (canary).
-  `commit-builds-summary` runs only for commit builds.
+- `commit-builds-summary` runs only for commit builds. Release download tables
+  and channel feeds are published from `stable-release.yml` (for both stable
+  and canary).
 
 Re-smoke an already staged artifact without rebuilding:
 
@@ -585,7 +584,7 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `ci-review-comment.yml` | CI review comment | workflow_run(CI in_progress) | none |
 | `ci.yaml` | CI | PR, main, dispatch, call | stable, canary-e2e |
 | `deploy-site.yml` | Deploy Site | main (paths), release published, dispatch | skills-index (dispatch) |
-| `desktop-bundled-release.yml` | Desktop Bundled Release | dispatch, call | stable; canary/release.py (dispatch) |
+| `desktop-bundled-release.yml` | Desktop Bundled Release | dispatch, call | stable; commit/channel builds (dispatch) |
 | `desktop-bundle-smoke.yml` | Desktop bundle smoke | dispatch, call | desktop-bundled-release |
 | `docker.yml` | Docker Build, Test, and Publish | PR, main, call | stable |
 | `docs-search-monitor.yml` | Docs Search Monitor | cron 6 h, workflow_run(Deploy Site), dispatch | none |

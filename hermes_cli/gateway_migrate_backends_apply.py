@@ -487,7 +487,7 @@ def _put_back(home: Path, m: dict, key: str, name: str) -> None:
     now, backup = _file_digest(target), backups.get(key)
     if backup is not None and _backup_digest(m, key) in (None, "unreadable"):
         raise StepFailed(f"the backup of {name} ({backup}) is missing or cannot be read, so {target} was not "
-                         f"written back; your edits were kept")
+                         f"written back; it was left as it is")
     if now != "unreadable" and now == _backup_digest(m, key):
         return  # already as before the migration (an earlier, interrupted rollback put it back)
     recorded = m.get("files_after_apply")
@@ -798,6 +798,9 @@ def _file_step(m: dict, home: str, key: str, name: str) -> str:
     backup, done = b.get(key), (m.get("files_put_back") or {}).get(name)
     if done == "restored":
         return f"{target} was restored from its backup (nothing to do for it)"
+    if backup and _backup_digest(m, key) in (None, "unreadable"):  # before "kept": a lost backup is no edit
+        return (f"the backup {backup} of {name} is missing or cannot be read: recover it, or put {target} back "
+                f"as it was before the migration by hand, before you start the old backend")
     if done == "kept" and (m.get("files_after_apply") or {}).get(name) == "writing":
         return (f"the migration stopped while writing {target}, so it may hold the migration's changes: compare it "
                 f"with {backup or 'nothing (it did not exist before the migration)'} and put back by hand what "
@@ -806,9 +809,6 @@ def _file_step(m: dict, home: str, key: str, name: str) -> str:
         source = backup or "nothing (it did not exist before the migration)"
         return (f"keep {target} as it is (it was edited after the migration wrote it): merge the lines you need "
                 f"from {source} into it by hand before you start the old backend")
-    if backup and not os.path.isfile(backup):
-        return (f"the backup {backup} of {name} is missing: recover it, or put {target} back as it was before "
-                f"the migration by hand, before you start the old backend")
     if not backup:
         return f"rm {target}"
     return f"cp {backup} {target}" + (f" && chmod {b.get('env_mode') or 0o600:o} {target}" if key == "env" else "")

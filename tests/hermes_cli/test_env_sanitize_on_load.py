@@ -58,3 +58,22 @@ def test_env_loader_does_not_split_concatenated_text():
         assert parsed_token == f"{token}ANTHROPIC_API_KEY=sk-ant-test"
     finally:
         env_path.unlink(missing_ok=True)
+
+
+def test_a_quoted_multiline_value_keeps_its_lines_on_load(tmp_path, monkeypatch):
+    """A quoted value that spans lines is value data: its continuation lines keep their whitespace,
+    in the process and in the file that the load writes back."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for name in ("ZZ_MULTI", "ZZ_PLAIN"):  # set, then delete: the test restores both afterwards
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    env_path = tmp_path / ".env"
+    env_path.write_text('  ZZ_PLAIN=1  \nZZ_MULTI="line1  \n    line2"\n', encoding="utf-8")
+
+    load_hermes_dotenv(hermes_home=tmp_path, load_external_secrets=False)
+
+    import os
+    assert os.environ["ZZ_MULTI"] == "line1  \n    line2"
+    assert env_path.read_text(encoding="utf-8") == 'ZZ_PLAIN=1\nZZ_MULTI="line1  \n    line2"\n'

@@ -4,11 +4,13 @@ import time
 
 import pytest
 
+from persistence.core.errors import AuthorityRefusal
 from persistence.sqlite.conversation._store.compression import (
     get_compression_failure_cooldown_row, get_compression_fallback_streak, get_compression_ineffective_count,
     get_compression_recovery_deadline,
 )
 from persistence.sqlite.workers._receipt import mutate_worker_execution
+from tests.fixtures.storage_read import session_row, transcript_rows
 from tests.persistence_sqlite.workers._runtime_worker import worker as worker  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
@@ -59,40 +61,40 @@ def test_compression_lease_cannot_be_revived_or_released_by_old_holder(worker):
 @pytest.mark.parametrize('prompt', ['NEW PROMPT', ''])
 @pytest.mark.parametrize('fail_prompt', [False, True])
 def test_worker_compaction_commits_prompt_and_transcript_together(worker, exact_coverage, prompt, fail_prompt):
-    db, store = worker
+    persistence, store = worker
+    holder = persistence.holder()
     original = [{'role': 'user', 'content': 'original question'},
                 {'role': 'assistant', 'content': 'original answer'}]
     store.append_messages_batch('owned', original)
-    covered = db.get_active_message_ids('owned') if exact_coverage else None
+    covered = list(persistence.messages.active_message_ids('owned')) if exact_coverage else None
     compacted = [{'role': 'user', 'content': 'summary'}]
     sequence = store.journal['next_sequence']
     if fail_prompt:
-        db._conn.execute("CREATE TEMP TRIGGER reject_worker_prompt BEFORE UPDATE OF system_prompt_hash ON sessions "
-                         "WHEN NEW.id = 'owned' BEGIN SELECT RAISE(FAIL, 'worker prompt refused'); END")
+        holder._conn.execute("CREATE TEMP TRIGGER reject_worker_prompt BEFORE UPDATE OF system_prompt_hash ON sessions "
+                             "WHEN NEW.id = 'owned' BEGIN SELECT RAISE(FAIL, 'worker prompt refused'); END")
         with pytest.raises(sqlite3.IntegrityError, match='worker prompt refused'):
             store.archive_and_compact('owned', compacted, covered_ids=covered, system_prompt=prompt)
-        assert [row['content'] for row in db.get_messages('owned')] == ['original question', 'original answer']
-        assert db.get_session('owned')['system_prompt'] == 'prefix'
-        assert db._read_one('SELECT last_sequence FROM worker_executions')[0] == sequence - 1
-        db._conn.execute('DROP TRIGGER reject_worker_prompt')
+        assert [row['content'] for row in transcript_rows(persistence, 'owned')] == ['original question', 'original answer']
+        assert session_row(persistence, 'owned')['system_prompt'] == 'prefix'
+        assert holder._read_one('SELECT last_sequence FROM worker_executions')[0] == sequence - 1
+        holder._conn.execute('DROP TRIGGER reject_worker_prompt')
         store.retry_pending()
     else:
         assert store.archive_and_compact('owned', compacted, covered_ids=covered, system_prompt=prompt) == 1
-    assert [row['content'] for row in db.get_messages('owned')] == ['summary']
-    assert db.get_session('owned')['system_prompt'] == prompt
-    assert db.get_session('foreign')['system_prompt'] == 'secret'
-    assert db._read_one('SELECT last_sequence FROM worker_executions')[0] == sequence
+    assert [row['content'] for row in transcript_rows(persistence, 'owned')] == ['summary']
+    assert session_row(persistence, 'owned')['system_prompt'] == prompt
+    assert session_row(persistence, 'foreign')['system_prompt'] == 'secret'
+    assert holder._read_one('SELECT last_sequence FROM worker_executions')[0] == sequence
 
 
 def test_worker_compaction_rejects_non_text_prompt_before_mutation(worker):
-    from hermes_state_runtime import RuntimeStoreError
-
-    db, store = worker
+    persistence, store = worker
+    holder = persistence.holder()
     sequence = store.journal['next_sequence']
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        mutate_worker_execution(db, **store.scope, sequence=sequence, operation='compression.archive',
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
+        mutate_worker_execution(holder, **store.scope, sequence=sequence, operation='compression.archive',
             payload=dict(messages=[{'role': 'user', 'content': 'must not land'}], model_config_patch=None,
                          watermark=None, lock_holder=None, tail_count=0, system_prompt=123))
-    assert db.get_messages('owned') == []
-    assert db.get_session('owned')['system_prompt'] == 'prefix'
-    assert db._read_one('SELECT last_sequence FROM worker_executions')[0] == sequence - 1
+    assert transcript_rows(persistence, 'owned') == []
+    assert session_row(persistence, 'owned')['system_prompt'] == 'prefix'
+    assert holder._read_one('SELECT last_sequence FROM worker_executions')[0] == sequence - 1

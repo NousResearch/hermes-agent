@@ -378,7 +378,8 @@ class SQLiteMessageRepository:
                 watermark: Optional[Watermark] = None, carried_tail_count: int = 0,
                 lock_holder: Optional[str] = None, model_config_patch: Optional[Mapping[str, JsonValue]] = None,
                 carried: Sequence[HeldMessage] = (), coverage: Optional[HeldCoverage] = None,
-                held_for_cas: Optional[Sequence[HeldMessage]] = None) -> CompactionResult:
+                held_for_cas: Optional[Sequence[HeldMessage]] = None,
+                system_prompt: Optional[str] = None) -> CompactionResult:
         holder = self._store.holder()
         dicts = [_message_dict(m) for m in replacement]
         with _refusals(holder, session_id):
@@ -389,7 +390,8 @@ class SQLiteMessageRepository:
                 carried_messages=[_held_dict(m) for m in carried] or None,
                 covered_ids=None if coverage is None else [int(i) for i in coverage.covered_ids],
                 unresolved_held=None if coverage is None else [_held_dict(m) for m in coverage.unresolved],
-                held_for_cas=None if held_for_cas is None else [_held_dict(m) for m in held_for_cas])
+                held_for_cas=None if held_for_cas is None else [_held_dict(m) for m in held_for_cas],
+                system_prompt=system_prompt)
         return CompactionResult(active_count=active, rows=tuple(_stamp(m, {}) for m in dicts))
 
     def rewrite_pruned_rows(self, session_id: SessionId, changes: Sequence[PrunedRowChange], *,

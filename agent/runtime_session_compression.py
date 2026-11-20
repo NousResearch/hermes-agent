@@ -84,10 +84,13 @@ class RuntimeSessionCompressionMixin:
             {k: v for k, v in m.items()
              if k in HANDOFF_MESSAGE_FIELDS or k == '_db_persisted'}
             for m in held_for_cas if isinstance(m, dict)]
-        result = self._apply('compression.archive', dict(messages=_handoff_rows(compacted_messages),
+        payload = dict(messages=_handoff_rows(compacted_messages),
             model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
             tail_count=tail_count, carried_messages=carried, covered_ids=covered_ids,
-            unresolved_held=unresolved, held_for_cas=cas, system_prompt=system_prompt))
+            unresolved_held=unresolved, held_for_cas=cas)
+        if system_prompt is not None:
+            payload['system_prompt'] = system_prompt
+        result = self._apply('compression.archive', payload)
         from agent.runtime_session_store import apply_row_annotations
         apply_row_annotations(compacted_messages, result['annotations'])
         # The worker's local context version (the prompt-cache clock's compaction witness): every

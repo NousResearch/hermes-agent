@@ -100,6 +100,7 @@ def commit_compaction(
         watermark=None if watermark is None else Watermark(MessageId(int(watermark)) if watermark else None),
         carried_tail_count=kwargs.get("tail_count", 0), lock_holder=kwargs.get("lock_holder"),
         model_config_patch=kwargs.get("model_config_patch"), carried=held("carried_messages") or (),
+        system_prompt=kwargs.get("system_prompt"),
         coverage=None if covered_ids is None else HeldCoverage(
             covered_ids=tuple(MessageId(int(i)) for i in covered_ids), unresolved=held("unresolved_held") or ()),
         held_for_cas=held("held_for_cas"))

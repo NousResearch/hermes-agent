@@ -72,7 +72,7 @@ def _config_bool(value: Any, default: bool = False) -> bool:
 def _tts_response_format_from_path(output_path: str) -> str:
     """Pick an OpenAI-style response format (opus/wav/flac/mp3) from the output extension."""
     formats = ((".ogg", "opus"), (".wav", "wav"), (".flac", "flac"))
-    return next((fmt for ext, fmt in formats if output_path.endswith(ext)), "mp3")
+    return next((fmt for ext, fmt in formats if output_path.lower().endswith(ext)), "mp3")
 
 
 def _require_key(env_var: str, provider_id: str, hint: str) -> str:
@@ -223,7 +223,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: dict[str, Any]
     audio_generator = client.text_to_speech.convert(
         text=text, voice_id=el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
         model_id=el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID),
-        output_format="opus_48000_64" if output_path.endswith(".ogg") else "mp3_44100_128")
+        output_format="opus_48000_64" if output_path.lower().endswith(".ogg") else "mp3_44100_128")
     with open(output_path, "wb") as f:
         f.writelines(audio_generator)
     return output_path
@@ -319,7 +319,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: dict[str, Any]) -
     base_url = str(base_url or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
 
     # Documented minimal POST /v1/tts shape; optional fields only when they differ from defaults.
-    codec = "wav" if output_path.endswith(".wav") else "mp3"
+    codec = "wav" if output_path.lower().endswith(".wav") else "mp3"
     payload: dict[str, Any] = {"text": text, "voice_id": voice_id, "language": language}
     if codec != "mp3" or sample_rate != DEFAULT_XAI_SAMPLE_RATE or bit_rate != DEFAULT_XAI_BIT_RATE:
         output_format: dict[str, Any] = {"codec": codec}

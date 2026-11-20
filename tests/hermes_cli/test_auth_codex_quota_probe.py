@@ -283,6 +283,43 @@ def test_resolver_selects_entry_with_expired_millisecond_reset(tmp_path, monkeyp
 
 
 
+@pytest.mark.parametrize("newer_failure", [False, True])
+def test_pool_probe_recovery_survives_stale_flush_and_preserves_newer_failures(
+    tmp_path, monkeypatch, newer_failure,
+):
+    from agent.credential_pool import load_pool
+
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    store = _pool_only_rate_limited_store(now - 10)
+    original = store["credential_pool"]["openai-codex"][0]
+    original["model_cooldowns"] = {"unavailable-model": now + 3600}
+    _write_auth_store(home, store)
+    pool = load_pool("openai-codex")
+    stale = load_pool("openai-codex")
+
+    def probe(token, **kwargs):
+        if newer_failure:
+            peer = {**original, "last_status_at": now + 1}
+            auth_mod.write_credential_pool("openai-codex", [peer])
+        return True
+
+    monkeypatch.setattr(auth_mod, "_refresh_expired_codex_probe_token", lambda *args: None)
+    monkeypatch.setattr(auth_mod, "_probe_codex_quota_restored", probe)
+    pool._available_entries(clear_expired=True, model="available-model")
+    # An unrelated flush from a process predating recovery must not undo the clear.
+    stale._persist()
+    persisted = auth_mod.read_credential_pool("openai-codex")[0]
+    assert persisted["last_status"] == ("exhausted" if newer_failure else "ok")
+    assert persisted["model_cooldowns"] == original["model_cooldowns"]
+    reloaded = load_pool("openai-codex")
+    available, _ = reloaded._available_entries(model="available-model")
+    assert bool(available) is not newer_failure
+    assert reloaded._available_entries(model="unavailable-model")[0] == []
+
+
 def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
     """Entries frozen by auth-shaped failures must not trigger the probe."""
     now = time.time()

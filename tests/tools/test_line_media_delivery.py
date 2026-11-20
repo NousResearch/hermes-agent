@@ -2,7 +2,7 @@
 
 The cron delivery layer parses a ``MEDIA:<path>`` tag out of a job's output and
 routes the file to the platform's native media API. Which platforms support
-that is decided by ``tools.send_message_tool._CHUNKED_ROUTES`` — a platform
+that is decided by ``gateway.outbound.send._CHUNKED_ROUTES`` — a platform
 missing from that table falls through to the generic text-only path, where the
 attachment is silently discarded with a warning::
 
@@ -17,7 +17,7 @@ refactor cannot quietly drop it again.
 
 import pytest
 
-from tools.send_message_tool import _CHUNKED_ROUTES, _MEDIA_PLATFORMS_NOTE, _via_adapter_route
+from gateway.outbound.send import _CHUNKED_ROUTES, _MEDIA_PLATFORMS_NOTE, _via_adapter_route
 
 
 def test_line_is_registered_for_media_delivery():

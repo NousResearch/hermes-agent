@@ -23,7 +23,7 @@ Schema traps this covers:
 2. ``altText`` is required on a flex message.
 
 Separately, the cron delivery layer drops MEDIA attachments on LINE unless
-``line`` is registered in ``tools.send_message_tool._CHUNKED_ROUTES`` (covered by
+``line`` is registered in ``gateway.outbound.send._CHUNKED_ROUTES`` (covered by
 ``tests/tools/test_line_media_delivery.py``), and the out-of-process (standalone)
 sender needs the loopback media-publish endpoint (covered here).
 """

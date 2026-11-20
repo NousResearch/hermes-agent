@@ -70,6 +70,9 @@ def _local_base() -> str:
         scoped = str(get_scoped_secret("LINE_LOCAL_BASE", "") or "")
     except ImportError:
         scoped = ""
+    # LINE_LOCAL_BASE is a loopback base URL, not a credential; the scoped read
+    # above is the primary path and os.environ is only the DEFAULT-profile fallback.
+    # health: allow PS-P06 -- LINE_LOCAL_BASE is a local URL, not a secret
     return (scoped or os.environ.get("LINE_LOCAL_BASE", DEFAULT_LOCAL_BASE)).rstrip("/")
 
 

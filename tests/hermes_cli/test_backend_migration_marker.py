@@ -34,6 +34,38 @@ def test_an_unreadable_manifest_keeps_the_old_backend_down(tmp_path, content):
     assert backend_retired_by_migration(tmp_path) is True
 
 
+@pytest.mark.platforms("linux", "macos")
+def test_an_unreadable_directory_behaves_like_no_marker(tmp_path):
+    """Startup must never crash with PermissionError when the marker path cannot be searched."""
+    import os
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses directory permission checks")
+    from hermes_cli.backend_migration_marker import backend_retired_by_migration
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        assert backend_retired_by_migration(locked) is False
+    finally:
+        locked.chmod(0o700)
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_an_unreadable_marker_file_behaves_like_no_marker(tmp_path):
+    """An unreadable marker file is treated as no marker and never raises."""
+    import os
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses file permission checks")
+    from hermes_cli.backend_migration_marker import backend_retired_by_migration
+    marker = tmp_path / "backend_migration.json"
+    marker.write_text(json.dumps({"state": "done"}))
+    marker.chmod(0o000)
+    try:
+        assert backend_retired_by_migration(tmp_path) is False
+    finally:
+        marker.chmod(0o600)
+
+
 def _systemctl(active: str, enabled: str, calls: list):
     def run(args, *a, **kw):
         calls.append(list(args))

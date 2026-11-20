@@ -360,6 +360,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    worktree_id = getattr(args, "worktree_id", None)
+    if worktree_id is not None:
+        try:
+            kb.validate_worktree_id(worktree_id)
+        except ValueError as exc:
+            return _err(f"kanban: --worktree-id: {exc}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -374,6 +380,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
+            worktree_id=worktree_id,
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
@@ -511,6 +518,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         field("branch", task.branch_name)
+    if task.worktree_id:
+        field("worktree", task.worktree_id)
     if task.skills:
         field("skills", ", ".join(task.skills))
     if task.model_override:
@@ -951,17 +960,23 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    worktree_id = getattr(args, "worktree_id", None)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, worktree_id)):
+        return _err("kanban edit: provide --title, --body, --priority, --result, or --worktree-id", 2)
+    if worktree_id is not None:
+        try:
+            kb.validate_worktree_id(worktree_id)
+        except ValueError as exc:
+            return _err(f"kanban edit: --worktree-id: {exc}", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
+            result=result, summary=summary, metadata=metadata, worktree_id=worktree_id,
         )
     return _ok_or_err(
         ok,

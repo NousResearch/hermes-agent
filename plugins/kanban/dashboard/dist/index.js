@@ -3118,6 +3118,102 @@
     return "";
   }
 
+  // ---------------------------------------------------------------------------
+  // Orca worktree badge (ORCA-06 kanban<->orca auto-link). Renders only when
+  // the task carries a worktree_id link; hidden otherwise (null return keeps
+  // the chip row of unlinked cards byte-identical). State is polled from the
+  // plugin backend, which talks to the live Orca runtime over its local RPC
+  // socket and falls back to the orca-status skill journal — so the badge
+  // stays fresh without a page reload and degrades to a muted "unknown" pill
+  // (never a fabricated state) when Orca is unreachable. Click asks the
+  // backend to focus the worktree in Orca via the same worktree.activate RPC
+  // Orca's mobile companion uses for its worktree "open" action.
+  // ---------------------------------------------------------------------------
+
+  var ORCA_BADGE_POLL_MS = 15000;
+
+  function OrcaWorktreeBadge(props) {
+    var worktreeId = props.worktreeId;
+    var _status = useState(null), status = _status[0], setStatus = _status[1];
+    var _busy = useState(false), busy = _busy[0], setBusy = _busy[1];
+    var _reveal = useState(null), revealError = _reveal[0], setRevealError = _reveal[1];
+    var { t } = useI18n();
+
+    var refresh = useCallback(function () {
+      if (!worktreeId) return;
+      SDK.fetchJSON(API + "/orca/worktree-status?worktree_id=" + encodeURIComponent(worktreeId))
+        .then(function (r) { setStatus(r && typeof r === "object" ? r : null); })
+        .catch(function () { setStatus({ state: "unknown", source: "dashboard-error" }); });
+    }, [worktreeId]);
+
+    useEffect(function () {
+      if (!worktreeId) return;
+      refresh();
+      var timer = setInterval(refresh, ORCA_BADGE_POLL_MS);
+      var onVisible = function () { if (!document.hidden) refresh(); };
+      document.addEventListener("visibilitychange", onVisible);
+      return function () {
+        clearInterval(timer);
+        document.removeEventListener("visibilitychange", onVisible);
+      };
+    }, [worktreeId, refresh]);
+
+    if (!worktreeId) return null;
+
+    var state = (status && status.state) || "unknown";
+    var stateLabel =
+      state === "active" ? tx(t, "orcaBadgeActive", "Active") :
+      state === "idle" ? tx(t, "orcaBadgeIdle", "Idle") :
+      state === "complete" ? tx(t, "orcaBadgeComplete", "Complete") :
+      tx(t, "orcaBadgeUnknown", "Orca");
+    var model = status && status.model;
+    var tip = "Orca worktree " + worktreeId + " — " + stateLabel +
+      (model ? " (agent: " + model + ")" : "") +
+      (status && status.path ? " — " + status.path : "") +
+      (status && status.error ? ". " + status.error : "") +
+      ". Click to focus this worktree in Orca.";
+    var openOrca = function (e) {
+      e.stopPropagation();
+      if (busy) return;
+      setBusy(true);
+      setRevealError(null);
+      SDK.fetchJSON(API + "/orca/worktree-reveal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ worktree_id: worktreeId }),
+      }).then(function (r) {
+        if (r && r.ok === false) setRevealError(r.error || "Orca did not focus the worktree");
+      }).catch(function () { setRevealError("Orca reveal request failed"); })
+        .then(function () { setBusy(false); });
+    };
+    return h(Badge, {
+      className: cn(
+        "hermes-kanban-orca-badge",
+        "hermes-kanban-orca-badge--" + state,
+        busy ? "hermes-kanban-orca-badge--busy" : ""),
+      title: tip,
+      role: "button",
+      tabIndex: 0,
+      draggable: false,
+      "aria-label": tip,
+      onClick: function (e) { e.stopPropagation(); openOrca(e); },
+      onKeyDown: function (e) {
+        // The card opens the drawer on Enter/Space; the badge is its own
+        // action, so swallow those keys before they reach the card handler.
+        if (e.key === "Enter" || e.key === " ") {
+          e.stopPropagation();
+          e.preventDefault();
+          openOrca(e);
+        }
+      },
+    },
+      h("span", { className: "hermes-kanban-orca-badge-dot", "aria-hidden": "true" }),
+      stateLabel,
+      revealError
+        ? h("span", { className: "hermes-kanban-orca-badge-err", title: revealError }, " ⚠")
+        : null);
+  }
+
   function TaskCard(props) {
     const { t: i18n } = useI18n();
     const t = props.task;
@@ -3231,6 +3327,9 @@
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
+              : null,
+            t.worktree_id
+              ? h(OrcaWorktreeBadge, { worktreeId: t.worktree_id })
               : null,
             progress
               ? h("span", {

@@ -682,6 +682,33 @@ hermes kanban set-model t_abcd none    # clear the override
 
 The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model.
 
+### Orca worktree links (`worktree_id`)
+
+A kanban card can carry a link to the Orca worktree it belongs to (the ORCA-06 kanban↔orca auto-link). The value is a plain string identifier — whatever Orca reports for the worktree (e.g. `orca worktree ps --json`). It is inert bookkeeping in Hermes: the dispatcher doesn't act on it, it just round-trips through every surface so the card and the worktree can find each other.
+
+```bash
+# At creation
+hermes kanban create "refactor scoring engine" --assignee coder --worktree-id wt_9f2c1a
+
+# Later — set/replace, or clear with an empty value
+hermes kanban edit t_abcd --worktree-id wt_9f2c1a
+hermes kanban edit t_abcd --worktree-id ""     # clear the link
+
+# Read it back (text show, --json, kanban_show, dashboard GET /tasks/:id)
+hermes kanban show t_abcd
+```
+
+`kanban_create` accepts the same `worktree_id` parameter, and the dashboard's `PATCH /tasks/:id` takes `worktree_id` (set/replace; `""` clears) plus an explicit `clear_worktree_id` flag. When present the value must be a non-empty string identifier — alphanumeric first character, then letters/digits/`.`/`_`/`-`/`/`/`:`, at most 255 characters (the `:` admits Orca's canonical two-part id ``<repoId>::<worktreePath>``, e.g. `repo-42::/Users/me/orca/fix-login`); anything else is rejected at write time. Cards without a link behave exactly as before.
+
+#### Worktree status badge
+
+When a card carries a `worktree_id`, the dashboard renders an Orca badge in the card's chip row (hidden otherwise). It shows the live worktree state — **Active** (green, pulsing dot: Orca `active`/`working`/`permission`), **Idle** (amber: worktree exists, no live session — Orca `inactive`), **Complete** (blue: session ended — Orca `done`, failed sessions included with the outcome in the tooltip) — polling the plugin backend every 15 s (and on tab focus). The backend reads Orca's runtime RPC `worktree.ps` over the runtime's local unix socket and falls back to the orca-status skill journal when Orca is unreachable; an unresolvable link shows a muted "Orca" pill rather than a fabricated state. Clicking the badge focuses the worktree in the Orca UI via the runtime's `worktree.activate` RPC (the same call Orca's mobile companion uses for its worktree "open" action — Orca registers no `orca://worktree/...` URL route, so the RPC is the deep link).
+
+New dashboard API routes (mounted under `/api/plugins/kanban/`, same auth as the rest of the plugin):
+
+| `GET` | `/orca/worktree-status?worktree_id=<id>` | Badge payload for one link: `{state: active\|idle\|complete\|unknown, source: orca-runtime-rpc\|orca-status-state\|none, orca_status, agent_states, model, path, last_activity_at, error, error_code}`. Never 5xx — unresolvable links degrade to `state: "unknown"` |
+| `POST` | `/orca/worktree-reveal` | Body `{worktree_id}` → focuses the worktree in Orca (`worktree.activate` RPC with selector `id:<worktree_id>`). When the runtime is down it launches Orca once (`orca open`, or `open -a Orca`) and retries exactly one time. Returns `{ok, launched, method, error, error_code}` — `ok: false` with `runtime_unavailable` is an operational state, not an HTTP error |
+
 ### Cost strategy: frontier orchestrator, inexpensive workers
 
 Kanban's per-profile configs make the planner/worker cost split natural. Decomposing a project into well-scoped cards takes frontier-level judgment; executing a card that already carries a clear goal, context, and handoff evidence usually doesn't — and the workers are where the vast majority of tokens are spent, so the worker model is where the cost lives. Run your orchestrator/dispatcher profile on a frontier model and point worker profiles at inexpensive models. Each profile has its own `config.yaml` under `~/.hermes/profiles/<name>/`, and the dispatcher injects the profile-scoped `HERMES_HOME` when it spawns `hermes -p <assignee>`, so each worker reads its own profile's model settings:
@@ -877,7 +904,9 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
-| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
+| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result / `worktree_id` (Orca link; `clear_worktree_id` flag clears it) |
+| `GET` | `/orca/worktree-status?worktree_id=<id>` | Orca badge state for a linked worktree (`active`/`idle`/`complete`/`unknown`) — polls Orca's runtime RPC, degrades to the orca-status journal, never 5xx |
+| `POST` | `/orca/worktree-reveal` | Focus the linked worktree in the Orca UI (`worktree.activate` RPC; launches Orca once and retries when the runtime is down) |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
 | `POST` | `/tasks/:id/specify` | Run the triage specifier — auxiliary LLM fleshes out the task body and promotes it from `triage` to `todo`. Returns `{ok, task_id, reason, new_title}`; `ok=false` with a human-readable reason on "not in triage" / no aux client / LLM error is a 200, not a 4xx |

@@ -96,23 +96,27 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
 
   // Each plan read is numbered: only the newest one's answer is shown (an older one may arrive later).
   const planReads = useRef(0);
-  const readPlan = useCallback(async () => {
-    const n = ++planReads.current;
-    const r = await backendMigrationApi.plan();
+  const adopt = useCallback((r: { status: number; body: BackendMigrationPlanResponse | null }, n: number) => {
     if (!alive.current || n !== planReads.current || r.status !== 200 || !r.body) return;
     setPlan(r.body);
     setRefusal(null);
     setView(initialView(r.body));
     follows(r.body);
   }, [follows]);
+  const readPlan = useCallback(() => {
+    const n = ++planReads.current;
+    void backendMigrationApi.plan().then((r) => adopt(r, n));
+  }, [adopt]);
 
   useEffect(() => {
+    const followsInitial = (r: BackendMigrationPlanResponse) => follows(r);
     if (initial !== undefined) {
-      if (initial) follows(initial);
+      if (initial) followsInitial(initial);
       return;
     }
-    void readPlan();
-  }, [initial, follows, readPlan]);
+    const n = ++planReads.current;
+    void backendMigrationApi.plan().then((r) => adopt(r, n));
+  }, [initial, follows, adopt]);
 
   const profile = plan?.profile ?? plan?.run.profile ?? (getManagementProfile() || null);
   const commands = plan?.commands ?? plan?.run.commands ?? null;
@@ -167,7 +171,7 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
 
   // After a rolled-back run (everything was put back): read the plan again, as a page load does, and show
   // the move as it stands now (or follow a run that started meanwhile).
-  const tryAgain = () => void readPlan();
+  const tryAgain = readPlan;
 
   const checkAgain = () => {
     if (!followed) return;

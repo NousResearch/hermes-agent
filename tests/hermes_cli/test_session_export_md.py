@@ -75,3 +75,41 @@ def test_verify_export_file_checks_count_and_sha(tmp_path):
     assert "sha256" in reason
 
 
+def _self_referential_session(content: str) -> dict:
+    """A session whose own messages contain a marker line the exporter also writes."""
+    return _session(
+        messages=[
+            {"role": "user", "content": content, "created_at": 1783331697.0},
+            {"role": "assistant", "content": "noted", "created_at": 1783331698.0},
+        ],
+        message_count=2,
+    )
+
+
+def test_export_quoting_the_placeholder_token_still_verifies(tmp_path):
+    """Mechanism A of issue #157707: the in-body token must not be rewritten with the digest."""
+    session = _self_referential_session("what is `__SHA256_PLACEHOLDER__` for?")
+    path = write_session_markdown(session, tmp_path)
+
+    assert verify_export_file(path, session) == (True, "ok")
+    assert "`__SHA256_PLACEHOLDER__`" in path.read_text(encoding="utf-8")
+
+
+def test_export_quoting_an_earlier_footer_still_verifies(tmp_path):
+    """Mechanism B: a quoted SHA line inside the messages is not the marker to recompute from."""
+    quoted = f"- SHA256 of exported body: `{'0' * 64}`"
+    session = _self_referential_session(quoted)
+    path = write_session_markdown(session, tmp_path)
+
+    assert verify_export_file(path, session) == (True, "ok")
+    assert path.read_text(encoding="utf-8").count(quoted) == 1
+
+
+def test_self_referential_export_still_detects_tampering(tmp_path):
+    session = _self_referential_session("what is `__SHA256_PLACEHOLDER__` for?")
+    path = write_session_markdown(session, tmp_path)
+    path.write_text(path.read_text(encoding="utf-8").replace("noted", "Tampered"), encoding="utf-8")
+
+    ok, reason = verify_export_file(path, session)
+    assert ok is False
+    assert "sha256" in reason

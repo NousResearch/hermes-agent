@@ -1,0 +1,49 @@
+[project]
+name = "security-recon-assistant"
+version = "0.1.0"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml",
+    "jinja2",
+    "click>=8.0",
+]
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-mock>=3.10",
+]
+
+[project.scripts]
+security-recon-assistant = "security_recon_assistant.cli:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "unit: Tests unitaires isolés",
+    "integration: Tests d'intégration",
+    "slow: Tests lents (>5s)",
+]
+
+[tool.coverage.run]
+source = ["security_recon_assistant"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]

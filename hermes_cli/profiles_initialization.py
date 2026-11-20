@@ -3,7 +3,6 @@ import contextlib
 import errno
 import os
 import shutil
-import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -28,8 +27,9 @@ def publish_staging(staging: Path, profile_dir: Path, exists_error: Callable[[],
     try:
         os.rename(staging, profile_dir)
     except OSError as exc:
+        from hermes_platform.host.facts import os_family
         lost = isinstance(exc, FileExistsError) or exc.errno in (errno.ENOTEMPTY, errno.EEXIST) or (
-            isinstance(exc, PermissionError) and sys.platform == "win32" and profile_dir.exists())
+            isinstance(exc, PermissionError) and os_family() == "win32" and profile_dir.exists())
         if not lost:
             raise
         raise exists_error() from exc

@@ -44,6 +44,7 @@ logs_router = APIRouter()
 _collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
+_default_hermes_root_is_opt_data = late("_default_hermes_root_is_opt_data", "hermes_cli.web_server_files")
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
 _require_token = late("_require_token")
@@ -508,7 +509,24 @@ def _status_local_reads() -> dict[str, Any]:
     return {"version": get_version_info().base_version, "config_version": current_ver,
             "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "hosted_webapp_url": _hosted_webapp_url(),
             "nous_session_valid": _nous_session_validity()}
+
+
+def _hosted_webapp_url() -> Optional[str]:
+    """The Webapp's public address on a hosted (Hermes Cloud) agent that serves one, else None.
+    Hosted is the ``/opt/data`` layout the update gate already keys on; the Portal seeds
+    ``webapp.enabled`` and ``webapp.public_url`` on the agents it has moved to the Webapp."""
+    if not _default_hermes_root_is_opt_data():
+        return None
+    try:
+        from gateway.webapp_listener import _public_url
+        block = load_config().get("webapp")
+        if not isinstance(block, dict) or block.get("enabled") is not True:
+            return None
+        return _public_url(block.get("public_url")) or None
+    except Exception:
+        return None
 
 
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:
@@ -664,6 +682,14 @@ async def get_status(profile: Optional[str] = None,
                 "hermes_home": str(get_hermes_home()), "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
+
+        # The standalone dashboard of a hosted agent is being replaced by its Webapp: a signed-in
+        # caller there gets the address to move to (the SPA's "dashboard is moving" modal). Never on
+        # a loopback bind, and never from the Webapp itself.
+        from hermes_cli.web_server_surface import surface
+        if (verified and auth["auth_required"] and local["hosted_webapp_url"]
+                and request is not None and surface(request.app.state) == "dashboard"):
+            status["webapp_url"] = local["hosted_webapp_url"]
 
         if not verified:
             redact_status_for_unverified(status)

@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 
 import { BackendMigrationCard } from "./BackendMigrationCard";
 import { containerPlans, systemSystemdPlans } from "./BackendMigrationCard.plans.fixture";
-import { unknownActivityBlocker } from "./BackendMigrationCard.engine.fixture";
+import { lateTurnStatus, unknownActivityBlocker } from "./BackendMigrationCard.engine.fixture";
 import {
   applyOutcome,
   blockerAdvice,
@@ -241,6 +241,42 @@ describe("BackendMigrationCard", () => {
     expect(container.querySelector('[data-slot="backend-migration-rolled-back"]')?.textContent).toContain(
       "Reason: verify failed: no HTTP 200 on 127.0.0.1:9119/api/status",
     );
+  });
+
+  describe("a chat that starts after the preflight (exit 4, the old backend never stopped)", () => {
+    // The status route's records after the engine stopped the move right before the old backend's stop.
+    it.each([
+      ["a running turn", lateTurnStatus.running,
+        "1 turn(s) are running on the old backend. Wait for them to finish, then try again. The old backend has not "
+          + "been stopped."],
+      ["unreadable activity", lateTurnStatus.unknown,
+        "Cannot tell whether turns are running on the old backend: its turn activity could not be read. To move it, "
+          + "confirm it is idle, then try again. The old backend has not been stopped."],
+    ])("with %s reads as rolled back with the engine's reason and offers to try again", async (_what, record, reason) => {
+      const late = record as unknown as BackendMigrationStatus;
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+        const url = String(input);
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (url.includes("/apply")) {
+          return new Response(JSON.stringify({ ok: true, confirmed: true, requested_at: late.started_at }),
+            { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        const body = url.includes("/plan") ? planWith({}, late) : late;
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }));
+      await render(planWith({}));
+      await confirmMove();
+      await wait(1600);
+      const shown = container.querySelector('[data-slot="backend-migration-rolled-back"]')?.textContent ?? "";
+      expect(shown).toContain(`Reason: ${reason}`);
+      expect(shown).not.toContain("--force-interrupt");
+      expect(shown).not.toContain("gateway_service failed");
+      await act(async () => button("Try again")!.click());
+      expect(calls.filter((c) => c.startsWith("GET") && c.includes("/plan"))).toHaveLength(1);
+      expect(container.querySelector('[data-slot="backend-migration-rolled-back"]')).toBeNull();
+      expect(moveButton()?.disabled).toBe(false);
+    });
   });
 
   it("sends one apply for a double confirm and follows a 409 'already running' instead of applying again", async () => {

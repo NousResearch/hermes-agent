@@ -220,6 +220,17 @@ export function reasonOf(status: BackendMigrationStatus): string {
   return (status.message.split("; rolled back")[0] ?? status.message).split("; rollback incomplete")[0].trim();
 }
 
+/** A rolled-back run's reason as the card shows it. A move the engine stopped before the old backend was
+ *  stopped (a chat started after the preflight) gives the preflight's turn blocker: without the step
+ *  prefix, and with "try again" (the card offers it) in place of the CLI flag. Other reasons are as given. */
+export function rolledBackReason(reason: string): string {
+  if (!reason.endsWith("The old backend has not been stopped.")) return reason;
+  return reason
+    .replace(/^[a-z_]+ failed: /, "")
+    .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\./, ", then try again.")
+    .replace(/,? then re-run with --force-interrupt( \(any running turn is interrupted\))?\./, ", then try again.");
+}
+
 /** The engine's per-file manual-step notes (a file put back, kept for its edits, or whose backup is missing):
  *  words to follow, not a command to copy. */
 export function isFileNote(step: string): boolean {
@@ -264,7 +275,7 @@ export function viewOf(st: BackendMigrationStatus): PollView {
     case "done":
       return { kind: "done", address: st.new_address ?? "" };
     case "rolled_back":
-      return { kind: "rolledBack", reason: reasonOf(st) };
+      return { kind: "rolledBack", reason: rolledBackReason(reasonOf(st)) };
     case "failed":
       // A refused background run changed nothing: say why it did not start, not "could not be undone".
       if (st.refused) {

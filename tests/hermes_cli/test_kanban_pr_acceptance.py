@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import threading
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -129,6 +130,55 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("expires_at", [None, "bind", "receipt"])
+def test_goal_pr_acceptance_writes_require_live_lease(github, monkeypatch, expires_at):
+    from hermes_cli import kanban_pr_acceptance_store as store
+
+    repo = "acme/repo"
+    pr = f"https://github.com/{repo}/pull/7"
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract=repo, goal_mode=True)
+        owner = kb.claim_task(conn, tid)
+        assert owner is not None and owner.current_run_id is not None
+        run_id = owner.current_run_id
+
+        def expire_lease():
+            with connect() as rival, kb.write_txn(rival):
+                rival.execute("UPDATE tasks SET claim_expires=0 WHERE id=?", (tid,))
+                rival.execute("UPDATE task_runs SET claim_expires=0 WHERE id=?", (run_id,))
+
+        if expires_at == "bind":
+            # Worker was live during preparation, but expires before acquiring the bind's write lock.
+            write_txn = store.write_txn
+
+            @contextmanager
+            def after_lease_expires(connection):
+                expire_lease()
+                with write_txn(connection):
+                    yield
+
+            monkeypatch.setattr(store, "write_txn", after_lease_expires)
+        elif expires_at == "receipt":
+            github["race"] = expire_lease
+
+        ok = kb.complete_task(conn, tid, result="Published", expected_run_id=run_id,
+                              metadata={"published_pr": pr})
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert task is not None and run is not None
+        assert task.completion_contract == (repo if expires_at == "bind" else pr)
+        if expires_at == "bind":
+            assert not github["requests"]
+        receipts = conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'",
+                                (tid,)).fetchone()[0]
+        assert receipts == int(expires_at is None)
+        assert ok is (expires_at is None) and run.id == run_id
+        if expires_at:
+            assert task.status == "running" and task.current_run_id == run_id and run.outcome is None
+        else:
+            assert task.status == "done" and run.outcome == "completed"
 
 
 # --- #122689: acceptance must read the repo as the ASSIGNEE profile's gh login ---

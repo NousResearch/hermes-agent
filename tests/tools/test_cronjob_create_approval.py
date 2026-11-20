@@ -27,12 +27,17 @@ def cron_store(tmp_path, monkeypatch):
     terminal_tool.set_approval_callback(None)
 
 
-def _asking(monkeypatch, answer):
+def _asking(monkeypatch, answer, late=False):
     asked = []
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
     def callback(command, description, *, kind="command", **_):
         asked.append((kind, description))
+        if late:  # the user answers an hour after the card appeared
+            from datetime import timedelta
+            from cron import jobs
+            real_now = jobs._hermes_now
+            monkeypatch.setattr(jobs, "_hermes_now", lambda: real_now() + timedelta(hours=1))
         return answer
     terminal_tool.set_approval_callback(callback)
     return asked
@@ -48,11 +53,13 @@ _GATE = 'import json\nprint(json.dumps({"wakeAgent": False}))\n'
     ("once", 1, {"script_content": _GATE}), ("deny", 0, {"script_content": _GATE}),
     # The card describes what create stores: a numeric-string repeat and the skills beside a prompt.
     ("once", 1, {"repeat": "3", "skill": "maps"}),
+    # The job saves the first run the card showed, however long the answer takes (one-shot and recurring).
+    ("once", 1, {"schedule": "in 2h", "repeat": None}), ("once", 1, {"schedule": "every 2h"}),
     # A create that would fail validation never asks: the user is not shown a job that cannot save.
     ("once", 0, {"timezone": "Not/AZone"}), ("once", 0, {"no_agent": True}),
 ])
 def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch, answer, saved, extra):
-    asked = _asking(monkeypatch, answer)
+    asked = _asking(monkeypatch, answer, late="schedule" in extra)
     result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, **extra}))
     assert result.get("success") is (saved == 1)
     assert len(cron_store.load_jobs()) == saved
@@ -61,6 +68,14 @@ def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch
         return
     # The schedule card, not the command card, on every surface that draws one.
     assert len(asked) == 1 and asked[0][0] == "schedule"
+    if "schedule" in extra:
+        job = cron_store.load_jobs()[0]
+        card_first = asked[0][1].split("first run ")[1].split(")")[0].split(",")[0]
+        from datetime import datetime
+        from hermes_time import now as hermes_now
+        saved = datetime.fromisoformat(job["next_run_at"]).astimezone(hermes_now().tzinfo)
+        assert saved.strftime("%a %b %d %H:%M %Z") == card_first
+        return
     assert "Water" in asked[0][1] and "3 runs" in asked[0][1]
     if "skill" in extra:
         assert "skills: maps" in asked[0][1]

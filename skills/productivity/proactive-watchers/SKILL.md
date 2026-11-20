@@ -2,7 +2,7 @@
 name: proactive-watchers
 description: "Anticipate needs: trip moments, owed replies, watched pages."
 version: 1.0.0
-author: Hermes Agent
+author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

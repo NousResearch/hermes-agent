@@ -1516,7 +1516,7 @@ run = subprocess.run(
 if run.returncode != 0:  # signed out, Slack not connected, gateway error: stay quiet this tick
     print(json.dumps({"wakeAgent": False}))
     raise SystemExit(0)
-data = json.loads(run.stdout).get("data") or {}
+data = json.loads(run.stdout)  # the tool's response itself, already unwrapped
 matches = (data.get("messages") or {}).get("matches") or []
 new = [m for m in matches if float(m.get("ts", 0)) > last]
 if not new:

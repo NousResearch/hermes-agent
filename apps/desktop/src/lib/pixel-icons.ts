@@ -352,6 +352,7 @@ export const CODICON_PIXEL: Readonly<Record<string, PixelMapping>> = {
   'record-keys': 'keyboard',
   references: 'link',
   refresh: 'refresh',
+  redo: 'redo', // check-in "Show me around again" (18677:28726)
   regex: 'code',
   remote: 'cloud-server',
   remove: 'close',

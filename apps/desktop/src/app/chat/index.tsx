@@ -54,8 +54,8 @@ import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
-import { DeveloperViewOffer } from '../discovery/developer-view-offer'
-import { HeldExchange, useIntroUnlessHeld } from '../discovery/held-exchange'
+import { ChatDiscovery } from '../discovery/chat-discovery'
+import { useIntroUnlessHeld } from '../discovery/held-exchange'
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
@@ -800,9 +800,7 @@ const ChatViewContent = memo(function ChatViewContent({
             sessionKey={threadKey}
           />
           {classicPrimary && <IntroCopy />}
-          <HeldExchange primary={isPrimary} routed={isRoutedSessionView} />
-          {/* Artifacts are filed under the stored chat (artifact-card.tsx), which the route names. */}
-          {isPrimary && <DeveloperViewOffer sessionId={routedSessionId} />}
+          <ChatDiscovery primary={isPrimary} routedSessionId={routedSessionId} />
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}

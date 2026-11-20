@@ -1532,3 +1532,31 @@ def test_interrupted_recovery_keeps_edits_made_before_recovery(home, capsys, nam
     assert host.old["active"] is False
     assert str(home / name) in out and "edits were kept" in out and "Do this by hand:" in out
 
+
+# --------------------------------------------------------------------------- hand-started backend rollback
+
+
+def test_a_rollback_killed_as_it_records_the_end_keeps_the_launch_snapshot_for_the_next_run(home):
+    """The copies of a hand-started backend's command line and environment go only after the final state
+    is saved: a run killed in between is recovered with the old backend found running (exit 4)."""
+    host = FakeHost(home, supervisor="manual")
+    host.gateway_lies = True  # verify fails after the old backend was stopped: rollback
+    real_finish = engine.Run.finish
+
+    def killed_at_the_end(run, state, message):
+        if state == "rolled_back" and not getattr(killed_at_the_end, "done", False):
+            killed_at_the_end.done = True
+            raise Killed()
+        real_finish(run, state, message)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(engine.Run, "finish", killed_at_the_end)
+        with pytest.raises(Killed):
+            engine.cmd_apply(host, _args())
+    assert host.old["active"] is True
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLED_BACK
+    m = engine.read_manifest(home)
+    assert m["state"] == "rolled_back" and m["backups"]["launcher_argv"] is None
+    assert not list((home / "backend_migration").glob("launcher-*.json"))
+

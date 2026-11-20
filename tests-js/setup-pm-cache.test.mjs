@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { posix } from 'node:path'
 import { load } from 'js-yaml'
 import { expect, it } from 'vitest'
 
@@ -72,8 +73,10 @@ const targetOf = job => job.strategy.matrix.target.map(row => row.label)
 const desktopLegs = cacheUsers(desktop)
 
 const SHA = 'a'.repeat(40)
+// A release leg builds only for Stable Release's candidate phase (stable-release.yml passes
+// release-phase: candidate and no upload_release); a direct tag dispatch is refused at validate.
 const dispatches = {
-  tag: { build_commit: '', channel: '', 'release-phase': '', upload_release: true },
+  candidate: { build_commit: '', channel: '', 'release-phase': 'candidate', upload_release: false },
   commit: { build_commit: SHA, channel: '', 'release-phase': '', upload_release: false },
   channel: { build_commit: SHA, channel: 'preview', 'release-phase': '', upload_release: false },
 }
@@ -87,10 +90,12 @@ const payloadEvents = {
   branch: { event_name: 'push', ref: 'refs/heads/feature', sha: SHA },
 }
 
-it('finds a release and a commit leg for every native target, and the payload producer', () => {
+it('finds a release and a commit leg for every native target, a release leg per Linux target, and the payload producer', () => {
   const legs = desktopLegs.map(([, job]) => `${targetOf(job)}:${job['cache-mode']}`).sort()
   const targets = ['darwin-arm64', 'win32-arm64', 'win32-x64']
-  expect(legs).toEqual(targets.flatMap(target => [`${target}:read`, `${target}:write`]).sort())
+  // Linux builds only on tag builds, so it has no read-only commit leg.
+  expect(legs).toEqual([...targets.flatMap(target => [`${target}:read`, `${target}:write`]),
+    'linux-arm64:write', 'linux-x64:write'].sort())
   expect(cacheUsers(payload)).toHaveLength(1)
 })
 
@@ -104,7 +109,7 @@ it.each([
     // Only the release branch writes the shared cache; commit and channel
     // builds of unreviewed inputs run the read-only leg.
     const needs = admitted(targetOf(job))
-    expect(evaluate(job.if, { inputs: dispatches.tag, needs })).toBe(cacheMode === 'write')
+    expect(evaluate(job.if, { inputs: dispatches.candidate, needs })).toBe(cacheMode === 'write')
     expect(evaluate(job.if, { inputs: dispatches.commit, needs })).toBe(cacheMode === 'read')
     expect(evaluate(job.if, { inputs: dispatches.channel, needs })).toBe(cacheMode === 'read')
   }
@@ -129,7 +134,13 @@ it.each([
     expect(build.run).not.toContain('--prepare-only')
   }
   expect(restore.with.producer).toBe(producer)
-  expect(restore.with.source).toBe('${{ github.workspace }}')
+  // The cache action must see the checkout in its own filesystem. On the host
+  // both the relative checkout and github.workspace work; in a job container
+  // the latter names a host path that isn't mounted there (actions/runner#2185).
+  const hostCheckout = '/runner/work/project/project'
+  const checkout = job.container ? '/__w/project/project' : hostCheckout
+  const source = restore.with.source.replace('${{ github.workspace }}', hostCheckout)
+  expect(posix.resolve(checkout, source)).toBe(checkout)
   expect(upload.with).toEqual({
     ...restore.with,
     phase: 'save',
@@ -142,7 +153,7 @@ it.each([
     ...context, steps: { prepare: { outcome } }, status: { failure: outcome !== 'success' },
   })
   const trusted = cacheMode
-    ? { inputs: dispatches.tag }
+    ? { inputs: dispatches.candidate }
     : { inputs: { ref: '' }, github: payloadEvents.trusted }
   expect(saves(trusted)).toBe(true)
   expect(saves(trusted, 'failure')).toBe(false)
@@ -173,8 +184,8 @@ it('each selection gate joins exactly one target\'s two trust branches after adm
     // The gate runs always() to judge a skipped branch, so it must still
     // refuse a failed admission itself.
     const needs = admitted([label])
-    expect(evaluate(gate.if, { inputs: dispatches.tag, needs })).toBe(true)
-    expect(evaluate(gate.if, { inputs: dispatches.tag,
+    expect(evaluate(gate.if, { inputs: dispatches.candidate, needs })).toBe(true)
+    expect(evaluate(gate.if, { inputs: dispatches.candidate,
       needs: { validate: { ...needs.validate, result: 'failure' } } })).toBe(false)
   }
 })

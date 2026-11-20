@@ -176,14 +176,13 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     # Session-search index knobs (hermes_state reads the env carriers).
     sessions_config = defaults.get("sessions", {})
     if isinstance(sessions_config, dict):
-        if "cjk_fts" in sessions_config:
-            os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
         if "search_slow_ms" in sessions_config:
             os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_config["search_slow_ms"])
 
 
 def _cli_config_defaults():
     """Built-in defaults for every config key the CLI reads (the file overlays these)."""
+    from hermes_cli.config import DEFAULT_CONFIG as shared, cfg_get
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as img
     return {
         "model": {"default": "", "base_url": "", "provider": "auto"},
@@ -197,7 +196,7 @@ def _cli_config_defaults():
         # threshold: fraction of the model's context limit; min_tail: real user messages kept in the tail
         "compression": {"enabled": True, "threshold": 0.50, "min_tail_user_messages": 1},
         "agent": {
-            "max_turns": 500, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
+            "max_turns": cfg_get(shared, "agent", "max_turns"), "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
             "reasoning_effort": "", "service_tier": "",
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
@@ -217,7 +216,7 @@ def _cli_config_defaults():
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
-        "delegation": {"max_iterations": 45, "model": "", "provider": "", "base_url": "", "api_key": ""},
+        "delegation": {"max_iterations": cfg_get(shared, "delegation", "max_iterations"), "model": "", "provider": "", "base_url": "", "api_key": ""},
         "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown
     }
 
@@ -256,23 +255,20 @@ def _merge_file_config(defaults: dict[str, Any], file_config: dict[str, Any]) ->
 
 
 def load_cli_config() -> dict[str, Any]:
-    """~/.hermes/config.yaml (else ./cli-config.yaml) over built-in defaults; env vars win.
+    """~/.hermes/config.yaml over built-in defaults; env vars win.
 
     ``HERMES_IGNORE_USER_CONFIG=1`` skips the user config entirely (``.env`` still loads).
     """
     from cli import _cli_config_defaults, _hermes_home, _merge_file_config, _mirror_config_to_env
     from hermes_cli.config_backend import config_exists, read_config_doc
     config_path = _hermes_home / 'config.yaml'
-    # A backend whose user layer always exists never takes the repo-file fallback.
-    if not config_exists(config_path) or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
-        config_path = Path(__file__).parent / 'cli-config.yaml'
 
     defaults = _cli_config_defaults()
 
     # Only a file's terminal section may overwrite terminal env vars already set by .env.
     _file_has_terminal_config = False
 
-    if config_exists(config_path):
+    if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1" and config_exists(config_path):
         try:
             from hermes_cli.config import _normalize_root_model_keys
 
@@ -281,7 +277,7 @@ def load_cli_config() -> dict[str, Any]:
             _file_has_terminal_config = "terminal" in file_config
             _merge_file_config(defaults, file_config)
         except Exception as e:
-            logger.warning("Failed to load cli-config.yaml: %s", e)
+            logger.warning("Failed to load %s: %s", config_path, e)
 
     # Expand ${ENV_VAR} references before bridging to env vars.
     from hermes_cli.config import _expand_env_vars

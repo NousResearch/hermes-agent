@@ -17,6 +17,11 @@ export interface TimelinePartMetadata {
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Stored reply a live `text` tail part already shows ahead of its stream (a
+   * reconnect page's body the live row adopted): its raw text and the segment
+   * offset it reaches, so the stream's deltas that repeat it (including ones
+   * past a chunk the reconnect lost) are not drawn twice. */
+  storedTail?: { end: number; text: string }
   /** Stored tool result without a matching assistant call in the loaded page.
    *  Render for history, but never treat it as authoritative Todo state. */
   unpairedStoredToolResult?: boolean
@@ -55,6 +60,9 @@ export type ChatMessage = {
   interim?: boolean
   /** The user stopped this reply before it finished; its text is partial. */
   interrupted?: boolean
+  /** A stopped reply that the next turn went on with (a hidden prompt, no visible row between): it
+   *  did not end there, so its stopped mark is not drawn (use-message-stream/interrupted-reply.ts). */
+  continued?: boolean
   /** A projected queued prompt (`user-queued-…`) whose own turn has started:
    *  `message.start` arrived after it was drawn. It is now that turn's user
    *  row, not a prompt still waiting for a later turn. */
@@ -139,6 +147,9 @@ export type GatewayEventPayload = {
   turn_id?: string
   segment?: number
   offset?: number
+  /** message.start of an automation admission: its async-result card's kind
+   *  (gateway/session_automation.admission_display), a visible row in history. */
+  display_kind?: string
   cwd?: string
   branch?: string
   terminal_backend?: string
@@ -248,6 +259,8 @@ export type GatewayEventPayload = {
   response_transformed?: MessageCompletePayload['response_transformed']
   // message.complete — `text` is a response this turn already delivered: it adds no text.
   response_reused?: MessageCompletePayload['response_reused']
+  // message.complete — an interrupted turn its interrupter continues by itself (store/paused-replies.ts).
+  paused?: MessageCompletePayload['paused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

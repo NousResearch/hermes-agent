@@ -1,0 +1,19 @@
+name: manners-meter
+repo: https://github.com/MadeByBrain/hermes-extensions
+sha: f7dac322b1675f0c98948041306fb17be98ff48c
+subdir: plugins/manners-meter
+description: "How polite are you to your agent? Counts please, thank you, bitte, danke, por favor, merci and friends in the messages you typed (code blocks, quotes and injected system blocks skipped; cron, subagent, kanban, batch, webhook and tool sessions ignored), estimates the tokens your politeness cost (typed and re-sent with later calls of the same chat, an upper bound, not a bill), keeps a swear jar with a price per coin and gives a silly rank. /manners on every surface and hermes manners in the terminal, plus a share card (self-contained HTML, 1080x1920, no external assets). Disclosure: no network calls, no model calls, standard library only. Reads state.db of the active profile read only (mode=ro). Writes only the share card, by default to HERMES_HOME/plugin-data/manners-meter/manners-card.html. A pre_llm_call hook (jar_reactions, on by default) checks your new message for swear words; when it finds one it adds a short note with the matched word and the jar count to that user message (never to the system prompt) so the agent may answer with one dry line; jar_reactions: false turns it off. Session titles and message texts never appear in the output. No credentials, no shell commands, no cron jobs, no background processes, no telemetry."
+maintainer: MadeByBrain
+tier: community
+category: general
+docs_url: https://github.com/MadeByBrain/hermes-extensions/tree/main/plugins/manners-meter#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/MadeByBrain/hermes-extensions/f7dac322b1675f0c98948041306fb17be98ff48c/plugins/manners-meter/docs/banner.png
+requires_hermes: ">=0.22.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

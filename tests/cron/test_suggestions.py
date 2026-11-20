@@ -198,7 +198,7 @@ class TestCatalog:
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):
-        from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
+        from cron.skill_blueprints import BlueprintSpec, register_blueprint_suggestion
 
         spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
         with patch("cron.suggestions.add_suggestion", store.add_suggestion):
@@ -207,6 +207,7 @@ class TestBlueprintBridge:
         assert rec["source"] == "blueprint"
         assert rec["job_spec"]["skills"] == ["morning-brief"]
         assert rec["job_spec"]["schedule"] == "0 8 * * *"
+        assert rec["job_spec"]["deliver"] == "telegram"
 
 class TestCommandHandler:
     def test_bare_lists_pending(self, store):

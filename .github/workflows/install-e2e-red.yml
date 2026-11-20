@@ -1,26 +1,25 @@
-name: Install & Update E2E red tracker
+name: Canary E2E red tracker
 
-# Someone hears about a red scheduled matrix. After every scheduled
-# "Install & Update E2E" run, tests/install/e2e-assets/red-tracker.mjs keeps
-# ONE issue labelled install-e2e-red in step with it: a red run opens it (or
-# rewrites the open one's body in place with the current red legs grouped by
-# failure class), a green run closes it. No comment per red run, no second
-# issue.
+# Someone hears about a red canary run. After every Canary release run of
+# Stable Release (titled "Canary release <tag>"), tests/install/e2e-assets/red-tracker.mjs
+# keeps ONE issue labelled install-e2e-red in step with it: a red run opens it
+# (or rewrites the open one's body in place with the current red jobs grouped by
+# failure class), a green run closes it. No comment per red run, no second issue.
+# Stable release runs, fork runs, and skipped runs leave it alone.
 #
-# A separate workflow on purpose: install-e2e.yml is also a reusable workflow
-# called by stable-release.yml with contents/actions read only, and a nested
-# job asking for issues: write would fail that call at startup.
+# A separate workflow on purpose: stable-release.yml's own last job would read its
+# run while that run is still in progress, with no conclusion yet.
 #
-# Dispatch it by hand to preview (dry-run, the default) or replay a run.
+# Dispatch it by hand to preview (dry-run, the default) or replay any run.
 
 on:
   workflow_run:
-    workflows: ['Install & Update E2E']
+    workflows: ['Stable Release']
     types: [completed]
   workflow_dispatch:
     inputs:
       run-id:
-        description: 'Install & Update E2E run id to report on.'
+        description: 'Run id to report on.'
         required: true
         type: string
       dry-run:
@@ -32,14 +31,31 @@ on:
 permissions:
   contents: read
 
+# GitHub keeps one pending run per group, and every Stable Release completion starts
+# this workflow. Every run that can change the issue shares one group, so two
+# never both see "no open issue" and create one each: a tracking Canary release run
+# and a live replay (dry-run false). Stable release runs, skipped/fork runs, and
+# dry-run previews get their own group so they can't replace a queued result.
 concurrency:
-  group: install-e2e-red-tracker
+  group: >-
+    install-e2e-red-tracker-${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run == false ||
+    github.event_name == 'workflow_run' &&
+    github.event.workflow_run.event == 'workflow_dispatch' &&
+    github.event.workflow_run.head_repository.full_name == github.repository &&
+    startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
+    github.event.workflow_run.conclusion != 'skipped') &&
+    'auto' || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   track:
     name: Update the install-e2e-red tracker
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'workflow_dispatch' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
+       github.event.workflow_run.conclusion != 'skipped')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:

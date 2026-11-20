@@ -26,7 +26,7 @@
  */
 import assert from 'node:assert/strict'
 
-import { afterEach, describe, test } from 'vitest'
+import { afterEach, describe, test, vi } from 'vitest'
 
 import {
   isWslBridgeActive,
@@ -37,6 +37,13 @@ import {
   setWslBridgeProfileState,
   wslPosixToWindowsAccessible
 } from './wsl-path-bridge'
+
+// Pin a registered distribution so these tests do not depend on the host's
+// WSL install; the no-WSL cases live in wsl-path-bridge-availability.test.ts.
+vi.mock('node:child_process', () => ({
+  execFileSync: (exe: string, args: string[] = []) =>
+    exe === 'reg.exe' ? `${args[1]}\\{distribution-guid}\n    DistributionName    REG_SZ    Ubuntu\n` : 'Ubuntu\n'
+}))
 
 // ── helpers ──────────────────────────────────────────────────────────
 

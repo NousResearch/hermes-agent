@@ -61,7 +61,7 @@ jobs:
           cache-python: false
       - name: Run the native linker and wheel contracts
         run: |
-          bash scripts/run_tests.sh -j 2 \
+          just test -j 2 \
             tests/scripts/test_termux_python_linkage.py tests/scripts/test_termux_retag_wheel.py \
             tests/scripts/test_termux_build_wheels.py \
             tests/scripts/test_termux_wheelhouse_cache.py tests/scripts/test_termux_runtime_libs.py \
@@ -143,11 +143,7 @@ jobs:
       - name: Preserve and retrieve pinned inputs
         run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
       - name: Stage the pinned bionic runtimes
-        run: |
-          bash scripts/termux/build_cpython.sh termux-build/payload
-          bash scripts/termux/build_uv.sh termux-build/payload
-          bash scripts/termux/termux_pkg_build.sh ffmpeg ffmpeg termux-build/payload
-          python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+        run: just termux-payload termux-build/payload python uv ffmpeg
       - name: Verify ffmpeg on the bare bionic runtime
         run: |
           digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')

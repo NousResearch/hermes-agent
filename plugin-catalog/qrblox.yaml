@@ -1,0 +1,18 @@
+name: qrblox
+title: Qrblox
+repo: https://github.com/Terahertz-Inc/qrblox-mcp
+sha: da68c941d725e38e7c6812a67df6648a7ac5169f
+version: "0.1.0"
+description: "QR codes, audio codes, menus and the Voice Agent Phone Book through Qrblox's remote MCP (https://api.qrblox.com/mcp/v1). Portable Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector; every tool call goes to api.qrblox.com. Ping and public voice-agent lookup work without a key; merchant/QR/menu tools need a sk-qrblox- API key in QRBLOX_API_KEY. The package marks the server untrusted so Hermes asks before write-capable tools. The live tool set is served by the remote server and is not covered by the pinned sha."
+maintainer: Terahertz, Inc.
+tier: community
+category: tools
+docs_url: https://docs.qrblox.com/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: ["QRBLOX_API_KEY"]

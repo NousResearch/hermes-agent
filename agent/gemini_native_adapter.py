@@ -536,6 +536,12 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _long_decode_cap(max_tokens: Optional[int], extra_body: dict[str, Any]) -> Optional[int]:
+    """Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins."""
+    budget = extra_body.get("max_output_tokens")
+    return budget if isinstance(budget, int) and budget > int(max_tokens or 0) else max_tokens
+
+
 def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> dict[str, Any]:
     """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
 
@@ -713,7 +719,8 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
             text_signature = _text_part_signature(part) or text_signature
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    mapped_finish = _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    finish_reason = "tool_calls" if tool_calls and mapped_finish == "stop" else mapped_finish
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
@@ -834,7 +841,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
                      "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
-        finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        mapped_finish = _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        finish_reason = "tool_calls" if tool_call_indices and mapped_finish == "stop" else mapped_finish
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
         if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
             finish_chunk.usage = _usage_from_metadata(usage_meta)
@@ -946,6 +954,16 @@ class GeminiNativeClient:
         chunk = next(iterator, _END)
         return (True, None) if chunk is _END else (False, chunk)
 
+    @staticmethod
+    def effective_output_cap(*, max_tokens: Optional[int] = None, extra_body: Optional[dict[str, Any]] = None,
+                             **_: Any) -> int:
+        """The ``maxOutputTokens`` a ``chat.completions.create(**kwargs)`` call would really send: the
+        long-decode budget and thinking headroom can raise ``max_tokens`` (the prompt-cache warmer sends
+        a keep-alive only when the cap it asked for stands)."""
+        extra = extra_body if isinstance(extra_body, dict) else {}
+        return _effective_gemini_max_output_tokens(
+            _long_decode_cap(max_tokens, extra), extra.get("thinking_config") or extra.get("thinkingConfig"))
+
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
@@ -953,10 +971,7 @@ class GeminiNativeClient:
         timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
-        # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
-        budget = extra.get("max_output_tokens")
-        if isinstance(budget, int) and budget > int(max_tokens or 0):
-            max_tokens = budget
+        max_tokens = _long_decode_cap(max_tokens, extra)
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),

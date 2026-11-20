@@ -1,0 +1,193 @@
+"""Secret exports a local shell carries between commands in memory, never in the snapshot file.
+
+The session snapshot (``hermes-snap-*.sh``) carries a terminal session's exported variables
+from one command to the next on disk. Secret values never go there (#62336): the dump sends each
+secret export's ``declare -p`` text to an inherited pipe and writes only its generation id as the
+file's first line (``base_session_env._secret_handoff_snippet``). This store keeps declarations by
+generation. Before the next command starts, the backend opens the snapshot it will source, reads
+that line, and hands the shell the open file plus a pipe carrying that one generation's
+declarations, so the file and its secrets always come from the same dump, and no secret ever
+rides process env (where one oversize entry would fail every later spawn). The shell sees the same
+variables, arrays and attributes included, as before.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import uuid
+from collections import OrderedDict
+from collections.abc import Iterable
+
+from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
+
+# One dump's ceiling: a runaway export must not grow the host process without bound.
+_MAX_HANDOFF_BYTES = 16 * 1024 * 1024
+# Unpublished dumps kept per snapshot file besides the one it names: with overlapping commands the
+# last to report need not be the last to publish, and a failed publish leaves one that never will.
+_PENDING_KEPT = 8
+_GEN_PREFIX = b"__hermes_sgen="
+
+
+def profile_secret_names() -> tuple[str, ...]:
+    """Env names the served profile's ``.env`` and external secret sources define. ``.env`` is
+    secrets-only, so these are credentials whatever they are called (``PORTAL_CLIENT_SECRET``
+    needs no naming convention). The bound scope under multiplex, else the active home's file;
+    ``load_env_file`` is memoised on the file's bytes, so a call per command costs one read."""
+    from agent.secret_scope import current_secret_scope, load_env_file
+    from hermes_cli.env_loader import source_supplied_names
+    from hermes_constants import get_hermes_home
+
+    scope = current_secret_scope()
+    names = set(scope) if scope is not None else set(load_env_file(get_hermes_home() / ".env"))
+    names.update(source_supplied_names())
+    return tuple(sorted(n for n in names if isinstance(n, str) and _SHELL_ENV_NAME_RE.fullmatch(n)))
+
+
+def _parse_records(data: bytes) -> dict[str, str] | None:
+    """``NAME=<declaration>\\0`` records closed by one empty record; None when the dump never
+    closed them (killed mid-write, a failed write, or it did not run), so a cut-off record never
+    plants a partial value."""
+    if data.startswith(b"\0"):
+        body = b""
+    else:
+        end = data.find(b"\0\0")
+        if end < 0:
+            return None
+        body = data[:end]
+    decls: dict[str, str] = {}
+    for record in body.split(b"\0") if body else ():
+        name, sep, decl = record.decode("utf-8", "surrogateescape").partition("=")
+        if sep and _SHELL_ENV_NAME_RE.fullmatch(name):
+            decls[name] = decl
+    return decls
+
+
+def _named_generation(fd: int) -> str:
+    """The generation id on the open snapshot's first line (``pread``: the shell sources the same
+    open file from offset 0, and on macOS ``/dev/fd/N`` shares this offset)."""
+    head = os.pread(fd, 64, 0)
+    if not head.startswith(_GEN_PREFIX):
+        return ""
+    return head[len(_GEN_PREFIX):].split(b"\n", 1)[0].decode("ascii", "replace")
+
+
+def _pipe_with(data: bytes) -> int:
+    """A pipe's read end that yields *data* then EOF. A writer thread feeds it, so a set larger
+    than the pipe buffer never blocks the spawn; it ends when the reader closes its end."""
+    read_fd, write_fd = os.pipe()
+
+    def feed() -> None:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(write_fd, view):]
+        except OSError:
+            pass
+        finally:
+            os.close(write_fd)
+
+    if len(data) <= 4096:  # fits the pipe buffer on every POSIX host: no thread needed
+        feed()
+    else:
+        # health: allow HX012 -- writes bytes already in hand to a pipe; reads no scope, config or home
+        threading.Thread(target=feed, name="hermes-secret-restore", daemon=True).start()
+    return read_fd
+
+
+def _file_generation(path: str) -> str:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return ""
+    try:
+        return _named_generation(fd)
+    finally:
+        os.close(fd)
+
+
+class SecretHandoff:
+    """Per environment: snapshot path -> its dumps' secret declarations, by generation id."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_snapshot: dict[str, OrderedDict[str, dict[str, str]]] = {}
+        self._names: set[str] = set()
+
+    @staticmethod
+    def new_generation() -> str:
+        return uuid.uuid4().hex
+
+    def open_source(self, snapshot_paths: Iterable[str], skip: Iterable[str] = ()) -> tuple[int, int]:
+        """Open the snapshot the next command sources (the first that exists, the wrapper's order)
+        and a pipe that carries the declarations of the dump that file names: ``(snapshot fd, pipe
+        read fd)``, both for the child. Choosing both here, from one open file, means a newer publish
+        cannot slip between them. No file: ``/dev/null`` and an empty pipe."""
+        script = ""
+        fd = -1
+        for path in snapshot_paths:
+            try:
+                fd = os.open(path, os.O_RDONLY)
+            except OSError:
+                continue
+            generation = _named_generation(fd)
+            skipped = set(skip)
+            with self._lock:
+                decls = self._by_snapshot.get(path, {}).get(generation, {}) if generation else {}
+                script = "".join(f"{d}\n" for n, d in decls.items() if n not in skipped)
+            break
+        if fd < 0:
+            fd = os.open(os.devnull, os.O_RDONLY)
+        return fd, _pipe_with(script.encode("utf-8", "surrogateescape"))
+
+    def start_reader(self, snapshot_path: str, generation: str) -> tuple[int, threading.Thread]:
+        """Open the channel for one spawn: returns the inheritable write fd to hand the child and the
+        reader thread (already running) that records what arrives as *generation* of *snapshot_path*.
+        The thread must run while the child does, since a pipe holds only ~64 KB before the writer
+        blocks."""
+        read_fd, write_fd = os.pipe()
+        os.set_inheritable(write_fd, True)
+        # health: allow HX012 -- reads one pipe into this object; no secret scope, config or home is read
+        reader = threading.Thread(
+            target=self._collect, args=(read_fd, snapshot_path, generation), name="hermes-secret-handoff",
+            daemon=True)
+        reader.start()
+        return write_fd, reader
+
+    def _collect(self, read_fd: int, snapshot_path: str, generation: str) -> None:
+        """Read to the closing empty record or EOF, then keep the set under its generation. Eviction
+        never drops the generation the file on disk names, so failed publishes cannot push out the
+        dump the next command needs."""
+        data = b""
+        try:
+            while len(data) <= _MAX_HANDOFF_BYTES and not (data == b"\0" or data.endswith(b"\0\0")):
+                chunk = os.read(read_fd, 65536)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError:
+            return
+        finally:
+            os.close(read_fd)
+        decls = _parse_records(data)
+        if decls is None:
+            return
+        with self._lock:
+            kept = self._by_snapshot.setdefault(snapshot_path, OrderedDict())
+            kept[generation] = decls
+            self._names.update(decls)
+            if len(kept) > _PENDING_KEPT + 1:
+                published = _file_generation(snapshot_path)
+                for old in [g for g in kept if g != published][:len(kept) - _PENDING_KEPT - 1]:
+                    del kept[old]
+
+    def names(self) -> set[str]:
+        """Every name a dump ever handed off: it stays a secret for the environment's lifetime, even
+        after it is unset and leaves ``.env``, so a later re-export never lands on disk."""
+        with self._lock:
+            return set(self._names)
+
+    def forget(self) -> None:
+        with self._lock:
+            self._by_snapshot.clear()
+            self._names.clear()

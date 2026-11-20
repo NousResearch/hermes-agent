@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 
 /** @typedef {{ path: string, digest: string }} PreparedFile */
-/** @typedef {{ sevenZip: string, icons: string, winCodeSign?: string, appimage?: string, fpm?: string }} PackagingToolsets */
+/** @typedef {{ sevenZip?: string, icons?: string, winCodeSign?: string, appimage?: string, fpm?: string }} PackagingToolsets */
 /** @typedef {{ schema: number, source: string, out: string, identity: string, target: string, formats: string[], electron: string, toolsets: PackagingToolsets, windows: import('./windows-bundle-tools.mjs').WindowsBundleTools | null, dmgbuild: string | null, files: PreparedFile[] }} PreparedPackaging */
 
 /** @param {string} message @returns {Error} */
@@ -111,7 +111,10 @@ export function readPackagingInputs(manifest, source, target = `${process.platfo
         result.target !== target || result.identity !== packagingIdentity(source)) {
       throw preparationRequired('Stale or foreign packaging inputs')
     }
-    const required = [result.electron, result.toolsets.sevenZip, result.toolsets.icons, ...Object.values(result.toolsets)]
+    if (result.formats.some(format => format !== 'dir') && (!result.toolsets.sevenZip || !result.toolsets.icons)) {
+      throw preparationRequired('Missing archive or icon tool selection')
+    }
+    const required = [result.electron, ...Object.values(result.toolsets)]
     if (target.startsWith('win32-')) {
       if (!result.windows || !result.toolsets.winCodeSign || !result.windows.dotnetRoot) throw preparationRequired('Missing Windows tool selection')
       required.push(result.windows.dotnetRoot)

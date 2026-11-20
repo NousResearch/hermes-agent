@@ -20,7 +20,7 @@ from .groups_bot_relay import (
     GroupsPeerInviteResult, GroupsPeerRegisterResult, GroupsPeerRevokeResult, RoomParams, RoomTaskReceipt,
 )
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
-from .registry import canonical_method, method
+from .registry import canonical_method, canonical_namespace, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ canonical_method("prompt.resolve_unknown", params=PromptResolveUnknownParams, re
 
 
 class SessionMutateParams(Params):
-    """``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;
+    """``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``;
     ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.
     ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite
     the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``
@@ -114,7 +114,7 @@ canonical_method("session.mutate", params=SessionMutateParams, result=SessionMut
 
 
 class SessionPruneParams(Params):
-    """Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as
+    """Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as
     ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``)."""
 
     filters: dict[str, JsonValue] | None = None
@@ -178,6 +178,13 @@ class SessionInventoryFields(Result):
     usage: Usage | None = None
 
 
+class CanonicalClientLabel(Result):
+    """The client a session's creator declared itself as (``session.create`` ``client``)."""
+
+    name: str
+    version: str | None = None
+
+
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     """``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
 
@@ -191,6 +198,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
     edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # The creator's self-declared client; absent when it sent none. A label, never a grant.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
@@ -249,6 +258,51 @@ class SessionStats(Result):
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
                  doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
+
+
+class SessionAccountUsageParams(Params):
+    session_id: str
+
+
+class NousUsageBar(Result):
+    """``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining)."""
+
+    kind: Literal["plan", "topup"]
+    remaining_usd: float
+    total_usd: float
+    spent_usd: float = 0.0
+
+
+class NousUsageDollars(Result):
+    """``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block."""
+
+    available: bool
+    status: str = "free"
+    plan_name: str | None = None
+    renews_at: str | None = None
+    renews_display: str | None = None
+    subscription_remaining_usd: float | None = None
+    topup_remaining_usd: float | None = None
+    total_spendable_usd: float | None = None
+    plan_bar: NousUsageBar | None = None
+    topup_bar: NousUsageBar | None = None
+
+
+class SessionAccountUsage(Result):
+    """``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the
+    route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the
+    profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is
+    Nous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account
+    read's dollar model, so the CLI draws its two bars without reading the account again."""
+
+    lines: list[str]
+    nous_lines: list[str] = []
+    nous_route: bool
+    nous_usage: NousUsageDollars | None = None
+
+
+canonical_method("session.account_usage", params=SessionAccountUsageParams, result=SessionAccountUsage,
+                 doc="The /usage account blocks for this session's route: provider plan limits, then the Nous balance.")
 
 
 class RollbackSessionDiffParams(Params):
@@ -358,6 +412,21 @@ class RuntimeDescribeResult(Result):
 
 canonical_method("runtime.describe", params=RuntimeDescribeParams, result=RuntimeDescribeResult,
                  doc="Owner identity and the canonical capabilities a client may rely on.")
+
+
+class PluginRpcParams(Params):
+    """Open: the plugin's handler owns every other key. ``session_id`` names the session the call
+    acts in and passes that session's authorization first."""
+
+    model_config = Params.model_config | {"extra": "allow"}
+    session_id: str | None = None
+
+
+canonical_namespace("plugin.{plugin_id}.{name}", prefix="plugin.", capability="plugin-rpc-v1",
+                    params=PluginRpcParams,
+                    doc="A method a loaded plugin registered with ctx.register_rpc; the result is its handler's "
+                        "JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is "
+                        "not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported.")
 
 
 class ClarifyRespondParams(Params):
@@ -626,4 +695,4 @@ canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParam
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections
+from . import canonical_sessions, canonical_projections, canonical_stored_reads

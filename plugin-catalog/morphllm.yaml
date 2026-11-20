@@ -1,0 +1,16 @@
+name: morphllm
+repo: https://github.com/morphllm/morph-hermes
+sha: a5ca3475a09a31f7334bdd3722725aa8cda8716f
+title: "Morph"
+description: Morph's OpenAI-compatible API for open models (Kimi, GLM, DeepSeek)
+maintainer: morphllm
+category: models
+docs_url: https://github.com/morphllm/morph-hermes#readme
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MORPH_API_KEY

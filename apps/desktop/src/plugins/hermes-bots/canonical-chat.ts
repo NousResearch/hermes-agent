@@ -163,12 +163,19 @@ async function openStoredBotChat(
   //
   // Compression rotates the tip while tiles stay keyed by segment, and hidden
   // Bot Chats never reach the sidebar listing the lineage guard reads, so the
-  // old-segment tile is discarded here or it survives beside the tip
+  // old-segment tile is reconciled here or it survives beside the tip
   // (hermes-agent#120810). Same owner-scoped probe the roster click runs, but
-  // discard-only (`[]` fronts nothing): a background refresh must never take
-  // the tab strip (#121874), and the openSession below fronts explicit opens.
+  // it fronts nothing (`[]`): a background refresh must never take the tab
+  // strip (#121874), and the openSession below fronts explicit opens.
+  //
+  // The stale tab is RE-HOMED onto the tip (`storedId`), not discarded. A
+  // rotation this window never streamed — a teammate's message_agent, a cron
+  // delivery — leaves the open Bot Chat tab on the old segment, and the wake
+  // that notices is this background one. Its openSession is refreshInPlace,
+  // which refreshes a tab that exists and mints none: discard first and the
+  // Bot Chat tab was simply gone, the strip left on the tab beside it.
   const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
-  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [])
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [], storedId)
 
   await host.openSession(storedId, {
     ...(route

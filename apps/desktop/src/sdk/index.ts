@@ -1284,12 +1284,20 @@ export const host = {
    *  persisted bot tile can name a session the backend has since superseded,
    *  and fronting it pinned the roster click to a stale finished session
    *  forever. Tiles the probe rejects are discarded (never fronted), so the
-   *  caller falls through to its authoritative open path. */
+   *  caller falls through to its authoritative open path.
+   *
+   *  `rehomeStaleTo`: the stored id a rejected tab should be showing instead,
+   *  when the caller has already resolved it. The tab is re-keyed onto that
+   *  session where it stands (same slot, same selection) rather than
+   *  discarded. Pass it whenever the call may not be followed by a visible
+   *  open — a `refreshInPlace` wake mints no tab, so discarding there deletes
+   *  the user's open chat. Older desktops ignore the argument and discard. */
   focusOpenWorkspaceSession: (
     workspaceOwnerKey: string,
     isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
-    onlyStoredIds?: readonly string[]
-  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds),
+    onlyStoredIds?: readonly string[],
+    rehomeStaleTo?: string
+  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds, rehomeStaleTo),
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding

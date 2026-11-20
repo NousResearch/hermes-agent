@@ -37,6 +37,7 @@ import {
   movePanes as movePanesOp,
   normalize,
   removePane,
+  renamePane,
   reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
   setGroupMinimized,
@@ -932,6 +933,19 @@ export function removeTreePane(paneId: string) {
   if (tree) {
     rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
+  }
+}
+
+/** Re-key a pane in place for an owner store whose surface changed identity
+ *  (a session tab following its conversation to a new stored id). The owner
+ *  swaps the contribution too; doing this FIRST keeps the tab's slot and its
+ *  selection, where remove + re-adopt would front a neighbor. */
+export function renameTreePane(fromId: string, toId: string) {
+  const tree = $layoutTree.get()
+  const next = tree ? renamePane(tree, fromId, toId) : null
+
+  if (next && next !== tree) {
+    commit(next)
   }
 }
 

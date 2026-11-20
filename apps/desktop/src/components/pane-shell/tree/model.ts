@@ -529,6 +529,25 @@ export function setActivePane(root: LayoutNode, groupId: string, paneId: string)
   return mapGroups(root, g => (g.id === groupId && g.panes.includes(paneId) ? { ...g, active: paneId } : g))
 }
 
+/** Give a pane a new id where it stands: same group, same strip slot, still
+ *  the active tab if it was. For an owner store re-keying a surface whose
+ *  identity moved (a session tab following its conversation to a new stored
+ *  id) — remove + re-adopt would hand the slot's selection to a neighbor.
+ *  Unchanged when `fromId` is absent or `toId` is already in the tree. */
+export function renamePane(root: LayoutNode, fromId: string, toId: string): LayoutNode {
+  const paneIds = allPaneIds(root)
+
+  if (fromId === toId || !paneIds.includes(fromId) || paneIds.includes(toId)) {
+    return root
+  }
+
+  return mapGroups(root, g =>
+    g.panes.includes(fromId)
+      ? { ...g, active: g.active === fromId ? toId : g.active, panes: g.panes.map(p => (p === fromId ? toId : p)) }
+      : g
+  )
+}
+
 /** Reorder a block of panes within a group as one unit (browser-tab drag
  *  semantics; a single-tab drag is a one-id block): the block lands at
  *  `toIndex` among the remaining tabs, keeping its own order. */

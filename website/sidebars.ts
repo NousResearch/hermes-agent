@@ -253,7 +253,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-meeting-action-items',
                     'user-guide/skills/bundled/productivity/productivity-microsoft-office',
                     'user-guide/skills/bundled/productivity/productivity-pdf',
-                    'user-guide/skills/bundled/productivity/productivity-proactive-watchers',
                     'user-guide/skills/bundled/productivity/productivity-product-price-monitor',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
                     'user-guide/skills/bundled/productivity/productivity-weekly-review-planning',

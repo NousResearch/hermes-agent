@@ -446,7 +446,6 @@ def _script_argv(
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
-    job_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -457,8 +456,7 @@ def _run_job_script(
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
-    ``.py`` scripts (#8714). job_id: the owning job; its id and private state dir reach the
-    script as ``HERMES_CRON_JOB_ID`` / ``HERMES_CRON_STATE_DIR`` (``cron.script_state``).
+    ``.py`` scripts (#8714).
     """
     from tools.hosted_tool_policy import host_feature_refusal
     if refusal := host_feature_refusal("cron_scripts", "A cron script"):
@@ -500,8 +498,6 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
-        from cron.script_state import script_identity_env
-        env.update(script_identity_env(job_id))
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -583,7 +579,7 @@ def _run_job_script_with_claim_heartbeat(
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
     def run() -> tuple[bool, str]:
         return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
-                               interpreter=job.get("interpreter"), job_id=job.get("id"))
+                               interpreter=job.get("interpreter"))
 
     schedule = job.get("schedule")
     claim = job.get("run_claim")

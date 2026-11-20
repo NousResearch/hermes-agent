@@ -43,14 +43,8 @@ def _asking(monkeypatch, answer, late=False):
     return asked
 
 
-_GATE = 'import json\nprint(json.dumps({"wakeAgent": False}))\n'
-
-
 @pytest.mark.parametrize("answer, saved, extra", [
     ("deny", 0, {}), ("once", 1, {}),
-    # A script the call saves is consent text: the card shows its whole body, and a denied
-    # create leaves no file behind.
-    ("once", 1, {"script_content": _GATE}), ("deny", 0, {"script_content": _GATE}),
     # The card describes what create stores: a numeric-string repeat and the skills beside a prompt.
     ("once", 1, {"repeat": "3", "skill": "maps"}),
     # The job saves the first run the card showed, however long the answer takes (one-shot and recurring).
@@ -79,11 +73,6 @@ def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch
     assert "Water" in asked[0][1] and "3 runs" in asked[0][1]
     if "skill" in extra:
         assert "skills: maps" in asked[0][1]
-    elif extra:
-        from hermes_constants import get_hermes_home
-        assert "--- script cron_water_" in asked[0][1] and asked[0][1].endswith(_GATE)
-        scripts = list((get_hermes_home() / "scripts").glob("cron_water_*.py"))
-        assert len(scripts) == saved and all(p.read_text() == _GATE for p in scripts)
 
 
 def test_create_with_nobody_to_answer_never_asks(cron_store, monkeypatch):
@@ -91,24 +80,3 @@ def test_create_with_nobody_to_answer_never_asks(cron_store, monkeypatch):
     terminal_tool.set_approval_callback(lambda *a, **k: pytest.fail("asked with nobody present"))
     assert json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))["success"] is True
     assert len(cron_store.load_jobs()) == 1
-
-
-def test_denied_create_keeps_a_script_another_job_saved_meanwhile(cron_store, monkeypatch):
-    """Chat A waits on its card while chat B saves a job on the same script; A's deny must not delete it."""
-    from hermes_constants import get_hermes_home
-    from tools.cronjob_tools import cronjob
-
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-
-    def callback(command, description, **_):
-        assert json.loads(cronjob(action="create", schedule="every 2h", name="B", prompt="p",
-                                  script="shared.py", script_content=_GATE))["success"]
-        return "deny"
-    terminal_tool.set_approval_callback(callback)
-    result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, "script": "shared.py", "script_content": _GATE}))
-    assert result.get("success") is False
-    assert [j["name"] for j in cron_store.load_jobs()] == ["B"]
-    assert (get_hermes_home() / "scripts" / "shared.py").read_text() == _GATE
-    # list never writes a script, even when handed script_content
-    registry.dispatch("cronjob_manage", {"action": "list", "script_content": _GATE, "script": "listed.py"})
-    assert not (get_hermes_home() / "scripts" / "listed.py").exists()

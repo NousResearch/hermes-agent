@@ -17,7 +17,6 @@ SIGN_IN_EXPIRED = "sign_in_expired"
 UNREACHABLE = "unreachable"
 # No Nous identity yet: the first hosted manage_connections action creates one.
 NOT_SET_UP = "not_set_up"
-SIGN_IN_FAILED_CODE = "SIGN_IN_FAILED"
 NOT_SET_UP_MESSAGE = ("Hosted connectors are not set up for this user yet. "
                       "Call manage_connections to connect the app first; that sets them up.")
 
@@ -172,11 +171,9 @@ def run_remote(
             exc.code,
             exc,
         )
-        # A sign-in failure keeps its own code so callers (a gate script's exit status) can tell it
-        # from a tool failure.
         return fill_remote_failure(
-            planned, f"The connector gateway request failed: {exc}",
-            code=SIGN_IN_FAILED_CODE if isinstance(exc, GatewayAuthError) else "PROVIDER_ERROR")
+            planned, f"The connector gateway request failed: {exc}"
+        )
     except Exception as exc:
         logger.warning(
             "Connector execute for dispatch %s failed unexpectedly: %s",

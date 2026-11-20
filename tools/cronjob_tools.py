@@ -1102,7 +1102,6 @@ def cronjob(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int | str] = None,
-    script_content: Optional[str] = None,
     approve: Optional[Any] = None) -> str:
     """Unified cron job management tool. ``approve(args)`` (model-tool dispatch only) runs after a create's
     validation and returns a refusal JSON to stop it; CLI, dashboard and Desktop callers never pass it."""
@@ -1111,8 +1110,7 @@ def cronjob(
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
         if handler is not None:
-            # Only create stages a script: list stays read-only even when handed script_content.
-            return _with_staged_script(a, None, lambda: handler(a)) if normalized == "create" else handler(a)
+            return handler(a)
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
         # Job resolution precedes the action check (an unknown action on a missing job
@@ -1123,47 +1121,9 @@ def cronjob(
         handler = _JOB_ACTIONS.get(normalized)
         if handler is None:
             return tool_error(f"Unknown cron action '{action}'", success=False)
-        if normalized == "update":
-            return _with_staged_script(a, job, lambda: handler(job, a))
         return handler(job, a)
     except Exception as e:
         return tool_error(str(e), success=False)
-
-
-def _with_staged_script(a: dict[str, Any], job: Optional[dict[str, Any]], run) -> str:
-    """Create/update with ``script_content``: save the body under scripts/ first (``script`` names
-    it; else the updated job's own script; else a derived name), then ``run()``; a failed run
-    takes the write back so a refused job leaves no stray script behind."""
-    content = a.get("script_content")
-    if content is None:
-        return run()
-    from cron.script_content import derived_script_name, stage_script_content
-    own = str(job.get("script") or "").strip() or None if job else None
-    if own and any(other.get("id") != job.get("id") and str(other.get("script") or "").strip() == own
-                   for other in list_jobs(include_disabled=True)):
-        own = None  # another job runs this file too: an edit must not change what that job runs
-    name = str(a["script"] or "").strip() or own or derived_script_name(a["name"] or (job or {}).get("name"))
-    staged = stage_script_content(content, name, own_script=own)
-    if staged.error:
-        return tool_error(staged.error, success=False)
-    a["script"] = name
-
-    def undo() -> None:
-        # Re-checked at undo time: another call may have saved a job on this file while ours waited
-        # for its approval, and that job's script must survive our rollback.
-        if not any(str(other.get("script") or "").strip() == name for other in list_jobs(include_disabled=True)
-                   if not job or other.get("id") != job.get("id")):
-            staged.discard()
-    try:
-        result = run()
-    except Exception:
-        undo()
-        raise
-    outcome = json.loads(result)
-    # A saved job keeps its script even when a later step (scheduler registration) failed.
-    if not outcome.get("success") and not outcome.get("job_saved"):
-        undo()
-    return result
 
 
 def _script_description(home: str) -> str:
@@ -1183,9 +1143,16 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Proactively schedule reminders and checks: once, a few times, or recurring.
+    "description": """Proactively schedule help for later: reminders, follow-ups and watches, once, a few times, or recurring.
 
-Be proactive: when the conversation mentions something time-bound — an appointment, a trip, a deadline, a habit, something to re-check later (a flaky site, a deploy, a price) — create a job that would help without waiting to be asked, then tell the user what you scheduled. Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs (`repeat`) over an open-ended schedule. Pick waking-hours times and the least frequent cadence that helps unless the user gave one. Where someone can answer, the user approves each new job before it is saved, so a declined job is a normal answer: never retry it.
+Be proactive: when the conversation reveals a moment the user will need help at later, create a job for it without waiting to be asked, then tell the user in one line what you scheduled. Typical moments:
+- Appointments and events: a heads-up with enough lead time to get there (the day before for a morning slot, a leave-by time with the route).
+- Trips: online check-in when it opens (about 24h before departure), leave for the airport, arrival paperwork the destination needs, getting from the airport to the hotel, the return flight. A few one-shots at those moments beat one recurring job; use each moment's local zone.
+- Deadlines and things owed: a morning-of nudge for a deadline, a reply or document the user said they still owe, something they promised to send.
+- Habits and goals: a handful of runs at sensible times (`repeat`), not a forever schedule.
+- Things to re-check until they change: a price, a restock, a flight's status, a flaky site, a deploy. Use `monitor` for a URL so unchanged ticks cost nothing; otherwise a few runs whose prompt says to answer [SILENT] when nothing changed.
+- After an event: check how it went, or offer the next step.
+Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs over an open-ended schedule, waking-hours times, and the least frequent cadence that helps unless the user gave one. A job drafts, reminds and checks; it never sends, buys or submits on the user's behalf. Where someone can answer, the user approves each new job before it is saved, so a declined job is a normal answer: never retry it.
 
 Cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
 
@@ -1250,10 +1217,6 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": _script_description("the profile HERMES_HOME")
             },
-            "script_content": {
-                "type": "string",
-                "description": "Full source of the gate script for `script`; Hermes saves it under scripts/ for you (no separate file write needed). Last stdout line {\"wakeAgent\": false} skips the agent run; {\"wakeAgent\": true, \"context\": ...} wakes it with only that context. The script gets HERMES_CRON_STATE_DIR for its own state."
-            },
             "monitor": {
                 "type": "string",
                 "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
@@ -1317,7 +1280,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response", "script_content")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
 def _pinned_one_shot(schedule: str) -> str:
@@ -1354,17 +1317,14 @@ def _approval_when(parsed: dict[str, Any], timezone: Any, first: Optional[str]) 
 
 def _approval_task(args: dict[str, Any]) -> str:
     """What the job will actually run: the script alone for a no-agent job, else the prompt or skills
-    plus any attached script, so the card never describes work that will not happen. A script
-    the call itself saves (``script_content``) is shown in full: it is what the user consents to."""
+    plus any attached script, so the card never describes work that will not happen."""
     script = str(args.get("script") or "").strip()
-    body = args.get("script_content")
-    shown = f"\n--- script {script} ---\n{body}" if isinstance(body, str) and body.strip() else ""
     if args.get("no_agent"):
-        return f"runs script {script}{shown}"
+        return f"runs script {script}"
     skills = ", ".join(_canonical_skills(args.get("skill"), args.get("skills")))
     task = str(args.get("prompt") or "").strip()  # whole: it is what the user consents to; surfaces page it
     task = f"{task} (skills: {skills})" if task and skills else task or f"skills: {skills}"
-    return (f"{task} (after running script {script})" if script else task) + shown
+    return f"{task} (after running script {script})" if script else task
 
 
 def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:

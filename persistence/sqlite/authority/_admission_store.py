@@ -14,6 +14,7 @@ import uuid
 
 from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, STEERING, admission_fingerprint
 from persistence.authority.admissions import raise_gate
+from persistence.authority.admission_order import preferred_session_input
 from persistence.core.errors import AuthorityRefusal
 
 from ._admission_owner import authorize_admission, close_discarded_turn
@@ -60,7 +61,7 @@ __all__ = [
 def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: str,
                         request_id: str, payload: dict, intent: str = 'queue',
                         gate=None, replaces=None, supersedes=None, api_target=None, rewrite=None,
-                        hosted=None, fold=None) -> tuple[dict, bool]:
+                        hosted=None, fold=None, retires=()) -> tuple[dict, bool]:
     """Admit input; ``(row, created)``. ``gate`` (the owner's ``GateRefusal``, or a callable answered here on every
     attempt) refuses a NEW write after the queue cap, then the typed extras run in the same write before the insert. Exact
     existing and terminal replays bypass both; ``replaces`` runs its replay check on the exact live replay."""
@@ -95,7 +96,7 @@ def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: st
         raise_gate(gate)
         authorize_admission(holder, conn, epoch=epoch, principal_id=principal_id, session_id=session_id,
                             request_id=request_id, replaces=replaces, supersedes=supersedes,
-                            api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold)
+                            api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold, retires=retires)
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
@@ -150,7 +151,7 @@ _ANY_HEAD = object()
 
 
 def claim_session_input(holder, *, epoch: int, session_id: str, gate=None, head=_ANY_HEAD) -> dict | bool | None:
-    """Claim the FIFO head. ``gate`` (the owner's ``GateRefusal``, or a callable answered here on every attempt)
+    """Claim the preferred queue head. ``gate`` (the owner's ``GateRefusal``, or a callable answered here on every attempt)
     refuses right after the epoch fence. ``head`` is the admission id the caller's preclaim checks validated (None: it saw nothing queued); if
     the head is another row by the time this write runs, nothing is claimed and False tells the caller to re-read and
     validate the row that is now first. The claimed row carries ``queued_owner_epoch``, the ``owner_epoch`` it held
@@ -168,7 +169,10 @@ def claim_session_input(holder, *, epoch: int, session_id: str, gate=None, head=
             raise AuthorityRefusal('unknown_execution')
         if blocked or workers:
             return None
-        row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq LIMIT 1", (session_id,)).fetchone()
+        candidates = conn.execute(
+            "SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq",
+            (session_id,))
+        row = preferred_session_input(map(_row, candidates))
         if head is not _ANY_HEAD and (row['admission_id'] if row is not None else None) != head:
             return False
         if row is None:

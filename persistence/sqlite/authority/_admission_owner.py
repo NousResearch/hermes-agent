@@ -48,7 +48,7 @@ __all__ = [
 
 
 def authorize_admission(holder, conn, *, epoch, principal_id, session_id, request_id, replaces=None, supersedes=None,
-                        api_target=None, rewrite=None, hosted=None, fold=None) -> None:
+                        api_target=None, rewrite=None, hosted=None, fold=None, retires=()) -> None:
     """The typed extras of one admission, inside its write after the queue cap and gate and before the insert."""
     if replaces is not None:
         retire_replaced_input(conn, replaces.admission_id, replacement_binding(principal_id, session_id, request_id))
@@ -62,6 +62,8 @@ def authorize_admission(holder, conn, *, epoch, principal_id, session_id, reques
         _hosted_authorize_write(conn, epoch, hosted)
     if fold is not None:
         _fold_queued(conn, fold.admission_id, session_id, fold.skip_ids)
+    for admission_id in retires:
+        _replace_queued(conn, admission_id, session_id)
 
 
 def _replace_queued(conn, admission_id, session_id):

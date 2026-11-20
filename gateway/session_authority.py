@@ -1128,7 +1128,8 @@ class SessionAuthority:
             pending = [admission_row(row) for row in await asyncio.to_thread(store.admissions.list, session_id=ref.session_id)]
             if any(row['status'] == 'unknown' for row in pending):
                 raise AuthorityRefusal('unknown_execution')
-            first = next((row for row in pending if row['status'] == 'queued'), None)
+            from persistence.authority.admission_order import preferred_session_input
+            first = preferred_session_input(pending)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the

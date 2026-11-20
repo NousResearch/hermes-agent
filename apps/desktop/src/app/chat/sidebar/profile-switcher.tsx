@@ -1438,8 +1438,10 @@ interface ProfileSquareProps {
   remoteHost: null | string
 }
 
-interface ProfileSquareContentProps
-  extends Pick<ProfileSquareProps, 'active' | 'failed' | 'label' | 'pending' | 'remoteHost'> {
+interface ProfileSquareContentProps extends Pick<
+  ProfileSquareProps,
+  'active' | 'failed' | 'label' | 'pending' | 'remoteHost'
+> {
   summary: ProfileDotSummary | null
 }
 

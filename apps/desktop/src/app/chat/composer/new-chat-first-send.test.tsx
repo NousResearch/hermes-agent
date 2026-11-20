@@ -46,7 +46,12 @@ interface Scope {
 type Composer = ReturnType<typeof useComposerDraft> & ReturnType<typeof useComposerQueue> & { scope: null | string }
 
 // ChatBar's draft + queue spine on the scope it actually resolves.
-function Harness({ freshDraftKey, latest, onSubmit, ...scope }: Scope & {
+function Harness({
+  freshDraftKey,
+  latest,
+  onSubmit,
+  ...scope
+}: Scope & {
   freshDraftKey: string
   latest: { current: Composer | null }
   onSubmit: ChatBarProps['onSubmit']
@@ -95,7 +100,14 @@ it('a new chat first send keeps its creation-time draft, queues on the new chat 
   enqueueQueuedPrompt('session-a', { attachments: [], id: 'for-a', text: 'for A' })
 
   const view = render(
-    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey="session-a" sessionId="session-a" />
+    <Harness
+      busy
+      freshDraftKey={freshDraftKey}
+      latest={latest}
+      onSubmit={onSubmit}
+      queueSessionKey="session-a"
+      sessionId="session-a"
+    />
   )
 
   const show = (scope: Scope) =>
@@ -153,7 +165,14 @@ it('a follow-up queued while session.create is in flight moves to the new chat a
   enqueueQueuedPrompt('session-a', { attachments: [], id: 'for-a', text: 'for A' })
 
   const view = render(
-    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey={null} sessionId="session-a" />
+    <Harness
+      busy
+      freshDraftKey={freshDraftKey}
+      latest={latest}
+      onSubmit={onSubmit}
+      queueSessionKey={null}
+      sessionId="session-a"
+    />
   )
 
   const show = (scope: Scope) =>
@@ -198,7 +217,14 @@ it('claiming the runtime re-scopes the composer without a sessionId or route cha
 
   // session.create published the runtime before the mirror: nothing claims it yet.
   render(
-    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey={null} sessionId="rt-new" />
+    <Harness
+      busy
+      freshDraftKey={freshDraftKey}
+      latest={latest}
+      onSubmit={onSubmit}
+      queueSessionKey={null}
+      sessionId="rt-new"
+    />
   )
   expect(latest.current?.scope).toBe('rt-new')
 
@@ -217,14 +243,28 @@ it('a session already claimed elsewhere never hands its queue to the new chat on
   enqueueQueuedPrompt('session-a', { attachments: [], id: 'for-a', text: 'for A' })
 
   const view = render(
-    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey="session-a" sessionId="session-a" />
+    <Harness
+      busy
+      freshDraftKey={freshDraftKey}
+      latest={latest}
+      onSubmit={onSubmit}
+      queueSessionKey="session-a"
+      sessionId="session-a"
+    />
   )
 
   // A stale announcement naming another chat while A is routed: A's queue stays put.
   announceNewSessionDraftKey('stored-new')
   act(() =>
     view.rerender(
-      <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey="stored-new" sessionId="rt-new" />
+      <Harness
+        busy
+        freshDraftKey={freshDraftKey}
+        latest={latest}
+        onSubmit={onSubmit}
+        queueSessionKey="stored-new"
+        sessionId="rt-new"
+      />
     )
   )
 

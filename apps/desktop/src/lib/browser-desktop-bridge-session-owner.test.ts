@@ -16,7 +16,11 @@ function stubGateway() {
     const path = url.pathname
 
     const body = path.endsWith('/api/profiles/sessions/sidebar')
-      ? { recents: { sessions: [row('r1', 'default')] }, cron: { sessions: [] }, messaging: { sessions: [row('m1', 'work')] } }
+      ? {
+          recents: { sessions: [row('r1', 'default')] },
+          cron: { sessions: [] },
+          messaging: { sessions: [row('m1', 'work')] }
+        }
       : path.endsWith('/api/profiles/sessions')
         ? { sessions: [row('a', 'default'), row('b', 'work')], total: 2 }
         : path.endsWith('/api/sessions/a')
@@ -58,6 +62,8 @@ describe('session rows a Webapp tab lists', () => {
     expect(sidebar.messaging.sessions[0].connection_id).toBe('local')
     await expect(api({ path: '/api/sessions/a' })).resolves.toMatchObject({ connection_id: 'local' })
     // A write's echo is not a listing: Electron's main process leaves those untouched too.
-    await expect(api({ path: '/api/sessions/a', method: 'PATCH', body: {} })).resolves.not.toHaveProperty('connection_id')
+    await expect(api({ path: '/api/sessions/a', method: 'PATCH', body: {} })).resolves.not.toHaveProperty(
+      'connection_id'
+    )
   })
 })

@@ -53,15 +53,18 @@ export function singleFlightSessionResume<T>(
   // A message-bearing caller cannot join an omitted-message flight. Queue one
   // follow-up behind it instead: this preserves same-session ordering while
   // still letting all later callers join the stronger queued snapshot.
-  const ready = existing ? existing.promise.then(() => undefined, () => undefined) : Promise.resolve()
+  const ready = existing
+    ? existing.promise.then(
+        () => undefined,
+        () => undefined
+      )
+    : Promise.resolve()
 
-  const promise = ready
-    .then(run)
-    .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(flightKey) === flight) {
-        _inFlightResumeByStoredSessionId.delete(flightKey)
-      }
-    })
+  const promise = ready.then(run).finally(() => {
+    if (_inFlightResumeByStoredSessionId.get(flightKey) === flight) {
+      _inFlightResumeByStoredSessionId.delete(flightKey)
+    }
+  })
 
   const flight: SessionResumeFlight = {
     includesMessages: options?.requiresMessages === true,

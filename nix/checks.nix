@@ -814,9 +814,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # ── Gateway control-dir modes ────────────────────────────────────
         # Runtime discovery (hermes_cli/gateway_runtime_discovery.py)
         # rejects a group-writable control dir whenever the owning group is
-        # shared. The module therefore provisions HERMES_HOME
-        # (stateDir/.hermes) itself at 2750 — setgid + group r-x — while
-        # stateDir, workingDirectory and the state subdirs stay 2770. The
+        # shared, and sshd StrictModes refuses the group-writable service
+        # account home. The module therefore provisions stateDir (the
+        # account home) and HERMES_HOME (stateDir/.hermes) at 2750 — setgid
+        # + group r-x — while workingDirectory and the state subdirs stay
+        # 2770. The
         # check reads the two outputs the module writes the modes through —
         # the tmpfiles `d` rules and the activation chmod lines — and fails
         # when the control dir ends up group-writable (2770).
@@ -868,8 +870,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             failures =
               lib.optional (ruleMode hermesHome != "2750")
                 "tmpfiles must provision the gateway control dir ${hermesHome} at 2750 (discovery rejects a group-writable control dir), got: ${ruleMode hermesHome}"
-              ++ lib.optional (ruleMode stateDir != "2770")
-                "tmpfiles must keep ${stateDir} shared-writable at 2770, got: ${ruleMode stateDir}"
+              ++ lib.optional (ruleMode stateDir != "2750")
+                "tmpfiles must provision ${stateDir} at 2750 (sshd StrictModes refuses a group-writable account home), got: ${ruleMode stateDir}"
               ++ lib.optional (ruleMode workingDirectory != "2770")
                 "tmpfiles must keep ${workingDirectory} shared-writable at 2770, got: ${ruleMode workingDirectory}"
               ++ lib.concatMap (d:
@@ -883,14 +885,18 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 "activation must chmod 2750 the gateway control dir ${hermesHome}"
               ++ lib.optional (chmodLines "2770" hermesHome != [ ])
                 "activation must not chmod 2770 the gateway control dir ${hermesHome}: ${lib.concatStringsSep "; " (chmodLines "2770" hermesHome)}"
-              ++ lib.optional (chmodLines "2770" stateDir == [ ] || chmodLines "2770" workingDirectory == [ ])
-                "activation must keep ${stateDir} and ${workingDirectory} shared-writable at 2770";
+              ++ lib.optional (chmodLines "2750" stateDir == [ ])
+                "activation must chmod 2750 ${stateDir} (sshd StrictModes refuses a group-writable account home)"
+              ++ lib.optional (chmodLines "2770" stateDir != [ ])
+                "activation must not chmod 2770 ${stateDir}: ${lib.concatStringsSep "; " (chmodLines "2770" stateDir)}"
+              ++ lib.optional (chmodLines "2770" workingDirectory == [ ])
+                "activation must keep ${workingDirectory} shared-writable at 2770";
           in
           pkgs.runCommand "hermes-gateway-control-dir-modes" { } (
             if failures != [ ] then
               throw "gateway control-dir modes check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
             else ''
-              echo "PASS: gateway control dir 2750, stateDir/workspace/subdirs 2770 (tmpfiles + activation)"
+              echo "PASS: stateDir + control dir at 2750 (sshd / discovery), workspace + subdirs at 2770 (tmpfiles + activation)"
               mkdir -p $out
               echo "ok" > $out/result
             ''

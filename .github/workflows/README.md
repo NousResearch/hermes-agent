@@ -133,7 +133,8 @@ did not select it. In release mode a skipped required job **fails** the gate
 
 GitHub does not start workflows for `push` (including tags) or `release`
 events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
-`workflow_run` are the exceptions. This is why:
+`repository_dispatch` are the exceptions; a run dispatched that way still
+starts no `workflow_run` workflow when it completes. This is why:
 
 - Release controllers start their follow-up builds with explicit
   `gh workflow run` dispatches (`release.py`, `skills-index.yml` → `deploy-site.yml`).

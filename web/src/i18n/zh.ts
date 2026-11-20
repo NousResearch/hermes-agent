@@ -2,6 +2,11 @@ import type { Translations } from "./types";
 
 export const zh: Translations = {
   common: {
+    webhookTargetProfile: "目标配置档",
+    webhookExecutingProfile: "执行配置档",
+    webhookExecutionProfile: "执行配置档",
+    webhookBotChatHint: "我会投递到规范的本地 Bot Chat。即使使用仅投递模式，接收方 Bot Chat 仍可能运行模型并产生费用。",
+
     save: "保存",
     saving: "保存中...",
     cancel: "取消",

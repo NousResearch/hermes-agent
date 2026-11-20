@@ -47,6 +47,14 @@ export const jaNotifications = {
       unsupported: 'このブラウザーは通知を表示できません。タブのタイトルは引き続き点滅します。'
     }
   },
+  phonePresence: {
+    title: 'スマートフォン通知でのこのコンピューター',
+    description: 'このウィンドウがあなたの在席について Hermes に伝える内容です。どう扱うかはスマートフォン通知プラグインが決めます。',
+    unsupported: 'このバックエンドでは、スマートフォン通知はアクティビティの影響を受けません。',
+    disconnected: '接続されていません。',
+    watchingComputer: (time: string) => `このウィンドウで会話を開いている間、このコンピューターを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`,
+    watchingWindow: (time: string) => `このウィンドウで会話を開いている間、このウィンドウを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`
+  },
   test: 'テスト通知を送信',
   testTitle: 'Hermes',
   testBody: '通知は正常に動作しています。',

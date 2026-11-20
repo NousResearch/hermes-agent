@@ -115,6 +115,8 @@ export interface ScriptedTurn {
   toolCalls?: Array<{
     name: string
     args: Record<string, unknown>
+    /** Provider tool-call id; defaults to a script-index id that repeats across turns. */
+    id?: string
   }>
 }
 
@@ -439,6 +441,133 @@ const SINGLE_BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: SINGLE_BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/**
+ * A clarify asked the way a real agent asks one: two tool rounds with
+ * commentary first, then commentary plus a long batch (five ~300-char questions,
+ * the tool's cap, three choices each) in the same turn. Provider ids are unique
+ * per call.
+ */
+export const REAL_CLARIFY_TRIGGER = 'E2E_REAL_CLARIFY_TRIGGER'
+
+const REAL_CLARIFY_FILLER =
+  'This matters because the next step depends on it, and picking wrong means redoing the whole pass from the start, ' +
+  'so here is the full context: the earlier run left two candidate paths, each with different costs and risks for the rest of the plan.'
+
+export const REAL_CLARIFY_QUESTIONS = Array.from({ length: 5 }, (_, index) => ({
+  question: `Real question ${index + 1}: which way should step ${index + 1} go? ${REAL_CLARIFY_FILLER}`,
+  choices: [`Option A${index + 1} (keep it)`, `Option B${index + 1} (change it)`, `Option C${index + 1} (skip it)`]
+}))
+
+const REAL_CLARIFY_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Let me check where the previous run left things before asking anything.',
+    toolCalls: [
+      {
+        id: 'toolu_e2e_real_1',
+        name: 'todo',
+        args: { todos: [{ id: 'r1', content: 'Review last run', status: 'in_progress' }] }
+      }
+    ]
+  },
+  {
+    text: '',
+    toolCalls: [
+      { id: 'toolu_e2e_real_2', name: 'read_file', args: { path: 'e2e-real-clarify-missing-a.md' } },
+      { id: 'toolu_e2e_real_3', name: 'read_file', args: { path: 'e2e-real-clarify-missing-b.md' } }
+    ]
+  },
+  {
+    text: 'The researcher finished. Before I go on, a few decisions only you can make; recommendations are marked.',
+    toolCalls: [{ id: 'toolu_e2e_real_4', name: 'clarify', args: { questions: REAL_CLARIFY_QUESTIONS } }]
+  }
+]
+
+/** The next REAL_CLARIFY_SCRIPT turn for this request, or null once the clarify has its result. */
+function realClarifyTurn(messages: unknown): ScriptedTurn | null {
+  if (!Array.isArray(messages)) {
+    return null
+  }
+
+  let start = -1
+
+  messages.forEach((message: { role?: string; content?: unknown }, index) => {
+    if (message?.role === 'user' && JSON.stringify(message.content ?? '').includes(REAL_CLARIFY_TRIGGER)) {
+      start = index
+    }
+  })
+
+  if (start < 0) {
+    return null
+  }
+
+  const after = messages.slice(start + 1) as Array<{ role?: string; tool_call_id?: string; tool_calls?: unknown[] }>
+
+  if (after.some(message => message?.role === 'tool' && message.tool_call_id === 'toolu_e2e_real_4')) {
+    return null
+  }
+
+  const rounds = after.filter(message => message?.role === 'assistant' && Array.isArray(message.tool_calls)).length
+
+  return REAL_CLARIFY_SCRIPT[rounds] ?? null
+}
+
+/**
+ * A long tool-heavy turn (32 rounds of three parallel reads, ~130 stored rows)
+ * so the next turn's transcript runs past the newest REST page.
+ */
+export const LONG_HISTORY_TRIGGER = 'E2E_LONG_HISTORY_TRIGGER'
+const LONG_HISTORY_ROUNDS = 32
+
+function longHistoryTurn(messages: unknown): ScriptedTurn | null {
+  if (!Array.isArray(messages)) {
+    return null
+  }
+
+  let start = -1
+  let lastUser = -1
+
+  messages.forEach((message: { role?: string; content?: unknown }, index) => {
+    if (message?.role !== 'user') {
+      return
+    }
+
+    lastUser = index
+
+    if (JSON.stringify(message.content ?? '').includes(LONG_HISTORY_TRIGGER)) {
+      start = index
+    }
+  })
+
+  if (start < 0 || start !== lastUser) {
+    return null
+  }
+
+  const rounds = messages
+    .slice(start + 1)
+    .filter(
+      (message: { role?: string; tool_calls?: unknown[] }) =>
+        message?.role === 'assistant' && Array.isArray(message.tool_calls)
+    ).length
+
+  if (rounds >= LONG_HISTORY_ROUNDS) {
+    return { text: 'Long history done.', toolCalls: [] }
+  }
+
+  return {
+    text: rounds % 4 === 0 ? `Working through batch ${rounds + 1}.` : '',
+    toolCalls: [0, 1, 2].map(slot => ({
+      id: `toolu_e2e_long_${rounds}_${slot}`,
+      name: 'read_file',
+      args: { path: `e2e-long-history-missing-${rounds}-${slot}.md` }
+    }))
+  }
+}
+
+/** The next turn of a clarify session-switch scenario (real clarify, long history), else null. */
+function sessionSwitchTurn(messages: unknown): ScriptedTurn | null {
+  return realClarifyTurn(messages) ?? longHistoryTurn(messages)
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -705,6 +834,19 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       return true
     }
 
+    // A scripted turn, streamed or not as asked; a held completion waits for the release.
+    const answerScriptedTurn = (res: ServerResponse, model: string, stream: boolean, turn: ScriptedTurn, hold = false): void => {
+      const respond = () => (stream ? streamScriptedTurn(res, model, turn) : nonStreamingScriptedTurn(res, model, turn))
+
+      if (hold) {
+        heldCompletionCount++
+        resolveHeldStreamStarted?.()
+        void heldStreamReleased.then(respond)
+      } else {
+        respond()
+      }
+    }
+
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
       // don't hurt and make the server usable from a browser context too.
@@ -868,6 +1010,14 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             }
           }
 
+          const switchTurn = sessionSwitchTurn(parsed.messages)
+
+          if (switchTurn) {
+            answerScriptedTurn(res, model, stream, switchTurn)
+
+            return
+          }
+
           if (includesBatchClarifyTrigger(parsed.messages)) {
             // Only the FIRST completion of the conversation scripts the batch
             // clarify. The trigger text stays in message history, so once the
@@ -877,11 +1027,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
 
             if (!hasToolResult) {
-              if (stream) {
-                streamScriptedTurn(res, model, BATCH_CLARIFY_TURN)
-              } else {
-                nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
-              }
+              // A held batch clarify lets a test leave the chat before the
+              // question exists, so it lands on a background session.
+              answerScriptedTurn(res, model, stream, BATCH_CLARIFY_TURN, holdThisCompletion)
 
               return
             }
@@ -1221,7 +1369,7 @@ function streamScriptedTurn(
         sseChunk(model, {
           tool_calls: turn.toolCalls!.map((tc, idx) => ({
             index: idx,
-            id: `call_e2e_${_scriptIndex}_${idx}`,
+            id: tc.id ?? `call_e2e_${_scriptIndex}_${idx}`,
             type: 'function',
             function: { name: tc.name, arguments: JSON.stringify(tc.args) },
           })),
@@ -1249,7 +1397,7 @@ function streamScriptedTurn(
           sseChunk(model, {
             tool_calls: turn.toolCalls!.map((tc, idx) => ({
               index: idx,
-              id: `call_e2e_${_scriptIndex}_${idx}`,
+              id: tc.id ?? `call_e2e_${_scriptIndex}_${idx}`,
               type: 'function',
               function: { name: tc.name, arguments: JSON.stringify(tc.args) },
             })),
@@ -1291,7 +1439,7 @@ function nonStreamingScriptedTurn(
 
   if (hasToolCalls) {
     message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
-      id: `call_e2e_${_scriptIndex}_${idx}`,
+      id: tc.id ?? `call_e2e_${_scriptIndex}_${idx}`,
       type: 'function',
       function: { name: tc.name, arguments: JSON.stringify(tc.args) },
     }))

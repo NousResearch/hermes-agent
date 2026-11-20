@@ -10,8 +10,8 @@
 
 import { atom, host } from '@hermes/plugin-sdk'
 
-import { botRosterKey, botSelectionKey } from './data'
-import { getPluginCtx } from './shared'
+import { $lastRoster, botRosterKey, botSelectionKey } from './data'
+import { $pendingBotOpen, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
 // last_active watermark per source-qualified bot, seeded on first poll so a
@@ -180,5 +180,57 @@ export function focusedRosterOwner(
     authoritative: owner.authoritative !== false,
     connectionId: String(owner.connectionId || '').trim(),
     name
+  }
+}
+
+/** Follow the chat the user is LOOKING AT (#154651): when a session owns the
+ *  workspace, the roster selection must name its owner — the same owner the
+ *  row highlight already follows (botRowOwnsWorkspace). A selection left
+ *  behind by an earlier click (a restored tab, a cron-opened chat, a
+ *  canonical open that skipped the click path) otherwise re-owns the
+ *  workspace on the next roster hydrate or pane-visibility flip: the stale
+ *  row re-highlights and the "+" aims at a bot nobody is reading.
+ *
+ *  Transient by design: focus moves without a click, so adoption updates the
+ *  window's atoms only. The durable selection and its storage stay with the
+ *  user's last click — an ambient view must not plant a selection a later
+ *  boot would publish. Authoritative owners only — the legacy profile-only
+ *  fallback carries no source identity and fails closed (see
+ *  $focusedBotOwner). A focused owner with no roster row (a plain session on
+ *  an unlisted profile) leaves the selection alone. Callers gate on group
+ *  rooms, which own no single row.
+ *
+ *  Defers while a cold open is in flight ($pendingBotOpen): the in-flight
+ *  click already re-pointed the selection at its bot and published its
+ *  target, so adopting the still-focused chat would overwrite the deliberate
+ *  pick before it lands. The flight bounds the defer itself — success
+ *  focuses the clicked chat, a failure leaves the click standing until the
+ *  next ambient event, and a bump (another click, a group, a pane hide)
+ *  drops the mark — so this reads pending to defer only, never to route or
+ *  highlight. */
+export function reconcileSelectionToFocusedChat(): void {
+  if (!$botChatFocused.get() || !$selectedRosterHydrated.get()) {
+    return
+  }
+
+  // A cold open is in flight — the docstring above carries the why and the
+  // bounds.
+  if ($pendingBotOpen.get()) {
+    return
+  }
+
+  const focused = focusedRosterOwner($focusedBotOwner.get())
+
+  if (!focused?.authoritative) {
+    return
+  }
+
+  const key = botRosterKey({ connectionId: focused.connectionId, name: focused.name })
+  const bot = $lastRoster.get().find(row => botRosterKey(row) === key)
+
+  if (bot && botRosterKey(bot) !== $selectedRosterKey.get()) {
+    // See the docstring: transient adoption, never persisted.
+    $selectedBot.set(botSelectionKey(bot))
+    $selectedRosterKey.set(key)
   }
 }

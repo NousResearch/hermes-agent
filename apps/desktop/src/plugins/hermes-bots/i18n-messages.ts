@@ -187,6 +187,7 @@ export type BotsMessages = {
     advancedHint: string
     advancedFailed: string
     openAnotherChatUnsupported: string
+    noRoutableConnection: string
     remoteConnectionsUnsupported: string
     /** Bot-open failure toasts (canonical-chat.ts notifyBotOpenFailure). The
      *  raw RPC/connection error travels in the toast `detail`, never here. */

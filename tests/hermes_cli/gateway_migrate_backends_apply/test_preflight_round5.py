@@ -5,6 +5,8 @@ without a working directory, and a turn that started after the preflight."""
 from __future__ import annotations
 
 import json
+import os
+import sys
 
 import pytest
 from pathlib import Path
@@ -12,6 +14,7 @@ from pathlib import Path
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli.backend_migration_marker import backend_retired_by_migration
 from tests.hermes_cli.test_gateway_migrate_backends_apply import FakeHost, _args
+from tests.waiting import wait_until
 
 
 def test_an_unrecognised_record_state_is_refused_and_kept(home, capsys):
@@ -233,3 +236,74 @@ def test_an_old_backend_that_changed_since_the_check_is_not_stopped(home, capsys
     assert "old_stop" not in host.calls, out
     assert code == engine.EXIT_ROLLED_BACK, out
     assert "the old backend changed since the check" in out and "run this command again" in out
+
+
+@pytest.fixture
+def backend_in(tmp_path):
+    """A real hand-started stand-in (it only sleeps) run as ``python hermes_cli/main.py dashboard ...`` from a
+    checkout directory; yields (checkout dir, process)."""
+    import subprocess
+    import sys
+    checkout = tmp_path / "checkout"
+    (checkout / "hermes_cli").mkdir(parents=True)
+    ready = tmp_path / "ready"
+    (checkout / "hermes_cli" / "main.py").write_text(
+        f"import pathlib, time\npathlib.Path({str(ready)!r}).touch()\ntime.sleep(120)\n", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "hermes_cli/main.py", *_TAIL], cwd=checkout, stdin=subprocess.DEVNULL)
+    wait_until(ready.exists, timeout=30)  # the script is open and running before its directory is broken
+    yield checkout, proc
+    proc.kill()
+    proc.wait()
+    if checkout.exists():
+        checkout.chmod(0o755)
+
+
+def _real_cwd_host(home, proc):
+    from hermes_cli.gateway_migrate_backends import BackendItem
+    from hermes_cli.gateway_migrate_backends_host import SystemHost
+
+    class Host(FakeHost):
+        def backends(self):
+            return [BackendItem(**{**i.__dict__, "pid": proc.pid}) if i.pid else i for i in super().backends()]
+
+        def same_process(self, pid, start_time):
+            return pid == proc.pid and proc.poll() is None and self.old["active"]
+
+        def process_cwd(self, pid):  # the real reader: /proc on Linux, psutil on macOS
+            return SystemHost(self.home).process_cwd(pid)
+
+    host = Host(home, supervisor="manual")
+    host.argv = [sys.executable, "hermes_cli/main.py", *_TAIL]
+    return host
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("break_it", ["deleted", "mode 000"])
+def test_a_working_directory_that_cannot_be_entered_is_refused(home, backend_in, capsys, break_it):
+    """The kernel still names the cwd of a backend whose directory was deleted (`/path (deleted)`) or made mode
+    000, but a relaunch there fails: refused (exit 3) before the backend is stopped."""
+    import shutil
+    checkout, proc = backend_in
+    if break_it == "deleted":
+        shutil.rmtree(checkout)
+    else:
+        checkout.chmod(0)
+        if os.access(checkout, os.X_OK):
+            pytest.skip("this user can enter a mode-000 directory (root)")
+    host = _real_cwd_host(home, proc)
+
+    code = engine.cmd_apply(host, _args())
+
+    out = capsys.readouterr().out
+    assert proc.poll() is None, out
+    assert code == engine.EXIT_BLOCKED, out
+    assert host.calls == []
+    assert "working directory" in out and "no longer exists or cannot be entered" in out, out
+
+
+@pytest.mark.platforms("posix")
+def test_a_working_directory_that_exists_still_migrates(home, backend_in):
+    _checkout, proc = backend_in
+    host = _real_cwd_host(home, proc)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK

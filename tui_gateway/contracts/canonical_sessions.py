@@ -21,10 +21,13 @@ class CanonicalSessionParams(ProfileParams):
 
 class CanonicalClientIdentity(Params):
     """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
-    printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``)."""
+    printable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and
+    ``mobile`` are known; another is kept off the label, not refused). Attribution only (owners
+    advertising ``session-client-v1``)."""
 
     name: str
     version: str | None = None
+    kind: str | None = None
 
 
 class CanonicalCreateParams(ProfileParams):

@@ -4937,10 +4937,11 @@ export interface CanonicalSessionInfo {
   config_warning?: string | null
   [key: string]: unknown
 }
-/** The client a session's creator declared itself as (``session.create`` ``client``). */
+/** The client a session's creator declared itself as (``session.create`` ``client``); ``kind`` only when it named one this owner knows. */
 export interface CanonicalClientLabel {
   name: string
   version?: string | null
+  kind?: string | null
 }
 export interface SessionStatsParams {
   session_id: string
@@ -5244,10 +5245,11 @@ export interface CanonicalCreateParams {
   client_env?: Record<string, string> | null
   client?: CanonicalClientIdentity | null
 }
-/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``). */
+/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and ``mobile`` are known; another is kept off the label, not refused). Attribution only (owners advertising ``session-client-v1``). */
 export interface CanonicalClientIdentity {
   name: string
   version?: string | null
+  kind?: string | null
 }
 export interface CanonicalSnapshot {
   session_id: string

@@ -16,6 +16,7 @@ import webbrowser
 
 from agent.i18n import t
 from hermes_cli.callbacks import prompt_for_secret
+from hermes_cli.cli_approval_kinds import approval_card
 from typing import Optional
 
 _TIMED_OUT = object()  # sentinel returned by _poll_modal_queue when the deadline passes
@@ -25,20 +26,6 @@ _CONFIRM_ALIASES = {
     "1": "once", "once": "once", "approve": "once", "yes": "once", "y": "once", "ok": "once",
     "2": "always", "always": "always", "remember": "always",
     "3": "cancel", "cancel": "cancel", "nevermind": "cancel", "no": "cancel", "n": "cancel"}
-
-# Approval result -> catalog key of the outcome label shown in the persisted prompt summary.
-# Resolved at call time (``_approval_outcome_label``) so the active language applies.
-_APPROVAL_OUTCOME_KEYS = {
-    "once": "cli.approval.outcome_once",
-    "session": "cli.approval.outcome_session",
-    "always": "cli.approval.outcome_always",
-    "deny": "cli.approval.outcome_deny"}
-
-
-def _approval_outcome_label(result) -> str:
-    key = _APPROVAL_OUTCOME_KEYS.get(result)
-    return t(key) if key else str(result)
-
 
 def _approval_gate_on(key: str) -> bool:
     """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
@@ -1071,30 +1058,34 @@ class CLIModalMixin:
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
+                           smart_denied: bool = False,
+                           kind: str = "command") -> str:
         """Dangerous-command approval through the prompt_toolkit UI (agent thread).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
-        commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
+        commands; ``kind`` picks the card copy (``hermes_cli/cli_approval_kinds.py``). ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
         so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
+        card = approval_card(kind)
+        subject = card.subject(command, description)[0]
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": self._approval_choices(
+                "kind": kind,
+                "choices": card.choices(self._approval_choices(
                     command,
                     allow_permanent=allow_permanent,
                     allow_session=allow_session,
-                    smart_denied=smart_denied),
+                    smart_denied=smart_denied)),
                 "selected": 0,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
-            self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
+            self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=subject)
             self._paint_now()
 
             result = self._poll_modal_queue(response_queue, "_approval_deadline")
@@ -1102,12 +1093,11 @@ class CLIModalMixin:
             self._approval_deadline = 0
             self._paint_now()
             if result is _TIMED_OUT:
-                _cprint(f"\n{_DIM}  {t('cli.approval.timeout_denying')}{_RST}")
+                _cprint(f"\n{_DIM}  {t(card.timeout_key)}{_RST}")
                 self._persist_prompt_summary(
-                    "⚠", t("cli.approval.label"), command, t("cli.approval.timed_out_no_response"))
+                    card.icon, t(card.label_key), subject, t("cli.approval.timed_out_no_response"))
                 return "timeout"
-            self._persist_prompt_summary(
-                "⚠", t("cli.approval.label"), command, _approval_outcome_label(result))
+            self._persist_prompt_summary(card.icon, t(card.label_key), subject, card.outcome_label(result))
             return result
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,

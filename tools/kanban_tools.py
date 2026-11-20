@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
-from hermes_cli.goals import KANBAN_EXTERNAL_BLOCK_KINDS, judge_goal, kanban_goal_block_error
+from hermes_cli.goals import KANBAN_EXTERNAL_BLOCK_KINDS, judge_goal, kanban_goal_block_reason
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -831,7 +831,7 @@ def _handle_block(args: dict, **kw) -> str:
             if owned_kanban_task() == tid:
                 if kind == "dependency":
                     parents = kb.unsatisfied_parents(conn, tid)
-                error = kanban_goal_block_error(task, reason, kind, parents=parents or (), judge=judge_goal)
+                reason, error = kanban_goal_block_reason(task, reason, kind, parents=parents or (), judge=judge_goal)
                 _check(error is None, error)
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
                            expected_open_parents=parents)

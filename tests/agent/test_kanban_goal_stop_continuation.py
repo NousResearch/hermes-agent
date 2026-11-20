@@ -190,6 +190,8 @@ def test_goal_receives_partial_then_continues_same_session(worker, monkeypatch, 
         assert kb.get_task(conn, worker.context['task_id']).status == 'review'
         run = kb.latest_run(conn, worker.context['task_id'])
         assert run is not None and run.status == 'review'
+        assert [row[0] for row in conn.execute('SELECT id FROM task_runs WHERE task_id=?',
+                                               (worker.context['task_id'],))] == [worker.context['run_id']]
     if caller == 'sdk':
         assert session_kanban.worker_exit_code(worker.context['db'], worker.context) == 0
 
@@ -446,13 +448,20 @@ def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, p
 
 @pytest.mark.parametrize('surface', ['tool', 'cli'])
 @pytest.mark.parametrize('expire', [False, True])
-def test_goal_worker_block_requires_live_lease_at_write(worker, monkeypatch, surface, expire):
+@pytest.mark.parametrize(('action', 'status', 'outcome'), [
+    ('block', 'blocked', 'blocked'),
+    ('complete', 'done', 'completed'),
+    ('request_review', 'review', 'review_requested'),
+])
+def test_goal_worker_handoff_requires_live_lease_at_write(worker, monkeypatch, surface, expire,
+                                                        action, status, outcome):
     from argparse import Namespace
-    from hermes_cli.kanban import _cmd_block
+    from hermes_cli import kanban as kanban_cli
     from tools import kanban_tools
 
     tid, run_id = worker.context['task_id'], worker.context['run_id']
-    reason = 'Need the operator to select the required export format.'
+    evidence = ('Need the operator to select the required export format.' if action == 'block'
+                else 'Both sections are written and verified.')
     judged = []
 
     def judge(goal, last_response):
@@ -461,23 +470,28 @@ def test_goal_worker_block_requires_live_lease_at_write(worker, monkeypatch, sur
             with connect_closing() as conn, kb.write_txn(conn):
                 conn.execute('UPDATE tasks SET claim_expires = 0 WHERE id = ?', (tid,))
                 conn.execute('UPDATE task_runs SET claim_expires = 0 WHERE id = ?', (run_id,))
-        return 'blocked', 'operator selection required', False, None, False
+        return ('blocked' if action == 'block' else 'done', 'handoff accepted', False, None, False)
 
     monkeypatch.setattr(goals, 'judge_goal', judge)
     monkeypatch.setattr(kanban_tools, 'judge_goal', judge)
+    fields = {'kind': 'needs_input', 'reason': evidence} if action == 'block' else {'summary': evidence}
     if surface == 'tool':
-        result = json.loads(kanban_tools._handle_block({'kind': 'needs_input', 'reason': reason}))
+        result = json.loads(getattr(kanban_tools, '_handle_' + action)(fields))
         accepted = result.get('ok', False)
     else:
-        accepted = _cmd_block(Namespace(task_id=tid, task_ids=[], kind='needs_input', reason=[reason])) == 0
-    assert len(judged) == 1 and reason in judged[0]
+        if action == 'block':
+            fields['reason'] = [evidence]
+        handler = getattr(kanban_cli, '_cmd_' + action)
+        accepted = handler(Namespace(task_id=tid, task_ids=[tid], result=None, **fields)) == 0
+    assert len(judged) == 1 and evidence in judged[0]
     with connect_closing() as conn:
         task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert task is not None and run is not None
         assert run.id == run_id
         if expire:
             assert task.status == 'running' and task.current_run_id == run_id and run.outcome is None
         else:
-            assert task.status == 'blocked' and run.outcome == 'blocked' and run.summary == reason
+            assert task.status == status and run.outcome == outcome and run.summary == evidence
     assert accepted is not expire
 
 
@@ -493,6 +507,44 @@ def test_cli_worker_block_without_run_pin_is_refused(worker, monkeypatch, run_pi
     with connect_closing() as conn:
         task = kb.get_task(conn, tid)
         assert task is not None and task.current_run_id == worker.context['run_id']
+
+
+@pytest.mark.parametrize('surface', ['tool', 'cli'])
+@pytest.mark.parametrize('route_failed', [True, False])
+def test_goal_human_input_request_distinguishes_outage_from_continue(worker, monkeypatch, surface, route_failed):
+    from argparse import Namespace
+    from hermes_cli.kanban import _cmd_block
+    from tools import kanban_tools
+
+    tid, run_id = worker.context['task_id'], worker.context['run_id']
+    reason = 'Only the operator can choose the required export format.'
+    judgments = []
+
+    def judge(goal, last_response):
+        judgments.append(last_response)
+        detail = 'no judge route responded' if route_failed else 'another export format is available'
+        return 'continue', detail, False, None, route_failed
+
+    monkeypatch.setattr(goals, 'judge_goal', judge)
+    monkeypatch.setattr(kanban_tools, 'judge_goal', judge)
+    if surface == 'tool':
+        result = json.loads(kanban_tools._handle_block({'kind': 'needs_input', 'reason': reason}))
+        accepted = result.get('ok', False)
+    else:
+        accepted = _cmd_block(Namespace(task_id=tid, task_ids=[tid], kind='needs_input', reason=[reason])) == 0
+
+    assert len(judgments) == 1 and reason in judgments[0]
+    with connect_closing() as conn:
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert task is not None and run is not None
+        assert run.id == run_id
+        if route_failed:
+            assert task.status == 'blocked' and task.block_kind == 'needs_input'
+            assert task.current_run_id is None and run.outcome == 'blocked'
+            assert run.summary and reason in run.summary and 'judge unavailable' in run.summary.lower()
+        else:
+            assert task.status == 'running' and task.current_run_id == run_id and run.outcome is None
+    assert accepted is route_failed
 
 
 def test_quiet_goal_reports_judge_failure_without_notification_reentry(worker, monkeypatch):

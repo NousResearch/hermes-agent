@@ -2637,6 +2637,19 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+def _worker_handoff_guard(expected_run_id: Optional[int]) -> tuple[str, tuple]:
+    """A Goal handoff may return from its judge before the expired lease is reaped."""
+    if expected_run_id is None:
+        return "", ()
+    now = int(time.time())
+    return (
+        " AND current_run_id = ? AND (NOT goal_mode OR (status = 'running' AND claim_expires >= ?"
+        " AND EXISTS (SELECT 1 FROM task_runs WHERE id = tasks.current_run_id"
+        " AND ended_at IS NULL AND claim_expires >= ?)))",
+        (int(expected_run_id), now, now),
+    )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2671,6 +2684,11 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
+    run_guard, run_params = _worker_handoff_guard(expected_run_id)
+    if run_guard and not conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ?" + run_guard, (task_id, *run_params),
+    ).fetchone():
+        return False
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -2679,8 +2697,14 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
+        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        if acceptance is not None:
+            if run_guard and not conn.execute(
+                "SELECT 1 FROM tasks WHERE id = ?" + run_guard, (task_id, *run_params),
+            ).fetchone():
+                return False
+            if not record_acceptance(conn, task_id, acceptance):
+                return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
@@ -2704,11 +2728,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
+        if conn.execute(sql + run_guard, (result, now, task_id, *run_params)).rowcount != 1:
             return False
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
@@ -3193,15 +3213,8 @@ def block_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """
-        params = (*params, task_id)
-        if expected_run_id is not None:
-            # A Goal verdict can arrive after the lease expired but before reclaim.
-            sql += (" AND current_run_id = ? AND (NOT goal_mode OR (status = 'running' AND claim_expires >= ?"
-                    " AND EXISTS (SELECT 1 FROM task_runs WHERE id = tasks.current_run_id"
-                    " AND ended_at IS NULL AND claim_expires >= ?)))")
-            now = int(time.time())
-            params = (*params, int(expected_run_id), now, now)
-        if conn.execute(sql, params).rowcount != 1:
+        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        if conn.execute(sql + run_guard, (*params, task_id, *run_params)).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
@@ -3338,10 +3351,10 @@ def request_review(
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
-            run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            run_guard, run_params = _worker_handoff_guard(expected_run_id)
             params: tuple[Any, ...] = (
                 *(() if reviewer is None else (reviewer,)), task_id,
-                *(() if expected_run_id is None else (int(expected_run_id),)),
+                *run_params,
             )
             cur = conn.execute(
                 """
@@ -3358,7 +3371,7 @@ def request_review(
             )
             if cur.rowcount != 1:
                 return _ret(
-                    False, "task is not in running/ready (or expected_run_id did not match the current run)",
+                    False, "task is not in running/ready or the worker no longer holds its current run",
                 )
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(

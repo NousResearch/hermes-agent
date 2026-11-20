@@ -59,16 +59,23 @@ def _derived_version(
     return base_version
 
 
-def _run_git(repo_dir: Path, *args: str) -> str | None:
+def _run_git_status(repo_dir: Path, *args: str) -> tuple[bool, str | None]:
     try:
         result = subprocess.run(
             ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return False, None
+    if result.returncode != 0:
+        return False, None
     value = (result.stdout or "").strip()
-    return value if result.returncode == 0 and value else None
+    return True, value or None
+
+
+def _run_git(repo_dir: Path, *args: str) -> str | None:
+    _, value = _run_git_status(repo_dir, *args)
+    return value
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -238,7 +245,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     except (OSError, subprocess.SubprocessError):
         dirty = False
 
-    tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
+    tags_ok, tags = _run_git_status(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
     releases = [
         tag[1:]
         for tag in (tags or "").splitlines()
@@ -251,7 +258,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     distance = _parse_nonnegative(
         _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
     ) if releases else None
-    if not releases:
+    if tags_ok and not releases:
         base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
     short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
     if base_version == "unknown" and short_commit:

@@ -571,3 +571,24 @@ def test_macos_smoke_runs_without_a_receipt_outside_the_candidate_phase(arch):
     assert gate(smoke, inputs, skipped)
     assert not gate(smoke, {**inputs, "release-phase": "candidate"}, skipped)
     assert gate(smoke, {**inputs, "release-phase": "candidate"}, staged)
+
+
+def test_docker_alias_steps_use_docker_driver_buildx_not_blacksmith_builder():
+    """Docker Hub imagetools steps must use docker/setup-buildx-action with driver: docker:
+    useblacksmith/setup-docker-builder breaks Docker Hub manifest list commits (and a commit SHA
+    in buildx-version 404s its release download on every run)."""
+    alias_steps = [
+        ("stable-release.yml", step)
+        for step in workflow("stable-release.yml")["jobs"]["complete"]["steps"]
+        if "Buildx" in step.get("name", "")
+    ] + [
+        ("stable-release-publication.yml", step)
+        for step in workflow("stable-release-publication.yml")["jobs"]["reconcile"]["steps"]
+        if "Buildx" in step.get("name", "")
+    ]
+    assert len(alias_steps) == 3
+    for wf, step in alias_steps:
+        uses = step.get("uses", "")
+        assert uses.startswith("docker/setup-buildx-action@"), f"{wf}: {step.get('name')} uses {uses}"
+        assert (step.get("with") or {}).get("driver") == "docker", f"{wf}: {step.get('name')} missing driver: docker"
+        assert "buildx-version" not in (step.get("with") or {}), f"{wf}: {step.get('name')} sets buildx-version"

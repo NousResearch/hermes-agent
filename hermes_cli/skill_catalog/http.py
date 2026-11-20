@@ -98,8 +98,8 @@ async def _selected_service(request, hint, deadline):
 
 def _invoke(service, method, *args, **kwargs):
     # Hydration belongs to this worker, never the ASGI/gateway event loop.
-    from hermes_cli.plugins_loader import _plugin_home_scope
-    with _plugin_home_scope(Path(service.home)):
+    from agent.runtime_scope import bind_profile_scope
+    with bind_profile_scope(Path(service.home)):
         return getattr(service, method)(*args, **kwargs)
 
 

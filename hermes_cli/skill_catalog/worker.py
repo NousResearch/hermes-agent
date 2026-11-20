@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.memory_provider import spawn_context_thread
+from agent.runtime_scope import bind_profile_scope
 from hermes_constants import hermes_home_key
-from hermes_cli.plugins_loader import _plugin_home_scope
 from hermes_cli.skill_catalog import registry
 from hermes_cli.skill_catalog.validation import CatalogError, validate_request, validate_result
 
@@ -72,7 +72,7 @@ def _timeout(call):
 
 def _invoke(call, profile):
     try:
-        with _plugin_home_scope(Path(call.entry.scope)):
+        with bind_profile_scope(Path(call.entry.scope)):
             if not call.entry.authorized():
                 raise CatalogError("consent_required", "Catalog consent is required.")
             with _lock:

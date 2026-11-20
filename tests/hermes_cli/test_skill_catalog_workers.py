@@ -73,6 +73,85 @@ def test_call_binds_entry_scope_inside_worker_and_preserves_caller_context(tmp_p
     assert int(time.time() * 1000) - 3000 <= context["deadline_ms"] <= int(time.time() * 1000) + 3000
 
 
+@pytest.mark.parametrize('boundary', ['worker', 'http'])
+def test_unbound_catalog_workers_read_only_own_profile_credentials(tmp_path, monkeypatch, boundary):
+    from agent import secret_scope
+    from hermes_cli.skill_catalog import worker, http
+    from hermes_cli.skill_catalog.service import Service
+    from tests.hermes_cli.test_skill_catalog_service import fixture
+    from hermes_scope import push_state
+    home = tmp_path / 'selected'
+    home.mkdir()
+    (home / '.env').write_text('CATALOG_TEST_SECRET=selected-only\n')
+    monkeypatch.setenv('CATALOG_TEST_SECRET', 'foreign-process')
+    monkeypatch.setenv('FOREIGN_CATALOG_SECRET', 'foreign-only')
+    manager, entry, _plan = fixture(home)
+    seen = []
+    sentinel = contextvars.ContextVar('catalog_secret_sentinel', default=None)
+    token = sentinel.set('caller-context')
+
+    def available(request):
+        seen.append((get_hermes_home(), secret_scope.get_secret('CATALOG_TEST_SECRET'),
+                     secret_scope.get_secret('FOREIGN_CATALOG_SECRET'), sentinel.get()))
+        return dict(ok=True, data=dict(state='ready', message=''))
+
+    monkeypatch.setattr(entry.provider, 'availability', available)
+    multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        with push_state(scope=None, secrets=None):
+            if boundary == 'worker':
+                assert worker.call(entry, 'availability', {})['state'] == 'ready'
+            else:
+                class ScopedSources(Service):
+                    def sources(self):
+                        assert secret_scope.get_secret('CATALOG_TEST_SECRET') == 'selected-only'
+                        return super().sources()
+                assert http._invoke(ScopedSources(home), 'sources')[0]['state'] == 'ready'
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                secret_scope.get_secret('CATALOG_TEST_SECRET')
+        assert seen == [(home, 'selected-only', None, 'caller-context')]
+    finally:
+        secret_scope.set_multiplex_active(multiplex)
+        sentinel.reset(token)
+        manager.unload()
+
+
+def test_catalog_worker_rebinds_ambient_profile_but_refuses_hosted_switch(tmp_path, monkeypatch):
+    from agent.runtime_scope import bind_profile_scope, bind_state
+    from agent.secret_scope import get_secret
+    from hermes_cli.skill_catalog import worker, http
+    from hermes_cli.skill_catalog.service import Service
+    from hermes_scope import Scope, Principal, ScopeSwitchRefused
+    outer = tmp_path / 'outer'
+    outer.mkdir()
+    (outer / '.env').write_text('CATALOG_TEST_SECRET=outer-only\nFOREIGN_CATALOG_SECRET=outer-private\n')
+    home = tmp_path / 'selected'
+    home.mkdir()
+    (home / '.env').write_text('CATALOG_TEST_SECRET=selected-only\n')
+    seen = []
+
+    class Reader(Catalog):
+        def availability(self, request):
+            seen.append((get_hermes_home(), get_secret('CATALOG_TEST_SECRET'),
+                         get_secret('FOREIGN_CATALOG_SECRET')))
+            return dict(ok=True, data=dict(state='ready', message=''))
+
+    entry = make_entry(home, Reader())
+    with bind_profile_scope(outer):
+        assert worker.call(entry, 'availability', {})['state'] == 'ready'
+        assert get_hermes_home() == outer and get_secret('CATALOG_TEST_SECRET') == 'outer-only'
+    assert seen == [(home, 'selected-only', None)]
+    with bind_state(Scope('tenant', 'agent', Principal('owner'),
+                          owner=Principal('owner'), can_administer=True)):
+        with pytest.raises(CatalogError) as caught:
+            worker.call(entry, 'availability', {})
+        assert caught.value.code == 'provider_error'
+        with pytest.raises(ScopeSwitchRefused):
+            http._invoke(Service(home), 'sources')
+    assert len(seen) == 1
+
+
 def test_invalid_request_never_resolves_provider_method(tmp_path):
     from hermes_cli.skill_catalog import worker
 
@@ -208,7 +287,7 @@ def test_worker_rechecks_entry_after_blocked_scope_entry(tmp_path, monkeypatch, 
             assert release.wait(8)
             yield
 
-    monkeypatch.setattr(worker, "_plugin_home_scope", delayed_scope)
+    monkeypatch.setattr(worker, "bind_profile_scope", delayed_scope)
     monkeypatch.setattr(worker, "spawn_context_thread", track)
     pending = Pending(entry, "availability", {}, deadline=time.monotonic() + (2 if state == "expired" else 6))
     try:
@@ -274,7 +353,7 @@ def test_timed_out_read_retains_slot_until_real_worker_cleanup_exits(tmp_path, m
                 assert release.wait(8)
 
     monkeypatch.setattr(worker, "spawn_context_thread", track)
-    monkeypatch.setattr(worker, "_plugin_home_scope", blocked_cleanup)
+    monkeypatch.setattr(worker, "bind_profile_scope", blocked_cleanup)
     entry = make_entry(tmp_path)
     pending = Pending(entry, "availability", {}, deadline=time.monotonic() + 2)
     try:
@@ -524,7 +603,7 @@ def test_shutdown_drains_worker_scope_cleanup_before_returning(tmp_path, monkeyp
                 cleanup.set()
                 assert release.wait(8)
 
-    monkeypatch.setattr(worker, "_plugin_home_scope", blocked_cleanup)
+    monkeypatch.setattr(worker, "bind_profile_scope", blocked_cleanup)
     pending = Pending(entry, "availability", {})
     assert cleanup.wait(4)
     real_join = threading.Thread.join

@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/types/hermes'
-
 import { $apiRequestScope } from '@/api/client'
+import type { SessionInfo } from '@/types/hermes'
 
 import {
   bindDesktopMetrics,
@@ -15,8 +14,8 @@ import { $sessions } from './session'
 import { $shellChoice } from './shell-variant'
 import {
   $landingMoment,
-  AWAY_AFTER_MS,
   $starterIdeas,
+  AWAY_AFTER_MS,
   hideStarterIdeas,
   noteStarterIdeaPicked,
   noteTaskFinished,

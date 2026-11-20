@@ -44,8 +44,8 @@ export function DeveloperViewOffer({ sessionId }: DeveloperViewOfferProps) {
     }
   }, [shown])
 
-  // Leaving the chat mid-preview leaves the view as it was.
-  useEffect(() => () => previewDeveloperView(false), [])
+  // No unmount cleanup: switching the interface mode rebuilds the layout and remounts this card under
+  // the pointer, which must not end the preview it just started. Leaving the row ends it.
 
   if (!shown) {
     return null

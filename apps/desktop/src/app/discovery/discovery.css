@@ -1045,9 +1045,27 @@
 
 /* ── Activate & grow (Onboarding 03): the landing's later moments, the check-in, the developer view ── */
 
+/* Back and away (C4, C5, C8: "Empty chat introduction" 18677:28394): the title and its line 16 apart in
+   Nous/Body Regular at .6, 16 above the composer; no eyebrow. */
+:root[data-shell='portal'] .discovery-landing-greeting:is([data-moment='back'], [data-moment='away']) {
+  margin-block-end: 1rem;
+}
+
+:root[data-shell='portal'] .discovery-landing-greeting:is([data-moment='back'], [data-moment='away']) .discovery-landing-heading {
+  gap: 1rem;
+}
+
+:root[data-shell='portal'] .discovery-landing-greeting:is([data-moment='back'], [data-moment='away']) .discovery-landing-subtitle {
+  color: var(--portal-text-tertiary);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
 /* Section 03's own buttons (Onboarding / Button 18677:32714): 36px, 12 across, 6 corners, Nous/Compact
    SemiBold at the 14px body; the primary in the accent, the secondary ink 5 with no rim. */
-:root[data-shell='portal'] .discovery-landing-action[data-size][data-variant] {
+:root[data-shell='portal']
+  :is(.discovery-landing-actions, .discovery-check-in-answers)
+  .discovery-landing-action[data-size][data-variant] {
   min-block-size: 2.25rem;
   padding-block: 0;
   padding-inline: 0.75rem;

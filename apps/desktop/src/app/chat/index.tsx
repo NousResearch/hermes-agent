@@ -801,7 +801,8 @@ const ChatViewContent = memo(function ChatViewContent({
           />
           {classicPrimary && <IntroCopy />}
           <HeldExchange primary={isPrimary} routed={isRoutedSessionView} />
-          {isPrimary && <DeveloperViewOffer sessionId={activeSessionId} />}
+          {/* Artifacts are filed under the stored chat (artifact-card.tsx), which the route names. */}
+          {isPrimary && <DeveloperViewOffer sessionId={routedSessionId} />}
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}

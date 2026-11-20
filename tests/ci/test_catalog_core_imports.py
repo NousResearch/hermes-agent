@@ -6,6 +6,7 @@ comes from the same fetch-and-parse path the scheduled build runs.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -106,11 +107,9 @@ def _check(repo: Path, index: dict, files: dict) -> list[tuple[str, str]]:
 
 
 def test_removing_a_name_a_pinned_plugin_imports_is_named_and_a_kept_spelling_is_not(index, core):
-    repo, base = core
+    repo, _base = core
     removed = _check(repo, index, {"tools/registry.py": "def other(): ...\n"})
     assert removed == [("__init__.py:2", "tools.registry.registry_helper")]
-    assert "Open a PR for an official seam" in cci.report(
-        cci.breaks(index, cci.Tree(repo, base), cci.Tree(repo, "HEAD")))
     _commit(repo, {"tools/registry.py": "def registry_helper(): ...\n"})
 
     # The removed module only ever stood in for sqlite_support behind the plugin's own try: nothing breaks.
@@ -134,6 +133,8 @@ def test_removing_a_name_a_pinned_plugin_imports_is_named_and_a_kept_spelling_is
 MOVED = 'MOVES: dict[str, str] = {"tools.old": "tools.new"}\n'
 TWO_LEVELS = ("try:\n    from tools.a import x\n    try:\n        from tools.b import y\n    except ImportError:\n"
               "        from tools.c import y\nexcept ImportError:\n    x = None\n")
+OPTIONAL_INNER = ("try:\n    from tools.a import x\n    try:\n        from tools.b import y\n    except ImportError:\n"
+                  "        y = None\nexcept ImportError:\n    x = None\n")
 ELSE_AND_TYPING = ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from tools.registry import only_typing\n"
                    "try:\n    import json\nexcept ImportError:\n    json = None\nelse:\n    from tools.registry import helper\n")
 
@@ -151,6 +152,9 @@ ELSE_AND_TYPING = ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    fro
     # A body whose nested try fails as a whole does not run, whatever its own imports do.
     (TWO_LEVELS, {"tools/a.py": "x = 1\n", "tools/b.py": "y = 1\n", "tools/c.py": "y = 1\n"},
      {"tools/b.py": "", "tools/c.py": ""}, [("__init__.py:4", "tools.b.y"), ("__init__.py:6", "tools.c.y")]),
+    # A try nested in a body that still runs loses its own feature: the outer import surviving hides nothing.
+    (OPTIONAL_INNER, {"tools/a.py": "x = 1\n", "tools/b.py": "y = 1\n"}, {"tools/b.py": ""},
+     [("__init__.py:4", "tools.b.y")]),
     # An ``else:`` block is checked like any plain import; a ``TYPE_CHECKING`` import never loads.
     (ELSE_AND_TYPING, {"tools/registry.py": "helper = only_typing = 1\n"}, {"tools/registry.py": ""},
      [("__init__.py:9", "tools.registry.helper")]),
@@ -224,14 +228,42 @@ def test_a_module_getattr_answers_only_the_names_it_spells(index, core):
     assert _check(repo, index, {"tools/registry.py": "def other(): ...\n"}) == []
 
 
-def test_the_label_lets_an_intended_break_through(index, core, monkeypatch, capsys):
-    repo, base = core
-    head = _commit(repo, {"agent/memory_provider.py": "class Other: ...\n"})
-    monkeypatch.setattr(cci, "ROOT", repo)
-    monkeypatch.setattr(cci, "read_index", lambda: index)
-    assert cci.check(base, head, []) == 1
-    assert "demo __init__.py:1 imports agent.memory_provider.MemoryProvider" in capsys.readouterr().out
-    assert cci.check(base, head, [cci.OVERRIDE_LABEL]) == 0
+def test_a_break_is_a_warning_naming_the_core_name_and_the_plugins_catalog_record(
+        index, core, tmp_path, monkeypatch, capsys):
+    repo, _base = core
+    # Judged against the BASE's published API: this tree publishes MemoryProvider and nothing else.
+    api = json.dumps({"groups": [{"entries": ["agent.memory_provider:MemoryProvider"]}]})
+    base = _commit(repo, {"hermes_cli/data/plugin_api.json": api})
+    head = _commit(repo, {"agent/memory_provider.py": "class Other: ...\n",
+                          "hermes_state_wal.py": None, "sqlite_support.py": None})
+    sha = next(iter(index.values())).sha
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "demo.yaml").write_text(
+        f"name: demo\nrepo: https://github.com/acme/demo-plugin\nsha: {sha}\nsubdir: plugin\nversion: '1.4.0'\n"
+        "description: d\nmaintainer: acme\ntier: community\ncategory: memory\n", encoding="utf-8")
+    for name, value in {"ROOT": repo, "CATALOG": catalog, "read_index": lambda: index}.items():
+        monkeypatch.setattr(cci, name, value)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "runner"))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+
+    assert cci.check(base, head) == 0  # a warning, never a failure
+    out = capsys.readouterr().out
+    # The core name, whether a plugin may rely on it, and who imports it.
+    assert "`agent.memory_provider.MemoryProvider` (public API): 1 plugin: demo" in out
+    assert "`hermes_state_wal.wal_mode` (private): 1 plugin: demo" in out
+    # The plugin's catalog record: repo, subdir and pin, catalog file, and a link to the import line.
+    assert f"repo: https://github.com/acme/demo-plugin (subdir `plugin`) @ `{sha[:12]}`" in out
+    assert "plugin-catalog/demo.yaml" in out and "maintainer `acme`" in out and "1.4.0" in out
+    assert f"https://github.com/acme/demo-plugin/blob/{sha}/plugin/__init__.py#L1" in out
+    assert "::warning title=Breaks catalog plugin demo::" in out
+    assert "hermes_state_wal.wal_mode" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+    status = (tmp_path / "runner" / "review-status" / "catalog-core-imports" / "review-status.json").read_text(
+        encoding="utf-8")
+    (entry,) = json.loads(status.removeprefix("review_status="))
+    assert entry["results"][0]["kind"] == "warning"
+    assert "acme/demo-plugin" in entry["results"][0]["detail"]
 
 
 def test_a_failed_read_or_a_moved_subdir_is_read_again(index):

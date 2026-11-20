@@ -15,6 +15,7 @@ import {
   killedWhileWritingStatus,
   lateTurnStatus,
   nonFileBackendApply,
+  planWhileRunning,
   refusalBlockers,
   refusedUrlPlans,
   relativeLauncherStatus,
@@ -409,6 +410,45 @@ describe("BackendMigrationCard", () => {
       expect(calls.filter((c) => c.startsWith("GET") && c.includes("/plan"))).toHaveLength(1);
       expect(container.querySelector('[data-slot="backend-migration-rolled-back"]')).toBeNull();
       expect(moveButton()?.disabled).toBe(false);
+    });
+  });
+
+  describe("Try again after a rolled-back run", () => {
+    const running = planWhileRunning as unknown as BackendMigrationPlanResponse;
+    const rolledBack = () => planWith({ nothing_to_do: true }, lateTurnStatus.running as unknown as BackendMigrationStatus);
+    const reply = (body: unknown) => new Response(JSON.stringify(body),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+
+    it("follows a move that is running by then instead of offering Move", async () => {
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+        const url = String(input);
+        calls.push(url);
+        return reply(url.includes("/plan") ? running : running.run);
+      }));
+      await render(rolledBack());
+      await act(async () => button("Try again")!.click());
+      expect(moveButton()).toBeUndefined();
+      expect(container.querySelector('[data-slot="backend-migration-progress"]')).not.toBeNull();
+      await wait(1600);
+      expect(calls.some((u) => u.includes("/status"))).toBe(true);
+      expect(moveButton()).toBeUndefined();
+    });
+
+    it("ignores an earlier Try again whose answer arrives after a newer one", async () => {
+      const pending: ((r: Response) => void)[] = [];
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+        if (!String(input).includes("/plan")) return reply(running.run);
+        return new Promise<Response>((resolve) => pending.push(resolve));
+      }));
+      await render(rolledBack());
+      await act(async () => button("Try again")!.click());
+      await act(async () => button("Try again")!.click());
+      expect(pending).toHaveLength(2);
+      await act(async () => pending[1](reply(running)));
+      await act(async () => pending[0](reply(planWith({}))));
+      expect(moveButton()).toBeUndefined();
+      expect(container.querySelector('[data-slot="backend-migration-progress"]')).not.toBeNull();
     });
   });
 

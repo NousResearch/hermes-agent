@@ -87,23 +87,32 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
     };
   }, []);
 
+  /** Follow a run the plan says is still going (a page opened, or Try again read, while a move runs). */
+  const follows = useCallback((r: BackendMigrationPlanResponse) => {
+    if (r.run.state === "running" && isInFlight(viewOf(r.run))) {
+      void follow({ previousStartedAt: r.run.started_at - 1, requestedAt: r.run.started_at });
+    }
+  }, [follow]);
+
+  // Each plan read is numbered: only the newest one's answer is shown (an older one may arrive later).
+  const planReads = useRef(0);
+  const readPlan = useCallback(async () => {
+    const n = ++planReads.current;
+    const r = await backendMigrationApi.plan();
+    if (!alive.current || n !== planReads.current || r.status !== 200 || !r.body) return;
+    setPlan(r.body);
+    setRefusal(null);
+    setView(initialView(r.body));
+    follows(r.body);
+  }, [follows]);
+
   useEffect(() => {
-    const follows = (r: BackendMigrationPlanResponse) => {
-      if (r.run.state === "running" && isInFlight(viewOf(r.run))) {
-        void follow({ previousStartedAt: r.run.started_at - 1, requestedAt: r.run.started_at });
-      }
-    };
     if (initial !== undefined) {
       if (initial) follows(initial);
       return;
     }
-    void backendMigrationApi.plan().then((r) => {
-      if (!alive.current || r.status !== 200 || !r.body) return;
-      setPlan(r.body);
-      setView(initialView(r.body));
-      follows(r.body);
-    });
-  }, [initial, follow]);
+    void readPlan();
+  }, [initial, follows, readPlan]);
 
   const profile = plan?.profile ?? plan?.run.profile ?? (getManagementProfile() || null);
   const commands = plan?.commands ?? plan?.run.commands ?? null;
@@ -156,14 +165,9 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
     setPlan(r.body);
   };
 
-  // After a rolled-back run (everything was put back): read the plan again and offer the move as it stands now.
-  const tryAgain = async () => {
-    const r = await backendMigrationApi.plan();
-    if (!alive.current || r.status !== 200 || !r.body) return;
-    setPlan(r.body);
-    setRefusal(null);
-    setView(null);
-  };
+  // After a rolled-back run (everything was put back): read the plan again, as a page load does, and show
+  // the move as it stands now (or follow a run that started meanwhile).
+  const tryAgain = () => void readPlan();
 
   const checkAgain = () => {
     if (!followed) return;
@@ -195,7 +199,7 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
         {refusal && <RefusalNotice refusal={refusal} />}
 
         {view && <Progress view={view} profile={profile} commands={commands} onCheckAgain={followed ? checkAgain : undefined}
-          onTryAgain={() => void tryAgain()} />}
+          onTryAgain={tryAgain} />}
       </CardContent>
 
       <ConfirmDialog

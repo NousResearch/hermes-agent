@@ -142,7 +142,7 @@ import sys
 
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
-from gateway.platforms.base_exec_approval import ea_t
+from gateway.platforms.base import ea_t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,

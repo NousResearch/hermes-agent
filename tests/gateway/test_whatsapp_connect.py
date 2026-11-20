@@ -528,7 +528,7 @@ class TestHttpSessionLifecycle:
         adapter = _make_adapter()
         mock_proc = MagicMock()
         mock_proc.pid = 12345
-        mock_proc.poll.side_effect = [0]
+        mock_proc.poll.side_effect = [None]
         adapter._bridge_process = mock_proc
         adapter._poll_task = None
         adapter._http_session = None
@@ -540,7 +540,7 @@ class TestHttpSessionLifecycle:
             await adapter.disconnect()
 
         mock_run.assert_called_once()
-        assert mock_run.call_args.args[0] == ["taskkill", "/PID", "12345", "/T"]
+        assert mock_run.call_args.args[0] == ["taskkill", "/PID", "12345", "/T", "/F"]
         mock_proc.terminate.assert_not_called()
         mock_proc.kill.assert_not_called()
 

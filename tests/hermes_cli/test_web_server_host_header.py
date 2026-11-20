@@ -566,3 +566,48 @@ def test_a_loopback_public_url_behind_a_host_rewriting_proxy(
             with client.websocket_connect(url, headers=headers):
                 pass
         assert exc.value.code == 4403
+
+
+@pytest.mark.parametrize("origin, trusted", [
+    ("https://hermes.tailnet.ts.net", True),     # canonical public_url
+    ("https://hermes.example.com", True),        # extra_public_urls
+    ("https://other.example.com", False),        # not declared
+    ("https://hermes.example.com.evil.test", False),
+])
+def test_extra_public_urls_are_trusted_host_and_origin(monkeypatch, tmp_path, origin, trusted):
+    """A dashboard reachable under a second hostname lists it in dashboard.extra_public_urls; its
+    Host and WebSocket Origin pass the DNS-rebinding guard, an undeclared host still does not,
+    and the malformed entry in the list is skipped without dropping the valid ones."""
+    import json
+    import types
+
+    from hermes_cli.web_server_boundary import _dashboard_public_hosts, ws_host_origin_reason
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(json.dumps({"dashboard": {
+        "public_url": "https://hermes.tailnet.ts.net",
+        "extra_public_urls": ["not a url", "hermes.example.com", "https://hermes.example.com/"],
+    }}))
+
+    hosts = _dashboard_public_hosts()
+    assert hosts == {"hermes.tailnet.ts.net", "hermes.example.com"}
+    state = types.SimpleNamespace(
+        bound_host="127.0.0.1", bound_port=9119, auth_required=True, trusted_public_hosts=hosts)
+    host = origin.split("://", 1)[1]
+    sock = types.SimpleNamespace(headers={"host": host, "origin": origin})
+    assert (ws_host_origin_reason(sock, state) is None) is trusted
+
+
+def test_extra_public_urls_never_feed_the_oauth_redirect(monkeypatch, tmp_path):
+    import json
+
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(json.dumps({"dashboard": {
+        "public_url": "https://hermes.tailnet.ts.net",
+        "extra_public_urls": ["https://hermes.example.com"],
+    }}))
+    assert resolve_public_url() == "https://hermes.tailnet.ts.net"

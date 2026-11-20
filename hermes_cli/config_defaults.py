@@ -1044,10 +1044,10 @@ DEFAULT_CONFIG = {
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
         # trusted by Host/Origin guards and engages the auth gate when non-loopback. For proxies
-        # that don't forward X-Forwarded-Host/-Proto/-Prefix; X-Forwarded-Prefix is then IGNORED on
-        # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
-        # = reconstruct from headers.
+        # that don't forward X-Forwarded-Host/-Proto/-Prefix (X-Forwarded-Prefix is then IGNORED
+        # on the OAuth path). Empty or malformed (no http(s):// + host, or quote/angle/whitespace) = reconstruct from headers.
         "public_url": "",
+        "extra_public_urls": [],  # more URLs the dashboard answers to: Host/Origin trust + gate only, never the OAuth redirect_uri
     },
 
     "privacy": {

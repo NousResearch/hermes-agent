@@ -135,3 +135,27 @@ def resolve_public_url(state=None) -> str:
     if not cfg_clean:
         _warn_if_malformed("dashboard.public_url in config.yaml", cfg_raw)
     return cfg_clean
+
+
+def resolve_extra_public_urls() -> tuple[str, ...]:
+    """``dashboard.extra_public_urls``: further URLs the dashboard is reached at, valid ones only.
+
+    Their hostnames join the Host/Origin trust set; the OAuth redirect_uri stays on
+    :func:`resolve_public_url`. Config-only, a non-list value or malformed entry warns and is
+    skipped."""
+    raw = _load_dashboard_section().get("extra_public_urls")
+    if raw in (None, "", []):
+        return ()
+    if not isinstance(raw, list):
+        _warn_once(
+            _warned_malformed_public_urls, ("extra_public_urls", repr(raw)), repr(raw),
+            "dashboard.extra_public_urls in config.yaml must be a list of URLs, got %r; ignored", raw)
+        return ()
+    urls = []
+    for item in raw:
+        clean = _normalise_public_url(item if isinstance(item, str) else None)
+        if clean:
+            urls.append(clean)
+        else:
+            _warn_if_malformed("dashboard.extra_public_urls in config.yaml", str(item))
+    return tuple(urls)

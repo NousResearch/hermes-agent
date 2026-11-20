@@ -1077,6 +1077,23 @@ browser-facing hostname while forwarding to a dashboard bound to
 such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
 guard.
 
+If the dashboard is reachable under more than one hostname (for example a Tailscale
+host plus a custom domain behind Cloudflare Access), keep `public_url` as the
+canonical address and list the others in `dashboard.extra_public_urls`:
+
+```yaml
+dashboard:
+  public_url: "https://hermes.tailnet.ts.net"
+  extra_public_urls:
+    - "https://hermes.example.com"
+```
+
+Each entry's hostname is accepted as an exact `Host` / WebSocket `Origin` and
+engages the auth gate like `public_url` does. The OAuth callback is still built
+from `public_url` alone. Entries use the same validation as `public_url`
+(http(s) scheme required; malformed ones are logged and skipped), there is no
+env var, and wildcards are not supported. List only addresses you control.
+
 Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider
 first; without one, Hermes fails closed at startup. This prevents the local SPA

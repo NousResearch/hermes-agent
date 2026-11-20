@@ -21,8 +21,24 @@ logger = logging.getLogger(__name__)
 PLAN_ARGS = "gateway migrate --backends --apply --dry-run"
 #: Backends Hermes Desktop owns are its own business, never offered for migration.
 _DESKTOP_OWNED = frozenset({"desktop-ssh", "desktop-local"})
-#: Overall wall-clock budget for the post-update old-backend scan; on timeout the notice is skipped.
+#: Overall wall-clock budget for waiting on the post-update old-backend scan; on timeout the notice is skipped.
 _SCAN_TIMEOUT_SECONDS = 5.0
+
+
+def _serves_this_home(item, home: Path, host) -> bool:
+    if not item.running and item.unit and item.scope == "user" and item.supervisor in ("systemd", "nix-systemd"):
+        from hermes_cli.gateway_migrate_backends_plan import _for_this_home
+        return _for_this_home(item, host)
+    if item.this_home is not None:
+        return bool(item.this_home)
+    # A user unit that is not running and names no HERMES_HOME would run this user's own default home; a
+    # system unit's user is not known here.
+    if item.running or item.scope != "user":
+        return False
+    from hermes_cli.dashboard_procs import _normalized_home_for_compare
+    from hermes_constants import _get_platform_default_hermes_home
+    return (_normalized_home_for_compare(str(home))
+            == _normalized_home_for_compare(str(_get_platform_default_hermes_home())))
 
 
 def _describe(item) -> str:
@@ -52,14 +68,13 @@ def old_backend_notice(home: Path | None = None) -> str | None:
     from hermes_cli.backend_migration_marker import backend_retired_by_migration
     from hermes_cli.gateway_migrate_backends import collect_backends
     from hermes_cli.gateway_migrate_backends_host import SystemHost
-    from hermes_cli.gateway_migrate_backends_plan import _for_this_home
     from hermes_constants import get_hermes_home
     home = Path(home) if home is not None else get_hermes_home()
     host = SystemHost(home)
     # A unit a migration stopped but could not make `disabled` (a `static` one) is not a backend left over.
     retired = backend_retired_by_migration(home)
     found = [item for item in collect_backends()
-             if item.supervisor not in _DESKTOP_OWNED and _for_this_home(item, host)
+             if item.supervisor not in _DESKTOP_OWNED and _serves_this_home(item, home, host)
              and (item.running or not retired)]
     if not found:
         return None

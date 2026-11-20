@@ -377,6 +377,26 @@ def test_stopped_sibling_user_unit_is_not_named_while_this_homes_unit_is(tmp_pat
     assert "hermes-dashboard-envfile.service" not in notice
 
 
+def test_stopped_system_launchd_daemon_without_hermes_home_is_not_named(tmp_path, monkeypatch):
+    """Only stopped systemd user units use the planner's `_for_this_home`; a stopped system-scope
+    launchd daemon with no HERMES_HOME must not be attributed to this user's default home."""
+    import types
+    import hermes_cli.gateway_migrate_backends as backends
+    from hermes_cli.gateway_migrate_backends import BackendItem
+    from hermes_cli.update_backend_notice import old_backend_notice
+
+    root = _standard_root(tmp_path, monkeypatch)
+    try:
+        import pwd
+        monkeypatch.setattr(pwd, "getpwnam", lambda _user: types.SimpleNamespace(pw_dir=str(tmp_path)))
+    except ImportError:
+        pass
+    daemon = BackendItem("launchd", False, unit="com.example.hermes-dashboard", scope="system",
+                         hermes_home=None, this_home=None)
+    monkeypatch.setattr(backends, "collect_backends", lambda: [daemon])
+    assert old_backend_notice(root) is None
+
+
 def test_notice_runs_after_clearing_restart_marker_and_still_prints_when_restart_incomplete(monkeypatch, capsys):
     """On a complete restart the notice runs only after `_clear_fleet_restart_pending_marker()`; on an
     incomplete restart the marker stays armed and the notice still prints before returning."""

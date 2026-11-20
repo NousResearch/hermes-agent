@@ -260,9 +260,7 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    # The full-duplex mic goes first: a hand-off pending during the flush would open the next owner's listener.
-    for step in (_release_fd_listener_owner, _flush_sessions_before_exit, _release_gateway_wake_owner,
-                 _stop_turns_before_exit):
+    for step in (_release_fd_listener_owner, _flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:

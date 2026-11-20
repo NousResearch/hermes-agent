@@ -192,7 +192,7 @@ def test_full_duplex_stop_turns_the_owner_mode_off_not_the_sidecar_flag(owner, s
     owner.slash("owner", "on")
     owner.rpc("voice.record", action="start", session_id="owner")
     monkeypatch.setenv("HERMES_VOICE", "1")
-    server._deliver_fd_transcript("stop")
+    server._deliver_fd_transcript("stop", {"sid": "owner", "session": None, "transport": owner.sink, "ctx": None})
     assert owner.runner._voice_mode["owner"] == "off"
     assert server._voice_mode_enabled() is True
     assert _transcripts(owner.sink)[-1]["stop_phrase"] is True

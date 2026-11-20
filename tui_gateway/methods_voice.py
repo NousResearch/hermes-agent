@@ -240,10 +240,7 @@ def _fd_owner_from_context() -> dict:
     """The calling voice turn as a mic owner: its session record (bound on the turn thread), that
     record's sid, the bound transport, and a copy of the caller's context (profile scope)."""
     session = _current_runtime_session_record.get()
-    sid = ""
-    if session is not None:
-        with _sessions_lock:  # taken before (never under) _fd_listener_lock
-            sid = next((k for k, v in _sessions.items() if v is session), "")
+    sid = _lifecycle_own_sid(session) if session is not None else ""  # takes _sessions_lock, never under ours
     return {"sid": sid, "session": session, "transport": current_transport(),
             "ctx": contextvars.copy_context()}
 
@@ -419,9 +416,9 @@ def _fd_emit(owner: dict, event: str, payload: dict | None = None) -> None:
             reset_transport(token)
 
 
-def _deliver_fd_transcript(text: str, owner: dict | None = None) -> None:
-    """Emit the captured interjection to its *owner* (default: the push-to-talk session); a bare
-    stop phrase (the owner's ``voice.stop_phrases``: this runs in its context) also ends that
+def _deliver_fd_transcript(text: str, owner: dict) -> None:
+    """Emit the captured interjection to its *owner* (a sessionless owner: the push-to-talk target);
+    a bare stop phrase (the owner's ``voice.stop_phrases``: this runs in its context) also ends that
     session's voice chat. The stop check must never break delivery (stubbed voice_mode in tests,
     partial installs)."""
     try:
@@ -430,17 +427,8 @@ def _deliver_fd_transcript(text: str, owner: dict | None = None) -> None:
     except Exception:
         is_stop = False
     if is_stop:  # turn already interrupted / TTS cut at trip time; now end the chat
-        if owner is not None:
-            sid = owner["sid"]
-        else:
-            with _voice_sid_lock:
-                sid = _voice_event_sid
-        _end_session_voice_chat(sid, stop_loop=True, stop_tts=False)
-    payload = {"stop_phrase": True, "text": text} if is_stop else {"text": text}
-    if owner is None:
-        _voice_emit("voice.transcript", payload)
-    else:
-        _fd_emit(owner, "voice.transcript", payload)
+        _end_session_voice_chat(owner["sid"], stop_loop=True, stop_tts=False)
+    _fd_emit(owner, "voice.transcript", {"stop_phrase": True, "text": text} if is_stop else {"text": text})
 
 
 def _speak_text_with_barge(text: str) -> None:

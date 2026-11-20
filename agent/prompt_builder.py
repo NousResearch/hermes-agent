@@ -1086,7 +1086,8 @@ _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
 # duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 5
+# v5 快照可能包含已回滚的技能，升级后首次读取时重新生成。
+_SKILLS_SNAPSHOT_VERSION = 6
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1419,7 +1420,11 @@ def _build_skills_system_prompt_inner(
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
     else:
         candidates = []
-        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+        # 只读取构建缓存键时列出的技能，避免把中途新增的文件写进旧目录的索引。
+        for relative in sorted(manifest):
+            skill_file = skills_dir / relative
+            if skill_file.name != "SKILL.md":
+                continue
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
     # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
@@ -1448,17 +1453,20 @@ def _build_skills_system_prompt_inner(
             if name not in listed:
                 listed.add(name)
                 skills_by_category.setdefault("plugin", []).append((name, desc))
-    if snapshot is None:  # persist for fast cold-start reuse (best-effort)
+    unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
+    result = _render_skills_index(skills_by_category, compact_categories, available_tools, unloadable)
+    if snapshot is None:
+        # 本次读取可以完成；若目录已变，将下一次读取留给新目录重新构建。
+        if _build_skills_manifest(skills_dir) != manifest:
+            return result
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
-                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
+                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": manifest,
                 "skills": [entry for entry, _ in candidates],
             })
         except Exception as e:
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
-    unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
-    result = _render_skills_index(skills_by_category, compact_categories, available_tools, unloadable)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

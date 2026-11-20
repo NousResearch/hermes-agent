@@ -234,7 +234,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
         home = named_profile_home(dg.get_hermes_home())
         if home is None or named_profile_is_live(home):
             raise
-        return f"Profile '{home.name}' no longer exists; disk-cleanup did nothing. {exc}"
+        return f"Profile '{home.name}' no longer exists; disk-cleanup stopped (files it already removed stay removed). {exc}"
 
 
 def register(ctx) -> None:

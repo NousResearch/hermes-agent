@@ -842,7 +842,7 @@ def skill_manage(
 
 # --- OpenAI Function-Calling Schema -------------------------------------------
 
-def _skill_manage_description() -> str:
+def _skill_manage_description(desc_limit: int = SKILL_PROMPT_DESC_LIMIT) -> str:
     return (
         "Create, update or delete skills: your procedural memory for recurring "
         "tasks. The operations apply atomically — any failure rolls "
@@ -851,12 +851,19 @@ def _skill_manage_description() -> str:
         "ops), patch (targeted old_string/new_string fix — preferred), "
         "write_file/remove_file (supporting files), delete (sole "
         "op only). Existing skills are modified wherever they live. "
-        f"Description: max {get_skill_desc_limit()} chars, 'Use when <trigger>. <behavior>.', never "
+        f"Description: max {desc_limit} chars, 'Use when <trigger>. <behavior>.', never "
         "the category name (the index shows it). Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
         "skill_view() shows format conventions."
     )
+
+
+def _skill_manage_schema_overrides() -> dict | None:
+    """The description's char budget follows the active profile's skills.index_desc_limit. The default
+    width keeps the static schema bytes, so an unconfigured install's tools[] never changes."""
+    limit = get_skill_desc_limit()
+    return None if limit == SKILL_PROMPT_DESC_LIMIT else {"description": _skill_manage_description(limit)}
 
 
 _NAME = {"type": "string"}
@@ -945,6 +952,7 @@ from tools.registry import registry, tool_error
 
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
+    dynamic_schema_overrides=_skill_manage_schema_overrides,
     handler=lambda args, **kw: _skill_manage_from(
         args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
     # The flat single-op shape old transcripts replay, and the batch's top-level default name.

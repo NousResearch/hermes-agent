@@ -367,3 +367,14 @@ def test_a_forced_windows_plan_with_running_turns_keeps_the_count_in_its_instruc
     assert engine.cmd_apply(host, _args(dry_run=True, json=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
     (entry,) = json.loads(capsys.readouterr().out)["plan"]["unsupported"]
     assert entry["steps"] and "2 turn(s) are running on it now: stopping it interrupts them" in entry["instructions"]
+
+
+def test_a_refused_old_public_url_withholds_the_windows_steps(home, capsys):
+    (home / "config.yaml").write_text("dashboard:\n  public_url: https://admin:url-pw-62@dash.example/\n",
+                                      encoding="utf-8")
+
+    assert engine.cmd_apply(WindowsHost(home), _args(dry_run=True, json=True)) == engine.EXIT_BLOCKED
+    out = capsys.readouterr().out
+    plan = json.loads(out)["plan"]
+    assert plan["unsupported"][0]["steps"] == [] and "url-pw-62" not in out
+    assert any("is not one the gateway accepts as webapp.public_url" in b for b in plan["blockers"])

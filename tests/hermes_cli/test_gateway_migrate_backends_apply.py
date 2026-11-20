@@ -1429,3 +1429,28 @@ def test_a_by_hand_backend_without_api_health_says_why_its_activity_is_unknown(h
     (blocker,) = [b for b in out["plan"]["blockers"] if "Cannot tell whether turns are running" in b]
     assert code == engine.EXIT_BLOCKED and "older than v2026.7.30" in blocker and "GET /api/health" in blocker
     assert "confirm it is idle, then re-run with --force-interrupt" in blocker
+
+
+# --- review round 5: a refused old public URL blocks a by-hand plan as it blocks an automatic one
+
+_REFUSED_URL = "https://admin:url-pw-never-printed-62@dash.example/?k=v"
+
+
+@pytest.mark.parametrize("supervisor", ["container", "s6", "systemd-system"])
+@pytest.mark.parametrize("where", ["config", "env"])
+def test_a_refused_old_public_url_withholds_the_by_hand_steps(home, capsys, monkeypatch, supervisor, where):
+    kw = {"supervisor": "systemd", "scope": "system"} if supervisor == "systemd-system" else {"supervisor": supervisor}
+    host = FakeHost(home, host="127.0.0.1", **kw)
+    if where == "config":
+        (home / "config.yaml").write_text(f"dashboard:\n  public_url: {_REFUSED_URL}\n", encoding="utf-8")
+    else:
+        env = host.process_env(_BACKEND_PID)
+        monkeypatch.setattr(host, "process_env", lambda pid: {**env, "HERMES_DASHBOARD_PUBLIC_URL": _REFUSED_URL})
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED and out["plan"]["unsupported"][0]["steps"] == []
+    source = "dashboard.public_url" if where == "config" else "HERMES_DASHBOARD_PUBLIC_URL"
+    assert f"The old backend's public URL ({source}) is not one the gateway accepts as webapp.public_url" \
+        in " ".join(out["plan"]["blockers"])
+    assert "url-pw-never-printed-62" not in _everything(host, capsys)

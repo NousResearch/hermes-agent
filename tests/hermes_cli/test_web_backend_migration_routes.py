@@ -94,6 +94,12 @@ class FakeHost(SystemHost):
     def http_status(self, host, port):  # shaped like SystemHost's: GET /api/health (+ providers)
         return {"ok": True, "auth_required": True, "auth_providers": ["basic"]}
 
+    def same_network_namespace(self, pid, *, container):  # the fake pid is never looked up in /proc
+        return True
+
+    def health_status(self, host, port):  # the by-hand plan's health-only read, from the same fake answer
+        return self.http_status(host, port)
+
 
 _IS_STANDARD_ROOT = gateway_migrate_backends_plan._is_standard_root
 
@@ -981,4 +987,6 @@ def test_a_by_hand_plan_held_by_chat_activity_lists_its_steps_when_forced(home, 
     forced = client.get("/api/gateway/migrate/backends/plan", params={"force_interrupt": "true"}).json()
     assert forced["exit_code"] == engine.EXIT_UNSUPPORTED and forced["plan"]["blockers"] == [], forced["plan"]
     assert forced["plan"]["unsupported"][0]["steps"]
+    # A system unit shares the planner's network namespace: no "check inside the container" note.
+    assert "outside its container" not in forced["plan"]["unsupported"][0]["instructions"]
     assert spawned == []

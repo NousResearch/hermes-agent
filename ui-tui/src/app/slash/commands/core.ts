@@ -526,7 +526,8 @@ export const coreCommands: SlashCommand[] = [
       }
 
       const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
-      const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
+      // Bare /copy takes the latest real answer, past an interrupt marker or a failure card.
+      const target = arg ? all[Math.min(parseInt(arg, 10), all.length) - 1] : all.findLast(m => !m.noAnswer)
 
       if (!target) {
         return sys(t('slashCmd.core.copy.nothingToCopy'))

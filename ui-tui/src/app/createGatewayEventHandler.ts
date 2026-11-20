@@ -67,6 +67,7 @@ import {
   describeRpcError,
   describeTurnFailure,
   isBareErrorText,
+  markFailureNoAnswer,
   promptTimeoutNotice,
   stderrLooksLikeProblem,
   stderrProblemActivity
@@ -1877,7 +1878,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               ? finalMessages
               : [{ role: 'assistant', text: finalText }]
 
-          msgs.forEach(appendMessage)
+          markFailureNoAnswer(msgs, payload).forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')

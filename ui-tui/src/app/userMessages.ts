@@ -8,6 +8,7 @@ import type { ErrorSurface } from '@hermes/shared/gateway-events'
 
 import { messages, t } from '../i18n/runtime.js'
 import type { Translations } from '../i18n/types.js'
+import type { Msg } from '../types.js'
 
 /** JSON-RPC error codes the gateway answers with. */
 export const RPC_INVALID_PARAMS = 4000
@@ -317,6 +318,15 @@ export const describeTurnFailure = (payload: TurnFailure): string => {
   const raw = (payload.error ?? '').replace(/^Error:\s*/, '')
 
   return [t('userMessages.turn.notAnswered', title), detailLine(raw), nextStep].filter(Boolean).join('\n')
+}
+
+/** A failed turn with no partial reply ends on failure copy, not an answer: tag that row so /copy skips it. */
+export const markFailureNoAnswer = (msgs: Msg[], payload: { partial?: unknown; status?: unknown }): Msg[] => {
+  const last = msgs.at(-1)
+
+  return payload.status === 'error' && !payload.partial && last?.role === 'assistant'
+    ? [...msgs.slice(0, -1), { ...last, noAnswer: true }]
+    : msgs
 }
 
 /** True when the assistant slot carries nothing but the backend's "Error: …" fallback text. */

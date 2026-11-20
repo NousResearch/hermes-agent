@@ -26,7 +26,7 @@ _SCAN_TIMEOUT_SECONDS = 5.0
 
 
 def _serves_this_home(item, home: Path, host) -> bool:
-    if not item.running and item.unit and item.scope == "user" and item.supervisor in ("systemd", "nix-systemd"):
+    if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
         from hermes_cli.gateway_migrate_backends_plan import _for_this_home
         return _for_this_home(item, host)
     if item.this_home is not None:

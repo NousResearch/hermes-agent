@@ -344,6 +344,26 @@ it.each(['--tui-session', '--global'])('a picker-issued --reasoning rides with m
   expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
 })
 
+it.each([
+  '--global --session',
+  '--session --global',
+  '--global --tui-session',
+  '--tui-session --global',
+  '--global --session --global'
+])('an explicit session flag overrides global scope: %s', async flags => {
+  const { request, slash } = harness()
+  slash(`/model picked --provider custom --reasoning high ${flags}`)
+  await flush()
+  await flush()
+
+  const sends = request.mock.calls
+    .filter(([method]) => method === 'session.mutate')
+    .map(([, params]) => params.payload)
+
+  expect(sends).toEqual([{ model: 'picked', provider: 'custom', reasoning: 'high' }])
+  expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
+})
+
 it('an unknown --reasoning level is refused like any unsupported model option, mutating nothing', async () => {
   const { request, slash } = harness()
   slash('/model picked --reasoning warp --tui-session')

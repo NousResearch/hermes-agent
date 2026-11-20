@@ -83,4 +83,35 @@ describe('searchResultToSession', () => {
 
     expect(s.archived).toBe(false)
   })
+
+  // The flat All-profiles search list tags each row with its owning profile
+  // (session-row's `profile` meta). A synthesized hit that drops the stamp
+  // renders as the default profile: no chip, and the row's prewarm/drag
+  // metadata points at a backend that never held the session.
+  it("carries the hit's owning profile onto the synthesized row", () => {
+    const s = searchResultToSession({
+      session_id: '20261110_101009',
+      session_started: null,
+      snippet: 'quarterly numbers',
+      role: 'user',
+      model: null,
+      profile: 'omar',
+      source: 'desktop'
+    })
+
+    expect(s.profile).toBe('omar')
+  })
+
+  it('leaves profile undefined when the gateway omits it (single-profile builds)', () => {
+    const s = searchResultToSession({
+      session_id: '20261110_101010',
+      session_started: null,
+      snippet: 'hello',
+      role: null,
+      model: null,
+      source: 'desktop'
+    })
+
+    expect(s.profile).toBeUndefined()
+  })
 })

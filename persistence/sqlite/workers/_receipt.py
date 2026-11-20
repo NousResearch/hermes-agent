@@ -163,8 +163,9 @@ def apply_worker_receipt(holder, *, epoch, execution_id, session_id, generation,
     encoded = _json(payload)
     if len(encoded.encode('utf-8', errors='surrogatepass')) > 4 * 1024 * 1024:
         raise AuthorityRefusal('invalid_params')
+    frozen_payload = json.loads(encoded)
     digest = admission_fingerprint(canonical_target=session_id,
-                                  payload={'operation': operation, 'payload': json.loads(encoded)})
+                                  payload={'operation': operation, 'payload': frozen_payload})
     def write(conn):
         _epoch(conn, epoch)
         row = worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest)
@@ -200,4 +201,31 @@ def apply_worker_receipt(holder, *, epoch, execution_id, session_id, generation,
             from ._runtime_workers import compact_terminal_receipts
             compact_terminal_receipts(conn, execution_id)
         return result
-    return holder._execute_write(write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from .._state.lineage_fence import SessionLineageError, guarded_discovered_write
+    from ..conversation._store.compression import _session_turn_lease_key_on_conn
+
+    def write_ids(conn):
+        _epoch(conn, epoch)
+        assignment = worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest)
+        if assignment['owner_epoch'] != epoch:
+            raise AuthorityRefusal('stale_epoch')
+        old = conn.execute('SELECT 1 FROM worker_receipts WHERE execution_id=? AND sequence=?',
+                           (execution_id, sequence)).fetchone()
+        # An exact old receipt is read back unchanged. The writer still checks the digest.
+        if old is not None or assignment['status'] not in ('registered', 'running'):
+            return set()
+        if sequence != assignment['last_sequence'] + 1:
+            return set()
+        ids = {session_id, assignment['session_id']}
+        if operation in ('turn.acquire', 'turn.renew'):
+            ids.add(_session_turn_lease_key_on_conn(holder, conn, session_id))
+        if operation == 'compression.publish' and isinstance(frozen_payload, dict):
+            child = frozen_payload.get('child_session_id')
+            if isinstance(child, str) and 0 < len(child) <= 1024:
+                ids.add(child)
+        return ids
+
+    try:
+        return guarded_discovered_write(holder, write_ids, write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    except SessionLineageError as exc:
+        raise AuthorityRefusal(exc.code) from exc

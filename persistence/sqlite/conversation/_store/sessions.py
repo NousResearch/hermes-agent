@@ -20,7 +20,7 @@ from persistence.sqlite.conversation._store.sql_common import (
     _placeholders as _session_ids_placeholders, _source_match_clause, launch_stub_filter_sql,
 )
 from persistence.sqlite.conversation._store.compression import (
-    _CHAIN_CAP, _UNSET_CREATED_SQL, get_compression_chain, get_compression_tip,
+    _CHAIN_CAP, _UNSET_CREATED_SQL, _compression_tip_on, get_compression_chain,
 )
 from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, _delete_unreferenced_system_prompts, _session_row_dict
 from persistence.sqlite.conversation._store.messages import _bump_conversation_generation, _display_messages_from_conn, _is_explicit_fork_child_row
@@ -322,13 +322,19 @@ _INHERIT_PARENT_ROUTING_SQL = (
 )
 
 
+def _session_store_install_root() -> Path:
+    """Canonical root used for this SQLite store's profile identity and ownership inventory."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root().resolve()
+
+
 def _own_profile_name(holder: StoreHolder) -> Optional[str]:
     """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
     ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that
     profile's store. None outside the profile tree — NULL beats a fabricated owner."""
     try:
-        from hermes_constants import get_default_hermes_root
-        root = get_default_hermes_root().resolve()
+        root = _session_store_install_root()
         parent = Path(holder.db_path).resolve().parent
         if parent == root:
             return "default"
@@ -396,8 +402,11 @@ def _insert_session_row(
                   parent_session_id=parent_session_id, cwd=cwd, profile_name=profile_name,
                   git_repo_root=git_repo_root, origin_json=origin_json, display_name=display_name,
                   transport_profile=transport_profile)
-    holder._execute_write(lambda conn: insert_session_row_in_transaction(holder, conn, **params),
-                        patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        holder._execute_write(lambda conn: insert_session_row_in_transaction(holder, conn, **params),
+                              patience_s=remaining)
 
 
 def create_session(holder: StoreHolder, session_id: str, source: str, **kwargs) -> str:
@@ -480,7 +489,11 @@ def reopen_session(holder: StoreHolder, session_id: str) -> None:
         )
         # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
         _unarchive_auto_archived_lineage(conn, session_id)
-    holder._execute_write(_do)
+
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def promote_to_session_reset(holder: StoreHolder, session_id: str, reason: str = "session_reset") -> bool:
@@ -627,15 +640,34 @@ def clear_session_activity_labels(holder: StoreHolder, session_id: str) -> None:
     )
 
 
+def _session_config_fence_matches(conn, fence) -> bool:
+    row = conn.execute(
+        "SELECT runtime_revision, runtime_generation, model_config FROM sessions WHERE id=?",
+        (fence.session_id,),
+    ).fetchone()
+    if row is None or tuple(row[:2]) != (fence.runtime_revision, fence.runtime_generation):
+        return False
+    return (json.dumps(_parse_model_config(row[2]), sort_keys=True)
+            == json.dumps(dict(fence.model_config), sort_keys=True))
+
+
 def update_session_meta(
-    holder: StoreHolder, session_id: str, model_config_json: str, model: Optional[str] = None,
+    holder: StoreHolder, session_id: str, model_config_json: str, model: Optional[str] = None, *, fences=(),
 ) -> None:
-    """Update model_config and (COALESCE) optionally model."""
-    holder.flush_token_counts()  # barrier against queued token deltas — see update_session_model
-    holder._write_sql(
-        "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-        (model_config_json, model, session_id),
-    )
+    """Publish a session's model metadata only while every supplied row still matches."""
+    from persistence.core.errors import StoreContention
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    if not holder.flush_token_counts():
+        raise StoreContention("Session accounting is unsettled; model metadata was not updated")
+
+    def write(conn):
+        if all(_session_config_fence_matches(conn, fence) for fence in fences):
+            conn.execute("UPDATE sessions SET model_config=?, model=coalesce(?, model) WHERE id=?",
+                         (model_config_json, model, session_id))
+
+    with session_write_budget(holder, (session_id, *(fence.session_id for fence in fences))) as remaining:
+        holder._execute_write(write, patience_s=remaining)
 
 
 def update_system_prompt(holder: StoreHolder, session_id: str, system_prompt: Optional[str]) -> None:
@@ -680,7 +712,10 @@ def update_session_model(
     """
     # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
     # first_accounted_route overwrite and resurrect the old route.
-    holder.flush_token_counts()
+    from persistence.core.errors import StoreContention
+
+    if not holder.flush_token_counts():
+        raise StoreContention("Session accounting is unsettled; model metadata was not updated")
     patch: dict[str, Any] = {"browser_model_lock": None}
     if model:
         patch["model"] = model
@@ -707,7 +742,10 @@ def _write_model_config_patch(
         if merged is _MODEL_CONFIG_ROW_MISSING:
             return
         conn.execute(sql, params(merged) if params else (merged, session_id))
-    holder._execute_write(_do)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def _merge_model_config_json(
@@ -969,8 +1007,7 @@ def unarchive_recoverable_session(holder: StoreHolder, session_id: str) -> bool:
     accidents, not user intent, so the identity-scoped canonical chat must survive them (#92687).
     Sessions archived with no end_reason or an explicit boundary reason (user archived deliberately,
     ``session_reset``, …) are left untouched — returns ``False`` for those, ``True`` only when the row
-    was archived for a recoverable reason and is now un-archived (whole compression lineage, via
-    :meth:`set_session_archived`).
+    was archived for a recoverable reason and its whole compression lineage is now un-archived.
     """
     if not session_id:
         return False
@@ -980,24 +1017,34 @@ def unarchive_recoverable_session(holder: StoreHolder, session_id: str) -> bool:
         return False
     if not row or not row.get("archived"):
         return False
-    # The accidental stamp lives on the live TIP; judge recoverability there.
-    tip = row
-    try:
-        tip_id = get_compression_tip(holder, session_id) or session_id
-        if tip_id != session_id:
-            tip = get_session(holder, tip_id) or row
-    except Exception:  # health: allow BLE001 S110 -- a failed tip lookup checks the row itself
-        pass
-    if (tip.get("end_reason") or "") not in RECOVERABLE_END_REASONS:
-        return False
-    if not set_session_archived(holder, session_id, False)[0]:
-        return False
-    # Clear the accidental end stamp, or a LATER deliberate archive (which never
-    # writes end_reason) would auto-resurrect on the next lookup.
-    holder._write_sql(
-        "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
-    )
-    return True
+    from persistence.sqlite._state.lineage_fence import guarded_discovered_write
+
+    def recoverable_tip(conn):
+        requested = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not requested or not requested[0]:
+            return None
+        # The accidental end stamp lives on the current compression tip.
+        tip = _compression_tip_on(holder, conn, session_id)
+        row = conn.execute("SELECT end_reason FROM sessions WHERE id = ?", (tip,)).fetchone()
+        return tip if row and row[0] in RECOVERABLE_END_REASONS else None
+
+    def discover(conn):
+        tip = recoverable_tip(conn)
+        if tip is None:
+            return ()
+        rows = conn.execute(_LINEAGE_CTE_SQL + " SELECT id FROM lineage", (session_id, session_id))
+        return {tip, *(row[0] for row in rows)}
+
+    def reopen(conn):
+        tip = recoverable_tip(conn)
+        if tip is None:
+            return False
+        _set_lineage_column_in_transaction(holder, conn, "archived", session_id, 0)
+        # Clear the accidental stamp atomically so a later deliberate archive stays hidden.
+        conn.execute("UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip,))
+        return True
+
+    return guarded_discovered_write(holder, discover, reopen, patience_s=holder._WRITE_PATIENCE_S)
 
 
 def set_session_pinned(holder: StoreHolder, session_id: str, pinned: bool) -> bool:

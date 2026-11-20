@@ -67,7 +67,16 @@ def test_adoption_again_skips_and_retires_again(stores):
 def test_a_donor_ahead_of_the_local_copy_is_not_retired(stores, caplog):
     local, donor = stores
     adopt_session_lineage(local, donor, "s-atip")
-    donor.messages.append(SessionId("s-atip"), NewMessage(role="user", content="more"))
+    if hasattr(donor.maintenance, "adopt_lineage_from"):
+        # Simulate a legacy process writing after retirement. The current
+        # repository correctly refuses a write on the retired donor.
+        from tests.fixtures.storage_holder import raw_holder
+        raw_holder(donor)._execute_write(lambda conn: conn.execute(
+            "INSERT INTO messages(session_id,role,content,timestamp) VALUES (?, 'user', 'more', ?)",
+            ("s-atip", NOW),
+        ))
+    else:
+        donor.messages.append(SessionId("s-atip"), NewMessage(role="user", content="more"))
     caplog.set_level(logging.DEBUG, logger="hermes_state")
     assert adopt_session_lineage(local, donor, "s-atip") == {
         "ok": True, "imported": 0, "skipped": 1, "detached": 0, "imported_ids": [], "skipped_ids": ["s-atip"], "errors": [],

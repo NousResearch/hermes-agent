@@ -1258,7 +1258,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if not cli_turn(ctx.inbound_message_id).get("model_override"):
             # A `/model --once` / `/moa` turn ran another route for this admission only: the row keeps
             # the session's model, or a /resume would come back on the one-turn model.
-            runner._sync_session_model_from_agent(agent_session_id, agent)
+            if hasattr(self, "_model_sync_fences"):
+                runner._sync_session_model_from_agent(agent_session_id, agent, turn_fences=self._model_sync_fences)
+            else:
+                runner._sync_session_model_from_agent(agent_session_id, agent)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.
@@ -1397,6 +1400,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             max_iterations = room.max_iterations
             ctx.enabled_toolsets = list(room.enabled_toolsets)
         try:
+            capture = getattr(runner, "_capture_model_sync_fences", None)
+            if capture is not None:
+                self._model_sync_fences = capture(ctx.session_id)
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )

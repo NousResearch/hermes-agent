@@ -34,6 +34,7 @@ def commit_local_session(holder, *, epoch, receipt, client_request, created_sour
     encoded = _json(receipt)
     receipt = json.loads(encoded)
     sid, route = receipt['session_id'], receipt['route']
+    from .._state.lineage_fence import SessionLineageError, _require_local_write, session_lock_budget
     from ..conversation._store.local import POLICY_PREFIX
     key = POLICY_PREFIX + sid
     def write(conn):
@@ -55,6 +56,7 @@ def commit_local_session(holder, *, epoch, receipt, client_request, created_sour
             # Deleted: its receipt was retired with the transcript; a create/cron retry must not
             # resurrect the row (and re-fire its prompt) under the same deterministic id.
             raise AuthorityRefusal('not_found')
+        _require_local_write(conn, (sid,))
         if ('legacy_session_id' not in receipt and
                 conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()):
             raise AuthorityRefusal('storage_unavailable')
@@ -84,7 +86,12 @@ def commit_local_session(holder, *, epoch, receipt, client_request, created_sour
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         return receipt, True
-    return holder._execute_write(write)
+    try:
+        # The route and immutable creation receipt carry the same chosen session id.
+        with session_lock_budget(holder, (sid,)) as deadline:
+            return holder._execute_write(write, patience_s=max(0.0, deadline - time.monotonic()))
+    except SessionLineageError as exc:
+        raise AuthorityRefusal(exc.code) from exc
 
 
 def _row_cwd(policy):

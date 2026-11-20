@@ -244,6 +244,12 @@ class SessionTitlesConfigMixin:
         row = self._table(scope).get(session_id)
         if row is None:
             return
+        for fence in command.fences:
+            current = self._table(scope).get(fence.session_id)
+            if (current is None or current.get("runtime_revision", 0) != fence.runtime_revision
+                    or current.get("runtime_generation", 0) != fence.runtime_generation
+                    or current.get("model_config", {}) != fence.model_config):
+                return
         self._set_config(row, dict(command.model_config))
         if command.model is not None:
             row["model"] = command.model

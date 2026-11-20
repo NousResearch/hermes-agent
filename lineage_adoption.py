@@ -34,6 +34,9 @@ def _result_dict(result: ImportResult) -> dict[str, Any]:
 
 def adopt_session_lineage(store, donor, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
     """Adopt *session_id*'s full compression lineage from the *donor* store into *store*: the donor's lineage export with every row, imported here (runtime fields reset, already-present ids skipped, so it is idempotent). Every message row is carried with its archived state, so turns in-place compaction archived stay visible here and stay out of model context. With ``retire_donor`` and a complete adoption, donor rows are ARCHIVED (never deleted) with ``end_reason=END_REASON_ADOPTED``, deliberately not a recoverable reason, so resurrection cannot undo an adoption. Returns the ``import_sessions`` dict plus ``adopted`` and ``donor_retired`` (True only when EVERY segment retired)."""
+    native = getattr(store.maintenance, "adopt_lineage_from", None)
+    if native is not None:
+        return native(donor.maintenance, session_id, retire_donor=retire_donor)
     # Every row, not just live ones: the retired donor is unrecoverable, so any turn left behind
     # (compaction-archived history included) would be visible nowhere.
     payload = donor.maintenance.export_session_lineage(session_id, include_inactive=True)
@@ -69,6 +72,21 @@ def adopt_session_lineage(store, donor, session_id: str, *, retire_donor: bool =
     if adopted and retire_donor and not donor_ahead:
         donor_retired = all(_retire_donor_segment(store, donor, segment.session.id) for segment in segments)
     return {**result, "adopted": adopted, "donor_retired": donor_retired}
+
+
+def resume_pending_adoption(store, session_id, open_donor):
+    """Resume an existing transfer through the configured donor, if still pending."""
+    pending_source = getattr(store.maintenance, "pending_adoption_source", None)
+    pending = pending_source(session_id) if pending_source is not None else None
+    if pending is None:
+        return None
+    with open_donor() as donor:
+        if donor is None or donor.maintenance.adoption_store_location() != pending:
+            return "Pending adoption donor is unavailable"
+        result = store.maintenance.adopt_lineage_from(donor.maintenance, session_id, pending_only=True)
+    if result.get("retry_skipped") or (result.get("adopted") and result.get("donor_retired")):
+        return None
+    return "Donor retirement is incomplete"
 
 
 def _retire_donor_segment(store, donor, seg_id: str) -> bool:

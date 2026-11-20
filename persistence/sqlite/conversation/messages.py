@@ -249,7 +249,10 @@ def _append_chunk(holder: StoreHolder, session_id: SessionId, messages: list[dic
                 msg.update({"_row_id": int(row["id"]), "timestamp": row["timestamp"], DB_ROW_SNAPSHOT: transcript_row_snapshot(row)})
                 _restore_row_identity(row, msg)
         return inserted
-    return _execute_transcript_write(holder, _do, messages, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        return _execute_transcript_write(holder, _do, messages, patience_s=remaining)
 
 
 def _row_outcomes(rows: Sequence[Mapping[str, Any]], count: int) -> tuple[RowOutcome, ...]:

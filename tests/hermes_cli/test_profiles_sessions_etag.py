@@ -189,14 +189,12 @@ class TestProfilesSessionsSidebarEtag(_ProfilesEtagBase):
         etag = first.headers["etag"]
         assert first.json()["recents"]["profiles_usage"]["default"]["tokens"] == 0
 
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
 
-        db = SessionDB(db_path=self.home / "state.db")
-        try:
-            db._conn.execute(
-                "UPDATE sessions SET input_tokens = 42 WHERE id = ?", ("p-uwin-a",))
-        finally:
-            db.close()
+        with open_persistence(profile_scope(home=self.home)) as store:
+            raw_holder(store)._execute_write(lambda conn: conn.execute(
+                "UPDATE sessions SET input_tokens = 42 WHERE id = ?", ("p-uwin-a",)))
 
         changed = self._get(headers={"If-None-Match": etag}, extra="recents_limit=1")
 

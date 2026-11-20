@@ -127,15 +127,13 @@ class TestSessionsListEtag:
         # ETag could miss: with no messages its effective last activity is
         # started_at, so this flips is_active true→false — and the body a 304
         # would protect must therefore differ.
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
 
-        db = SessionDB(db_path=self.home / "state.db")
-        try:
-            db._conn.execute(
+        with open_persistence(profile_scope(home=self.home)) as store:
+            raw_holder(store)._execute_write(lambda conn: conn.execute(
                 "UPDATE sessions SET started_at = ? WHERE id = ?",
-                (time.time() - 3600, "s-etag-active"))
-        finally:
-            db.close()
+                (time.time() - 3600, "s-etag-active")))
 
         aged = self.client.get(
             "/api/sessions?limit=10&offset=0", headers={"If-None-Match": etag})

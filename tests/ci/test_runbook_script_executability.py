@@ -16,8 +16,18 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 DOC = "deploy/RUNBOOK.md"
+
+if not (REPO / DOC).exists():
+    # The runbook and the deploy scripts it documents are VM-local scaffolding:
+    # a checkout without them (upstream, any CI clone of this repo) has nothing
+    # for this gate to read, so it skips rather than erroring on a missing file.
+    # Where the scaffolding exists (the fork's test VM) the gate runs whole.
+    pytest.skip(f"{DOC} is not in this checkout (the VM deploy scaffolding "
+                "is not carried here)", allow_module_level=True)
 
 FENCE_OPEN = re.compile(r"^\s*```(\w*)\s*$")
 # a repo-relative script path sitting at the head of a command segment

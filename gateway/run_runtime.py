@@ -620,7 +620,10 @@ async def start_gateway_runtime_api(runner):
             import errno
             from gateway.webapp_listener import loopback_companion
             cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
-            if loopback_companion(host) and isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL:
+            # Only the specific address itself; a loopback socket that cannot bind (``::1`` with IPv6
+            # loopback off) keeps the OS's words.
+            if (loopback_companion(host) and isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL
+                    and not isinstance(exc, run_api.ListenerAddressError)):
                 cause = "the address is not assigned to any network interface on this machine"
             # A specific address's loopback socket names its own address (run_api.ListenerAddressError).
             address = getattr(exc, "address", None) or f"{host}:{port}"

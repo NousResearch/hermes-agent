@@ -566,6 +566,27 @@ def _launcher_env(m: dict) -> Optional[dict]:
     return None
 
 
+def _relative_path(word: str) -> bool:
+    return not os.path.isabs(word) and ("/" in word or os.sep in word)
+
+
+def _launch_needs_cwd(argv: list) -> Optional[str]:
+    """What in *argv* depends on the working directory it was started in, else None: a relative launcher
+    path, or after a Python interpreter ``-m`` (module mode imports from it) or a relative script. A word
+    after a non-Python launcher (``hermes -m MODEL``) is that program's own option."""
+    from hermes_cli.gateway_migrate_backends_plan import _PYTHON_EXE
+    if _relative_path(str(argv[0])):
+        return "was started by a relative path"
+    if not _PYTHON_EXE.match(Path(str(argv[0])).name):
+        return None
+    for word in map(str, argv[1:]):
+        if word == "-m":
+            return "runs `python -m ...`"
+        if not word.startswith("-"):
+            return None if os.path.isabs(word) else "runs a Python script by a relative path"
+    return None
+
+
 def _snapshot_problem(m: dict) -> Optional[str]:
     """Why a hand-started old backend cannot be started again as it ran (its recorded raw command line
     and environment, read back from their private files), else None. Never replaced by a guess: the
@@ -574,9 +595,9 @@ def _snapshot_problem(m: dict) -> Optional[str]:
         return None
     if (argv := _launcher_argv(m)) is None:
         return "the old backend's recorded command line is missing or unreadable"
-    if "-m" in argv and not (m.get("old_backend") or {}).get("cwd"):
-        # `python -m hermes_cli.main` imports from its working directory: started elsewhere it cannot run.
-        return "the old backend runs `python -m ...` and its working directory could not be read"
+    if not (m.get("old_backend") or {}).get("cwd") and (needs := _launch_needs_cwd(argv)) is not None:
+        # Started again elsewhere it would not be found (or not import): refused before it is stopped.
+        return f"the old backend {needs} and its working directory could not be read"
     if not isinstance(_launcher_env(m), dict):
         return "the old backend's recorded environment is missing or unreadable"
     return None

@@ -102,6 +102,8 @@ def unreadable_manifest(home: Path) -> Optional[str]:
     data = read_manifest(home)
     if data is None:
         return f"{path} exists but cannot be read as a migration record"
+    if data.get("state") not in ("running", "failed", *FINAL_STATES):
+        return f"{path} has an unrecognized migration state"
     missing = [k for k in _MANIFEST_KEYS if k not in data]
     return f"{path} is missing {', '.join(missing)}" if missing else None
 

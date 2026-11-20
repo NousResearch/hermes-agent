@@ -18,8 +18,6 @@ from pathlib import Path
 from typing import Optional
 
 MANIFEST_NAME = "backend_migration.json"
-#: States in which the old backend is meant to stay down (``rolled_back`` and ``restored`` put it back).
-_RETIRED_STATES = frozenset({"running", "done", "failed"})
 
 
 def backend_retired_by_migration(home: Optional[Path] = None) -> bool:
@@ -39,4 +37,4 @@ def backend_retired_by_migration(home: Optional[Path] = None) -> bool:
         return os.path.exists(path)  # never raises (Path.exists does on an unsearchable home before 3.14)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("state"), str):
         return True
-    return manifest["state"] in _RETIRED_STATES
+    return manifest["state"] not in {"restored", "rolled_back"}

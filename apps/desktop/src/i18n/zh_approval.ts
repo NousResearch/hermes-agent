@@ -30,5 +30,15 @@ export const zhApproval: Partial<ApprovalCopy> = {
     title: '网站访问',
     alwaysTitle: '始终允许此网站？',
     alwaysDescription: '该网站将加入此档案的允许网站。Hermes 在任何对话中都不会再询问。'
+  },
+  schedule: {
+    title: '安排此任务？',
+    allowSession: '在此对话中允许',
+    alwaysAllowMenu: '始终允许新任务…',
+    alwaysTitle: '始终允许新的计划任务？',
+    alwaysDescription:
+      'Hermes 将不经询问直接创建计划任务。从 config.yaml 的 command_allowlist 中移除 cron_create 即可重新开启询问。',
+    timedOutSystemLine:
+      '审批已超时 — 任务未创建。请让 Hermes 重试，或在 设置 → 安全 → 审批超时 中提高上限。'
   }
 }

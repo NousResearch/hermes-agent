@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { canonicalPromptParams } from '@/api/canonical-protocol'
+
 import {
   approvalKindFields,
   clearAllPrompts,
@@ -85,6 +87,21 @@ describe('approvalKindFields', () => {
     expect(approvalKindFields({ host: 'example.com', kind: 'network', label: '  ' }).target).toEqual({
       host: 'example.com'
     })
+  })
+})
+
+describe('schedule approvals', () => {
+  it('a canonical prompt\'s approval_kind reaches the card as kind "schedule"', () => {
+    const params = canonicalPromptParams('approval', 's1', {
+      approval_kind: 'schedule',
+      choices: ['once', 'session', 'always', 'deny'],
+      command: '<cronjob_manage> (schedule a new job)',
+      description: 'Schedule "Water reminder" (every 2h): remind me',
+      prompt_id: 'p1'
+    })
+
+    expect(approvalKindFields(params)).toEqual({ kind: 'schedule' })
+    expect(approvalKindFields(canonicalPromptParams('approval', 's1', { command: 'rm -rf x', prompt_id: 'p2' }))).toEqual({})
   })
 })
 

@@ -315,6 +315,16 @@ export const arAssistant = {
         alwaysTitle: 'السماح دائمًا بهذا الموقع؟',
         alwaysDescription:
           'تتم إضافة الموقع إلى المواقع المسموح بها لهذا الملف الشخصي. لن يسأل Hermes عنه مرة أخرى في أي محادثة.'
+      },
+      schedule: {
+        title: 'جدولة هذه المهمة؟',
+        allowSession: 'السماح لهذه المحادثة',
+        alwaysAllowMenu: 'السماح دائمًا بالمهام الجديدة…',
+        alwaysTitle: 'السماح دائمًا بالمهام المجدولة الجديدة؟',
+        alwaysDescription:
+          'سينشئ Hermes مهام مجدولة دون أن يسأل أولًا. يمكنك إعادة تفعيل السؤال بإزالة cron_create من command_allowlist في config.yaml.',
+        timedOutSystemLine:
+          'انتهت مهلة الموافقة — لم تُنشأ المهمة. اطلب من Hermes المحاولة مرة أخرى، أو ارفع الحد من الإعدادات ← الأمان ← مهلة الموافقة.'
       }
     },
     clarify: {

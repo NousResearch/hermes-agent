@@ -36,5 +36,15 @@ export const deApproval: Partial<ApprovalCopy> = {
     alwaysTitle: 'Diese Website immer erlauben?',
     alwaysDescription:
       'Die Website wird den erlaubten Websites dieses Profils hinzugefügt. Hermes fragt in keinem Chat mehr danach.'
+  },
+  schedule: {
+    title: 'Diesen Job planen?',
+    allowSession: 'Für diesen Chat erlauben',
+    alwaysAllowMenu: 'Neue Jobs immer erlauben…',
+    alwaysTitle: 'Neue geplante Jobs immer erlauben?',
+    alwaysDescription:
+      'Hermes erstellt geplante Jobs, ohne vorher zu fragen. Du kannst die Nachfrage wieder einschalten, indem du cron_create aus command_allowlist in config.yaml entfernst.',
+    timedOutSystemLine:
+      'Zeit für die Freigabe abgelaufen — der Job wurde nicht erstellt. Bitte Hermes, es erneut zu versuchen, oder erhöhe das Limit unter Einstellungen → Sicherheit → Freigabe-Zeitlimit.'
   }
 }

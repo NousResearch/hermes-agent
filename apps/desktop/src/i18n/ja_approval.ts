@@ -32,5 +32,15 @@ export const jaApproval: Partial<ApprovalCopy> = {
     alwaysTitle: 'このサイトを常に許可しますか？',
     alwaysDescription:
       'サイトがこのプロファイルの許可済みサイトに追加されます。Hermes はどのチャットでも再度尋ねません。'
+  },
+  schedule: {
+    title: 'このジョブをスケジュールしますか？',
+    allowSession: 'このチャットで許可',
+    alwaysAllowMenu: '新しいジョブを常に許可…',
+    alwaysTitle: '新しいスケジュールジョブを常に許可しますか？',
+    alwaysDescription:
+      'Hermes は確認せずにスケジュールジョブを作成します。config.yaml の command_allowlist から cron_create を削除すると、確認が再び有効になります。',
+    timedOutSystemLine:
+      '承認がタイムアウトしました — ジョブは作成されませんでした。Hermes にもう一度依頼するか、設定 → 安全 → 承認タイムアウトで上限を引き上げてください。'
   }
 }

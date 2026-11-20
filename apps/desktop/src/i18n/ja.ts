@@ -192,6 +192,8 @@ export const jaOverrides = {
       accessTitleNamed: session => `フォルダーアクセスが必要です — ${session}`,
       networkTitle: 'サイトへのアクセスが必要です',
       networkTitleNamed: session => `サイトへのアクセスが必要です — ${session}`,
+      scheduleTitle: 'Hermes がジョブをスケジュールしようとしています',
+      scheduleTitleNamed: session => `Hermes がジョブをスケジュールしようとしています — ${session}`,
       allowAction: '許可',
       denyAction: '拒否',
       inputTitle: '入力が必要です',

@@ -180,6 +180,8 @@ export const ruOverrides = {
       accessTitleNamed: session => `Нужен доступ к папке — ${session}`,
       networkTitle: 'Нужен доступ к сайту',
       networkTitleNamed: session => `Нужен доступ к сайту — ${session}`,
+      scheduleTitle: 'Hermes хочет запланировать задание',
+      scheduleTitleNamed: session => `Hermes хочет запланировать задание — ${session}`,
       allowAction: 'Разрешить',
       denyAction: 'Запретить',
       inputTitle: 'Требуется ввод',

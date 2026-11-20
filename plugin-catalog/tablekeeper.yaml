@@ -1,0 +1,42 @@
+name: "tablekeeper"
+repo: "https://github.com/kaverimeshram/tablekeeper"
+sha: "c80ea3fbdca41d68fdfc3ee4439036f787e8864b"
+subdir: "tablekeeper"
+description: "Tabletop RPG campaigns for Hermes group chats. Code rolls the dice and owns hit points, positions, initiative and turn order, each player controls only their own character, and the model narrates the results. SRD 5.1 monsters, characters and spells, including a young red dragon with a fire breath cone. With `/table dice phone`, each player throws their own d20 from a Telegram button; code still rolls the number. Disclosure — Disclosure: Storage. `<hermes home>/plugin-data/tablekeeper/campaigns.sqlite3`, resolved per profile, WAL mode, file mode 0600. The Desktop pane and dashboard route open it read-only; Prompt. In a chat that has a campaign, and in a local CLI or Desktop session once it has used `/table` or a `tk_` tool, a compact state summary of at most about 600 tokens is added to each turn and the reply passes through the narration guard. The guard lets a reply quote any hit point or AC figure the state block listed or a tool returned, flags invented damage, rolls and hit points, and appends one compact correction line. A campaign with no table activity for 24 hours adds no prompt tokens until the next `tk_` call or `/table` command wakes it. Other sessions and chats without a campaign are untouched; Network and processes. The plugin opens no connection of its own, starts no subprocess and reads no credentials. With `/table dice phone` on a Telegram session it registers one callback handler scoped to `^tk:throw:<id>` and sends one button message per pending throw through the gateway's own bot; a tap is accepted only from the character's owner id; each throw result, including an automatic throw when the owner does not tap within the timeout (15-600 s, default 120), is queued into that chat as a message from the owner and starts an agent turn without anyone typing; Identity. Platform, chat id and sender id from the turn context, used as the campaign and owner keys."
+maintainer: "kaverimeshram"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.23.1"
+docs_url: "https://github.com/kaverimeshram/tablekeeper"
+version: "0.4.0"
+title: "Tablekeeper"
+readme: true
+image: "https://raw.githubusercontent.com/kaverimeshram/tablekeeper/c80ea3fbdca41d68fdfc3ee4439036f787e8864b/docs/cover.png"
+screenshots:
+  - "https://raw.githubusercontent.com/kaverimeshram/tablekeeper/c80ea3fbdca41d68fdfc3ee4439036f787e8864b/docs/tabletop-3d.png"
+  - "https://raw.githubusercontent.com/kaverimeshram/tablekeeper/c80ea3fbdca41d68fdfc3ee4439036f787e8864b/docs/pane.png"
+capabilities:
+  provides_tools:
+    - "tk_state"
+    - "tk_new_campaign"
+    - "tk_claim_character"
+    - "tk_roll"
+    - "tk_check"
+    - "tk_save"
+    - "tk_attack"
+    - "tk_cast"
+    - "tk_move"
+    - "tk_next_turn"
+    - "tk_death_save"
+    - "tk_rest"
+    - "tk_start_combat"
+    - "tk_damage"
+    - "tk_heal"
+    - "tk_condition"
+    - "tk_recap"
+  provides_hooks:
+    - "pre_llm_call"
+    - "post_tool_call"
+    - "transform_llm_output"
+  provides_middleware: []
+  requires_env: []

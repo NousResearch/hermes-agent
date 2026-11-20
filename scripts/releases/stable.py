@@ -18,19 +18,19 @@ from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases import lanes as lane_set
+from scripts.releases.desktop_targets import MANIFEST_TARGETS
 from scripts.releases.draft_warning import strip_draft_warning
 from scripts.releases.versioning import tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
-DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
+DESKTOP_TARGETS = tuple(f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS)
 ALL_TARGETS = tuple(lane_set.TARGET_LANE)
 SMOKE_JOBS = {
     "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
-    "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
     "smoke-win32-arm64": "Windows MSIX (arm64)",
     "smoke-win32-x64": "Windows MSIX (x64)",
 }
-SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64", "smoke-darwin-x64": "macos/x64",
+SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64",
                  "smoke-win32-arm64": "windows/arm64", "smoke-win32-x64": "windows/x64"}
 
 
@@ -91,7 +91,6 @@ def require_success(needs: dict, required: list[str]) -> None:
 
 # Each signed-package upgrade arm and the transitions job that plans it.
 PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
-               "macos-packaged-x64": "transitions-darwin-x64",
                "windows-packaged": "transitions-win32"}
 
 
@@ -175,7 +174,6 @@ def stable_windows_version(epoch: object) -> str:
 
 RECEIPT_TARGETS = {
     "darwin-arm64": ("macos/arm64",),
-    "darwin-x64": ("macos/x64",),
     "win32-bundle": ("windows/x64", "windows/arm64"),
 }
 
@@ -187,7 +185,6 @@ RECEIPT_TARGETS = {
 # enforces the signing facts (teamId, publisher).
 RECEIPT_HANDOFFS = {
     "darwin-arm64": ("darwin-arm64",),
-    "darwin-x64": ("darwin-x64",),
     "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
 }
 RECEIPT_INCLUDES = ("metadata-*.json",)
@@ -786,11 +783,10 @@ def transitions(env: dict) -> None:
 # smokes run in the bundle call, beside assembly, not after each per-arch build.
 SMOKE_CALLS = {
     "smoke-darwin-arm64": "candidates-darwin-arm64",
-    "smoke-darwin-x64": "candidates-darwin-x64",
     "smoke-win32-arm64": "candidates-win32-bundle",
     "smoke-win32-x64": "candidates-win32-bundle",
 }
-CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
+CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-arm64",
                       "termux", "windows-universal")
 CANDIDATE_INCLUDES = ("metadata-*.json",)
 
@@ -1022,7 +1018,7 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
         return
     if argv and argv[0] == "stage-receipt":
         if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:
-            raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
+            raise ValueError("Expected stage-receipt --receipt darwin-arm64|win32-bundle")
         stage_receipt(env, argv[2])
         return
     commands = {"admit": admit, "verify": verify, "transitions": transitions,

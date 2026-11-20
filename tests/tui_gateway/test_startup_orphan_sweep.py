@@ -15,7 +15,11 @@ import io
 import time
 import types
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import RECOVERABLE_END_REASONS
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tui_gateway import entry, server
 from hermes_cli import model_switch_providers
 
@@ -24,23 +28,25 @@ IDLE_S = 6 * 3600
 
 
 def _seed_session(db, session_id, *, source, last_active, started_at=None):
-    db.create_session(session_id, source=source)
-    db.append_message(session_id, role="user", content="hello")
-    with db._lock:
-        db._conn.execute(
+    seed_session(db, session_id, source)
+    seed_messages(db, session_id, {"role": "user", "content": "hello"})
+
+    def backdate(conn):
+        conn.execute(
             "UPDATE sessions SET started_at = ? WHERE id = ?",
             (last_active if started_at is None else started_at, session_id),
         )
-        db._conn.execute(
+        conn.execute(
             "UPDATE messages SET timestamp = ? WHERE session_id = ?",
             (last_active, session_id),
         )
-        db._conn.commit()
+
+    raw_holder(db)._execute_write(backdate)
 
 
 class TestSweepOrphanedSessionRows:
     def test_ends_stale_tui_desktop_and_subagent(self, monkeypatch, tmp_path):
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         stale = time.time() - 8 * 3600
         _seed_session(db, "stale-tui", source="tui", last_active=stale)
         _seed_session(db, "stale-desktop", source="desktop", last_active=stale)
@@ -53,7 +59,7 @@ class TestSweepOrphanedSessionRows:
 
         assert sorted(swept) == ["stale-desktop", "stale-sub", "stale-tui"]
         for sid in ("stale-tui", "stale-desktop", "stale-sub"):
-            row = db.get_session(sid)
+            row = session_row(db, sid)
             assert row["ended_at"] is not None
             assert row["end_reason"] == "startup_orphan_reap"
 
@@ -68,42 +74,40 @@ class TestSweepOrphanedSessionRows:
         non-recoverable reason would make the restart LOSE the session
         instead of merely closing its phantom row.
         """
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         stale = time.time() - 8 * 3600
         _seed_session(db, "stranded-tui", source="tui", last_active=stale)
-        with db._lock:
-            db._conn.execute(
-                "UPDATE sessions SET session_key = ? WHERE id = ?",
-                ("tui:peer-1", "stranded-tui"),
-            )
-            db._conn.commit()
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET session_key = ? WHERE id = ?",
+            ("tui:peer-1", "stranded-tui"),
+        ))
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_SESSION_TTL_S", float(IDLE_S))
         monkeypatch.setattr(server, "_sessions", {})  # no live runtime
 
         assert server._sweep_orphaned_session_rows() == ["stranded-tui"]
-        row = db.get_session("stranded-tui")
+        row = session_row(db, "stranded-tui")
         assert row["ended_at"] is not None
         assert row["end_reason"] == "startup_orphan_reap"
 
         # The distinct reason is a recoverable accident, not a boundary.
-        assert "startup_orphan_reap" in SessionDB.RECOVERABLE_END_REASONS
+        assert "startup_orphan_reap" in RECOVERABLE_END_REASONS
 
         # Peer-keyed recovery still surfaces the swept row...
-        recovered = db.find_latest_gateway_session_for_peer(
+        recovered = db.routing.latest_session_for_peer(
             source="tui", session_key="tui:peer-1"
         )
         assert recovered is not None
-        assert recovered["id"] == "stranded-tui"
+        assert recovered.session.session_id == "stranded-tui"
 
-        # ...and the session.resume path (reopen_session) fully revives it.
-        db.reopen_session("stranded-tui")
-        revived = db.get_session("stranded-tui")
+        # ...and the session.resume path (sessions.reopen) fully revives it.
+        db.sessions.reopen("stranded-tui")
+        revived = session_row(db, "stranded-tui")
         assert revived["ended_at"] is None
         assert revived["end_reason"] is None
 
     def test_spares_fresh_row_with_old_copied_history(self, monkeypatch, tmp_path):
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         old_history = time.time() - 8 * 3600
         _seed_session(
             db,
@@ -117,25 +121,25 @@ class TestSweepOrphanedSessionRows:
         monkeypatch.setattr(server, "_sessions", {})
 
         assert server._sweep_orphaned_session_rows() == []
-        assert db.get_session("fresh-branch")["ended_at"] is None
+        assert session_row(db, "fresh-branch")["ended_at"] is None
 
     def test_spares_pinned_idle_row(self, monkeypatch, tmp_path):
         """Pinned rows are prune-immune (#68035); the startup sweep must match auto-prune."""
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         stale = time.time() - 8 * 3600
         _seed_session(db, "pinned-tui", source="tui", last_active=stale)
         _seed_session(db, "stale-tui", source="tui", last_active=stale)
-        db.set_session_pinned("pinned-tui", True)
+        db.sessions.set_pinned("pinned-tui", True)
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_SESSION_TTL_S", float(IDLE_S))
         monkeypatch.setattr(server, "_sessions", {})
 
         assert server._sweep_orphaned_session_rows() == ["stale-tui"]
-        assert db.get_session("pinned-tui")["ended_at"] is None
-        assert db.get_session("stale-tui")["end_reason"] == "startup_orphan_reap"
+        assert session_row(db, "pinned-tui")["ended_at"] is None
+        assert session_row(db, "stale-tui")["end_reason"] == "startup_orphan_reap"
 
     def test_spares_live_in_memory_and_gateway_rows(self, monkeypatch, tmp_path):
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         stale = time.time() - 8 * 3600
         _seed_session(db, "resumed-tui", source="tui", last_active=stale)
         _seed_session(db, "gateway-row", source="telegram", last_active=stale)
@@ -155,25 +159,25 @@ class TestSweepOrphanedSessionRows:
 
         assert server._sweep_orphaned_session_rows() == []
         for row_id in ("resumed-tui", "gateway-row", "recent-tui"):
-            assert db.get_session(row_id)["ended_at"] is None
+            assert session_row(db, row_id)["ended_at"] is None
 
     def test_leaves_already_ended_rows_untouched(self, monkeypatch, tmp_path):
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         stale = time.time() - 8 * 3600
         _seed_session(db, "reaped-tui", source="tui", last_active=stale)
-        db.end_session("reaped-tui", "ws_orphan_reap")
-        before = db.get_session("reaped-tui")
+        db.sessions.end("reaped-tui", "ws_orphan_reap")
+        before = session_row(db, "reaped-tui")
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_SESSION_TTL_S", float(IDLE_S))
         monkeypatch.setattr(server, "_sessions", {})
 
         assert server._sweep_orphaned_session_rows() == []
-        after = db.get_session("reaped-tui")
+        after = session_row(db, "reaped-tui")
         assert after["end_reason"] == "ws_orphan_reap"
         assert after["ended_at"] == before["ended_at"]
 
     def test_zero_ttl_skips_sweep(self, monkeypatch, tmp_path):
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         stale = time.time() - 8 * 3600
         _seed_session(db, "stale-tui", source="tui", last_active=stale)
         monkeypatch.setattr(server, "_get_db", lambda: db)
@@ -181,7 +185,7 @@ class TestSweepOrphanedSessionRows:
         monkeypatch.setattr(server, "_sessions", {})
 
         assert server._sweep_orphaned_session_rows() == []
-        assert db.get_session("stale-tui")["ended_at"] is None
+        assert session_row(db, "stale-tui")["ended_at"] is None
 
 
 class TestScheduleStartupOrphanSweep:

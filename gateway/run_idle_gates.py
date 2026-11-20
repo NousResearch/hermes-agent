@@ -2,7 +2,7 @@
 
 Entering ``_profile_runtime_scope`` costs a config.yaml load, a ``.env`` parse, secret hydration and a
 terminal-policy build; on a multiplex gateway the pollers paid that per profile per tick with nothing
-to do. Each gate answers "does this profile's store hold work?" from the goals-cached SessionDB with
+to do. Each gate answers "does this profile's store hold work?" from the goals-cached store handle with
 ONLY the HERMES_HOME contextvar installed. Every gate fails OPEN: an unavailable store, a failing
 read or a corrupt row is "cannot prove emptiness", never "idle".
 """
@@ -16,7 +16,7 @@ logger = logging.getLogger("gateway.run")
 
 
 def _profile_session_db_probe(profile_home: Path) -> Optional[Any]:
-    """The goals-cached SessionDB for *profile_home*; None when unavailable."""
+    """The goals-cached store handle for *profile_home*; None when unavailable."""
     from hermes_cli.goals import _get_session_db
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -54,7 +54,7 @@ def profile_has_active_loop(profile_home: Path) -> bool:
 
 
 def profile_has_pending_handoff(profile_home: Path) -> bool:
-    return _gate(profile_home, lambda db: db.has_pending_handoffs())
+    return _gate(profile_home, lambda store: store.coordination.has_pending_handoffs())
 
 
 async def off_loop_gate(runner: object, probe: Callable[[], bool]) -> bool:

@@ -4,7 +4,7 @@ N45: a /stop while the claimed turn still builds its agent (the slot holds the p
 must latch on the authority, so the agent the turn adopts starts interrupted and never runs tools.
 N53: an idle /stop or /new (between turns: slot released, next row not yet claimed) must still
 cancel the queued messaging follow-up. Real GatewayRunner, DiscordAdapter, SessionAuthority and
-drain over a real SessionDB; only agent construction/conversation is a stand-in.
+drain over a real store; only agent construction/conversation is a stand-in.
 """
 import asyncio
 
@@ -42,7 +42,6 @@ async def test_stop_during_agent_construction_latches_so_the_turn_runs_no_tools(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_results import execution_result
     from gateway.turn_context import TurnContext
-    from hermes_state_runtime import list_session_admissions
 
     runner, adapter, sent = _owner(monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
@@ -84,11 +83,11 @@ async def test_stop_during_agent_construction_latches_so_the_turn_runs_no_tools(
     await _until(lambda: any('Stopped' in text for text in sent))
     built.set()
     owner_id = runner.session_store.peek_session_id(key)
-    await _until(lambda: [r['status'] for r in list_session_admissions(
-        authority.db, session_id=owner_id, pending_only=False)] == ['terminal'])
-    rows = list_session_admissions(authority.db, session_id=owner_id, pending_only=False)
+    await _until(lambda: [r.status for r in authority.persistence.admissions.list(
+        session_id=owner_id, pending_only=False)] == ['terminal'])
+    rows = authority.persistence.admissions.list(session_id=owner_id, pending_only=False)
     assert tools_ran == [], 'the stopped turn still ran its tools'
-    assert [(r['request_id'], r['outcome']) for r in rows] == [('A', 'interrupted')]
+    assert [(r.request_id, r.outcome) for r in rows] == [('A', 'interrupted')]
 
 
 @pytest.mark.asyncio
@@ -100,7 +99,6 @@ async def test_idle_stop_and_new_cancel_the_queued_followup(monkeypatch, command
     from gateway.session_ingress import admit_message
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)
     # The gap between turns: the slot is released and the drain has not claimed B yet.
@@ -121,8 +119,8 @@ async def test_idle_stop_and_new_cancel_the_queued_followup(monkeypatch, command
     with native_callback(runner, stop, get_hermes_home()):
         assert await runner._handle_message(stop) is not None
     assert await asyncio.wait_for(waiter, 5) is None, 'the cancelled follow-up must get no reply'
-    rows = list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    assert [(r['request_id'], r['status'], r['outcome']) for r in rows] == [('B', 'terminal', 'cancelled')]
+    rows = authority.persistence.admissions.list(session_id=owner, pending_only=False)
+    assert [(r.request_id, r.status, r.outcome) for r in rows] == [('B', 'terminal', 'cancelled')]
     executed = []
 
     async def handle(event):

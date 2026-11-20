@@ -224,6 +224,25 @@ function withoutMountEntries(env: NodeJS.ProcessEnv, execPath: string): NodeJS.P
 }
 
 /**
+ * A child run from outside this app's AppImage mount (the payload copy) outlives it, so it must not
+ * load from it. A mount inherited from a terminal or IDE AppImage is that app's (see ownAppImage).
+ */
+export function mountFreeEnv(
+  env: NodeJS.ProcessEnv,
+  command: string,
+  execPath: string = process.execPath
+): NodeJS.ProcessEnv {
+  const appDir = ownAppImage(execPath, env) ? mountRoot(execPath, env) : undefined
+  const resolved = posix.resolve(command)
+
+  if (!appDir || resolved === appDir || resolved.startsWith(`${appDir}/`)) {
+    return env
+  }
+
+  return withoutMountEntries(env, execPath)
+}
+
+/**
  * Start `target` with `args` once this process is gone, as an ordinary
  * detached child: Electron's relauncher execs with PR_SET_NO_NEW_PRIVS, which
  * locks sudo, pkexec and FUSE out of the new app and all its descendants.

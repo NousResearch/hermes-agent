@@ -8,7 +8,7 @@ and fall back to the bare id.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Iterable, TypedDict
 
 
 class LanguageOption(TypedDict):
@@ -16,6 +16,7 @@ class LanguageOption(TypedDict):
     endonym: str
     rtl: bool
     source: str
+    surfaces: list[str]
 
 
 # id -> (endonym, rtl). Keep sorted by id; ``en`` is listed first by ``language_options`` regardless.
@@ -43,10 +44,12 @@ BUNDLED_SOURCE = "bundled"
 OVERLAY_SOURCE = "overlay"
 
 
-def describe_language(lang: str, *, pack: dict | None, overlay: bool) -> LanguageOption:
+def describe_language(lang: str, *, pack: dict | None, overlay: bool, surfaces: Iterable[str]) -> LanguageOption:
     """One picker row. Precedence for endonym/rtl: bundled table → pack metadata → bare id / LTR.
     ``source`` names the highest layer that supplies the language (``plugin:<name>`` > ``overlay`` >
-    ``bundled``) so a picker can say where a language came from."""
+    ``bundled``) so a picker can say where a language came from. ``surfaces`` are the surfaces some
+    layer has strings for (``agent.i18n.language_surfaces``), so a renderer can leave out a language it
+    would only show in English."""
     bundled = BUNDLED_LANGUAGE_INFO.get(lang)
     endonym, rtl = bundled if bundled else ((pack or {}).get("endonym") or lang, bool((pack or {}).get("rtl")))
     if pack is not None:
@@ -55,18 +58,21 @@ def describe_language(lang: str, *, pack: dict | None, overlay: bool) -> Languag
         source = OVERLAY_SOURCE
     else:
         source = BUNDLED_SOURCE
-    return {"id": lang, "endonym": endonym, "rtl": rtl, "source": source}
+    return {"id": lang, "endonym": endonym, "rtl": rtl, "source": source, "surfaces": list(surfaces)}
 
 
 def language_options() -> list[LanguageOption]:
-    """``[{"id", "endonym", "rtl", "source"}, ...]`` for every supported language, ``en`` first then sorted
+    """``[{"id", "endonym", "rtl", "source", "surfaces"}, ...]`` for every supported language, ``en`` first then sorted
     by id — the list ``i18n.languages`` serves and every switcher renders (endonym only, no flags)."""
     from agent import i18n, i18n_layers
     from hermes_constants import get_hermes_home
 
-    overlay_langs = i18n_layers.overlay_languages(get_hermes_home())
+    home = get_hermes_home()
+    overlay_langs = i18n_layers.overlay_languages(home)
+    surfaces = i18n.language_surfaces(str(home))
     return [
-        describe_language(lang, pack=i18n_layers.pack_info(lang), overlay=lang in overlay_langs)
+        describe_language(lang, pack=i18n_layers.pack_info(lang), overlay=lang in overlay_langs,
+                          surfaces=surfaces.get(lang, ()))
         for lang in i18n.supported_languages()
     ]
 

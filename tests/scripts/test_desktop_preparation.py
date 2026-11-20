@@ -15,13 +15,14 @@ def _project(tmp_path: Path) -> tuple[Path, str]:
     source = tmp_path / "source with spaces"
     source.mkdir()
     (source / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.2.3"\n', encoding="utf-8")
-    (source / "package.json").write_text('{"workspaces": ["apps/desktop"]}', encoding="utf-8")
-    (source / "package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+    (source / "package.json").write_text('{}', encoding="utf-8")
+    (source / "pnpm-workspace.yaml").write_text("packages:\n  - apps/desktop\n", encoding="utf-8")
+    (source / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     (source / ".gitignore").write_text(".build/\n", encoding="utf-8")
     (source / "pm").mkdir()
     (source / "pm/lock.json").write_text(json.dumps({"schema": 1, "packages": {
         name: {"version": "1.0.0", "artifacts": {current_target(): {"url": "https://example.test/tool", "sha256": "a" * 64}}}
-        for name in ("python", "node", "npm")
+        for name in ("python", "node", "pnpm")
     }}), encoding="utf-8")
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=source, check=True)
@@ -106,7 +107,7 @@ def test_prepared_input_roundtrip_rejects_mutation_and_foreign_source(tmp_path):
     from pm.registry import get_package
     store = cache / "tools"
     binaries = {}
-    for name in ("python", "node", "npm"):
+    for name in ("python", "node", "pnpm"):
         package = get_package(name)
         entry = store / package.store_entry("1.0.0", request.target)
         binary = package.binary(entry, request.target)

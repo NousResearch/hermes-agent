@@ -41,11 +41,19 @@ class SlashAccessPolicy:
             return True
         return bool(user_id) and str(user_id) in self.admin_user_ids
 
+    @property
+    def user_runnable_commands(self) -> frozenset[str]:
+        """What a non-admin may run: ``user_allowed_commands``, plus ``deny`` for an ``approve``
+        holder (whoever may approve a pending approval may also refuse it). Excludes the
+        ``_ALWAYS_ALLOWED_FOR_USERS`` floor."""
+        allowed = self.user_allowed_commands
+        return allowed | {"deny"} if "approve" in allowed else allowed
+
     def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
         if self.is_admin(user_id):
             return True
         return bool(canonical_cmd) and (
-            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_allowed_commands
+            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_runnable_commands
         )
 
 
@@ -116,7 +124,14 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     extra = getattr(platform_config, "extra", None)
     if not isinstance(extra, dict):
         extra = platform_config if isinstance(platform_config, dict) else {}
-    chat_type = getattr(source, "chat_type", None)
+    return policy_for_chat_type(extra, getattr(source, "chat_type", None))
+
+
+def policy_for_chat_type(extra: Any, chat_type: Any) -> SlashAccessPolicy:
+    """The scope policy of one platform ``extra`` block for a chat of ``chat_type``: the single rule
+    every surface uses to pick DM vs group admins (slash commands, ``/approve``, approval buttons)."""
+    if not isinstance(extra, dict):
+        extra = {}
     normalized = str(chat_type).strip().lower() if chat_type is not None else ""
     if normalized:
         scope = "dm" if normalized in _DM_CHAT_TYPES else "group"
@@ -127,10 +142,20 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     # ungated allow-everything scope; keep the historical group scope on a tie.
     dm_policy = policy_from_extra(extra, "dm")
     group_policy = policy_from_extra(extra, "group")
-    return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
+    if dm_policy.enabled and group_policy.enabled:
+        # Both scopes gated: the source could be either scope, so grant only what BOTH grant.
+        # Picking one policy wholesale would let a scope-specific admin (or command list) act
+        # across the scope boundary the operator drew.
+        return SlashAccessPolicy(
+            enabled=True,
+            admin_user_ids=dm_policy.admin_user_ids & group_policy.admin_user_ids,
+            user_allowed_commands=dm_policy.user_allowed_commands
+            & group_policy.user_allowed_commands,
+        )
+    return dm_policy if dm_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_for_source", "policy_from_extra"]
+__all__ = ["SlashAccessPolicy", "policy_for_chat_type", "policy_for_source", "policy_from_extra"]
 
 
 

@@ -1741,6 +1741,23 @@ def test_the_manual_steps_never_copy_over_or_remove_a_file_kept_for_its_edits(ho
         assert step in out  # the run printed the same steps --status returns
 
 
+def test_a_backup_lost_during_rollback_is_never_called_an_edit(home):
+    """The manual step for a file whose backup vanished during the rollback says the backup is missing; it never
+    tells the user to keep the migration's file as an edit and merge from a backup that is gone."""
+    host = FakeHost(home)
+    host.gateway_lies = True  # verify fails: rollback
+    real_status = host.gateway_status
+
+    def lose_the_backup(dial, port):
+        Path(engine.read_manifest(home)["backups"]["config"]).unlink(missing_ok=True)
+        return real_status(dial, port)
+
+    host.gateway_status = lose_the_backup
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+    steps = [s for s in engine.status_payload(host)["manual_steps"] if f"{home}/config.yaml" in s]
+    assert steps and "missing" in steps[0] and "edited" not in steps[0], steps
+
+
 def test_restore_detach_of_a_hand_started_backend_exits_3_before_any_background_run(home, capsys):
     """The command the user typed refuses (exit 3) instead of reporting a started background run that
     can only refuse."""

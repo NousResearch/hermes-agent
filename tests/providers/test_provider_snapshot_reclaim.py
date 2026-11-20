@@ -199,3 +199,36 @@ def test_a_data_only_uninstall_keeps_the_snapshots_live_processes_import(loader,
 
     assert not failures and not (home / "notes.md").exists()
     assert (root / "pkg" / "lazy.py").is_file()
+
+
+def test_snapshot_copies_trees_whose_staging_path_exceeds_max_path(loader, tmp_path):
+    # A per-home module name plus a plugin's deep tree can push the staging copy's destination
+    # past Windows' MAX_PATH (260) even though the published target fits. The copy must use the
+    # extended-length prefix (\\?\) so the plugin still stages on a default Windows host.
+    # The test sizes names dynamically because tmp_path length varies by host: it needs the
+    # published target to stay under 260 (plain paths keep working, as in the real bug) while the
+    # intermediate ".copy-XXXXXXXX" staging path crosses it.
+    reload, _hooks = loader
+    plugin_name = "p" * 30
+    tests_name = "tests"
+    file_name = "t" * 48 + ".py"
+
+    root = reload._new_root()
+    reload._snapshot_root = root
+    module_len = min(80, max(8, 157 - len(os.fspath(root))))
+    module = "m" * module_len
+
+    plugin = tmp_path / plugin_name
+    tests = plugin / tests_name
+    tests.mkdir(parents=True)
+    (tests / file_name).write_text("x = 1\n", encoding="utf-8")
+
+    target = reload._snapshot(plugin, module)
+
+    target_dest = target / tests_name / file_name
+    staging_dest_len = len(os.fspath(target_dest)) + len(".copy-XXXXXXXX") + 1
+    if os.name == "nt":
+        # The staging copy really had to beat MAX_PATH for this to be a regression test.
+        assert len(os.fspath(target_dest)) < 260 <= staging_dest_len
+    assert target_dest.is_file()
+    assert target_dest.read_text(encoding="utf-8") == "x = 1\n"

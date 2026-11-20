@@ -33,6 +33,22 @@ import threading
 import uuid
 from pathlib import Path
 
+if os.name == "nt":
+    _LONG_PREFIX = "\\\\?\\"
+
+    def _extend_long_path(p: Path) -> Path:
+        """Prefix an absolute path with the extended-length marker (``\\\\?\\``) so Windows
+        accepts paths longer than MAX_PATH (260) for the staging copy."""
+        s = os.fspath(p)
+        if s.startswith(_LONG_PREFIX):
+            return Path(s)
+        return Path(_LONG_PREFIX + s)
+
+else:
+
+    def _extend_long_path(p: Path) -> Path:  # type: ignore[misc]
+        return Path(os.fspath(p))
+
 from hermes_cli.home_data_layout import PROVIDER_PLUGIN_SNAPSHOT_PARTS
 from hermes_constants import get_default_hermes_root, mkdir_under_hermes_home
 
@@ -155,13 +171,17 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix=".copy-", dir=target.parent))
     try:
-        shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_SNAPSHOT_IGNORE)
-        os.rename(private / plugin_dir.name, target)
+        # Windows: the ".copy-" staging name combined with the long per-home module name
+        # can push the copied files past MAX_PATH (260) even when the published target
+        # fits; use the extended-length path (``\\?\``) for the temporary copy.
+        shutil.copytree(_extend_long_path(plugin_dir), _extend_long_path(private / plugin_dir.name),
+                        ignore=_SNAPSHOT_IGNORE)
+        os.rename(_extend_long_path(private / plugin_dir.name), target)
     except OSError:
         if not target.is_dir():  # another scan publishing the same copy first is fine
             raise
     finally:
-        shutil.rmtree(private, ignore_errors=True)
+        shutil.rmtree(_extend_long_path(private), ignore_errors=True)
     return target
 
 

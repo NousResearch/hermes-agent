@@ -651,7 +651,7 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
-**CPU and memory:** Vercel fixes memory at 2048 MB per vCPU, so `container_cpu` (rounded down to a whole vCPU count) sizes the sandbox and `container_memory` applies only when `container_cpu` is `0`.
+**CPU and memory:** Vercel fixes memory at 2048 MB per vCPU, so `container_cpu` sizes the sandbox, rounded down to a count Vercel offers (1 or an even number; at least 1), and `container_memory` applies only when `container_cpu` is `0`.
 
 ### Singularity/Apptainer Backend
 

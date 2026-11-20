@@ -153,12 +153,13 @@ def _sandbox_status_type() -> type[SandboxStatus]:
 def _sandbox_resources(cpu: float, memory: int) -> Any:
     """The SDK resource request for Hermes' ``container_cpu``/``container_memory``.
 
-    Vercel sizes memory from the vCPU count (2048 MB each) and the SDK rejects any other pairing,
-    so with a CPU count only the vCPUs are sent; ``container_memory`` is used only without one.
+    Vercel sizes memory from the vCPU count (2048 MB each) and offers 1 or an even number of vCPUs;
+    the SDK rejects anything else, so with a CPU count only the vCPUs are sent, rounded down to an
+    offered count (at least 1); ``container_memory`` is used only without one.
     """
     from vercel.sandbox import Resources
 
-    vcpus = math.floor(cpu) if cpu > 0 else None
+    vcpus = max(1, math.floor(cpu) // 2 * 2) if cpu > 0 else None
     if vcpus is not None:
         if memory > 0 and memory != vcpus * _VERCEL_MB_PER_VCPU:
             logger.info("Vercel: container_memory=%d ignored; %d vCPU sandboxes get %d MB",

@@ -30,7 +30,8 @@ def create_calls(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize(("cpu", "memory", "vcpus"), [(1, 5120, 1), (2, 2048, 2), (4, 0, 4)])
+@pytest.mark.parametrize(("cpu", "memory", "vcpus"),
+                         [(1, 5120, 1), (2, 2048, 2), (4, 0, 4), (3, 5120, 2), (0.5, 5120, 1)])
 def test_container_resources_reach_sandbox_create(create_calls, cpu, memory, vcpus):
     with pytest.raises(_CreateCalled):
         vercel_sandbox.VercelSandboxEnvironment(cpu=cpu, memory=memory, persistent_filesystem=False)

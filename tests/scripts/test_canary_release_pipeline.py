@@ -380,7 +380,15 @@ def test_the_pruner_keeps_the_live_canary_however_old(monkeypatch, capsys):
     r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())
     doomed = capsys.readouterr().out
     assert stale in doomed and live not in doomed
-    # An unreadable pointer could hide the live canary: refuse to prune at all.
-    monkeypatch.setattr(r2, "get_object", lambda *_args, **_kw: None)
-    with pytest.raises(RuntimeError, match="live canary"):
-        r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())
+    # An unreadable, malformed, non-canary, or dangling pointer could hide the live canary:
+    # refuse to prune at all.
+    for bad, pattern in (
+        (None, "live canary.*refusing to prune"),
+        ("{not json", "parse.*refusing to prune"),
+        ('["not-an-object"]', "live canary.*refusing to prune"),
+        (json.dumps({"archive": "v1.2.3"}), "live canary.*refusing to prune"),
+        (json.dumps({"archive": "canary.20990101T000000Z-v9.9.9"}), "missing archive.*refusing to prune"),
+    ):
+        monkeypatch.setattr(r2, "get_object", lambda *_args, value=bad, **_kw: value)
+        with pytest.raises(RuntimeError, match=pattern):
+            r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())

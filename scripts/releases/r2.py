@@ -977,10 +977,19 @@ def prune(
     # names its archive ref, which is in every one of those keys.
     pointer_key = "releases/canary/release-candidates.json"
     if pointer_key in keys:
+        from hermes_cli.update_channel import is_canary_tag
+
         text = get_object(creds, base, bucket, pointer_key, now, fetcher=fetcher)
-        live = json.loads(text).get("archive") if text is not None else None
-        if not isinstance(live, str) or not live:
-            raise RuntimeError(f"Cannot read the live canary from {pointer_key}; refusing to prune")
+        try:
+            payload = json.loads(text) if text is not None else None
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Cannot parse {pointer_key}: {exc}; refusing to prune") from exc
+        live = payload.get("archive") if isinstance(payload, dict) else None
+        if not isinstance(live, str) or not is_canary_tag(live):
+            raise RuntimeError(f"Cannot read a valid live canary archive from {pointer_key}; refusing to prune")
+        archive_prefix = f"releases/tag/{live}/"
+        if not any(key.startswith(archive_prefix) for key in keys):
+            raise RuntimeError(f"Live canary pointer {pointer_key} names missing archive {live}; refusing to prune")
         protected.update(key for key in keys if live in key)
 
     # A desktop-only canary can advance that pointer without replacing the live APT index.

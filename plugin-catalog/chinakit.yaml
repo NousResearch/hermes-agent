@@ -1,0 +1,22 @@
+name: chinakit
+title: ChinaKit
+repo: https://github.com/AbigailDavised/chinakit-mcp
+sha: a867d890a05399f34a1459dfd534674faaf24149
+version: "1.0.0"
+description: "China work permit Category A/B/C rubric scorer, controlled border medication screener, expatriate IIT fringe optimizer, 240h TWOV transit validator, Hague Apostille advisor, and CAAC flight powerbank/Alipay RMB 200 fee-waiver splitter covering 331 verified attractions through ChinaKit's official MCP server (Streamable HTTP at https://chinakit.io/api/mcp, no sign-in, no keys in config). Bundles the chinakit workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure - hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chinakit.io/api/mcp with only the itinerary, medication, salary or destination query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: ChinaKit
+tier: community
+category: tools
+docs_url: https://chinakit.io
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/chinakit-mcp/a867d890a05399f34a1459dfd534674faaf24149/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/chinakit-mcp/a867d890a05399f34a1459dfd534674faaf24149/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/chinakit-mcp/a867d890a05399f34a1459dfd534674faaf24149/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

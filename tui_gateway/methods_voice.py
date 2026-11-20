@@ -534,6 +534,12 @@ def _(rid, params: dict) -> dict:
     transport = _caller_transport()
     # Each call updates what it names: the Desktop sends ``desktop_local`` on its own, so a backend older
     # than the field refuses only that call and keeps the ``server_requests`` it already accepted.
+    # A refused ``client`` answers before anything else in the call takes effect.
+    if "client" in params and hasattr(transport, "client_identity"):
+        from gateway.session_client import client_problem, normalized_client
+        if problem := client_problem(params["client"]):
+            return _err(rid, 4001, f"client {problem}")
+        transport.client_identity = normalized_client(params["client"])
     if "server_requests" in params:
         server_requests.advertise(transport, bool(params.get("server_requests")))
     if "desktop_local" in params and hasattr(transport, "auth_identity"):

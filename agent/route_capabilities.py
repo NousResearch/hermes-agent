@@ -25,7 +25,7 @@ def _entry_decision(entry: dict[str, Any], model: str, capability: str) -> Optio
     return None
 
 
-def configured_route_capability(agent: Any, capability: str) -> Optional[bool]:
+def configured_route_capability(agent: Any, capability: str, *, unanimous: bool = False) -> Optional[bool]:
     """Explicit boolean for *capability* on the agent's live route, or ``None`` when undeclared.
 
     Only the live provider entry decides: the entry on this endpoint whose name, config key or
@@ -33,7 +33,8 @@ def configured_route_capability(agent: Any, capability: str) -> Optional[bool]:
     as the runtime resolves them), so a sibling sharing the endpoint never speaks for it. Entries
     that match together must agree, and an explicit false wins. A ``custom:`` identity with no entry
     on this endpoint is undeclared. With no named identity (``provider="custom"``, an alias such as
-    ``vllm``), every entry on the endpoint counts and an explicit false still wins.
+    ``vllm``), every entry on the endpoint counts and an explicit false still wins; an unflagged
+    entry abstains, unless *unanimous*, where it leaves the opt-in undeclared.
     """
     # Returns no entries on unreadable config, so no guard is needed here.
     from hermes_cli.config import _entries_for_route
@@ -49,8 +50,8 @@ def configured_route_capability(agent: Any, capability: str) -> Optional[bool]:
     if live or any(name.startswith("custom:") for name in names):
         decisions = {_entry_decision(e, model, capability) for e in live}
         return False if False in decisions else (True if decisions == {True} else None)
-    # Without a named identity, even one unconfigured sibling makes an opt-in ambiguous.
-    decisions = {_entry_decision(e, model, capability) for e in entries}
+    # Without a named identity, a unanimous capability treats one unconfigured sibling as ambiguous.
+    decisions = {_entry_decision(e, model, capability) for e in entries} - (set() if unanimous else {None})
     if decisions == {True}:
         return True
     return False if False in decisions else None
@@ -61,8 +62,9 @@ def literal_think_tags_capability(agent: Any) -> bool:
     of band (``reasoning_content`` / ``reasoning``) and ends thinking by token id, so ``<think>`` /
     ``</think>`` text in ``content`` is answer text that the reasoning-tag scrubbers must keep.
 
-    Explicit opt-in only; ``None`` agents (history and compression helpers) keep stripping.
+    Explicit opt-in only; ``None`` agents (history and compression helpers) keep stripping, and an
+    unnamed shared endpoint keeps it unless every entry there opts in.
     """
     if agent is None:
         return False
-    return configured_route_capability(agent, _LITERAL_THINK_TAGS_CAPABILITY) is True
+    return configured_route_capability(agent, _LITERAL_THINK_TAGS_CAPABILITY, unanimous=True) is True

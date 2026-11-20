@@ -11865,6 +11865,17 @@
             "default": null,
             "title": "Voice Context"
           },
+          "voice_claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalVoiceClaim"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "interrupted": {
             "default": false,
             "title": "Interrupted",
@@ -12005,6 +12016,34 @@
           }
         },
         "title": "CanonicalTurnAuthor",
+        "type": "object"
+      },
+      "CanonicalVoiceClaim": {
+        "additionalProperties": false,
+        "description": "Provider evidence for a delegated utterance; the owner must independently verify it.",
+        "properties": {
+          "call_id": {
+            "title": "Call Id",
+            "type": "string"
+          },
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Event Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "call_id",
+          "delegation_id",
+          "event_ids"
+        ],
+        "title": "CanonicalVoiceClaim",
         "type": "object"
       },
       "CanonicalVoiceStopped": {
@@ -49105,6 +49144,97 @@
         "title": "VerificationStatusResult",
         "type": "object"
       },
+      "VoiceLiveCapturePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "title": "Call Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "recording",
+              "updated",
+              "saved",
+              "pending",
+              "incomplete"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id",
+          "state"
+        ],
+        "title": "VoiceLiveCapturePayload",
+        "type": "object"
+      },
+      "VoiceLiveStartParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sdp": {
+            "title": "Sdp",
+            "type": "string"
+          },
+          "history": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "History"
+          }
+        },
+        "required": [
+          "session_id",
+          "sdp"
+        ],
+        "title": "VoiceLiveStartParams",
+        "type": "object"
+      },
+      "VoiceLiveStartResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session": {
+            "additionalProperties": true,
+            "title": "Session",
+            "type": "object"
+          },
+          "transport": {
+            "additionalProperties": true,
+            "title": "Transport",
+            "type": "object"
+          },
+          "capture_status": {
+            "enum": [
+              "recording",
+              "unavailable"
+            ],
+            "title": "Capture Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "transport",
+          "capture_status"
+        ],
+        "title": "VoiceLiveStartResult",
+        "type": "object"
+      },
       "VoicePartialPayload": {
         "additionalProperties": false,
         "description": "``methods_voice`` voice.record ``on_partial`` \u2014 live STT text so far (``stt.streaming``).",
@@ -51335,6 +51465,24 @@
       }
     },
     {
+      "name": "voice.live.start",
+      "summary": "Negotiate GPT-Live for an authorized chat and attach its owner-side transcript capture.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceLiveStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceLiveStartResult"
+        }
+      }
+    },
+    {
       "name": "worker.adopt",
       "summary": "Adopt a registered execution after verifying the live producer claim.",
       "params": [
@@ -52597,6 +52745,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.live.capture",
+      "summary": "GPT-Live recording status or a committed transcript update.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceLiveCapturePayload"
           }
         }
       ]

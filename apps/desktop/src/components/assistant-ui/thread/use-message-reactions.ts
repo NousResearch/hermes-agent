@@ -48,6 +48,11 @@ export function isTapbackDoubleClick(event: { detail: number; target: EventTarge
 }
 
 /** Paint the tapback locally, then persist behind it. */
+/** This message is a render-time join of several saved voice rows (voice-live-display). */
+export function useVoiceJoined(): boolean {
+  return useAuiState(s => (s.message.metadata?.custom as { voiceJoined?: boolean } | undefined)?.voiceJoined === true)
+}
+
 function commitReaction(
   messageId: string,
   role: ChatMessage['role'],
@@ -78,6 +83,7 @@ export function useMessageReactions(
   enabled: boolean
   react: (emoji: null | string) => void
   reactions: MessageReaction[]
+  retract: (() => void) | undefined
 } {
   const reactions = useAuiState(s => {
     const custom = (s.message.metadata?.custom ?? {}) as { reactions?: MessageReaction[] }
@@ -91,7 +97,9 @@ export function useMessageReactions(
     return custom.rowId
   })
 
-  const enabled = useStore($reactionsEnabled)
+  // A display join of several saved voice rows has no single row to react to.
+  const voiceJoined = useVoiceJoined()
+  const enabled = useStore($reactionsEnabled) && !voiceJoined
   const localAll = useStore($localReactions)
   const agentAll = useStore($agentReactions)
   const sessionView = useSessionView()
@@ -116,10 +124,17 @@ export function useMessageReactions(
   return {
     enabled,
     react: useCallback(
-      (emoji: null | string) => commitReaction(messageId, role, rowId, reactions, emoji, sessionId),
-      [messageId, reactions, role, rowId, sessionId]
+      (emoji: null | string) => {
+        // A display join of several saved voice rows: no single row to change.
+        if (!voiceJoined) {
+          commitReaction(messageId, role, rowId, reactions, emoji, sessionId)
+        }
+      },
+      [messageId, reactions, role, rowId, sessionId, voiceJoined]
     ),
-    reactions: mergeReactions(reactions, localAll[messageId], agentLive)
+    reactions: mergeReactions(reactions, localAll[messageId], agentLive),
+    // Removing the user's own reaction; none on a display join.
+    retract: voiceJoined ? undefined : () => commitReaction(messageId, role, rowId, reactions, null, sessionId)
   }
 }
 
@@ -136,7 +151,8 @@ export function useTapbackDoubleClick(
   messageId: string,
   role: ChatMessage['role']
 ): ((event: MouseEvent<HTMLElement>) => void) | undefined {
-  const enabled = useStore($reactionsEnabled)
+  const voiceJoined = useVoiceJoined()
+  const enabled = useStore($reactionsEnabled) && !voiceJoined
   const messageRuntime = useMessageRuntime()
   const sessionView = useSessionView()
   const runtimeSessionId = useStore(sessionView.$runtimeId)

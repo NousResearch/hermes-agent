@@ -501,6 +501,8 @@ export interface Translations extends NoticeTranslations {
       tryRecordingAgain: string
       unavailable: string
       liveEnded: string
+      liveCaptureUnavailable: string
+      liveCaptureIncomplete: string
       liveEndedConnectionLost: string
       liveEndedClosed: string
       liveError: string

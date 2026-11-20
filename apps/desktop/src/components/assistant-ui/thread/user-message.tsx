@@ -15,7 +15,7 @@ import { BackgroundResult } from '@/components/assistant-ui/thread/system-messag
 import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
-import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
+import { useMessageReactions, useVoiceJoined } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -406,6 +406,12 @@ function TouchUserBubble({
  *  not on every frame while the outer max-height animates open, and compare it
  *  with the clamp's own max-height so the fade and toggle only appear when
  *  text is actually hidden. */
+function useReadOnlyBubble(): boolean {
+  const voiceJoined = useVoiceJoined()
+
+  return isWatchWindow() || voiceJoined
+}
+
 function useUserBubbleClamp(readOnly: boolean, touch: boolean) {
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
   const [bodyClamped, setBodyClamped] = useState(false)
@@ -489,7 +495,7 @@ export const UserMessage: FC<{
   })
 
   const [pickerOpen, setPickerOpen] = useState(false)
-  const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'user')
+  const { enabled: reactionsEnabled, react, reactions: shownReactions, retract } = useMessageReactions(messageId, 'user')
 
   const pickEmoji = useCallback(
     (emoji: null | string) => {
@@ -502,7 +508,8 @@ export const UserMessage: FC<{
   // Watch windows spectate a subagent run driven elsewhere — prompts can't be
   // edited, restored, or stopped from here. The bubble stays a button that
   // toggles the 2-line clamp so long prompts are still fully readable.
-  const readOnly = isWatchWindow()
+  // A display join of several saved voice rows is read-only too: edit/restore would act on its first row only.
+  const readOnly = useReadOnlyBubble()
   const { bodyClamped, clampActive, clampInnerRef, expanded, setExpanded } = useUserBubbleClamp(readOnly, touch)
 
   // Injected background-process notification, not a human prompt — render the
@@ -703,7 +710,7 @@ export const UserMessage: FC<{
                 sent bubble. Overlaying the corner read badly in practice. */}
             <ReactionBadge
               className="justify-end gap-1.5 py-1.5 pr-1.5"
-              onRetract={() => react(null)}
+              onRetract={retract}
               reactions={shownReactions}
             />
             <MessageTimelineTimestamp className="self-end pr-1.5" />

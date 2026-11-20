@@ -321,6 +321,15 @@ function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CS
   } as CSSProperties
 }
 
+/** A stable getter for the current route token (path, search and hash). */
+function useRouteTokenGetter(location: { hash: string; pathname: string; search: string }): () => string {
+  const routeToken = `${location.pathname}:${location.search}:${location.hash}`
+  const routeTokenRef = useRef(routeToken)
+  routeTokenRef.current = routeToken
+
+  return useCallback(() => routeTokenRef.current, [])
+}
+
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -357,10 +366,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const routedSessionIdRef = useRef(routedSessionId)
 
   routedSessionIdRef.current = routedSessionId
-  const routeToken = `${location.pathname}:${location.search}:${location.hash}`
-  const routeTokenRef = useRef(routeToken)
-  routeTokenRef.current = routeToken
-  const getRouteToken = useCallback(() => routeTokenRef.current, [])
+  const getRouteToken = useRouteTokenGetter(location)
 
   const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
 
@@ -1075,6 +1081,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // identity for the app's life (memoized surfaces don't re-render on churn)
   // while every handler still closes over the latest values.
   const nextActions: WiringActions = {
+    createVoiceDraftSession: createBackendSessionForSend,
     onAddContextRef: composer.addContextRefAttachment,
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
     // The row menu reuses this verb on archived rows, so it restores there

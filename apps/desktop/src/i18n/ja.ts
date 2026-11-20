@@ -170,6 +170,8 @@ export const jaOverrides = {
       microphoneNeedsHttps:
         'マイクには安全な接続が必要です。使うには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。',
       microphonePermissionDenied: 'マイクのアクセス許可が拒否されました。',
+      liveCaptureUnavailable: 'このライブ通話の文字起こしはチャットに保存されません。',
+      liveCaptureIncomplete: 'このライブ通話の文字起こしは一部欠けている可能性があります。',
       microphoneStartFailed: 'マイクの録音を開始できませんでした。',
       microphoneUnsupported: 'このランタイムはマイク録音をサポートしていません。',
       noMicrophone: 'マイクが見つかりませんでした。',

@@ -29,6 +29,7 @@ import type { ComposerTarget } from '../focus'
 import { onComposerDictationRequest, onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
+import { useVoiceCallTarget } from '../voice-call-target'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -72,6 +73,9 @@ export function useComposerVoice({
   sessionId,
   target
 }: UseComposerVoiceArgs) {
+  // Where a GPT-Live call records (the chat view provides it).
+  const voiceCall = useVoiceCallTarget()
+  const { storedSessionId } = voiceCall
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
@@ -186,11 +190,35 @@ export function useComposerVoice({
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are
    *  what the user said; the transcript window rides the model input only. */
-  const submitLiveDelegation = async (text: string, voiceContext: string) => {
+  const submitLiveDelegation = async (
+    text: string,
+    voiceContext: string,
+    submissionId: string,
+    callStoredId: string,
+    createdRuntimeId?: string,
+    voiceClaim?: NonNullable<Parameters<ChatBarProps['onSubmit']>[1]>['voiceClaim']
+  ) => {
+    const runtimeId = storedSessionId === callStoredId ? sessionId : createdRuntimeId
+
+    if (!runtimeId) {
+      return false
+    }
+
     triggerHaptic('submit')
-    resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text, { surface: 'voice-live', voiceContext })
+
+    if (storedSessionId === callStoredId && !voiceClaim) {
+      resetBrowseState(runtimeId)
+      clearDraft()
+    }
+
+    return onSubmit(text, {
+      sessionId: runtimeId,
+      storedSessionId: callStoredId,
+      submission_id: submissionId,
+      surface: 'voice-live',
+      voiceContext,
+      ...(voiceClaim && { attachments: [], voiceClaim })
+    })
   }
 
   /** Recent text turns of this chat, as GPT-Live startup history. */
@@ -246,12 +274,16 @@ export function useComposerVoice({
     busy,
     consumePendingResponse,
     enabled: voiceConversationActive && liveEngineActive,
+    createVoiceDraftSession: voiceCall.createDraftSession,
+    voiceDraftKey: voiceCall.draftKey,
+    voiceRouteSessionId: voiceCall.routeSessionId,
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
     onStopWord: () => setVoiceConversationActive(false),
     onSubmit: submitLiveDelegation,
     pendingResponse: pendingTurnResponse,
-    seedHistory: seedLiveHistory
+    seedHistory: seedLiveHistory,
+    storedSessionId
   })
 
   const conversation = liveEngineActive ? liveConversation : chainedConversation

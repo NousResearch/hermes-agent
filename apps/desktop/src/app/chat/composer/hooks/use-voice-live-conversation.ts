@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CanonicalVoiceClaim } from '@hermes/shared'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { resolveOwnerNow } from '@/api/client'
+import type { CreateBackendSessionForSend, VoiceDraftDestination } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
+import { $sessionStates } from '@/store/session-states'
+import {
+  appendVoiceLiveDraft,
+  markVoiceLiveDraftClaimed,
+  newVoiceLiveDraftRunId,
+  retireVoiceLiveDrafts
+} from '@/store/voice-live-draft'
 
 import { useComposerScope } from '../scope'
 
@@ -16,6 +26,95 @@ const SUBMIT_SETTLE_GRACE_MS = 15_000
 /** Quiet after the last user transcript fragment before the utterance is judged
  *  as a whole ("stop" ends the chat; "stop the container" is a request). */
 const UTTERANCE_SETTLE_MS = 1_500
+/** The thread retires each live run when its saved row lands. Leftovers of an ended
+ *  call (a save that never lands) go once its chat has been continuously idle this
+ *  long; a busy turn defers hydration of the saved rows, so it defers this too, up to a cap. */
+const LIVE_DRAFT_IDLE_MS = 30_000
+const LIVE_DRAFT_RECHECK_MS = 15_000
+const LIVE_DRAFT_MAX_MS = 30 * 60_000
+
+function retireEndedCallDrafts(storedSessionId: string, ids: ReadonlySet<string>) {
+  const ended = Date.now()
+
+  const chatBusy = () =>
+    Object.values($sessionStates.get()).some(
+      state => state.storedSessionId === storedSessionId && (state.busy || state.awaitingResponse)
+    )
+
+  // Continuous idle only: any turn on this chat, however short, restarts the wait.
+  let idleSince: null | number = chatBusy() ? null : ended
+
+  const unsubscribe = $sessionStates.listen(() => {
+    if (chatBusy()) {
+      idleSince = null
+    } else if (idleSince === null) {
+      idleSince = Date.now()
+    }
+  })
+
+  const check = () => {
+    const now = Date.now()
+
+    if ((idleSince !== null && now - idleSince >= LIVE_DRAFT_IDLE_MS) || now - ended >= LIVE_DRAFT_MAX_MS) {
+      unsubscribe()
+      retireVoiceLiveDrafts(storedSessionId, ids)
+
+      return
+    }
+
+    window.setTimeout(check, LIVE_DRAFT_RECHECK_MS)
+  }
+
+  window.setTimeout(check, LIVE_DRAFT_RECHECK_MS)
+}
+
+interface CallTarget {
+  createVoiceDraftSession?: CreateBackendSessionForSend
+  storedSessionId?: null | string
+  voiceDraftKey?: string
+}
+
+/** A call opened on New Chat: it creates its own chat before the mic opens. */
+function isFreshDraftTarget(target: CallTarget): boolean {
+  return !target.storedSessionId && !!target.voiceDraftKey && !!target.createVoiceDraftSession
+}
+
+/** Create the New Chat draft as the call's chat. Resolves its stored id, or null
+ *  when the start was superseded meanwhile. */
+async function createCallChat(
+  target: CallTarget,
+  isCurrent: () => boolean,
+  onAssigned: (destination: VoiceDraftDestination) => void
+): Promise<null | string> {
+  if (!target.voiceDraftKey || !target.createVoiceDraftSession) {
+    throw new Error('The chat does not have a resolved voice destination.')
+  }
+
+  let assigned: VoiceDraftDestination | undefined
+
+  const runtime = await target.createVoiceDraftSession(null, {
+    voiceDraft: {
+      key: target.voiceDraftKey,
+      isCurrent,
+      onAssigned: destination => {
+        assigned = destination
+        onAssigned(destination)
+      }
+    }
+  })
+
+  if (!isCurrent()) {
+    return null
+  }
+
+  const destination = assigned as VoiceDraftDestination | undefined
+
+  if (!destination || runtime !== destination.runtimeSessionId) {
+    throw new Error('The fresh chat could not be assigned a voice destination.')
+  }
+
+  return destination.storedSessionId
+}
 
 interface PendingVoiceResponse {
   id: string
@@ -32,8 +131,11 @@ interface VoiceLiveConversationOptions {
   onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
   /** Submit a Hermes turn: `text` is the user's last words (the bubble and the
-   *  persisted row), `voiceContext` the recent spoken exchange for the model. */
-  onSubmit: (text: string, voiceContext: string) => Promise<void> | void
+   *  persisted row), `voiceContext` the recent spoken exchange for unsaved calls. */
+  onSubmit: (text: string, voiceContext: string, submissionId: string, storedSessionId: string, createdRuntimeId?: string, claim?: CanonicalVoiceClaim) => Promise<boolean | void> | boolean | void
+  createVoiceDraftSession?: CreateBackendSessionForSend
+  voiceDraftKey?: string
+  voiceRouteSessionId?: string | null
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
   /** Text turns to seed the live model with when the session opens. */
@@ -41,33 +143,73 @@ interface VoiceLiveConversationOptions {
   /** Names of tools currently running in the turn (quiet progress for the voice). */
   activeToolLabel?: () => null | string
   beforeMicOpen?: () => Promise<void> | void
+  storedSessionId?: null | string
 }
 
-/** Turn transcript fragments into the Hermes turn: `prompt` is what the user
- *  last said (the persisted user row), `context` the recent spoken exchange
- *  that rides the model input only (see tools/voice_live.py). */
-export function delegationPrompt(context: LiveTranscriptFragment[]): { context: string; prompt: string } {
-  const turns: Array<{ speaker: 'assistant' | 'user'; text: string }> = []
+/** Recorded claims use arrival order and leave spoken context to the owner. */
+export function delegationPrompt(context: LiveTranscriptFragment[], recorded = false): {
+  context: string
+  eventIds: null | string[]
+  prompt: string
+} {
+  type SpeechGroup = LiveTranscriptFragment & { eventIds: null | string[] }
+  const turns: SpeechGroup[] = []
 
-  for (const fragment of context) {
-    const last = turns.at(-1)
+  // Only unsaved calls infer order and merge backchannels from timing. The
+  // owner's recorded claim requires a contiguous group in wire order.
+  const timed = !recorded && context.every(
+    ({ endMs, startMs, timingMissing }) =>
+      !timingMissing && Number.isFinite(startMs) && Number.isFinite(endMs) && startMs >= 0 && endMs > startMs
+  )
 
-    if (last && last.speaker === fragment.speaker) {
-      last.text += fragment.text
+  const fragments = timed ? [...context].sort((a, b) => a.startMs - b.startMs) : context
+  let current: SpeechGroup | undefined
+  let lastUser: SpeechGroup | undefined
+  let overlappingReplyEnd = 0
+
+  for (const fragment of fragments) {
+    // Do not infer a turn boundary from a pause. Only bridge an intervening
+    // assistant delta when it actually overlaps speech on both sides.
+    const joinsUser = timed && fragment.speaker === 'user' && fragment.startMs < overlappingReplyEnd
+    const previous = joinsUser ? lastUser : current?.speaker === fragment.speaker ? current : undefined
+
+    if (previous) {
+      previous.text += fragment.text
+      previous.endMs = Math.max(previous.endMs, fragment.endMs)
+
+      if (fragment.event_id && previous.eventIds) {
+        previous.eventIds.push(fragment.event_id)
+      } else {
+        previous.eventIds = null
+      }
+
+      current = previous
     } else {
-      turns.push({ speaker: fragment.speaker, text: fragment.text })
+      current = { ...fragment, eventIds: fragment.event_id ? [fragment.event_id] : null }
+      turns.push(current)
+    }
+
+    if (fragment.speaker === 'user') {
+      lastUser = current
+      overlappingReplyEnd = 0
+    } else if (lastUser && fragment.startMs < lastUser.endMs) {
+      overlappingReplyEnd = Math.max(overlappingReplyEnd, fragment.endMs)
     }
   }
 
-  const lastUser = [...turns].reverse().find(turn => turn.speaker === 'user')
   const prompt = (lastUser?.text ?? '').replace(/\s+/g, ' ').trim()
+  const eventIds = prompt ? (lastUser?.eventIds ?? null) : null
+
+  if (recorded) {
+    return { context: '', eventIds, prompt }
+  }
 
   const transcript = turns
     .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${turn.text.replace(/\s+/g, ' ').trim()}`)
     .filter(line => !line.endsWith(': '))
     .join('\n')
 
-  return { context: transcript, prompt: prompt || transcript.slice(-400) }
+  return { context: transcript, eventIds, prompt: prompt || transcript.slice(-400) }
 }
 
 /**
@@ -112,7 +254,11 @@ export function useVoiceLiveConversation({
   consumePendingResponse,
   seedHistory,
   activeToolLabel,
-  beforeMicOpen
+  beforeMicOpen,
+  storedSessionId = null,
+  createVoiceDraftSession,
+  voiceDraftKey,
+  voiceRouteSessionId
 }: VoiceLiveConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -123,12 +269,16 @@ export function useVoiceLiveConversation({
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
   const sessionRef = useRef<null | VoiceLiveSession>(null)
-  // The scope's session owner (a Bot's own connection + profile) picks the
-  // GPT-Live backend and voice; a ref keeps the long-lived start closures
-  // reading the current value.
+  // Capture and delegation must share the same stored chat and owner for the
+  // entire call. A navigation must not hand the old call to new callbacks.
   const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
-  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
-  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
+  const ownerHint = { connectionId: ownerConnectionId, profile: ownerProfile }
+  const owner = resolveOwnerNow(ownerHint)
+  const targetKey = JSON.stringify([owner.connectionId, owner.profile, storedSessionId])
+  const target = { key: targetKey, ownerHint, storedSessionId, voiceDraftKey, voiceRouteSessionId, createVoiceDraftSession }
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const ownsCallTargetRef = useRef<null | (() => boolean)>(null)
   // Bumped by every start/end so an in-flight start() that lost the race
   // (StrictMode double-effect, quick toggle) closes its session instead of
   // leaving a second billed one running.
@@ -148,6 +298,8 @@ export function useVoiceLiveConversation({
   const spokenResponseIdRef = useRef<null | string>(null)
   const lastToolLabelRef = useRef<null | string>(null)
   const wasEnabledRef = useRef(enabled)
+  // Retires the live words the current recorded call put in the chat.
+  const retireLiveDraftsRef = useRef<null | (() => void)>(null)
 
   const latest = useRef({
     activeToolLabel,
@@ -207,6 +359,7 @@ export function useVoiceLiveConversation({
   const end = useCallback(async () => {
     startEpochRef.current += 1
     startingRef.current = false
+    ownsCallTargetRef.current = null
 
     if (utteranceTimerRef.current) {
       window.clearTimeout(utteranceTimerRef.current)
@@ -214,6 +367,8 @@ export function useVoiceLiveConversation({
     }
 
     userUtteranceRef.current = ''
+    retireLiveDraftsRef.current?.()
+    retireLiveDraftsRef.current = null
     const session = sessionRef.current
     sessionRef.current = null
     setDelegation(null)
@@ -226,6 +381,14 @@ export function useVoiceLiveConversation({
     setStatus('idle')
   }, [setDelegation])
 
+  useLayoutEffect(() => {
+    if (ownsCallTargetRef.current?.() === false) {
+      void end()
+      latest.current.onFatalError?.()
+    }
+  })
+  useLayoutEffect(() => () => { void end() }, [end])
+
   const start = useCallback(async () => {
     if (sessionRef.current || startingRef.current) {
       return
@@ -233,6 +396,80 @@ export function useVoiceLiveConversation({
 
     startingRef.current = true
     const epoch = ++startEpochRef.current
+    const target = targetRef.current
+    const initialOwner = resolveOwnerNow(target.ownerHint)
+    const isFreshDraft = isFreshDraftTarget(target)
+    let assigned: VoiceDraftDestination | undefined
+    let reachedAssignedChat = false
+
+    const stillTargeted = () => {
+      const current = targetRef.current
+      const currentOwner = resolveOwnerNow(current.ownerHint)
+
+      if (isFreshDraft) {
+        if (assigned && current.storedSessionId === assigned.storedSessionId) {
+          reachedAssignedChat = true
+          const profile = currentOwner.profile ?? 'default'
+
+          return currentOwner.connectionId === assigned.owner.connectionId &&
+            (profile === assigned.backendProfile || profile === assigned.owner.profile)
+        }
+
+        // Permit only the handoff announced by our own create, not a new
+        // draft or an unrelated route whose stored session has yet to load.
+        return !reachedAssignedChat && !current.storedSessionId && (
+          current.voiceDraftKey === target.voiceDraftKey ||
+          (!!assigned && current.voiceRouteSessionId === assigned.storedSessionId)
+        )
+      }
+
+      return (
+        current.key === target.key &&
+        currentOwner.connectionId === initialOwner.connectionId &&
+        currentOwner.profile === initialOwner.profile
+      )
+    }
+
+    ownsCallTargetRef.current = stillTargeted
+
+    const isCurrent = () => enabledRef.current && startEpochRef.current === epoch && stillTargeted()
+    let stored = target.storedSessionId
+
+    if (!stored) {
+      try {
+        stored = await createCallChat(target, isCurrent, destination => {
+          assigned = destination
+        })
+      } catch (error) {
+        if (isCurrent()) {
+          void end()
+          notifyError(error, voiceCopy.couldNotStartSession)
+          latest.current.onFatalError?.()
+        }
+
+        return
+      }
+
+      if (!stored) {
+        return
+      }
+    }
+
+    const callStoredId = stored
+    // Only a call the owner records gets live words: its saved rows replace them.
+    let recorded = false
+    let liveRun: null | { id: string; role: LiveTranscriptFragment['speaker'] } = null
+    const liveRuns = new Set<string>()
+
+    const retireLiveDrafts = () => {
+      const ids = new Set(liveRuns)
+
+      if (callStoredId && ids.size) {
+        retireEndedCallDrafts(callStoredId, ids)
+      }
+    }
+
+    const callOwner = assigned ? { ...assigned.owner, profile: assigned.backendProfile } : initialOwner
 
     try {
       await latest.current.beforeMicOpen?.()
@@ -240,8 +477,10 @@ export function useVoiceLiveConversation({
       // A wake-pause failure must not block an explicit start.
     }
 
-    if (!enabledRef.current || startEpochRef.current !== epoch) {
-      startingRef.current = false
+    if (!isCurrent()) {
+      if (startEpochRef.current === epoch) {
+        startingRef.current = false
+      }
 
       return
     }
@@ -252,6 +491,25 @@ export function useVoiceLiveConversation({
         // never delegates it, so the spoken stop phrase is judged on the user
         // transcript once the utterance settles.
         onTranscript: fragment => {
+          if (sessionRef.current !== session || !stillTargeted()) {
+            return
+          }
+
+          // Arrival order, like the owner's runs: a speaker change starts a new run.
+          if (recorded && callStoredId && fragment.text) {
+            if (liveRun?.role !== fragment.speaker) {
+              liveRun = { id: newVoiceLiveDraftRunId(), role: fragment.speaker }
+              liveRuns.add(liveRun.id)
+            }
+
+            appendVoiceLiveDraft(callStoredId, liveRun.id, fragment.speaker, fragment.text, {
+              endMs: fragment.endMs,
+              eventId: fragment.event_id,
+              startMs: fragment.startMs,
+              timingMissing: fragment.timingMissing
+            })
+          }
+
           if (fragment.speaker !== 'user') {
             return
           }
@@ -267,7 +525,7 @@ export function useVoiceLiveConversation({
             const utterance = userUtteranceRef.current
             userUtteranceRef.current = ''
 
-            if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
+            if (sessionRef.current === session && stillTargeted() && isVoiceStopCommand(utterance)) {
               void end()
               latest.current.onStopWord?.()
             }
@@ -279,6 +537,8 @@ export function useVoiceLiveConversation({
           }
 
           sessionRef.current = null
+          retireLiveDraftsRef.current?.()
+          retireLiveDraftsRef.current = null
           setDelegation(null)
           setStatus('idle')
 
@@ -291,12 +551,12 @@ export function useVoiceLiveConversation({
             latest.current.onFatalError?.()
           }
         },
-        onDelegation: (delegationId, context) => {
-          if (sessionRef.current !== session) {
+        onDelegation: (delegationId, context, submissionId, recordedCallId) => {
+          if (sessionRef.current !== session || !stillTargeted()) {
             return
           }
 
-          const { context: voiceContext, prompt } = delegationPrompt(context)
+          const { context: voiceContext, eventIds, prompt } = delegationPrompt(context, Boolean(recordedCallId))
 
           // A spoken stop command ends the conversation instead of becoming a turn.
           if (prompt && isVoiceStopCommand(prompt)) {
@@ -306,8 +566,19 @@ export function useVoiceLiveConversation({
             return
           }
 
-          // A newer request supersedes an in-flight turn: stop it so the answer
-          // the voice speaks is for what the user asked last.
+          if (!prompt) {
+            return
+          }
+
+          // No separate interrupt for a recorded admission. It is not fenced to a
+          // specific turn, and the spoken-reply bridge can track only one request.
+          if (recordedCallId && (!eventIds || busyRef.current || delegationRef.current)) {
+            notify({ kind: 'warning', message: '', title: voiceCopy.liveDelegationFailed })
+            session.speak(delegationId, 'I could not hand that request to Hermes. Please try again.')
+
+            return
+          }
+
           if (busyRef.current) {
             void latest.current.onInterrupt?.()
           }
@@ -320,7 +591,31 @@ export function useVoiceLiveConversation({
           submittedAtRef.current = Date.now()
           latest.current.consumePendingResponse()
           refreshStatus()
-          void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
+
+          const claim = recordedCallId && eventIds
+            ? { call_id: recordedCallId, delegation_id: delegationId, event_ids: eventIds }
+            : undefined
+
+          // Its optimistic bubble now shows this run's words; the live line steps aside.
+          if (claim && callStoredId && eventIds?.[0]) {
+            markVoiceLiveDraftClaimed(callStoredId, eventIds[0], submissionId)
+          }
+
+          const submission = claim
+            ? latest.current.onSubmit(prompt, voiceContext, submissionId, callStoredId, assigned?.runtimeSessionId, claim)
+            : assigned
+              ? latest.current.onSubmit(prompt, voiceContext, submissionId, callStoredId, assigned.runtimeSessionId)
+              : latest.current.onSubmit(prompt, voiceContext, submissionId, callStoredId)
+
+          void Promise.resolve(submission).then(accepted => {
+            if (accepted === false) {
+              throw new Error(voiceCopy.liveDelegationFailed)
+            }
+          }).catch(error => {
+            if (sessionRef.current !== session || !stillTargeted() || delegationRef.current !== delegationId) {
+              return
+            }
+
             notifyError(error, voiceCopy.liveDelegationFailed)
             session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
             setDelegation(null)
@@ -331,12 +626,15 @@ export function useVoiceLiveConversation({
           notify({ kind: fatal ? 'error' : 'warning', message, title: voiceCopy.liveError })
         },
         onSpeakingChange: speaking => {
+          if (sessionRef.current !== session || !stillTargeted()) {
+            return
+          }
+
           speakingRef.current = speaking
           setLevel(speaking ? 0.6 : 0)
           refreshStatus()
         }
-      },
-      ownerRef.current
+      }
     )
 
     sessionRef.current = session
@@ -345,12 +643,25 @@ export function useVoiceLiveConversation({
     setStatus('thinking')
 
     try {
-      await session.start(latest.current.seedHistory())
+      const captureStatus = await session.start(assigned ? [] : latest.current.seedHistory(), callStoredId, callOwner)
 
       if (sessionRef.current !== session || startEpochRef.current !== epoch) {
         session.close()
 
         return
+      }
+
+      if (!stillTargeted()) {
+        void end()
+
+        return
+      }
+
+      if (captureStatus === 'recording') {
+        recorded = true
+        retireLiveDraftsRef.current = retireLiveDrafts
+      } else {
+        notify({ kind: 'warning', message: voiceCopy.liveCaptureUnavailable })
       }
 
       refreshStatus()
@@ -487,8 +798,6 @@ export function useVoiceLiveConversation({
 
     wasEnabledRef.current = enabled
   }, [enabled, end, start])
-
-  useEffect(() => () => void end(), [end])
 
   return { end, level, muted, start, status, stopTurn, toggleMute }
 }

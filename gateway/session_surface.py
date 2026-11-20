@@ -7,7 +7,9 @@ persisted user row stays the words the user typed and the frozen system prefix i
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 
+from persistence.authority.admissions import VOICE_CLAIM_V1
 from persistence.core.errors import AuthorityRefusal
 
 SURFACES = frozenset({'hud', 'voice-live'})
@@ -43,6 +45,30 @@ def admit_surface(params):
     if voice_turn:
         committed['voice_turn'] = True
     return {'surface_v1': committed} if committed else {}
+
+
+def admit_voice_claim(params, *, request_id):
+    """Validate an untrusted provider-coverage claim; the owner still has to prove it."""
+    if 'voice_claim' not in params:
+        return {}
+    claim = params['voice_claim']
+    if params.get('surface') != 'voice-live' or not isinstance(claim, dict) or set(claim) != {
+        'call_id', 'delegation_id', 'event_ids',
+    }:
+        raise AuthorityRefusal('invalid_params')
+    call_id, delegation_id, event_ids = (claim[k] for k in ('call_id', 'delegation_id', 'event_ids'))
+
+    def valid_id(value):
+        return isinstance(value, str) and 0 < len(value) <= 256 and value.isascii() and all('!' <= c <= '~' for c in value)
+
+    if (not valid_id(call_id) or not valid_id(delegation_id) or not isinstance(event_ids, list)
+            or not 1 <= len(event_ids) <= 80 or not all(valid_id(value) for value in event_ids)
+            or len(event_ids) != len(set(event_ids))):
+        raise AuthorityRefusal('invalid_params')
+    stable_id = 'voice-live:' + json.dumps([call_id, delegation_id], separators=(',', ':'))
+    if request_id != stable_id:
+        raise AuthorityRefusal('invalid_params')
+    return {VOICE_CLAIM_V1: {'call_id': call_id, 'delegation_id': delegation_id, 'event_ids': list(event_ids)}}
 
 
 def restore_surface(committed):

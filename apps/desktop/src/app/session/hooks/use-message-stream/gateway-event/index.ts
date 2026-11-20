@@ -29,6 +29,7 @@ import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
 import { handleToolEvent, handleToolProgressEvent, retireTurnToolProgress } from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
+import { handleRefusedVoiceClaim, handleVoiceLiveCapture } from './voice-live-capture'
 
 export type { GatewayEventDeps } from './types'
 
@@ -154,9 +155,15 @@ function noteExecutionAdmission(event: GatewayEvent, sessionId: null | string, d
   }
 }
 
+/** Whether a session has a turn in flight that a late unscoped event could belong to. */
+function hasLiveTurn(state: ReturnType<GatewayEventDeps['sessionStateByRuntimeIdRef']['current']['get']>): boolean {
+  return Boolean(state && (state.awaitingResponse || state.busy || state.streamId || state.sawAssistantPayload))
+}
+
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const executionAuthorities = useRef(new Map())
+  const capture = useRef({ reads: new Map<string, symbol>(), warnedCalls: new Set<string>() })
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   // One pin per concurrent unscoped stream, not a single shared slot: two chats
@@ -194,6 +201,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         window.clearTimeout(configRefreshTimerRef.current)
         configRefreshTimerRef.current = null
       }
+
+      capture.current.reads.clear()
+      capture.current.warnedCalls.clear()
     },
     []
   )
@@ -212,6 +222,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         (!event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())) &&
         registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
           registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
+
+      // Capture is a storage notification, not an execution frame or watchdog heartbeat.
+      if (event.type === 'voice.live.capture') {
+        handleVoiceLiveCapture(event, deps, fromActiveSource, capture.current)
+
+        return
+      }
 
       const occurredAt = gatewayEventOccurredAt(payload)
 
@@ -232,6 +249,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = route.sessionId
 
+      // Never an execution frame: handled before the fence, and only on an idle chat.
+      if (handleRefusedVoiceClaim(event, sessionId, deps, occurredAt)) {
+        return
+      }
+
       if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
         return
       }
@@ -250,13 +272,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         event.type !== 'message.start' &&
         UNSCOPED_STREAM_EVENT_TYPES.has(event.type)
       ) {
-        const state = sessionStateByRuntimeIdRef.current.get(sessionId)
-
-        const hasLiveTurn = Boolean(
-          state && (state.awaitingResponse || state.busy || state.streamId || state.sawAssistantPayload)
-        )
-
-        if (!hasLiveTurn) {
+        if (!hasLiveTurn(sessionStateByRuntimeIdRef.current.get(sessionId))) {
           return
         }
       }

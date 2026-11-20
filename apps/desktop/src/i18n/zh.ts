@@ -266,6 +266,8 @@ export const zhOverrides = {
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用',
       liveEnded: '实时语音会话已结束',
+      liveCaptureUnavailable: '本次实时通话的转录不会保存到聊天中。',
+      liveCaptureIncomplete: '本次实时通话的转录可能不完整。',
       liveEndedConnectionLost: '实时语音会话连接已断开。',
       liveEndedClosed: '实时语音会话已被服务端关闭。',
       liveError: '实时语音',

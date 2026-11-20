@@ -6,6 +6,7 @@ import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import type { CreateBackendSessionForSend } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
@@ -44,7 +45,6 @@ import {
   $resumeExhaustedSessionId,
   $sessions,
   getSessionOwnerHint,
-  resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
   shouldMigrateComposerScope
@@ -54,7 +54,6 @@ import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
-import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -70,13 +69,13 @@ import {
   useComposerScope,
   useComposerSurfaceId
 } from './composer/scope'
+import { VoiceCallTargetProvider } from './composer/voice-call-target'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
-import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
@@ -90,8 +89,10 @@ import {
 import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
 import { useChatBarState } from './use-chat-bar-state'
 import { useTranscriptRetention } from './use-transcript-retention'
+import { useChatViewTargets } from './view-targets'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
+  createVoiceDraftSession?: CreateBackendSessionForSend
   gateway: HermesGateway | null
   modelOptionsOwnerConnectionId?: string
   modelOptionsProfile?: string
@@ -485,6 +486,7 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
 
 const ChatViewContent = memo(function ChatViewContent({
   className,
+  createVoiceDraftSession,
   gateway,
   modelOptionsOwnerConnectionId,
   modelOptionsProfile,
@@ -581,19 +583,19 @@ const ChatViewContent = memo(function ChatViewContent({
   const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
-  // Durable composer/queue scope (lineage root) so auto-compression tip rotation
-  // does not wipe an in-progress draft or orphan /queue entries. For the
-  // primary view, the route is authoritative over the store selection — the
-  // latter can be momentarily null/stale mid-switch, which used to leak into
-  // the composer's scope key (#59305). A tile has no route, so it always uses
-  // its own selection directly.
-  const queueSessionKey = useMemo(() => {
-    const effectiveSelectedSessionId = isPrimary
-      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
-      : selectedSessionId
-
-    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
-  }, [isPrimary, location.pathname, selectedSessionId, sessions])
+  const { isRoutedSessionView, queueSessionKey, routedSessionId, routeSessionMismatch, voiceCall } = useChatViewTargets({
+    activeSessionId,
+    createVoiceDraftSession,
+    freshDraftKey,
+    freshDraftReady,
+    gatewaySwapTarget,
+    isPrimary,
+    messagesEmpty,
+    pathname: location.pathname,
+    selectedSessionId,
+    sessions,
+    transcriptStoredSessionId
+  })
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
@@ -621,23 +623,6 @@ const ChatViewContent = memo(function ChatViewContent({
 
     return onCancel()
   }, [activeSessionId, onCancel, queueSessionKey])
-
-  // A tile IS its session — no route involved, never "mismatched".
-  const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
-  const isRoutedSessionView = Boolean(routedSessionId)
-
-  // The URL points at a session the store hasn't loaded yet (sidebar / cmd-K /
-  // direct nav). Derived in render so the swap reads instantly: the same frame
-  // the id changes we drop the old transcript and show the loader, instead of
-  // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isPrimary
-    ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions, {
-        activeRuntimeId: activeSessionId,
-        contextSwitching: Boolean(gatewaySwapTarget),
-        messagesEmpty,
-        transcriptStoredSessionId
-      })
-    : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state. The Appearance toggle
@@ -837,6 +822,7 @@ const ChatViewContent = memo(function ChatViewContent({
         {showChatBar && (
           <FloatingComposerSurface>
             <Suspense fallback={<ChatBarFallback />}>
+              <VoiceCallTargetProvider value={voiceCall}>
               <ChatBar
                 busy={busy}
                 cwd={currentCwd}
@@ -865,6 +851,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 sessionId={activeSessionId}
                 state={chatBarState}
               />
+              </VoiceCallTargetProvider>
             </Suspense>
           </FloatingComposerSurface>
         )}

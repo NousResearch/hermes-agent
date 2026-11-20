@@ -177,6 +177,17 @@ export function applyThinkingSoundFromConfig(
   $thinkingSoundEnabled.set(config?.voice?.thinking_sound !== false)
 }
 
+// `voice.gpt_live.spoken_replies` — how the chat shows the voice model's spoken
+// reading of a Hermes reply: collapsed under the reply (default) or hidden.
+export type GptLiveSpokenReplies = 'collapse' | 'hide'
+export const $gptLiveSpokenReplies = atom<GptLiveSpokenReplies>('collapse')
+
+export function applyGptLiveSpokenRepliesFromConfig(
+  config: { voice?: { gpt_live?: { spoken_replies?: unknown } | null } | null } | null | undefined
+) {
+  $gptLiveSpokenReplies.set(config?.voice?.gpt_live?.spoken_replies === 'hide' ? 'hide' : 'collapse')
+}
+
 /** Persist even an unchanged value, so migrating false is also one-time. */
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
   storeAutoSpeak(enabled, false)

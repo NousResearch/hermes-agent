@@ -473,6 +473,8 @@ export const en: Translations = {
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable',
       liveEnded: 'Live voice session ended',
+      liveCaptureUnavailable: 'This live call transcript won’t be saved to the chat.',
+      liveCaptureIncomplete: 'This live call transcript may be incomplete.',
       liveEndedConnectionLost: 'The live voice session lost its connection.',
       liveEndedClosed: 'The live voice session was closed by the service.',
       liveError: 'Live voice',

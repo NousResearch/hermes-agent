@@ -4,6 +4,7 @@ import { useMemo, useRef } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
+import { shapeVoiceLiveMessages } from '@/lib/chat-messages/voice-live-display'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
 
 // The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
@@ -35,7 +36,9 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
+    // Voice rows are joined/marked for display here, never in session state:
+    // paging, rewind and reactions keep one durable row per message.
+    for (const message of shapeVoiceLiveMessages(coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current))) {
       // A repeated id is a transcript bug upstream, but it must not reach the
       // repository: MessageRepository throws on the second link ("A message
       // with the same id already exists in the parent tree") and takes the

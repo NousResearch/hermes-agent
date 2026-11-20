@@ -514,6 +514,7 @@ export interface HermesConfig {
     barge_in?: unknown
     barge_in_threshold_multiplier?: unknown
     silence_duration?: unknown
+    gpt_live?: { spoken_replies?: unknown } | null
   }
 }
 

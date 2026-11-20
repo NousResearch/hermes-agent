@@ -3,7 +3,6 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
-import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
@@ -58,7 +57,6 @@ import {
   resolveActiveSourceOwnerRoute,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
-import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
@@ -67,7 +65,6 @@ import {
   $connection,
   $currentCwd,
   $messages,
-  $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
   idsShareLineage,
@@ -126,7 +123,6 @@ import {
   openSessionTile,
   patchSessionTile,
   publishSessionState,
-  releaseSessionOwnerHold,
   type SessionTileWorkspaceScope,
   type TileDock
 } from '@/store/session-states'
@@ -160,6 +156,7 @@ import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import { newSessionCwd, normalizeNewChatWorkspaceTarget } from './new-session-cwd'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -229,6 +226,13 @@ import {
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
 } from './utils'
+import {
+  closeAbandonedSession,
+  createdSessionAbandoned,
+  guardedCreateTransport,
+  VoiceDraftCreate,
+  voiceDraftCreate
+} from './voice-draft-create'
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -289,10 +293,6 @@ interface FreshSessionDraftOptions {
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
-function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
-  return typeof target === 'string' ? target.trim() || null : target
-}
-
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
@@ -318,6 +318,7 @@ export function useSessionActions({
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
   const createIntentRef = useRef<string | null>(null)
+  const voiceDraftCreateRef = useRef<string | null>(null)
   const transcriptHydrationByRuntimeRef = useRef(new Map<string, symbol>())
   const coldDisplayReadsRef = useRef(new Map<string, symbol>())
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
@@ -593,25 +594,18 @@ export function useSessionActions({
     async (preview: string | null = null, createOverrides?: SessionCreateOverrides): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
-      const createIntent = (createIntentRef.current ??= randomUuid())
+      const voice = voiceDraftCreate(createOverrides?.voiceDraft, startingRouteToken, getRouteToken, () => selectedStoredSessionIdRef.current)
 
+      if (VoiceDraftCreate.blocked(voiceDraftCreateRef, voice, creatingSessionRef.current)) {
+        return null
+      }
+
+      const createIntent = (createIntentRef.current ??= randomUuid())
+      voice?.claim(voiceDraftCreateRef, createIntent)
       creatingSessionRef.current = true
 
       try {
-        // An explicit one-shot workspace target (null → detached, string → that
-        // folder) wins; otherwise the live cwd, then the project-aware default
-        // (resolveNewSessionCwd — a project's new session keeps its repo cwd).
-        // Home is an explicit detached scope: do not let a stale live cwd from
-        // the previously selected project leak into this new session (#84220).
-        const workspaceTarget = $newChatWorkspaceTarget.get()
-        const homeScope = $projectScope.get() === NO_PROJECT_ID
-
-        const cwd =
-          workspaceTarget === null || (workspaceTarget === undefined && homeScope)
-            ? ''
-            : typeof workspaceTarget === 'string'
-              ? workspaceTarget.trim()
-              : $currentCwd.get().trim() || resolveNewSessionCwd()
+        const cwd = newSessionCwd()
 
         // The EXACT owner for this create: an explicit agent route, else the
         // (registry source, profile) pair the draft was made on. Read ONCE at
@@ -649,8 +643,14 @@ export function useSessionActions({
         let created: SessionCreateResponse
         let stored: null | string
 
+        voice?.bind(capturedRoute, capturedProfile)
+
         try {
-          created = await createGatewaySession(capturedRoute, params, requestGateway)
+          if (voice?.lost()) {
+            return null
+          }
+
+          created = await createGatewaySession(capturedRoute, params, guardedCreateTransport(voice, requestGateway))
 
           stored = created.stored_session_id ?? null
 
@@ -690,23 +690,15 @@ export function useSessionActions({
           submitTargetStoredId: stored
         })
 
-        if (drift) {
-          console.warn('[submit-drift-abort]', drift, { phase: 'mid-create' })
-
-          // Close on the backend that minted the session: the ambient socket
-          // is a different machine/profile for a routed create and would
-          // 4001 while the orphan lives on (and later ws-orphan-reaps) there.
-          const closeCreated = capturedRoute
-            ? requestGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, 'session.close', {
-                session_id: created.session_id
-              })
-            : requestGateway('session.close', { session_id: created.session_id })
-
-          await closeCreated.catch(() => undefined)
-
-          if (stored) {
-            releaseSessionOwnerHold(stored)
-          }
+        if (createdSessionAbandoned(drift, stored, voice)) {
+          await closeAbandonedSession({
+            drift,
+            ownerLost: Boolean(voice?.ownerChanged()),
+            requestGateway,
+            route: capturedRoute,
+            runtimeSessionId: created.session_id,
+            storedSessionId: stored
+          })
 
           return null
         }
@@ -736,6 +728,8 @@ export function useSessionActions({
           // The draft's preview tabs follow it the same way (#73890).
           adoptDraftPreviewTabs(stored)
           createOverrides?.onComposerScopeAssigned?.(stored)
+
+          voice?.assign(created.session_id, stored)
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the
           // previous session (#66057).
@@ -775,6 +769,8 @@ export function useSessionActions({
 
         return created.session_id
       } finally {
+        voice?.release(voiceDraftCreateRef, createIntent)
+
         // Keep the guard up while a navigate to the new stored id is pending;
         // otherwise clear immediately (abort, error, or create without stored id).
         if (!pendingCreatedStoredSessionIdRef.current) {
@@ -857,6 +853,7 @@ export function useSessionActions({
             ],
             awaitingResponse: true,
             busy: true,
+            voiceClaimSubmissionId: null,
             turnStartedAt: state.turnStartedAt ?? Date.now()
           }),
           stored
@@ -2820,7 +2817,8 @@ export function useSessionActions({
       resumeSession,
       selectedStoredSessionIdRef,
       t,
-      updateSessionState
+      updateSessionState,
+      releaseCreatingSessionGuard
     ]
   )
 

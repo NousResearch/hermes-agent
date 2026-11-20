@@ -1,5 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { type CanonicalVoiceClaim, JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -828,6 +828,8 @@ export interface SubmitTextOptions {
   /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
+  /** A recorded delegation must never fall back to a plain text admission. */
+  voiceClaim?: CanonicalVoiceClaim
   /** A spoken turn from the chained voice conversation: the gateway runs it on
    *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
   voiceTurn?: boolean

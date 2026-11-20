@@ -93,6 +93,23 @@ export type ChatMessage = {
    *  bubble and never the model's reply. `notice` is absent on older backends;
    *  the renderer falls back to an i18n string. */
   contentRefused?: { notice?: string }
+  /** A saved GPT-Live speaker run (`display_metadata.voice_live`): its first provider event
+   *  and call-relative timing (null when the provider omitted it). Identifies the row that
+   *  replaces that run's live words. */
+  voiceLive?: { callKey?: string; endMs: null | number; firstEventId?: string; startMs: null | number }
+  /** Render-time only (shapeVoiceLiveMessages): the saved voice runs a crosstalk join shows as one message. */
+  voiceLiveRuns?: VoiceLiveRun[]
+  /** Render-time only: the voice model's spoken reading of the Hermes reply above it.
+   *  `repeat` says what the reply says; `differs` adds a word that can change its
+   *  meaning (a negation), so it is never hidden. */
+  spokenRelay?: 'differs' | 'repeat'
+}
+
+export interface VoiceLiveRun {
+  endMs: null | number
+  firstEventId?: string
+  startMs: null | number
+  text: string
 }
 
 export type GatewayEventPayload = {

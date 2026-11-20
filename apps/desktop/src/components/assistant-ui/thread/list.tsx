@@ -52,6 +52,7 @@ import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } 
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
 import { useTimelineReveal } from './use-timeline-reveal'
+import { VoiceLiveDraftRows } from './voice-live-draft'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -503,6 +504,20 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
   )
 })
 
+const ShowEarlierButton: FC<{ onClick: () => void }> = ({ onClick }) => {
+  const { t } = useI18n()
+
+  return (
+    <button
+      className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+      onClick={onClick}
+      type="button"
+    >
+      {t.assistant.thread.showEarlier}
+    </button>
+  )
+}
+
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
   components,
@@ -529,7 +544,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
   )
 
-  const { t } = useI18n()
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
   // below on every tick). Weights are folded in separately for the budget.
@@ -1636,15 +1650,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           data-slot="aui_thread-content"
           ref={contentRef as React.RefCallback<HTMLDivElement>}
         >
-          {!renderEmpty && (hiddenCount > 0 || olderAvailable) && (
-            <button
-              className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-              onClick={showEarlier}
-              type="button"
-            >
-              {t.assistant.thread.showEarlier}
-            </button>
-          )}
+          {!renderEmpty && (hiddenCount > 0 || olderAvailable) && <ShowEarlierButton onClick={showEarlier} />}
           {renderEmpty ? (
             <div className="grid flex-1 grid-rows-[minmax(0,1fr)_auto] gap-(--conversation-turn-gap)">
               {emptyPlaceholder}
@@ -1652,6 +1658,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           ) : (
             rows
           )}
+          <VoiceLiveDraftRows sessionId={sessionId} sessionKey={sessionKey} />
           <PendingApprovalStack />
           {!renderEmpty && loadingIndicator}
           {!renderEmpty && clampToComposer && (

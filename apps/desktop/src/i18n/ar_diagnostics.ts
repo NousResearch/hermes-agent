@@ -75,6 +75,8 @@ export const arDiagnostics = {
       microphoneInUse: 'الميكروفون مستخدم من تطبيق آخر.',
       microphoneNeedsHttps: 'يحتاج الميكروفون إلى اتصال آمن. افتح Webapp عبر HTTPS، أو عبر نفق SSH إلى 127.0.0.1، لاستخدامه.',
       microphonePermissionDenied: 'تم رفض إذن الميكروفون.',
+      liveCaptureUnavailable: 'لن يُحفظ نص هذه المكالمة المباشرة في المحادثة.',
+      liveCaptureIncomplete: 'قد يكون نص هذه المكالمة المباشرة غير مكتمل.',
       microphoneStartFailed: 'تعذر بدء تسجيل الميكروفون.',
       microphoneUnsupported: 'هذا المتصفح لا يدعم تسجيل الميكروفون.',
       noMicrophone: 'لم يتم العثور على ميكروفون.',

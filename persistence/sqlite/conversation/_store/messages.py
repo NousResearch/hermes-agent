@@ -1506,7 +1506,8 @@ def _display_set(holder: StoreHolder, sql: str, session_ids: list[str]) -> list[
 def get_messages_as_conversation(holder: StoreHolder, session_id: str, include_ancestors: bool = False,
                                  include_inactive: bool = False, repair_alternation: bool = False,
                                  include_row_ids: bool = False,
-                                 include_compacted: bool = False) -> list[dict[str, Any]]:
+                                 include_compacted: bool = False,
+                                 exclude_row: tuple[int, str] | None = None) -> list[dict[str, Any]]:
     """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
     only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
     repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
@@ -1516,6 +1517,8 @@ def get_messages_as_conversation(holder: StoreHolder, session_id: str, include_a
     rows = _fetch_conversation_rows(holder,
         _resume_lineage_ids(holder, session_id) if include_ancestors else [session_id],
         _active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
+    if exclude_row is not None:
+        rows = [row for row in rows if (row['id'], row['message_uid']) != exclude_row]
     if include_compacted:
         rows = _dedupe_display_generations(holder, rows, drop_removed=display)
     return _rows_to_conversation(holder, rows, session_id=session_id, include_ancestors=include_ancestors,

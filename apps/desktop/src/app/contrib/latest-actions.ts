@@ -30,6 +30,7 @@ function latestOptional<A extends unknown[], R>(
 
 export function latestChatActions(actions: ChatActions): ChatActions {
   return {
+    createVoiceDraftSession: latestOptional(() => actions.createVoiceDraftSession),
     onAddContextRef: (...args) => actions.onAddContextRef(...args),
     onAddUrl: (...args) => actions.onAddUrl(...args),
     onAttachDroppedItems: (...args) => actions.onAttachDroppedItems(...args),

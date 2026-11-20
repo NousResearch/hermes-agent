@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isImeComposing, isSubmitEnter } from './ime'
+import { IME_COMMIT_GUARD_MS, isImeComposing, isPostCompositionCommitEnter, isSubmitEnter } from './ime'
 
 describe('isImeComposing', () => {
   it('detects composition via nativeEvent.isComposing (React events)', () => {
@@ -40,5 +40,37 @@ describe('isSubmitEnter', () => {
 
   it('rejects non-Enter keys', () => {
     expect(isSubmitEnter({ key: 'Escape', nativeEvent: {} })).toBe(false)
+  })
+})
+
+describe('isPostCompositionCommitEnter', () => {
+  const END = 1_000_000
+
+  it('is false for a field that has never composed', () => {
+    expect(isPostCompositionCommitEnter(0, END)).toBe(false)
+  })
+
+  it('claims the Enter that lands on the back of a composition end', () => {
+    expect(isPostCompositionCommitEnter(END, END)).toBe(true)
+    expect(isPostCompositionCommitEnter(END, END + 40)).toBe(true)
+    expect(isPostCompositionCommitEnter(END, END + IME_COMMIT_GUARD_MS)).toBe(true)
+  })
+
+  it('hands back an Enter that arrives after the window — that one is a send', () => {
+    expect(isPostCompositionCommitEnter(END, END + IME_COMMIT_GUARD_MS + 1)).toBe(false)
+    expect(isPostCompositionCommitEnter(END, END + 5_000)).toBe(false)
+  })
+
+  it('stays inside the window when the clock goes backwards', () => {
+    // Date.now() can step back (NTP, sleep/wake). A negative delta means the
+    // guard fires rather than a send slipping through on a clock adjustment.
+    expect(isPostCompositionCommitEnter(END, END - 50)).toBe(true)
+  })
+
+  it('keeps the window far below human send latency', () => {
+    // The guard's whole justification is that a commit Enter is a keystroke and
+    // a send is a decision. If this ever creeps into human-decision territory
+    // the guard would start swallowing deliberate sends.
+    expect(IME_COMMIT_GUARD_MS).toBeLessThanOrEqual(300)
   })
 })

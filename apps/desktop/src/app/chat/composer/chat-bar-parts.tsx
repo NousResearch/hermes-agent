@@ -1,6 +1,9 @@
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 
+import type { ComposerSendGrace } from './hooks/use-composer-send-grace'
+import { SendHoldChip } from './send-hold-chip'
+
 /**
  * Radial dock-target glow shown while a popped-out composer is dragged.
  * Intensity tracks how close the composer is to the dock (1 = peak).
@@ -26,6 +29,15 @@ export function ComposerDockGlow({ dockProximity }: { dockProximity: number }) {
       }}
     />
   )
+}
+
+/**
+ * The send grace window's only visible cue, rendered next to the other
+ * composer-level pills because a withheld send belongs to THIS composer and must
+ * vanish with it. Nothing shows while no send is waiting.
+ */
+export function SendHoldCue({ grace, label }: { grace: ComposerSendGrace; label: string }) {
+  return grace.holding ? <SendHoldChip label={label} onCancel={grace.cancel} /> : null
 }
 
 /** "Editing a queued prompt" banner with Cancel / Save actions. */

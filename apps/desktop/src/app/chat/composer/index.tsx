@@ -30,6 +30,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
+import { $composerSendPrefs } from '@/store/composer-prefs'
 import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
@@ -45,7 +46,8 @@ import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
-import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { ComposerDockGlow, QueuedEditBanner, SendHoldCue } from './chat-bar-parts'
+import { ComposerPrimitiveBinding } from './composer-primitive-binding'
 import { ComposerTopSlot } from './composer-top-slot'
 import {
   acceptsTriggerCompletion,
@@ -62,6 +64,12 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
+import {
+  type ComposerEnterDeps,
+  handleComposerEnterKeyDown,
+  isImeCommitEnter,
+  releaseComposerEnterKey
+} from './enter-commit'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
@@ -75,6 +83,7 @@ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerScreenshot } from './hooks/use-composer-screenshot'
+import { useComposerSendGestures } from './hooks/use-composer-send-gestures'
 import { useComposerSubmit } from './hooks/use-composer-submit'
 import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
@@ -94,6 +103,7 @@ import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
+  composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
@@ -459,6 +469,18 @@ export function ChatBar({
     takeDraftRetry
   })
 
+  // The send gestures — grace window, hold threshold, idle deadline — in one
+  // owner that never paints (see use-composer-send-gestures). `ownerKey` is the
+  // session whose draft a waiting send would commit: the composer stays mounted
+  // across a session swap, so the hook must know which one armed it and take the
+  // window back when that changes.
+  const gestures = useComposerSendGestures({
+    busy,
+    editorRef,
+    ownerKey: activeQueueSessionKey,
+    submitDraft
+  })
+
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
   const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
@@ -529,6 +551,30 @@ export function ChatBar({
     []
   )
 
+  // Everything the Enter path may touch, passed explicitly: the module owns no
+  // composer state (see enter-commit.ts). The settings are read here, per press,
+  // so a change mid-gesture cannot make the repeat that arrives a few ms later
+  // mean something else.
+  const enterDeps = (): ComposerEnterDeps => ({
+    attachmentCount: attachments.length,
+    busy,
+    canSteer,
+    deliverQueuedNow,
+    disabled,
+    draftRef,
+    drainNextQueued,
+    editorRef,
+    flushEditorToDraft,
+    gestures,
+    prefs: $composerSendPrefs.get(),
+    queueDraft,
+    queueEdit,
+    queuedPrompts,
+    setComposerText,
+    steerDraft,
+    submitDraft
+  })
+
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
@@ -537,6 +583,9 @@ export function ChatBar({
       return
     }
 
+    // Live typing re-arms the gestures: it stamps the pause mode's clock, takes
+    // back a held send, and pushes the idle deadline out (see the hook).
+    gestures.noteEditorInput(composerPlainText(event.currentTarget).trim().length === 0)
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 
@@ -702,12 +751,11 @@ export function ChatBar({
       return
     }
 
-    // macOS Chinese IME (and some 3rd-party IMEs on Windows) emit Enter with
-    // keyCode 229 (legacy VK_PROCESSKEY) while isComposing is already false.
-    // The compositionend has fired but the keydown still carries 229, signalling
-    // "this Enter is an IME commit, not a user send".  If we let it through,
-    // the message fires before the committed text is fully in the DOM.
-    if (event.key === 'Enter' && event.keyCode === 229) {
+    // The two Enter commits the flags above miss: the legacy 229 stamp, and a
+    // candidate-confirm Enter that lands just after `compositionend` with nothing
+    // on the event to say so. Only the timing can tell the second one apart, so
+    // the guard owns that policy (see isImeCommitEnter).
+    if (isImeCommitEnter(event, gestures.press.compositionEndedAt, Date.now())) {
       return
     }
 
@@ -969,74 +1017,37 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
-      event.preventDefault()
-
-      if (busy && !disabled) {
-        // As with plain Enter, source the just-typed content from the DOM so a
-        // fast keypress cannot queue a stale draft.
-        const editorText = liveComposerDraft(editorRef.current, draftRef.current)
-
-        if (editorText !== draftRef.current) {
-          draftRef.current = editorText
-          setComposerText(editorText)
-        }
-
-        queueDraft()
-      }
-
-      return
+    // A real character key. Modifiers, arrows and the like do not count: the
+    // idle send asks "did the user type this", not "did they touch the keyboard".
+    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey) {
+      gestures.noteCharacterKey()
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-
-      // Decide from the DOM, not React state. `hasComposerPayload` is derived
-      // from the AUI composer state, which lags the latest keystroke by a
-      // render, so on fast typing / IME the just-typed text isn't in state yet.
-      // Without the live read, a real message typed while prompts are queued
-      // would drain the queue instead of sending. submitDraft() re-syncs and
-      // sends the live editor text.
-      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
-      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
-
-      if (disabled) {
-        return
-      }
-
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
-        void drainNextQueued()
-
-        return
-      }
-
-      // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second delivers them
-      // now — steered into the live turn when a steer can carry them, else
-      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
-      // drain above. With nothing queued it stays a no-op — interrupting is
-      // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
-      // DOM payload (not the render-lagged composer state) so a message typed
-      // fast / via IME while busy still reaches submitDraft() and gets queued
-      // instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
-        const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
-
-        if (head) {
-          void deliverQueuedNow(head.id)
-        }
-
-        return
-      }
-
-      submitDraft()
+    // Enter owns a decision tree of its own — the IME commits above, the repeat
+    // guard, both chords, and the gesture ladder — so it lives in enter-commit.ts
+    // and prevents exactly the presses it claims. Everything else this handler
+    // owns (undo, the popover, the arrows, the chips) has already had its turn.
+    if (event.key === 'Enter') {
+      handleComposerEnterKeyDown(event, enterDeps())
 
       return
     }
 
     if (event.key === 'Escape') {
+      // A held send owns Esc. It is the only thing on screen about to act on
+      // the user's behalf, and taking it back is the entire reason the hold
+      // exists — so it outranks the interrupt and popover meanings below.
+      if (gestures.sendGrace.holding) {
+        event.preventDefault()
+        gestures.sendGrace.cancel()
+
+        return
+      }
+
+      // A pending idle send is the same kind of promise as a held one: Esc is
+      // how you say "not yet", and it must work before the hold even starts.
+      gestures.cancelIdleSend()
+
       // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
       if (queueEdit) {
         event.preventDefault()
@@ -1056,7 +1067,17 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
+  const triggerKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
+
+  // The release half of a press: a tap that was waiting on the hold threshold
+  // still owes its send (see releaseComposerEnterKey).
+  const handleEditorKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter') {
+      releaseComposerEnterKey(enterDeps())
+    }
+
+    triggerKeyUp()
+  }
 
   const {
     dragActive,
@@ -1187,6 +1208,13 @@ export function ChatBar({
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
         onBlur={() => {
+          // A press in flight belongs to the editor that started it: losing
+          // focus ends the gesture, so neither the hold timer nor whatever the
+          // release was deferred to run can fire after focus has moved — and a
+          // keyup delivered elsewhere cannot revive a stale pause or commit on a
+          // later Enter.
+          gestures.cancelPress()
+
           // A composition never survives focus loss (Chromium commits the
           // preedit and fires compositionend on blur) — but if that event is
           // missed, the wedged flag would block the Send button's form-submit
@@ -1205,6 +1233,7 @@ export function ChatBar({
         }}
         onCompositionEnd={event => {
           composingRef.current = false
+          gestures.noteCompositionEnd()
 
           // The input events fired *during* composition were skipped (they
           // carried uncommitted preedit text), and Chromium does NOT reliably
@@ -1237,32 +1266,7 @@ export function ChatBar({
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />
-      {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
-        so the composer-state binding (text + IME + paste + form-submit hookup)
-        wires up. We render the real input UI ourselves above via the
-        contentEditable, so the primitive is invisible (sr-only).
-
-        IMPORTANT: don't let it render its default <TextareaAutosize>. That
-        component runs `useLayoutEffect(resizeTextarea)` on every value change
-        and reads `node.scrollHeight` against a hidden measurement textarea,
-        forcing two synchronous layouts per keystroke for an element the
-        user can't see. Profiling 400-char synthetic typing showed >900ms
-        cumulative cost in getHeight2/calculateNodeHeight alone (~2.3ms/key)
-        on top of the per-keystroke React commit.
-
-        `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
-        plain <textarea>, which carries the binding but skips autosize. */}
-      <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
-        <textarea
-          aria-hidden
-          autoCapitalize="off"
-          autoComplete="off"
-          autoCorrect="off"
-          className="sr-only"
-          spellCheck={false}
-          tabIndex={-1}
-        />
-      </ComposerPrimitive.Input>
+      <ComposerPrimitiveBinding />
     </div>
   )
 
@@ -1306,6 +1310,7 @@ export function ChatBar({
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
+            <SendHoldCue grace={gestures.sendGrace} label={t.composer.sendHold} />
             <ActionBadges sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}

@@ -2564,6 +2564,8 @@ export const ruOverrides = {
   },
   composer: {
     message: 'Сообщение',
+    predictionHint: '→ Принять · Tab Далее · Esc Скрыть',
+    predictionAnnouncement: (index, total, text) => `Подсказка ${index} из ${total}: ${text}`,
     wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',

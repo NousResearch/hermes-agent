@@ -13,8 +13,9 @@ import sqlite3
 
 from hermes_cli.doctor_report import Finding
 from hermes_cli.doctor_state import _state_db_health
-from hermes_state import SessionDB
-from hermes_state_repair import integrity_damage_is_structural, state_db_has_structural_damage
+from persistence.sqlite._state.repair import integrity_damage_is_structural, state_db_has_structural_damage
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def test_integrity_damage_classifier_maps_tree_ids_through_rootpage():
@@ -39,11 +40,10 @@ def test_integrity_damage_classifier_maps_tree_ids_through_rootpage():
 
 def _seed(tmp_path, rows=120):
     db_path = tmp_path / "state.db"
-    db = SessionDB(db_path=db_path)
-    db.create_session("s1", source="cli")
-    for i in range(rows):
-        db.append_message("s1", "user", f"hello {i} alpha beta " + "lorem " * 30)
-    db.close()
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, "s1", "cli")
+        seed_messages(store, "s1", *({"role": "user", "content": f"hello {i} alpha beta " + "lorem " * 30}
+                                     for i in range(rows)))
     raw = sqlite3.connect(db_path)
     raw.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     page_size = raw.execute("PRAGMA page_size").fetchone()[0]
@@ -78,11 +78,9 @@ def test_doctor_routes_structural_damage_to_recover_not_fts_rebuild(tmp_path, mo
     assert not list(tmp_path.glob("state.db.malformed-backup-*"))
 
     fts_path = tmp_path / "fts" / "state.db"
-    fts_db = SessionDB(db_path=fts_path)
-    fts_db.create_session("s1", source="cli")
-    for i in range(40):
-        fts_db.append_message("s1", "user", f"hello {i} alpha")
-    fts_db.close()
+    with open_persistence(profile_scope(home=fts_path.parent)) as fts_store:
+        seed_session(fts_store, "s1", "cli")
+        seed_messages(fts_store, "s1", *({"role": "user", "content": f"hello {i} alpha"} for i in range(40)))
     raw = sqlite3.connect(fts_path)
     raw.execute("UPDATE messages_fts_data SET block = X'DEADBEEFDEADBEEFDEADBEEFDEADBEEF'")
     raw.commit()

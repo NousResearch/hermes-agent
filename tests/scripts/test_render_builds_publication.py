@@ -41,11 +41,11 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     version = tag[1:]
     prefix = f'releases/tag/{tag}/'
     visible = [f'HermesBundled-{version}-mac-arm64.dmg', f'HermesBundled-{version}-win-x64.msix',
-               f'HermesBundled-{version}-win-arm64.msix', f'HermesBundled-{version}-linux-x64.AppImage',
-               f'HermesLight-{version}-win-x64.msix']
+               f'HermesBundled-{version}-win-arm64.msix', f'HermesLight-{version}-win-x64.msix']
     hidden = [f'HermesBundled-{version}-mac-arm64.zip', f'HermesBundled-{version}-win.msixbundle',
               f'HermesBundled-{version}-win-x64.msix.blockmap', 'latest.yml',
-              'HermesBundled-9.9.9-win-x64.msix']
+              'HermesBundled-9.9.9-win-x64.msix', f'HermesBundled-{version}-linux-x64.AppImage',
+              f'HermesBundled-{version}-linux-arm64.AppImage', 'canary-linux-arm64.yml']
     for name in visible + hidden:
         r2_server.store[prefix + name] = (name.encode(), '"e"')
     r2_server.store['releases/tag/v9.9.9/HermesBundled-9.9.9-win-x64.msix'] = (b'neighbor', '"e"')
@@ -72,7 +72,7 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     assert set(re.findall(r'href="(http[^"]+)"', page)) == expected | {release_url}
     assert rbt.recorded_build(page) == tag and 'Bundle environment' not in page
     assert all(name not in page and name not in body for name in hidden)
-    assert 'linux-arm64' not in page
+    assert 'Linux' not in body.split('Native install/chat smoke')[0]
     for url in expected:
         with urlopen(url, timeout=5) as response:
             assert response.read() == unquote(url.rsplit('/', 1)[1]).encode()
@@ -127,6 +127,30 @@ def test_incomplete_tag_keeps_channel_and_links_diagnostics(monkeypatch, r2_serv
         assert (rbt.r2.public_url_for(base, key) in output) == asset_present
     assert ('No downloadable artifacts' in page) == (not asset_present)
     assert r2_server.store['releases/canary/index.html'][0] == b'previous good page'
+
+
+def test_failed_linux_builds_still_advance_the_channel_page(monkeypatch, r2_server, release_body):  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+    tag = 'v1.2.3+canary.20260818T101010Z'
+    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    key = f'releases/tag/{tag}/HermesBundled-{tag[1:]}-win-x64.msix'
+    r2_server.store[key] = (b'transport fixture', '"e"')
+    r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
+    monkeypatch.setenv('RELEASE_NEEDS', json.dumps({
+        'build-win32-x64': {'result': 'success'}, 'termux-deb': {'result': 'success'},
+        'build-linux-x64': {'result': 'failure'}, 'build-linux-arm64': {'result': 'skipped'}}))
+    monkeypatch.setattr(sys, 'argv', ['renderer', '--tag', tag, '--r2-base-url', base])
+    assert rbt.main() == 0
+    page = r2_server.store['releases/canary/index.html'][0].decode()
+    for output in (page, release_body['body']):
+        assert 'Build incomplete' not in output and 'build-linux' not in output
+        assert rbt.r2.public_url_for(base, key) in output
+
+    monkeypatch.setenv('RELEASE_NEEDS', json.dumps({
+        'termux-deb': {'result': 'failure'}, 'build-linux-x64': {'result': 'failure'}}))
+    r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
+    assert rbt.main() == 0
+    assert r2_server.store['releases/canary/index.html'][0] == b'previous good page'
+    assert 'termux-deb (failure)' in release_body['body'] and 'build-linux' not in release_body['body']
 
 
 def test_attempt_page_warns_and_canary_page_does_not():

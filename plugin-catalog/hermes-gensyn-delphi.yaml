@@ -1,13 +1,13 @@
 name: hermes-gensyn-delphi
 repo: https://github.com/TakeshiTGAL/hermes-gensyn-plugins
-sha: 9325a7b15d815ca05983885ddd6615eae5f2b7a6
+sha: 8c49f39aa73673fc6d60c29c5991a763a54a94ac
 subdir: packages/delphi
-description: "Seven read-only tools. Disclosure — Seven read-only tools for Gensyn Delphi prediction markets; no funds move and nothing is signed or sent. Needs Node.js 20.18+ and a manual `npm ci --ignore-scripts` in the plugin folder (installs the pinned @gensyn-ai/gensyn-delphi-sdk and its locked npm deps) before the tools work. Runs a local Node subprocess per call (25 s deadline, not a sandbox). Sends your DELPHI_API_ACCESS_KEY only to delphi-api.gensyn.ai (testnet) or api.delphi.fyi (mainnet); history and quotes read api.goldsky.com and gensyn-testnet/mainnet.g.alchemy.com without the key, and quotes use a throwaway in-memory key the SDK requires. Tools are on for every surface by default, including messaging gateways, where anyone admitted can run these reads on the owner's key (rate limit 30 requests per minute per process); disable per surface with `hermes tools`."
+description: 'Seven read-only tools. Disclosure — Seven read-only tools for Gensyn Delphi prediction markets; no funds move and nothing is signed or sent. Needs Node.js 20.18+ and a manual `npm ci --ignore-scripts` in the plugin folder (installs the pinned @gensyn-ai/gensyn-delphi-sdk and its locked npm deps) before the tools work. Runs a local Node subprocess per call (25 s deadline, not a sandbox). Sends your DELPHI_API_ACCESS_KEY only to delphi-api.gensyn.ai (testnet) or api.delphi.fyi (mainnet); history and quotes read api.goldsky.com and gensyn-testnet/mainnet.g.alchemy.com without the key, and quotes use a throwaway in-memory key the SDK requires. Tools are on for every surface by default, including messaging gateways, where anyone admitted can run these reads on the owner''s key (rate limit 30 requests per minute per process); disable per surface with `hermes tools`.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 requires_hermes: ">=0.21.4"
-version: "0.2.0"
+version: 0.2.1
 platforms:
   - linux
   - macos

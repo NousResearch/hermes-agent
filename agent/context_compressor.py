@@ -3,7 +3,6 @@ tail are protected (iterative summaries, token-budget tail, tool-output pruning 
 
 import contextlib
 import contextvars
-import copy
 import hashlib
 import json
 import logging
@@ -30,13 +29,13 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
-from agent.context_compressor_window import CompactionWindowMixin
-from agent.context_compressor_prune import ProactivePruneMixin
+from agent.context_compressor_window import CompactionWindowMixin, summary_view
+from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
-from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_typed_input import TYPED_TURNS_POINTER, typed_summary_messages
 from agent.conversation_compression_scaffolding import is_user_role_scaffolding
 from agent.context_compressor_tail import (
@@ -53,8 +52,23 @@ from agent.model_metadata import (
 from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_derived_text, redact_sensitive_text
-from agent.turn_context import drop_stale_api_content
+from session_rules import turns as _turns
+from session_rules.turns import drop_stale_api_content
+from persistence.core.errors import PersistenceError
 from tools.todo_tool import TODO_INJECTION_HEADER
+from session_rules.turns import (
+    _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view,
+)
+from session_rules.turns import (
+    _BACKGROUND_PROCESS_NOTIFICATION_PREFIX,
+    _DB_PERSISTED_MARKER,
+    _HISTORICAL_SUMMARY_PREFIXES,
+    _IMAGE_PART_TYPES,
+    _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,42 +326,23 @@ MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
 # ``display_metadata`` flag on a row the model reads but nobody typed as one message (micro-compaction's
 # merge of adjacent user turns). Its source rows stay in display history, so display projections skip it.
 MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
-# Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
-# ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
-# dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.
-# by scaffolding rewind or in-place compaction) and garbage- collected, CPython is free to hand its address
-# to a brand-new assistant/tool message, whose ``id()`` then collides with the stale entry and the real turn
-# is silently never persisted. A marker bound to the dict itself cannot be aliased that way. The ``_``
-# prefix is mandatory: the wire sanitizers (agent/transports/chat_completions.py,
-# agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
-# process, so this never reaches a strict OpenAI-compatible gateway. CONTRACT (#92231): the marker asserts
-# "this dict's CONTENT is durable as written". Loaded rows are stamped at materialization time
-# (hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
-# and needs the change persisted MUST pop the marker (and invalidate _db_flush_scan_prefix if the dict may
-# sit inside the bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
-# agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without
-# popping leaves the DB silently stale.
-_DB_PERSISTED_MARKER = "_db_persisted"
 # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY = "_proactive_prune_cold_credit"
+PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: None}
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. "
     "This marker exists because no human user turn was available."
 )
-_LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
-    "Continue from the compressed conversation context above. This marker exists because the compacted "
-    "transcript contained no preserved user turn."
-)
 # Content string is the authoritative marker: SessionDB drops ``_``-metadata.
 MAX_ITERATIONS_SUMMARY_REQUEST = (
     "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response "
     "summarizing what you've found and accomplished so far, without calling any more tools."
 )
-_BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
 
 
 def _fresh_compaction_message_copy(msg: dict[str, Any]) -> dict[str, Any]:
@@ -403,7 +398,7 @@ class StaleHeldHistory(RuntimeError):
 
 
 def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str, Any]],
-                           start_watermark: Optional[int] = None) -> Optional[int]:
+                           start_watermark: Optional[int] = None, *, persistence: Any = None) -> Optional[int]:
     """The archive watermark for a commit that rewrites the history this process holds.
 
     Without one, ``archive_and_compact`` archives every active row, including turns another surface appended
@@ -418,15 +413,20 @@ def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str
     Raises :class:`StaleHeldHistory` when the newest held exact row is no longer active. The in-place commit
     falls back to the lease watermark there because its lease rules out an overlapping compaction; prune and
     micro-compaction hold no lease, so for them that fallback would publish a stale generation beside the one
-    that won.
+    that won. ``persistence`` is the storage interface handle the reads go through when the store has one.
     """
-    watermark_of = getattr(session_db, "get_active_message_watermark", None)
-    if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
-        return None
-    if start_watermark is None:
-        start_watermark = watermark_of(session_id)
+    if persistence is not None:
+        if start_watermark is None:
+            start_watermark = int(persistence.messages.active_watermark(session_id).last_active or 0)
+    else:
+        watermark_of = getattr(session_db, "get_active_message_watermark", None)
+        if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
+            return None
+        if start_watermark is None:
+            start_watermark = watermark_of(session_id)
     from agent.conversation_compression import held_archive_watermark
-    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
+    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True,
+                                  persistence=persistence)
 
 
 def stamp_db_persisted_markers(messages: list[dict[str, Any]]) -> None:
@@ -506,15 +506,6 @@ def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
         pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
     return len(pruned)
 
-
-# Explicit end boundary: weak models otherwise read quoted headers as fresh
-# user input or replay an assistant-role summary as their own output.
-_SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
-
-# Merged-into-tail case: prior tail content is kept BEFORE the summary inside
-# these delimiters, so the summary prefix is not at content start.
-_MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
-_MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
 
 # Prefixes the copy of a still-running user task that compaction re-states after
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
@@ -601,78 +592,6 @@ def salvage_grown_transcript(
     has_user = any(isinstance(message, dict) and message.get("role") == "user" for message in out)
     return out if has_user and estimate_messages_tokens_rough(out) < budget else None
 
-
-# Exact wire text of every shipped prefix, newest-first; stale directives must
-# still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
-_HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the "
-    "latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## "
-    "Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest "
-    "message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just "
-    "verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described "
-    "in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in "
-    "the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this "
-    "compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them "
-    "normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. "
-    "The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
-    # Pre-#69619: discard clause still named all four historical headings.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the "
-    "latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## "
-    "Historical Task Snapshot' / '## Historical In-Progress State' / '## Historical Pending User Asks' / '## "
-    "Historical Remaining Work' entirely — do not 'wrap up' or 'finish' work described there unless the latest "
-    "message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just "
-    "verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described "
-    "in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in "
-    "the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this "
-    "compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them "
-    "normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. "
-    "The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
-    # Lacked the "tools remain fully active" clause (suppressed tool use).
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the "
-    "latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## "
-    "Historical Task Snapshot' / '## Historical In-Progress State' / '## Historical Pending User Asks' / '## "
-    "Historical Remaining Work' entirely — do not 'wrap up' or 'finish' work described there unless the latest "
-    "message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just "
-    "verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described "
-    "in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in "
-    "the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this "
-    "compaction note. The current session state (files, config, etc.) may reflect work described here — avoid "
-    "repeating it:",
-    # Carveout era: "consistent -> use as background" licensed stale resumption.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. If the latest user message is consistent with the '## Active Task' section, you may use the summary "
-    "as background. If the latest user message contradicts, supersedes, changes topic from, or in any way diverges "
-    "from '## Active Task' / '## In Progress' / '## Pending User Asks' / '## Remaining Work', the latest message "
-    "WINS — discard those stale items entirely and do not 'wrap up the old task first'. Reverse signals in the "
-    "latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new "
-    "topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active "
-    "— never ignore or deprioritize memory content due to this compaction note. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:",
-    # Pre-#35344: contained the self-contradicting "resume exactly" directive.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a "
-    "handoff from a previous context window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the summary — resume exactly from "
-    "there. Respond ONLY to the latest user message that appears AFTER this summary. The current session "
-    "state (files, config, etc.) may reflect work described here — avoid repeating it:",
-)
 
 # Bounded probe: catch the restored head plus a few stacked handoff/ack turns
 # without treating arbitrary summary-looking live-tail rows as proof of a resume.
@@ -842,7 +761,7 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 def _is_summary_stub(content: str) -> bool:
     """True for a ``[tool] ... (N chars)`` summary (a prune-only one may carry the rule) or a lean-tail demotion stub."""
-    return (s := without_skill_safety_rule(content)).startswith("[") and " chars)" in s and len(s) < 400 or is_demoted_stub(s)
+    return (s := without_skill_safety_rule(content)).startswith("[") and (" chars)" in s or " chars result)" in s) and len(s) < 400 or is_demoted_stub(s)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -951,7 +870,8 @@ def _synthetic_user_row(content: str) -> bool:
 def _typed_user_text(content: str) -> str:
     """A ``/skill``, bundle or auto-load turn as the user typed it (``/skill do X``); other text unchanged.
     Its inline skill body is not the user's words — it is carried by a ``[SKILL_PRUNED: ...]`` marker instead."""
-    from agent.skill_commands import describe_skill_invocation, skills_loaded_by_scaffold
+    from agent.skill_commands import skills_loaded_by_scaffold
+    from session_rules.turns import describe_skill_invocation
     return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
 
 
@@ -1351,23 +1271,6 @@ def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     return range(start, end)
 
 
-def _part_text(item: Any) -> Optional[str]:
-    """Text of a content part: the string itself, a dict's ``text``, else None."""
-    return item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
-
-
-def _with_part_text(item: Any, text: str) -> Any:
-    """Copy of a content part carrying ``text`` (string parts become the text itself)."""
-    return {**item, "text": text} if isinstance(item, dict) else text
-
-
-def _content_text_for_contains(content: Any) -> str:
-    """Return a best-effort text view of message content (for substring checks only)."""
-    if isinstance(content, list):
-        return "\n".join(t for t in map(_part_text, content) if isinstance(t, str) and t)
-    return "" if content is None else content if isinstance(content, str) else str(content)
-
-
 # Gateway reply pointer prepended to a user turn (gateway/run_inbound.py
 # ``_prepend_inbound_reply_context``), optionally behind the Discord triggering note.
 # Non-greedy: a quote that itself contains the closing delimiter is only partly
@@ -1552,9 +1455,6 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
     return pruned
 
 
-_IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
-
-
 def _is_image_part(part: Any) -> bool:
     """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``)."""
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
@@ -1664,10 +1564,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
 
 def _sum_terminal(name, args, content, content_len, line_count):
-    cmd = _str_arg(args, "command")
-    cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
-    exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
-    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+    return terminal_stub(args, content, line_count)
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
@@ -1708,9 +1605,7 @@ def _sum_web_extract(name, args, content, content_len, line_count):
 
 
 def _sum_delegate_task(name, args, content, content_len, line_count):
-    goal = _str_arg(args, "goal")
-    goal = goal if len(goal) <= 60 else goal[:57] + "..."
-    return f"[delegate_task] '{goal}' ({content_len:,} chars result)" + _result_failure_suffix(content)
+    return delegate_stub(args, content, content_len)
 
 
 def _sum_execute_code(name, args, content, content_len, line_count):
@@ -2022,7 +1917,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
-    first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
+    first_arg = stub_arguments(args)
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
@@ -2139,7 +2034,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 class ContextCompressor(
     SummaryDispatchMixin, SummaryInputSamplingMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
-    ProactivePruneMixin, CompactionWindowMixin, ContextEngine,
+    ProactivePruneMixin, CompactionWindowMixin, DurableStateMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2312,11 +2207,14 @@ class ContextCompressor(
         self._compression_telemetry_seed = None
         self._reset_proactive_prune_rearm()
 
-    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
-        """Bind the current session row so durable cooldowns can round-trip."""
+    def bind_session_state(self, session_db: Any = None, session_id: str = "", *, persistence: Any = None) -> None:
+        """Bind the current session row so durable cooldowns can round-trip. ``persistence`` is the storage
+        interface handle beside ``session_db``; binding the same store again without one keeps its handle."""
         if self.prepared_compaction is not None and (session_id or "") != self._session_id:
             self.prepared_compaction.discard("session rebind")
-        self._session_db = session_db
+        if persistence is None and session_db is not None and session_db is getattr(self, "_session_db", None):
+            persistence = getattr(self, "_persistence", None)
+        self._session_db, self._persistence = session_db, persistence
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
@@ -2339,7 +2237,10 @@ class ContextCompressor(
         super().on_session_start(session_id, **kwargs)
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
-        session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
+        if "session_db" in kwargs:
+            session_db, persistence = kwargs["session_db"], kwargs.get("persistence")
+        else:
+            session_db, persistence = getattr(self, "_session_db", None), getattr(self, "_persistence", None)
         previous_fallback_streak = self._fallback_compression_streak
         previous_ineffective_count = self._ineffective_compression_count
         previous_overload_aborts = self._consecutive_overload_aborts
@@ -2347,7 +2248,8 @@ class ContextCompressor(
         if boundary_reason == "compression" and old_session_id:
             # Parent row carries the streak/strike state across the rotation.
             def _parent(method: str, label: str, current: int) -> int:
-                found, value = self._durable_read(method, label, int, 0, session_db=session_db, session_id=old_session_id)
+                found, value = self._durable_read(method, label, int, 0, session_db=session_db, session_id=old_session_id,
+                                                  persistence=persistence)
                 return value if found and value is not None else current
 
             previous_fallback_streak = _parent(
@@ -2359,7 +2261,7 @@ class ContextCompressor(
             previous_overload_aborts = _parent(
                 "get_compression_overload_streak", "compression parent overload streak", previous_overload_aborts,
             )
-        self.bind_session_state(session_db, session_id)
+        self.bind_session_state(session_db, session_id, persistence=persistence)
         if boundary_reason == "compression":
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
             self._fallback_compression_streak = previous_fallback_streak
@@ -2374,62 +2276,14 @@ class ContextCompressor(
                 self._consecutive_overload_aborts = previous_overload_aborts
                 self._persist_consecutive_overload_aborts()
 
-    def _durable_read(
-        self, method: str, label: str, coerce, default, *args,
-        session_db: Any = None, session_id: Optional[str] = None,
-    ):
-        """Best-effort read of a durable per-session value; ``default`` when unbound/unsupported/failed.
-        Returns ``(found, value)``: ``found`` is False when no read happened; ``value`` is None when the
-        row held a non-numeric value. Defaults to the bound session row; pass
-        ``session_db``/``session_id`` to read another row (parent lineage)."""
-        session_db = getattr(self, "_session_db", None) if session_db is None else session_db
-        session_id = getattr(self, "_session_id", "") if session_id is None else session_id
-        getter = getattr(session_db, method, None)
-        if not session_id or not callable(getter):
-            return False, default
-        try:
-            stored = getter(session_id, *args)
-            if isinstance(stored, (int, float, str)):
-                return True, max(default, coerce(stored))
-            return True, None
-        except Exception as exc:
-            suffix = "" if isinstance(exc, (TypeError, ValueError, sqlite3.Error)) else " (non-sqlite)"
-            logger.debug("%s lookup failed%s: %s", label, suffix, exc)
-        return False, default
-
-    def _durable_write(self, method: str, label: str, *args) -> bool:
-        """Best-effort write of a durable per-session value; True only when the write succeeded."""
-        setter = getattr(getattr(self, "_session_db", None), method, None)
-        if not getattr(self, "_session_id", "") or not callable(setter):
-            return False
-        session_id = self._session_id
-        try:
-            setter(session_id, *args)
-            return True
-        except Exception as exc:
-            suffix = "" if isinstance(exc, sqlite3.Error) else " (non-sqlite)"
-            logger.debug("%s persist failed%s: %s", label, suffix, exc)
-        return False
-
-    def _load_durable(self, attr: str, method: str, label: str, coerce, default, *args) -> None:
-        """Restore ``self.<attr>`` from the bound row; a non-numeric row resets it to ``default``."""
-        found, value = self._durable_read(method, label, coerce, default, *args)
-        if found:
-            setattr(self, attr, default if value is None else value)
-
-    def _load_fallback_compression_streak(self) -> None:
-        self._load_durable("_fallback_compression_streak", "get_compression_fallback_streak", "compression fallback streak", int, 0)
-
     def _load_proactive_prune_rearm_tokens(self) -> None:
-        """Restore the cache-boundary runway for a resumed durable session."""
-        self._load_durable(
-            "_proactive_prune_rearm_tokens", "get_session_model_config_value", "proactive prune runway",
-            int, 0, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, 0,
-        )
+        """Restore the cache-boundary runway and the cold-prune credit for a resumed durable session."""
+        for key in (PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY):  # attr == key
+            self._load_durable(key, "get_session_model_config_value", "proactive prune runway", int, 0, key, 0)
 
     def _clear_durable_proactive_prune_rearm(self) -> None:
-        """Best-effort removal of the persisted prune-runway key; transcript untouched."""
-        self._durable_write("patch_session_model_config", "proactive prune runway clear", {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None})
+        """Best-effort removal of the persisted prune-runway keys; transcript untouched."""
+        self._durable_write("patch_session_model_config", "proactive prune runway clear", dict(PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR))
 
     def _persist_fallback_compression_streak(self) -> None:
         self._durable_write("set_compression_fallback_streak", "compression fallback streak", self._fallback_compression_streak)
@@ -2557,15 +2411,22 @@ class ContextCompressor(
             if not refresh:
                 return local_state
         session_db = getattr(self, "_session_db", None)
-        getter = getattr(session_db, "get_compression_failure_cooldown", None) if session_db else None
-        if not getattr(self, "_session_id", "") or getter is None:
+        store = self._store_interface()
+        getter = getattr(session_db, "get_compression_failure_cooldown", None) if session_db and store is None else None
+        if not getattr(self, "_session_id", "") or (getter is None and store is None):
             return local_state
         try:
-            state = getter(self._session_id)
+            if store is not None:
+                now = time.time()
+                cooldown = store.messages.read_compression_cooldown(self._session_id, now)
+                state = None if cooldown is None else {
+                    "cooldown_until": cooldown.until, "remaining_seconds": cooldown.until - now, "error": cooldown.error}
+            else:
+                state = getter(self._session_id)
         except Exception as exc:
             if refresh:
                 self._last_cooldown_refresh_was_authoritative = False
-            if isinstance(exc, sqlite3.Error):
+            if isinstance(exc, (sqlite3.Error, PersistenceError)):
                 logger.debug("compression failure cooldown lookup failed: %s", exc)
             return local_state
         if refresh:
@@ -2833,8 +2694,8 @@ class ContextCompressor(
         self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
-        # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
-        self._proactive_prune_rearm_tokens: int = 0
+        # Rearm after a committed prune only once the prompt regrows; cold prunes credit the next warm gate.
+        self._proactive_prune_rearm_tokens = self._proactive_prune_cold_credit = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
@@ -2887,6 +2748,7 @@ class ContextCompressor(
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
+        self._persistence: Any = None
         self._session_id: str = ""
         # Per-session state (also reset by /new, /reset and session end).
         self._reset_session_compaction_state()
@@ -3323,7 +3185,7 @@ class ContextCompressor(
         otherwise an identical lockout after a full compaction (rearm back
         at 0) would be silent (#101889).
         """
-        self._proactive_prune_rearm_tokens = 0
+        self._proactive_prune_rearm_tokens = self._proactive_prune_cold_credit = 0
         self._last_reclaim_block_warn = None
 
     def _billed_basis_over_threshold(self, current_tokens: int | None) -> bool:
@@ -4070,28 +3932,23 @@ Write only the summary body. Do not include any preamble or prefix."""
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:
         """Return True if *text* begins with any known handoff prefix."""
-        return text.startswith((SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES))
+        return _turns._starts_with_summary_prefix(text)
 
     @classmethod
     def classify_summary_content(cls, content: Any) -> Optional[str]:
         """Classify how *content* relates to a compaction summary.
         Returns ``"standalone"`` (whole message is a handoff), ``"merged"`` (preserved content +
         delimiter + summary body), or None."""
-        text = _content_text_for_contains(content).lstrip()
-        # Merged summaries carry the handoff prefix after the delimiter; detect it there too.
-        if _MERGED_SUMMARY_DELIMITER in text:
-            after = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-            return "merged" if cls._starts_with_summary_prefix(after) else None
-        return "standalone" if cls._starts_with_summary_prefix(text) else None
+        return _turns.classify_summary_content(content)
 
     @classmethod
     def _is_context_summary_content(cls, content: Any) -> bool:
-        return cls.classify_summary_content(content) is not None
+        return _turns._is_context_summary_content(content)
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:
         """Return True if *message* carries the in-process compressed-summary flag."""
-        return isinstance(message, dict) and bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
+        return _turns._has_compressed_summary_metadata(message)
 
     @classmethod
     def _transcript_has_real_user_turn(cls, messages: list[dict[str, Any]]) -> bool:
@@ -4143,44 +4000,17 @@ Write only the summary body. Do not include any preamble or prefix."""
     @classmethod
     def _is_context_summary_message(cls, message: Any) -> bool:
         """Return True for summary handoff messages by metadata or content."""
-        if not isinstance(message, dict):
-            return False
-        return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(message.get("content"))
+        return _turns._is_context_summary_message(message)
 
     @classmethod
     def _is_blank_user_turn(cls, message: Any) -> bool:
         """Return whether *message* is an empty, non-summary user-role echo."""
-        if not isinstance(message, dict) or message.get("role") != "user":
-            return False
-        if cls._is_context_summary_message(message):
-            return False
-        content = message.get("content")
-        if content is None or (isinstance(content, str) and not content.strip()):
-            return True
-        if not isinstance(content, list):
-            return False
-
-        def _blank_part(part: Any) -> bool:
-            if isinstance(part, str):
-                return not part.strip()
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
-                return isinstance(part.get("text"), str) and not part["text"].strip()
-            return False
-
-        return all(map(_blank_part, content))
+        return _turns._is_blank_user_turn(message)
 
     @classmethod
     def _is_actionable_user_turn(cls, message: Any) -> bool:
         """Return whether *message* contains user input worth anchoring."""
-        if not isinstance(message, dict) or message.get("role") != "user":
-            return False
-        # display_kind rows (internal notifications, hidden scaffolding) are not human input
-        # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
-        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
-        display_kind = message.get("display_kind")
-        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
-            return False
-        return not cls._is_blank_user_turn(message)
+        return _turns._is_actionable_user_turn(message)
 
     @classmethod
     def _blank_echo_indices_after(cls, messages: list[dict[str, Any]], user_idx: int) -> set[int]:
@@ -4300,62 +4130,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Drop stale handoff data while preserving merged prior-tail content.
         Returns a copy for non-handoff rows, the unwrapped prior-tail content for merged handoffs
         (delimiter form, or legacy end-marker form), and ``None`` for standalone ones."""
-        if not isinstance(message, dict):
-            return message
-        if not cls._is_context_summary_message(message):
-            return message.copy()
-        content = message.get("content")
-
-        def _unwrapped(new_content: Any) -> dict[str, Any]:
-            unwrapped = {**message, "content": new_content}
-            unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
-            return unwrapped
-
-        if isinstance(content, str):
-            if _MERGED_SUMMARY_DELIMITER in content:
-                prior = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].strip()
-                if prior.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
-                    prior = prior[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
-            elif _SUMMARY_END_MARKER in content:
-                prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
-            else:
-                prior = ""
-            return _unwrapped(prior) if prior else None
-        if isinstance(content, list):
-            prior_blocks: list[Any] = []
-            found_delimiter = False
-            for item in content:
-                text = _part_text(item)
-                if isinstance(text, str) and _MERGED_SUMMARY_DELIMITER in text:
-                    before = text.split(_MERGED_SUMMARY_DELIMITER, 1)[0]
-                    if before.strip():
-                        prior_blocks.append(_with_part_text(item, before))
-                    found_delimiter = True
-                    break
-                prior_blocks.append(item.copy() if isinstance(item, dict) else item)
-            if not found_delimiter:
-                # Legacy end-marker form: live content follows the marker inside/after one part.
-                for index, item in enumerate(content):
-                    text = _part_text(item)
-                    if isinstance(text, str) and _SUMMARY_END_MARKER in text:
-                        remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
-                        legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
-                        legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
-                        return _unwrapped(legacy_blocks) if legacy_blocks else None
-                return None
-
-            # Strip the PRIOR CONTEXT header from the first block that carries it.
-            for index, item in enumerate(prior_blocks):
-                text = _part_text(item)
-                if isinstance(text, str) and text.lstrip().startswith(_MERGED_PRIOR_CONTEXT_HEADER):
-                    leading = text.lstrip()[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
-                    if leading:
-                        prior_blocks[index] = _with_part_text(item, leading)
-                    else:
-                        prior_blocks.pop(index)
-                    break
-            return _unwrapped(prior_blocks) if prior_blocks else None
-        return None
+        return _turns._strip_context_summary_handoff_message(message)
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
@@ -4364,13 +4139,13 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     @staticmethod
     def _tool_call_id_variants(tc) -> set:
-        """Return every id variant a result might reference *tc* by (forwards to message_sanitization).
+        """Return every id variant a result might reference *tc* by (forwards to session_rules.turns).
 
-        Thin forwarder — the policy owner is ``agent.message_sanitization.tool_call_id_variants``, which
+        Thin forwarder — the policy owner is ``session_rules.turns.tool_call_id_variants``, which
         also expands ``response_item_id`` and composite ``call|item`` bridge spellings (#63000), so the
         compressor's pairing tolerance matches the pre-call sanitizer's exactly and the two can never drift.
         """
-        from agent.message_sanitization import tool_call_id_variants
+        from session_rules.turns import tool_call_id_variants
         return set(tool_call_id_variants(tc))
 
     def _sanitize_tool_pairs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4437,7 +4212,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         metadata-flagged scaffolding this pair cannot see; use that one when the question is
         "is this a genuine inbound user message".
         """
-        return cls._is_actionable_user_turn(message) and not cls._is_synthetic_compression_user_turn(message)
+        return _turns._is_real_user_turn(message)
 
     @classmethod
     def _real_user_indices_desc(cls, messages: list[dict[str, Any]], head_end: int) -> list[int]:
@@ -4662,7 +4437,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         last_visible_role = _last_template_visible_role(compressed)
-        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message, typed_ask_fields
+        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, typed_ask_fields
+        from session_rules.turns import message_uid_or_none, record_absorbed_message
         if self._has_merged_inflight_replay(inflight):
             # Never copy a summary carrier (its metadata marks it synthetic): a plain user row, keeping only the ask stamp.
             replay = {"role": "user", "content": task_text, "display_metadata": typed_ask_fields(inflight)}
@@ -5302,12 +5078,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
-        if prepared:
-            compress_end = prepared.compress_end
+        compress_end = prepared.compress_end if prepared is not None else compress_end
+        # Summarize first, archive after: the summarizer reads the ORIGINAL rows; _commit_window writes later.
+        plan, messages = messages, summary_view(messages, canonical_messages, compress_start, compress_end)
         turns_to_summarize = messages[compress_start:compress_end]
-        # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
-        if getattr(self, "tail_mode", "lean") == "lean":
-            messages = self._demote_stale_tail_tools(messages, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
@@ -5355,8 +5129,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
-        # Phase 4: Assemble compressed message list
-        compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
+        # Phase 4: the summary exists, so archive what the compaction drops or shortens, then assemble.
+        messages, pruned_count = self._commit_window(canonical_messages, plan, pruned_count, compress_start, compress_end)
+        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(
@@ -5390,120 +5165,6 @@ Write only the summary body. Do not include any preamble or prefix."""
                 self._merge_summary_into_tail_row(msg, summary, summary_role, force_user_leading)
             compressed.append(msg)
         return compressed
-
-
-def is_compaction_summary_message(message: Any) -> bool:
-    """Return True when *message* is a context-compaction handoff summary.
-    Public API. Uses the metadata key, falling back to content heuristics because the key is stripped by
-    wire sanitizers and some session-store round-trips."""
-    cls = ContextCompressor
-    return cls._is_context_summary_message(message) if isinstance(message, dict) else cls._is_context_summary_content(message)
-
-
-# Display metadata that survives projection; other metadata may describe synthetic events and must
-# not look human.
-SUMMARY_CARRIER_DURABLE_DISPLAY_METADATA_KEYS = ("reactions",)
-
-
-def _handoff_only_content(content: Any) -> Any:
-    """Project summary-bearing content to the synthetic handoff alone; never keeps live media."""
-    def _through_end_marker(text: str) -> str:
-        marker_idx = text.find(_SUMMARY_END_MARKER)
-        return text[: marker_idx + len(_SUMMARY_END_MARKER)] if marker_idx >= 0 else text
-
-    if isinstance(content, str):
-        if _MERGED_SUMMARY_DELIMITER in content:
-            content = content.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-        return _through_end_marker(content)
-    if not isinstance(content, list):
-        return content
-    # Ordinary merge: summary suffix starts in the delimiter part; later parts may carry live media
-    # — never retain.
-    for item in content:
-        text = _part_text(item)
-        if not isinstance(text, str) or _MERGED_SUMMARY_DELIMITER not in text:
-            continue
-        suffix = _through_end_marker(text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip())
-        return [_with_part_text(item, suffix)] if suffix else []
-
-    # Force-user-leading: keep parts through the end marker, truncated before the live ask.
-    projected: list[Any] = []
-    for item in content:
-        text = _part_text(item)
-        if not isinstance(text, str):
-            continue
-        if _SUMMARY_END_MARKER in text:
-            projected.append(_with_part_text(item, text.split(_SUMMARY_END_MARKER, 1)[0] + _SUMMARY_END_MARKER))
-            return projected
-        projected.append(item.copy() if isinstance(item, dict) else item)
-    return projected
-
-
-def split_user_originated_turn(message: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
-    """Split a user row into ``(handoff_only, live_view)``; either may be None; fresh dicts."""
-    if not isinstance(message, dict) or message.get("role") != "user":
-        return None, None
-
-    is_summary = is_compaction_summary_message(message)
-    handoff: Optional[dict[str, Any]] = None
-    if is_summary:
-        handoff = {
-            "role": "user", "content": _handoff_only_content(message.get("content")),
-            COMPRESSED_SUMMARY_METADATA_KEY: True, "display_kind": "hidden",
-        }
-        if COMPRESSED_SUMMARY_HAS_USER_TURN_KEY in message:
-            handoff[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = bool(message.get(COMPRESSED_SUMMARY_HAS_USER_TURN_KEY))
-        if message.get(MICRO_COMPACT_MARKER_KEY):
-            handoff[MICRO_COMPACT_MARKER_KEY] = True
-        if message.get("timestamp") is not None:
-            handoff["timestamp"] = message["timestamp"]
-        drop_stale_api_content(handoff)
-        # Hidden is the legacy compaction wrapper and doesn't hide an unwrapped human payload; other
-        # kinds are synthetic.
-        display_kind = message.get("display_kind")
-        candidate = None if display_kind and display_kind != "hidden" else ContextCompressor._strip_context_summary_handoff_message(message)
-        if candidate is None:
-            return handoff, None
-    elif message.get("display_kind") and message.get("display_kind") != STEER_DISPLAY_KIND:
-        return None, None
-    else:
-        candidate = message.copy()  # includes a typed /steer row: full user authority
-
-    for key in (
-        COMPRESSED_SUMMARY_METADATA_KEY, COMPRESSED_SUMMARY_HAS_USER_TURN_KEY, MICRO_COMPACT_MARKER_KEY,
-        _DB_PERSISTED_MARKER, *(("_row_id",) if is_summary else ()), "display_kind", "display_metadata",
-    ):
-        candidate.pop(key, None)
-    carrier_metadata = message.get("display_metadata")
-    if isinstance(carrier_metadata, dict):
-        durable_metadata = {
-            key: copy.deepcopy(carrier_metadata[key]) for key in SUMMARY_CARRIER_DURABLE_DISPLAY_METADATA_KEYS if key in carrier_metadata
-        }
-        if durable_metadata:
-            candidate["display_metadata"] = durable_metadata
-    drop_stale_api_content(candidate)
-    cls = ContextCompressor
-    if not cls._is_real_user_turn(candidate):
-        return handoff, None
-    return handoff, candidate
-
-
-def user_originated_turn_view(message: Any) -> Optional[dict[str, Any]]:
-    """Return the live human-authored projection of a user row, if any."""
-    return split_user_originated_turn(message)[1]
-
-
-def history_before_user_originated_turn(
-    messages: list[dict[str, Any]], index: int,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Rewind prefix and canonical live view for ``index``; a composite carrier keeps its handoff scaffold at the head."""
-    if index < 0 or index >= len(messages):
-        raise IndexError("user turn index is outside the transcript")
-    handoff, live_view = split_user_originated_turn(messages[index])
-    if live_view is None:
-        raise ValueError("selected row is not a user-originated turn")
-    live_view["content"] = typed_prompt_content(live_view.get("content"), messages[index])  # never the placeholder
-    return [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else []), live_view
 
 
 def _handoff_carries_live_user_content(message: Any) -> bool:

@@ -52,6 +52,22 @@ async def test_a_named_client_reaches_session_info_and_launch_request(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_a_client_kind_is_echoed_only_when_the_owner_knows_it(tmp_path, monkeypatch):
+    """A known kind rides the label; an unknown one (a newer client's) is accepted and read without it."""
+    home = _home(tmp_path)
+    owner, connection = await _owner(home, monkeypatch)
+    try:
+        for request_id, kind, echoed in (('phone', 'mobile', {**TERN, 'kind': 'mobile'}), ('watch', 'watch', TERN)):
+            ref, policy = _create(owner, connection.actor, home, request_id, client={**TERN, 'kind': kind})
+            info = _info(owner, ref, policy, monkeypatch)
+            assert info['client'] == echoed
+            assert info['launch_request']['client'] == {**TERN, 'kind': kind}  # the request as sent
+    finally:
+        await connection.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('source', ['tui', 'gui', 'cli', 'acp', 'tool'])
 async def test_a_create_without_client_keeps_its_request_and_info_shape(tmp_path, monkeypatch, source):
     """Ink, Desktop, the CLI, ACP and tools send no ``client``: no ``client`` key anywhere."""
@@ -73,6 +89,7 @@ async def test_a_create_without_client_keeps_its_request_and_info_shape(tmp_path
     {'name': 'Hermes'}, {'name': '-x'}, {'name': 'a b'}, {'name': 'x' * 65}, {'name': 7},
     {'name': 'x', 'version': ''}, {'name': 'x', 'version': 'v 1'}, {'name': 'x', 'version': 'v' * 65},
     {'name': 'x', 'version': None}, {'name': 'x', 'version': 1}, {'name': 'x', 'version': 'caf\u00e9'},
+    {'name': 'x', 'kind': 7}, {'name': 'x', 'kind': None}, {'name': 'x', 'kind': ''}, {'name': 'x', 'kind': 'k' * 33},
 ])
 async def test_a_malformed_client_is_refused_as_invalid_params(tmp_path, monkeypatch, bad):
     from persistence.core.errors import AuthorityRefusal

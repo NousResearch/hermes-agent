@@ -8433,7 +8433,7 @@
       },
       "CanonicalClientIdentity": {
         "additionalProperties": false,
-        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``).",
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and\n``mobile`` are known; another is kept off the label, not refused). Attribution only (owners\nadvertising ``session-client-v1``).",
         "properties": {
           "name": {
             "title": "Name",
@@ -8450,6 +8450,18 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "required": [
@@ -8460,7 +8472,7 @@
       },
       "CanonicalClientLabel": {
         "additionalProperties": false,
-        "description": "The client a session's creator declared itself as (``session.create`` ``client``).",
+        "description": "The client a session's creator declared itself as (``session.create`` ``client``); ``kind`` only\nwhen it named one this owner knows.",
         "properties": {
           "name": {
             "title": "Name",
@@ -8477,6 +8489,18 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "required": [

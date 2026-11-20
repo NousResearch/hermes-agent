@@ -66,7 +66,7 @@ def call_connector_tool(
     spec: str, arguments: dict[str, Any], *, account: Optional[str] = None, allow_write: bool = False,
 ) -> CallOutcome:
     """Run one connector tool; a non-read tool without ``allow_write`` never reaches the gateway."""
-    from tools.connectors.gateway.bridge import run_remote
+    from tools.connectors.gateway.bridge import SIGN_IN_FAILED_CODE, run_remote
     from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
     from tools.connectors.gateway.merge import partition_calls
     from tools.connectors.portal.client import PortalConnectorClient
@@ -97,6 +97,7 @@ def call_connector_tool(
     partition = partition_calls([{"name": name, "arguments": arguments}])
     entry = run_remote(partition.remote, None, availability=None, client_factory=None)[0]
     if "error" in entry:
-        error = entry["error"]
-        return CallOutcome(CallExit.tool_error, error if isinstance(error, dict) else {"message": str(error)})
+        error = entry["error"] if isinstance(entry["error"], dict) else {"message": str(entry["error"])}
+        signed_out = error.get("code") == SIGN_IN_FAILED_CODE
+        return CallOutcome(CallExit.unavailable if signed_out else CallExit.tool_error, error)
     return CallOutcome(CallExit.ok, entry.get("response"))

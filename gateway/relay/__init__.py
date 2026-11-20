@@ -24,6 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable, Optional
+from hermes_cli.urllib_security import open_credentialed_url
 
 logger = logging.getLogger("gateway.relay")
 
@@ -298,7 +299,7 @@ def _json_post(url: str, token: str, body: dict, timeout: float):
             "Accept": "application/json",
         },
     )
-    return urllib.request.urlopen(req, timeout=timeout)
+    return open_credentialed_url(req, timeout=timeout)
 
 
 def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:

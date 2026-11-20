@@ -65,6 +65,7 @@ def _fake_http(monkeypatch, routes):
         return _Resp(body, {"Content-Length": str(len(body)), **headers})
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("gateway.relay.media.open_credentialed_url", urlopen)
 
 
 def _relay_adapter():

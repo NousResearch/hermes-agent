@@ -196,6 +196,9 @@ class FakeConnector:
             raise AssertionError(f"unexpected connector route {path}")
 
         monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        # The relay modules open credentialed requests through the redirect-safe seam.
+        monkeypatch.setattr("gateway.relay.open_credentialed_url", urlopen)
+        monkeypatch.setattr("gateway.relay.media.open_credentialed_url", urlopen)
 
     @staticmethod
     def _next(script: list, auth: str):

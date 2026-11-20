@@ -15,6 +15,7 @@ from typing import Any, Optional
 from gateway.platforms._shared import coerce_port as _coerce_int, get_scoped_secret as _get_scoped_secret
 
 from . import protocol, security
+from hermes_cli.urllib_security import open_credentialed_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _auth_header(auth: dict) -> dict:
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with open_credentialed_url(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 

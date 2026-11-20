@@ -27,6 +27,7 @@ import logging
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
+from hermes_cli.urllib_security import open_credentialed_url
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
         f"{base_url}/live/sessions", data=body, method="POST",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with open_credentialed_url(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:600]

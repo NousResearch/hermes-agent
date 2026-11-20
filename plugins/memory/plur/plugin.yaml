@@ -1,0 +1,5 @@
+name: plur
+version: 0.18.1
+description: "PLUR persistent memory — local engram store with BM25 + embedding search, episodic timeline, cross-device sync, and 22 explicit tools. Zero cloud, works offline."
+pip_dependencies:
+  - plur-hermes>=0.18.1

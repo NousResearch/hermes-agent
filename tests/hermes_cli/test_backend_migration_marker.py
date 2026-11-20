@@ -51,8 +51,9 @@ def test_an_unreadable_directory_behaves_like_no_marker(tmp_path):
 
 
 @pytest.mark.platforms("linux", "macos")
-def test_an_unreadable_marker_file_behaves_like_no_marker(tmp_path):
-    """An unreadable marker file is treated as no marker and never raises."""
+def test_a_marker_file_that_cannot_be_read_keeps_the_old_backend_down(tmp_path):
+    """A manifest that exists but cannot be read may be a migration stopped half-way: never raises, and
+    nothing starts the old backend on a guess."""
     import os
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("root bypasses file permission checks")
@@ -61,7 +62,7 @@ def test_an_unreadable_marker_file_behaves_like_no_marker(tmp_path):
     marker.write_text(json.dumps({"state": "done"}))
     marker.chmod(0o000)
     try:
-        assert backend_retired_by_migration(tmp_path) is False
+        assert backend_retired_by_migration(tmp_path) is True
     finally:
         marker.chmod(0o600)
 

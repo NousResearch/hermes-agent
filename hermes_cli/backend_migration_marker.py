@@ -13,6 +13,7 @@ rollback) the update restarts that unit only if it is already running.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -22,20 +23,20 @@ _RETIRED_STATES = frozenset({"running", "done", "failed"})
 
 
 def backend_retired_by_migration(home: Optional[Path] = None) -> bool:
-    """Whether this home's backend migration manifest says the old backend must stay down. No manifest
-    (or an unreadable marker path) is False: startup and update behave as without a migration and never
-    raise. A readable manifest that is corrupt or incomplete JSON is True: a migration may have stopped
-    half-way, so nothing starts the old backend on a guess."""
+    """Whether this home's backend migration manifest says the old backend must stay down. Never raises.
+    No manifest (or a home whose entries cannot be seen) is False: startup and update behave as without a
+    migration. A manifest that exists but cannot be read, or is corrupt or incomplete, is True: a
+    migration may have stopped half-way, so nothing starts the old backend on a guess."""
     if home is None:
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
     path = Path(home) / MANIFEST_NAME
     try:
         manifest = json.loads(path.read_text(encoding="utf-8-sig"))
-    except OSError:
+    except FileNotFoundError:
         return False
-    except ValueError:
-        return True
+    except (OSError, ValueError):
+        return os.path.exists(path)  # never raises (Path.exists does on an unsearchable home before 3.14)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("state"), str):
         return True
     return manifest["state"] in _RETIRED_STATES

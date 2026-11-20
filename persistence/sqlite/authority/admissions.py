@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from persistence.authority.webhooks import StoreIncarnation
+
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping, Sequence
 
@@ -62,12 +66,12 @@ class SQLiteAdmissionRepository:
               intent: Literal["queue", "steer", "redirect"] = "queue", gate: AdmissionGate = None,
               replaces: QueuedReplacement | None = None, supersedes: str | None = None,
               api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None,
-              hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
+              hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None, incarnation: StoreIncarnation | None = None) -> tuple[AdmissionRecord, bool]:
         with refused():
             row, created = store.admit_session_input(
                 self._store.holder(), epoch=epoch, principal_id=principal_id, session_id=session_id,
                 request_id=request_id, payload=payload, intent=intent, gate=gate, replaces=replaces,
-                supersedes=supersedes, api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold)
+                supersedes=supersedes, api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold, incarnation=incarnation)
         return _record(row), created
 
     def claim(self, *, epoch: int, session_id: str, gate: AdmissionGate = None,

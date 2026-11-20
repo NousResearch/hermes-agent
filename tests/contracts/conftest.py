@@ -75,7 +75,7 @@ _NODE_BACKENDS: dict[str, str] = {}
 # ── Authority-contract accounting ─────
 
 # The three authority capability flags.
-_AUTHORITY_FLAGS = ("authority_fences", "durable_admissions", "receipted_writes")
+_AUTHORITY_FLAGS = ("authority_fences", "durable_admissions", "receipted_writes", "webhook_delivery_fences")
 
 # Authority suite file -> the capability flag its cases exercise (the
 # node-to-capability metadata). This conftest owns the map; a capability
@@ -85,6 +85,7 @@ _AUTHORITY_SUITE_FLAGS: dict[str, str] = {
     "test_admissions_contract.py": "durable_admissions",
     "test_worker_executions_contract.py": "receipted_writes",
     "test_bindings_contract.py": "receipted_writes",
+    "test_webhook_deliveries_contract.py": "webhook_delivery_fences",
 }
 
 # nodeid -> capability flag, from the suite map at collection time.

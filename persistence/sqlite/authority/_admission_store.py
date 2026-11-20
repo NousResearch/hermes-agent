@@ -60,7 +60,7 @@ __all__ = [
 def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: str,
                         request_id: str, payload: dict, intent: str = 'queue',
                         gate=None, replaces=None, supersedes=None, api_target=None, rewrite=None,
-                        hosted=None, fold=None) -> tuple[dict, bool]:
+                        hosted=None, fold=None, incarnation=None) -> tuple[dict, bool]:
     """Admit input; ``(row, created)``. ``gate`` (the owner's ``GateRefusal``, or a callable answered here on every
     attempt) refuses a NEW write after the queue cap, then the typed extras run in the same write before the insert. Exact
     existing and terminal replays bypass both; ``replaces`` runs its replay check on the exact live replay."""
@@ -95,7 +95,7 @@ def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: st
         raise_gate(gate)
         authorize_admission(holder, conn, epoch=epoch, principal_id=principal_id, session_id=session_id,
                             request_id=request_id, replaces=replaces, supersedes=supersedes,
-                            api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold)
+                            api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold, incarnation=incarnation)
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)

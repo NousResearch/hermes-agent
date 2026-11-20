@@ -63,6 +63,8 @@ def retire_terminal_receipts(conn, session_ids, *, media_root):
             row['lineage_json'] = '[]'
             row['retired_at'] = time.time()
             _compact_result(conn, row['admission_id'])
+            from persistence.sqlite.authority._webhook_retirement import retire_webhook_sources
+            retire_webhook_sources(conn, [row])
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',

@@ -1560,3 +1560,41 @@ def test_a_rollback_killed_as_it_records_the_end_keeps_the_launch_snapshot_for_t
     assert m["state"] == "rolled_back" and m["backups"]["launcher_argv"] is None
     assert not list((home / "backend_migration").glob("launcher-*.json"))
 
+
+
+_DETACHED_UNIT = "hermes-backend-migration-1700000000.service"
+
+
+def test_a_background_rollback_never_starts_a_hand_started_backend_inside_its_own_unit(home, capsys):
+    """Started from the background run's transient unit the old backend would be stopped with it: it stays
+    down, the run ends with the command that starts it again from a terminal (exit 5)."""
+    host = FakeHost(home, supervisor="manual")
+    host.caller_unit = _DETACHED_UNIT
+    host.gateway_lies = True
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    out = capsys.readouterr().out
+    assert "old_start" not in host.calls and host.old["active"] is False
+    assert _DETACHED_UNIT in out and "gateway migrate --backends --restore" in out
+    assert engine.read_manifest(home)["state"] == "failed"
+    assert list((home / "backend_migration").glob("launcher-*.json"))  # the terminal run needs them
+
+    host.caller_unit = None  # from a terminal
+    capsys.readouterr()
+    assert engine.cmd_restore(host, _args(apply=False, restore=True)) == engine.EXIT_ROLLED_BACK
+    assert host.old["active"] is True
+
+
+def test_a_background_restore_of_a_hand_started_backend_changes_nothing(home, capsys):
+    host = FakeHost(home, supervisor="manual")
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    host.caller_unit = _DETACHED_UNIT
+    host.calls.clear()
+    capsys.readouterr()
+
+    assert engine.restore(host, yes=True, detached=True) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert host.calls == [] and host.gw["active"] is True and engine.read_manifest(home)["state"] == "done"
+    assert "Nothing changed" in out and _DETACHED_UNIT in out and "without --detach" in out

@@ -570,7 +570,10 @@ back would lose those edits; it checks again after you confirm, and prints the s
 `--restore` or the rollback of an interrupted run writes a file back only while it is exactly as the migration wrote
 it: one edited since (or whose backup is gone) is left as it is with your edits, the old backend stays down and the
 run ends with manual steps (exit 5). When the rollback cannot prove the gateway is off the old
-address, the old backend stays down and the run ends with manual steps (exit 5).
+address, the old backend stays down and the run ends with manual steps (exit 5). A `--detach` run never
+starts a backend you started by hand again (its transient unit would stop it when the run ends): `--restore
+--detach` refuses (exit 3), and a background rollback leaves it down (exit 5) and prints the
+`--restore` command to run from a terminal, which starts it again as it ran.
 On macOS the old backend's LaunchAgent is booted out, disabled (`launchctl disable gui/UID/LABEL`) and its plist
 renamed to `.disabled`, so neither the next login nor a later `launchctl bootstrap` starts it; `--restore` and a
 rollback undo all three.

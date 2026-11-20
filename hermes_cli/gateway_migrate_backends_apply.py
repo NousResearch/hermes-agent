@@ -551,6 +551,18 @@ def _symlinked(home: Path) -> Optional[str]:
     return None
 
 
+def _respawn_dies_here(host) -> Optional[str]:
+    """Why a hand-started backend may not be started again by this run, else None: a ``--detach`` run's
+    transient unit stops every process it started when the run ends."""
+    from hermes_cli.gateway_migrate_backends_host import DETACHED_UNIT_PREFIX
+    from hermes_cli.gateway_migrate_backends_plan import hermes_command
+    if not (unit := host.own_unit() or "").startswith(DETACHED_UNIT_PREFIX):
+        return None
+    return (f"this background run is in {unit}, which stops what it starts when the run ends; start it again "
+            f"from a terminal, without --detach: {hermes_command(host.home, powershell=os.name == 'nt')} "
+            f"gateway migrate --backends --restore")
+
+
 def _entered(m: dict, step: str) -> bool:
     """Whether the apply run may have started *step*'s changes (its journal; no journal: assume so)."""
     entered = m.get("entered")
@@ -613,6 +625,10 @@ def _undo(run: Run, errors: list[str]) -> None:
     if not safe[0]:
         errors.append("did not start the old backend again: the migrated gateway may still own its address")
         print("  ✗ the old backend was not started again (it would run beside the migrated gateway)")
+        return
+    if rec["supervisor"] == "manual" and rec.get("was_active") and (why := _respawn_dies_here(host)) is not None:
+        errors.append(f"did not start the old backend again: {why}")
+        print(f"  ✗ the old backend was not started again: {why}")
         return
     if (rec.get("was_active") or rec.get("was_loaded")) and (missing := _snapshot_problem(m)) is not None:
         errors.append(f"did not start the old backend again: {missing}")
@@ -774,6 +790,13 @@ def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -
 
 def _restore_refused(host, m: dict, detached: bool) -> Optional[int]:
     """The exit code of a --restore that must change nothing (prints why and the manual steps), else None."""
+    rec = m.get("old_backend") or {}
+    if rec.get("supervisor") == "manual" and rec.get("was_active") and (why := _respawn_dies_here(host)):
+        reason = f"a restore would start the hand-started old backend, but {why}"
+        print(f"✗ Nothing changed: {reason}.")
+        if detached:
+            record_refusal(host, mode="restore", reason=reason, exit_code=EXIT_BLOCKED)
+        return EXIT_BLOCKED
     if (reason := _symlinked(host.home)) is not None:
         print(f"✗ Nothing changed: {reason}.")
         if detached:

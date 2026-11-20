@@ -8,6 +8,10 @@ the manifest and the run lock are real). Used by the lock tests to race two real
 ``RACE_DIR``: with ``RACE_HOLD=1`` the run stops in its preflight (the first read of the old backend),
 writes ``RACE_DIR/held-PID`` and waits until ``RACE_DIR/release`` exists. A ``--detach`` spawns the
 background run as another real process of this module (its own session), inheriting the environment.
+
+``KILL_AFTER_PUBLISH=NAME``: right after the real rename of the staged ``NAME`` (``config.yaml`` or ``.env``)
+over the home's file, the run writes ``RACE_DIR/published-NAME`` and waits there, so the test can SIGKILL it
+at exactly that point (the crash tests). The pause lives only in this test module.
 """
 
 from __future__ import annotations
@@ -43,10 +47,28 @@ class RaceHost(FakeHost):
         return {"pid": proc.pid}
 
 
+def _pause_after_publish(name: str) -> None:
+    from tests.waiting import wait_until
+    real_publish = host_module._publish
+
+    def publish_then_wait(staged, path):
+        data = real_publish(staged, path)
+        if path.name == name:
+            race = Path(os.environ["RACE_DIR"])
+            (race / f"published-{name}").write_text(str(os.getpid()), encoding="utf-8")
+            with contextlib.suppress(AssertionError):  # the test kills the process here
+                wait_until((race / "release").exists, timeout=120)
+        return data
+
+    host_module._publish = publish_then_wait
+
+
 def main() -> None:
     engine.VERIFY_SECONDS = 0.0
     engine.ROLLBACK_VERIFY_SECONDS = 0.0
     host_module.SystemHost = RaceHost
+    if name := os.environ.get("KILL_AFTER_PUBLISH"):
+        _pause_after_publish(name)
     sys.argv = ["hermes", *sys.argv[1:]]
     from hermes_cli.main import main as hermes_main
     hermes_main()

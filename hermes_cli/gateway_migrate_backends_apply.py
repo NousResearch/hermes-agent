@@ -493,6 +493,9 @@ def _put_back(home: Path, m: dict, key: str, name: str) -> None:
     recorded = m.get("files_after_apply")
     if isinstance(recorded, dict) and recorded.get(name, False) == _backup_digest(m, key):
         return  # the migration never wrote it (its record still holds the backup's digest): nothing to undo
+    if isinstance(recorded, dict) and recorded.get(name) == "writing":
+        raise StepFailed(f"the migration stopped while writing {target}, so it may hold the migration's changes; "
+                         f"it was not written back")
     if now == "unreadable" or not isinstance(recorded, dict) or name not in recorded or now != recorded[name]:
         raise StepFailed(f"{target} changed since the migration wrote it, so it was not written back and your "
                          f"edits were kept; merge them with {backup or 'nothing (it did not exist before)'} by hand")
@@ -795,6 +798,10 @@ def _file_step(m: dict, home: str, key: str, name: str) -> str:
     backup, done = b.get(key), (m.get("files_put_back") or {}).get(name)
     if done == "restored":
         return f"{target} was restored from its backup (nothing to do for it)"
+    if done == "kept" and (m.get("files_after_apply") or {}).get(name) == "writing":
+        return (f"the migration stopped while writing {target}, so it may hold the migration's changes: compare it "
+                f"with {backup or 'nothing (it did not exist before the migration)'} and put back by hand what "
+                f"the migration changed, before you start the old backend")
     if done == "kept":
         source = backup or "nothing (it did not exist before the migration)"
         return (f"keep {target} as it is (it was edited after the migration wrote it): merge the lines you need "

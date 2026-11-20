@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { makeSessionInfo } from '@/test/session-info'
 
 import { $gateway } from './gateway'
 import { setHapticsMuted } from './haptics'
@@ -19,8 +22,8 @@ import {
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, APPROVAL_RESPOND_REQUEST_TIMEOUT_MS, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
-import { setActiveSessionId } from './session'
-import { dropSessionState, publishSessionState } from './session-states'
+import { $sessions, setActiveSessionId } from './session'
+import { $sessionTiles, dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -107,16 +110,85 @@ describe('dispatchNativeNotification focus gating', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
-  it('suppresses a completion notification for a non-active background session (no gateway spam)', () => {
+  it('suppresses a completion notification for a non-hosted background session (no gateway spam)', () => {
     setActiveSessionId('on-screen')
     dispatchNativeNotification({ kind: 'turnDone', sessionId: 'busy-bot-session', title: 'done' })
     expect(notify).not.toHaveBeenCalled()
   })
 
-  it('fires an attention notification for an off-screen session even when focused', () => {
+  describe('with a session open in a tab', () => {
+    const storedId = 'tab-stored'
+    const pane = `session-tile:${storedId}`
+    let runtimeId: string
+    let primaryId: string
+
+    function focusChat(active: string) {
+      $layoutTree.set(group(['workspace', pane], { active, id: 'main' }))
+      noteActiveTreeGroup('main')
+    }
+
+    beforeEach(() => {
+      primaryId = freshSession()
+      runtimeId = freshSession()
+      setActiveSessionId(primaryId)
+      $sessionTiles.set([{ runtimeId, storedSessionId: storedId }])
+    })
+
+    afterEach(() => {
+      noteActiveTreeGroup(null)
+      $layoutTree.set(null)
+      $sessionTiles.set([])
+    })
+
+    it.each([
+      { active: pane, focused: false, kind: 'turnDone', notifications: 1 },
+      { active: 'workspace', focused: false, kind: 'turnDone', notifications: 1 },
+      { active: 'workspace', focused: true, kind: 'turnError', notifications: 1 },
+      { active: pane, focused: true, kind: 'backgroundDone', notifications: 0 }
+    ] as const)('sends $notifications $kind notification(s) with $active active and window focused=$focused', ({
+      active,
+      focused,
+      kind,
+      notifications
+    }) => {
+      focusChat(active)
+      setWindowState({ focused })
+      dispatchNativeNotification({ kind, sessionId: runtimeId, title: 'finished' })
+      expect(notify).toHaveBeenCalledTimes(notifications)
+    })
+
+    it('notifies for the primary chat when a tile is on screen in the focused window', () => {
+      focusChat(pane)
+      setWindowState({ focused: true })
+      dispatchNativeNotification({ kind: 'turnDone', sessionId: primaryId, title: 'done' })
+      expect(notify).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      { active: 'workspace', notifications: 1 },
+      { active: pane, notifications: 0 }
+    ])('matches a rotated runtime with its open tab ($active active)', ({ active, notifications }) => {
+      const eventId = freshSession()
+      const sessions = $sessions.get()
+      $sessions.set([...sessions, makeSessionInfo({ _lineage_root_id: storedId, id: 'tab-tip' })])
+      publishSessionState(eventId, createClientSessionState('tab-tip'))
+
+      try {
+        focusChat(active)
+        setWindowState({ focused: true })
+        dispatchNativeNotification({ kind: 'backgroundDone', sessionId: eventId, title: 'finished' })
+        expect(notify).toHaveBeenCalledTimes(notifications)
+      } finally {
+        dropSessionState(eventId)
+        $sessions.set(sessions)
+      }
+    })
+  })
+
+  it.each(['approval', 'input'] as const)('fires an off-screen %s notification even when focused', kind => {
     setWindowState({ focused: true, hidden: false })
     setActiveSessionId('on-screen')
-    dispatchNativeNotification({ kind: 'approval', sessionId: 'background', title: 'approve' })
+    dispatchNativeNotification({ kind, sessionId: 'background', title: 'attention' })
     expect(notify).toHaveBeenCalledTimes(1)
   })
 

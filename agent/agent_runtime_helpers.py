@@ -33,6 +33,7 @@ from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.route_binding import StartupPrimary, restore_startup_primary
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 from session_rules.turns import _msg_has_payload, repair_message_sequence
 logger = logging.getLogger(__name__)
@@ -937,55 +938,23 @@ def _revert_credential_rotation(agent) -> None:
     agent._credential_pool_revert_id = None
 
 
-def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
-    """True when a Codex quota window that the primary pool still has benched has reopened.
-
-    A Codex 429 benches the entry, and arms ``_rate_limited_until``, until a ``resets_at`` that can be
-    days out (weekly window). The window can reopen sooner (redeemed reset, top-up, plan change); the
-    pool's throttled usage probe notices, but only on ``select()``, which a session pinned to its
-    fallback never reaches. Fails closed: any doubt leaves both cooldowns in force.
-
-    At most one check per probe interval per agent: the probe caches its verdict and nothing clears
-    it on the next 429, so a "restored" answer the endpoint got wrong would otherwise restore,
-    fail, and fall back again on every turn of the cached window. Checks in between could only
-    replay that cached verdict, so they return before loading the pool.
-    """
-    if primary_provider != "openai-codex":
-        return False
-    from hermes_cli.auth_codex import CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS
-    now = time.monotonic()
-    if now - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
-        return False
-    agent._codex_reopen_checked_at = now
-    try:
-        pool = getattr(agent, "_credential_pool", None)
-        if pool is None or not matches_primary(pool):
-            pool = load_primary_pool()
-        if pool is None:
-            return False
-        model = primary_model or None
-        benched_until = pool.next_available_at(model=model)
-        if benched_until is None or benched_until <= time.time():
-            return False
-        return pool.lift_reopened_cooldowns(model=model)
-    except Exception:
-        logger.debug("Early quota-reopen check failed; keeping the cooldown", exc_info=True)
-        return False
-
-
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
+    intent = getattr(agent, "_pre_agent_primary", None)
+    startup = intent if isinstance(intent, StartupPrimary) else None
+    if startup and restore_startup_primary(agent, startup):
+        return True
+    # The startup route is the turn's baseline while the configured primary is unavailable.
+    fallback_index = startup.fallback_index if startup else 0
     if not agent._fallback_activated:
-        # Reset the index even without activation: a failed _try_activate_fallback() can strand
-        # _fallback_index past the chain end and silently block future fallbacks (#20465).
-        agent._fallback_index = 0
+        agent._fallback_index = fallback_index
         _revert_credential_rotation(agent)
         return False
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
-    from agent.fallback_cooldown import _is_entitlement_rejected
+    from agent.fallback_cooldown import _is_entitlement_rejected, _primary_quota_reopened_early
     from hermes_cli.chat_catalog import is_known_non_chat_model
     if primary_model and (
         _is_entitlement_rejected(agent, primary_provider, primary_model)
@@ -1024,10 +993,11 @@ def restore_primary_runtime(agent) -> bool:
         reinstall_primary_runtime(
             agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
-        logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
+        agent._fallback_index = fallback_index
+        logger.info("Turn-start runtime restored: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
-        if provider_fallback_active:
+        if provider_fallback_active and startup is None:
             from agent.fallback_notice import announce_primary_restored
             announce_primary_restored(agent, previous_model, previous_provider)
         return True
@@ -1925,17 +1895,21 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     revalidate_compression_feasibility(agent)
 
 
-def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
+def _finish_switch(agent, new_provider, old_norm, new_norm, *, supersede_pre_agent_primary) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
     agent._credential_pool_revert_id = None
+    if supersede_pre_agent_primary:
+        agent._pre_agent_primary = None
+    elif isinstance(intent := getattr(agent, "_pre_agent_primary", None), StartupPrimary):
+        agent._fallback_index = intent.fallback_index
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
+    if supersede_pre_agent_primary and old_norm and new_norm and old_norm != new_norm:
         fallback_chain = [
             entry for entry in fallback_chain
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
@@ -1965,12 +1939,16 @@ def _persist_switch_billing_route(agent) -> None:
 
 
 def switch_model(
-    agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None
+    agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None,
+    *, supersede_pre_agent_primary=True,
 ):
     """Switch the model/provider in-place for a live agent (rebuild clients, caching flags,
     compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
     the change persists across turns. A failed swap/rebuild rolls back to the pre-switch
-    snapshot and re-raises (callers catch)."""
+    snapshot and re-raises (callers catch).
+
+    Explicit switches supersede a startup-fallback restore intent by default. Internal runtime
+    rebuilds that are not user choices must pass ``supersede_pre_agent_primary=False``."""
     old_model = agent.model
     old_provider = agent.provider
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,
@@ -2023,7 +2001,9 @@ def switch_model(
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
-    _finish_switch(agent, new_provider, old_norm, new_norm)
+    _finish_switch(
+        agent, new_provider, old_norm, new_norm, supersede_pre_agent_primary=supersede_pre_agent_primary,
+    )
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,

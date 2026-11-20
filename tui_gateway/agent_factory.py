@@ -523,36 +523,45 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
     """
     return name in _TOOL_LIFECYCLE_UI_TOOLS
 
-def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
-    """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries
-    are skipped so the unavailable primary model can never leak into a different runtime."""
-    from hermes_cli.auth import AuthError
+def _resolve_runtime_with_fallback(
+    resolve_kwargs: dict | None = None, fallback_model=None,
+) -> _RuntimeFallbackResolution:
+    """Resolve the primary, or the first usable provider/model pair and its chain position."""
+    from agent.agent_init_fallback import _fallback_entries
+    from agent.fallback_cooldown import candidate_pool_exhausted
+    from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
+        return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})))
     except AuthError as primary_exc:
-        for entry in _load_fallback_model() or []:
+        chain = _fallback_entries(_load_fallback_model() if fallback_model is None else fallback_model)
+        for index, entry in enumerate(chain, start=1):
             fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
             fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
                 runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
+                if candidate_pool_exhausted(fb_provider, fb_model, pool=runtime.get("credential_pool")):
+                    logging.getLogger(__name__).warning(
+                        "Fallback skip: %s/%s credential pool is exhausted", fb_provider, fb_model,
+                    )
+                    continue
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
-                from hermes_cli.auth import primary_failure_wording
-                logging.getLogger(__name__).warning(
-                    "Primary %s (%s), falling back to %s model %s",
-                    primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)
-                return _RuntimeFallbackResolution(runtime, fb_model, True)
-            except Exception:
+            except Exception:  # health: allow BLE001 -- a broken provider candidate must leave later routes eligible
                 continue
+            logging.getLogger(__name__).warning(
+                "Primary %s (%s), falling back to %s model %s",
+                primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model,
+            )
+            return _RuntimeFallbackResolution(runtime, fb_model, index)
         raise
 
 
-def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
+def _resolve_agent_model_runtime(model_override, provider_override, fallback_model=None) -> tuple[str, dict]:
     """(model, runtime) for a new agent; a per-session override (/model switch or a resumed row's persisted
     runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
     matches) — recover the identity from the persisted base_url or the rebuild fails "No LLM provider
@@ -587,7 +596,8 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             requested_provider = provider_override
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
-    resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+    from agent.route_binding import StartupPrimary, apply_persisted_runtime_overrides
+    resolution = _resolve_runtime_with_fallback(resolve_kwargs, fallback_model)
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
@@ -600,29 +610,12 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
+        resolution.runtime["_pre_agent_primary"] = StartupPrimary(
+            model, resolve_kwargs, overrides, resolution.fallback_index,
+        )
         return resolution.selected_model, resolution.runtime
-    if resolution.runtime.get("source") == "local-runtime":
-        # Live supervisor beat any persisted loopback URL for this identity.
-        overrides.pop("base_url", None)
-    resolution.runtime.update({k: v for k, v in overrides.items() if v})
-    if any(overrides.values()):
-        _rederive_per_model_route(model, resolution.runtime)
+    apply_persisted_runtime_overrides(model, resolution.runtime, overrides)
     return model, resolution.runtime
-
-
-def _rederive_per_model_route(model: str, runtime: dict) -> None:
-    """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
-    that pick the wire per model (OpenCode Zen/Go, Nous, profiles with api_mode_for_model) must re-derive both from the target model,
-    or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
-    other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
-    from hermes_cli.model_switch import model_derived_api_mode
-    from hermes_cli.models import normalize_opencode_base_url
-    provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
-    api_mode = model_derived_api_mode(provider, model)
-    if api_mode is None:
-        return
-    runtime["api_mode"] = api_mode
-    runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
@@ -668,8 +661,10 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
-    model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    fallback_model = _load_fallback_model()
+    model, runtime = _resolve_agent_model_runtime(model_override, provider_override, fallback_model)
     fallback_notice = runtime.pop("_fallback_notice", None)
+    pre_agent_primary = runtime.pop("_pre_agent_primary", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -702,7 +697,7 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=fallback_model,
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
         request_overrides=runtime.get("request_overrides"),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
@@ -712,6 +707,9 @@ def _make_agent(
     if fallback_notice:
         # Emitted once at the start of the next turn via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+    if pre_agent_primary is not None:
+        agent._pre_agent_primary = pre_agent_primary
+        agent._fallback_index = pre_agent_primary.fallback_index
     return agent
 
 

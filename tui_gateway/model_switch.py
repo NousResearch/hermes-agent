@@ -15,46 +15,54 @@ _registry = HandlerRegistry()
 _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 
-def _snapshot_agent_model_runtime(agent) -> dict:
-    """Capture the current agent model runtime for a one-turn restore."""
+def _snapshot_agent_model_runtime(agent, session: dict) -> dict:
+    """Keep the original session runtime if a second one-turn pick replaces the first."""
+    if pending := session.get("one_turn_model_restore"):
+        return pending
     from agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": primary_runtime_for_restore(agent)}
+            "primary_runtime": primary_runtime_for_restore(agent),
+            "startup_primary": getattr(agent, "_pre_agent_primary", None)}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     """Restore an agent model runtime captured before a one-turn override."""
     if not snapshot or agent is None:
         return
-    # `/model X --reasoning high --once`: the effort leaves with the model. Set before the
-    # runtime restore paths below (primary_runtime may predate a session /reasoning change).
+    # A one-turn reasoning override leaves with its model.
     if "reasoning_config" in snapshot:
         agent.reasoning_config = snapshot["reasoning_config"]
     primary = snapshot.get("primary_runtime")
-    if primary and hasattr(agent, "_restore_primary_runtime"):
-        try:
-            agent._primary_runtime = copy.deepcopy(primary)
-            agent._fallback_activated = True
-            agent._rate_limited_until = 0
-            if agent._restore_primary_runtime():
-                if "reasoning_config" in snapshot:
-                    agent.reasoning_config = snapshot["reasoning_config"]
-                return
-        except Exception:
-            logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
-    if hasattr(agent, "switch_model"):
-        model, provider, api_key, base_url, api_mode = (snapshot.get(k, "") for k in _RUNTIME_KEYS)
-        agent.switch_model(
-            new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
-            api_mode=api_mode, capabilities=snapshot.get("capabilities"))
-        # Endpoint-stamped, so this applies only when the switch landed on the primary's URL; the model
-        # check keeps a fallback that shares that URL from inheriting the primary's verdicts.
-        if isinstance(primary, dict) and primary.get("model") == model:
-            from agent.route_verdicts import restore_primary_route_verdicts
-            restore_primary_route_verdicts(agent, copy.deepcopy(primary))
+    startup = snapshot.get("startup_primary")
+    restored = False
+    try:
+        if primary and hasattr(agent, "_restore_primary_runtime"):
+            try:
+                agent._primary_runtime = copy.deepcopy(primary)
+                agent._fallback_activated = True
+                agent._rate_limited_until = 0
+                if startup is not None:
+                    agent._provider_fallback_active = False
+                restored = agent._restore_primary_runtime()
+            except Exception:
+                logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
+        if not restored and hasattr(agent, "switch_model"):
+            model, provider, api_key, base_url, api_mode = (snapshot.get(k, "") for k in _RUNTIME_KEYS)
+            agent.switch_model(
+                new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
+                api_mode=api_mode, capabilities=snapshot.get("capabilities"), supersede_pre_agent_primary=False,
+            )
+            # Endpoint-stamped; a different model sharing the URL cannot inherit the primary verdicts.
+            if isinstance(primary, dict) and primary.get("model") == model:
+                from agent.route_verdicts import restore_primary_route_verdicts
+                restore_primary_route_verdicts(agent, copy.deepcopy(primary))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
+    finally:
+        if startup is not None:
+            agent._pre_agent_primary = startup
+            agent._fallback_index = startup.fallback_index
 
 
 def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True):
@@ -260,7 +268,9 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
             agent.switch_model(
                 new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
                 base_url=result.base_url, api_mode=result.api_mode,
-                capabilities=getattr(result, "runtime_capabilities", None))
+                capabilities=getattr(result, "runtime_capabilities", None),
+                supersede_pre_agent_primary=snapshot is None,
+            )
         except Exception as exc:
             # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
             # restart, persist, marker, override, config write) or the session pins a broken model.
@@ -271,15 +281,18 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
             logger.warning("In-place model switch failed for TUI agent: %s", exc)
             raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
                              f"staying on {getattr(agent, 'model', current_model)}.") from exc
+        if snapshot is not None:
+            session["one_turn_model_restore"] = snapshot
+            if snapshot.get("startup_primary") is not None:
+                # Park recovery until the requested one-turn model has actually run.
+                agent._pre_agent_primary = None
+        else:
+            session.pop("one_turn_model_restore", None)
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
         _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
         _emit_session_info(sid, session)
-        if snapshot is not None:
-            session["one_turn_model_restore"] = snapshot
-        else:
-            session.pop("one_turn_model_restore", None)
 
 
 LARGE_MODEL_NOTICE_KEY = "model.large_notice"
@@ -322,7 +335,7 @@ def _apply_model_switch(
         raise ValueError(result.error_message or "model switch failed")
     if persist_global:  # the exact plan, incl. conditional clears: still before any confirm or commit
         _refuse_managed_model_pick(reasoning_effort, result)
-    restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
+    restore_snapshot = _snapshot_agent_model_runtime(agent, session) if one_turn else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:

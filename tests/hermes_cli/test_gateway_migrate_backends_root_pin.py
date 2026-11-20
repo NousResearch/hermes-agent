@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -206,10 +205,28 @@ def test_the_windows_owner_blocker_prints_the_powershell_pin(team_root):
     assert "HERMES_HOME=" not in problem.replace("$env:HERMES_HOME=", ""), problem
 
 
-def test_every_message_naming_a_hermes_command_follows_the_host_shell():
-    """Each hermes_command() call in the plan passes powershell= unless it builds the POSIX recipe."""
-    import inspect
-    source = inspect.getsource(plan)
-    calls = re.findall(r"hermes_command\(([^()]*(?:\([^()]*\))?[^()]*)\)", source)
-    unqualified = [c for c in calls if "powershell" not in c and not c.startswith("home: Optional")]
-    assert unqualified == ["home"], unqualified  # manual_steps: the POSIX recipe (Windows has its own)
+@pytest.mark.parametrize("powershell", [True, False])
+def test_every_message_naming_a_hermes_command_follows_the_host_shell(team_root, powershell):
+    """The plan's own messages (outside the printed recipes) pin the root in the host's shell: the
+    stray-gateway blocker, the gateway line for systemd and launchd, and the owner blocker."""
+    home = team_root.root / "profiles" / "work"
+    pin = plan.pin_hermes_home(team_root.root, "hermes -p work", powershell=powershell)
+    texts = {}
+    for kind in ("systemd", "launchd"):
+        p = plan.BackendPlan(home=str(home), powershell=powershell)
+        state = {"kind": kind, "installed": False, "active": False, "running_pid": 77, "unit": None}
+        host = SimpleNamespace(gateway_state=lambda state=state: state, linger=lambda: None,
+                               gateway_preflight=lambda: None)
+        plan._gateway(p, host)
+        texts[f"{kind} stray gateway"] = (" ".join(p.blockers), f"({pin} gateway stop)")
+        texts[f"{kind} gateway line"] = (plan._gateway_line(p), f"({pin} gateway install;")
+    owner = SimpleNamespace(home=home, gateway_owner=lambda: ("unknown", None),
+                            os_family=lambda: "win32" if powershell else "linux")
+    texts["owner"] = (plan._owner_problem(owner), f"({pin} gateway status)")
+
+    for where, (text, command) in texts.items():
+        assert command in text, (where, text)
+        if powershell:
+            assert "HERMES_HOME=" not in text.replace("$env:HERMES_HOME=", ""), (where, text)
+        else:
+            assert "$env:" not in text, (where, text)

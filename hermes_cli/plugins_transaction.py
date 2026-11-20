@@ -199,6 +199,10 @@ def update_plugin(
             pc._check_manifest_version(manifest, installed_name)
             pc._scan_merged_tree(staged, source, merged, force=force, scan_decision_cb=scan_decision_cb,
                                  reviewed_pin=catalog_entry is not None)
+            from hermes_cli.plugin_native_assets import stage_catalog_native_asset
+
+            native_assets = catalog_entry.native_assets if catalog_entry is not None else None
+            stage_catalog_native_asset(record.get("catalog"), native_assets, staged)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

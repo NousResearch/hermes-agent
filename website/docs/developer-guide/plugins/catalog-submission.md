@@ -219,6 +219,13 @@ the same file. The README at the pinned commit renders there by default, and
    <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
    only from the upstream tool's official source, pinned by checksum, and
    disclosed (rule 13) — never bundled and never from an unofficial mirror.
+   Hermes can provision a catalog-declared native executable from the plugin
+   repository's GitHub release using `native_assets`. Admission verifies the
+   pinned archive digest, its build provenance and its declared executable
+   member. Maintainers can approve a specific repackaged archive by recording
+   the exact catalog pin, archive, member and producer in the CI approval
+   ledger. The reviewed packaging workflow must verify the original build
+   at the catalog pin before repackaging it.
 18. **Password managers come from their vendor.** A plugin that registers a
    `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
    `tier: verified`, submitted from the password-manager vendor's own repository

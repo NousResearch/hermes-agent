@@ -6,11 +6,9 @@ Validates ``plugin-catalog/*.yaml`` catalog entries and
 only stdlib + ruamel.yaml so the admission CI (and third-party repos) can run it
 WITHOUT installing hermes-agent.
 
-NOTE: this script intentionally duplicates the schema rules instead of
-importing ``hermes_cli`` — the whole point is the no-install requirement for
-cheap cross-repo CI use. The runtime twin of this schema lives in
-``hermes_cli/plugin_catalog.py``; if the contract changes there, update the
-rules here in lockstep.
+Most checks mirror ``hermes_cli/plugin_catalog.py`` without importing the
+installed package. Native asset declarations share the stdlib-only parser
+from its exact checkout path.
 
 Usage:
     python3 scripts/validate_plugin_catalog.py plugin-catalog/
@@ -27,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import runpy
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -80,6 +79,7 @@ KNOWN_KEYS = {
     "default",
     "known_issues",
     "attested_binaries",
+    "native_assets",
 }
 # Cosmetic labels attached to the pin. ``version`` is never parsed; ``image`` and ``screenshots``
 # may only point at GitHub so the Desktop catalog browser and the docs site never fetch from
@@ -260,6 +260,7 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     # build-provenance attestation (README rule 17). The CI gate verifies the
     # attestation; here we only shape-check the paths.
     _check_attested_binaries(data.get("attested_binaries"), errors)
+    _check_native_assets(data, platforms, errors)
     _check_default(data, errors)
 
     return errors, warnings
@@ -291,6 +292,21 @@ def _check_attested_binaries(attested: object, errors: list[str]) -> None:
             errors.append(
                 f"attested_binaries path {p!r} must be a relative path without '.' or '..' segments"
             )
+
+
+def _check_native_assets(data: dict, platforms: object, errors: list[str]) -> None:
+    native = data.get("native_assets")
+    repo = data.get("repo")
+    if native is None or not isinstance(repo, str) or not isinstance(platforms, list):
+        return
+    parser = Path(__file__).resolve().parents[1] / "hermes_cli" / "plugin_native_assets.py"
+    if not parser.is_file():
+        errors.append("native_assets validation requires hermes_cli/plugin_native_assets.py")
+        return
+    try:
+        runpy.run_path(str(parser))["parse_native_assets"](native, repo=repo, platforms=platforms)
+    except ValueError as exc:
+        errors.append(str(exc))
 
 
 def validate_removed(data: object) -> tuple[list[str], list[str]]:

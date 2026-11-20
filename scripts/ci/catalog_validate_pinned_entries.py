@@ -9,6 +9,7 @@ The supply-chain half of the plugin-catalog admission gate. For every entry path
 * a repo that does not clone, or a pin that is not a reachable commit object;
 * a subdir or any symlink in the clone that resolves outside the pinned clone;
 * a subdir with no ``plugin.yaml``/``plugin.yml``/``plugin.json``;
+* a native release archive that fails the catalog digest, provenance or member check;
 * a failing ``hermes plugins validate --install-deps``;
 * an ``attested_binaries`` path that is not a regular file, or has no build-provenance attestation
   from the entry's repo at the pinned sha (README rule 17);
@@ -29,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -36,6 +38,8 @@ import tempfile
 from pathlib import Path
 
 _FIELDS_SCRIPT = Path(__file__).resolve().with_name("catalog_entry_fields.py")
+_NATIVE_ASSETS_MODULE = Path(__file__).resolve().parents[2] / "hermes_cli" / "plugin_native_assets.py"
+_NATIVE_REPACK_ALLOWLIST = Path(__file__).resolve().with_name("catalog_native_repack_allowlist.json")
 _MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
 # A GitHub fetch. The pattern itself is plain (grep -E): the ajv exemption is applied in Python
 # afterward, in _file_fetches_github, so it cannot be gamed by quoting/spacing of the ajv
@@ -101,7 +105,7 @@ def _substituted(output: bytes) -> str:
     return os.fsdecode(output.replace(b"\0", b"")).rstrip("\n")
 
 
-_FIELDS = ("REPO", "SHA", "SUBDIR", "ATTESTED", "BAD")
+_FIELDS = ("REPO", "SHA", "SUBDIR", "ATTESTED", "NATIVE_ASSETS", "BAD")
 
 
 def _read_fields(entry: str) -> dict[str, str]:
@@ -192,6 +196,74 @@ def _check_attested(attested: str, plugin_dir: str, repo: str, sha: str) -> None
         os.remove(binary)
 
 
+def _verify_native_provenance(
+    archive: Path, owner_repo: str, pin: str, approval: dict | None
+) -> None:
+    producer = approval["producer"] if approval else None
+    verify = [
+        "gh", "attestation", "verify", str(archive), "--repo", owner_repo,
+        "--source-digest", producer["sha"] if producer else pin,
+        "--deny-self-hosted-runners", "--predicate-type", _PROVENANCE,
+    ]
+    if producer:
+        # An entry can only use a repack authorized for these exact bytes by
+        # the maintainer-owned ledger. The immutable workflow it authorizes
+        # verifies the original build at the catalog pin before repackaging.
+        verify.extend([
+            "--signer-digest", producer["sha"],
+            "--signer-workflow", f"{owner_repo}/{producer['workflow']}",
+            "--format", "json", "--jq",
+            ".[].verificationResult.statement.predicate.runDetails.metadata.invocationId",
+        ])
+    else:
+        verify.extend(["--signer-repo", owner_repo])
+    verified = _run(verify, timeout=_ATTEST_SECONDS, stdout=subprocess.PIPE)
+    if verified.returncode != 0 or (
+        producer and producer["invocation"] not in _substituted(verified.stdout).splitlines()
+    ):
+        raise EntryRejected(f"native_assets provenance failed for {archive.name} at {owner_repo}@{pin}")
+    if approval:
+        source = approval["input"]
+        print(f"Reviewed native repack {producer['invocation']} verified input "
+              f"sha256:{source['sha256']} from {source['invocation']}")
+
+
+def _check_native_assets(declaration: str, clone_dir: str, repo: str, sha: str) -> None:
+    if not declaration:
+        return
+    contract = runpy.run_path(str(_NATIVE_ASSETS_MODULE))
+    try:
+        data, platforms = json.loads(declaration)
+        assets = contract["parse_native_assets"](data, repo=repo, platforms=platforms)
+    except ValueError as exc:
+        raise EntryRejected(" ".join(str(exc).splitlines())) from exc
+    tag_pin = _run(
+        ["git", "-C", clone_dir, "rev-parse", "--verify", f"refs/tags/{assets.tag}^{{commit}}"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if tag_pin.returncode != 0 or _substituted(tag_pin.stdout) != sha:
+        raise EntryRejected(f"native_assets tag {assets.tag} must resolve to the catalog pin")
+    owner_repo = contract["github_repository"](repo)
+    approvals = json.loads(_NATIVE_REPACK_ALLOWLIST.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="catalog-native-") as staging:
+        for target, asset in assets.targets.items():
+            identity = {
+                "repo": owner_repo, "pin": sha, "tag": assets.tag, "target": target,
+                "filename": asset.filename, "sha256": asset.sha256,
+                "member": assets.member, "destination": assets.destination,
+            }
+            approval = next((row for row in approvals if row["artifact"] == identity), None)
+            archive = Path(staging) / asset.filename
+            try:
+                contract["download_native_archive"](repo, assets.tag, asset, archive)
+                _verify_native_provenance(archive, owner_repo, sha, approval)
+                contract["extract_native_executable"](archive, assets.member, Path(staging) / target, target=target)
+            except (OSError, ValueError) as exc:
+                reason = " ".join(str(exc).splitlines())
+                raise EntryRejected(f"native_assets {target}: {reason}") from exc
+            archive.unlink()
+
+
 def _check_payloads(plugin_dir: str) -> None:
     # UNSCANNABLE-PAYLOAD GATE (README rule 17). A reviewer and the install scanner must be able
     # to read everything shipped at the pin as source: no compiled binaries (by header),
@@ -264,6 +336,7 @@ def validate_entry(entry: str, workroot: str) -> None:
     # when both exist).
     if not any(os.path.isfile(f"{plugin_dir}/{name}") for name in _MANIFESTS):
         raise EntryRejected(f"no plugin.yaml or plugin.json at subdir '{subdir}' of {repo}@{sha}")
+    _check_native_assets(fields["NATIVE_ASSETS"], clone_dir, repo, sha)
     # Manifest schema + declared-vs-registered capability check.
     validate = ["hermes", "plugins", "validate", "--install-deps", plugin_dir]
     if _run(validate, timeout=_VALIDATE_SECONDS).returncode != 0:

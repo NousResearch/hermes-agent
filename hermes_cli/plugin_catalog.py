@@ -23,11 +23,14 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from datetime import UTC
 from hermes_cli._startup_fast import project_root_str
+
+if TYPE_CHECKING:
+    from hermes_cli.plugin_native_assets import NativeAssets
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,7 @@ class PluginCatalogEntry:
     default: bool = False        # installed and enabled once in every home (official/verified only)
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
     known_issues: list[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
+    native_assets: NativeAssets | None = None
 
     @property
     def install_identifier(self) -> str:
@@ -125,7 +129,7 @@ class PluginCatalogEntry:
 
     def to_dict(self) -> dict[str, Any]:
         caps = self.capabilities
-        return {
+        result = {
             "name": self.name, "repo": self.repo, "sha": self.sha, "description": self.description,
             "maintainer": self.maintainer, "tier": self.tier, "category": self.category,
             "requires_hermes": self.requires_hermes,
@@ -139,6 +143,9 @@ class PluginCatalogEntry:
             },
             "known_issues": list(self.known_issues),
         }
+        if self.native_assets is not None:
+            result["native_assets"] = self.native_assets.to_dict()
+        return result
 
 
 def get_catalog_dir() -> Path:
@@ -195,6 +202,16 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     screenshots = [s for s in _str_list(data.get("screenshots")) if is_allowed_image_url(s)]
     if len(screenshots) != len(_str_list(data.get("screenshots"))):
         logger.warning("Plugin catalog: %s: ignoring screenshots off GitHub hosts", label)
+    platforms = _str_list(data.get("platforms"))
+    native_assets = None
+    if data.get("native_assets") is not None:
+        from hermes_cli.plugin_native_assets import parse_native_assets
+
+        try:
+            native_assets = parse_native_assets(data["native_assets"], repo=repo, platforms=platforms)
+        except ValueError as exc:
+            logger.warning("Plugin catalog: %s: %s", label, exc)
+            return None
     return PluginCatalogEntry(
         name=name, repo=repo, sha=sha,
         description=str(data.get("description") or "").strip(),
@@ -202,7 +219,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
         subdir=str(data.get("subdir") or "").strip(), docs_url=docs_url,
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
-        platforms=_str_list(data.get("platforms")),
+        platforms=platforms, native_assets=native_assets,
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True, default=default,
         known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(

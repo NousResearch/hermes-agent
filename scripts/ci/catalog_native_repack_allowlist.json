@@ -1,0 +1,44 @@
+[
+  {
+    "artifact": {
+      "repo": "Lokee86/reliquary-hermes",
+      "pin": "0ad300940c0d6d77d39ad0078ab0a8674dd421b5",
+      "tag": "v0.3.0",
+      "target": "macos-amd64",
+      "filename": "reliquary-hermes-v0.3.0-macos-x86_64.zip",
+      "sha256": "54035b6d07844e4621613d3ce63a4b3d16a39b03f63d011f5518f1d0ab4b1d11",
+      "member": "reliquary/host/reliquary-hermes-host",
+      "destination": "host/reliquary-hermes-host"
+    },
+    "producer": {
+      "sha": "6a4aef0bd55d2ac3baeb639bc11f5140feae95c6",
+      "workflow": ".github/workflows/native.yml",
+      "invocation": "https://github.com/Lokee86/reliquary-hermes/actions/runs/44645872234/attempts/1"
+    },
+    "input": {
+      "sha256": "ea82dde8c27cb5ffe143d48b2a89908a3cb2159184a2b111ca3d27d43d4d398a",
+      "invocation": "https://github.com/Lokee86/reliquary-hermes/actions/runs/44628246577/attempts/1"
+    }
+  },
+  {
+    "artifact": {
+      "repo": "Lokee86/reliquary-hermes",
+      "pin": "0ad300940c0d6d77d39ad0078ab0a8674dd421b5",
+      "tag": "v0.3.0",
+      "target": "macos-arm64",
+      "filename": "reliquary-hermes-v0.3.0-macos-arm64.zip",
+      "sha256": "2f3e8cd10c823c15c2752590d10dfee18ea933283fc3ff5fb75e9db798fa3453",
+      "member": "reliquary/host/reliquary-hermes-host",
+      "destination": "host/reliquary-hermes-host"
+    },
+    "producer": {
+      "sha": "6a4aef0bd55d2ac3baeb639bc11f5140feae95c6",
+      "workflow": ".github/workflows/native.yml",
+      "invocation": "https://github.com/Lokee86/reliquary-hermes/actions/runs/44645872234/attempts/1"
+    },
+    "input": {
+      "sha256": "2c76323025be290528da1670bd0ac2df1ad4e56e09e95252e440271045656663",
+      "invocation": "https://github.com/Lokee86/reliquary-hermes/actions/runs/44628246577/attempts/1"
+    }
+  }
+]

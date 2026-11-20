@@ -14,10 +14,13 @@ import tempfile
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.plugin_install_phase import InstallPhase
+
+if TYPE_CHECKING:
+    from hermes_cli.plugin_native_assets import NativeAssets
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +397,7 @@ def _install_plugin_core(
     python_deps: bool = True,
     assume_deps_consent: bool = False,
     catalog: Optional[dict] = None,
+    native_assets: NativeAssets | None = None,
     allow_removed: bool = False,
     before_swap=None,
     app_title: Optional[str] = None,
@@ -410,6 +414,7 @@ def _install_plugin_core(
     (``{"name", "repo", "tier", "pin"}``) is recorded on the install-metadata record with the
     checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it;
     its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
+    *native_assets* is the catalog's optional release declaration, used only at the reviewed pin.
     *allow_removed* records that the user knowingly bypassed the kill list.
     *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
     the single scan and portable-package check admit the merged tree (file-count/size limits
@@ -470,16 +475,19 @@ def _install_plugin_core(
         owner.enter_context(plugin_update_lock(target))
         old_metadata = _pc()._read_install_metadata()
         prior = old_metadata.get(plugin_name)
+        reviewed_assets = native_assets if at_reviewed_pin else None
         # `install --force --ref` is the documented way to move a pin, so a reinstall of the same
         # source is an update: it replaces the plugin's code, never the user's state.
         tracked_edits: list[str] = []
         if (before_swap is None and force and target.is_dir() and not target.is_symlink()
                 and isinstance(prior, dict) and prior.get("source") == source):
+            from hermes_cli.plugin_native_assets import managed_native_paths
             from hermes_cli.plugins_cmd_catalog import _carry_user_files, _local_changes
             local, tracked_edits = _local_changes(target)
+            managed_paths = managed_native_paths(reviewed_assets, prior)
 
             def _carry(_manifest, tree):
-                return _carry_user_files(target, tree, local)
+                return _carry_user_files(target, tree, local, managed_paths=managed_paths)
             before_swap = _carry
         # A callback may merge user-owned state into the candidate tree; run it first so one scan
         # admits the final bytes.
@@ -532,7 +540,10 @@ def _install_plugin_core(
                 "sha": installed_revision,
                 "pin": reviewed_pin if at_reviewed_pin else "",
             }
+            from hermes_cli.plugin_native_assets import stage_catalog_native_asset
             from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar_record
+
+            stage_catalog_native_asset(record["catalog"], reviewed_assets, tmp_target)
             write_catalog_sidecar_record(tmp_target, catalog, installed_revision)
         if allow_removed:
             record["allow_removed"] = True

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Read the PR-controlled clone source of one catalog entry and print it as one JSON object.
 
-Prints ``{"REPO": ..., "SHA": ..., "SUBDIR": ..., "ATTESTED": ..., "BAD": ...}``, every value a
-string (``ATTESTED`` is newline-separated). These fields are
+Prints the clone fields and any ``NATIVE_ASSETS`` declaration as strings.
+``ATTESTED`` is newline-separated. These fields are
 PR-controlled, so the entry is rejected here (non-empty ``BAD``) before anything uses them: the
 clone must be remote-only and the subdir a plain relative path, or the pinned sha ends up
 validating files outside the pinned commit. Run it with ``python3 -I``: cwd is the PR tree, and
@@ -72,7 +72,7 @@ def _attested(data: object) -> tuple[list[str], str]:
 
 
 def source_fields(data: object) -> dict[str, str]:
-    """REPO, SHA, SUBDIR, ATTESTED and the BAD verdict for a parsed entry."""
+    """Clone fields, native assets and the BAD verdict for one parsed entry."""
     mapping = data if isinstance(data, dict) else {}
     repo = str(mapping.get("repo", ""))
     sha = mapping.get("sha", "")
@@ -82,8 +82,19 @@ def source_fields(data: object) -> dict[str, str]:
     subdir = subdir_raw if isinstance(subdir_raw, str) else ""
     attested, attested_bad = _attested(data)
     bad = _rejection(data, repo, sha, subdir_raw, subdir) or attested_bad
+    native_assets = ""
+    if not bad and mapping.get("native_assets") is not None:
+        platforms = mapping.get("platforms")
+        platforms = [] if platforms is None else platforms
+        if not isinstance(platforms, list) or not all(isinstance(p, str) for p in platforms):
+            bad = "platforms must be a list of strings for native_assets"
+        else:
+            try:
+                native_assets = json.dumps([mapping["native_assets"], platforms])
+            except (TypeError, ValueError):
+                bad = "native_assets must use JSON-compatible values"
     return {"REPO": repo, "SHA": str(sha), "SUBDIR": subdir, "ATTESTED": "\n".join(attested),
-            "BAD": bad}
+            "NATIVE_ASSETS": native_assets, "BAD": bad}
 
 
 def main(argv: list[str] | None = None) -> int:

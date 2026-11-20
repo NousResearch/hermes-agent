@@ -161,6 +161,13 @@ meaningful:
    <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
    only from the upstream tool's official source, pinned by checksum, and
    disclosed (rule 13) — never bundled and never from an unofficial mirror.
+   Hermes can provision a catalog-declared native executable from the plugin
+   repository's GitHub release using `native_assets`. Admission verifies the
+   pinned archive digest, its build provenance and its declared executable
+   member. Maintainers can approve a specific repackaged archive by recording
+   the exact catalog pin, archive, member and producer in the CI approval
+   ledger. The reviewed packaging workflow must verify the original build
+   at the catalog pin before repackaging it.
 18. **Password managers come from their vendor.** A plugin that registers a
    `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
    `tier: verified`, submitted from the password-manager vendor's own repository
@@ -215,17 +222,32 @@ image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
 screenshots: []             # optional, up to 6 https images on a GitHub host; displayed by catalog clients
 readme: true                # optional, default true; include the README at the PINNED SHA
-platforms: []               # optional, e.g. [linux, macos]; empty = all
+platforms: [linux]          # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
 default: false              # optional; installed and enabled once in every home (official or verified entries only)
 known_issues: []            # optional strings shown at the install prompt; informational, never blocks
+# Optional. This example targets Linux. Include the supported OSes in platforms.
+native_assets:
+  tag: v1.4.0
+  member: example/bin/host      # regular archive member, relative to the archive root
+  destination: bin/host         # relative to the installed plugin directory
+  targets:
+    linux-amd64:
+      filename: example-linux-x86_64.tar.gz
+      sha256: "<64 lowercase hex characters>"
+      min_glibc: "2.35"
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
 ```
+
+`native_assets.targets` uses Linux and macOS keys `linux-amd64`, `linux-arm64`,
+`macos-amd64` and `macos-arm64`. Linux archives use `.tar.gz` and declare
+`min_glibc`. macOS archives use `.zip` and declare `min_macos`. Give
+`requires_hermes` an installer version that supports the field.
 
 `tier` says who stands behind an entry. `official`: maintained by NousResearch.
 `verified`: verified by the Nous team to come from the company that makes what

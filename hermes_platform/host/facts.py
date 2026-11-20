@@ -90,6 +90,24 @@ def native_arch() -> str:
     return process_arch()
 
 
+@functools.cache
+def glibc_version() -> str:
+    """Return the Linux GNU C library version, or an empty string when unavailable."""
+    if os_family() != "linux":
+        return ""
+    try:
+        value = os.confstr("CS_GNU_LIBC_VERSION")
+    except (OSError, ValueError):
+        return ""
+    return (value or "").removeprefix("glibc ")
+
+
+@functools.cache
+def macos_version() -> str:
+    """Return the macOS product version."""
+    return platform.mac_ver()[0] if os_family() == "darwin" else ""
+
+
 _CPU_KEY = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
 
 
@@ -445,5 +463,5 @@ def interactive_session() -> bool:
 def clear_caches() -> None:
     """Clear every cached host fact."""
     for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
-                 nvidia_gpus, _windows_display_adapters):
+                 glibc_version, macos_version, nvidia_gpus, _windows_display_adapters):
         fact.cache_clear()

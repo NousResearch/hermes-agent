@@ -77,6 +77,33 @@ def test_valid_entry_without_optional_fields_passes(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_native_asset_declaration_checks_staged_destination(tmp_path):
+    assets = {
+        "tag": "v1.0.0",
+        "member": "example/bin/host",
+        "destination": "bin/host",
+        "targets": {
+            "linux-amd64": {
+                "filename": "example-linux-x86_64.tar.gz",
+                "sha256": "b" * 64,
+                "min_glibc": "2.35",
+            }
+        },
+    }
+    entry = {**VALID_ENTRY, "platforms": ["linux"], "native_assets": assets}
+    path = write_entry(tmp_path, entry)
+    result = run_validator(str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "unknown top-level key" not in result.stdout
+
+    assets["destination"] = "../host"
+    write_entry(tmp_path, entry)
+    result = run_validator(str(path))
+    assert result.returncode == 1
+    assert "native_assets" in result.stdout
+    assert "destination" in result.stdout
+
+
 # ── each malformed field fails with a pointed error ────────────────────
 
 

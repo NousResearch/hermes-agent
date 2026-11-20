@@ -118,6 +118,109 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
     assert _head(world["plugins_dir"] / "cat-plugin") == world["sha2"]
 
 
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("failure", ["checksum", "member", "architecture"])
+def test_catalog_native_host_publishes_with_the_pin(world, monkeypatch, failure):
+    """A bad archive leaves the old plugin intact, and a retry replaces only the native host and source."""
+    from hashlib import sha256
+    from io import BytesIO
+    import tarfile
+    import zipfile
+
+    from hermes_cli import plugin_native_assets as native
+    from hermes_platform.host import facts
+
+    linux = facts.os_family() == "linux"
+    platform = "linux" if linux else "macos"
+    arch = facts.native_arch()
+    key = f"{platform}-{arch}"
+    repo = "https://github.com/example/cat-plugin"
+    member = "cat-plugin/host/native"
+    relative_host = "host/native"
+    filename = "native.tar.gz" if linux else "native.zip"
+    minimum = {"min_glibc": "2.0"} if linux else {"min_macos": "10.0"}
+    state = {}
+
+    def executable_bytes(contents, cpu=arch):
+        if linux:
+            machine = {"amd64": b"\x3e\x00", "arm64": b"\xb7\x00"}[cpu]
+            return bytes.fromhex("7f454c460201010000000000000000000300") + machine + contents
+        machine = {"amd64": b"\x07\x00\x00\x01", "arm64": b"\x0c\x00\x00\x01"}[cpu]
+        return b"\xcf\xfa\xed\xfe" + machine + bytes(12) + contents
+
+    old_host = executable_bytes(b"old host")
+    new_host = executable_bytes(b"new host")
+
+    def archive(contents, path=member):
+        output = BytesIO()
+        if linux:
+            with tarfile.open(fileobj=output, mode="w:gz") as tar:
+                info = tarfile.TarInfo(path)
+                info.size = len(contents)
+                tar.addfile(info, BytesIO(contents))
+        else:
+            with zipfile.ZipFile(output, "w") as zipped:
+                zipped.writestr(path, contents)
+        return output.getvalue()
+
+    def set_release(tag, blob, response=None):
+        state.update(tag=tag, digest=sha256(blob).hexdigest(), blob=blob if response is None else response)
+
+    def entries():
+        return [pc_cat.entry_from_mapping({
+            "name": "cat-plugin", "repo": repo, "sha": world["state"]["pin"], "platforms": [platform],
+            "native_assets": {
+                "tag": state["tag"], "member": member, "destination": relative_host,
+                "targets": {key: {"filename": filename, "sha256": state["digest"], **minimum}},
+            },
+        }, "fixture")]
+
+    class Release:
+        def open(self, url, *, timeout):
+            assert url == f"{repo}/releases/download/{state['tag']}/{filename}"
+            return BytesIO(state["blob"])
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: entries())
+    monkeypatch.setattr(pc, "_resolve_git_url", lambda identifier: (world["repo"].as_uri(), ""))
+    monkeypatch.setattr(native, "build_opener", lambda _handler: Release())
+
+    set_release("v1", archive(old_host))
+    target = cat.install_catalog_entry(entries()[0], force=False)[0]
+    executable = target / relative_host
+    user_data = target / "notes.txt"
+    user_data.write_text("my data")
+    old_metadata = pc._read_install_metadata()
+    assert executable.read_bytes() == old_host
+    assert executable.stat().st_mode & 0o111
+
+    world["state"]["pin"] = world["sha2"]
+    replacement = archive(new_host)
+    if failure == "checksum":
+        set_release("v2", replacement, response=b"corrupt archive")
+        reason = "SHA-256 mismatch"
+    elif failure == "member":
+        set_release("v2", archive(new_host, path="elsewhere/native"))
+        reason = "must contain exactly one"
+    else:
+        other_arch = "amd64" if arch == "arm64" else "arm64"
+        set_release("v2", archive(executable_bytes(b"foreign host", other_arch)))
+        reason = f"does not match {key}"
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert reason in result["error"]
+    assert _head(target) == world["sha1"]
+    assert executable.read_bytes() == old_host
+    assert pc._read_install_metadata() == old_metadata
+
+    set_release("v2", replacement)
+    assert pc.dashboard_update_user_plugin("cat-plugin")["ok"]
+    assert _head(target) == world["sha2"]
+    assert executable.read_bytes() == new_host
+    assert user_data.read_text() == "my data"
+    assert pc._read_install_metadata()["cat-plugin"]["catalog"]["native_asset"] == {
+        "path": relative_host, "target": key, "sha256": state["digest"],
+    }
+
+
 def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
     world["state"]["removed"].append(
         pc_cat.RemovedEntry(name="cat-plugin", repo=world["repo"].as_uri(), reason="malware"))

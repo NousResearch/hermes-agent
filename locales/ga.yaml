@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
+  schedule_header: "⏰  Sceidealaigh an jab seo? {description}"
   choose_long: "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"
   choose_short: "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
   prompt_long: "      Rogha [o/s/a/D]: "

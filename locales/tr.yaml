@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
+  schedule_header: "⏰  Bu görev zamanlansın mı? {description}"
   choose_long: "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"
   choose_short: "      [b]ir kez  |  [o]turum  |  [r]eddet"
   prompt_long: "      Seçim [b/o/h/R]: "

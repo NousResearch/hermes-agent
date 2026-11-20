@@ -30,7 +30,11 @@ def cron_store(tmp_path, monkeypatch):
 def _asking(monkeypatch, answer):
     asked = []
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-    terminal_tool.set_approval_callback(lambda command, description, **_: asked.append(description) or answer)
+
+    def callback(command, description, *, kind="command", **_):
+        asked.append((kind, description))
+        return answer
+    terminal_tool.set_approval_callback(callback)
     return asked
 
 
@@ -38,7 +42,9 @@ def _asking(monkeypatch, answer):
 def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch, answer, saved):
     asked = _asking(monkeypatch, answer)
     result = json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))
-    assert len(asked) == 1 and "Water" in asked[0] and "3 runs" in asked[0]
+    # The schedule card, not the command card, on every surface that draws one.
+    assert len(asked) == 1 and asked[0][0] == "schedule"
+    assert "Water" in asked[0][1] and "3 runs" in asked[0][1]
     assert result.get("success") is (saved == 1)
     assert len(cron_store.load_jobs()) == saved
 

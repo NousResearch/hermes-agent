@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
+  schedule_header: "⏰  Skeduleer hierdie taak? {description}"
   choose_long: "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"
   choose_short: "      [o]eenmalig  |  [s]sessie  |  [d]weier"
   prompt_long: "      Keuse [o/s/a/D]: "

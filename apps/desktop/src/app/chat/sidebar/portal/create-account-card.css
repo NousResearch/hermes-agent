@@ -1,7 +1,7 @@
 /* "Create an Account" (Figma 18695:18439) at the foot of the chat sidebar, in the usage-stats card's
    slot: under the list on the sidebar's opaque fill, the brand fill in the accent with the on-brand
-   ink, the lattice art faded in from the leading edge (Figma's anime-hermes portrait has no asset
-   here). 84 tall, 9 corners, 16 padding; the words clear the art by 62. */
+   ink, Figma's portrait (anime-hermes, the hand holding the orb) screened onto it at the leading
+   corner. 84 tall, 9 corners, 16 padding; the words clear the portrait by 62. */
 .portal-sidebar .portal-account-offer {
   position: relative;
   isolation: isolate;
@@ -27,12 +27,13 @@
   content: '';
   position: absolute;
   z-index: -1;
-  inset: 0;
-  /* token-exempt: the usage-stats card's own art placement */
-  background: url('../../../../assets/settings-agent-lattice.avif') -9.55rem 50% / 18.175rem no-repeat;
-  mix-blend-mode: var(--portal-sidebar-offer-art-blend);
-  opacity: var(--portal-sidebar-offer-art-opacity);
-  mask-image: linear-gradient(to right, var(--portal-raw-black) 4%, transparent 22%);
+  /* token-exempt: Figma's image slot, 153.8 x 85.8 from 45.3px before the card's start to 2px under it */
+  inset-block-end: -0.125rem;
+  inset-inline-start: -2.83rem;
+  inline-size: 9.6125rem;
+  block-size: 5.365rem;
+  background: url('../../../../assets/account-portrait.avif') center / cover no-repeat;
+  mix-blend-mode: screen;
   pointer-events: none;
 }
 

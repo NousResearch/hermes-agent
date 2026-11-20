@@ -132,6 +132,61 @@
   --artwork-h: 882;
 }
 
+/* The onboarding's artworks (Onboarding 18695:18059's picker; the Brand page draws no rows for them).
+   Each is Figma's 2048px square, a 1270px square on the 1270-wide Background where the onboarding
+   lays one (Throne at y -160, 18695:18577; the others at y -200, as its hidden layers sit), on the
+   photo ground. The square meets the Background's sides exactly, so it is drawn 5px larger each way
+   to reach the window past the bezel; they stay put beside a docked sidebar. */
+:root.dark[data-shell='portal'][data-artwork-dark='cathedral'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-cathedral.avif');
+  /* token-exempt: Figma's placement, grown 5px each way past the bezel */
+  --artwork-x: -5;
+  --artwork-y: -205;
+  --artwork-w: 1280;
+  --artwork-h: 1280;
+}
+
+:root.dark[data-shell='portal'][data-artwork-dark='forest'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-forest.avif');
+  /* token-exempt: Figma's placement, grown 5px each way past the bezel */
+  --artwork-x: -5;
+  --artwork-y: -205;
+  --artwork-w: 1280;
+  --artwork-h: 1280;
+}
+
+:root.dark[data-shell='portal'][data-artwork-dark='sword'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-sword.avif');
+  /* token-exempt: Figma's placement, grown 5px each way past the bezel */
+  --artwork-x: -5;
+  --artwork-y: -205;
+  --artwork-w: 1280;
+  --artwork-h: 1280;
+}
+
+:root.dark[data-shell='portal'][data-artwork-dark='throne'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-throne.avif');
+  /* token-exempt: Figma's placement, grown 5px each way past the bezel */
+  --artwork-x: -5;
+  --artwork-y: -165;
+  --artwork-w: 1280;
+  --artwork-h: 1280;
+}
+
+:root.dark[data-shell='portal'][data-artwork-dark='lattice'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-lattice.avif');
+  /* token-exempt: Figma's placement, grown 5px each way past the bezel */
+  --artwork-x: -5;
+  --artwork-y: -205;
+  --artwork-w: 1280;
+  --artwork-h: 1280;
+}
+
 /* Light Vanilla (Light/Wing 16292:23804): the same hatch in black .98 at .05 on #f2f2f2 (the
    02–06 screens; 01 draws it at half that). The white ghost differenced from the ground draws it
    near-black; a canvas veil sets its .049. */
@@ -179,6 +234,26 @@
 /* Each artwork's card in the first-time splash's picker (app/discovery/make-it-yours.tsx): the same
    file the canvas paints, covering the card. Light draws its two the way its canvas does: the ghost
    and the photo differenced from the light ground, the photo lightened with the brand blue. */
+:root[data-shell='portal'] .discovery-artwork[data-artwork='cathedral'] {
+  --discovery-artwork-image: url('../../assets/artwork-cathedral.avif');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='forest'] {
+  --discovery-artwork-image: url('../../assets/artwork-forest.avif');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='sword'] {
+  --discovery-artwork-image: url('../../assets/artwork-sword.avif');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='throne'] {
+  --discovery-artwork-image: url('../../assets/artwork-throne.avif');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='lattice'] {
+  --discovery-artwork-image: url('../../assets/artwork-lattice.avif');
+}
+
 :root[data-shell='portal'] .discovery-artwork[data-artwork='wing'] {
   --discovery-artwork-image: url('../../assets/portal-wing.svg');
 }

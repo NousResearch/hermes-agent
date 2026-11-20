@@ -189,7 +189,7 @@ describe('the first-time splash in the shell', () => {
     expect(window.document.documentElement.classList.contains('dark')).toBe(true)
 
     const artworks = screen.getByRole('group', { name: copy.splash.theme.artwork.title })
-    expect(within(artworks).getAllByRole('radio')).toHaveLength(5)
+    expect(within(artworks).getAllByRole('radio')).toHaveLength(10)
     fireEvent.click(within(artworks).getByRole('radio', { name: copy.splash.theme.artwork.names.karborn }))
     expect($artworkChoice.get()).toBe('karborn')
     expect(

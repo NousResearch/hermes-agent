@@ -7,6 +7,7 @@ import {
   $paintedArtwork,
   type Artwork,
   ARTWORK_CHOICE_KEY,
+  ARTWORKS,
   ARTWORK_KEY,
   artworkForLaunch,
   artworkForMode,
@@ -33,7 +34,7 @@ function launches(mode: ArtworkMode, count: number): Artwork[] {
 
 describe('the launch rotation', () => {
   it('walks every dark artwork in Figma order, then starts over', () => {
-    expect(launches('dark', 6)).toEqual(['wing', 'angel', 'ascend', 'karborn', 'vanilla', 'wing'])
+    expect(launches('dark', 11)).toEqual([...ARTWORKS, 'ascend'])
   })
 
   it('alternates the two light artworks', () => {
@@ -56,20 +57,21 @@ describe('the launch rotation', () => {
   it('keeps the pick for every window of one launch', () => {
     const first = artworkForLaunch({ launch: 'old', artwork: 'angel' }, 'now', 'dark')
 
-    expect(first.artwork).toBe('ascend')
+    expect(first.artwork).toBe('sword')
     expect(artworkForLaunch(first, 'now', 'dark')).toEqual(first)
   })
 
   it('starts the cycle over from an unreadable record', () => {
-    expect(artworkForLaunch({ launch: 'old', artwork: 'retired' }, 'now', 'dark').artwork).toBe('wing')
+    expect(artworkForLaunch({ launch: 'old', artwork: 'retired' }, 'now', 'dark').artwork).toBe('ascend')
     expect(artworkForLaunch('garbage', 'now', 'light').artwork).toBe('ascend')
   })
 
   it('maps a pick onto the other theme by name, else to the next artwork that theme draws', () => {
     expect(artworkForMode('vanilla', 'light')).toBe('vanilla')
     expect(artworkForMode('ascend', 'light')).toBe('ascend')
-    expect(artworkForMode('wing', 'light')).toBe('ascend')
-    expect(artworkForMode('angel', 'light')).toBe('ascend')
+    expect(artworkForMode('wing', 'light')).toBe('vanilla')
+    expect(artworkForMode('angel', 'light')).toBe('vanilla')
+    expect(artworkForMode('throne', 'light')).toBe('vanilla')
     expect(artworkForMode('karborn', 'light')).toBe('vanilla')
     expect(artworkForMode('karborn', 'dark')).toBe('karborn')
     expect(nextArtwork('karborn', 'dark')).toBe('vanilla')
@@ -98,9 +100,9 @@ describe('installArtworkAttributes', () => {
     localStorage.setItem(ARTWORK_KEY, JSON.stringify({ launch: 'previous-launch', artwork: 'wing' }))
     dispose = installArtworkAttributes(root)
 
-    expect(root.dataset.artworkDark).toBe('angel')
-    expect(root.dataset.artworkLight).toBe('ascend')
-    expect(JSON.parse(localStorage.getItem(ARTWORK_KEY) ?? 'null')).toMatchObject({ artwork: 'angel' })
+    expect(root.dataset.artworkDark).toBe('karborn')
+    expect(root.dataset.artworkLight).toBe('vanilla')
+    expect(JSON.parse(localStorage.getItem(ARTWORK_KEY) ?? 'null')).toMatchObject({ artwork: 'karborn' })
   })
 
   it('gives a second window of the same launch the same artwork', () => {
@@ -129,7 +131,7 @@ describe('installArtworkAttributes', () => {
     expect(localStorage.getItem(ARTWORK_KEY)).toBeNull()
 
     $shellChoice.set(true)
-    expect(root.dataset.artworkDark).toBe('wing')
+    expect(root.dataset.artworkDark).toBe('ascend')
     $shellChoice.set(false)
     expect(root.dataset.artworkDark).toBeUndefined()
   })
@@ -167,7 +169,7 @@ describe('installArtworkAttributes', () => {
 
 describe('artworksFor', () => {
   it('offers only what the mode draws, in the cycle order', () => {
-    expect(artworksFor('dark')).toEqual(['wing', 'angel', 'ascend', 'karborn', 'vanilla'])
+    expect(artworksFor('dark')).toEqual(ARTWORKS)
     expect(artworksFor('light')).toEqual(['ascend', 'vanilla'])
   })
 })

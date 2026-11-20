@@ -9,14 +9,28 @@ import { persistentAtom } from '@/lib/persisted'
 import { readJson, readKey, writeJson } from '@/lib/storage'
 import { $portalShell } from '@/store/shell-variant'
 
-/** The cycle every theme walks: Figma's rows, with Vanilla (a faint watermark, close to no artwork)
- *  moved to the end so a first launch opens on a picture. */
-export const ARTWORKS = ['wing', 'angel', 'ascend', 'karborn', 'vanilla'] as const
+/** The cycle every theme walks, and the order "Make it yours" offers them: the picker's own order
+ *  (Onboarding 18695:18059, 18695:18219: Ascend, Cathedral, Forest, Angel, Sword, Throne, Lattice),
+ *  then the Brand rows it does not show, with Vanilla (a faint watermark, close to no artwork) last so
+ *  a first launch opens on a picture. */
+export const ARTWORKS = [
+  'ascend',
+  'cathedral',
+  'forest',
+  'angel',
+  'sword',
+  'throne',
+  'lattice',
+  'wing',
+  'karborn',
+  'vanilla'
+] as const
 
 export type Artwork = (typeof ARTWORKS)[number]
 export type ArtworkMode = 'dark' | 'light'
 
-/** Light draws two of them (rows "Ascension / Light" and "Vanilla / Light"). */
+/** Light draws two of them (Brand rows "Light/Ascend" and "Light/Wing", the latter Vanilla's hatch);
+ *  the Brand page draws no light version of the others. */
 const MODE_ARTWORKS: Record<ArtworkMode, ReadonlySet<Artwork>> = {
   dark: new Set(ARTWORKS),
   light: new Set(['vanilla', 'ascend'])

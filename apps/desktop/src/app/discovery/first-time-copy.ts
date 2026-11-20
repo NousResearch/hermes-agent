@@ -133,9 +133,14 @@ const en: FirstTimeCopy = {
         title: 'Make it beautiful',
         selected: 'Selected',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -246,9 +251,14 @@ const fr: FirstTimeCopy = {
         title: 'Rendez-le beau',
         selected: 'Choisi',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -359,9 +369,14 @@ const de: FirstTimeCopy = {
         title: 'Mach es schön',
         selected: 'Ausgewählt',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -472,9 +487,14 @@ const es: FirstTimeCopy = {
         title: 'Hazlo bonito',
         selected: 'Elegida',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -585,9 +605,14 @@ const ja: FirstTimeCopy = {
         title: '美しく彩る',
         selected: '選択中',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -698,9 +723,14 @@ const zh: FirstTimeCopy = {
         title: '让它更美',
         selected: '已选',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -811,9 +841,14 @@ const zhHant: FirstTimeCopy = {
         title: '讓它更美',
         selected: '已選',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -924,9 +959,14 @@ const ru: FirstTimeCopy = {
         title: 'Сделайте красиво',
         selected: 'Выбрано',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }
@@ -1037,9 +1077,14 @@ const ar: FirstTimeCopy = {
         title: 'اجعله جميلًا',
         selected: 'محدد',
         names: {
-          wing: 'Wing',
-          angel: 'Angel',
           ascend: 'Ascend',
+          cathedral: 'Cathedral',
+          forest: 'Forest',
+          angel: 'Angel',
+          sword: 'Sword',
+          throne: 'Throne',
+          lattice: 'Lattice',
+          wing: 'Wing',
           karborn: 'Karborn',
           vanilla: 'Vanilla'
         }

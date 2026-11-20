@@ -615,9 +615,11 @@ with a comment naming the class. Classic's sidebar dock point is the medium brea
 ### Artwork
 
 The redesign paints one artwork per app launch behind the whole window (Figma "Prod - Desktop" ›
-Brand, frame `16292:10764`: one row per artwork). Dark rotates Vanilla (the engraved wing as a
-trace), Wing (the RGB wing), Angel, Ascend and Karborn; light rotates its own Vanilla and Ascend.
-`app/redesign/artwork.ts` picks the next one in that order on every launch (per device, in
+Brand, frame `16292:10764`: one row per artwork; the onboarding's picker, 18695:18059, adds five).
+Dark rotates, in the picker's order, Ascend, Cathedral, Forest, Angel, Sword, Throne and Lattice, then
+Wing (the RGB wing), Karborn and Vanilla (the engraved wing as a trace); light rotates its own Ascend
+and Vanilla, the only two the Brand page draws in light. `app/redesign/artwork.ts` picks the next one
+in that order on every launch (per device, in
 localStorage), so two launches in a row never repeat; every window of one launch shares the pick
 through the main process's launch id (`hermesDesktop.launchId`), and in a browser each page load
 is a launch. A theme switch keeps the same artwork when the other theme draws it, else the next

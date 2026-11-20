@@ -42,12 +42,14 @@ export function planTracker(run, jobs, openIssue) {
   // A run a newer one replaced while it was still pending ends cancelled with
   // no jobs: nothing ran, so it says nothing about the commit.
   if (run.conclusion === 'cancelled' && jobs.length === 0) return { action: 'none' };
-  const red = jobs.filter(
-    (j) => RED.has(String(j.conclusion)) && !String(j.name || '').startsWith(DIAGNOSTIC_PREFIX),
-  );
-  const runRed = RED.has(String(run.conclusion)) || red.length > 0;
+  const isDiagnostic = (/** @type {{name?: string}} */ j) => String(j.name || '').startsWith(DIAGNOSTIC_PREFIX);
+  const diagnosticRed = jobs.filter((j) => RED.has(String(j.conclusion)) && isDiagnostic(j));
+  const red = jobs.filter((j) => RED.has(String(j.conclusion)) && !isDiagnostic(j));
+  const diagnosticOnlyFailure = run.conclusion === 'failure' && red.length === 0 && diagnosticRed.length > 0;
+  const effectiveConclusion = diagnosticOnlyFailure ? 'success' : run.conclusion;
+  const runRed = RED.has(String(effectiveConclusion)) || red.length > 0;
   if (!runRed) {
-    if (run.conclusion === 'success' && openIssue) {
+    if (effectiveConclusion === 'success' && openIssue) {
       return { action: 'close', body: `**${run.display_title}** is green: ${run.html_url}. Closing; the next red run opens a fresh tracker.` };
     }
     return { action: 'none' };

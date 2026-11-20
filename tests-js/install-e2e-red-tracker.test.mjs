@@ -54,3 +54,15 @@ test('non-gating diagnostic Linux failures never block closing or pollute the re
   expect(opened.body).toContain('win32-bundle')
   expect(opened.body).not.toContain('Build diagnostic Linux bundle')
 })
+
+test('manual replay of a failed run with only diagnostic Linux failures closes the tracker', () => {
+  const diag = leg('Build diagnostic Linux bundle (linux-x64) / bundled linux-x64 (linux-x64)', 'failure', 'Audit bundle architecture')
+  const passed = leg('Stable release is green', 'success')
+  expect(planTracker(run('failure'), [passed, diag], { number: 7 }).action).toBe('close')
+  expect(planTracker(run('failure'), [passed, diag], null).action).toBe('none')
+  // A failure with no red jobs at all (no diagnostic explanation) still opens/updates fail-closed.
+  expect(planTracker(run('failure'), [passed], null).action).toBe('open')
+  // A cancelled run is never reclassified as green.
+  const diagCancelled = leg('Build diagnostic Linux bundle (linux-x64) / bundled linux-x64 (linux-x64)', 'cancelled', 'Audit')
+  expect(planTracker(run('cancelled'), [passed, diagCancelled], { number: 7 }).action).toBe('update')
+})

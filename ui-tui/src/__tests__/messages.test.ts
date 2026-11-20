@@ -28,6 +28,15 @@ describe('toTranscriptMessages', () => {
     expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
   })
 
+  it('marks a resumed failed-turn boundary row noAnswer so /copy skips it', () => {
+    const result = toTranscriptMessages([
+      { role: 'assistant', text: 'the real answer' },
+      { display_kind: 'failed_turn', role: 'assistant', text: 'Your request was not processed.' }
+    ])
+
+    expect(result.map(m => m.noAnswer)).toEqual([undefined, true])
+  })
+
   it('skips hidden display_kind rows entirely', () => {
     const rows = [
       { role: 'user', text: 'visible prompt' },

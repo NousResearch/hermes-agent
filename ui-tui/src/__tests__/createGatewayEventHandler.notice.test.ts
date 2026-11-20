@@ -137,6 +137,40 @@ describe('createGatewayEventHandler', () => {
       }
     })
 
+    it('a tools-only interrupt marker becomes copyable once the persisted reply text arrives', () => {
+      vi.useFakeTimers()
+
+      try {
+        const history: Msg[] = []
+        const ctx = buildCtx(history)
+        ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
+        ctx.transcript.setHistoryItems = (next: ((prev: Msg[]) => Msg[]) | Msg[]) =>
+          history.splice(0, history.length, ...(typeof next === 'function' ? next([...history]) : next))
+        const onEvent = createGatewayEventHandler(ctx)
+
+        patchUiState({ sid: 'sess-1' })
+        onEvent({ payload: {}, type: 'message.start' } as any)
+        onEvent({ payload: { context: 'ls', name: 'terminal', tool_id: 't1' }, type: 'tool.start' } as any)
+        onEvent({ payload: { name: 'terminal', summary: 'ok', tool_id: 't1' }, type: 'tool.complete' } as any)
+        turnController.interruptTurn({
+          appendMessage: (msg: Msg) => history.push(msg),
+          gw: ctx.gateway.gw,
+          sid: 'sess-1',
+          sys: ctx.system.sys
+        })
+        expect(history.at(-1)).toMatchObject({ noAnswer: true, text: '*[interrupted]*' })
+
+        onEvent({ payload: { status: 'interrupted', text: 'late reply' }, type: 'message.complete' } as any)
+
+        const reply = history.findLast(m => m.role === 'assistant')
+        expect(reply?.text).toContain('late reply')
+        expect(reply?.noAnswer).toBeUndefined()
+      } finally {
+        vi.runAllTimers()
+        vi.useRealTimers()
+      }
+    })
+
     it('flushes a held notice at recordError (turn-end via error)', () => {
       const onEvent = createGatewayEventHandler(buildCtx([]))
 

@@ -1848,7 +1848,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setHistoryItems(prev => {
             const at = prev.findLastIndex(m => m.role === 'assistant' && m.text === from)
 
-            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, text: to } : m))
+            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, noAnswer: undefined, text: to } : m))
           })
         }
 

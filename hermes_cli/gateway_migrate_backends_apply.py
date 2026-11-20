@@ -1132,6 +1132,8 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
         plan.blockers.append(f"{BACKEND_ENV}={backend.name} keeps the settings outside config.yaml, but the migration "
                              f"backs up, rolls back and restores only config.yaml, so it needs the file config "
                              f"backend. Move this home by hand with the steps in the docs. Nothing changed.")
+    if (managed := _managed_webapp_override(host, plan)) is not None:
+        plan.blockers.append(managed)
     auth = plan.auth_before
     if auth and auth["auth_required"] and auth["providers"] is None and not plan.keep_webapp:
         # The post-move check compares the gateway's sign-in providers with this list: unknown is no proof.
@@ -1186,6 +1188,28 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
     if unit and host.own_unit() in (unit, f"{unit}.service"):
         plan.blockers.append(f"This command runs inside {host.own_unit()}, which the migration restarts and a "
                              f"rollback stops. Run it from a terminal, or with --detach.")
+
+
+def _managed_webapp_override(host, plan: BackendPlan) -> Optional[str]:
+    """Why the managed overlay would undo the move's ``webapp.*`` writes (the gateway applies it after the
+    user config), else None: the old backend would be stopped and the move rolled back every time."""
+    from hermes_cli import managed_scope
+    if plan.new_host is None or not isinstance(managed_scope.load_managed_config().get("webapp"), dict):
+        return None  # no target (the plan already refuses), or no managed webapp setting
+    if not (writes := plan.config_writes()):
+        return None
+    after = host.migrated_webapp_settings(writes)
+    got = {"webapp.enabled": after.enabled, "webapp.host": after.host, "webapp.port": after.port,
+           "webapp.public_url": after.public_url}
+    if not (overridden := [key for key, value in writes.items() if got.get(key) != value]):
+        return None
+    path = Path(managed_scope.get_managed_dir() or "") / "config.yaml"
+    would = (f"serve {format_address(after.host, after.port)}" if after.enabled
+             else "stay off" + (f" ({after.reason})" if after.reason else ""))
+    return (f"The managed config {path} sets {', '.join(overridden)}, which the gateway applies after this "
+            f"home's config.yaml: after the move its Webapp would {would} instead of serving "
+            f"{format_address(plan.new_host, plan.new_port)}, so the old backend would be stopped for nothing. "
+            f"Have the administrator change that setting, then run this again. Nothing changed.")
 
 
 #: Unit-file states that start a unit at boot: such a unit is a session owner even when it is down now.

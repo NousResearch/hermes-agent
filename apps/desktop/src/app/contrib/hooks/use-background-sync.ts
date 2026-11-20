@@ -1,17 +1,19 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { ambientOwnerConnectionId } from '@/api/client'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
 import {
+  isSessionNotFoundError,
   isSessionRecentlyInterrupted,
   recentInterruptRemainingMs
 } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
-import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
+import { preserveLocalPendingTurnMessages, probeStoredSession } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import {
   type ChatMessage,
@@ -42,6 +44,7 @@ import {
   getSessionOwnerHint,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
+  sessionOwnerRouteFromRow,
   setCurrentCwd
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
@@ -51,6 +54,7 @@ import {
   $sessionTiles,
   confirmReconnectSettlesExcept,
   noteSessionEvent,
+  patchSessionTile,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setLiveTurnBackend,
@@ -270,14 +274,21 @@ export async function reconcileTileTranscripts({
   ) => ClientSessionState
 }): Promise<void> {
   const tiles = tilesOverride ?? $sessionTiles.get()
-  const openSignatureKeys = new Set(tiles.map(tileTranscriptSignatureKey))
-  // The pre-fetch row fingerprints (#95767) live in the same map under
-  // `tile-meta:` keys — they track open tiles the same way, so a closed tile
-  // prunes both and the map never grows one entry per ever-opened tile.
-  const openFingerprintKeys = new Set(tiles.map(tile => tileRowFingerprintKey(tile.storedSessionId)))
+
+  // The pre-fetch row fingerprints (#95767, `tile-meta:`) and gone marks
+  // (`tile-gone:`) live in the same map — they track open tiles the same way,
+  // so a closed tile prunes all of them and the map never grows one entry per
+  // ever-opened tile.
+  const openKeys = new Set(
+    tiles.flatMap(tile => [
+      tileTranscriptSignatureKey(tile),
+      tileRowFingerprintKey(tile.storedSessionId),
+      tileGoneKey(tile)
+    ])
+  )
 
   for (const signatureKey of signatureRef.current.keys()) {
-    if (!openSignatureKeys.has(signatureKey) && !openFingerprintKeys.has(signatureKey)) {
+    if (!openKeys.has(signatureKey)) {
       signatureRef.current.delete(signatureKey)
     }
   }
@@ -297,6 +308,11 @@ export async function reconcileTileTranscripts({
 
     if ($activeSessionId.get() === runtimeSessionId) {
       // The main pane reconcile already owns this surface.
+      continue
+    }
+
+    if (signatureRef.current.has(tileGoneKey(tile))) {
+      // No profile holds this session: reading it again can only 404.
       continue
     }
 
@@ -442,9 +458,67 @@ export async function reconcileTileTranscripts({
         }),
         storedSessionId
       )
-    } catch {
-      // Non-fatal: the next change event retries.
+    } catch (error) {
+      await recoverTileReadFailure(tile, error, tileStillPresent, signatureRef)
     }
+  }
+}
+
+async function recoverTileReadFailure(
+  tile: TileTranscriptTarget,
+  error: unknown,
+  tileStillPresent: () => boolean,
+  signatureRef: MutableRefObject<Map<string, string>>
+): Promise<void> {
+  // An explicit owner stays fail-closed (probeStoredSession contract); only an
+  // ownerless tile's session 404 means the read went to the wrong profile.
+  // Anything else is non-fatal: the next change event retries.
+  if (!tile.ownerRoute && isSessionNotFoundError(error) && tileStillPresent()) {
+    await adoptTileOwner(tile, signatureRef)
+  }
+}
+
+function tileGoneKey(tile: TileTranscriptTarget): string {
+  return `tile-gone:${tileTranscriptSignatureKey(tile)}`
+}
+
+/**
+ * An ownerless tile reads with no profile, so the backend answers from its own
+ * launch profile. A tile restored after relaunch can lose its owner route
+ * (#133123); its session then 404s on every sessions.changed tick while the
+ * row is alive in another profile. Resolve the owner through the same
+ * cache → active → cross-profile ladder session opens use and pin the exact
+ * route on the tile, so the next tick reads the right store. A session no
+ * profile holds is marked so the tile stops re-reading it while it stays open.
+ */
+async function adoptTileOwner(
+  tile: TileTranscriptTarget,
+  signatureRef: MutableRefObject<Map<string, string>>
+): Promise<void> {
+  const probe = await probeStoredSession(tile.storedSessionId)
+
+  if (probe.status === 'gone') {
+    signatureRef.current.set(tileGoneKey(tile), 'gone')
+
+    return
+  }
+
+  if (probe.status !== 'found') {
+    return
+  }
+
+  // A by-id probe answers on the ambient connection, so an untagged row is owned there.
+  const route = sessionOwnerRouteFromRow({
+    ...probe.session,
+    connection_id: probe.session.connection_id?.trim() || ambientOwnerConnectionId()
+  })
+
+  const stillOwnerless = $sessionTiles
+    .get()
+    .some(candidate => candidate.storedSessionId === tile.storedSessionId && !candidate.ownerRoute)
+
+  if (route && stillOwnerless) {
+    patchSessionTile(tile.storedSessionId, { ownerRoute: route })
   }
 }
 

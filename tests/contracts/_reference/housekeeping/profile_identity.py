@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 import time
 from typing import Any, Mapping, Optional
 
@@ -15,6 +16,7 @@ from persistence.housekeeping.profile_identity import ProfileIdentityCollision, 
 from .._authority import authority_state
 from ..authority.bindings_lineage import RECEIPT_PREFIX, decode
 from ..backend import InMemoryBackend, register_repository
+from ..gateway.routing import _parse
 
 __all__ = ["InMemoryProfileIdentityRepository"]
 
@@ -41,6 +43,8 @@ def _rekeyed_receipt(raw: Any, old: str, new: str, old_ns: str, new_ns: str) -> 
         origin = entry.get("origin")
         if isinstance(origin, dict) and origin.get("profile") == old:
             origin["profile"], changed = new, True
+        if entry.get("transport_profile") == old:
+            entry["transport_profile"], changed = new, True
     return receipt if changed else None
 
 
@@ -85,18 +89,21 @@ class InMemoryProfileIdentityRepository:
             if any(key[0] == old and (new, *key[1:]) in table for key in table):
                 raise ProfileIdentityCollision(new, f"profile identity collision in {table_name}")
 
-    def _rekey_sessions(self, old: str, new: str, old_ns: str, new_ns: str) -> tuple[int, int, int]:
+    def _rekey_sessions(self, old: str, new: str, old_ns: str, new_ns: str) -> tuple[int, int, int, int]:
         rows = self._table("sessions").values()
         owners = [row for row in rows if row.get("profile_name") == old]
         for row in owners:
             row["profile_name"] = new
+        pinned = [row for row in rows if row.get("transport_profile") == old]
+        for row in pinned:
+            row["transport_profile"] = new
         keys = [row for row in rows if isinstance(row.get("session_key"), str) and row["session_key"].startswith(old_ns)]
         for row in keys:
             row["session_key"] = _rekeyed(row["session_key"], old_ns, new_ns)
         origins = [row for row in rows if isinstance(row.get("origin"), Mapping) and row["origin"].get("profile") == old]
         for row in origins:
             row["origin"] = {**row["origin"], "profile": new}
-        return len(owners), len(keys), len(origins)
+        return len(owners), len(pinned), len(keys), len(origins)
 
     def _rekey_obligations(self, old: str, new: str, old_ns: str, new_ns: str) -> dict[str, int]:
         if (rows := self._obligations()) is None:
@@ -128,8 +135,8 @@ class InMemoryProfileIdentityRepository:
             "telegram_dm_topic_bindings_session_key": len(rekeyed),
         }
 
-    def _rekey_routing(self, old: str, new: str, old_ns: str, new_ns: str) -> int:
-        moved = 0
+    def _rekey_routing(self, old: str, new: str, old_ns: str, new_ns: str) -> tuple[int, int]:
+        moved = repinned = 0
         for entries in self._table("routing").values():
             for key in [k for k in entries if k.startswith(old_ns)]:
                 entry = entries.pop(key)
@@ -138,7 +145,12 @@ class InMemoryProfileIdentityRepository:
                     origin = {**origin, "profile": new}
                 entries[_rekeyed(key, old_ns, new_ns)] = dataclasses.replace(entry, session_key=_rekeyed(entry.session_key, old_ns, new_ns), origin=origin)
                 moved += 1
-        return moved
+            for key, entry in entries.items():
+                payload = _parse(entry.entry_json)
+                if isinstance(payload, dict) and payload.get("transport_profile") == old:
+                    entries[key] = dataclasses.replace(entry, entry_json=json.dumps({**payload, "transport_profile": new}))
+                    repinned += 1
+        return moved, repinned
 
     def _rekey_receipts(self, *names: str) -> tuple[int, int]:
         """The API binding and local creation receipts moved, in one authority transaction."""
@@ -160,20 +172,22 @@ class InMemoryProfileIdentityRepository:
             return self._rekey_all(old, new, old_ns, new_ns)
 
     def _rekey_all(self, old: str, new: str, old_ns: str, new_ns: str) -> ProfileRekeyCounts:
-        owners, keys, origins = self._rekey_sessions(old, new, old_ns, new_ns)
+        owners, pinned, keys, origins = self._rekey_sessions(old, new, old_ns, new_ns)
         heartbeats = [row for row in self._table("gateway_heartbeats").values() if row.get("profile") == old]
         for row in heartbeats:
             row["profile"] = new
         obligations = self._rekey_obligations(old, new, old_ns, new_ns)
         topics = self._rekey_topics(old, new, old_ns, new_ns)
-        routing = self._rekey_routing(old, new, old_ns, new_ns)
+        routing, repinned = self._rekey_routing(old, new, old_ns, new_ns)
         api, local = self._rekey_receipts(old, new, old_ns, new_ns)
         return ProfileRekeyCounts(
             sessions_profile_name=owners,
+            sessions_transport_profile=pinned,
             gateway_heartbeats_profile=len(heartbeats),
             sessions_session_key=keys,
             sessions_origin_json=origins,
             gateway_routing=routing,
+            gateway_routing_transport_profile=repinned,
             api_binding_receipts=api,
             local_policy_receipts=local,
             **obligations,

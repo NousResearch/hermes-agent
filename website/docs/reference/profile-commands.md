@@ -250,11 +250,13 @@ hermes profile rename mybot assistant
 
 The rename also migrates the profile's persisted session/routing identity — session keys
 (`agent:<old>:*`), `sessions.profile_name`, heartbeats, and routing/delivery rows — to the new
-name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
-when it is running the CLI delegates to it. Checkpoint (`/rollback`) history of workspaces that
-live inside the profile directory is rekeyed to their new path as well, so it stays reachable
-after the rename; `hermes profile migrate-identity` retries that step too if it was reported as
-failed.
+name. Routes the renamed profile's bot received, including chats it routes to another profile,
+record that bot under its new name (`transport_profile`), so background completions on them
+look for the renamed bot instead of the old name. A live multiplexed gateway owns that migration
+(it holds the routing index in memory), so when it is running the CLI delegates to it.
+Checkpoint (`/rollback`) history of workspaces that live inside the profile directory is rekeyed
+to their new path as well, so it stays reachable after the rename;
+`hermes profile migrate-identity` retries that step too if it was reported as failed.
 
 ## `hermes profile migrate-identity`
 

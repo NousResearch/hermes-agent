@@ -1249,7 +1249,9 @@ class SessionStore(
         return new_entry
 
     def rekey_profile_routing(self, old_name: str, new_name: str) -> int:
-        """Rekey the live routing index and reject target collisions before mutation."""
+        """Rekey the live routing index and reject target collisions before mutation. Entries keyed in
+        another profile's namespace keep their key but follow the rename of the bot that received
+        them (``transport_profile``). Returns the number of entries moved out of the old namespace."""
         from dataclasses import replace as _dc_replace
         old, new = (old_name or "").strip(), (new_name or "").strip()
         if not old or not new or old == new:
@@ -1271,7 +1273,14 @@ class SessionStore(
                 if origin is not None and getattr(origin, "profile", None) == old:
                     origin = _dc_replace(origin, profile=new)
                 self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
-            if moving:
+            repinned = [key for key, entry in self._entries.items() if entry.transport_profile == old]
+            for key in repinned:
+                entry = self._entries[key]
+                # A plain copy of the origin: the old one can carry the identity pinned to the old bot,
+                # which ``restore_identity`` returns as is, ignoring the new pin.
+                origin = _dc_replace(entry.origin) if entry.origin is not None else None
+                self._entries[key] = _dc_replace(entry, transport_profile=new, origin=origin)
+            if moving or repinned:
                 self._save()
         return len(moving)
 

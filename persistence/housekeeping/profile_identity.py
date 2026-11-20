@@ -1,6 +1,6 @@
 """Profile identity lifecycle contract.
 
-A profile is an identity inside a store. The store carries that identity in two shapes: the ``agent:<profile>:`` KEY NAMESPACE on session keys (sessions, gateway routing entries, delivery obligations, topic bindings, the route and entry key of API binding and local creation receipts) and OWNER TAGS on rows (``sessions.profile_name``, ``gateway_heartbeats.profile``, ``delivery_obligations.adapter_profile``, the telegram topic tables' ``profile_name``), plus the ``profile`` field of stored origin payloads (session origins, routing payloads, receipt entries). A receipt's ``profile_id`` is the home that minted it and is never rewritten. Renaming a profile rewrites every shape at once; deleting one purges its bookkeeping. A caller working on several stores (the routing home and the profile home, hermes_cli/profile_identity.py:128, :228; gateway/run_profile_reconcile.py:675-720) opens one handle per store and calls the verb on each.
+A profile is an identity inside a store. The store carries that identity in two shapes: the ``agent:<profile>:`` KEY NAMESPACE on session keys (sessions, gateway routing entries, delivery obligations, topic bindings, the route and entry key of API binding and local creation receipts) and OWNER TAGS on rows (``sessions.profile_name``, ``gateway_heartbeats.profile``, ``delivery_obligations.adapter_profile``, the telegram topic tables' ``profile_name``), plus the ``profile`` field of stored origin payloads (session origins, routing payloads, receipt entries) and the receiving-bot pin ``transport_profile`` (``sessions.transport_profile``, routing payloads, receipt entries; a route in another profile's namespace can be pinned to this profile's bot). A receipt's ``profile_id`` is the home that minted it and is never rewritten. Renaming a profile rewrites every shape at once; deleting one purges its bookkeeping. A caller working on several stores (the routing home and the profile home, hermes_cli/profile_identity.py:128, :228; gateway/run_profile_reconcile.py:675-720) opens one handle per store and calls the verb on each.
 
 Both verbs are one write transaction:
 
@@ -48,6 +48,7 @@ class ProfileRekeyCounts:
     """Rows rewritten by one ``rekey_profile`` call; field names are the ``as_dict()`` keys, in the same order, ``None`` for a facet the store lacks."""
 
     sessions_profile_name: Optional[int] = None
+    sessions_transport_profile: Optional[int] = None
     gateway_heartbeats_profile: Optional[int] = None
     sessions_session_key: Optional[int] = None
     sessions_origin_json: Optional[int] = None
@@ -56,6 +57,7 @@ class ProfileRekeyCounts:
     telegram_dm_topic_mode_profile_name: Optional[int] = None
     telegram_dm_topic_bindings_profile_name: Optional[int] = None
     telegram_dm_topic_bindings_session_key: Optional[int] = None
+    gateway_routing_transport_profile: Optional[int] = None
     gateway_routing: Optional[int] = None
     api_binding_receipts: Optional[int] = None
     local_policy_receipts: Optional[int] = None
@@ -85,7 +87,7 @@ class ProfileIdentityRepository(Protocol):
     """Profile identity rewrite and purge inside the handle's store."""
 
     def rekey_profile(self, old_name: str, new_name: str) -> ProfileRekeyCounts:
-        """Rewrite ``old_name``'s identity to ``new_name`` in one write: owner tags (sessions, heartbeats, delivery obligations, topic tables), the ``agent:<old>:`` namespace on session keys (sessions, delivery obligations, topic bindings, routing entries with the payload's ``session_key``), and the ``profile`` field of session origins and routing payload origins. API binding and local creation receipts move too, each counted once when it changed: the top-level ``route`` and ``entry['session_key']`` leave the old namespace, ``entry['origin']['profile']`` names the new profile, and ``profile_id``, the ids and the lineage stay as stored; a receipt that does not decode as an object is left alone. Both receipt counts are present whenever the names are valid. Empty or equal stripped names return empty counts with no write. A collision raises ``ProfileIdentityCollision`` before anything is written. Idempotent: a repeated rename counts zero."""
+        """Rewrite ``old_name``'s identity to ``new_name`` in one write: owner tags (sessions, heartbeats, delivery obligations, topic tables), the ``agent:<old>:`` namespace on session keys (sessions, delivery obligations, topic bindings, routing entries with the payload's ``session_key``), the ``profile`` field of session origins and routing payload origins, and the ``transport_profile`` pin of session rows and routing payloads equal to ``old_name`` in any namespace (``gateway_routing`` counts the entries moved out of the namespace, ``gateway_routing_transport_profile`` the payloads repinned). API binding and local creation receipts move too, each counted once when it changed: the top-level ``route`` and ``entry['session_key']`` leave the old namespace, ``entry['origin']['profile']`` and an ``entry['transport_profile']`` equal to ``old_name`` name the new profile, and ``profile_id``, the ids and the lineage stay as stored; a receipt that does not decode as an object is left alone. Both receipt counts are present whenever the names are valid. Empty or equal stripped names return empty counts with no write. A collision raises ``ProfileIdentityCollision`` before anything is written. Idempotent: a repeated rename counts zero."""
         ...
 
     def purge_profile(self, profile: str) -> ProfilePurgeCounts:

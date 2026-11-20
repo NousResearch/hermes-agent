@@ -1,6 +1,7 @@
 """``ProfileIdentityRepository`` on SQLite: the profile rekey and purge of the bound ``state.db``, each one write
 transaction; a facet whose lazily created table or column the store lacks is skipped and counted ``None``. The
-rekey also moves the API binding and local policy receipts in ``state_meta``."""
+rekey also moves the API binding and local policy receipts in ``state_meta``, and the receiving-bot pin
+(``transport_profile``) of session rows and routing entries."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from persistence.housekeeping.profile_identity import (
 )
 
 from .._backend import SQLiteStore, register_repository, translated
+from .._schema_ddl import _sql_json_extract
 from ..conversation._store.local import API_BINDING_PREFIX, POLICY_PREFIX
 from ..gateway._local_lineage import _receipt
 
@@ -51,8 +53,8 @@ def _moved_key(key: object, old: str, new: str) -> Optional[str]:
 
 def _rekey_entry(entry: dict, old: str, new: str) -> bool:
     """Move one serialized ``SessionEntry`` (a routing row, a session receipt) from profile *old*
-    to *new*: its ``agent:<old>:`` session-key namespace and its ``origin.profile``. True when
-    either changed."""
+    to *new*: its ``agent:<old>:`` session-key namespace, its ``origin.profile`` and the receiving
+    bot it is pinned to (``transport_profile``). True when any of them changed."""
     changed = False
     if (session_key := _moved_key(entry.get("session_key"), old, new)) is not None:
         entry["session_key"] = session_key
@@ -60,6 +62,9 @@ def _rekey_entry(entry: dict, old: str, new: str) -> bool:
     origin = entry.get("origin")
     if isinstance(origin, dict) and origin.get("profile") == old:
         origin["profile"] = new
+        changed = True
+    if entry.get("transport_profile") == old:
+        entry["transport_profile"] = new
         changed = True
     return changed
 
@@ -137,6 +142,8 @@ class SQLiteProfileIdentityRepository:
 
             counts["sessions_profile_name"] = conn.execute(
                 "UPDATE sessions SET profile_name = ? WHERE profile_name = ?", (new, old)).rowcount
+            counts["sessions_transport_profile"] = conn.execute(
+                "UPDATE sessions SET transport_profile = ? WHERE transport_profile = ?", (new, old)).rowcount
             counts["gateway_heartbeats_profile"] = conn.execute(
                 "UPDATE gateway_heartbeats SET profile = ? WHERE profile = ?", (new, old)).rowcount
             counts["sessions_session_key"] = conn.execute(
@@ -179,11 +186,17 @@ class SQLiteProfileIdentityRepository:
                     "WHERE substr(session_key, 1, ?) = ?",
                     (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
 
+            # A chat the old profile's bot received can run under another profile (a shared bot routed
+            # to a satellite): its key stays, but its receiving-bot pin must follow the rename.
             routing = conn.execute(
                 "SELECT rowid, session_key, entry_json FROM gateway_routing "
-                "WHERE substr(session_key, 1, ?) = ?", (ns_len, old_ns)).fetchall()
+                f"WHERE substr(session_key, 1, ?) = ? OR {_sql_json_extract('entry_json', '$.transport_profile')} = ?",
+                (ns_len, old_ns, old)).fetchall()
+            moved = repinned = 0
             for rowid, session_key, entry_json in routing:
-                new_session_key = new_ns + session_key[ns_len:]
+                in_namespace = session_key.startswith(old_ns)
+                new_session_key = new_ns + session_key[ns_len:] if in_namespace else session_key
+                moved += in_namespace
                 new_json = entry_json
                 if entry_json:
                     try:
@@ -191,12 +204,14 @@ class SQLiteProfileIdentityRepository:
                     except (ValueError, TypeError):
                         payload = None
                     if isinstance(payload, dict):
+                        repinned += payload.get("transport_profile") == old
                         _rekey_entry(payload, old, new)
                         new_json = json.dumps(payload, ensure_ascii=False)
                 conn.execute(
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
-            counts["gateway_routing"] = len(routing)
+            counts["gateway_routing"] = moved
+            counts["gateway_routing_transport_profile"] = repinned
             counts["api_binding_receipts"] = _rekey_session_receipts(conn, API_BINDING_PREFIX, old, new)
             counts["local_policy_receipts"] = _rekey_session_receipts(conn, POLICY_PREFIX, old, new)
 

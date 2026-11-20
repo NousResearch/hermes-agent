@@ -7,6 +7,7 @@ only when bundled changed AND the user copy still matches the origin hash (else 
 archived copy remains (the entry is that copy's only built-in provenance record)."""
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -395,12 +396,26 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]
             logger.debug("Could not copy %s: %s", desc_md, e)
 
 
-def _retired_kept(active_removed: list[tuple[str, str]]) -> list[str]:
-    """Active leftovers of skills that left the bundle and are not Hub-managed, read after the optional
-    backfill. Splitting them by catalog is left to the update report: indexing optional-skills/
-    would add measurable cost to every launch's sync."""
-    hub_paths = _read_hub_install_paths() if active_removed else set()
-    return sorted({name for name, path in active_removed if path not in hub_paths})
+def _retired_kept(active_removed: list[tuple[str, str]]) -> list[list[str]]:
+    """``[name, rel_path]`` of active leftovers of skills that left the bundle and are not Hub-managed,
+    read after the optional backfill. Splitting them by catalog is left to the update report: indexing
+    optional-skills/ would add measurable cost to every launch's sync. Best-effort: empty when the Hub
+    lock exists but can't be read or has the wrong shape, since unknown ownership is not proof that a
+    copy is unmanaged, and this report must never fail the sync."""
+    if not active_removed:
+        return []
+    try:  # read directly: an exists() pre-check can't tell "absent" from "inaccessible"
+        data = json.loads((_skills_dir() / ".hub" / "lock.json").read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):  # ValueError covers malformed JSON and undecodable bytes
+        return []
+    installed = data.get("installed", {}) if isinstance(data, dict) else None
+    if not isinstance(installed, dict):
+        return []
+    hub_paths = {str(e["install_path"]).strip("/") for e in installed.values()
+                 if isinstance(e, dict) and e.get("install_path")}
+    return [list(pair) for pair in sorted({pair for pair in active_removed if pair[1] not in hub_paths})]
 
 
 def sync_skills(quiet: bool = False) -> dict:

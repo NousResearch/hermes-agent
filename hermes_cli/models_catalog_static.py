@@ -344,8 +344,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-3.8-flash", "google/gemini-4-hydrogen", "google/gemini-4-carbon", "google/gemini-4-argon",
-        "google/gemini-3.7-flash",  # [0] = silent default
+        "google/gemini-3.8-flash",  # [0] = silent default; Gemini 4 after it, in the direct gemini list's order
+        "google/gemini-4-neon", "google/gemini-4-hydrogen", "google/gemini-4-carbon", "google/gemini-4-argon",
+        "google/gemini-3.7-flash",
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",

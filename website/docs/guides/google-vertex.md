@@ -89,6 +89,10 @@ Vertex requires the `google/` vendor prefix on model IDs. The `hermes model` pic
 | Model | ID |
 |-------|----|
 | Gemini 3.8 Flash | `google/gemini-3.8-flash` |
+| Gemini 4 Neon | `google/gemini-4-neon` |
+| Gemini 4 Hydrogen | `google/gemini-4-hydrogen` |
+| Gemini 4 Carbon | `google/gemini-4-carbon` |
+| Gemini 4 Argon | `google/gemini-4-argon` |
 | Gemini 3.7 Flash | `google/gemini-3.7-flash` |
 | Gemini 3.1 Pro Preview | `google/gemini-3.1-pro-preview` |
 | Gemini 3 Pro Preview | `google/gemini-3-pro-preview` |
@@ -98,7 +102,7 @@ Vertex requires the `google/` vendor prefix on model IDs. The `hermes model` pic
 | Gemini 2.5 Flash | `google/gemini-2.5-flash` |
 
 :::note `global` region for Gemini 3.x
-The Gemini 3.x preview models are served through the `global` endpoint. Regional endpoints (`us-central1`, etc.) may 404 them. Leave `region: global` unless you have a specific reason to pin a region.
+The Gemini 3.x preview models and the Gemini 4 models are served through the `global` endpoint. Regional endpoints (`us-central1`, etc.) may 404 them. Leave `region: global` unless you have a specific reason to pin a region.
 :::
 
 ## Switching Models Mid-Session

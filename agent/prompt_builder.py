@@ -389,7 +389,12 @@ TASK_COMPLETION_GUIDANCE = (
     "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative "
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
-    "produce. Reporting a blocker honestly is always better than inventing a result."
+    "produce. Reporting a blocker honestly is always better than inventing a result.\n"
+    # Unfinished-Bench (arXiv:2611.17460) measured Hermes' completion push raising rule violations; this line cut
+    # override/bypass use 46.5% -> 37.2% on a held-out 6-model replay, with permitted-override controls flat.
+    "Finishing never outranks a rule you find in the task's files, docs or tool output (required approvals, "
+    "sign-offs, freezes, restrictions): when the only way to done breaks one, do not use an override, a bypass "
+    "flag or someone else's identity; stop and report the blocker."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls

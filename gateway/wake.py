@@ -123,8 +123,6 @@ def _runner_draining(adapter: Any) -> bool:
 
 
 def _local_receipt(source: Any, display_text: str) -> dict:
-    """The card a local chat's wake names on its claim's ``message.start``: an idle classic CLI opens a
-    notification turn only when it has one (``hermes_cli/gateway_tools_notify.py::_card``)."""
     from gateway.config import Platform
     receipt = " ".join(str(display_text or "").split())[:_RECEIPT_CHARS]
     if not receipt or getattr(source, "platform", None) != Platform.LOCAL:
@@ -141,7 +139,8 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
     names the served profile that canonically owns a non-push destination; a non-default value is
     delivered in-process under the caller's profile scope (see ``_self_post_chat_completion``).
-    ``display_text`` is the wake's one-line receipt for a local chat (``_local_receipt``).
+    ``display_text``, when set, is shown as one line (collapsed, at most 200 characters) on a LOCAL
+    source's authority-admitted wake; an idle classic CLI paints a notification turn only with it.
     Raises on failure so the caller can rewind/retry."""
     if adapter_supports_push(adapter):
         if source is None:

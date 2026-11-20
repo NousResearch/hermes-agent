@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 import copy
@@ -31,6 +32,7 @@ _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
 from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
+    compute_next_run,
     get_job,
     is_job_runnable,
     list_jobs,
@@ -1263,6 +1265,32 @@ _HANDLER_FORWARDED_ARGS = (
     "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
+def _approval_when(parsed: dict[str, Any], timezone: Any) -> str:
+    """The schedule as the user will experience it: its own wording plus the first run in the
+    profile's clock with the zone named, so an offset timestamp or a pinned zone is never read as
+    local time."""
+    from hermes_time import now as hermes_now
+    when = parsed.get("display", "")
+    if isinstance(timezone, str) and timezone.strip():
+        when += f" {timezone.strip()}"
+    first = compute_next_run(parsed, timezone=timezone)
+    if first:
+        local = datetime.fromisoformat(first).astimezone(hermes_now().tzinfo)
+        when += f", first run {local.strftime('%a %b %d %H:%M %Z')}"
+    return when
+
+
+def _approval_task(args: dict[str, Any]) -> str:
+    """What the job will actually run: the script alone for a no-agent job, else the prompt or skills
+    plus any attached script, so the card never describes work that will not happen."""
+    script = str(args.get("script") or "").strip()
+    if args.get("no_agent"):
+        return f"runs script {script}"
+    task = " ".join(str(args.get("prompt") or ", ".join(_clean_str_list(args.get("skills")) or [])).split())
+    task = task if len(task) <= 300 else task[:299] + "…"
+    return f"{task} (after running script {script})" if script else task
+
+
 def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
     """None when the model may create this job, else the JSON refusal. Asks the user through the shared
     approval gate (CLI panel, TUI prompt, Desktop card, messaging /approve) only when someone is there to
@@ -1273,18 +1301,15 @@ def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
     _cb, is_cli, is_gateway, is_ask = _presence()
     if not (is_cli or is_gateway or is_ask):
         return None
-    schedule = str(args.get("schedule") or "")
     try:
-        when = parse_schedule(schedule).get("display", schedule)
+        when = _approval_when(parse_schedule(str(args.get("schedule") or "")), args.get("timezone"))
     except ValueError:
         return None  # create reports the bad schedule itself; nothing is saved
     repeat = args.get("repeat")
     runs = f", {repeat} runs" if isinstance(repeat, int) and repeat > 1 else ""
-    task = " ".join(str(args.get("prompt") or ", ".join(_clean_str_list(args.get("skills")) or [])).split())
-    task = task if len(task) <= 300 else task[:299] + "…"
     name = args.get("name") or "new job"
     result = _run_approval_gate(
-        pattern_key="cron_create", description=f"Schedule \"{name}\" ({when}{runs}): {task}",
+        pattern_key="cron_create", description=f"Schedule \"{name}\" ({when}{runs}): {_approval_task(args)}",
         display_target="<cronjob_manage> (schedule a new job)",
         subject="Creating a scheduled job requires the user's approval", noun="scheduled jobs",
         advice="Tell the user what you wanted to schedule; do not retry.",

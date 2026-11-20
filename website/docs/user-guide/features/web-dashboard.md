@@ -571,7 +571,9 @@ back would lose those edits; it checks again after you confirm, and prints the s
 then) stops the move with the edit kept (exit 3 when nothing was written yet, otherwise the `.env` it wrote is put
 back, exit 4). A rollback, `--restore` or the rollback of an interrupted run writes a file back only if it still
 holds the exact bytes the migration wrote, checked right before the write: one edited since (or whose backup is gone) is left as it is with your edits, the old backend stays down and the
-run ends with manual steps (exit 5). When the rollback cannot prove the gateway is off the old
+run ends with manual steps (exit 5). The manual steps (also in `--status`) are per file: a file that was put back is
+listed as done, a file kept for its edits is never copied over or removed (the step names its backup and says to
+merge the lines you need by hand before starting the old backend), and a missing backup is never copied. When the rollback cannot prove the gateway is off the old
 address, the old backend stays down and the run ends with manual steps (exit 5). A `--detach` run never
 starts a backend you started by hand again (its transient unit would stop it when the run ends): `--restore
 --detach` refuses (exit 3), and a background rollback leaves it down (exit 5) and prints the

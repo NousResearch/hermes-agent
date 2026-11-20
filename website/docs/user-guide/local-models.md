@@ -156,9 +156,17 @@ local_runtime:
   enabled: false     # true = start the managed server with Hermes.
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
+  keep_alive: 900    # seconds to retain idle models; -1 = never unload,
+                     # 0 = unload on the next idle sweep (default: 900)
   detect_ports: [8081]  # extra ports to probe for a llama-server you run
                         # yourself (the default probe is :8080 only)
 ```
+
+`keep_alive` accepts whole seconds only. Invalid values safely retain the
+15-minute default, so a malformed setting does not unexpectedly unload a
+model. Set it to `-1` on a dedicated inference machine to keep staged models
+resident; use `0` when GPU memory should be released as soon as the idle
+sweeper observes no work.
 
 Running `llama-server` yourself on a fixed port works with the same
 `model.provider: llamacpp` selection — either list the port in

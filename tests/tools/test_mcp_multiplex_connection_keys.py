@@ -426,3 +426,37 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]
+
+
+def test_lazy_server_keeps_its_tools_across_a_second_discovery_pass(two_profiles):
+    """A lazy server is registered from the schema cache and has no connection until its first
+    call. A second discovery pass for the same routed profile (a cron job's MCP init, a turn's
+    pre-flight) must leave its tools in the profile overlay: with them gone nothing can make the
+    first call, and the lazy ledgers stop any later pass from registering them again."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc
+    import toolsets
+
+    cached = {"fingerprint": "abc", "utility_tools": [], "tools": [
+        {"name": "t", "description": "d", "inputSchema": {"type": "object", "properties": {}}}]}
+    servers = {"x": {"command": "npx", "args": ["-y", "some-mcp"], "lazy": True}}
+
+    two_profiles("a")
+    try:
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("tools.mcp_schema_cache.get_cached_entry", return_value=cached), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as connect:
+            disc.register_mcp_servers(servers)
+            assert toolsets.resolve_toolset("mcp-x") == ["mcp__x__t"]
+
+            disc.register_mcp_servers(servers)
+            disc.register_mcp_servers(servers)
+
+        connect.assert_not_called()
+        assert toolsets.resolve_toolset("mcp-x") == ["mcp__x__t"]
+        assert disc.get_mcp_status(servers)[0]["status"] == "lazy"
+    finally:
+        for ledger in (core._lazy_server_fingerprints, core._lazy_server_tool_names):
+            for key in [k for k in ledger if "x" in (k if isinstance(k, tuple) else (k,))]:
+                ledger.pop(key, None)

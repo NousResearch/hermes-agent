@@ -1,20 +1,18 @@
 """Initial profile files, written on the staging tree before publication."""
 import contextlib
-import os
-import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 
 def clone_staging_dir(profile_dir: Path) -> Path:
-    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
-    rename is atomic). A leftover from a crashed create is discarded."""
-    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
+    """Fresh unique ``profiles/.<name>.staging-<mkdtemp>`` beside the final dir (same filesystem, so the
+    publish rename is atomic). ``mkdtemp`` keeps concurrent creates in one process independent: a PID
+    suffix is shared by every request thread, so two parallel creates raced on one staging path and
+    one wiped the other's half-built tree before publish."""
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
-    if staging.is_symlink() or staging.is_file():
-        staging.unlink()
-    elif staging.is_dir():
-        shutil.rmtree(staging, ignore_errors=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{profile_dir.name}.staging-", dir=profile_dir.parent))
+    staging.rmdir()
     return staging
 
 

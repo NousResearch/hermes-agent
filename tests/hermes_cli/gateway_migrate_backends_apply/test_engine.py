@@ -1688,3 +1688,33 @@ def test_the_fingerprint_is_the_written_bytes_not_a_later_read(home, capsys, mon
     _restore_refused_and_nothing_changed(host, home, capsys, f"{home / 'config.yaml'} changed since the migration")
     assert (home / "config.yaml").read_text(encoding="utf-8").endswith(edit)
 
+
+def test_the_manual_steps_never_copy_over_or_remove_a_file_kept_for_its_edits(home, capsys):
+    """config.yaml put back, .env kept because it was edited: no step copies the backup over .env or removes
+    it; the steps name its backup and say to merge by hand. --status returns the same steps."""
+    host = FakeHost(home)
+    host.gateway_lies = True  # verify fails: rollback
+    real_status = host.gateway_status
+    edited = []
+
+    def edit_env_during_verify(dial, port):
+        if not edited:
+            env = home / ".env"
+            env.write_text(env.read_text(encoding="utf-8") + "\nMY_KEY=mine\n", encoding="utf-8")
+            edited.append(True)
+        return real_status(dial, port)
+
+    host.gateway_status = edit_env_during_verify
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+    out = capsys.readouterr().out
+
+    steps = engine.status_payload(host)["manual_steps"]
+    env, backup = f"{home}/.env", engine.read_manifest(home)["backups"]["env"]
+    assert not [s for s in steps if (s.startswith(("cp ", "rm ")) and env in s)], steps
+    kept = [s for s in steps if env in s and backup in s]
+    assert kept and "merge" in kept[0] and "before" in kept[0]
+    assert any("config.yaml" in s and "restored" in s for s in steps)
+    assert not any(s.startswith("cp ") and "config.yaml" in s for s in steps)
+    for step in steps:
+        assert step in out  # the run printed the same steps --status returns
+

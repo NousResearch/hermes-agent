@@ -621,8 +621,12 @@ def _undo(run: Run, errors: list[str]) -> None:
         attempt("stopped the gateway", lambda: host.gateway_verb("stop"), guards=True)
     phase("restore_files")
     if _entered(m, "write_config"):
+        outcome = m["files_put_back"] = {}  # per file, for the manual steps (and --status)
         for key, name in _RESTORED_FILES:
-            attempt(f"restored {name}", lambda key=key, name=name: _put_back(host.home, m, key, name), guards=True)
+            outcome[name] = "kept"  # until _put_back returns: what it refused stays as the user left it
+            if attempt(f"restored {name}", lambda key=key, name=name: _put_back(host.home, m, key, name),
+                       guards=True):
+                outcome[name] = "restored"
     phase("restore_gateway_service")
     if _entered(m, "gateway_service"):
         if not gw_before["installed"]:
@@ -752,13 +756,10 @@ def _manual_rollback_steps(m: dict) -> list[str]:
     """The numbered-by-the-caller steps that finish a rollback by hand, from the recorded state. Every
     ``hermes`` command names this run's profile (``hermes -p NAME``), so it acts on this home."""
     from hermes_cli.gateway_migrate_backends_plan import hermes_command
-    rec, b = m["old_backend"], m["backups"]
+    rec = m["old_backend"]
     home = m.get("home") or "the Hermes home"
     hermes = hermes_command(m.get("home"), powershell=os.name == 'nt')
-    steps = [f"{hermes} gateway stop"]
-    env_mode = f"{b.get('env_mode') or 0o600:o}"
-    steps += [f"cp {b['config']} {home}/config.yaml" if b.get("config") else f"rm {home}/config.yaml",
-              f"cp {b['env']} {home}/.env && chmod {env_mode} {home}/.env" if b.get("env") else f"rm {home}/.env"]
+    steps = [f"{hermes} gateway stop", *(_file_step(m, home, key, name) for key, name in _RESTORED_FILES)]
     if not m["gateway"]["installed"]:
         steps.append(f"{hermes} gateway uninstall")
     elif m["gateway"]["active"]:
@@ -779,6 +780,25 @@ def _manual_rollback_steps(m: dict) -> list[str]:
         steps.append(f"start the old backend again the way you started it before{pid}, so it serves "
                      f"{m.get('old_address') or 'its address'} again")
     return steps
+
+
+def _file_step(m: dict, home: str, key: str, name: str) -> str:
+    """The manual step for one restored file: nothing destructive over a file a rollback put back or kept
+    for its edits, and no copy of a backup that is gone."""
+    b, target = m["backups"], f"{home}/{name}"
+    backup, done = b.get(key), (m.get("files_put_back") or {}).get(name)
+    if done == "restored":
+        return f"{target} was restored from its backup (nothing to do for it)"
+    if done == "kept":
+        source = backup or "nothing (it did not exist before the migration)"
+        return (f"keep {target} as it is (it was edited after the migration wrote it): merge the lines you need "
+                f"from {source} into it by hand before you start the old backend")
+    if backup and not os.path.isfile(backup):
+        return (f"the backup {backup} of {name} is missing: recover it, or put {target} back as it was before "
+                f"the migration by hand, before you start the old backend")
+    if not backup:
+        return f"rm {target}"
+    return f"cp {backup} {target}" + (f" && chmod {b.get('env_mode') or 0o600:o} {target}" if key == "env" else "")
 
 
 def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -> int:

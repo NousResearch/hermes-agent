@@ -64,6 +64,7 @@ import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
+import { resolveEnterIntent } from './enter-intent'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -95,8 +96,10 @@ import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
   deleteChipBeforeCaret,
+  composerPlainText,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
+  insertComposerLineBreak,
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
@@ -255,6 +258,12 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  // A phone keyboard's ↵ is also the IME's commit key: pressed while a word is
+  // still in the composition buffer, it commits and the break we want would be
+  // swallowed — the first press read as inert and only a second (empty-buffer)
+  // press opened the line. Remember the intent and land the break on
+  // compositionend instead.
+  const pendingTouchBreakRef = useRef(false)
   // The blur-close timer must not outlive the composer: an unmounted editor's
   // deferred closeTrigger() would setState after teardown (vitest reported it as
   // an unhandled "window is not defined" from paste-url-is-text.test.tsx).
@@ -680,6 +689,43 @@ export function ChatBar({
       composingRef.current = false
     }
 
+    // Touch: ↵ doubles as the IME's commit key. Pressed with a word still in the
+    // composition buffer, the keydown arrives composing and the break would be
+    // swallowed — which read as "the first press does nothing, the second opens
+    // the line". Remember the intent; compositionend below lands the break.
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      touchPointer &&
+      (composingRef.current || event.nativeEvent.isComposing)
+    ) {
+      pendingTouchBreakRef.current = true
+
+      // Gboard can keep the composition open indefinitely, so waiting for
+      // compositionend alone left the key looking dead. Land the break anyway
+      // shortly after, unless compositionend already did.
+      window.setTimeout(() => {
+        if (!pendingTouchBreakRef.current) {
+          return
+        }
+
+        pendingTouchBreakRef.current = false
+
+        const editor = editorRef.current
+
+        if (!editor) {
+          return
+        }
+
+        composingRef.current = false
+        recordUndoPoint()
+        insertComposerLineBreak(editor)
+        scheduleFlushEditorToDraft(editor)
+      }, 220)
+
+      return
+    }
+
     // IME composition: Enter confirms composed text, not a message submission.
     // We check both composingRef (set by compositionstart/compositionend, robust
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
@@ -969,9 +1015,20 @@ export function ChatBar({
       return
     }
 
+    // Enter ownership is one decision, not three conditions: Cmd/Ctrl+Enter
+    // queues, a touch host always opens a line (plain or shifted Return), and a
+    // desktop Return sends.
+    const enterIntent = resolveEnterIntent({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      touch: touchPointer,
+    })
+
     // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
     // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    if (enterIntent === 'queue') {
       event.preventDefault()
 
       if (busy && !disabled) {
@@ -990,7 +1047,28 @@ export function ChatBar({
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    // Touch surfaces have no Shift to pair with Enter, so a phone keyboard's
+    // only "line break" key is plain Enter — and hardware keyboards and IMEs on
+    // the same host can deliver Shift+Enter, which must not fall through either.
+    // Chromium's own break for it is a block wrapper that
+    // normalizeComposerEditorDom strips as the phantom trailing line, so the key
+    // read as inert — insert the break ourselves in the shape the renderer emits
+    // ("\n" ⇒ <br>), which normalizes and round-trips through the draft.
+    if (enterIntent === 'break') {
+      event.preventDefault()
+
+      const editor = editorRef.current
+
+      if (editor) {
+        recordUndoPoint()
+        insertComposerLineBreak(editor)
+        scheduleFlushEditorToDraft(editor)
+      }
+
+      return
+    }
+
+    if (enterIntent === 'send') {
       event.preventDefault()
 
       // Decide from the DOM, not React state. `hasComposerPayload` is derived
@@ -1193,6 +1271,7 @@ export function ChatBar({
           // guard forever (#44135). Clear unconditionally: by the time blur
           // runs there is nothing left composing in this editor.
           composingRef.current = false
+          pendingTouchBreakRef.current = false
 
           if (blurCloseTimer.current !== null) {
             window.clearTimeout(blurCloseTimer.current)
@@ -1214,6 +1293,15 @@ export function ChatBar({
           // `hasComposerPayload` stays false and the send button stays hidden
           // until an unrelated edit forces a sync (#39614).
           flushEditorToDraft(event.currentTarget)
+
+          // The ↵ that committed this composition asked for a line break too;
+          // the buffer is empty now, so it can land without splitting a word.
+          if (pendingTouchBreakRef.current) {
+            pendingTouchBreakRef.current = false
+            recordUndoPoint()
+            insertComposerLineBreak(event.currentTarget)
+            scheduleFlushEditorToDraft(event.currentTarget)
+          }
         }}
         onCompositionStart={event => {
           composingRef.current = true
@@ -1396,8 +1484,20 @@ export function ChatBar({
             onSubmit={e => {
               e.preventDefault()
 
-              if (composingRef.current) {
+              // A phone keyboard keeps the last word in its IME buffer, so
+              // `composingRef` is still true when the Send is tapped — the guard
+              // below then swallowed the send until the keyboard was dismissed
+              // (the exact "I have to hide the keyboard first" report). The DOM
+              // already holds the preedit characters, and submitDraft() reads the
+              // editor directly, so on touch the composition is not a reason to
+              // drop the message. Desktop/CJK keep the guard.
+              if (composingRef.current && !touchPointer) {
                 return
+              }
+
+              if (composingRef.current) {
+                composingRef.current = false
+                pendingTouchBreakRef.current = false
               }
 
               // The send clears the text an open completion list was built

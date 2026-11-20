@@ -437,7 +437,15 @@ def _canary_notes(commits, tag: str, version: str, *, since: str | None, no_chan
     return generate_changelog(commits, tag, version, prev_tag=since, no_changelog=True)
 
 
-def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path | None = None) -> None:
+def _resume_canary(
+    tag: str,
+    remote: str,
+    repository: str,
+    *,
+    notes_file: Path | None = None,
+    lanes: frozenset[str] | None = None,
+    require_green: bool | None = None,
+) -> None:
     """Converge a tag-pushed canary through draft, dispatch, and protected head."""
     ref = f"refs/tags/{tag}"
     local_object = git("rev-parse", ref)
@@ -449,6 +457,31 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     ).splitlines())
     if remote_refs.get(ref) != local_object or remote_refs.get(f"{ref}^{{}}") != commit:
         raise ValueError("Canary receipt differs from its exact remote tag object")
+
+    from scripts.releases import lanes as lane_set, stable as stable_release
+    from scripts.releases.versioning import published_channel_identity
+
+    published = published_channel_identity(repository, "canary")
+    if published is not None and published == (release_version(tag), commit):
+        print(f"✓ {tag} is already published.")
+        return
+
+    if lanes is not None or require_green is not None:
+        existing = stable_release.canary_claim(
+            git("tag", "-l", tag, "--format=%(contents)"),
+            tag=tag,
+            commit=commit,
+        )
+        if lanes is not None and existing["lanes"] != frozenset(lanes):
+            raise ValueError(
+                f"Cannot resume {tag}: existing claim lanes ({lane_set.describe(existing['lanes'])}) "
+                f"differ from requested ({lane_set.describe(lanes)})"
+            )
+        if require_green is not None and existing["requireGreen"] != require_green:
+            raise ValueError(
+                f"Cannot resume {tag}: existing claim has requireGreen={existing['requireGreen']} "
+                f"but requested requireGreen={require_green}"
+            )
 
     view = subprocess.run(
         ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
@@ -482,11 +515,6 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
             raise ValueError("Canary release state differs from its receipt")
         draft_url = release.get("url") or ""
 
-    from scripts.releases.versioning import published_channel_identity
-    published = published_channel_identity(repository, "canary")
-    if published is not None and published == (release_version(tag), commit):
-        print(f"✓ {tag} is already published.")
-        return
     if not dispatch_desktop_build(tag, repository):
         raise SystemExit(1)
     print(f"Resumed canary publication for {tag}.")
@@ -535,7 +563,10 @@ def cmd_canary(args) -> None:
         head = git("rev-parse", "HEAD")
         if head and head == git("rev-parse", f"{prev_canary}^{{commit}}"):
             if args.publish:
-                _resume_canary(prev_canary, push_remote, gh_repo)
+                _resume_canary(
+                    prev_canary, push_remote, gh_repo,
+                    lanes=lanes, require_green=bool(args.require_green),
+                )
             else:
                 print(f"✓ No new commits since {prev_canary} — nothing to do.")
             return
@@ -549,7 +580,10 @@ def cmd_canary(args) -> None:
         if git("rev-parse", f"{tag_name}^{{commit}}") != git("rev-parse", "HEAD"):
             raise ValueError(f"{tag_name} already receipts a different commit")
         if args.publish:
-            _resume_canary(tag_name, push_remote, gh_repo)
+            _resume_canary(
+                tag_name, push_remote, gh_repo,
+                lanes=lanes, require_green=bool(args.require_green),
+            )
         else:
             print(f"✓ {tag_name} already exists — nothing to do.")
         return
@@ -593,7 +627,10 @@ def cmd_canary(args) -> None:
 
     changelog_file = REPO_ROOT / ".release_notes.md"
     changelog_file.write_text(changelog, encoding="utf-8")
-    _resume_canary(tag_name, push_remote, gh_repo, notes_file=changelog_file)
+    _resume_canary(
+        tag_name, push_remote, gh_repo, notes_file=changelog_file,
+        lanes=lanes, require_green=bool(args.require_green),
+    )
     changelog_file.unlink(missing_ok=True)
     # Record the tag for any workflow step that wants it. release.py
     # starts the build itself, so nothing consumes this today; it stays

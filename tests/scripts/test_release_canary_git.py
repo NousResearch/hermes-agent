@@ -232,8 +232,15 @@ def test_canary_tag_pushed_without_a_draft_is_recovered_on_a_busy_repository(can
     git("commit", "--allow-empty", "-qm", "stable")
     git("tag", "v1.2.3")
     git("commit", "--allow-empty", "-qm", "feat: next")
+    import json
+    from scripts.releases import lanes as lane_set
+
     tag = "canary.20260818T103000Z-v1.2.3"
-    git("tag", "-a", tag, "-m", "Hermes Agent canary 20260818T103000Z")
+    message = json.dumps({
+        "schema": 1, "kind": "canary", "version": "1.2.3", "commit": git("rev-parse", "HEAD"),
+        "lanes": sorted(lane_set.CANARY), "lanesRevision": lane_set.LANES_REVISION, "requireGreen": True,
+    }, sort_keys=True, separators=(",", ":"))
+    git("tag", "-a", tag, "-m", message)
     git("push", "origin", f"refs/tags/{tag}")
 
     release.cmd_canary(canary_args("20260819T103000Z", no_changelog=False))
@@ -244,6 +251,50 @@ def test_canary_tag_pushed_without_a_draft_is_recovered_on_a_busy_repository(can
     assert f"# Hermes Agent v{release.release_version(tag)} ({tag})" in body
     assert len(builds_table.splice(body, _every_download(tag))) <= GITHUB_BODY_LIMIT
     assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
+
+
+def test_resuming_an_unpublished_canary_refuses_policy_or_lane_mismatch(canary_repo, monkeypatch):
+    git, _remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    from scripts.releases import versioning
+
+    # Scheduled canary tags HEAD with requireGreen=False and fails before publishing.
+    release.cmd_canary(canary_args("20260818T064100Z", require_green=False))
+    monkeypatch.setattr(versioning, "published_channel_identity", lambda *_args: None)
+    calls.clear()
+
+    # Manual dispatch with require_green=True must refuse instead of silently re-dispatching
+    # the relaxed scheduled claim.
+    with pytest.raises(ValueError, match="requireGreen"):
+        release.cmd_canary(canary_args("20260818T120000Z", require_green=True))
+    assert calls == []
+
+    # Same-timestamp retry with a different green policy is also refused.
+    with pytest.raises(ValueError, match="requireGreen"):
+        release.cmd_canary(canary_args("20260818T064100Z", require_green=True))
+    assert calls == []
+
+    # Resuming with different lanes is refused without dispatching.
+    with pytest.raises(ValueError, match="lanes"):
+        release.cmd_canary(canary_args("20260818T120000Z", require_green=False, without_lanes=["termux"]))
+    assert calls == []
+
+    # Matching lanes and green policy resumes and dispatches cleanly.
+    release.cmd_canary(canary_args("20260818T120000Z", require_green=False))
+    assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
+
+    # Once published, a quiet-day scheduled run with a different flag stays a clean no-op.
+    head = git("rev-parse", "HEAD")
+    monkeypatch.setattr(
+        versioning,
+        "published_channel_identity",
+        lambda *_args: ("1.2.3+canary.20260818T064100Z", head),
+    )
+    calls.clear()
+    release.cmd_canary(canary_args("20260819T064100Z", require_green=True))
+    assert not any(call[1:3] in (["release", "create"], ["workflow", "run"]) for call in calls)
 
 
 def test_the_claim_records_the_chosen_lanes_and_green_policy(canary_repo):

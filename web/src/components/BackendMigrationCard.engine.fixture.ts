@@ -882,3 +882,170 @@ export const engineStepStrings = [
   "the backup /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/gone.bak of config.yaml is missing or cannot be read: recover it, or put /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml back as it was before the migration by hand, before you start the old backend",
   "the migration stopped while writing /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml, so it may hold the migration's changes: compare it with /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/backend_migration/config.yaml.bak and put back by hand what the migration changed, before you start the old backend"
 ];
+
+// The plan route's answer read while a move runs (between its steps): run.state "running", alive.
+export const planWhileRunning = {
+  "applied": false,
+  "dry_run": true,
+  "exit_code": 0,
+  "plan": {
+    "home": "/var/tmp/hermes-pytest-1000/r-f3103xa2/pytest-of-mark/pytest-0/test_plan_while_a_run_is_runni0/hermes-home",
+    "old_backend": {
+      "supervisor": "systemd",
+      "unit": "hermes-dashboard.service",
+      "scope": "user",
+      "pid": 4242,
+      "unit_file_state": "enabled",
+      "was_active": true
+    },
+    "old_address": "0.0.0.0:9119",
+    "new_address": "0.0.0.0:9119",
+    "keep_webapp_address": false,
+    "copy_env_keys": [],
+    "generate_secret": false,
+    "public_url": null,
+    "auth_before": {
+      "auth_required": true,
+      "providers": [
+        "basic"
+      ]
+    },
+    "gateway": {
+      "kind": "systemd",
+      "unit": "hermes-gateway",
+      "installed": true,
+      "enabled": true,
+      "active": false,
+      "running_pid": null
+    },
+    "linger": true,
+    "webapp_bundle_missing": null,
+    "running_turns": 0,
+    "blockers": [],
+    "unsupported": [],
+    "notices": [],
+    "nothing_to_do": false,
+    "steps": [
+      {
+        "name": "preflight",
+        "title": "check that the move can run (nothing changed yet)"
+      },
+      {
+        "name": "manifest",
+        "title": "record the current state in backend_migration.json (backups of config.yaml and .env)"
+      },
+      {
+        "name": "webapp_bundle",
+        "title": "check the Webapp bundle (built)"
+      },
+      {
+        "name": "write_config",
+        "title": "write .env and webapp.* (webapp.enabled, webapp.host, webapp.port)"
+      },
+      {
+        "name": "gateway_service",
+        "title": "make sure the gateway runs as a user service"
+      },
+      {
+        "name": "stop_old_backend",
+        "title": "stop the old backend and disable it (its unit file is kept)"
+      },
+      {
+        "name": "start_gateway",
+        "title": "start or restart the gateway"
+      },
+      {
+        "name": "verify",
+        "title": "verify 127.0.0.1:9119: /api/status 200 from the gateway and the Webapp page served, within 90 s"
+      }
+    ],
+    "text": [
+      "Backend migration plan (dry run — nothing changed)",
+      "  home:          /var/tmp/hermes-pytest-1000/r-f3103xa2/pytest-of-mark/pytest-0/test_plan_while_a_run_is_runni0/hermes-home",
+      "  old backend:   systemd user unit hermes-dashboard.service, pid 4242 on 0.0.0.0:9119",
+      "  new backend:   the gateway's Webapp on 0.0.0.0:9119 (same bind and port: exposure unchanged)",
+      "  sign-in:       required (interactive providers: basic)",
+      "  .env copies:   none needed (names only; values are never printed)",
+      "  gateway:       installed, stopped (hermes-gateway) → start it",
+      "  webapp bundle: present",
+      "  running turns: 0",
+      "",
+      "  Steps:",
+      "    1. record the current state in backend_migration.json (backups of config.yaml and .env)",
+      "    2. check the Webapp bundle (built)",
+      "    3. write .env and webapp.* (webapp.enabled, webapp.host, webapp.port)",
+      "    4. make sure the gateway runs as a user service",
+      "    5. stop the old backend and disable it (its unit file is kept)",
+      "    6. start or restart the gateway",
+      "    7. verify 127.0.0.1:9119: /api/status 200 from the gateway and the Webapp page served, within 90 s",
+      "  Any failure after step 1 undoes what was changed and verifies the old backend answers again.",
+      "  After a move, clients notice: one re-sign-in (new cookies); the browser gets the Webapp instead of the old dashboard UI; old-protocol WebSocket clients and loopback page-token clients stop working."
+    ],
+    "expect_token": "29321721297f7001c05a882d48e3d7ef",
+    "found": true
+  },
+  "report": [
+    {
+      "supervisor": "systemd",
+      "running": true,
+      "pid": 4242,
+      "unit": "hermes-dashboard.service",
+      "scope": "user",
+      "state": "enabled",
+      "this_home": true,
+      "not_applied": "",
+      "notes": []
+    }
+  ],
+  "run": {
+    "state": "running",
+    "step": "gateway_service",
+    "steps": [
+      {
+        "name": "preflight",
+        "state": "done"
+      },
+      {
+        "name": "manifest",
+        "state": "done"
+      },
+      {
+        "name": "webapp_bundle",
+        "state": "done"
+      },
+      {
+        "name": "write_config",
+        "state": "done"
+      },
+      {
+        "name": "gateway_service",
+        "state": "running"
+      },
+      {
+        "name": "stop_old_backend",
+        "state": "pending"
+      },
+      {
+        "name": "start_gateway",
+        "state": "pending"
+      },
+      {
+        "name": "verify",
+        "state": "pending"
+      }
+    ],
+    "message": "",
+    "old_address": "0.0.0.0:9119",
+    "new_address": "0.0.0.0:9119",
+    "started_at": 1795214019.76219,
+    "finished_at": null,
+    "manual_steps": [],
+    "alive": true,
+    "reason": null
+  },
+  "profile": "default",
+  "commands": {
+    "status": "hermes -p default gateway migrate --backends --status",
+    "restore": "hermes -p default gateway migrate --backends --restore"
+  }
+};

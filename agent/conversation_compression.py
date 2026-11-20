@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
-from agent.context_compressor_summary import _accepts_keyword_argument
+from agent.context_compressor_summary import accepts_keyword_argument
 from agent.context_engine import CompactionProgressText, automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_deadline import resolve_context_compression_timeouts
@@ -188,7 +188,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
     "_summary_model_fallen_back", "summary_model",
     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
-    "_proactive_prune_rearm_tokens",
+    "_proactive_prune_rearm_tokens", "_proactive_prune_cold_credit",
 )
 
 _COMPRESSOR_COOLDOWN_STATE_FIELDS = ("_summary_failure_cooldown_until", "_last_summary_error", "_cooldown_persist_failed")
@@ -1340,11 +1340,11 @@ def _restore_messages_snapshot(messages: list, snapshot: Optional[list]) -> None
 
 
 def _restore_prune_rearm_tokens(compressor: Any, snapshot: dict) -> None:
-    """Restore ONLY the prune runway from the attempt snapshot.
+    """Restore ONLY the prune runway (and its cold credit) from the attempt snapshot.
     compress() zeroes it in memory while the durable copy only clears on a successful commit; a kept
     transcript keeps its cached prefix, and 0 would let the next prune break that cache."""
-    if "_proactive_prune_rearm_tokens" in snapshot:
-        compressor._proactive_prune_rearm_tokens = snapshot["_proactive_prune_rearm_tokens"]
+    for key in (k for k in ("_proactive_prune_rearm_tokens", "_proactive_prune_cold_credit") if k in snapshot):
+        setattr(compressor, key, snapshot[key])
 
 
 def compression_skipped_due_to_lock(agent: Any) -> bool:
@@ -1420,14 +1420,14 @@ def _automatic_compression_gate_blocks(
     blocked = getattr(type(compressor), "_automatic_compression_blocked", None)
     if not callable(blocked):
         return None
-    ignore = bypass_cooldown and _accepts_keyword_argument(blocked, "ignore_cooldown")
+    ignore = bypass_cooldown and accepts_keyword_argument(blocked, "ignore_cooldown")
     if not (blocked(compressor, ignore_cooldown=True) if ignore else blocked(compressor)):
         return None
     reason, reason_fn = None, getattr(compressor, "_compression_block_reason", None)
     if callable(reason_fn):  # engines predating it name no reason
         with _swallow('compression block-reason read failed', exc_info=True):
             reason = (
-                reason_fn(ignore_cooldown=True) if ignore and _accepts_keyword_argument(reason_fn, "ignore_cooldown")
+                reason_fn(ignore_cooldown=True) if ignore and accepts_keyword_argument(reason_fn, "ignore_cooldown")
                 else reason_fn()
             )
     reason = reason if isinstance(reason, str) and reason else "unknown"
@@ -1482,7 +1482,7 @@ def _rebind_session_context(session_id: str) -> None:
 
 def context_engine_persistence(hook, persistence):
     """``{"persistence": persistence}`` for a context engine hook that accepts that keyword, else ``{}``."""
-    return {"persistence": persistence} if _accepts_keyword_argument(hook, "persistence") else {}
+    return {"persistence": persistence} if accepts_keyword_argument(hook, "persistence") else {}
 
 
 def context_engine_session_db(agent, session_db):
@@ -3566,7 +3566,7 @@ def _commit_compaction(
             # still needs (#118580), so hold it across the call.
             with _hold_attempt_telemetry(agent.context_compressor):
                 agent.commit_memory_session(original_messages)
-            from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
+            from agent.context_compressor import PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR, stamp_db_persisted_markers
             from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
             if in_place:
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
@@ -3614,7 +3614,7 @@ def _commit_compaction(
                     verbatim_tail, persistence=store)
                 commit_compaction(
                     agent._session_db, store,
-                    agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                    agent.session_id, persisted, model_config_patch=dict(PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR),
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                     covered_ids=covered_ids, unresolved_held=unresolved_held,

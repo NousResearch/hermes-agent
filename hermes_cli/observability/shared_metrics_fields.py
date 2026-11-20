@@ -120,7 +120,7 @@ _COMPRESSION_TRIGGERS = {
     **dict.fromkeys(("auto", "threshold", "preflight", "auto_threshold"), "auto"),
     # The attempt log's precise automatic triggers stay one coarse bucket here.
     **dict.fromkeys(
-        ("idle", "turn_start_threshold", "engine_preflight", "pre_api", "post_tool", "gateway_hygiene"), "auto",
+        ("idle", "turn_start_threshold", "engine_preflight", "pre_api", "post_tool", "gateway_hygiene", "cache_expiry"), "auto",
     ),
     **dict.fromkeys(("overflow", "context_overflow", "overflow_error", "error"), "overflow"),
     **dict.fromkeys(("manual", "user", "command", "slash"), "manual"),

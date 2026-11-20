@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
@@ -146,7 +146,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        ignored = _non_exportable_entries(directory, names)
+        ignored = _non_exportable_entries(directory, names) | provider_plugin_snapshot_dir(directory, names, source_dir)
         if at_root:
             ignored.update(root_exclude & set(names))
             ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))
@@ -2227,52 +2227,51 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
-    # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
-    # the next login or container boot. Then stop the gateway and the screen whose launcher
-    # holds paths under the old name.
-    gw_running = _check_gateway_running(old_dir)
-    service_removed = _cleanup_gateway_service(old_canon, old_dir)
-    _maybe_unregister_gateway_service(old_canon)
-    if gw_running:
-        _stop_gateway_process(old_dir)
-    _stop_bot_desktop(old_dir)
-
-    # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
-    # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
-    # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
-    # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
-    # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
-    # resurrected dir as a ghost served profile (#109267).
-    live_mux = _live_default_multiplexer()
-    if live_mux:
-        mark_named_profile_deleted(old_dir)
-        _notify_multiplexer(old_canon)
-
-    # 1c. Release this process's cached MCP stderr handle into the old home (same as
-    # delete_profile): Windows refuses to rename a directory holding an open file, and the
-    # handle would otherwise stay cached under the old key after the move.
+    # 1. Remove the old name's service even when its gateway is stopped (the unit runs ``--profile <old>``
+    # and would crash-loop on the next login or boot), then stop the gateway and the screen holding old paths.
+    # 1b. Unroute the old name from a live multiplexer BEFORE the move (same protocol as delete_profile):
+    # it serves a multiplexed secondary that has no gateway.pid; a writer outside ``mkdir_under_hermes_home``
+    # can re-create the moved-away home, which the reconcile could re-adopt as a ghost (#109267). 1c. Release
+    # this process's MCP stderr handle into the old home: Windows refuses to rename a dir holding an open file.
+    # 2. Everything before the move is undone on any exit (Ctrl-C in the service stop or owner wait, EXDEV, a
+    # racing writer); after it, the old name is never re-served.
     from hermes_constants import hermes_home_key
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-
-    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
-    # undo the unroute so the profile is never stranded tombstoned-but-present.
+    gw_running = _check_gateway_running(old_dir)
+    service_removed = live_mux = renamed = False
+    old_identity = None
     try:
+        service_removed = _cleanup_gateway_service(old_canon, old_dir)
+        _maybe_unregister_gateway_service(old_canon)
+        if gw_running:
+            _stop_gateway_process(old_dir)
+        _stop_bot_desktop(old_dir)
+        live_mux = _live_default_multiplexer()
+        old_identity = old_dir.lstat()
+        if live_mux:
+            mark_named_profile_deleted(old_dir)
+            _notify_multiplexer(old_canon)
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         old_dir.rename(new_dir)
-    except Exception:
-        if live_mux:
+        renamed = True
+    finally:
+        moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
+        if not moved and old_identity is not None:
+            with contextlib.suppress(OSError):  # no new_dir: the move never landed
+                moved = os.path.samestat(new_dir.lstat(), old_identity)
+        if moved:
             clear_named_profile_deleted(old_dir)
-            _notify_multiplexer(old_canon)
-        _maybe_register_gateway_service(old_canon)
-        if service_removed:
-            print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
-        raise
+            clear_named_profile_deleted(new_dir)
+        else:
+            if live_mux:
+                clear_named_profile_deleted(old_dir)
+                _notify_multiplexer(old_canon)
+            _maybe_register_gateway_service(old_canon)
+            if service_removed:
+                print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    clear_named_profile_deleted(old_dir)
-    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

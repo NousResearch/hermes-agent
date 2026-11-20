@@ -206,11 +206,18 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
-    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"); None = whatever is asked.
-    # Hermes clamps the requested tier to it and the prompt-cache clock never believes more.
+    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"). Hermes clamps the requested
+    # tier to it, and the prompt-cache clock declares the sent tier up to it; None leaves a 1h ask on
+    # an Anthropic-wire gateway unproven (no keep-alive, compaction or cold-return pruning).
     # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider. Keyword-only so
     # plugin subclasses' positional fields keep their slots.
     prompt_cache_max_ttl: str | None = field(default=None, kw_only=True)
+
+    # The route's ``/models`` catalog says which models take explicit ``cache_control`` markers: a
+    # model priced with a cache-write rate (``input_cache_write``) gets markers (Anthropic spec, the
+    # tier asked for, up to ``prompt_cache_max_ttl``); one without caches automatically (OpenAI spec).
+    # Read from the catalog Hermes already fetches; when it is unreachable the built-in policy applies.
+    prompt_cache_markers_from_catalog: bool = field(default=False, kw_only=True)
 
     # Private replay carriers use a namespaced '<provider>.native_assistant' type
     # in reasoning_details. Only this profile may receive its matching carrier;

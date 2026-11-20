@@ -69,8 +69,24 @@ def _log_refusal(profile, method, exc: AuthorityRefusal) -> None:
         logger.debug(line, *args)
     elif field == 'request_id' and exc.reason == 'admission_conflict':
         logger.info(line, *args)
+    elif exc.reason == 'storage_unavailable' and _seen_storage_refusal((method, *args[1:])):
+        # A stored receipt refuses the same way on every retry (Desktop reopens a chat dozens of
+        # times): the first line names the check, the repeats stay at debug.
+        logger.debug(line, *args)
     else:
         logger.warning(line, *args)
+
+
+# (method, profile, reason, field, detail) of the named storage refusals this process already warned.
+_STORAGE_REFUSALS = set()
+
+
+def _seen_storage_refusal(key) -> bool:
+    if key in _STORAGE_REFUSALS:
+        return True
+    if len(_STORAGE_REFUSALS) < 512:
+        _STORAGE_REFUSALS.add(key)
+    return False
 
 
 # (method, error class) pairs whose traceback this process already logged.
@@ -262,6 +278,8 @@ class AuthorityConnection:
         handlers.update(side_handlers(self))
         from gateway.session_llm_oneshot import handlers as oneshot_handlers
         handlers.update(oneshot_handlers(self))
+        from gateway.session_teammate_waits import handlers as teammate_wait_handlers
+        handlers.update(teammate_wait_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)

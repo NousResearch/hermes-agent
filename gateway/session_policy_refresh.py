@@ -257,6 +257,8 @@ async def refresh_resumed_policy(authority, ref, *, attached=False):
         from storage_user_copy import error_type_name
         reason = (None if isinstance(exc, TransientStoreError) else getattr(exc, 'reason', None)) or error_type_name(exc)
         busy = reason in {'session_busy', 'unknown_execution', 'revision_conflict'}
+        if getattr(exc, 'field', None):
+            reason += f'[{exc.field}]' + (f': {exc.detail}' if exc.detail else '')
         logger.log(logging.INFO if busy else logging.WARNING, 'Session %s keeps its stored policy on resume: %s',
                    ref.session_id, reason)
 

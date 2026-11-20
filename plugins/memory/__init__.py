@@ -283,7 +283,8 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
 
 def _load_package(provider_dir: Path, name: str):
     """Import the provider package at *provider_dir* under the module name the loader owns
-    (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
+    (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None when refused,
+    the package's own exception when it fails to import."""
     return _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
         parents=(__package__.rpartition(".")[0], __package__),
@@ -305,7 +306,10 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
     provider_dir = find_provider_dir(name)
     if provider_dir is None:
         raise ImportError(f"memory provider {name!r} is not installed")
-    package = _load_package(provider_dir, name)
+    try:
+        package = _load_package(provider_dir, name)
+    except Exception as exc:
+        raise ImportError(f"memory provider {name!r} failed to import: {exc}") from exc
     if package is None:
         raise ImportError(f"memory provider {name!r} failed to import")
     return importlib.import_module(f"{package.__name__}.{submodule}") if submodule else package
@@ -586,19 +590,34 @@ def active_memory_provider_commands() -> set[str]:
 
 
 def parked_provider_notice(name: str) -> Optional[str]:
-    """The user-facing reason a configured provider is not loading because ``plugins.disabled`` parks
-    it, naming the update that did so when there was one; None when it is not parked."""
+    """The user-facing reason a provider is not loading because ``plugins.disabled`` parks it, naming
+    the update that did so when there was one; None when it is not parked. Only the selected provider
+    turns external memory off, and the enable command names the active home."""
     provider_dir = find_provider_dir(name)
     if provider_dir is None or not _explicitly_disabled(name, provider_dir):
         return None
     from hermes_cli.config import load_config
     from pm.plugins_state import RECORD
-    record = cfg_get(load_config(), "plugins", RECORD)
+    config = load_config()
+    record = cfg_get(config, "plugins", RECORD)
     recorded = record.get(name) if isinstance(record, dict) else None
     why = (f" An update turned it off ({recorded.get('reason')}) and a later update retries it."
            if isinstance(recorded, dict) and recorded.get("reason") else "")
-    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so external memory is off "
-            f"(built-in memory still works).{why} Turn it back on with `hermes plugins enable {name}`.")
+    effect = (", so external memory is off (built-in memory still works)"
+              if cfg_get(config, "memory", "provider") == name else "")
+    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it{effect}.{why} "
+            f"Turn it back on with {_enable_command(name)}.")
+
+
+def _enable_command(name: str) -> str:
+    """``plugins enable`` for the active home from any shell, so HERMES_HOME names that home. A
+    profile-shaped HERMES_HOME already beats the sticky profile; any other home needs ``-p default``,
+    which resolves to HERMES_HOME itself (:func:`hermes_cli.profiles.profile_root_for_env_home`)."""
+    from hermes_cli.profiles import profile_root_for_env_home
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    selector = "" if profile_root_for_env_home(str(home), home) != home else "-p default "
+    return f"`hermes {selector}plugins enable {name}` with HERMES_HOME set to {home}"
 
 
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:

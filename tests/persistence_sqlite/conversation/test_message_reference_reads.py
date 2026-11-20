@@ -1,12 +1,12 @@
-"""Message verbs on SQLite whose statements keep the legacy readers' shape: the spillover reference read's fixed row
-cap, the latest dialogue message's one content cell, and the row stamps an archive-dropped replace leaves on the
+"""Message verbs on SQLite whose statements keep the legacy readers' shape: the spillover reference read (uncapped,
+streamed), the latest dialogue message's one content cell, and the row stamps an archive-dropped replace leaves on the
 rows it keeps."""
 
 from persistence.conversation.messages import NewMessage, ReplaceMode
 from persistence.conversation.sessions import NewSession
 
 
-def test_spillover_reference_rows_read_at_most_one_past_the_trusted_set(backend, scope_a):
+def test_spillover_reference_rows_stream_every_referencing_row(backend, scope_a):
     store = backend.open(scope_a)
     store.sessions.create(NewSession("spill", "cli"))
     for i in range(3):
@@ -18,7 +18,7 @@ def test_spillover_reference_rows_read_at_most_one_past_the_trusted_set(backend,
         store.holder()._conn.executemany(
             "INSERT INTO messages (session_id, role, content, timestamp) VALUES ('spill', 'tool', ?, 0)",
             [(f"spillover/bulk-{i}",) for i in range(20001)])
-    assert len(store.messages.spillover_reference_rows()) == 20001
+    assert len(list(store.messages.spillover_reference_rows())) == 20004
 
 
 def test_latest_dialogue_message_is_the_stored_content_cell(backend, scope_a):

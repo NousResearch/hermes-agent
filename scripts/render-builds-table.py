@@ -53,7 +53,7 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable, versioning
+from scripts.releases import handoff, job_groups, r2, semver, stable, versioning
 from scripts.releases.desktop_targets import TARGETS as DESKTOP_TARGETS
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
@@ -80,6 +80,8 @@ _ARCH_LABEL = {
 _KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
 _ROW_ORDER = [("mac", "arm64"), ("win", "x64"), ("win", "arm64"),
               ("linux", "x64"), ("linux", "arm64")]
+# Linux AppImages are diagnostic builds: staged in the tag archive, kept off download tables.
+_UNLISTED_OS = frozenset({"linux"})
 
 
 def parse_assets(names: list[str]) -> dict[str, dict[tuple[str, str], tuple[str, str]]]:
@@ -109,7 +111,7 @@ def table_rows(assets_by_app: dict) -> list[tuple[str, list[tuple[str, str, str,
         rows = []
         for key in _ROW_ORDER:
             entry = assets_by_app.get(app, {}).get(key)
-            if not entry:
+            if not entry or key[0] in _UNLISTED_OS:
                 continue
             name, ext = entry
             rows.append((_OS_LABEL[key[0]], _ARCH_LABEL[key], _KIND_LABEL[ext], name))
@@ -188,7 +190,7 @@ _COMMIT_EXPECTED = [
     ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
-# Linux release legs are disabled; they still get a row so a reader can see
+# Commit builds skip the Linux legs; they still get a row so a reader can see
 # they were never expected to publish.
 _COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
 
@@ -202,7 +204,7 @@ _COMMIT_JOBS = {
 
 _SMOKE_SCOPE = (
     "Download availability is independent of smoke status. Each result covers all native legs "
-    "in that format group. Linux bundles are disabled; unsigned Store envelopes are not install-smoked. "
+    "in that format group. Linux AppImages and unsigned Store envelopes are not install-smoked. "
     "No-upload dry tags have no download handoff and are not smoke-qualified."
 )
 
@@ -288,7 +290,7 @@ def commit_entries(commit: str, names: list[str], base_url: str,
             status = "❌ Not built (ambiguous: multiple objects match)"
         entries.append((label, status, run_url, "View build run" if run_url else None))
     for label in _COMMIT_DISABLED:
-        entries.append((label, "Disabled (release leg disabled)", None, None))
+        entries.append((label, "Skipped (tag builds only)", None, None))
     return entries
 
 
@@ -340,7 +342,8 @@ def incomplete_release_jobs(release_needs_json: str | None) -> list[str]:
     """Tag pages may describe failures; channel pointers require successful jobs.
 
     Unlike a commit summary, skipped release prerequisites are incomplete too.
-    Standalone invocations without workflow results retain their existing behavior.
+    Diagnostic builds never are. Standalone invocations without workflow
+    results retain their existing behavior.
     """
     if release_needs_json is None:
         return []
@@ -348,8 +351,8 @@ def incomplete_release_jobs(release_needs_json: str | None) -> list[str]:
         needs = json.loads(release_needs_json)
         if not isinstance(needs, dict) or not needs:
             raise ValueError("missing workflow results")
-        return [f"{name} ({info.get('result', 'unknown')})" for name, info in sorted(needs.items())
-                if info.get("result") != "success"]
+        return [f"{name} ({needs[name].get('result', 'unknown')})"
+                for name in sorted(job_groups.gating_jobs(needs)) if needs[name].get("result") != "success"]
     except (ValueError, TypeError, AttributeError):
         return ["workflow results unavailable"]
 
@@ -491,13 +494,13 @@ def supersedes(existing_page: str | None, tag: str) -> bool:
     recorded = recorded_build(existing_page)
     if not recorded:
         return True
-    from hermes_cli.update_channel import canary_timestamp, is_canary_tag
-    if is_canary_tag(recorded) != is_canary_tag(tag):
+    from hermes_cli.update_channel import canary_timestamp, published_canary_timestamp
+    recorded_stamp = published_canary_timestamp(recorded)
+    tag_stamp = canary_timestamp(tag)
+    if (recorded_stamp is not None) != (tag_stamp is not None):
         return False
-    if is_canary_tag(tag):
-        recorded_stamp = canary_timestamp(recorded)
-        tag_stamp = canary_timestamp(tag)
-        return recorded_stamp is not None and tag_stamp is not None and recorded_stamp <= tag_stamp
+    if tag_stamp is not None:
+        return recorded_stamp <= tag_stamp
     try:
         return semver.compare(recorded.lstrip("v"), tag.lstrip("v")) <= 0
     except ValueError:
@@ -556,7 +559,9 @@ def r2_object_names(tag: str) -> list[str]:
 
     keys = r2_object_names_under(f"releases/tag/{tag}/")
     parsed = parse_attempt_ref(tag)
-    return filter_names_for_version(keys, parsed[0] if parsed else tag.lstrip("v"))
+    from hermes_cli.update_channel import release_version
+
+    return filter_names_for_version(keys, parsed[0] if parsed else (release_version(tag) or tag.lstrip("v")))
 
 
 def splice(body: str, block: str) -> str:

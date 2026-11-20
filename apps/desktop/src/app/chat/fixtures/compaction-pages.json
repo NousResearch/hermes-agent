@@ -1,0 +1,1342 @@
+{
+ "note": "synthetic: 12 scripted turns (prompt N / reply N), one in-place compaction that carries the last 4 rows, then one more turn; display pages read with limit 8 and in full at each of the three points",
+ "turns": 12,
+ "tail": 4,
+ "limit": 8,
+ "before": {
+  "tail": {
+   "messages": [
+    {
+     "id": 17,
+     "role": "user",
+     "content": "prompt 9",
+     "timestamp": 1090.0,
+     "message_uid": "uid-prompt-09",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 18,
+     "role": "assistant",
+     "content": "reply 9",
+     "timestamp": 1090.5,
+     "message_uid": "uid-reply-09",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 19,
+     "role": "user",
+     "content": "prompt 10",
+     "timestamp": 1100.0,
+     "message_uid": "uid-prompt-10",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 20,
+     "role": "assistant",
+     "content": "reply 10",
+     "timestamp": 1100.5,
+     "message_uid": "uid-reply-10",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 21,
+     "role": "user",
+     "content": "prompt 11",
+     "timestamp": 1110.0,
+     "message_uid": "uid-prompt-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 22,
+     "role": "assistant",
+     "content": "reply 11",
+     "timestamp": 1110.5,
+     "message_uid": "uid-reply-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 23,
+     "role": "user",
+     "content": "prompt 12",
+     "timestamp": 1120.0,
+     "message_uid": "uid-prompt-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 24,
+     "role": "assistant",
+     "content": "reply 12",
+     "timestamp": 1120.5,
+     "message_uid": "uid-reply-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 8,
+    "offset": 0,
+    "order": "latest",
+    "returned": 8
+   }
+  },
+  "older": {
+   "messages": [
+    {
+     "id": 9,
+     "role": "user",
+     "content": "prompt 5",
+     "timestamp": 1050.0,
+     "message_uid": "uid-prompt-05",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 10,
+     "role": "assistant",
+     "content": "reply 5",
+     "timestamp": 1050.5,
+     "message_uid": "uid-reply-05",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 11,
+     "role": "user",
+     "content": "prompt 6",
+     "timestamp": 1060.0,
+     "message_uid": "uid-prompt-06",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 12,
+     "role": "assistant",
+     "content": "reply 6",
+     "timestamp": 1060.5,
+     "message_uid": "uid-reply-06",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 13,
+     "role": "user",
+     "content": "prompt 7",
+     "timestamp": 1070.0,
+     "message_uid": "uid-prompt-07",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 14,
+     "role": "assistant",
+     "content": "reply 7",
+     "timestamp": 1070.5,
+     "message_uid": "uid-reply-07",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 15,
+     "role": "user",
+     "content": "prompt 8",
+     "timestamp": 1080.0,
+     "message_uid": "uid-prompt-08",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 16,
+     "role": "assistant",
+     "content": "reply 8",
+     "timestamp": 1080.5,
+     "message_uid": "uid-reply-08",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 8,
+    "offset": 8,
+    "order": "latest",
+    "returned": 8
+   }
+  },
+  "all": {
+   "messages": [
+    {
+     "id": 1,
+     "role": "user",
+     "content": "prompt 1",
+     "timestamp": 1010.0,
+     "message_uid": "uid-prompt-01",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 2,
+     "role": "assistant",
+     "content": "reply 1",
+     "timestamp": 1010.5,
+     "message_uid": "uid-reply-01",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 3,
+     "role": "user",
+     "content": "prompt 2",
+     "timestamp": 1020.0,
+     "message_uid": "uid-prompt-02",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 4,
+     "role": "assistant",
+     "content": "reply 2",
+     "timestamp": 1020.5,
+     "message_uid": "uid-reply-02",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 5,
+     "role": "user",
+     "content": "prompt 3",
+     "timestamp": 1030.0,
+     "message_uid": "uid-prompt-03",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 6,
+     "role": "assistant",
+     "content": "reply 3",
+     "timestamp": 1030.5,
+     "message_uid": "uid-reply-03",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 7,
+     "role": "user",
+     "content": "prompt 4",
+     "timestamp": 1040.0,
+     "message_uid": "uid-prompt-04",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 8,
+     "role": "assistant",
+     "content": "reply 4",
+     "timestamp": 1040.5,
+     "message_uid": "uid-reply-04",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 9,
+     "role": "user",
+     "content": "prompt 5",
+     "timestamp": 1050.0,
+     "message_uid": "uid-prompt-05",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 10,
+     "role": "assistant",
+     "content": "reply 5",
+     "timestamp": 1050.5,
+     "message_uid": "uid-reply-05",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 11,
+     "role": "user",
+     "content": "prompt 6",
+     "timestamp": 1060.0,
+     "message_uid": "uid-prompt-06",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 12,
+     "role": "assistant",
+     "content": "reply 6",
+     "timestamp": 1060.5,
+     "message_uid": "uid-reply-06",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 13,
+     "role": "user",
+     "content": "prompt 7",
+     "timestamp": 1070.0,
+     "message_uid": "uid-prompt-07",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 14,
+     "role": "assistant",
+     "content": "reply 7",
+     "timestamp": 1070.5,
+     "message_uid": "uid-reply-07",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 15,
+     "role": "user",
+     "content": "prompt 8",
+     "timestamp": 1080.0,
+     "message_uid": "uid-prompt-08",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 16,
+     "role": "assistant",
+     "content": "reply 8",
+     "timestamp": 1080.5,
+     "message_uid": "uid-reply-08",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 17,
+     "role": "user",
+     "content": "prompt 9",
+     "timestamp": 1090.0,
+     "message_uid": "uid-prompt-09",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 18,
+     "role": "assistant",
+     "content": "reply 9",
+     "timestamp": 1090.5,
+     "message_uid": "uid-reply-09",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 19,
+     "role": "user",
+     "content": "prompt 10",
+     "timestamp": 1100.0,
+     "message_uid": "uid-prompt-10",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 20,
+     "role": "assistant",
+     "content": "reply 10",
+     "timestamp": 1100.5,
+     "message_uid": "uid-reply-10",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 21,
+     "role": "user",
+     "content": "prompt 11",
+     "timestamp": 1110.0,
+     "message_uid": "uid-prompt-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 22,
+     "role": "assistant",
+     "content": "reply 11",
+     "timestamp": 1110.5,
+     "message_uid": "uid-reply-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 23,
+     "role": "user",
+     "content": "prompt 12",
+     "timestamp": 1120.0,
+     "message_uid": "uid-prompt-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 24,
+     "role": "assistant",
+     "content": "reply 12",
+     "timestamp": 1120.5,
+     "message_uid": "uid-reply-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 500,
+    "offset": 0,
+    "order": "latest",
+    "returned": 24
+   }
+  }
+ },
+ "afterCompaction": {
+  "tail": {
+   "messages": [
+    {
+     "id": 18,
+     "role": "assistant",
+     "content": "reply 9",
+     "timestamp": 1090.5,
+     "message_uid": "uid-reply-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 19,
+     "role": "user",
+     "content": "prompt 10",
+     "timestamp": 1100.0,
+     "message_uid": "uid-prompt-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 20,
+     "role": "assistant",
+     "content": "reply 10",
+     "timestamp": 1100.5,
+     "message_uid": "uid-reply-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 25,
+     "role": "user",
+     "content": "[CONTEXT COMPACTION] summary of the earlier turns",
+     "timestamp": 1121.0,
+     "message_uid": "uid-summary",
+     "display_kind": "hidden",
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 26,
+     "role": "user",
+     "content": "prompt 11",
+     "timestamp": 1110.0,
+     "message_uid": "uid-prompt-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 27,
+     "role": "assistant",
+     "content": "reply 11",
+     "timestamp": 1110.5,
+     "message_uid": "uid-reply-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 28,
+     "role": "user",
+     "content": "prompt 12",
+     "timestamp": 1120.0,
+     "message_uid": "uid-prompt-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 29,
+     "role": "assistant",
+     "content": "reply 12",
+     "timestamp": 1120.5,
+     "message_uid": "uid-reply-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 8,
+    "offset": 0,
+    "order": "latest",
+    "returned": 8
+   }
+  },
+  "older": {
+   "messages": [
+    {
+     "id": 10,
+     "role": "assistant",
+     "content": "reply 5",
+     "timestamp": 1050.5,
+     "message_uid": "uid-reply-05",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 11,
+     "role": "user",
+     "content": "prompt 6",
+     "timestamp": 1060.0,
+     "message_uid": "uid-prompt-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 12,
+     "role": "assistant",
+     "content": "reply 6",
+     "timestamp": 1060.5,
+     "message_uid": "uid-reply-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 13,
+     "role": "user",
+     "content": "prompt 7",
+     "timestamp": 1070.0,
+     "message_uid": "uid-prompt-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 14,
+     "role": "assistant",
+     "content": "reply 7",
+     "timestamp": 1070.5,
+     "message_uid": "uid-reply-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 15,
+     "role": "user",
+     "content": "prompt 8",
+     "timestamp": 1080.0,
+     "message_uid": "uid-prompt-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 16,
+     "role": "assistant",
+     "content": "reply 8",
+     "timestamp": 1080.5,
+     "message_uid": "uid-reply-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 17,
+     "role": "user",
+     "content": "prompt 9",
+     "timestamp": 1090.0,
+     "message_uid": "uid-prompt-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    }
+   ],
+   "pagination": {
+    "limit": 8,
+    "offset": 8,
+    "order": "latest",
+    "returned": 8
+   }
+  },
+  "all": {
+   "messages": [
+    {
+     "id": 1,
+     "role": "user",
+     "content": "prompt 1",
+     "timestamp": 1010.0,
+     "message_uid": "uid-prompt-01",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 2,
+     "role": "assistant",
+     "content": "reply 1",
+     "timestamp": 1010.5,
+     "message_uid": "uid-reply-01",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 3,
+     "role": "user",
+     "content": "prompt 2",
+     "timestamp": 1020.0,
+     "message_uid": "uid-prompt-02",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 4,
+     "role": "assistant",
+     "content": "reply 2",
+     "timestamp": 1020.5,
+     "message_uid": "uid-reply-02",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 5,
+     "role": "user",
+     "content": "prompt 3",
+     "timestamp": 1030.0,
+     "message_uid": "uid-prompt-03",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 6,
+     "role": "assistant",
+     "content": "reply 3",
+     "timestamp": 1030.5,
+     "message_uid": "uid-reply-03",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 7,
+     "role": "user",
+     "content": "prompt 4",
+     "timestamp": 1040.0,
+     "message_uid": "uid-prompt-04",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 8,
+     "role": "assistant",
+     "content": "reply 4",
+     "timestamp": 1040.5,
+     "message_uid": "uid-reply-04",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 9,
+     "role": "user",
+     "content": "prompt 5",
+     "timestamp": 1050.0,
+     "message_uid": "uid-prompt-05",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 10,
+     "role": "assistant",
+     "content": "reply 5",
+     "timestamp": 1050.5,
+     "message_uid": "uid-reply-05",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 11,
+     "role": "user",
+     "content": "prompt 6",
+     "timestamp": 1060.0,
+     "message_uid": "uid-prompt-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 12,
+     "role": "assistant",
+     "content": "reply 6",
+     "timestamp": 1060.5,
+     "message_uid": "uid-reply-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 13,
+     "role": "user",
+     "content": "prompt 7",
+     "timestamp": 1070.0,
+     "message_uid": "uid-prompt-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 14,
+     "role": "assistant",
+     "content": "reply 7",
+     "timestamp": 1070.5,
+     "message_uid": "uid-reply-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 15,
+     "role": "user",
+     "content": "prompt 8",
+     "timestamp": 1080.0,
+     "message_uid": "uid-prompt-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 16,
+     "role": "assistant",
+     "content": "reply 8",
+     "timestamp": 1080.5,
+     "message_uid": "uid-reply-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 17,
+     "role": "user",
+     "content": "prompt 9",
+     "timestamp": 1090.0,
+     "message_uid": "uid-prompt-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 18,
+     "role": "assistant",
+     "content": "reply 9",
+     "timestamp": 1090.5,
+     "message_uid": "uid-reply-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 19,
+     "role": "user",
+     "content": "prompt 10",
+     "timestamp": 1100.0,
+     "message_uid": "uid-prompt-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 20,
+     "role": "assistant",
+     "content": "reply 10",
+     "timestamp": 1100.5,
+     "message_uid": "uid-reply-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 25,
+     "role": "user",
+     "content": "[CONTEXT COMPACTION] summary of the earlier turns",
+     "timestamp": 1121.0,
+     "message_uid": "uid-summary",
+     "display_kind": "hidden",
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 26,
+     "role": "user",
+     "content": "prompt 11",
+     "timestamp": 1110.0,
+     "message_uid": "uid-prompt-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 27,
+     "role": "assistant",
+     "content": "reply 11",
+     "timestamp": 1110.5,
+     "message_uid": "uid-reply-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 28,
+     "role": "user",
+     "content": "prompt 12",
+     "timestamp": 1120.0,
+     "message_uid": "uid-prompt-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 29,
+     "role": "assistant",
+     "content": "reply 12",
+     "timestamp": 1120.5,
+     "message_uid": "uid-reply-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 500,
+    "offset": 0,
+    "order": "latest",
+    "returned": 25
+   }
+  }
+ },
+ "afterTurn": {
+  "tail": {
+   "messages": [
+    {
+     "id": 20,
+     "role": "assistant",
+     "content": "reply 10",
+     "timestamp": 1100.5,
+     "message_uid": "uid-reply-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 25,
+     "role": "user",
+     "content": "[CONTEXT COMPACTION] summary of the earlier turns",
+     "timestamp": 1121.0,
+     "message_uid": "uid-summary",
+     "display_kind": "hidden",
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 26,
+     "role": "user",
+     "content": "prompt 11",
+     "timestamp": 1110.0,
+     "message_uid": "uid-prompt-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 27,
+     "role": "assistant",
+     "content": "reply 11",
+     "timestamp": 1110.5,
+     "message_uid": "uid-reply-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 28,
+     "role": "user",
+     "content": "prompt 12",
+     "timestamp": 1120.0,
+     "message_uid": "uid-prompt-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 29,
+     "role": "assistant",
+     "content": "reply 12",
+     "timestamp": 1120.5,
+     "message_uid": "uid-reply-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 30,
+     "role": "user",
+     "content": "prompt 13",
+     "timestamp": 1140.0,
+     "message_uid": "uid-prompt-13",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 31,
+     "role": "assistant",
+     "content": "reply 13",
+     "timestamp": 1140.5,
+     "message_uid": "uid-reply-13",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 8,
+    "offset": 0,
+    "order": "latest",
+    "returned": 8
+   }
+  },
+  "older": {
+   "messages": [
+    {
+     "id": 12,
+     "role": "assistant",
+     "content": "reply 6",
+     "timestamp": 1060.5,
+     "message_uid": "uid-reply-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 13,
+     "role": "user",
+     "content": "prompt 7",
+     "timestamp": 1070.0,
+     "message_uid": "uid-prompt-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 14,
+     "role": "assistant",
+     "content": "reply 7",
+     "timestamp": 1070.5,
+     "message_uid": "uid-reply-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 15,
+     "role": "user",
+     "content": "prompt 8",
+     "timestamp": 1080.0,
+     "message_uid": "uid-prompt-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 16,
+     "role": "assistant",
+     "content": "reply 8",
+     "timestamp": 1080.5,
+     "message_uid": "uid-reply-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 17,
+     "role": "user",
+     "content": "prompt 9",
+     "timestamp": 1090.0,
+     "message_uid": "uid-prompt-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 18,
+     "role": "assistant",
+     "content": "reply 9",
+     "timestamp": 1090.5,
+     "message_uid": "uid-reply-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 19,
+     "role": "user",
+     "content": "prompt 10",
+     "timestamp": 1100.0,
+     "message_uid": "uid-prompt-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    }
+   ],
+   "pagination": {
+    "limit": 8,
+    "offset": 8,
+    "order": "latest",
+    "returned": 8
+   }
+  },
+  "all": {
+   "messages": [
+    {
+     "id": 1,
+     "role": "user",
+     "content": "prompt 1",
+     "timestamp": 1010.0,
+     "message_uid": "uid-prompt-01",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 2,
+     "role": "assistant",
+     "content": "reply 1",
+     "timestamp": 1010.5,
+     "message_uid": "uid-reply-01",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 3,
+     "role": "user",
+     "content": "prompt 2",
+     "timestamp": 1020.0,
+     "message_uid": "uid-prompt-02",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 4,
+     "role": "assistant",
+     "content": "reply 2",
+     "timestamp": 1020.5,
+     "message_uid": "uid-reply-02",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 5,
+     "role": "user",
+     "content": "prompt 3",
+     "timestamp": 1030.0,
+     "message_uid": "uid-prompt-03",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 6,
+     "role": "assistant",
+     "content": "reply 3",
+     "timestamp": 1030.5,
+     "message_uid": "uid-reply-03",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 7,
+     "role": "user",
+     "content": "prompt 4",
+     "timestamp": 1040.0,
+     "message_uid": "uid-prompt-04",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 8,
+     "role": "assistant",
+     "content": "reply 4",
+     "timestamp": 1040.5,
+     "message_uid": "uid-reply-04",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 9,
+     "role": "user",
+     "content": "prompt 5",
+     "timestamp": 1050.0,
+     "message_uid": "uid-prompt-05",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 10,
+     "role": "assistant",
+     "content": "reply 5",
+     "timestamp": 1050.5,
+     "message_uid": "uid-reply-05",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 11,
+     "role": "user",
+     "content": "prompt 6",
+     "timestamp": 1060.0,
+     "message_uid": "uid-prompt-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 12,
+     "role": "assistant",
+     "content": "reply 6",
+     "timestamp": 1060.5,
+     "message_uid": "uid-reply-06",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 13,
+     "role": "user",
+     "content": "prompt 7",
+     "timestamp": 1070.0,
+     "message_uid": "uid-prompt-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 14,
+     "role": "assistant",
+     "content": "reply 7",
+     "timestamp": 1070.5,
+     "message_uid": "uid-reply-07",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 15,
+     "role": "user",
+     "content": "prompt 8",
+     "timestamp": 1080.0,
+     "message_uid": "uid-prompt-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 16,
+     "role": "assistant",
+     "content": "reply 8",
+     "timestamp": 1080.5,
+     "message_uid": "uid-reply-08",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 17,
+     "role": "user",
+     "content": "prompt 9",
+     "timestamp": 1090.0,
+     "message_uid": "uid-prompt-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 18,
+     "role": "assistant",
+     "content": "reply 9",
+     "timestamp": 1090.5,
+     "message_uid": "uid-reply-09",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 19,
+     "role": "user",
+     "content": "prompt 10",
+     "timestamp": 1100.0,
+     "message_uid": "uid-prompt-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 20,
+     "role": "assistant",
+     "content": "reply 10",
+     "timestamp": 1100.5,
+     "message_uid": "uid-reply-10",
+     "display_kind": null,
+     "active": 0,
+     "compacted": 1
+    },
+    {
+     "id": 25,
+     "role": "user",
+     "content": "[CONTEXT COMPACTION] summary of the earlier turns",
+     "timestamp": 1121.0,
+     "message_uid": "uid-summary",
+     "display_kind": "hidden",
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 26,
+     "role": "user",
+     "content": "prompt 11",
+     "timestamp": 1110.0,
+     "message_uid": "uid-prompt-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 27,
+     "role": "assistant",
+     "content": "reply 11",
+     "timestamp": 1110.5,
+     "message_uid": "uid-reply-11",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 28,
+     "role": "user",
+     "content": "prompt 12",
+     "timestamp": 1120.0,
+     "message_uid": "uid-prompt-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 29,
+     "role": "assistant",
+     "content": "reply 12",
+     "timestamp": 1120.5,
+     "message_uid": "uid-reply-12",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 30,
+     "role": "user",
+     "content": "prompt 13",
+     "timestamp": 1140.0,
+     "message_uid": "uid-prompt-13",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    },
+    {
+     "id": 31,
+     "role": "assistant",
+     "content": "reply 13",
+     "timestamp": 1140.5,
+     "message_uid": "uid-reply-13",
+     "display_kind": null,
+     "active": 1,
+     "compacted": 0
+    }
+   ],
+   "pagination": {
+    "limit": 500,
+    "offset": 0,
+    "order": "latest",
+    "returned": 27
+   }
+  }
+ }
+}

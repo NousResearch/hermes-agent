@@ -242,6 +242,19 @@ export function isFileNote(step: string): boolean {
     || /^the migration stopped while writing \S.*, so it may hold the migration's changes: /.test(step);
 }
 
+/** An engine step to read, not to run: the planners' prose lines (they start with `#`), the rollback's
+ *  per-file notes, and its "start the old backend again the way you started it before …". Every other
+ *  step the engine emits starts with the program to run (or the HERMES_HOME pin in front of `hermes`). */
+export function isProseStep(step: string): boolean {
+  return step.startsWith("#") || isFileNote(step)
+    || step.startsWith("start the old backend again the way you started it before");
+}
+
+/** A prose step as words: without the `#` that marks it as a comment in a shell. */
+export function proseText(step: string): string {
+  return step.replace(/^# ?/, "");
+}
+
 /** An engine step that copies a backup over config.yaml or .env, or removes one of them (the engine's
  *  `cp <backup> <home>/config.yaml`, `cp <backup> <home>/.env && chmod <mode> <home>/.env`, `rm <home>/<name>`).
  *  Edits made to the file since the backup are lost when it runs. */

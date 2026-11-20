@@ -13,7 +13,8 @@ import {
   foundBackend,
   impactLines,
   isInFlight,
-  isFileNote,
+  isProseStep,
+  proseText,
   isThisRun,
   isUnresolved,
   migrateCommand,
@@ -243,9 +244,9 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
         <div key={u.instructions} className="text-warning">
           This server cannot be moved from here. {qualifyCommands(u.instructions, profile)}
           {blockers.length === 0 && !!u.steps?.length && (
-            <ol className="list-decimal pl-6">
-              {u.steps.map((step, index) => <li key={index}><code>{step}</code></li>)}
-            </ol>
+            <div className="flex flex-col gap-1">
+              <EngineSteps steps={u.steps} profile={null} />
+            </div>
           )}
         </div>
       ))}
@@ -399,17 +400,18 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
 }
 
 /** Engine steps to follow by hand: the save-both-files warning first when a step replaces or removes
- *  config.yaml or .env, then the steps in order (per-file notes as words, commands as code). */
+ *  config.yaml or .env, then the steps in order (prose as words, commands as code). *profile*: qualify the
+ *  `hermes` commands (null: shown as the server gave them). */
 function EngineSteps({ steps, profile }: { steps: string[]; profile: string | null }) {
   if (steps.length === 0) return null;
   return (
     <>
       {steps.some(replacesConfigFile) && <span>{SAVE_BOTH_WARNING}</span>}
-      <span>On this computer, run:</span>
+      <span>{steps.some(isProseStep) ? "Follow these steps:" : "On this computer, run:"}</span>
       <ol className="list-decimal pl-6">
-        {steps.map((s) => (
-          <li key={s}>
-            {isFileNote(s) ? qualifyCommands(s, profile) : <code>{qualifyCommands(s, profile)}</code>}
+        {steps.map((s, index) => (
+          <li key={index}>
+            {isProseStep(s) ? qualifyCommands(proseText(s), profile) : <code>{qualifyCommands(s, profile)}</code>}
           </li>
         ))}
       </ol>

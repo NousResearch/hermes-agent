@@ -24,6 +24,8 @@ import {
 import {
   applyOutcome,
   blockerAdvice,
+  isFileNote,
+  isProseStep,
   readPoll,
   replacesConfigFile,
   type BackendMigrationPlanResponse,
@@ -228,7 +230,14 @@ describe("BackendMigrationCard", () => {
       expect(calls[0]).toMatch(/^GET .*\/api\/gateway\/migrate\/backends\/plan\?force_interrupt=true/);
       // The engine's instructions, verbatim, whatever they say.
       expect(container.textContent).toContain(entry.instructions);
-      expect([...container.querySelectorAll("ol li code")].map((c) => c.textContent)).toEqual(entry.steps);
+      // Engine comment lines (`# …`) read as words without the `#`; only the commands are code to copy.
+      const steps = entry.steps ?? [];
+      const items = [...container.querySelectorAll("ol li")].map((li) => li.textContent);
+      expect(items).toEqual(steps.map((step) => step.replace(/^# ?/, "")));
+      expect([...container.querySelectorAll("ol li code")].map((c) => c.textContent))
+        .toEqual(steps.filter((step) => !step.startsWith("#")));
+      expect(container.textContent).toContain(steps.some((step) => step.startsWith("#"))
+        ? "Follow these steps" : "On this computer, run:");
       expect(button("Show the steps anyway")).toBeUndefined();
     });
 
@@ -283,6 +292,18 @@ describe("BackendMigrationCard", () => {
       expect(text).toContain("Before running these steps, save a copy of your current config.yaml and .env");
       expect(text.indexOf("Before running these steps")).toBeLessThan(text.indexOf("cp "));
     });
+
+  it("shows the engine's prose recovery step as words, under 'Follow these steps'", async () => {
+    const failed = exit5BundleStatus.manual as unknown as BackendMigrationStatus;
+    const prose = failed.manual_steps!.find((s) => s.startsWith("start the old backend again"))!;
+    await render(planWith({ nothing_to_do: true }, failed));
+    const manual = container.querySelector('[data-slot="backend-migration-manual"]')!;
+    const codes = [...manual.querySelectorAll("li code")].map((c) => c.textContent);
+    expect(codes).toEqual(failed.manual_steps!.filter((s) => s !== prose));
+    expect([...manual.querySelectorAll("li")].map((li) => li.textContent)).toContain(prose);
+    expect(manual.textContent).toContain("Follow these steps");
+    expect(manual.textContent).not.toContain("On this computer, run:");
+  });
 
   it("leaves the warning out of an incomplete rollback whose steps never copy over or remove either file", async () => {
     const killed = killedWhileWritingStatus.config as unknown as BackendMigrationStatus;
@@ -464,6 +485,7 @@ describe("BackendMigrationCard", () => {
     await render(planWith(manual));
     const lines = [...container.querySelectorAll("ol li code")].map((c) => c.textContent);
     expect(lines).toEqual(steps);
+    expect(container.textContent).toContain("On this computer, run:");
     await act(async () => root.unmount());
     container.remove();
 
@@ -594,6 +616,20 @@ describe("readPoll", () => {
   it("keeps the engine's blocker sentences but drops flags the card does not offer", () => {
     expect(blockerAdvice("This command runs inside x itself; stopping it would end this run. Re-run with --detach.").text)
       .not.toContain("--detach");
+  });
+});
+
+describe("isProseStep", () => {
+  it("tells every step the engine can emit apart: prose to read, or a command to run", () => {
+    // A command starts with a program the engine names (or the HERMES_HOME pin in front of `hermes`); the
+    // engine's prose is its `#` lines, its per-file notes and "start the old backend again …".
+    const command = /^(\$env:HERMES_HOME=\S.*?; hermes |HERMES_HOME=\S+ hermes |HERMES_HOME='[^']+' hermes |hermes |(cp|rm|mv|mkdir|move|launchctl|schtasks|sudo|systemctl|taskkill) )/;
+    for (const step of engineStepStrings) {
+      expect([step, isProseStep(step)]).toEqual([step, !command.test(step)]);
+    }
+    expect(engineStepStrings.filter((s) => !isProseStep(s) && !command.test(s))).toEqual([]);
+    expect(engineStepStrings.filter(isProseStep).every((s) => s.startsWith("#") || isFileNote(s)
+      || s.startsWith("start the old backend again the way you started it before"))).toBe(true);
   });
 });
 

@@ -49,3 +49,19 @@ def test_a_non_file_config_backend_is_refused_before_any_change(home, remote, ca
     assert host.old == {"enabled": True, "active": True}
     assert "HERMES_CONFIG_BACKEND=remote" in out and "file config backend" in out, out
     assert not _remote_webapp().get("enabled")  # Remote Config was not written either
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_detach_refuses_a_non_file_config_backend_before_spawning(home, remote, capsys, monkeypatch, as_json):
+    """The background run gets only HERMES_HOME and PATH, so it would not see HERMES_CONFIG_BACKEND and would
+    migrate the local files: the command the user typed refuses (exit 3) and starts nothing."""
+    host = FakeHost(home)
+    before = _config_files(home)
+
+    code = engine.cmd_apply(host, _args(detach=True, json=as_json))
+
+    out = capsys.readouterr().out
+    assert host.spawned == [] and host.calls == [], out
+    assert code == engine.EXIT_BLOCKED, out
+    assert "file config backend" in out and _config_files(home) == before
+    assert not engine.manifest_path(home).exists()

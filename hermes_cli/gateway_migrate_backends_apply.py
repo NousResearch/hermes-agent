@@ -1174,15 +1174,24 @@ def _plan_changed(host, plan: BackendPlan, expected: str, *, as_json: bool, deta
     return EXIT_PLAN_CHANGED
 
 
+def _non_file_config_backend() -> Optional[str]:
+    """Why the selected config backend cannot be migrated (its settings live outside config.yaml), else None.
+    Read from this process's environment, so a ``--detach`` parent checks it too: its background run does not
+    inherit ``HERMES_CONFIG_BACKEND``."""
+    from hermes_cli.config_backend import _FILE_BACKEND, BACKEND_ENV, get_config_backend
+    if (backend := get_config_backend()) is _FILE_BACKEND:
+        return None
+    return (f"{BACKEND_ENV}={backend.name} keeps the settings outside config.yaml, but the migration backs up, rolls "
+            f"back and restores only config.yaml, so it needs the file config backend. Move this home by hand with "
+            f"the steps in the docs. Nothing changed.")
+
+
 def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -> None:
     """Refusals the apply path adds to the plan before anything changes (shown by the dry run too)."""
-    from hermes_cli.config_backend import _FILE_BACKEND, BACKEND_ENV, get_config_backend
     from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home, hermes_command
     rec, item = plan.rec, plan.item
-    if (backend := get_config_backend()) is not _FILE_BACKEND:
-        plan.blockers.append(f"{BACKEND_ENV}={backend.name} keeps the settings outside config.yaml, but the migration "
-                             f"backs up, rolls back and restores only config.yaml, so it needs the file config "
-                             f"backend. Move this home by hand with the steps in the docs. Nothing changed.")
+    if (non_file := _non_file_config_backend()) is not None:
+        plan.blockers.append(non_file)
     if (managed := _managed_webapp_override(host, plan)) is not None:
         plan.blockers.append(managed)
     auth = plan.auth_before
@@ -1358,6 +1367,10 @@ def cmd_apply(host, args) -> int:
         unfinished = m is not None and m.get("state") in ("running", "failed")  # the background run recovers it
         if not unfinished and (code := _unsupported_here(host, args, as_json=as_json, detached=detached)) is not None:
             return code
+        if not unfinished and (non_file := _non_file_config_backend()) is not None:
+            print(json.dumps({"detached": False, "mode": "apply", "outcome": "refused", "message": non_file})
+                  if as_json else f"✗ {non_file}")
+            return EXIT_BLOCKED  # before any background run: it would not inherit this process's backend choice
         return detach(host, args)
     address = parse_address(args.address) if getattr(args, "address", None) else None
     # A background run checks its own cgroup like any other run (build_plan reads /proc/self/cgroup):

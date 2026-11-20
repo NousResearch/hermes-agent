@@ -93,6 +93,9 @@ class PlatformEntry:
     # ``{tool_name: sentence}`` appended to ``platform_hint`` only when the session's toolset (fixed at
     # prompt build) has that tool, so the hint never recommends a tool cron or the profile disabled.
     platform_hint_tool_notes: dict = field(default_factory=dict)
+    # ``{extra_key: sentence}`` appended to ``platform_hint`` only when ``platforms.<name>.extra.<extra_key>``
+    # is truthy, for opt-in renderers that lift a limit the base hint states (identical sentences dedupe).
+    platform_hint_extra_notes: dict = field(default_factory=dict)
     # ``() -> Optional[dict]`` of ``extra`` fields to seed when auto-enabled from env; runs in
     # ``_apply_env_overrides`` BEFORE adapter construction so ``gateway status`` sees it.
     env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None

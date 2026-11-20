@@ -9,6 +9,11 @@ from tools import code_execution_rpc, code_execution_tool
 from tools import file_tools
 
 
+def _programmatic_read(path: str, *, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+    dispatch = code_execution_rpc._default_dispatch(task_id)
+    return dispatch("read_file", {"path": path, "offset": offset, "limit": limit})
+
+
 def test_session_cell_raw_read_preserves_dispatch_identity(tmp_path, monkeypatch):
     import model_tools
     from tools.code_kernel import CellAuthority
@@ -66,10 +71,10 @@ def test_programmatic_read_returns_raw_content_on_repeated_calls(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("alpha\n1|literal\nomega\n", encoding="utf-8")
     first = json.loads(
-        file_tools.read_file_programmatic_tool(str(target), task_id="sandbox-read")
+        _programmatic_read(str(target), task_id="sandbox-read")
     )
     second = json.loads(
-        file_tools.read_file_programmatic_tool(str(target), task_id="sandbox-read")
+        _programmatic_read(str(target), task_id="sandbox-read")
     )
 
     assert first["success"] is True
@@ -79,7 +84,7 @@ def test_programmatic_read_returns_raw_content_on_repeated_calls(tmp_path):
 
 def test_programmatic_read_failure_keeps_stable_content_key(tmp_path):
     result = json.loads(
-        file_tools.read_file_programmatic_tool(
+        _programmatic_read(
             str(tmp_path / "missing.txt"), task_id="sandbox-read"
         )
     )
@@ -96,7 +101,7 @@ def test_programmatic_read_preserves_explicit_failure(monkeypatch):
         lambda **_kwargs: '{"success": false, "note": "blocked"}',
     )
 
-    result = json.loads(file_tools.read_file_programmatic_tool("blocked.pipe"))
+    result = json.loads(_programmatic_read("blocked.pipe"))
 
     assert result == {
         "success": False,
@@ -109,7 +114,7 @@ def test_programmatic_read_preserves_explicit_failure(monkeypatch):
 def test_programmatic_read_invalid_result_has_stable_failure_shape(monkeypatch, payload):
     monkeypatch.setattr(file_tools, "read_file_tool", lambda **_kwargs: payload)
 
-    result = json.loads(file_tools.read_file_programmatic_tool("notes.txt"))
+    result = json.loads(_programmatic_read("notes.txt"))
 
     assert result["success"] is False
     assert result["content"] == ""
@@ -121,7 +126,7 @@ def test_programmatic_read_preserves_pagination_without_display_gutters(tmp_path
     target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
 
     result = json.loads(
-        file_tools.read_file_programmatic_tool(
+        _programmatic_read(
             str(target), offset=2, limit=2, task_id="sandbox-page"
         )
     )
@@ -137,7 +142,7 @@ def test_programmatic_read_does_not_change_chat_dedup_contract(tmp_path):
     task_id = f"chat-{tmp_path.name}"
 
     programmatic = json.loads(
-        file_tools.read_file_programmatic_tool(str(target), task_id=task_id)
+        _programmatic_read(str(target), task_id=task_id)
     )
     tracker = file_tools._read_tracker[task_id]
     assert tracker["dedup"] == {}
@@ -224,21 +229,13 @@ def test_unicode_filename_retry_preserves_raw_read_mode(tmp_path, raw_read_backe
 
 
 def test_programmatic_read_and_chat_raw_paths_are_byte_identical(tmp_path):
-    """Pin the two content construction paths to identical raw output.
-
-    The early structured-document branch builds its page natively (no
-    gutter, no per-line truncation), while the file_ops branch either adds
-    numbers natively or — with line_numbers=False — applies the same clamp
-    without a gutter. Both must produce byte-identical raw content for the
-    same window so the "stable" programmatic contract cannot drift from
-    the chat path.
-    """
+    """The dispatcher and the raw file handler agree on per-line truncation."""
     target = tmp_path / "paths.txt"
     long_line = "x" * 3000  # exceeds the default 2000-char per-line clamp
     target.write_text(f"alpha\n{long_line}\ngamma\n", encoding="utf-8")
 
     programmatic = json.loads(
-        file_tools.read_file_programmatic_tool(str(target), task_id="pin-prog")
+        _programmatic_read(str(target), task_id="pin-prog")
     )
     chat_raw = json.loads(
         file_tools.read_file_tool(str(target), task_id="pin-chat", line_numbers=False)
@@ -254,7 +251,7 @@ def test_programmatic_early_document_branch_matches_file_ops_path_byte_for_byte(
     """Pin the early structured-document branch against the file_ops path.
 
     For an extractable document (``.ipynb``), ``read_file_tool`` builds the
-    page natively in its early branch — no gutter, no per-line clamp. The
+    page natively in its early branch without a gutter. The
     same window (offset=2, limit=1) read through a real
     ``ShellFileOperations.read_file(..., line_numbers=False)`` call must
     produce byte-identical content, so the "stable" programmatic contract
@@ -285,7 +282,7 @@ def test_programmatic_early_document_branch_matches_file_ops_path_byte_for_byte(
 
     # Programmatic path: same early branch, same window, no gutter.
     programmatic = json.loads(
-        file_tools.read_file_programmatic_tool(
+        _programmatic_read(
             str(target), offset=2, limit=1, task_id="pin-doc-prog"
         )
     )
@@ -322,7 +319,7 @@ def test_programmatic_read_records_write_baseline(tmp_path):
     task_id = f"prog-baseline-{tmp_path.name}"
 
     read = json.loads(
-        file_tools.read_file_programmatic_tool(str(target), task_id=task_id)
+        _programmatic_read(str(target), task_id=task_id)
     )
     assert read["success"] is True
 

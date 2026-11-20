@@ -4,6 +4,9 @@ The query is the text a user typed, in the store's search syntax: words (implici
 
 Which rows match, by route:
 
+CJK prefix-wildcard normalization keeps stars inside balanced quotes as literal text,
+including when the caller appends a wildcard after the closing quote.
+
 - A word matches whole words of a message's content, tool name or tool-call JSON, case-insensitively and without Latin diacritics (``cafe`` matches ``Café``); ``_`` splits words. Tool content counts only up to its first ``FTS_TOOL_CONTENT_PREFIX_CHARS`` characters. Structured content is searched as its stored ``\\x00json:`` JSON text, so a CJK string inside it is searchable only by its ``\\uXXXX`` escape.
 - When that finds nothing (and the query holds no CJK and no ``tool`` role filter), a query whose words all have three or more characters is retried with each word as a case-folded substring of the content or tool name of rows that are not tool rows and not in ``cron`` or ``subagent`` sessions or delegate children (``cat`` then matches ``concatenate``); when that also finds nothing, an implicit-AND query of two or more units without ``OR`` / ``NOT`` is retried with its units ORed. Each retry keeps the filters, sort, limit and offset, so an offset past the end of a smaller result reaches the next retry.
 - A ``tool`` role filter reads the stored rows by substring: words of one ``OR`` group must all appear (``AND`` ignored, ``NOT`` excludes the next word, quotes and ``*`` stripped from each word), matched ASCII-case-insensitively against content, tool name and tool-call JSON, where structured content never matches (its stored text starts with NUL).

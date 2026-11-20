@@ -99,6 +99,10 @@ def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning,
         ("gemini-4-hydrogen", "high", "high", None),
         ("gemini-4-hydrogen", "xhigh", "xhigh", 262_144),
         ("google/gemini-4-hydrogen", "max", "xhigh", 1_048_576),
+        ("gemini-4-neon", "medium", "medium", None),
+        ("gemini-4-neon", "high", "high", None),
+        ("gemini-4-neon", "xhigh", "xhigh", 262_144),
+        ("google/gemini-4-neon", "max", "xhigh", 1_048_576),
         ("gemini-4-carbon", "xhigh", "high", 262_144),  # Argon and Carbon answer 400 to xhigh
     ],
 )

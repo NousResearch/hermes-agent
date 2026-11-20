@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 # Models that take the ``xhigh`` thinking level; Gemini 4 Argon and Carbon answer 400 to it.
-_XHIGH_MODELS = ("gemini-4-hydrogen",)
+_XHIGH_MODELS = ("gemini-4-hydrogen", "gemini-4-neon")
 _XHIGH_EFFORTS = {"xhigh", "max", "ultra"}
 
 

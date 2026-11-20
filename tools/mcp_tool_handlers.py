@@ -785,6 +785,44 @@ def _json_type_stable_equal(left, right) -> bool:
     return type(left) is type(right) and left == right
 
 
+def _sanitize_error_value(value):
+    """Recursively apply ``_sanitize_error`` (credential redaction + unicode tag stripping)
+    to string leaves and keys inside ``isError`` structured payloads."""
+    if isinstance(value, str):
+        return _sanitize_error(value)
+    if isinstance(value, dict):
+        return {_sanitize_error(str(k)): _sanitize_error_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_error_value(item) for item in value]
+    return value
+
+
+def _render_error_tool_result(result) -> str:
+    """Render an ``isError=True`` ``CallToolResult`` without dropping ``structuredContent``
+    or ``_meta`` diagnostics (e.g. structured validation errors, error codes, retry windows)."""
+    raw_text = _error_result_text(result)
+    structured = _capped_structured_content(result)
+    meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
+
+    extra: dict[str, Any] = {}
+    if structured is not None:
+        if isinstance(structured, str):
+            if not raw_text:
+                raw_text = structured
+        elif not (raw_text and _content_dual_emits_structured(result, structured)):
+            extra["structuredContent"] = _sanitize_error_value(structured)
+    if meta is not None:
+        extra["_meta"] = _sanitize_error_value(meta)
+
+    error_msg = _sanitize_error(_truncate_mcp_text_result(raw_text or "MCP tool returned an error"))
+    if not extra:
+        return tool_error(error_msg)
+    try:
+        return tool_error(error_msg, **extra)
+    except (TypeError, ValueError):
+        return tool_error(error_msg)
+
+
 def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None, *,
                              for_model: bool = False) -> str:
     """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
@@ -799,7 +837,7 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     used. ``structuredContent`` fills ``result`` when the blocks rendered effectively empty
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
-        return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
+        return _render_error_tool_result(result)
     text_result, usable_parts, cached_images = _render_content_blocks(result, server_name)
     if image_paths is not None:
         image_paths.extend(cached_images)

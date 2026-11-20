@@ -488,3 +488,76 @@ class TestDroppedBlockNotice:
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
+
+
+class TestIsErrorStructuredContentPreservation:
+    """isError=True CallToolResults must preserve structuredContent and _meta."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_test_server_breaker(self):
+        mcp_tool._reset_server_error("test-server")
+        yield
+        mcp_tool._reset_server_error("test-server")
+
+    def test_is_error_structured_content_only_is_preserved(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        err_payload = {"code": "ERR_RELAY_LOCKED", "retry_after_sec": 30}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[],
+                is_error=True,
+                structuredContent=err_payload,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["error"] == "MCP tool returned an error"
+        assert data["structuredContent"] == err_payload
+
+    def test_is_error_summary_text_plus_structured_details_keeps_both(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        err_payload = {"field": "port", "reason": "in_use"}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("Validation failed")],
+                is_error=True,
+                structuredContent=err_payload,
+                meta={"request_id": "req-42", "modelcontextprotocol.io/internal": "drop-me"},
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["error"] == "Validation failed"
+        assert data["structuredContent"] == err_payload
+        assert data["_meta"] == {"request_id": "req-42"}
+
+    def test_is_error_dual_emitted_json_is_deduplicated(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        err_payload = {"code": "BAD_INPUT", "detail": "missing id"}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(json.dumps(err_payload, indent=2))],
+                is_error=True,
+                structuredContent=err_payload,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert json.loads(data["error"]) == err_payload
+        assert "structuredContent" not in data
+
+    def test_is_error_structured_content_sanitizes_credentials_and_unicode_tags(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        tagged_secret = "Bearer sk-1234567890abcdef1234567890abcdef\U000e0069\U000e0067"
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("Auth failed")],
+                is_error=True,
+                structuredContent={"header": tagged_secret, "note": "ev\U000e0069\U000e0067il"},
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert "sk-1234567890" not in json.dumps(data)
+        assert "\U000e0069" not in json.dumps(data)
+        assert data["structuredContent"]["note"] == "evil"

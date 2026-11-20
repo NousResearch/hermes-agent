@@ -57,6 +57,38 @@ def test_commit_derives_target_holds_both_locks_and_idempotently_settles(tmp_pat
                               expected_path_revision=0, result=dict(result, message='changed')))
 
 
+@pytest.mark.parametrize('state', ['completed', 'pending'])
+def test_permit_cannot_settle_another_bound_operation(tmp_path, state):
+    from hermes_cli.skill_catalog.mutations import Mutations
+    with started(tmp_path) as (p, owner):
+        facade = Mutations(owner, p)
+        a = p.reserve(owner, review(owner, target='a'))
+        b = p.reserve(owner, review(owner, target='b'))
+        opa, opb = uuid.uuid4().hex, uuid.uuid4().hex
+        for admission, op in ((a, opa), (b, opb)):
+            facade.bind({k: v for k, v in admission.items() if k != 'generation'}
+                        | {'operation_id': op})
+        permit = facade.acquire(dict(admission=a, operation_id=opa))
+        (tmp_path / 'skills/b').mkdir(parents=True)
+        before = (p.directory / 'claims.json').read_bytes()
+        try:
+            with pytest.raises(CatalogError) as caught:
+                facade.settle(dict(permit_id=permit['permit_id'], reservation_id=b['reservation_id'],
+                    operation_id=opb, expected_path_revision=0,
+                    result=operation(owner, opb, state=state,
+                                     outcome=None if state == 'pending' else 'installed')))
+            assert caught.value.code == 'ownership_conflict'
+            assert (p.directory / 'claims.json').read_bytes() == before
+        finally:
+            facade.release(dict(permit_id=permit['permit_id']))
+            facade.close()
+        doc = p.read()
+        assert doc['targets'] == {} and doc['path_revisions'] == {}
+        assert doc['reservations'][a['reservation_id']]['state'] == 'unknown'
+        assert doc['reservations'][b['reservation_id']]['state'] == 'bound'
+        assert all(row['local_result'] is None for row in doc['reservations'].values())
+
+
 def test_pending_local_settlement_then_terminal_outside_hold(tmp_path):
     with admitted(tmp_path) as (p, owner, facade, admission, op):
         with facade.commit(admission, op) as commit:

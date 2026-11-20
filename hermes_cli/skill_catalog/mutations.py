@@ -220,6 +220,12 @@ class Mutations:
         result = validate_result('operation', dict(ok=True, data=payload['result']), self.entry)
         if result['operation_id'] != payload['operation_id']:
             raise _conflict()
+        if 'permit_id' in payload:
+            permit = self._current(payload['permit_id'])
+            if (payload['reservation_id'], payload['operation_id'], payload['expected_path_revision']) != (
+                    permit['admission']['reservation_id'], permit['operation_id'],
+                    permit['admission']['expected_path_revision']):
+                raise _conflict()
         key = result['operation_id']
         fingerprint = {k: v for k, v in payload.items() if k != 'permit_id'}
         if key in self._accepted:

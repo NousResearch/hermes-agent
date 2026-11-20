@@ -146,6 +146,9 @@ _RE_OTP = re.compile(
     r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
 )
+# A name or label that is only "code" ("code", "Enter code", "Enter the code"). A qualified code (promo
+# code, zip code, coupon code) does not match.
+_RE_BARE_CODE = re.compile(r"^(?:enter\s+)?(?:the\s+|your\s+)?code$")
 
 
 def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginControl]:
@@ -161,7 +164,9 @@ def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginC
             continue
         if c.type not in ("text", "tel", "number", "password", ""):
             continue
-        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
+        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))) or any(
+            _RE_BARE_CODE.match(_normalize_text(p)) for p in (c.name, c.label) if p
+        ):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
     return out
 

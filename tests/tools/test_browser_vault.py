@@ -299,6 +299,16 @@ class TestClassifier:
         # A joined word that a pattern names as one word still matches.
         assert classify_checkout_control(_ctrl(name="ccNumber")).token == "cc-number"
 
+    def test_a_field_named_only_code_is_a_code_field(self):
+        """The tab probe selects ``input[name*=code i]``: a box that says only "code" must be found too.
+        A qualified code (promo, zip, coupon) is still not a second factor."""
+        from agent.vault_login_classifier import classify_otp_controls
+
+        for name, label in (("code", "Enter code"), ("code", ""), ("", "Enter the code")):
+            assert classify_otp_controls([_ctrl(name=name, label=label)]), (name, label)
+        for name, label in (("promo_code", "Promo code"), ("zip", "Zip code"), ("coupon", "Enter coupon code")):
+            assert classify_otp_controls([_ctrl(name=name, label=label)]) == [], (name, label)
+
 class TestBrowserVaultTools:
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose

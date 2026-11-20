@@ -5,7 +5,9 @@ vi.mock('./syntax-diff', () => ({ default: () => <span data-testid="shiki-diff" 
 
 import { FileDiffPanel } from './diff-lines'
 
-const DIFF = ['--- a/file.ts', '+++ b/file.ts', '@@ -1,2 +1,2 @@', ' const a = 1', '-const b = 2', '+const b = 3'].join('\n')
+const DIFF = ['--- a/file.ts', '+++ b/file.ts', '@@ -1,2 +1,2 @@', ' const a = 1', '-const b = 2', '+const b = 3'].join(
+  '\n'
+)
 
 let intersect: (() => void) | null = null
 const realObserver = globalThis.IntersectionObserver

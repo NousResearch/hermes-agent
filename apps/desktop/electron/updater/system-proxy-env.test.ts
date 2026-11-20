@@ -62,7 +62,14 @@ describe('update child proxy env from the system proxy (#123387)', () => {
     for (const answer of ['SOCKS 10.0.0.9:1080', 'SOCKS5 10.0.0.9:1080', 'HTTPS 10.0.0.9:443']) {
       const notes: string[] = []
 
-      expect(await systemProxyEnv({}, async () => answer, ['github.com'], note => notes.push(note))).toEqual({})
+      expect(
+        await systemProxyEnv(
+          {},
+          async () => answer,
+          ['github.com'],
+          note => notes.push(note)
+        )
+      ).toEqual({})
       expect(notes.join()).toContain(`github.com=${answer.split(' ')[0]}`)
     }
   })
@@ -111,8 +118,13 @@ describe('update child proxy env from the system proxy (#123387)', () => {
 
     expect(env.NO_PROXY?.split(',')).toContain('corp.internal')
     expect(env.HERMES_UPDATE_SYSTEM_PROXY?.split(',')).not.toContain('NO_PROXY')
-    expect(new Set(Object.entries(restored).filter(([key]) => key.toLowerCase() === 'no_proxy').map(([, v]) => v)))
-      .toEqual(new Set(['corp.internal']))
+    expect(
+      new Set(
+        Object.entries(restored)
+          .filter(([key]) => key.toLowerCase() === 'no_proxy')
+          .map(([, v]) => v)
+      )
+    ).toEqual(new Set(['corp.internal']))
   })
 
   it("keeps a fork origin and the user's package mirrors direct when the system sends them direct (S2)", async () => {

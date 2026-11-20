@@ -150,7 +150,10 @@ export class DesktopFrameMetrics {
   private flushAgain = false
   private prunedDay = ''
 
-  constructor(private readonly stateKey: string, expected?: DesktopFrameConsent) {
+  constructor(
+    private readonly stateKey: string,
+    expected?: DesktopFrameConsent
+  ) {
     this.key = `${stateKey}:frames`
     this.slot = `${this.key}:${randomUuid()}`
     const captured = expected ?? DesktopFrameMetrics.capture(stateKey)
@@ -169,8 +172,11 @@ export class DesktopFrameMetrics {
         const stored = readJson<ScopeState>(this.key)
         let value = stored ?? { epoch: 'initial' }
 
-        if ((expected !== undefined && !captured.active) || (!pending && value.epoch !== captured.epoch) ||
-          DesktopFrameMetrics.pendingRevocations.has(value.consent ?? `${this.key}:consent:${value.epoch}`)) {
+        if (
+          (expected !== undefined && !captured.active) ||
+          (!pending && value.epoch !== captured.epoch) ||
+          DesktopFrameMetrics.pendingRevocations.has(value.consent ?? `${this.key}:consent:${value.epoch}`)
+        ) {
           this.stopped = true
 
           return
@@ -287,10 +293,16 @@ export class DesktopFrameMetrics {
 
     const value = readJson<ScopeState>(this.key) ?? { epoch: 'initial' }
 
-    return !this.initializing && !this.stopped && !value.importing &&
-      value.epoch === this.journal.epoch && value.consent === this.consent &&
-      this.consent !== undefined && !DesktopFrameMetrics.pendingRevocations.has(this.consent) &&
-      readKey(this.consent) === '1' ? value : null
+    return !this.initializing &&
+      !this.stopped &&
+      !value.importing &&
+      value.epoch === this.journal.epoch &&
+      value.consent === this.consent &&
+      this.consent !== undefined &&
+      !DesktopFrameMetrics.pendingRevocations.has(this.consent) &&
+      readKey(this.consent) === '1'
+      ? value
+      : null
   }
 
   isCurrent(): boolean {
@@ -298,8 +310,10 @@ export class DesktopFrameMetrics {
   }
 
   private isClosed(day: string): boolean {
-    return readJson<Settlement>(`${this.key}:settled:${day}`)?.epoch === this.journal.epoch ||
+    return (
+      readJson<Settlement>(`${this.key}:settled:${day}`)?.epoch === this.journal.epoch ||
       readJson<FrameReport>(`${this.key}:report:${day}`)?.epoch === this.journal.epoch
+    )
   }
 
   private day(day: string): FrameDay | null {
@@ -359,7 +373,7 @@ export class DesktopFrameMetrics {
       return undefined
     }
 
-    return metricsPhase(() => this.settlement() ? change() : undefined).catch(() => {
+    return metricsPhase(() => (this.settlement() ? change() : undefined)).catch(() => {
       // In particular, a failed initial track must not leave a frame-only collector alive.
       this.stopped = true
       this.journal.since = null
@@ -377,9 +391,7 @@ export class DesktopFrameMetrics {
   private advance(at: number, visible: boolean, now: number): void {
     let since = this.journal.since
 
-    this.journal.since = this.journal.maxSpanMs > 0 && visible
-      ? Math.max(at, this.journal.updatedAt)
-      : null
+    this.journal.since = this.journal.maxSpanMs > 0 && visible ? Math.max(at, this.journal.updatedAt) : null
 
     if (since !== null && at > since && at - since <= this.journal.maxSpanMs && now - since <= this.journal.maxSpanMs) {
       while (since < at) {
@@ -449,8 +461,11 @@ export class DesktopFrameMetrics {
     const existing = readJson<Journal>(key)
     const copied = existing?.epoch === this.journal.epoch ? existing.days[day] : undefined
 
-    if (copied && copied.visibleMs === source.visibleMs &&
-      BUCKETS.every(bucket => (copied.frames[bucket] ?? 0) === (source.frames[bucket] ?? 0))) {
+    if (
+      copied &&
+      copied.visibleMs === source.visibleMs &&
+      BUCKETS.every(bucket => (copied.frames[bucket] ?? 0) === (source.frames[bucket] ?? 0))
+    ) {
       return true
     }
 
@@ -574,8 +589,11 @@ export class DesktopFrameMetrics {
 
       const candidate = readJson<ScopeState>(key)
 
-      if (candidate?.importing?.from === stateKey && candidate.importing.epoch === source?.epoch &&
-        candidate.consent === source?.consent) {
+      if (
+        candidate?.importing?.from === stateKey &&
+        candidate.importing.epoch === source?.epoch &&
+        candidate.consent === source?.consent
+      ) {
         DesktopFrameMetrics.finishImportOwned(key.slice(0, -':frames'.length))
       }
     }
@@ -596,9 +614,7 @@ export class DesktopFrameMetrics {
       return null
     }
 
-    const inherited = source.importing
-      ? readJson<ImportSnapshot>(`${move.from}:frames:import:${source.epoch}`)
-      : null
+    const inherited = source.importing ? readJson<ImportSnapshot>(`${move.from}:frames:import:${source.epoch}`) : null
 
     if (source.importing && (!inherited || inherited.epoch !== source.epoch)) {
       DesktopFrameMetrics.revokeConsentOwned(move.from, captured)
@@ -606,23 +622,28 @@ export class DesktopFrameMetrics {
       return null
     }
 
-    const entries: ImportSnapshot['entries'] = inherited?.entries ?? frameKeys(move.from).flatMap(sourceKey => {
-      if ((sourceKey !== move.from && !sourceKey.startsWith(`${move.from}:frames:`)) ||
-        sourceKey.startsWith(`${move.from}:frames:consent:`) ||
-        sourceKey.startsWith(`${move.from}:frames:import:`)) {
-        return []
-      }
+    const entries: ImportSnapshot['entries'] =
+      inherited?.entries ??
+      frameKeys(move.from).flatMap(sourceKey => {
+        if (
+          (sourceKey !== move.from && !sourceKey.startsWith(`${move.from}:frames:`)) ||
+          sourceKey.startsWith(`${move.from}:frames:consent:`) ||
+          sourceKey.startsWith(`${move.from}:frames:import:`)
+        ) {
+          return []
+        }
 
-      const value = readJson<Record<string, unknown>>(sourceKey)
+        const value = readJson<Record<string, unknown>>(sourceKey)
 
-      return value && (!('epoch' in value) || value.epoch === move.epoch)
-        ? [[sourceKey.slice(move.from.length), value] as [string, Record<string, unknown>]]
-        : []
-    })
+        return value && (!('epoch' in value) || value.epoch === move.epoch)
+          ? [[sourceKey.slice(move.from.length), value] as [string, Record<string, unknown>]]
+          : []
+      })
 
     const snapshot: ImportSnapshot = {
       entries: entries.map(([suffix, value]): [string, Record<string, unknown>] => [
-        suffix, 'epoch' in value ? { ...value, epoch: destination.epoch } : value
+        suffix,
+        'epoch' in value ? { ...value, epoch: destination.epoch } : value
       ]),
       epoch: destination.epoch
     }
@@ -692,8 +713,11 @@ export class DesktopFrameMetrics {
 
     // Retire the name before copying individual destination entries. A failed copy can now
     // retry only this immutable quarantine, never a newly recreated source profile's data.
-    if (source?.epoch === move.epoch && source.consent === destination.consent &&
-      !DesktopFrameMetrics.retireScopeOwned(move.from)) {
+    if (
+      source?.epoch === move.epoch &&
+      source.consent === destination.consent &&
+      !DesktopFrameMetrics.retireScopeOwned(move.from)
+    ) {
       DesktopFrameMetrics.revokeConsentOwned(move.from, captured)
 
       return false
@@ -868,14 +892,19 @@ export class DesktopFrameMetrics {
 
     const peers = this.peers(now)
 
-    const days = [...new Set([
-      ...peers.flatMap(peer => Object.keys(peer.days)),
-      ...frameKeys(`${this.key}:report:`).map(key => key.slice(-10))
-    ])].sort()
+    const days = [
+      ...new Set([
+        ...peers.flatMap(peer => Object.keys(peer.days)),
+        ...frameKeys(`${this.key}:report:`).map(key => key.slice(-10))
+      ])
+    ].sort()
 
     for (const day of days) {
-      if (day >= utcDay(now) || day < utcDay(now - RETENTION_MS) ||
-        readJson<Settlement>(`${this.key}:settled:${day}`)?.epoch === this.journal.epoch) {
+      if (
+        day >= utcDay(now) ||
+        day < utcDay(now - RETENTION_MS) ||
+        readJson<Settlement>(`${this.key}:settled:${day}`)?.epoch === this.journal.epoch
+      ) {
         continue
       }
 
@@ -889,7 +918,10 @@ export class DesktopFrameMetrics {
       const end = Date.parse(day) + DAY_MS
 
       // A day whose legacy contributions are not in the journal yet would settle incomplete.
-      if (!adopted(day) || peers.some(peer => peer.since !== null && peer.since < end && now - peer.since <= peer.maxSpanMs)) {
+      if (
+        !adopted(day) ||
+        peers.some(peer => peer.since !== null && peer.since < end && now - peer.since <= peer.maxSpanMs)
+      ) {
         continue
       }
 
@@ -945,7 +977,7 @@ export class DesktopFrameMetrics {
 
     try {
       while (this.settlement() && current()) {
-        const report = await metricsPhase(() => current() ? this.freeze(adopted) : null)
+        const report = await metricsPhase(() => (current() ? this.freeze(adopted) : null))
 
         if (!report || !this.settlement() || !current()) {
           return
@@ -955,8 +987,10 @@ export class DesktopFrameMetrics {
           try {
             const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_long_frames', {
               day: report.day,
-              frames: BUCKETS.filter(bucket => (report.frames[bucket] ?? 0) > 0)
-                .map(bucket => ({ bucket, count: report.frames[bucket]! })),
+              frames: BUCKETS.filter(bucket => (report.frames[bucket] ?? 0) > 0).map(bucket => ({
+                bucket,
+                count: report.frames[bucket]!
+              })),
               visible_ms: report.visibleMs
             })
 

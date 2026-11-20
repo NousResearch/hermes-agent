@@ -474,13 +474,22 @@ describe('durable projection', () => {
     // Keep the secondary gateway's earlier changed-room job pending across disband.
     vi.stubGlobal('setTimeout', () => 0)
     let active = 'gw-b'
-    host.state = { ...host.state as object, connectionId: { get: () => active, listen: () => () => undefined } }
+    host.state = { ...(host.state as object), connectionId: { get: () => active, listen: () => () => undefined } }
     host.profileRoutes = async () => ['gw-a', 'gw-b'].map(connectionId => ({ connectionId, profile: 'default' }))
     let release!: (value: unknown) => void
-    const read = new Promise(resolve => { release = resolve })
+    const read = new Promise(resolve => {
+      release = resolve
+    })
     host.requestProfile = async () => read
-    room.chat.updateGroupChat('Live', current => ({ ...current, running, roomId,
-      engine: 'desktop', members: [{ name: 'a', connectionId: 'gw-a' }, { name: 'b', connectionId: 'gw-b' }],
+    room.chat.updateGroupChat('Live', current => ({
+      ...current,
+      running,
+      roomId,
+      engine: 'desktop',
+      members: [
+        { name: 'a', connectionId: 'gw-a' },
+        { name: 'b', connectionId: 'gw-b' }
+      ],
       log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'Keep working', id: 'old:1' }]
     }))
     const snapshot = room.chat.groupChatSyncSnapshot(room.chat.$groupChats.get())
@@ -496,8 +505,17 @@ describe('durable projection', () => {
     expect(room.chat.groupChatSyncSnapshot(room.chat.$groupChats.get()).rooms).toEqual({})
     room.chat.stopGroupChatServerSync()
     // After pending jobs end, the name fence must not block a fresh identity.
-    const recreated = room.chat.groupChatSyncSnapshot({ Live: { roomId: 'fresh-room', log: [{ at: 2, from: { kind: 'user', name: 'You' }, text: 'New group chat' }], members: [], watermarks: {} } })
-    host.requestProfile = async () => ({ profiles: [{ name: 'default', ui_meta: { 'hermes-bots-groups': recreated } }] })
+    const recreated = room.chat.groupChatSyncSnapshot({
+      Live: {
+        roomId: 'fresh-room',
+        log: [{ at: 2, from: { kind: 'user', name: 'You' }, text: 'New group chat' }],
+        members: [],
+        watermarks: {}
+      }
+    })
+    host.requestProfile = async () => ({
+      profiles: [{ name: 'default', ui_meta: { 'hermes-bots-groups': recreated } }]
+    })
     await room.chat.pullGroupChatServerState('gw-b')
     expect(room.chat.$groupChats.get().Live?.roomId).toBe('fresh-room')
   })

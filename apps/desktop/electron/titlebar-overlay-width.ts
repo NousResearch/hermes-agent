@@ -1,5 +1,7 @@
 import type { BrowserWindow } from 'electron'
 
+import { macWindowButtonPosition } from '../window-chrome'
+
 export const OVERLAY_FALLBACK_WIDTH = 144
 
 export function isHexColor(value: unknown): value is string {
@@ -75,8 +77,13 @@ export function titleBarOverlayOptions({
 /** Apply refreshed options, tolerating platforms/builds without native overlays. */
 export function applyTitleBarOverlay(
   win: BrowserWindow | null | undefined,
-  options: ReturnType<typeof titleBarOverlayOptions>
+  options: ReturnType<typeof titleBarOverlayOptions>,
+  macTrafficLights = false
 ) {
+  if (macTrafficLights && win) {
+    win.setWindowButtonPosition(macWindowButtonPosition(win.webContents.getZoomFactor()))
+  }
+
   if (!options || typeof options !== 'object') {
     return
   }

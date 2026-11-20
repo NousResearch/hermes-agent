@@ -53,3 +53,21 @@ def test_get_running_pid_clears_pid_file_from_before_reboot(tmp_path, monkeypatc
     pid_path.write_text(json.dumps(_record()))
     assert status.get_running_pid(pid_path) is None
     assert not pid_path.exists()
+
+
+def test_scoped_lock_record_carries_boot_id_and_pre_reboot_lock_is_stale(monkeypatch):
+    # acquire_scoped_lock writes ``{**_build_pid_record(), "scope": ...}``; stale-lock recovery and
+    # runtime_ownership judge it through _live_pid_from_record.
+    monkeypatch.setattr(status, "_live_boot_id", lambda: "boot-A")
+    record = {**status._build_pid_record(), "scope": "telegram-bot-token"}
+    assert record["boot_id"] == "boot-A"
+    assert status._live_pid_from_record(record) == os.getpid()
+    monkeypatch.setattr(status, "_live_boot_id", lambda: "boot-B")  # rebooted
+    assert status._live_pid_from_record(record) is None
+
+
+def test_gateway_runtime_lock_record_from_before_reboot_is_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(status, "_live_boot_id", lambda: "boot-B")
+    lock_path = tmp_path / "gateway.lock"
+    lock_path.write_text(json.dumps(_record()))
+    assert status._live_pid_from_record(status._read_gateway_lock_record(lock_path)) is None

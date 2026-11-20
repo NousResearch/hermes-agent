@@ -905,6 +905,31 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     )
 
 
+def _lean_section_present(summary: str, heading: str, required_tail: str = "") -> bool:
+    """True when *heading* already opens a line of its own in *summary*.
+
+    A compacted transcript may legitimately quote a heading inside prose —
+    backticks, a bullet, a table cell — because a conversation about compression
+    says `` `## Anchor Index` `` out loud. Only a real section puts the heading at
+    column 0. Testing the line start is a structural property of the Markdown, so
+    it does not depend on guessing a string the prose will never contain.
+
+    ``required_tail`` (optional) must also appear *after* the line-start heading.
+    The recovery footer is the only consumer: its body names the session id, and
+    that is the one signal separating a footer this compressor appended for the
+    CURRENT session from an old handoff pasted back verbatim, whose footer sits
+    at column 0 too but names the previous session. Line-start structure alone
+    would swallow the fresh footer and ship the stale pointer.
+    """
+    if summary.startswith(heading):
+        heading_at = 0
+    else:
+        heading_at = summary.find(f"\n{heading}")
+        if heading_at < 0:
+            return False
+    return not required_tail or required_tail in summary[heading_at:]
+
+
 def _build_recovery_footer(session_id: str, region_len: int) -> str:
     """Deterministic pointer to the compacted region in session history.
     state.db keeps every pre-compaction message; naming the session_search re-access path lets the model
@@ -3445,12 +3470,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
-        for heading, build in (
-            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
-            (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
-            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
+        current_sid = getattr(self, "_session_id", "") or ""
+        for heading, build, required_tail in (
+            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize)), ""),
+            (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize)), ""),
+            # The footer names the current session, so presence additionally
+            # requires that name after the heading — a pasted old handoff's
+            # footer sits at column 0 but names the previous session id.
+            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(current_sid, len(turns_to_summarize)),
+             f"session_id='{current_sid}'" if current_sid else ""),
         ):
-            if heading not in summary:
+            if not _lean_section_present(summary, heading, required_tail):
                 summary += build()
         return summary
 

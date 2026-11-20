@@ -5352,6 +5352,8 @@
     "statusStack.goalPaused",
     "statusStack.goalWaiting",
     "statusStack.hideStack",
+    "statusStack.openPort",
+    "statusStack.port",
     "statusStack.previousTodos",
     "statusStack.running",
     "statusStack.showStack",

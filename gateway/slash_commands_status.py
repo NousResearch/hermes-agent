@@ -539,8 +539,9 @@ class GatewayStatusCommandsMixin:
 
         def _proc_row(proc):
             cmd = _clip(" ".join(str(proc.get("command", "")).split()), 90)
+            ports = "".join(f" · :{port}" for port in proc.get("ports") or ())
             return [f"- `{proc.get('session_id', '?')}` · "
-                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`"]
+                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))}{ports} · `{cmd}`"]
 
         lines = [t("gateway.agents.header"), "", t("gateway.agents.active_agents", count=len(agent_rows))]
         lines += _capped_rows(list(enumerate(agent_rows, 1)), _agent_row)

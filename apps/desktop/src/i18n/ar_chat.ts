@@ -210,6 +210,8 @@ export const arChat = {
     stop: 'إيقاف',
     dismiss: 'تجاهل',
     exit: code => `خروج ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `فتح ${url}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `الجولة ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} جولات`,

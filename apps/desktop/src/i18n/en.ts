@@ -3579,6 +3579,8 @@ export const en: Translations = {
     stop: 'Stop',
     dismiss: 'Dismiss',
     exit: code => `exit ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `Open ${url}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Turn ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} turn${turns === 1 ? '' : 's'}`,

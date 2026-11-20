@@ -3470,6 +3470,8 @@ export const zhOverrides = {
     stop: '停止',
     dismiss: '关闭',
     exit: code => `退出码 ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `打开 ${url}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 轮`,
       goalDoneTurns: turns => `共 ${turns} 轮`,

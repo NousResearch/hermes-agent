@@ -30458,6 +30458,21 @@
             ],
             "default": null,
             "title": "Detached"
+          },
+          "ports": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ports"
           }
         },
         "required": [

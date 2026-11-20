@@ -4027,6 +4027,8 @@ export const frOverrides = {
     stop: 'Arrêter',
     dismiss: 'Rejeter',
     exit: code => `sortie ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `Ouvrir ${url}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Tour ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} tour${turns === 1 ? '' : 's'}`,

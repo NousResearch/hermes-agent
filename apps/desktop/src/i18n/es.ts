@@ -4006,6 +4006,8 @@ export const esOverrides = {
     stop: 'Detener',
     dismiss: 'Descartar',
     exit: code => `salida ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `Abrir ${url}`,
     control: {
       goalActiveTurns: (turn: number, maxTurns: number) => `Turno ${turn}/${maxTurns}`,
       goalDoneTurns: (turns: number) => `${turns} ${turns === 1 ? 'turno' : 'turnos'}`,

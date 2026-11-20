@@ -189,6 +189,25 @@ def test_seed_preserves_a_link_at_the_payload_root(payload_cache):
     assert (link / "module.py").read_text(encoding="utf-8") == "seeded = True\n"
 
 
+def test_seed_copies_the_bytes_of_a_link_into_the_payload_venv(payload_cache):
+    """A bundle ships each unpacked-wheel file its venv holds as a link into the venv. Recreated
+    verbatim in the machine cache, that relative link points nowhere and uv cannot install it."""
+    payload = paths.store_root().parent
+    installed = payload / "venv" / "lib" / "site-packages" / "pkg" / "core.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("shipped once\n", encoding="utf-8")
+    shipped = payload / "uv-cache" / "archive-v0" / "bucket" / "pkg" / "core.py"
+    shipped.parent.mkdir(parents=True)
+    _symlink_or_skip(os.path.relpath(installed, shipped.parent), shipped)
+
+    packages.uv_cache_dir()
+
+    seeded = payload_cache / "archive-v0" / "bucket" / "pkg" / "core.py"
+    assert not seeded.is_symlink()
+    assert seeded.read_text(encoding="utf-8") == "shipped once\n"
+    assert (payload_cache / ".seeded").is_file()
+
+
 def test_seed_heals_a_directory_left_by_the_old_copy(payload_cache_with_wheel_link):
     """A volume poisoned by the pre-fix seed holds a directory where the link belongs."""
     machine = payload_cache_with_wheel_link

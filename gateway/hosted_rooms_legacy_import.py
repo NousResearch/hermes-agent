@@ -22,7 +22,7 @@ SOURCE_NAME = "state.db"
 MARKER_TABLE = "hosted_room_legacy_imports"
 # Liveness state, never copied: a lease is a ~15s heartbeat plus a process generation, so a copied
 # lease names a process that is gone. The driver claims a fresh one instead.
-_SKIP_TABLES = frozenset({"hosted_room_driver_leases"})
+_SKIP_TABLES = frozenset({"hosted_room_driver_leases", "hosted_room_router_claims"})
 # Sources this process could not import (unreadable file, rows the target refused). Every store open
 # re-checks readiness, so without this a broken legacy file would re-run the copy and re-warn on
 # every poll; the retry happens on the next process start instead.

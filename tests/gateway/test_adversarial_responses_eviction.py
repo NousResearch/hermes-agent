@@ -5,6 +5,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.session_ingress_media import native_inputs_root
+from session_retention import after_sessions_removed
+
 
 @pytest.mark.asyncio
 async def test_terminal_retry_after_cache_eviction_preserves_result(api, owner):
@@ -90,7 +93,11 @@ async def test_retired_terminal_retry_after_eviction_keeps_compact_outcome(api, 
     async with TestClient(TestServer(app)) as client:
         response = await client.post('/v1/responses', json={'input': 'work'}, headers=headers)
         original = await response.json()
-        assert owner.db.delete_session(response.headers['X-Hermes-Session-Id'])
+        sid = response.headers['X-Hermes-Session-Id']
+        removed = owner.persistence.sessions.delete(sid, media_root=str(native_inputs_root()))
+        after_sessions_removed(owner.persistence, owner.persistence.scope.profile_dir, removed, reason='delete',
+                               primary=sid)
+        assert removed
         store = api._current_response_store()
         store._max_size = 1
         store.put('unrelated', {'response': {}})

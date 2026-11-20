@@ -89,3 +89,97 @@ def test_lock_resolves_by_display_name_as_well_as_directory(locked_home):
     assert is_locked_skill("huggingface-accelerate")
     assert is_locked_skill("training/accelerate")
     assert not is_locked_skill("free-skill")
+
+
+@pytest.fixture(params=['{"locked-skill": ', "[]", "null", '"x"'], ids=["truncated", "list", "null", "string"])
+def unreadable_record(locked_home, request):
+    """The sidecar ``locked_home`` just wrote, damaged without deleting it (#147986). A record that
+    parses but is not an object is damage as well: it cannot say which skills are locked."""
+    (locked_home / "skills/.usage.json").write_text(request.param, encoding="utf-8")
+    return locked_home
+
+
+def test_a_damaged_lock_record_fails_closed_over_every_skill(unreadable_record):
+    """An existing-but-unparsable sidecar means "locks unknown", not "nothing is locked"."""
+    from tools.file_tools import patch_tool, write_file_tool
+
+    home = unreadable_record
+    free = home / "skills/ops/free-skill/SKILL.md"
+    before = free.read_text()
+
+    refused = [json.loads(write_file_tool(str(free), "replaced\n")),
+               json.loads(patch_tool(path=str(free), old_string="body", new_string="changed")),
+               json.loads(write_file_tool(str(home / "skills/.usage.json"), "{}\n"))]
+    allowed = json.loads(write_file_tool(str(home / "notes.md"), "x\n"))
+
+    for res in refused:
+        assert "cannot be read" in res["error"], res
+    assert free.read_text() == before
+    assert "error" not in allowed, allowed
+
+
+def test_a_damaged_lock_record_refuses_terminal_writes_into_the_skills_tree(unreadable_record):
+    from tools.skill_lock import command_refusal
+
+    home = unreadable_record
+    free = home / "skills/ops/free-skill"
+    for command in (f"echo x > {free}/SKILL.md", f"rm -fr {home}/skills/ops",
+                    f"sed -i s/body/x/ {free}/SKILL.md"):
+        reason = command_refusal(command, str(home))
+        assert reason and "cannot be read" in reason, reason
+    assert command_refusal(f"echo x > {home}/notes.md", str(home)) is None
+    assert command_refusal(f"cat {free}/SKILL.md", str(home)) is None
+
+
+def test_repairing_the_lock_record_restores_the_per_skill_guards(unreadable_record):
+    from tools.skill_lock import path_refusal
+
+    home = unreadable_record
+    (home / "skills/.usage.json").write_text(json.dumps({"locked-skill": {"locked": True}}), encoding="utf-8")
+    assert path_refusal([str(home / "skills/ops/free-skill/SKILL.md")]) is None
+    assert "locked" in (path_refusal([str(home / "skills/ops/locked-skill/SKILL.md")]) or "")
+
+
+def test_a_readable_record_with_nothing_locked_stays_writable(locked_home):
+    """Only an UNREADABLE record fails closed; a readable one with no locks guards nothing."""
+    from tools import skill_usage
+    from tools.skill_lock import command_refusal, path_refusal
+
+    assert skill_usage.set_locked("locked-skill", False)
+    record = locked_home / "skills/.usage.json"
+    assert path_refusal([str(record)]) is None
+    assert command_refusal(f"echo x > {record}", str(locked_home)) is None
+
+
+def test_usage_bumps_never_save_over_a_damaged_lock_record(unreadable_record):
+    """Telemetry on a damaged record is dropped instead of rewriting it from {}, which would erase
+    every lock and turn the fail-closed refusal into "nothing is locked" on the next skill_view."""
+    from tools import skill_usage
+    from tools.skill_lock import command_refusal, path_refusal
+
+    home = unreadable_record
+    record = home / "skills/.usage.json"
+    before = record.read_bytes()
+    skill_usage.bump_view("free-skill")
+    skill_usage.bump_use("free-skill")
+    skill_usage.bump_patch("free-skill")
+    skill_usage.forget("free-skill")
+    assert record.read_bytes() == before
+    locked_md = home / "skills/ops/locked-skill/SKILL.md"
+    assert "cannot be read" in (path_refusal([str(locked_md)]) or "")
+    assert "cannot be read" in (command_refusal(f"echo x > {locked_md}", str(home)) or "")
+
+
+def test_a_damaged_lock_record_stays_protected_with_no_skills_on_disk(tmp_path, monkeypatch):
+    """With every skill archived or removed, the damaged record is still the only copy of its locks."""
+    from tools.skill_lock import command_refusal, path_refusal
+
+    home = tmp_path / "hh"
+    record = home / "skills/.usage.json"
+    record.parent.mkdir(parents=True)
+    record.write_text('{"archived-skill": {"locked": true}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert "cannot be read" in (path_refusal([str(record)]) or "")
+    for command in (f"echo '{{}}' > {record}", f"find {home}/skills -name .usage.json -exec rm {{}} +"):
+        assert "cannot be read" in (command_refusal(command, str(home)) or ""), command
+    assert command_refusal(f"cat {record}", str(home)) is None

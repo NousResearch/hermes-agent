@@ -75,7 +75,7 @@ The desktop/server scripts are not the Termux installation path.
 ### What the source installer does
 
 The scripts clone the source, bootstrap uv, and delegate dependency preparation
-to PM. PM provides pinned Python, Node.js, npm, ripgrep, and FFmpeg. The source
+to PM. PM provides pinned Python, Node.js, npm, pnpm, ripgrep, and FFmpeg. The source
 installation selects the `all` Python extra, not every optional extra.
 PM also installs the browser and computer-use tools by default: a pinned
 Chromium (Chrome for Testing) that Hermes launches for local browsing, and

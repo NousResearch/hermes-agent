@@ -19,6 +19,8 @@ import {
   migrateCommand,
   qualifyCommands,
   readPoll,
+  replacesConfigFile,
+  SAVE_BOTH_WARNING,
   stepWords,
   viewOf,
   type BackendMigrationPlan,
@@ -381,18 +383,7 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
         <div className="flex flex-col gap-1 text-destructive" data-slot="backend-migration-manual">
           <span>The move failed and could not be fully undone ({view.reason}).</span>
           {view.detail && <span>{qualifyCommands(view.detail, profile)}</span>}
-          {view.steps.length > 0 && (
-            <>
-              <span>On this computer, run:</span>
-              <ol className="list-decimal pl-6">
-                {view.steps.map((s) => (
-                  <li key={s}>
-                    {isFileNote(s) ? qualifyCommands(s, profile) : <code>{qualifyCommands(s, profile)}</code>}
-                  </li>
-                ))}
-              </ol>
-            </>
-          )}
+          <EngineSteps steps={view.steps} profile={profile} />
         </div>
       );
     case "restored":
@@ -405,6 +396,25 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
         </div>
       );
   }
+}
+
+/** Engine steps to follow by hand: the save-both-files warning first when a step replaces or removes
+ *  config.yaml or .env, then the steps in order (per-file notes as words, commands as code). */
+function EngineSteps({ steps, profile }: { steps: string[]; profile: string | null }) {
+  if (steps.length === 0) return null;
+  return (
+    <>
+      {steps.some(replacesConfigFile) && <span>{SAVE_BOTH_WARNING}</span>}
+      <span>On this computer, run:</span>
+      <ol className="list-decimal pl-6">
+        {steps.map((s) => (
+          <li key={s}>
+            {isFileNote(s) ? qualifyCommands(s, profile) : <code>{qualifyCommands(s, profile)}</code>}
+          </li>
+        ))}
+      </ol>
+    </>
+  );
 }
 
 function Line({ children, spin }: { children: ReactNode; spin?: boolean }) {

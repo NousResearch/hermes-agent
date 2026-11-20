@@ -638,3 +638,247 @@ export const nonFileBackendApply = {
     "status_command": "hermes -p default gateway migrate --backends --status"
   }
 };
+
+// A move whose Webapp build fails while the old backend goes offline: rollback incomplete (exit 5), as the
+// status route returns it, for a systemd user unit and a hand-started backend.
+export const exit5BundleStatus = {
+  "systemd": {
+    "state": "failed",
+    "step": "webapp_bundle",
+    "steps": [
+      {
+        "name": "preflight",
+        "state": "done"
+      },
+      {
+        "name": "manifest",
+        "state": "done"
+      },
+      {
+        "name": "webapp_bundle",
+        "state": "failed"
+      },
+      {
+        "name": "write_config",
+        "state": "pending"
+      },
+      {
+        "name": "gateway_service",
+        "state": "pending"
+      },
+      {
+        "name": "stop_old_backend",
+        "state": "pending"
+      },
+      {
+        "name": "start_gateway",
+        "state": "pending"
+      },
+      {
+        "name": "verify",
+        "state": "pending"
+      }
+    ],
+    "message": "webapp_bundle failed: the Webapp bundle is still missing after the build: dist/index.html is missing; rollback incomplete: old backend not verified: hermes-dashboard.service is not active",
+    "old_address": "0.0.0.0:9119",
+    "new_address": "0.0.0.0:9119",
+    "started_at": 1795213477.5999467,
+    "finished_at": 1795213537.6100283,
+    "manual_steps": [
+      "hermes -p default gateway stop",
+      "cp /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back0/hermes-home/backend_migration/config.yaml.bak /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back0/hermes-home/config.yaml",
+      "cp /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back0/hermes-home/backend_migration/env.bak /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back0/hermes-home/.env && chmod 600 /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back0/hermes-home/.env",
+      "hermes -p default gateway uninstall",
+      "systemctl --user enable hermes-dashboard.service",
+      "systemctl --user start hermes-dashboard.service"
+    ],
+    "reason": "webapp_bundle failed: the Webapp bundle is still missing after the build: dist/index.html is missing",
+    "log_tail": [],
+    "launcher": null,
+    "served_by": "dashboard",
+    "now": 1795213537.622485,
+    "profile": "default",
+    "commands": {
+      "status": "hermes -p default gateway migrate --backends --status",
+      "restore": "hermes -p default gateway migrate --backends --restore"
+    }
+  },
+  "manual": {
+    "state": "failed",
+    "step": "webapp_bundle",
+    "steps": [
+      {
+        "name": "preflight",
+        "state": "done"
+      },
+      {
+        "name": "manifest",
+        "state": "done"
+      },
+      {
+        "name": "webapp_bundle",
+        "state": "failed"
+      },
+      {
+        "name": "write_config",
+        "state": "pending"
+      },
+      {
+        "name": "gateway_service",
+        "state": "pending"
+      },
+      {
+        "name": "stop_old_backend",
+        "state": "pending"
+      },
+      {
+        "name": "start_gateway",
+        "state": "pending"
+      },
+      {
+        "name": "verify",
+        "state": "pending"
+      }
+    ],
+    "message": "webapp_bundle failed: the Webapp bundle is still missing after the build: dist/index.html is missing; rollback incomplete: old backend not verified: hermes-dashboard.service is not active",
+    "old_address": "0.0.0.0:9119",
+    "new_address": "0.0.0.0:9119",
+    "started_at": 1795213537.6783073,
+    "finished_at": 1795213597.6890085,
+    "manual_steps": [
+      "hermes -p default gateway stop",
+      "cp /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back1/hermes-home/backend_migration/config.yaml.bak /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back1/hermes-home/config.yaml",
+      "cp /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back1/hermes-home/backend_migration/env.bak /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back1/hermes-home/.env && chmod 600 /var/tmp/hermes-pytest-1000/r-ua90v9hb/pytest-of-mark/pytest-0/test_bundle_fails_and_old_back1/hermes-home/.env",
+      "hermes -p default gateway uninstall",
+      "start the old backend again the way you started it before (it was pid 4242), so it serves 0.0.0.0:9119 again"
+    ],
+    "reason": "webapp_bundle failed: the Webapp bundle is still missing after the build: dist/index.html is missing",
+    "log_tail": [],
+    "launcher": null,
+    "served_by": "dashboard",
+    "now": 1795213597.6973193,
+    "profile": "default",
+    "commands": {
+      "status": "hermes -p default gateway migrate --backends --status",
+      "restore": "hermes -p default gateway migrate --backends --restore"
+    }
+  }
+};
+
+// The plan route's blockers for a Hermes home whose path holds the engine's remedy text: a symbolic-link
+// config.yaml, and an unreadable turn-marker file under that home.
+export const flagInPathBlockers = {
+  "symlink": "/var/tmp/hermes-pytest-1000/r-3n0nc6rb/pytest-of-mark/pytest-0/test_flag_text_inside_a_path0/--force-interrupt/, then re-run with --force-interrupt (any running turn is interrupted)./h/config.yaml is a symbolic link: the migration would change the file it points to, which may be shared. Replace the link with a copy of the file (or move this home off the shared file), then run this again.",
+  "unknown": "Cannot tell whether turns are running on the old backend: these turn-marker files cannot be read, or hold a marker whose writer cannot be checked: /var/tmp/hermes-pytest-1000/r-3n0nc6rb/pytest-of-mark/pytest-0/test_flag_text_inside_a_path0/--force-interrupt/, then re-run with --force-interrupt (any running turn is interrupted)./h/desktop/interrupted_turns.json. To move it, confirm it is idle, then re-run with --force-interrupt (any running turn is interrupted)."
+};
+
+// Every distinct step the engine's by-hand planners (POSIX: systemd user and system, launchd, Nix, s6,
+// container, hand-started, no backend; Windows: Scheduled Task, Startup folder, hand-started) and its
+// rollback steps (every old-backend kind and file state) emit, from the real functions (probe_steps_all.py).
+export const engineStepStrings = [
+  "# (an 'already exists' error from mkdir is fine)",
+  "# and Disable that task in Task Scheduler",
+  "# and remove whatever starts it at sign-in",
+  "# copy K1 from the old backend's environment into C:\\Users\\u\\.hermes/.env (values are never printed here)",
+  "# copy K1, K2 from the old launcher's environment into /h/.env, then: chmod 600 /h/.env  (values are never printed here)",
+  "# copy every HERMES_DASHBOARD_* line from the old launcher's environment, if any, into /h/.env (chmod 600)",
+  "# copy every HERMES_DASHBOARD_* line from the old launcher's environment, if any, into /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h/.env (chmod 600)",
+  "# copy every HERMES_DASHBOARD_* line from the old launcher's environment, if any, into the Hermes .env (chmod 600)",
+  "# copy the old backend's public URL (dashboard.public_url, or HERMES_DASHBOARD_PUBLIC_URL in its environment) into webapp.public_url: open config.yaml with $env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes config edit",
+  "# dashboard.public_url is not a URL the gateway accepts (http:// or https://, no credentials, query or fragment): set webapp.public_url yourself (the value is not printed here)",
+  "# enable the gateway service there, then run home-manager switch",
+  "# enable the gateway service there, then run nixos-rebuild switch or home-manager switch",
+  "# give the gateway K1, K2 through the environment file your Nix configuration provides (values are never printed here)",
+  "# give the gateway every HERMES_DASHBOARD_* variable the backend had through the environment file your Nix configuration provides (values are never printed here)",
+  "# in Task Scheduler, End the task that starts it",
+  "# in the mounted Hermes home's config.yaml set webapp.enabled: true, webapp.host and webapp.port to the old backend's address",
+  "# in the mounted Hermes home's config.yaml set webapp.enabled: true, webapp.host: 0.0.0.0, webapp.port: 9119",
+  "# in the mounted Hermes home's config.yaml set webapp.enabled: true, webapp.host: 0.0.0.0, webapp.port: 9119, webapp.public_url: https://dash.example",
+  "# in your Nix configuration: disable the hermes backend service and set webapp.enabled: true, webapp.host and webapp.port to the old backend's address in the Hermes settings",
+  "# in your Nix configuration: disable the hermes backend service and set webapp.enabled: true, webapp.host: 0.0.0.0, webapp.port: 9119 in the Hermes settings",
+  "# in your Nix configuration: disable the hermes backend service and set webapp.enabled: true, webapp.host: 0.0.0.0, webapp.port: 9119, webapp.public_url: https://dash.example in the Hermes settings",
+  "# more than one Startup-folder entry starts this exact command: find the one that starts this backend (shell:startup) and move it aside",
+  "# move it to a folder outside shell:startup, and move it back to undo",
+  "# publish 9119 on the gateway's container and restart it, so its gateway serves the address",
+  "# publish the old backend's port on the gateway's container and restart it, so its gateway serves the address",
+  "# remove the dashboard: recreate the container without HERMES_DASHBOARD=1, or drop the Compose `dashboard` service and run: docker compose up -d --remove-orphans",
+  "# run the next line from your own supervisor (restart on exit and at boot):",
+  "# set the old backend's address: $env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes config set webapp.host HOST, then webapp.port PORT",
+  "# set the old backend's address: HERMES_HOME=/h hermes config set webapp.host HOST, then webapp.port PORT",
+  "# stop the old backend (Ctrl+C in its window)",
+  "# stop the old backend through its supervisor and keep it from starting at boot",
+  "# the gateway takes a few seconds to serve the address: if the next line prints 'The gateway is not running', wait 5 seconds and run it again",
+  "# then by what it prints: 'Gateway is not running' (no service installed) -> $env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes gateway install; 'No gateway process detected' -> $env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes gateway start; 'Gateway process running' or 'Running manually' -> $env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes gateway restart",
+  "# then by what it prints: 'Gateway is not running' (no service installed) -> $env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes gateway install; 'No gateway process detected' -> $env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes gateway start; 'Gateway process running' or 'Running manually' -> $env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes gateway restart",
+  "# then by what it prints: 'Gateway is not running' (no service installed) -> HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes gateway install; 'service is stopped', 'service is not loaded' or 'registered with launchd' -> HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes gateway start; 'service is running', 'supervised by launchd' or 'Running manually' -> HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes gateway restart",
+  "# then by what it prints: 'Gateway is not running' (no service installed) -> HERMES_HOME=/h hermes gateway install; 'service is stopped', 'service is not loaded' or 'registered with launchd' -> HERMES_HOME=/h hermes gateway start; 'service is running', 'supervised by launchd' or 'Running manually' -> HERMES_HOME=/h hermes gateway restart",
+  "# then by what it prints: 'Gateway is not running' (no service installed) -> hermes -p default gateway install; 'No gateway process detected' -> hermes -p default gateway start; 'Gateway process running' or 'Running manually' -> hermes -p default gateway restart",
+  "# then by what it prints: 'Gateway is not running' (no service installed) -> hermes -p default gateway install; 'service is stopped', 'service is not loaded' or 'registered with launchd' -> hermes -p default gateway start; 'service is running', 'supervised by launchd' or 'Running manually' -> hermes -p default gateway restart",
+  "# these lines set HERMES_HOME for this Hermes root: run them in PowerShell, not Command Prompt",
+  "# this Startup-folder entry starts the same command; if it is what starts this backend at sign-in, move it out of the Startup folder (Windows tries to open any file left there, even a renamed one):",
+  "# to undo later: move \"C:\\Users\\u\\.hermes\\backend_migration\\hermes.lnk\" \"C:\\Users\\u\\Startup\\hermes.lnk\"",
+  "$env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes config set webapp.enabled true",
+  "$env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes config set webapp.host 0.0.0.0",
+  "$env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes config set webapp.port 9119",
+  "$env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes gateway status",
+  "$env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes webapp --build-only",
+  "$env:HERMES_HOME='C:\\Users\\u\\.hermes'; hermes webapp --status",
+  "$env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes config set webapp.enabled true",
+  "$env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes config set webapp.host 0.0.0.0",
+  "$env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes config set webapp.port 9119",
+  "$env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes gateway status",
+  "$env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes webapp --build-only",
+  "$env:HERMES_HOME='\\var\\tmp\\hermes-pytest-1000\\r-7q_qoome\\pytest-of-mark\\pytest-0\\test_collect0\\w h'; hermes webapp --status",
+  "/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env was restored from its backup (nothing to do for it)",
+  "/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml was restored from its backup (nothing to do for it)",
+  "HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes config set webapp.enabled true",
+  "HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes config set webapp.host 0.0.0.0",
+  "HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes config set webapp.port 9119",
+  "HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes gateway status",
+  "HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes webapp --build-only",
+  "HERMES_HOME='/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/x h' hermes webapp --status",
+  "HERMES_HOME=/h hermes config set webapp.enabled true",
+  "HERMES_HOME=/h hermes config set webapp.host 0.0.0.0",
+  "HERMES_HOME=/h hermes config set webapp.port 9119",
+  "HERMES_HOME=/h hermes config set webapp.public_url https://dash.example",
+  "HERMES_HOME=/h hermes gateway run",
+  "HERMES_HOME=/h hermes gateway status",
+  "HERMES_HOME=/h hermes webapp --build-only",
+  "HERMES_HOME=/h hermes webapp --status",
+  "HERMES_HOME=/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home hermes gateway start",
+  "HERMES_HOME=/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home hermes gateway stop",
+  "HERMES_HOME=/var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home hermes gateway uninstall",
+  "cp /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/backend_migration/config.yaml.bak /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml",
+  "cp /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/backend_migration/env.bak /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env && chmod 600 /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env",
+  "hermes -p default config set webapp.enabled true",
+  "hermes -p default config set webapp.host 0.0.0.0",
+  "hermes -p default config set webapp.port 9119",
+  "hermes -p default gateway status",
+  "hermes -p default webapp --build-only",
+  "hermes -p default webapp --status",
+  "keep /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env as it is (it was edited after the migration wrote it): merge the lines you need from /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/backend_migration/env.bak into it by hand before you start the old backend",
+  "keep /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env as it is (it was edited after the migration wrote it): merge the lines you need from nothing (it did not exist before the migration) into it by hand before you start the old backend",
+  "keep /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml as it is (it was edited after the migration wrote it): merge the lines you need from /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/backend_migration/config.yaml.bak into it by hand before you start the old backend",
+  "keep /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml as it is (it was edited after the migration wrote it): merge the lines you need from nothing (it did not exist before the migration) into it by hand before you start the old backend",
+  "launchctl bootout gui/501/ai.hermes.dashboard; launchctl disable gui/501/ai.hermes.dashboard",
+  "mkdir \"C:\\Users\\u\\.hermes\\backend_migration\"",
+  "move \"C:\\Users\\u\\Startup\\hermes.lnk\" \"C:\\Users\\u\\.hermes\\backend_migration\\hermes.lnk\"",
+  "mv /Users/u/Library/LaunchAgents/ai.hermes.dashboard.plist.disabled /Users/u/Library/LaunchAgents/ai.hermes.dashboard.plist; launchctl enable gui/501/ai.hermes.dashboard; launchctl bootstrap gui/501 /Users/u/Library/LaunchAgents/ai.hermes.dashboard.plist",
+  "rm -f /u/.config/systemd/user/hermes-dashboard.service.d/hermes-migrated.conf && systemctl --user daemon-reload",
+  "rm /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env",
+  "rm /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml",
+  "schtasks /Change /TN \"Hermes Dashboard\" /DISABLE",
+  "schtasks /End /TN \"Hermes Dashboard\"",
+  "start the old backend again the way you started it before (it was pid 4242), so it serves 0.0.0.0:9119 again",
+  "start the old backend again the way you started it before, so it serves 0.0.0.0:9119 again",
+  "sudo systemctl disable --now hermes-dashboard.service",
+  "systemctl --user disable --now hermes-dashboard.service",
+  "systemctl --user enable hermes-dashboard.service",
+  "systemctl --user start hermes-dashboard.service",
+  "systemctl enable --runtime hermes-dashboard.service",
+  "systemctl is-active hermes-dashboard.service  # must print inactive (or failed) before the next line",
+  "taskkill /PID 4242 /T /F",
+  "the backup /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/gone-env.bak of .env is missing or cannot be read: recover it, or put /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/.env back as it was before the migration by hand, before you start the old backend",
+  "the backup /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/gone.bak of config.yaml is missing or cannot be read: recover it, or put /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml back as it was before the migration by hand, before you start the old backend",
+  "the migration stopped while writing /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/config.yaml, so it may hold the migration's changes: compare it with /var/tmp/hermes-pytest-1000/r-7q_qoome/pytest-of-mark/pytest-0/test_collect0/home/backend_migration/config.yaml.bak and put back by hand what the migration changed, before you start the old backend"
+];

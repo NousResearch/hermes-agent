@@ -250,10 +250,11 @@ def create_workspace_session(rid, params: dict, create) -> dict:
         digest = hashlib.sha256(f"{Path(home).resolve()}\0{request_id}".encode()).hexdigest()
         key = f"coding_{digest}"
         with _create_lock:
-            with server._profile_db(params) as db:
-                if db is None:
+            with server._profile_db(params) as db, server._persistence_for(db) as persistence:
+                if persistence is None:
                     raise ValueError("Workspace session storage unavailable")
-                stored = db.get_session(key)
+                record = persistence.sessions.get(key)
+                stored = record.as_session_row() if record is not None else None
             if stored:
                 prior = server._stored_session_runtime_overrides(stored).get("coding_workspace") or {}
                 fields = ("requestId", "cwd", "projectId", "sourcePath", "repoRoot", "branch")
@@ -277,9 +278,9 @@ def persist_session_workspace(session: dict) -> None:
     session["coding_workspace"] = {**session["coding_workspace"], "artifactsPath": str(artifacts)}
     if server._ensure_session_db_row(session) is False:
         raise ValueError("Workspace session storage unavailable")
-    with server._session_db(session) as db:
-        row = db.get_session(session["session_key"]) if db is not None else None
-        if not row or row.get("cwd") != session["cwd"]:
+    with server._session_db(session) as db, server._persistence_for(db) as persistence:
+        row = persistence.sessions.get(session["session_key"]) if persistence is not None else None
+        if row is None or row.cwd != session["cwd"]:
             raise ValueError("Workspace session binding could not be persisted")
     # The durable session row now owns the checkout; the claim is no longer an orphan candidate.
     from hermes_cli import projects_db as pdb
@@ -335,7 +336,7 @@ def register_folder(pdb, conn, path: str):
     return project
 
 
-def recent_projects(pdb, conn, db) -> list:
+def recent_projects(pdb, conn, persistence) -> list:
     """Projects the checkout picker can open, most recently used first.
 
     Read-only: a project whose folder is gone stays stored (an unmounted volume comes back) but
@@ -355,10 +356,10 @@ def recent_projects(pdb, conn, db) -> list:
             if owner is not None and owner.id == project.id:
                 usable[key(project)] = project
     last_session: dict[str, float] = {}
-    for row in db.distinct_session_cwds() if db is not None and usable else ():
-        owner = pdb.project_for_path(conn, str(row.get("cwd") or ""))
+    for row in persistence.sessions.distinct_session_cwds() if persistence is not None and usable else ():
+        owner = pdb.project_for_path(conn, str(row.cwd or ""))
         if owner is not None and key(owner) in usable:
-            last_session[key(owner)] = max(last_session.get(key(owner), 0.0), float(row.get("last_active") or 0))
+            last_session[key(owner)] = max(last_session.get(key(owner), 0.0), float(row.last_active or 0))
     return sorted(usable.values(), key=lambda project: (
         key(project) not in last_session, -last_session.get(key(project), float(project.created_at or 0))))
 

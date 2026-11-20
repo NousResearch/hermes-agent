@@ -73,7 +73,8 @@ also works there on its own, as a bearer token, in the `X-Hermes-Session-Token` 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
 
-**From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
+**From another machine.** Set `webapp.host` to `0.0.0.0`, or to one IP address of this machine (a LAN or
+Tailscale address) to serve the Webapp at that address only; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
 you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
@@ -81,8 +82,9 @@ serves instead; that requires the same sign-in. A proxy in another container or 
 cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
 `hermes webapp` then opens the Webapp's address, where you sign in with
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
-registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
-loopback address (a password provider, or sign-in you set up by hand for that address). One-use
+registered Nous sign-in for, while it is still this machine's address and the Webapp's port; on an
+IP address you set, that address (if Web Access registered Nous sign-in for another address, the
+command says that sign-in cannot finish there); else the loopback address (a password provider, or sign-in you set up by hand for that address). One-use
 links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely.
 
 **What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
@@ -162,6 +164,32 @@ whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.
 
+### Reach your other gateways from one Webapp
+
+The Webapp's **Settings → Gateways** has the same **Saved connections** list as the native app,
+and it is the same list: a machine keeps one, in `gateway-connections.json` in its Hermes home
+(user-only, beside `ui-preferences.json`). Adding, editing or removing a connection in the native app
+shows in the Webapp, and the other way round, without a restart. The first time the native app runs
+after this change it copies its existing connections in, with the same ids, so nothing needs to be
+set up again.
+
+Each saved gateway joins the Webapp's gateway switcher and the sidebar's gateway groups. The
+browser still talks only to the gateway serving the page. That gateway sends each request and socket
+on to the saved one, with the credential saved for it, exactly as the native app would: the session
+token in the `X-Hermes-Session-Token` header, or the bearer token of a sign-in, plus any extra
+headers saved with the connection. The other gateway needs no setting of its own.
+
+Anyone who can sign in to this Webapp can use every gateway saved on this machine, as whoever the
+saved credential belongs to. Save only gateways you would let them reach. What a saved gateway sends
+back never runs as this Webapp's page: it is served under a sandboxing content policy, the browser
+keeps no copy of it, and it cannot redirect outside that gateway. Removing a connection closes its
+open sockets at once.
+
+A Webapp tab and the windows it opens run on the gateway serving the page, so **Open in new window**
+and **Set as default** are offered for that gateway's own profiles. Open another gateway's from the
+switcher. A chat on another gateway stays in the tab: popping it out says so instead of opening a
+window.
+
 ### Terminal in the Webapp
 
 The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home
@@ -174,6 +202,14 @@ terminal takes over the connection.
 Detached shells are kept for **15 minutes** while the gateway runs, up to **16 host terminals**
 including detached ones. A gateway restart or update ends them. Reconnecting replays up to **1 MiB** of
 recent output; full-screen programs may need their own redraw command.
+
+A terminal opened on a saved SSH gateway runs a login shell over that connection's SSH
+transport, like the native app. The serving Webapp retains the SSH terminal across browser
+disconnects; its selected gateway and profile remain the attachment scope. The shell uses the
+remote SSH login environment, not a same-named profile on the Webapp host. Removing or
+re-pointing the saved connection ends its terminals. The remote `serve --isolated` does not
+need Webapp enabled. For an HTTP gateway connection, the remote must itself provide the
+Webapp host-terminal service; a plain `serve` or gateway listener does not expose host shells.
 
 The bundle's npm dependencies install into `.build/webapp-workspace` in the checkout, separately from
 the native Desktop, and reinstall only when the lockfile changes. With lazy installs disabled, a plain
@@ -446,7 +482,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The public Skills Hub's **Install in Hermes** buttons open `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)'s **Install in Hermes** buttons open source-qualified `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
@@ -622,9 +658,9 @@ Further down the same **Settings → Gateways** page, **Registered gateways** ma
 - **Choose what opens after a restart.** **Open on launch** keeps the backward-compatible **Primary gateway** default, or can resume the **Last used** gateway after it connects successfully. This preference is stored outside the application bundle and survives Desktop updates.
 - **Add / edit / remove / test** connections from the panel. The **Add** flow offers all four kinds — **Local**, **Hermes Cloud**, **Remote gateway**, and **SSH** (the Local button is disabled while the app-managed local entry exists, and a hint points cloud adds at the sign-in/discovery flow above). The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
 - **Duplicates are rejected at save time**: only one **local** entry ever; remote and cloud entries are deduplicated on the normalized URL (trimmed, trailing slashes stripped, lowercased — across both kinds); SSH entries on the normalized `user@host:port` plus remote profile.
-- Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any legacy per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
+- Existing settings are **imported automatically, once**, the first time you run a build with the shared list: your current global connection, any legacy per-profile overrides and your saved connections become named entries. The old files in the app's user-data directory are left untouched, so older builds keep working, and they are never read again after that import: a connection you remove stays removed after a restart, in the native app and in the Webapp.
 - Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
-- Tokens are stored encrypted with the OS keyring (with an explicit plain-text opt-in on keyring-less Linux).
+- The list and its credentials live in your Hermes home, shared by the native app and the [Webapp](#reach-your-other-gateways-from-one-webapp): `gateway-connections.json` (connections, including session tokens and extra headers) and `gateway-connection-tokens.json` (sign-in credentials). Both are owner-only (0600) files holding the secrets as plain text, so the Webapp's server can read them; the OS keychain option does not apply to them. See [Security notes](./multi-connection-desktop.md#security-notes).
 
 Side-by-side routing is live: each registered gateway dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible gateway at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 
@@ -907,6 +943,18 @@ desktop:
 ```
 
 Use single quotes or no quotes so the backslashes stay literal. The key goes two spaces under `desktop:`, like the launch keys above. It has no effect on macOS or Linux.
+
+### SSH remote: the connection times out on a slow link
+
+The app gives SSH 15 seconds to connect and 15 seconds to set up its port forward. It passes the connect limit to `ssh` on the command line, so a `ConnectTimeout` in `~/.ssh/config` does not raise it. If your network needs longer (a VPN that takes a while to come up, a jump host, a lossy link) and boot keeps failing with `ssh timed out after 15000ms`, raise the limits in `config.yaml` and restart the app:
+
+```yaml
+desktop:
+  ssh_connect_timeout: 60
+  ssh_forward_timeout: 60
+```
+
+Both take a whole number of seconds, up to 120. Anything else (`60s`, `1.5`, `0`) is ignored and the app logs `desktop.ssh_connect_timeout was ignored` at startup. The keys go two spaces under `desktop:`, like the launch keys above.
 
 ### "The host key has CHANGED since you last connected" (SSH remote)
 

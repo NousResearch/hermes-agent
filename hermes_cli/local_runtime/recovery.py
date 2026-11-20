@@ -14,12 +14,9 @@ logger = logging.getLogger(__name__)
 
 def read_state() -> dict:
     from hermes_cli.local_runtime.supervisor import state_path
+    from utils import read_json_or_empty
 
-    try:
-        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
-        return state if isinstance(state, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return read_json_or_empty(state_path())
 
 
 _MODERN_FIELDS = ("create_time", "executable", "owner_pid", "owner_create_time")

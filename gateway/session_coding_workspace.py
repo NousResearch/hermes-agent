@@ -8,9 +8,8 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
-
-_KEY = 'canonical_coding_workspace_v1'
+from persistence.core.errors import AuthorityRefusal
+from session_rules.coding_workspace import CODING_WORKSPACE_KEY as _KEY
 
 
 def binding_request(params):
@@ -23,12 +22,12 @@ def binding_request(params):
     try:
         binding = CodingWorkspaceBinding.model_validate_json(json.dumps(raw), strict=True)
     except ValidationError as exc:
-        raise RuntimeStoreError('invalid_params', field='coding_workspace') from exc
+        raise AuthorityRefusal('invalid_params', field='coding_workspace') from exc
     if (not binding.requestId or len(binding.requestId) > 256 or binding.cwd != params.get('cwd')
             or params.get('request_id', binding.requestId) != binding.requestId
             or params.get('row_cwd', binding.cwd) != binding.cwd
             or binding.artifactsPath is not None):
-        raise RuntimeStoreError('invalid_params', field='coding_workspace', detail='binding must match cwd and request_id; artifacts are server-owned')
+        raise AuthorityRefusal('invalid_params', field='coding_workspace', detail='binding must match cwd and request_id; artifacts are server-owned')
     return raw
 
 
@@ -82,15 +81,16 @@ def _identity(binding):
 def prepare_binding(authority, actor, params):
     """Off-loop pre-mint filesystem and Projects checks; no session or registry writes."""
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if 'session:create' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     binding = binding_request(params)
     if binding is None:
         return None
-    from gateway.session_local_recovery import local_identity
-    sid = local_identity(authority.profile_id, actor.subject, request_id(params))
-    if authority.db.get_session(sid) is not None:
+    from gateway.session_persistence import authority_persistence
+    from persistence.authority.bindings import local_session_id
+    sid = local_session_id(authority.profile_id, actor.subject, request_id(params))
+    if authority_persistence(authority).sessions.get(sid) is not None:
         return None  # exact retry is judged by the original request, not current filesystem state
     from hermes_cli import projects_db as pdb
     home = Path(authority.profile_id)
@@ -117,7 +117,7 @@ def prepare_binding(authority, actor, params):
         artifacts = home / 'cache' / 'session-artifacts' / sid
         return {'binding': {**binding, 'artifactsPath': str(artifacts)}, 'identity': identity, 'session_id': sid}
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params', field='coding_workspace', detail=str(exc)) from exc
+        raise AuthorityRefusal('invalid_params', field='coding_workspace', detail=str(exc)) from exc
 
 
 def bind_policy(policy, prepared):
@@ -126,7 +126,7 @@ def bind_policy(policy, prepared):
     terminal = json.loads(policy.terminal_json)
     if (str(terminal.get('TERMINAL_ENV') or 'local').strip().lower() != 'local'
             or terminal.get('TERMINAL_CWD') != prepared['binding']['cwd'] or policy.cwd != prepared['binding']['cwd']):
-        raise RuntimeStoreError('invalid_params', field='coding_workspace', detail='a coding workspace requires its local terminal cwd')
+        raise AuthorityRefusal('invalid_params', field='coding_workspace', detail='a coding workspace requires its local terminal cwd')
     from tui_gateway.coding_workspaces import workspace_instructions
     config = json.loads(policy.config_json)
     config[_KEY] = prepared
@@ -146,7 +146,7 @@ def verify_policy(policy, expected=None, *, task_id=None):
     binding = workspace_binding(policy)
     if not binding:
         if expected is not None:
-            raise RuntimeStoreError('invalid_params', field='coding_workspace', detail='session has no coding workspace')
+            raise AuthorityRefusal('invalid_params', field='coding_workspace', detail='session has no coding workspace')
         return None
     try:
         terminal = json.loads(policy.terminal_json)
@@ -160,7 +160,7 @@ def verify_policy(policy, expected=None, *, task_id=None):
             raise ValueError('Prepared checkout moved or was replaced')
         _verify_terminal(binding, task_id or prepared['session_id'])
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('workspace_unavailable', field='coding_workspace', detail=str(exc)) from exc
+        raise AuthorityRefusal('workspace_unavailable', field='coding_workspace', detail=str(exc)) from exc
     return binding
 
 
@@ -214,7 +214,7 @@ def _probe_terminal(authority, policy, session_id, expected):
     identity = terminal_identity(authority, session_id)
     binding = verify_policy(policy, expected, task_id=identity['task_id'])
     if binding is None:
-        raise RuntimeStoreError('invalid_params', field='coding_workspace', detail='session has no coding workspace')
+        raise AuthorityRefusal('invalid_params', field='coding_workspace', detail='session has no coding workspace')
     from gateway.session_policy import policy_scope
     from tools.approval_context import reset_current_session_key, set_current_session_key
     from tools.terminal_tool import terminal_tool
@@ -231,7 +231,7 @@ def _probe_terminal(authority, policy, session_id, expected):
     from tui_gateway.coding_workspaces import cwd_within_checkout
     if result.get('exit_code') != 0 or not cwd_within_checkout(
             result.get('output', '').removesuffix('\n'), binding['cwd']):
-        raise RuntimeStoreError('workspace_unavailable', field='coding_workspace', detail='terminal workspace changed')
+        raise AuthorityRefusal('workspace_unavailable', field='coding_workspace', detail='terminal workspace changed')
     return {'cwd': binding['cwd'], 'gatewayCwd': binding['cwd']}
 
 
@@ -241,11 +241,11 @@ def _authorized_policy(connection, ref):
     source = authority.sessions[ref.session_id].source
     from gateway.config import Platform
     if source.platform != Platform.LOCAL or source.user_id != connection.actor.subject:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, source)
     if not workspace_binding(policy):
-        raise RuntimeStoreError('invalid_params', field='coding_workspace', detail='session has no coding workspace')
+        raise AuthorityRefusal('invalid_params', field='coding_workspace', detail='session has no coding workspace')
     return policy
 
 
@@ -266,7 +266,7 @@ def _references(policy, params):
             result['text'] = remap_workspace_reference_text(binding, params['text'], base)
         return result
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params', field='references', detail=str(exc)) from exc
+        raise AuthorityRefusal('invalid_params', field='references', detail=str(exc)) from exc
 
 
 async def references(connection, ref, params):
@@ -280,38 +280,17 @@ def handlers(connection):
             'session.workspace.references': partial(references, connection)}
 
 
-def check_receipt_owner(conn, receipt):
-    """Called in the durable creation transaction: two principals cannot own one claim."""
-    prepared = json.loads(receipt['policy']['config_json']).get(_KEY)
-    if not prepared:
-        return
-    from hermes_state_local import POLICY_PREFIX
-    request = prepared['binding']['requestId']
-    rows = conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',))
-    for (raw,) in rows:
-        try:
-            other = json.loads(raw)
-            bound = json.loads(other['policy']['config_json']).get(_KEY)
-            other_request = bound['binding']['requestId'] if bound else None
-            other_session = other['session_id'] if bound else None
-        except (ValueError, TypeError, KeyError, AttributeError):
-            # Malformed unrelated receipts name no owner (as in retirement scans).
-            continue
-        if other_request == request and other_session != receipt['session_id']:
-            raise RuntimeStoreError('admission_conflict')
-
-
 def finish_binding(authority, session_id):
     """Retryable post-commit projection: only the durable owner may mark the project claim bound."""
-    from hermes_state_local import local_receipt
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import restore_policy
-    policy = restore_policy(local_receipt(authority.db, session_id)['policy'])
+    policy = restore_policy(authority_persistence(authority).bindings.receipt(session_id).policy)
     binding = workspace_binding(policy)
     if not binding:
         return
     artifacts = Path(binding['artifactsPath'])
     if artifacts.resolve() != artifacts:
-        raise RuntimeStoreError('workspace_unavailable', field='coding_workspace', detail='managed artifacts path changed')
+        raise AuthorityRefusal('workspace_unavailable', field='coding_workspace', detail='managed artifacts path changed')
     artifacts.mkdir(parents=True, exist_ok=True)
     from hermes_cli import projects_db as pdb
     with pdb.connect_closing(Path(authority.profile_id) / 'projects.db') as conn:

@@ -18,7 +18,7 @@ import pytest
 
 from tools import terminal_tool
 from tui_gateway import server
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 
 
 def _git(cwd, *args):
@@ -248,7 +248,7 @@ def test_tool_complete_emits_session_info_on_adoption(session, repo_with_worktre
 
 def test_agent_worktree_is_persisted_and_restored_on_resume(tmp_path, monkeypatch, repo_with_worktree):
     _repo, worktree = repo_with_worktree
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
@@ -259,10 +259,10 @@ def test_agent_worktree_is_persisted_and_restored_on_resume(tmp_path, monkeypatc
     server._ensure_session_db_row(live)
     try:
         assert server._observe_terminal_activity(live, *_terminal_call(workdir=str(worktree))) is True
-        stored = json.loads(db.get_session(created["stored_session_id"])["model_config"])
+        stored = dict(db.sessions.get(created["stored_session_id"]).model_config)
         assert stored["agent_worktree"]["cwd"] == str(worktree)
         # The session's own row keeps the launch-dir rule: no cwd, no git identity.
-        assert db.get_session(created["stored_session_id"])["git_repo_root"] is None
+        assert db.sessions.get(created["stored_session_id"]).git_repo_root is None
     finally:
         server._sessions.pop(created["session_id"], None)
 
@@ -278,7 +278,7 @@ def test_agent_worktree_is_persisted_and_restored_on_resume(tmp_path, monkeypatc
 
 def test_a_stale_persisted_worktree_is_dropped_on_resume(tmp_path, monkeypatch, repo_with_worktree):
     repo, worktree = repo_with_worktree
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)

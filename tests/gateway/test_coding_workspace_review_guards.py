@@ -15,15 +15,16 @@ workspace = _workspace
                                 json.dumps({'policy': {'config_json': json.dumps({
                                     'canonical_coding_workspace_v1': ['invalid']})}})])
 async def test_unrelated_unreadable_receipt_cannot_block_workspace_create(workspace, raw):
-    from hermes_state_local import POLICY_PREFIX
+    from tests.fixtures.storage_holder import policy_key, raw_holder
     _home, _source, owner, connection, binding = workspace
-    owner.db.set_meta(POLICY_PREFIX + 'junk', raw)
+    holder = raw_holder(owner.persistence)
+    holder.set_meta(policy_key('junk'), raw)
     try:
         response = await rpc(connection, 'session.create', **create_params(binding))
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         pytest.fail(f'Unrelated malformed receipt blocked workspace creation: {exc!r}')
     assert 'result' in response, response
-    assert owner.db.get_meta(POLICY_PREFIX + 'junk') == raw
+    assert holder.get_meta(policy_key('junk')) == raw
     assert response['result']['info']['coding_workspace']['requestId'] == binding['requestId']
 
 

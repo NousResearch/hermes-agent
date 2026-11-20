@@ -76,9 +76,9 @@ def _persist_agent_worktree(session: dict) -> None:
     if not key:
         return
     with contextlib.suppress(Exception):
-        with _session_db(session) as db:
-            if db is not None and hasattr(db, "patch_session_model_config"):
-                db.patch_session_model_config(key, {"agent_worktree": session.get("agent_worktree")})
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is not None:
+                persistence.sessions.patch_model_config(key, {"agent_worktree": session.get("agent_worktree")})
 
 
 def _set_agent_worktree(session: dict, value: dict | None) -> bool:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED
 from tui_gateway import server
 
 
@@ -187,18 +188,18 @@ def test_git_probe_errors_never_become_non_git(tmp_path, monkeypatch):
     folder.mkdir()
     assert call("projects.workspace.inspect", path=str(folder))["repoRoot"] is None
     with monkeypatch.context() as env:
+        # Internal git drops an inherited GIT_DIR, so it cannot retarget the probe either way.
         env.setenv("GIT_DIR", str(tmp_path / "missing-git-dir"))
-        refused = server._methods["projects.workspace.inspect"](1, {"path": str(folder)})
-        assert "error" in refused, refused
+        assert call("projects.workspace.inspect", path=str(folder))["repoRoot"] is None
     monkeypatch.setenv("PATH", str(tmp_path / "no-git"))
     refused = server._methods["projects.workspace.inspect"](1, {"path": str(folder)})
     assert "error" in refused, refused
 
 
 def test_inline_workspace_references_use_original_cwd_and_expand_new_checkout(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from agent.context_references import parse_context_references, preprocess_context_references
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
@@ -314,9 +315,9 @@ def test_workspace_references_only_remap_explicit_project_paths(tmp_path):
 
 
 def test_coding_create_retry_recovers_one_durable_session(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from hermes_constants import get_hermes_home
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
@@ -331,7 +332,9 @@ def test_coding_create_retry_recovers_one_durable_session(tmp_path, monkeypatch)
     server._sessions.pop(first["session_id"])
     recovered = call("session.create", **params)
     assert recovered["stored_session_id"] == first["stored_session_id"]
-    assert db._conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+    from tests.fixtures.storage_holder import raw_holder
+    with raw_holder(db)._read_ctx() as conn:
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
     artifacts = get_hermes_home() / "cache" / "session-artifacts"
     assert [p.name for p in artifacts.iterdir()] == [first["stored_session_id"]]
     assert prepared["requestId"] == "lost-reply"
@@ -341,8 +344,8 @@ def test_coding_create_retry_recovers_one_durable_session(tmp_path, monkeypatch)
 
 
 def test_coding_session_persists_exact_cwd_and_refuses_missing_checkout(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
-    db = SessionDB(tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
@@ -350,8 +353,9 @@ def test_coding_session_persists_exact_cwd_and_refuses_missing_checkout(tmp_path
     folder.mkdir()
     prepared = call("projects.workspace.prepare", path=str(folder), mode="folder")
     created = call("session.create", source="desktop", cwd=str(folder), coding_workspace=prepared)
-    stored = db.get_session(created["stored_session_id"])
-    assert stored is not None and stored["cwd"] == str(folder)
+    record = db.sessions.get(created["stored_session_id"])
+    assert record is not None and record.cwd == str(folder)
+    stored = record.as_session_row()
     overrides = server._stored_session_runtime_overrides(stored)
     assert overrides["coding_workspace"]["cwd"] == str(folder)
     from hermes_constants import get_hermes_home
@@ -394,13 +398,13 @@ def _repo(tmp_path, name="repo"):
 @pytest.mark.parametrize("deletion", ["before-inspection", "during-status"])
 def test_missing_sibling_does_not_block_workspace_use(tmp_path, monkeypatch, deletion):
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from tui_gateway import coding_workspaces
 
     repo = _repo(tmp_path)
     sibling = tmp_path / "unrelated"
     git(repo, "worktree", "add", "-b", "unrelated", str(sibling))
-    with SessionDB(tmp_path / "state.db") as db, monkeypatch.context() as monkeypatch:
+    with open_persistence(profile_scope(home=tmp_path)) as db, monkeypatch.context() as monkeypatch:
         monkeypatch.setattr(server, "_hermes_home", str(get_hermes_home()))
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
@@ -489,7 +493,8 @@ def test_workspace_inspection_does_not_hide_selected_or_existing_errors(tmp_path
     assert "error" in response, response
     message = response["error"]["message"]
     assert "index" in message if failure.startswith("corrupt") else (
-        "No such file or directory" in message or "git invocation failed" in message)
+        "No such file or directory" in message or "git invocation failed" in message
+        or message == FILTER_DISCOVERY_FAILED)
     assert f"worktree {selected}\0" in git(repo, "worktree", "list", "--porcelain", "-z")
 
 
@@ -517,8 +522,8 @@ def test_prepare_failure_after_worktree_creation_leaves_no_ownerless_checkout(tm
 
 
 def test_bound_worktree_is_never_adopted_by_a_later_draft(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
-    db = SessionDB(tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)

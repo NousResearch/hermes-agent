@@ -57,15 +57,14 @@ jobs:
       # explicit binary preparation before the native fixtures launch.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       - name: Prepare locked Electron runtime
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       - name: Build the desktop app
-        working-directory: apps/desktop
         # The generator uses the runtime's Pillow + resvg-py, not a build-only venv.
-        run: pnpm run build
+        run: just desktop-build
 
       # webapp-gateway-attach.spec.ts drives the Webapp from a real browser: it needs the
       # Webapp renderer and a Chromium Playwright can launch.
@@ -105,7 +104,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-core-e2e-${{ github.sha }}
+          name: desktop-core-e2e-${{ inputs.commit || github.sha }}
           path: |
             apps/desktop/test-results/core
             apps/desktop/playwright-report/core

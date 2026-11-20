@@ -25,17 +25,19 @@ def _repo(root, name):
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
-    store = SessionDB(tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    store = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: store)
     yield store
     store.close()
 
 
 def _used(db, sid, cwd, at):
-    db.create_session(sid, "desktop", cwd=str(cwd))
-    db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?", (at, at, sid))
-    db._conn.commit()
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_session
+    seed_session(db, sid, "desktop", cwd=str(cwd))
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?", (at, at, sid)))
 
 
 def test_recent_projects_skip_missing_folders_and_duplicates_and_follow_last_use(tmp_path, db):

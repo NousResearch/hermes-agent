@@ -16,6 +16,21 @@ async def _owner(home, monkeypatch):
     return owner, connection
 
 
+def local_receipt(owner, sid):
+    """The stored creation receipt's fields these tests compare."""
+    binding = owner.persistence.bindings.receipt(sid)
+    return {'policy': dict(binding.policy), 'entry': dict(binding.entry), 'session_id': str(binding.session_id)}
+
+
+def session_cwd(owner, sid):
+    row = owner.persistence.sessions.get(sid)
+    return None if row is None else row.cwd
+
+
+def pending_admissions(owner, sid):
+    return owner.persistence.admissions.list(session_id=sid)
+
+
 def git(path, *args):
     return subprocess.run(['git', '-C', str(path), *args], check=True, capture_output=True,
                           text=True, timeout=10).stdout.removesuffix('\n')
@@ -51,7 +66,7 @@ async def workspace(tmp_path, monkeypatch, request):
         yield home, source, owner, connection, binding
     finally:
         await connection.close()
-        owner.db.close()
+        owner.persistence.close()
         reset_hermes_home_override(token)
 
 
@@ -68,7 +83,6 @@ def create_params(binding):
 @pytest.mark.asyncio
 async def test_canonical_create_binds_raw_request_and_durable_server_artifacts(workspace, monkeypatch):
     from hermes_cli import projects_db as pdb
-    from hermes_state_local import local_receipt
     home, _source, owner, connection, binding = workspace
     params = create_params(binding)
     response = await rpc(connection, 'session.create', **params)
@@ -83,9 +97,9 @@ async def test_canonical_create_binds_raw_request_and_durable_server_artifacts(w
     assert created['info']['source'] == 'gui'
     assert created['info']['launch_request']['coding_workspace'] == binding
     assert created['info']['launch_request']['cwd_explicit'] is False
-    saved = local_receipt(owner.db, sid)
+    saved = local_receipt(owner, sid)
     assert json.loads(saved['policy']['terminal_json'])['TERMINAL_CWD'] == binding['cwd']
-    assert owner.db.get_session(sid)['cwd'] == binding['cwd']
+    assert session_cwd(owner, sid) == binding['cwd']
     with pdb.connect_closing(home / 'projects.db') as conn:
         assert pdb.get_workspace_claim(conn, binding['requestId'])['state'] == 'bound'
     await connection.close()
@@ -95,13 +109,13 @@ async def test_canonical_create_binds_raw_request_and_durable_server_artifacts(w
         assert 'result' in retry, retry
         assert retry['result']['session_id'] == sid
         assert retry['result']['info']['coding_workspace'] == bound
-        assert local_receipt(restarted.db, sid)['policy'] == saved['policy']
+        assert local_receipt(restarted, sid)['policy'] == saved['policy']
         changed = {**params, 'coding_workspace': {**binding, 'branch': 'not-the-original-request'}}
         refused = await rpc(reconnected, 'session.create', **changed)
         assert refused['error']['message'] == 'invalid_params'
     finally:
         await reconnected.close()
-        restarted.db.close()
+        restarted.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -157,7 +171,6 @@ def replace_checkout(binding):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('prior_prompt', [False, True])
 async def test_plain_prompt_admission_rejects_replaced_checkout_without_preflight(workspace, monkeypatch, prior_prompt):
-    from hermes_state_runtime import list_session_admissions
     _home, _source, owner, connection, binding = workspace
     created = await rpc(connection, 'session.create', **create_params(binding))
     assert 'result' in created, created
@@ -169,8 +182,8 @@ async def test_plain_prompt_admission_rejects_replaced_checkout_without_prefligh
     replace_checkout(binding)
     refused = await rpc(connection, 'prompt.submit', session_id=sid, text='ordinary text', submission_id='first')
     assert refused.get('error', {}).get('message') == 'workspace_unavailable', refused
-    rows = list_session_admissions(owner.db, session_id=sid)
-    assert [row['request_id'] for row in rows] == (['prior'] if prior_prompt else [])
+    rows = pending_admissions(owner, sid)
+    assert [row.request_id for row in rows] == (['prior'] if prior_prompt else [])
 
 
 @pytest.mark.asyncio
@@ -179,12 +192,11 @@ async def test_actual_turn_scope_rechecks_checkout_and_keeps_frozen_instructions
     from gateway.run_turn_runner import TurnRunner
     from gateway.session_policy import restore_policy
     from gateway.session_worker_construct import construct_inputs
-    from hermes_state_local import local_receipt
     _home, _source, owner, connection, binding = workspace
     created = await rpc(connection, 'session.create', **create_params(binding))
     assert 'result' in created, created
     sid = created['result']['session_id']
-    policy = restore_policy(local_receipt(owner.db, sid)['policy'])
+    policy = restore_policy(local_receipt(owner, sid)['policy'])
     construct = construct_inputs(owner, policy, sid)
     assert binding['cwd'] in construct['ephemeral_system_prompt']
     assert created['result']['info']['coding_workspace']['artifactsPath'] in construct['ephemeral_system_prompt']
@@ -216,14 +228,14 @@ async def test_prepared_cwd_wins_over_named_profile_inherited_flag(workspace):
                                        ('artifactsPath', '/client-owned-artifacts'), ('requestId', ''),
                                        ('unexpected', True)])
 async def test_invalid_binding_never_mints_a_durable_session(workspace, field, value):
-    from gateway.session_local_recovery import local_identity
+    from persistence.authority.bindings import local_session_id
     home, _source, owner, connection, binding = workspace
-    sid = local_identity(owner.profile_id, connection.actor.subject, binding['requestId'])
+    sid = local_session_id(owner.profile_id, connection.actor.subject, binding['requestId'])
     params = create_params(binding)
     params['coding_workspace'] = {**binding, field: value}
     refused = await rpc(connection, 'session.create', **params)
     assert refused.get('error', {}).get('message') == 'invalid_params', refused
-    assert owner.db.get_session(sid) is None
+    assert owner.persistence.sessions.get(sid) is None
     assert not (home / 'cache' / 'session-artifacts' / sid).exists()
 
 
@@ -255,18 +267,18 @@ async def test_workspace_reads_require_exact_principal_profile_and_read_capabili
 
 @pytest.mark.asyncio
 async def test_binding_rejects_remote_terminal_and_mismatched_row_cwd(workspace):
-    from gateway.session_local_recovery import local_identity
+    from persistence.authority.bindings import local_session_id
     home, source, owner, connection, binding = workspace
-    sid = local_identity(owner.profile_id, connection.actor.subject, binding['requestId'])
+    sid = local_session_id(owner.profile_id, connection.actor.subject, binding['requestId'])
     remote_config = (home / 'config.yaml').read_text().replace('backend: local', 'backend: ssh')
     (home / 'config.yaml').write_text(remote_config)
     remote = await rpc(connection, 'session.create', **create_params(binding))
     assert remote.get('error', {}).get('message') == 'invalid_params', remote
-    assert owner.db.get_session(sid) is None
+    assert owner.persistence.sessions.get(sid) is None
     (home / 'config.yaml').write_text(remote_config.replace('backend: ssh', 'backend: local'))
     mismatched = await rpc(connection, 'session.create', **{**create_params(binding), 'row_cwd': str(source)})
     assert mismatched.get('error', {}).get('message') == 'invalid_params', mismatched
-    assert owner.db.get_session(sid) is None
+    assert owner.persistence.sessions.get(sid) is None
 
 
 @pytest.mark.asyncio
@@ -274,17 +286,16 @@ async def test_managed_execution_refuses_replaced_checkout_without_lost_worker(w
     from gateway import session_managed_worker as managed
     from gateway.session_contract import SessionRef
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     _home, _source, owner, connection, binding = workspace
     created = await rpc(connection, 'session.create', **create_params(binding))
     assert 'result' in created, created
     sid = created['result']['session_id']
-    policy = restore_policy(local_receipt(owner.db, sid)['policy'])
+    policy = restore_policy(local_receipt(owner, sid)['policy'])
     async def would_spawn(*args):
         return 'worker would execute'
     monkeypatch.setattr(managed, 'execute_managed', would_spawn)
     replace_checkout(binding)
-    result = await managed.admit_managed(owner, SessionRef(owner.profile_id, sid), {'admission_id': 'queued'}, policy)
+    result = await managed.admit_managed(owner, SessionRef(owner.profile_id, sid), {'admission_id': 'queued', 'payload': {'text': 'hi'}}, policy)
     assert result != 'worker would execute'
     assert owner.pending_results['queued']['result']['failed'] is True
 
@@ -294,25 +305,24 @@ async def test_overlapping_principals_cannot_bind_one_project_claim(workspace):
     from dataclasses import replace
     from gateway.session_local import stage_local_session
     from gateway.session_authorities import owner_scope
-    from hermes_state_local import commit_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_local import commit_local_session
+    from persistence.core.errors import AuthorityRefusal
     _home, _source, owner, connection, binding = workspace
     with owner_scope(owner):
         first = stage_local_session(owner, connection.actor, create_params(binding))
         foreign = stage_local_session(owner, replace(connection.actor, subject='another-principal'), create_params(binding))
-    commit_local_session(owner.db, epoch=owner.epoch, receipt=first)
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
-        commit_local_session(owner.db, epoch=owner.epoch, receipt=foreign)
-    assert owner.db.get_session(first['session_id']) is not None
-    assert owner.db.get_session(foreign['session_id']) is None
+    commit_local_session(owner.persistence, epoch=owner.epoch, receipt=first)
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
+        commit_local_session(owner.persistence, epoch=owner.epoch, receipt=foreign)
+    assert owner.persistence.sessions.get(first['session_id']) is not None
+    assert owner.persistence.sessions.get(foreign['session_id']) is None
 
 
 @pytest.mark.asyncio
 async def test_create_retry_repairs_post_commit_claim_projection_without_rebinding(workspace, monkeypatch):
     import sqlite3
     from hermes_cli import projects_db as pdb
-    from hermes_state_local import local_receipt
-    from gateway.session_local_recovery import local_identity
+    from persistence.authority.bindings import local_session_id
     home, _source, owner, connection, binding = workspace
     original = pdb.set_workspace_claim_state
     def fail_projection(*args):
@@ -320,12 +330,12 @@ async def test_create_retry_repairs_post_commit_claim_projection_without_rebindi
     monkeypatch.setattr(pdb, 'set_workspace_claim_state', fail_projection)
     failed = await rpc(connection, 'session.create', **create_params(binding))
     assert failed.get('error', {}).get('message') == 'storage_unavailable', failed
-    sid = local_identity(owner.profile_id, connection.actor.subject, binding['requestId'])
-    saved = local_receipt(owner.db, sid)
+    sid = local_session_id(owner.profile_id, connection.actor.subject, binding['requestId'])
+    saved = local_receipt(owner, sid)
     monkeypatch.setattr(pdb, 'set_workspace_claim_state', original)
     retry = await rpc(connection, 'session.create', **create_params(binding))
     assert retry.get('result', {}).get('session_id') == sid, retry
-    assert local_receipt(owner.db, sid)['policy'] == saved['policy']
+    assert local_receipt(owner, sid)['policy'] == saved['policy']
     with pdb.connect_closing(home / 'projects.db') as conn:
         assert pdb.get_workspace_claim(conn, binding['requestId'])['state'] == 'bound'
 

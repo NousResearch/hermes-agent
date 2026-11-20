@@ -50,7 +50,6 @@ def adapter():
     adapter._client.application_id = "test_app_id"
 
     adapter._sleep_between_command_sync_mutations = AsyncMock()
-    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
     adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
     adapter._patchable_app_command_payload = MagicMock(side_effect=lambda p: p)
 
@@ -80,7 +79,6 @@ async def test_safe_sync_deletes_before_creating():
     adapter._client.http = AsyncMock()
     adapter._client.application_id = "test_app_id"
     adapter._sleep_between_command_sync_mutations = AsyncMock()
-    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
     adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
     adapter._patchable_app_command_payload = MagicMock(side_effect=lambda p: p)
 
@@ -91,10 +89,10 @@ async def test_safe_sync_deletes_before_creating():
     # So: delete cmd_0 (1 deletion), create cmd_new (1 creation)
 
     existing_commands = [
-        SimpleNamespace(id=f"id_{i}", name=f"cmd_{i}", type=1)
+        {"id": f"id_{i}", "name": f"cmd_{i}", "type": 1}
         for i in range(100)
     ]
-    adapter._client.tree.fetch_commands = AsyncMock(return_value=existing_commands)
+    adapter._client.http.get_global_commands = AsyncMock(return_value=existing_commands)
 
     adapter._client.tree.get_commands = MagicMock(
         return_value=[

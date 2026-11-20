@@ -50,14 +50,14 @@ async def test_cd_out_of_checkout_is_admitted_and_next_turn_starts_at_root(works
     from gateway.session_authorities import owner_scope
     from gateway.session_contract import SessionRef
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from tests.gateway.test_session_coding_workspace import local_receipt, pending_admissions, session_cwd
     from tools.terminal_tool import clear_session_cwd, clear_task_env_overrides, get_session_cwd
     home, source, owner, connection, binding = workspace
     created = await rpc(connection, 'session.create', **create_params(binding))
     assert 'result' in created, created
     sid = created['result']['session_id']
     child, live = compress(owner, sid)
-    receipt = local_receipt(owner.db, sid)
+    receipt = local_receipt(owner, sid)
     policy = restore_policy(receipt['policy'])
     root = binding['cwd']
     monkeypatch.setattr(owner, '_schedule_admitted', lambda ref, row: None)
@@ -85,7 +85,7 @@ async def test_cd_out_of_checkout_is_admitted_and_next_turn_starts_at_root(works
             monkeypatch.setattr(managed, 'execute_managed', would_spawn)
             with owner_scope(owner):
                 result = await managed.admit_managed(owner, SessionRef(owner.profile_id, sid),
-                                                     {'admission_id': 'after-cd-managed'}, policy)
+                                                     {'admission_id': 'after-cd-managed', 'payload': {'text': 'hi'}}, policy)
             assert result == 'worker would execute', result
         if boundary in ('turn', 'sequence'):
             turn = TurnRunner(owner.runner, SimpleNamespace(source=live.source, session_id=child, session_key=live.route))
@@ -96,8 +96,8 @@ async def test_cd_out_of_checkout_is_admitted_and_next_turn_starts_at_root(works
             again = terminal(policy, owner, child, live.route, 'pwd')
             assert again['exit_code'] == 0 and again['output'] == root, again
         # Recovery never rebinds the chat: the binding and its receipt stay the checkout.
-        assert local_receipt(owner.db, sid)['policy'] == receipt['policy']
-        assert owner.db.get_session(sid)['cwd'] == root
+        assert local_receipt(owner, sid)['policy'] == receipt['policy']
+        assert session_cwd(owner, sid) == root
     finally:
         with owner_scope(owner):
             for key in (child, sid, live.route):

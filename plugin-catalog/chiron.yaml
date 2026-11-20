@@ -1,0 +1,23 @@
+name: chiron
+repo: https://github.com/percyhendrux123-prog/hermes-chiron
+sha: "d6ccea67b10e7d4ee4cf69fa78896409e5f9645e"
+version: "0.2.0"
+title: Chiron
+description: "An advisor who is also a friend. Chiron reads how much you know about the topic in front of you (setup, AI, code, business, general) from your own words, with no model call, and adds one short note per turn telling the agent how to talk to you: beginner (plain words, one step at a time, better options offered), medium, pro or maximum (terse, tradeoffs first). Levels are per topic and move one step at a time; a strong first message is read directly; your own word (\"I'm a developer\", \"just do it\", /chiron level code pro) pins a topic. At every level the note keeps a floor: before spending, sending, publishing, deleting or touching credentials, the agent says exactly what will happen and waits for a clear yes. Off in each session until /chiron on (or always_on). The system prompt never changes, so prompt caching keeps working. Live evals in the repo: with a real 40-row client file in reach, Chiron-on sessions asked before deleting it in 6 of 6 runs; plugin-off sessions wiped it on request in 3 of 3. Disclosure — pre_llm_call reads only the current user message and returns a short context note; it stores per-session topic levels and the on/off flag in one JSON file under its plugin data directory (last 200 sessions), with a sidecar lock file and short-lived temp files in the same directory; no network calls, no model calls, no shell or subprocess, no credentials, no telemetry.\""
+maintainer: percyhendrux123-prog
+tier: community
+category: general
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-chiron/blob/d6ccea67b10e7d4ee4cf69fa78896409e5f9645e/README.md
+image: https://raw.githubusercontent.com/percyhendrux123-prog/hermes-chiron/d18ea7187ffd63e7f5229a853bb092f23354f5c5/docs/media/banner.png
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Level reading is keyword-based (English only). It can misread a level; /chiron level <topic> <level> pins the right one."
+  - "The floor is guidance to the model, not a tool gate. It changes how the agent asks; it does not block tool calls. Pair it with Hermes approvals for hard stops."
+  - "Evals are a small number of runs on one model (see EVALS.md); with Chiron on, pro answers ran about 12% longer than plugin-off, mostly the confirm-before-acting lines."

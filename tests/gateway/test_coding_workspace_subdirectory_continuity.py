@@ -21,14 +21,14 @@ async def test_contained_persistent_cd_survives_each_execution_boundary(workspac
     from gateway.session_authorities import owner_scope
     from gateway.session_contract import SessionRef
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from tests.gateway.test_session_coding_workspace import local_receipt, pending_admissions, session_cwd
     from tools.terminal_tool import clear_session_cwd, clear_task_env_overrides, get_session_cwd, resolve_task_overrides
     home, _source, owner, connection, binding = workspace
     created = await rpc(connection, 'session.create', **create_params(binding))
     assert 'result' in created, created
     sid = created['result']['session_id']
     child, live = compress(owner, sid)
-    receipt = local_receipt(owner.db, sid)
+    receipt = local_receipt(owner, sid)
     policy = restore_policy(receipt['policy'])
     root = Path(binding['cwd'])
     target = root / relative
@@ -63,7 +63,7 @@ async def test_contained_persistent_cd_survives_each_execution_boundary(workspac
             monkeypatch.setattr(managed, 'execute_managed', would_spawn)
             with owner_scope(owner):
                 result = await managed.admit_managed(owner, SessionRef(owner.profile_id, sid),
-                                                     {'admission_id': 'contained-managed'}, policy)
+                                                     {'admission_id': 'contained-managed', 'payload': {'text': 'hi'}}, policy)
             assert result == 'worker would execute', result
         # A probe or turn must not silently reset the user's persistent cd or retarget the root.
         with owner_scope(owner):
@@ -71,8 +71,8 @@ async def test_contained_persistent_cd_survives_each_execution_boundary(workspac
             assert resolve_task_overrides(child) == before_overrides
         again = terminal(policy, owner, child, live.route, 'pwd')
         assert again['exit_code'] == 0 and again['output'] == str(target), again
-        assert local_receipt(owner.db, sid)['policy'] == receipt['policy']
-        assert owner.db.get_session(sid)['cwd'] == binding['cwd']
+        assert local_receipt(owner, sid)['policy'] == receipt['policy']
+        assert session_cwd(owner, sid) == binding['cwd']
         assert policy.cwd == json.loads(policy.terminal_json)['TERMINAL_CWD'] == binding['cwd']
         assert (home / 'config.yaml').read_bytes() == before_config
     finally:
@@ -90,8 +90,7 @@ async def test_containment_never_adopts_configured_task_retarget(workspace, monk
     from gateway.session_authorities import owner_scope
     from gateway.session_contract import SessionRef
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import list_session_admissions
+    from tests.gateway.test_session_coding_workspace import local_receipt, pending_admissions, session_cwd
     from tools.terminal_tool import (
         clear_session_cwd, clear_task_env_overrides, get_session_cwd, register_task_env_overrides,
     )
@@ -100,7 +99,7 @@ async def test_containment_never_adopts_configured_task_retarget(workspace, monk
     assert 'result' in created, created
     sid = created['result']['session_id']
     child, live = compress(owner, sid)
-    policy = restore_policy(local_receipt(owner.db, sid)['policy'])
+    policy = restore_policy(local_receipt(owner, sid)['policy'])
     target = Path(binding['cwd']) / 'sub'
     monkeypatch.setattr(owner, '_schedule_admitted', lambda ref, row: None)
     try:
@@ -118,7 +117,7 @@ async def test_containment_never_adopts_configured_task_retarget(workspace, monk
         elif boundary == 'submit':
             reply = await rpc(connection, 'prompt.submit', session_id=sid, text='must not run', submission_id='override')
             assert reply.get('error', {}).get('message') == 'workspace_unavailable', reply
-            assert list_session_admissions(owner.db, session_id=sid) == []
+            assert pending_admissions(owner, sid) == []
         elif boundary == 'turn':
             turn = TurnRunner(owner.runner, SimpleNamespace(source=live.source, session_id=child, session_key=live.route))
             monkeypatch.setattr(turn, '_run_sync_scoped', lambda: {'ran_model': True})
@@ -131,12 +130,12 @@ async def test_containment_never_adopts_configured_task_retarget(workspace, monk
             monkeypatch.setattr(managed, 'execute_managed', would_spawn)
             with owner_scope(owner):
                 result = await managed.admit_managed(owner, SessionRef(owner.profile_id, sid),
-                                                     {'admission_id': 'override-managed'}, policy)
+                                                     {'admission_id': 'override-managed', 'payload': {'text': 'hi'}}, policy)
             assert result != 'worker would execute', result
             assert owner.pending_results['override-managed']['result']['failed'] is True
         with owner_scope(owner):
             assert get_session_cwd(live.route) == str(target)  # refusal never silently rebinds the route
-        assert local_receipt(owner.db, sid)['policy']['cwd'] == binding['cwd']
+        assert local_receipt(owner, sid)['policy']['cwd'] == binding['cwd']
     finally:
         with owner_scope(owner):
             for key in (child, sid, live.route):

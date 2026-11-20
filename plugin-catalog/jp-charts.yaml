@@ -1,12 +1,13 @@
 name: jp-charts
 repo: https://github.com/TakeshiTGAL/hermes-plugin-charts
-sha: 870b5fcb1c9ca3db00f4fe956ee8d860f20ea661
-description: "Bar, line, stacked and 100% band charts as phone-sized PNGs for chat replies and reports, with Japanese text, 万/億 units and a required unit and source line. Every bar, point, label and tick is read back from the finished figure and compared with the parsed data before the image is returned. Disclosure: no network calls at run time; reads a local .csv/.tsv/.txt/.json only when given its path (never hidden files or the Hermes home); writes PNGs to the Hermes image cache; a transform_llm_output hook adds a forgotten MEDIA line to replies on chat platforms and cron deliveries (setting auto_attach, on by default)."
+sha: 8eff93d1ea09a71975fa749116de633f1c952e88
+description: 'Bar, line, stacked and 100% band charts as phone-sized PNGs for chat replies and reports, with Japanese text, 万/億 units and a required unit and source line. Following Japanese chart conventions, it turns a table typed in chat or read from a CSV or JSON file into a bar or line graph ready to post. Every bar, point, label and tick is read back from the finished figure and compared with the parsed data before the image is returned. Disclosure — no network calls at run time; reads a local .csv/.tsv/.txt/.json only when given its path (never hidden files or the Hermes home); writes PNGs to the Hermes image cache; a transform_llm_output hook adds a forgotten MEDIA line to replies on chat platforms and cron deliveries (setting auto_attach, on by default). The tools are on for every surface, including gateways, and ask for no approval: anyone you allow on your Hermes gateway can call them. Turn a surface off with hermes tools. Installing the plugin also installs the Python packages matplotlib and matplotlib-fontja from PyPI. The PNGs are written to <HERMES_HOME>/cache/images. Removing the plugin deletes its folder only; the PNGs and those two packages stay. A transform_tool_result hook remembers value and unit pairs in the process for that session and does not change the tool result. A pre_tool_call hook blocks chart_render when a plotted number was already returned in the same session with a different unit string, including a comma-grouped number such as 1,234, and no PNG is written. pre_llm_call adds one paragraph only on a chart question, and adds nothing on other turns. A chart question is 図, グラフ, チャート, or the word chart, or chart_render, chart_validate, or chart_types called in the previous turn. Company, filing, and unrelated questions do not add it. The paragraph says to call chart_render only with numbers and the unit copied from a tool result, that 1,234 is the same integer as 1234, that a different unit blocks the chart, and not to say a chart was drawn or write 取得しました when no number was returned. transform_llm_output does not replace or delete the model''s sentences. It appends one line when this turn''s tool record has no figure and an area tool was called, or some tool was called on a company or filing question. The line is: Tool record: this turn returned no company, filing, address, subsidy, statute, or chart figure, so a number or a fetch claim in this reply is not from a tool result. chart_types and chart_validate are not a figure. A turn whose only area tool is address_split is left unchanged by this hook.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-charts#readme
-version: "0.1.0"
+version: 0.1.10
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-charts/8eff93d1ea09a71975fa749116de633f1c952e88/assets/catalog-banner.png
 requires_hermes: ">=0.21.4"
 platforms: []
 capabilities:
@@ -16,5 +17,8 @@ capabilities:
   - chart_types
   provides_hooks:
   - transform_llm_output
+  - transform_tool_result
+  - pre_tool_call
+  - pre_llm_call
   provides_middleware: []
   requires_env: []

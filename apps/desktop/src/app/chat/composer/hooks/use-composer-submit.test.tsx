@@ -16,6 +16,7 @@ import { $gateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
+import { continueReplyPause, endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -37,6 +38,7 @@ interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
+  disabled?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
@@ -64,6 +66,7 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
+  disabled = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
@@ -131,7 +134,7 @@ function renderSubmitHook({
         busy,
         busyInputMode,
         clearDraft,
-        disabled: false,
+        disabled,
         draftScopeRef,
         draftRef,
         drainNextQueued: vi.fn(async () => false),
@@ -686,6 +689,182 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('useComposerSubmit while the reply is paused for an automatic continuation', () => {
+  afterEach(() => {
+    cleanup()
+    endReplyPause('stored-session')
+    clearQueuedPrompts('stored-session')
+    vi.restoreAllMocks()
+  })
+
+  // A host plugin stopped the turn to apply a grant and continues it by itself
+  // (store/paused-replies.ts). Sent now, the message would barge into that
+  // continuation: the gateway interrupts a running turn for a plain send. Queued,
+  // it goes after it.
+  it('queues the message instead of sending it into the continuation', () => {
+    markReplyPaused('stored-session')
+    const { hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ text: 'and now read it' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('sends at once when no reply is paused', () => {
+    const { hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ text: 'and now read it' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  // A folder grant restarts the backend: the composer is disabled while the
+  // connection is down, which is most of the pause. Enter still takes the message.
+  it('takes a message typed while the backend is away, into the queue', () => {
+    markReplyPaused('stored-session')
+
+    const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      disabled: true,
+      text: 'and now read it'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled() // the queue clears it once it holds the words
+  })
+
+  it('still does nothing while the backend is away and no reply is paused', () => {
+    const { hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ disabled: true, text: 'and now read it' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  // The continuation runs as a turn of its own: a message sent then is queued
+  // behind it, never steered into it or sent as an interrupt.
+  it('queues a message sent while the continuation runs instead of steering it into that turn', () => {
+    markReplyPaused('stored-session')
+
+    const { hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'interrupt',
+      text: 'and now read it'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('queues with Ctrl+Enter while the reply is paused and no turn runs', () => {
+    markReplyPaused('stored-session')
+    const { hook, queueCurrentDraft } = renderSubmitHook({ text: 'and now read it' })
+
+    act(() => hook.result.current.queueDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+  })
+
+  // A request another surface sends through the composer (the review pane's ship
+  // button, a reply's Continue, a plugin's composer.submit) waits like a typed
+  // message: in the chat's queue through both phases, the unsent draft left alone.
+  it.each([
+    ['waits for its continuation', false],
+    ['has its continuation running', true]
+  ] as const)("queues another surface's request while the paused reply %s", async (_phase, busy) => {
+    markReplyPaused('stored-session')
+
+    if (busy) {
+      continueReplyPause('stored-session')
+    }
+
+    const h = renderSubmitHook({ busy, text: 'unsent draft' })
+
+    await act(async () => {
+      expect(requestComposerSubmit('ship this review', { target: 'main' })).toBe(true)
+    })
+
+    expect(getQueuedPrompts('stored-session').map(({ text, attachments }) => ({ text, attachments }))).toEqual([
+      { text: 'ship this review', attachments: [] }
+    ])
+    expect(h.onSubmit).not.toHaveBeenCalled()
+    expect(h.onSteer).not.toHaveBeenCalled()
+    expect(h.clearDraft).not.toHaveBeenCalled()
+    expect(h.loadIntoComposer).not.toHaveBeenCalled()
+    expect(h.stashAt).not.toHaveBeenCalled()
+    expect(h.editor.textContent).toBe('unsent draft')
+  })
+
+  // A preview widget's intent is a hidden request: it keeps its kind in the queue
+  // and is not steered into the continuation as a note.
+  it.each([false, true])('queues a hidden request as hidden while the reply is paused (busy: %s)', async busy => {
+    markReplyPaused('stored-session')
+
+    if (busy) {
+      continueReplyPause('stored-session')
+    }
+
+    const h = renderSubmitHook({ busy })
+
+    await act(async () => {
+      expect(requestComposerSubmit('[widget] option B', { target: 'main', displayKind: 'hidden' })).toBe(true)
+    })
+
+    expect(getQueuedPrompts('stored-session').map(({ text, displayKind }) => ({ text, displayKind }))).toEqual([
+      { text: '[widget] option B', displayKind: 'hidden' }
+    ])
+    expect(h.onSubmit).not.toHaveBeenCalled()
+    expect(h.onSteerHidden).not.toHaveBeenCalled()
+    expect(h.onSteer).not.toHaveBeenCalled()
+  })
+
+  // The pause is asked of the store when the request arrives: one that comes in
+  // before the composer has rendered the pause is held too.
+  it("holds another surface's request that arrives before the composer rendered the pause", () => {
+    const h = renderSubmitHook({ text: 'unsent draft' })
+
+    act(() => {
+      markReplyPaused('stored-session')
+      requestComposerSubmit('ship this review', { target: 'main' })
+    })
+
+    expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['ship this review'])
+    expect(h.onSubmit).not.toHaveBeenCalled()
+  })
+
+  // As behind a running turn, where a slash command from another surface is queued, never run mid-turn.
+  it('queues a slash command another surface sends while the reply waits for its continuation', async () => {
+    markReplyPaused('stored-session')
+    const h = renderSubmitHook()
+
+    await act(async () => {
+      requestComposerSubmit('/status', { target: 'main' })
+    })
+
+    expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['/status'])
+    expect(h.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it("sends another surface's request at once when no reply is paused", async () => {
+    const h = renderSubmitHook({ text: 'unsent draft' })
+
+    await act(async () => {
+      requestComposerSubmit('ship this review', { target: 'main' })
+    })
+
+    expect(h.onSubmit).toHaveBeenCalledExactlyOnceWith('ship this review', expect.objectContaining({ attachments: [] }))
+    expect(getQueuedPrompts('stored-session')).toEqual([])
   })
 })
 

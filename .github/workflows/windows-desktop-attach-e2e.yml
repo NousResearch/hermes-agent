@@ -41,18 +41,17 @@ jobs:
       # Full install (not --ignore-scripts): native addons need their lifecycle scripts.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       # Electron 42+ has no postinstall; unpack the binary the attach spec launches.
       - name: Prepare locked Electron runtime
         shell: bash
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       - name: Build the desktop app
-        working-directory: apps/desktop
         shell: bash
         timeout-minutes: 15
-        run: pnpm run build
+        run: just desktop-build
 
       - name: Attach spec on the dev tree
         id: dev

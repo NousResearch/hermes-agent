@@ -27,12 +27,12 @@ it('delivers coding choices through the extracted fresh-draft hook without repla
     $freshSessionRequestOptions.set(options)
     $freshSessionRequest.set($freshSessionRequest.get() + 1)
   })
-  expect(start).toHaveBeenCalledExactlyOnceWith(options)
+  expect(start).toHaveBeenCalledExactlyOnceWith({ ...options, preserveProfileSwitch: true })
 
   act(() => {
     $freshSessionRequestOptions.set({})
     $freshSessionRequest.set($freshSessionRequest.get() + 1)
   })
-  expect(start).toHaveBeenLastCalledWith({})
+  expect(start).toHaveBeenLastCalledWith({ preserveProfileSwitch: true })
   expect(start).toHaveBeenCalledTimes(2)
 })

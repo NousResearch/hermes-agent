@@ -2,6 +2,9 @@
   "name": "@hermes/ink",
   "version": "0.0.1",
   "private": true,
+  "engines": {
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
+  },
   "type": "module",
   "scripts": {
     "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",

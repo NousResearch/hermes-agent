@@ -87,7 +87,7 @@ async function createRoom(page: MockBackendFixture['page']) {
   }
 
   await dialog.getByRole('textbox', { name: 'Group name' }).fill('Programmer, Reviewer')
-  await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+  await dialog.getByRole('button', { name: 'Create group (2)' }).click()
 
   const groupTab = page.getByRole('tab', { name: /Programmer, Reviewer Close/ })
   const groupComposer = page.getByRole('textbox', { name: 'Message Programmer, Reviewer' }).filter({ visible: true })

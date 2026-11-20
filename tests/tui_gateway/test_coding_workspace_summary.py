@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from tui_gateway import server
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 
 
 def call(method, **params):
@@ -17,8 +17,7 @@ def call(method, **params):
 @pytest.mark.parametrize("mode", ["folder", "current", "worktree"])
 @pytest.mark.parametrize("live_method", ["session.resume", "session.activate"])
 def test_binding_is_exposed_on_create_cold_resume_and_live_info(tmp_path, monkeypatch, mode, live_method):
-    db_path = tmp_path / "state.db"
-    db = SessionDB(db_path)
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
@@ -37,11 +36,11 @@ def test_binding_is_exposed_on_create_cold_resume_and_live_info(tmp_path, monkey
     prepared.pop("projectName", None)
     created = call("session.create", source="desktop", cwd=prepared["cwd"], coding_workspace=prepared)
     stored_id = created["stored_session_id"]
-    persisted = json.loads(db.get_session(stored_id)["model_config"])["coding_workspace"]
+    persisted = dict(db.sessions.get(stored_id).model_config)["coding_workspace"]
     assert created["info"].get("coding_workspace") == persisted
     server._sessions.pop(created["session_id"])
     db.close()
-    db = SessionDB(db_path)
+    db = open_persistence(profile_scope(home=tmp_path))
 
     def fail_agent_build(*args, **kwargs):
         pytest.fail("Lazy resume and activation must not construct or schedule an agent")
@@ -63,5 +62,5 @@ def test_binding_is_exposed_on_create_cold_resume_and_live_info(tmp_path, monkey
         assert reattached["info"].get("coding_workspace") == persisted
     ordinary = call("session.create", source="desktop", cwd=str(folder))
     assert ordinary["info"].get("coding_workspace") is None
-    assert json.loads(db.get_session(stored_id)["model_config"])["coding_workspace"] == persisted
+    assert dict(db.sessions.get(stored_id).model_config)["coding_workspace"] == persisted
     db.close()

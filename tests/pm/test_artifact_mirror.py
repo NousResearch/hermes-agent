@@ -86,7 +86,8 @@ def test_both_pnpm_archives_follow_the_users_npm_registry(tmp_path, monkeypatch)
 
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://npm.corp.example/npm/")
-    artifacts = [a for target in ("linux-x64", "win32-arm64") for a in Lockfile(lockfile_path()).artifacts("pnpm", target)]
+    artifacts = [a for target in ("linux-x64", "win32-arm64", "linux-arm64-bionic")
+                 for a in Lockfile(lockfile_path()).artifacts("pnpm", target)]
     assert artifacts
     for artifact in artifacts:
         path = artifact["url"].removeprefix("https://registry.npmjs.org/")

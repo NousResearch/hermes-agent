@@ -8,8 +8,7 @@ import pytest
 from gateway.session_authorities import SessionAuthorities
 from gateway.session_authority import SessionAuthority
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
 
 
 @pytest.fixture
@@ -35,9 +34,10 @@ def drafts(tmp_path, monkeypatch):
     with ExitStack() as stack:
         authorities = []
         for home in (root, coder):
-            db = stack.enter_context(SessionDB(db_path=home / 'state.db'))
-            epoch = begin_runtime_epoch(db, instance_id='draft-completion')
-            authority = SessionAuthority(runner, profile_id=str(home), instance_id='draft-completion', db=db, epoch=epoch)
+            db = stack.enter_context(open_persistence(profile_scope(home=home)))
+            epoch = db.runtime.begin_epoch(instance_id='draft-completion')
+            authority = SessionAuthority(runner, profile_id=str(home), instance_id='draft-completion', persistence=db,
+                                         epoch=epoch)
             runner.session_authorities.add(home, authority, name='coder' if home == coder else None)
             authorities.append(authority)
         identity = {'user_id': 'fixture-owner', 'profile_scope': 'host'}

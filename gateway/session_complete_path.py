@@ -8,25 +8,25 @@ import json
 from pathlib import Path
 
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 async def complete_path(connection, ref, params):
     if (set(params) - {'session_id', 'profile', 'word', 'cwd', 'cwd_explicit'}
             or any(not isinstance(value, str) for key, value in params.items() if key != 'cwd_explicit')
             or ('cwd_explicit' in params and type(params['cwd_explicit']) is not bool)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     authority = connection.authority
     if 'session:read' not in connection.actor.capabilities or connection.actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     word = params.get('word', '')
     policy = None
     if not ref.session_id and 'session:create' not in connection.actor.capabilities:
         # A draft can name a host cwd before any session owns it, unlike an authorized session read.
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if ref.session_id:
         if ref.session_id not in authority.sessions:
-            raise RuntimeStoreError('not_found')
+            raise AuthorityRefusal('not_found')
         authorize(connection, ref, params, 'session:read')
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)

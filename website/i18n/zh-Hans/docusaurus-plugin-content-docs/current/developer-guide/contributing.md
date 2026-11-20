@@ -90,6 +90,10 @@ npm ci --prefix website
 npm run build:fast --prefix website
 ```
 
+在仓库根目录和各 JS workspace 目录中，npm 会拒绝所有安装或解析依赖的命令（`npm install`，无论是否带 `--ignore-scripts`、`--package-lock-only` 或 `--force`，以及 `npm ci`、`update`、`dedupe`、`uninstall`、`link`）：这些目录各有一个设置了 `engine-strict=true` 的 `.npmrc`，其 `package.json` 声明了任何 npm 都无法满足的 `engines.npm`。`npm rebuild` 和 `npm pkg set` 不会被拒绝。显式传入 `--engine-strict=false` 可绕过该拒绝。
+
+`npx`、`npm exec` 和 `npm run` 仍可使用，因此 MCP 服务器和工具照常启动。但 `engine-strict` 作用于整个检出目录：这些目录本身，以及通过根目录 `.npmrc` 作用于所有没有自己 `package.json` 的位置（`agent/`、`tools/`、Docker 镜像的 `/opt/hermes`）。在这些位置，如果 `npx` 要安装的包或它带入的任一非可选依赖声明的 `engines` 与当前 Node 或 npm 不符，`npx` 会拒绝安装，而在检出目录之外只会警告。
+
 图标从 `assets/nous-girl-*.svg` 和 `assets/backgrounds/` 生成。
 `node scripts/generate-icons.mjs` 使用 Hermes 运行时 Python（`HERMES_PYTHON`，否则为 PATH 上的 `python`）渲染图标：Pillow 和 resvg-py 是核心依赖。不要提交生成的 PNG/ICO/ICNS 文件。
 

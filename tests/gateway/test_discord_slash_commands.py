@@ -97,7 +97,12 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_SMART_THREAD_TITLES", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -112,6 +117,23 @@ def adapter():
     # construct a full auth context (allowlist / channel scope).
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
+
+
+def test_patchable_payload_excludes_install_and_context_metadata(adapter):
+    payload = {
+        "type": 1,
+        "name": "status",
+        "description": "Show Hermes session status",
+        "options": [],
+        "contexts": [2, 0, 1],
+        "integration_types": [1, 0],
+    }
+
+    assert adapter._patchable_app_command_payload(payload) == {
+        "name": "status",
+        "description": "Show Hermes session status",
+        "options": [],
+    }
 
 
 # ------------------------------------------------------------------

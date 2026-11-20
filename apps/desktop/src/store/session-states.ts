@@ -40,9 +40,10 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropQueuedLaunchPicksForProfile, migrateQueuedLaunchPicksForProfile } from './composer-queued-pick'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
-import { recordDislike } from './desktop-metrics'
+import { dropDesktopMetricsForProfile, migrateDesktopMetricsForProfile, recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
 import {
   adoptPendingRuntimeTabs,
@@ -54,6 +55,7 @@ import {
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { renameLocalOwnerRoute } from './profile-owner-rename'
 import { $projectTree } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -94,6 +96,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
+import { mergeSessionTile, ownerProfileKey, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
 import { orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
@@ -349,7 +352,11 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
 // Bound on the status request itself; past it the check counts as unanswered.
 export const LIVE_TURN_PROBE_TIMEOUT_MS = 15_000
-const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// One re-armed deadline per live session. A streaming turn can emit 30-80
+// events/s; the old shape cleared and allocated a new timeout for every one of
+// them. The timer now stays armed and reads `lastEventAt` when it fires, so a
+// token costs a number write instead of a timer swap.
+const sessionEventSilenceTimers = new Map<string, { lastEventAt: number; timer: ReturnType<typeof setTimeout> }>()
 // One token per status check in flight: an event, a settle, or a newer check
 // drops it, so a late answer cannot act on a turn that moved on.
 const silentTurnChecks = new Map<string, object>()
@@ -380,12 +387,12 @@ export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
 }
 
 function clearEventSilence(runtimeId: string) {
-  const timer = sessionEventSilenceTimers.get(runtimeId)
+  const armed = sessionEventSilenceTimers.get(runtimeId)
 
   silentTurnChecks.delete(runtimeId)
 
-  if (timer) {
-    clearTimeout(timer)
+  if (armed) {
+    clearTimeout(armed.timer)
     sessionEventSilenceTimers.delete(runtimeId)
   }
 }
@@ -519,7 +526,22 @@ async function recoverEndedLiveTurn(runtimeId: string) {
  *  also keeps it — the stall hint and Stop remain — and asks again next window.
  *  Only a backend that reports the turn over settles it. */
 async function onEventSilence(runtimeId: string) {
-  sessionEventSilenceTimers.delete(runtimeId)
+  const armed = sessionEventSilenceTimers.get(runtimeId)
+
+  if (armed) {
+    // Events landed after this timer was armed: the deadline is measured from
+    // the LAST event, so re-arm for the remainder instead of probing while the
+    // turn is still demonstrably producing.
+    const remaining = armed.lastEventAt + LIVE_TURN_EVENT_SILENCE_MS - performance.now()
+
+    if (remaining > 0) {
+      armed.timer = setTimeout(() => void onEventSilence(runtimeId), remaining)
+
+      return
+    }
+
+    sessionEventSilenceTimers.delete(runtimeId)
+  }
 
   if (!isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
     return
@@ -554,46 +576,83 @@ export function noteSessionEvent(runtimeId: string) {
   }
 
   const current = $sessionStates.get()[runtimeId]
+  const armed = sessionEventSilenceTimers.get(runtimeId)
 
-  clearEventSilence(runtimeId)
+  // Any real event invalidates an in-flight silence verdict, armed or not.
+  silentTurnChecks.delete(runtimeId)
 
   if (!isLiveTurnAwaitingEvents(current)) {
+    if (armed) {
+      clearTimeout(armed.timer)
+      sessionEventSilenceTimers.delete(runtimeId)
+    }
+
     return
   }
 
-  sessionEventSilenceTimers.set(
-    runtimeId,
-    setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
-  )
-}
+  // Monotonic: setTimeout runs on it, so a wall-clock jump cannot move the deadline.
+  const now = performance.now()
 
-const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  if (armed) {
+    armed.lastEventAt = now
 
-function armWatchdog(runtimeId: string) {
-  const existing = sessionWatchdogTimers.get(runtimeId)
-
-  if (existing) {
-    clearTimeout(existing)
+    return
   }
 
-  sessionWatchdogTimers.set(
-    runtimeId,
-    setTimeout(() => {
-      sessionWatchdogTimers.delete(runtimeId)
-      const current = $sessionStates.get()[runtimeId]
+  sessionEventSilenceTimers.set(runtimeId, {
+    lastEventAt: now,
+    timer: setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
+  })
+}
 
-      if (current?.busy) {
-        setSessionStalled(current.storedSessionId, true)
-      }
-    }, SESSION_WATCHDOG_TIMEOUT_MS)
-  )
+// One re-armed deadline per busy session. `handleTransition` calls this on EVERY
+// busy publish (a streamed delta every ~40 ms), and the old shape cleared and
+// allocated a 5-minute timeout on each one. The timer stays armed and re-checks
+// `lastBusyAt` when it fires, so a publish costs a number write.
+const sessionWatchdogTimers = new Map<string, { lastBusyAt: number; timer: ReturnType<typeof setTimeout> }>()
+
+function fireWatchdog(runtimeId: string) {
+  const armed = sessionWatchdogTimers.get(runtimeId)
+
+  if (armed) {
+    const remaining = armed.lastBusyAt + SESSION_WATCHDOG_TIMEOUT_MS - performance.now()
+
+    if (remaining > 0) {
+      armed.timer = setTimeout(() => fireWatchdog(runtimeId), remaining)
+
+      return
+    }
+
+    sessionWatchdogTimers.delete(runtimeId)
+  }
+
+  const current = $sessionStates.get()[runtimeId]
+
+  if (current?.busy) {
+    setSessionStalled(current.storedSessionId, true)
+  }
+}
+
+function armWatchdog(runtimeId: string) {
+  const armed = sessionWatchdogTimers.get(runtimeId)
+
+  if (armed) {
+    armed.lastBusyAt = performance.now()
+
+    return
+  }
+
+  sessionWatchdogTimers.set(runtimeId, {
+    lastBusyAt: performance.now(),
+    timer: setTimeout(() => fireWatchdog(runtimeId), SESSION_WATCHDOG_TIMEOUT_MS)
+  })
 }
 
 function clearWatchdog(runtimeId: string) {
-  const t = sessionWatchdogTimers.get(runtimeId)
+  const armed = sessionWatchdogTimers.get(runtimeId)
 
-  if (t) {
-    clearTimeout(t)
+  if (armed) {
+    clearTimeout(armed.timer)
     sessionWatchdogTimers.delete(runtimeId)
   }
 }
@@ -938,14 +997,14 @@ export function dropSessionState(runtimeId: string) {
  *  wiped gateway's sessions must not fire stale clears or linger in the
  *  sidebar merge keep-set after the switch. */
 export function clearAllSessionStates() {
-  for (const timer of sessionWatchdogTimers.values()) {
-    clearTimeout(timer)
+  for (const armed of sessionWatchdogTimers.values()) {
+    clearTimeout(armed.timer)
   }
 
   sessionWatchdogTimers.clear()
 
-  for (const timer of sessionEventSilenceTimers.values()) {
-    clearTimeout(timer)
+  for (const armed of sessionEventSilenceTimers.values()) {
+    clearTimeout(armed.timer)
   }
 
   sessionEventSilenceTimers.clear()
@@ -1474,51 +1533,8 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
 
-function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
-  if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
-    return (
-      left.connectionId.trim() === right.connectionId.trim() &&
-      normalizeProfileKey(left.profile) === normalizeProfileKey(right.profile) &&
-      normalizeProfileKey(left.targetProfile ?? left.profile) ===
-        normalizeProfileKey(right.targetProfile ?? right.profile)
-    )
-  }
-
-  if (typeof left === 'string' && typeof right === 'string') {
-    return normalizeProfileKey(left) === normalizeProfileKey(right)
-  }
-
-  return false
-}
-
 function tileWorkspaceMode(tile: SessionTile): WorkspaceMode {
   return tile.workspaceMode ?? 'sessions'
-}
-
-function tilesShareOwner(left: SessionTile, right: SessionTile): boolean {
-  if (left.workspaceMode && right.workspaceMode && left.workspaceMode !== right.workspaceMode) {
-    return false
-  }
-
-  const workspaceMode = left.workspaceMode ?? right.workspaceMode ?? 'sessions'
-
-  if (workspaceMode === 'bots') {
-    if (left.workspaceOwnerKey && right.workspaceOwnerKey) {
-      return left.workspaceOwnerKey === right.workspaceOwnerKey
-    }
-
-    if (left.ownerRoute && right.ownerRoute) {
-      return sameSessionOwner(left.ownerRoute, right.ownerRoute)
-    }
-
-    return true
-  }
-
-  if (left.ownerRoute && right.ownerRoute) {
-    return sameSessionOwner(left.ownerRoute, right.ownerRoute)
-  }
-
-  return true
 }
 
 function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, tileProfile = profileKey()): boolean {
@@ -1533,48 +1549,6 @@ function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, t
   }
 
   return typeof mainOwner === 'string' && normalizeProfileKey(mainOwner) === normalizeProfileKey(tileProfile)
-}
-
-function mergeSessionTile(previous: SessionTile, next: SessionTile, storedSessionId: string): SessionTile {
-  const merged: SessionTile = { ...previous, storedSessionId }
-
-  if (next.anchor !== undefined) {
-    merged.anchor = next.anchor
-  }
-
-  if (next.before !== undefined) {
-    merged.before = next.before
-  }
-
-  if (next.dir !== undefined) {
-    merged.dir = next.dir
-  }
-
-  if (next.error !== undefined) {
-    merged.error = next.error
-  }
-
-  if (next.ownerRoute !== undefined) {
-    merged.ownerRoute = next.ownerRoute
-  }
-
-  if (next.runtimeId !== undefined) {
-    merged.runtimeId = next.runtimeId
-  }
-
-  if (next.workspaceMode !== undefined) {
-    merged.workspaceMode = next.workspaceMode
-  }
-
-  if (next.workspaceOwnerKey !== undefined) {
-    merged.workspaceOwnerKey = next.workspaceOwnerKey
-  }
-
-  if (next.workspaceTabTitle !== undefined) {
-    merged.workspaceTabTitle = next.workspaceTabTitle
-  }
-
-  return merged
 }
 
 function rekeyTileList(
@@ -1609,14 +1583,6 @@ function rekeyTileList(
   }
 
   return tiles.map(t => (t === stale ? { ...t, storedSessionId: nextStoredSessionId } : t))
-}
-
-function ownerProfileKey(owner: SessionOwnerScope): string | undefined {
-  if (isSessionOwnerRoute(owner)) {
-    return normalizeProfileKey(owner.profile)
-  }
-
-  return typeof owner === 'string' ? normalizeProfileKey(owner) : undefined
 }
 
 /**
@@ -2723,6 +2689,7 @@ export function dropTilesForProfile(
   // connection scope so deletion cannot erase same-named local tabs instead.
   const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
   const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
+  dropDesktopMetricsForProfile(name, (route ? routeConnection : ambientConnection) || LOCAL_CONNECTION_ID)
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
     if (!owner) {
@@ -2795,7 +2762,8 @@ export function dropTilesForProfile(
   // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
   // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
   dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
-  dropBrowserProfilePrefs(name)
+  dropBrowserProfilePrefs(name, route?.connectionId?.trim() || undefined)
+  dropQueuedLaunchPicksForProfile(name, route ? (route.connectionId ?? '') : undefined)
 }
 
 /**
@@ -2806,7 +2774,7 @@ export function dropTilesForProfile(
  * to a backend that no longer exists ("Couldn't open this session", #111868).
  * Local-connection state only; a remote gateway rename executes there.
  */
-export function migrateTilesForProfile(oldProfile: string, newProfile: string): void {
+export async function migrateTilesForProfile(oldProfile: string, newProfile: string): Promise<void> {
   const from = normalizeProfileKey(oldProfile)
   const to = normalizeProfileKey(newProfile)
 
@@ -2814,21 +2782,11 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     return
   }
 
-  const isLocal = (owner: SessionProfileRoute | undefined) =>
-    Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'
+  // Drain queued metric publications before changing local ownership. Keep all UI migrations
+  // below contiguous, so waiting for a frozen peer's coordinator cannot expose a half-rename.
+  await migrateDesktopMetricsForProfile(from, to)
 
-  const renamedOwner = (owner: SessionProfileRoute | undefined): SessionProfileRoute | undefined => {
-    if (!owner || !isLocal(owner)) {
-      return owner
-    }
-
-    const profile = normalizeProfileKey(owner.profile) === from ? to : owner.profile
-    const targetProfile = normalizeProfileKey(owner.targetProfile) === from ? to : owner.targetProfile
-
-    return profile === owner.profile && targetProfile === owner.targetProfile
-      ? owner
-      : { ...owner, profile, ...(targetProfile === undefined ? {} : { targetProfile }) }
-  }
+  const renamedOwner = (owner: SessionProfileRoute | undefined) => renameLocalOwnerRoute(owner, from, to)
 
   const moved = tilesByProfile[from]
 
@@ -2863,6 +2821,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)
   migrateBrowserProfilePrefs(from, to)
+  migrateQueuedLaunchPicksForProfile(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

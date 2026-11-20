@@ -338,7 +338,7 @@ def test_a_hosted_process_is_never_checkpointed_and_a_recovered_one_stays_its_ag
         id="proc_hosted_ckpt", command="sleep 600", task_id=key, sandbox_key=key, pid=os.getpid(),
         pid_scope="host", host_start_time=1.0)
     checkpoint = tmp_path / "procs.json"
-    with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+    with patch("tools.process_registry._checkpoint_path", return_value=checkpoint):
         registry._write_checkpoint()
         assert json.loads(checkpoint.read_text()) == []
         checkpoint.write_text(json.dumps([{"session_id": "proc_hosted_ckpt", "command": "sleep 600",

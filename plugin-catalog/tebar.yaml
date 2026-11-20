@@ -1,0 +1,17 @@
+name: tebar
+title: Tebar
+repo: https://github.com/tebarapp/tebar-agent-plugin
+sha: 7269c261e1fd57faee46b69ee1efb7139a914949
+description: "Publish and schedule social media posts through Tebar's (tebar.app, Indonesian social media scheduler) official hosted MCP server: Instagram, Threads, Facebook Pages, TikTok, YouTube, LinkedIn, X, Pinterest, Telegram and Discord; edit, cancel and retry scheduled posts; read account and post statistics; reply to comments, answer Instagram DMs and run comment-to-DM automations; keep an ideas board. Bundles one workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to https://api.tebar.app/mcp, which calls the social platforms' APIs for the user's connected accounts, with the user's API key from TEBAR_API_KEY sent as a Bearer header. Write actions are public and cannot be taken back through Tebar: they publish posts, reply to comments, send DMs and turn on automations that reply to people on their own; posting to X is paid from the user's Tebar balance. The package marks the server untrusted, so Hermes asks before every tool not annotated read-only. To upload a file from the Hermes machine, the bundled skill has the agent run a curl upload command returned by Tebar's server with that file's path. Account data returned by tools (posts, statistics, comments, DMs, commenter and customer names) reaches the model provider. API access needs a paid Tebar plan or the free trial. The tool list comes from the server at run time and is not covered by the pinned sha."
+maintainer: Tebar
+tier: community
+category: tools
+requires_hermes: '>=0.22.0'
+docs_url: https://github.com/tebarapp/tebar-agent-plugin/blob/7269c261e1fd57faee46b69ee1efb7139a914949/README.md
+version: '1.0.0'
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [TEBAR_API_KEY]

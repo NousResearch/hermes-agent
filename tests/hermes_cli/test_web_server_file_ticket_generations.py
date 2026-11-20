@@ -84,12 +84,12 @@ def _ticket(client, route, query):
 def _session_owned_file(home, profile, content):
     """Write the file outside the session owner's home: binding only the file's path
     would miss the owner's deletion."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     (home / "clip.mp4").write_bytes(content)
-    db = SessionDB(db_path=profile / "state.db")
-    db.create_session("synthetic-session", "desktop", cwd=str(home), profile_name="worker")
-    db.close()
+    with open_persistence(profile_scope(home=profile)) as store:
+        seed_session(store, "synthetic-session", "desktop", cwd=str(home), profile_name="worker")
 
 
 def _session_scope(home, profile):

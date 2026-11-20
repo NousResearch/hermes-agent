@@ -278,11 +278,11 @@ def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
     client = _load_fal_client()
     headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_video_gateway()
-    if managed_gateway is None:
-        return client.submit(endpoint, arguments=arguments, headers=headers)
     from tools.fal_common import (
-        _extract_http_status, _managed_fal_billing_error, submit_managed_fal_with_rate_limit_retry,
+        _extract_http_status, _managed_fal_billing_error, direct_fal_client, submit_managed_fal_with_rate_limit_retry,
     )
+    if managed_gateway is None:
+        return direct_fal_client(client).submit(endpoint, arguments=arguments, headers=headers)
     try:
         return submit_managed_fal_with_rate_limit_retry(
             lambda request_headers: _get_managed_fal_video_client(managed_gateway).submit(
@@ -300,6 +300,10 @@ def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
                              f"  • Pick a different model via `hermes tools` → Video Generation.") from exc
         raise
 
+
+# The managed FAL gateway answers HTTP 413 above ~4.5 MB of request body, so the tool layer
+# downscales inlined source images to fit this many data: URL characters (same budget as image_generate).
+MAX_INLINE_IMAGE_CHARS = 3_500_000
 
 # ByteDance SeedVR2 on FAL: $0.001/megapixel of output; a 5s 720p→1440p 2x pass is roughly $0.44.
 UPSCALER_ENDPOINT = "fal-ai/seedvr/upscale/video"
@@ -377,11 +381,13 @@ class FALVideoGenProvider(VideoGenProvider):
                     "resolutions": list(family["resolutions"] or []), "max_duration": max(durations), "min_duration": min(durations),
                     "supports_audio": bool(family["audio"]), "audio_always_on": bool(family.get("audio_native")),  # no toggle: description only
                     "supports_negative_prompt": bool(family["negative"]), "supports_seed": bool(family["seed"]),
-                    "supports_upscale": True, "max_reference_images": 0}  # SeedVR chains for any family
+                    "supports_upscale": True, "max_reference_images": 0,  # SeedVR chains for any family
+                    "max_inline_image_chars": MAX_INLINE_IMAGE_CHARS}
         spans = [m["durations"] for m in FAL_FAMILIES.values() if m["durations"]]
         return {"modalities": ["text", "image"], "aspect_ratios": ["16:9", "9:16", "1:1"], "resolutions": ["360p", "540p", "720p", "1080p"],
                 "max_duration": max([1] + [max(d) for d in spans]), "min_duration": min([min(d) for d in spans], default=1),
-                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0}
+                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0,
+                "max_inline_image_chars": MAX_INLINE_IMAGE_CHARS}
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,

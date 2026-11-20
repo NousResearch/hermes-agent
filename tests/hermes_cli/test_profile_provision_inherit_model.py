@@ -97,8 +97,6 @@ def test_inherit_launch_model_pins_a_bare_custom_endpoint(monkeypatch, tmp_path,
     for var in ("CUSTOM_BASE_URL", "OPENAI_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LAB_URL", "http://127.0.0.1:11434/v1")
-    # Hermetic: the pin probes the endpoint's /models.
-    monkeypatch.setattr("hermes_cli.models.probe_api_models", lambda *a, **k: {"models": ["llama3"]})
     atomic_config_write(
         home / "config.yaml",
         {

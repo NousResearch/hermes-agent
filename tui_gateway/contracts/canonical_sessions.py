@@ -182,11 +182,16 @@ class CanonicalListParams(ProfileParams):
     title: str | None = None
     include_hidden: bool = False
     # Only conversations of this folder, judged on each conversation's first row by the classic CLI's
-    # ``hermes -c`` rule (``hermes_state_sessions.workspace_key``): its git repo root equals this, or
+    # ``hermes -c`` rule (``persistence.conversation.sessions.workspace_key``): its git repo root equals this, or
     # (no root recorded) its cwd is this folder or under it. Pass the caller's repo root (else its cwd).
     workspace: str | None = None
     # Each row also carries the picker fields below (off by default: a live-list poll does not pay for them).
     picker: bool = False
+    # Stored scope only. ``query``: conversations whose title or id contains this text (1-200 characters).
+    # ``cursor``: an earlier stored page's ``next_cursor``, valid only with that page's ``workspace``,
+    # ``query`` and ``include_hidden``.
+    query: str | None = None
+    cursor: str | None = None
 
 
 class CanonicalSessionListRow(Result):
@@ -217,6 +222,8 @@ class CanonicalSessionListRow(Result):
 class CanonicalListResult(Result):
     sessions: list[CanonicalSessionListRow]
     scope: Literal['stored', 'live']
+    # Stored scope: null once the listing is exhausted (a last page may be empty). Live scope: absent.
+    next_cursor: str | None = None
 
 
 class CanonicalAttachment(Params):

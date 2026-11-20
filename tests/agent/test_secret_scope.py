@@ -2,6 +2,7 @@
 import pytest
 
 from agent import secret_scope as ss
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -392,7 +393,7 @@ class TestEnvFileParsing:
         (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n")
         from hermes_cli import env_loader
 
-        home_key = str(tmp_path.resolve())
+        home_key = hermes_home_key(tmp_path)
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,
             home_key,
@@ -414,11 +415,49 @@ class TestEnvFileParsing:
 
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,
-            str(other.resolve()),
+            hermes_home_key(other),
             {"XIAOMI_API_KEY": "sk-other-profile"},
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_build_profile_secret_scope_drops_planted_launch_only_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """#135200: a planted launch-only key in the user-writable ``.env`` must not
+        survive into the mapping. ``get_secret`` consults ``_is_global_env`` first, but
+        direct ``scope.get`` readers (e.g. ``platform_gate_env`` under multiplexing)
+        do not — they would read the planted value as if it were a profile secret."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        (profile / ".env").write_text(
+            "HERMES_MANAGED_DIR=/nonexistent/user-choice\n"
+            "SLACK_ALLOWED_USERS=legit-profile-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
+
+        scope = ss.build_profile_secret_scope(profile)
+
+        assert "HERMES_MANAGED_DIR" not in scope
+        assert scope["SLACK_ALLOWED_USERS"] == "legit-profile-value"  # control: others survive
+
+        # The direct-reader threat: an installed scope must answer `.get` miss for the
+        # planted key instead of the planted value.
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(dict(scope))
+        try:
+            assert ss.current_secret_scope().get("HERMES_MANAGED_DIR") is None
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_build_profile_secret_scope_drops_lowercase_launch_only_entry(self, tmp_path):
+        """Windows env names are case-insensitive, so the filter folds case."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        (profile / ".env").write_text(
+            "hermes_managed_dir=/user/choice\nHermes_Home=/x\nOTHER=1\n", encoding="utf-8")
+        assert ss.build_profile_secret_scope(profile) == {"OTHER": "1"}
 
 
 class TestApiServerListenerGlobals:

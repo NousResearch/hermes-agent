@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… (виберіть {label})"
     approval_command_truncated: "… (команду скорочено — повний текст: /logs або /debug)"
     approval_description_truncated: "… (опис скорочено)"
+    approval_schedule_truncated: "… (повне завдання виведено вище)"
     approval_title_schedule: "⏰  Запланувати це завдання?"
     approval_schedule_once: "Дозволити"
     approval_schedule_session: "Дозволити в цьому чаті"

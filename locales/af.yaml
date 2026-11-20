@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… (kies {label})"
     approval_command_truncated: "… (opdrag afgekap — gebruik /logs of /debug vir die volle teks)"
     approval_description_truncated: "… (beskrywing afgekap)"
+    approval_schedule_truncated: "… (volledige taak hierbo gedruk)"
     approval_title_schedule: "⏰  Skeduleer hierdie taak?"
     approval_schedule_once: "Laat toe"
     approval_schedule_session: "Laat toe vir hierdie gesprek"

@@ -254,6 +254,21 @@ def test_cold_waiter_saturation_does_not_delay_stock_search(monkeypatch):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('remaining', [0, .05])
+def test_lookup_projection_lock_uses_remaining_request_deadline(remaining):
+    from hermes_cli.skill_catalog.bootstrap import lookup
+    from hermes_cli.skill_catalog.locks import FileLease
+    from hermes_cli.skill_catalog.projection import Projection
+    from hermes_cli.skill_catalog.validation import CatalogError
+    projection = Projection(get_hermes_home())
+    with FileLease(projection.directory / 'mutation.lock'):
+        began = time.monotonic()
+        with pytest.raises(CatalogError) as caught:
+            lookup(None, deadline=began + remaining)
+        assert caught.value.code == 'busy'
+        assert time.monotonic() - began < 2
+
+
 def test_official_uses_one_absolute_bootstrap_and_availability_deadline(client, cold, monkeypatch):
     from hermes_cli.skill_catalog import http
     manager = cold()

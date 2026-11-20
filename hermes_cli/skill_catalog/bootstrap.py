@@ -82,7 +82,7 @@ def lookup(profile, *, deadline=None):
     # may own the actual OS lease. Never send its identifiers to the stock hub.
     from hermes_cli.skill_catalog.projection import Projection
     from hermes_cli.skill_catalog.validation import CatalogError
-    registrations = Projection(home).read()['registrations']
+    registrations = Projection(home).read(deadline=end)['registrations']
     if registrations.keys() - {entry.registration_id for entry in entries}:
         raise CatalogError('provider_unavailable', 'Catalog provider is served by another process.')
     if entries:

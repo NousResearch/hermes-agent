@@ -277,8 +277,8 @@ class Projection:
                     with suppress(OSError):
                         os.unlink(leftover)
 
-    def read(self):
-        with self.transaction() as doc:
+    def read(self, *, deadline=None):
+        with self.transaction(deadline=deadline) as doc:
             return copy.deepcopy(doc)
 
     def start(self, entry):

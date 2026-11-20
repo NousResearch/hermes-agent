@@ -1,4 +1,10 @@
-import { type ChatMessage, type GatewayEventPayload, QUESTION_CARD_TOOLS } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type GatewayEventPayload,
+  type PendingClarifyProjection,
+  QUESTION_CARD_TOOLS,
+  restorePendingClarifyToolCall
+} from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
@@ -96,4 +102,29 @@ export function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId
   }
 
   return changed ? next : messages
+}
+
+/**
+ * The transcript a cold resume paints when the open clarify was re-delivered
+ * while `session.resume` was in flight. That delivery seeds the runtime with
+ * nothing but the request-id projection; treating it as the prior transcript
+ * drops the stored history, and on a chat longer than one page the card then
+ * remounts (losing its staged picks) when an older page lands above it.
+ * Rebuild from the stored transcript and re-arm the clarify on it. Null when
+ * `seeded` holds anything besides that projection, or nothing is stored.
+ */
+export function transcriptUnderEarlyClarify(
+  seeded: ChatMessage[],
+  stored: ChatMessage[],
+  request: ClarifyRequest | undefined
+): PendingClarifyProjection | null {
+  if (!request || seeded.length === 0 || stored.length === 0) {
+    return null
+  }
+
+  if (withoutEarlyClarifyProjection(seeded, request.requestId).length > 0) {
+    return null
+  }
+
+  return restorePendingClarifyToolCall(stored, pendingClarifyToolPayload(request))
 }

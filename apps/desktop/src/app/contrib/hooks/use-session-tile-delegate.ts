@@ -15,6 +15,7 @@ import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
+import { $clarifyRequests } from '@/store/clarify'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -36,13 +37,14 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import type { useSessionActions } from '../../session/hooks/use-session-actions'
+import { transcriptUnderEarlyClarify } from '../../session/hooks/use-session-actions/restore-pending-clarify'
 import {
   chatMessageArraysEquivalent,
   overlayConcurrentMessageChanges,
@@ -81,6 +83,27 @@ function isWarmTileState(
   storedSessionId: string
 ): cached is ClientSessionState {
   return cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)
+}
+
+/**
+ * A cold resume's transcript: what the runtime already holds, else the stored
+ * rows. An open clarify re-delivered while the resume was in flight seeds the
+ * runtime with its card alone, which is not the chat's transcript, so then the
+ * stored rows are painted under the re-armed card.
+ */
+function coldResumeTranscript(
+  previous: ChatMessage[],
+  storedRows: SessionMessage[],
+  runtimeId: string
+): Pick<ClientSessionState, 'messages'> & Partial<Pick<ClientSessionState, 'streamId'>> {
+  if (previous.length === 0) {
+    return { messages: toChatMessages(storedRows) }
+  }
+
+  const request = $clarifyRequests.get()[runtimeId]
+  const underClarify = request ? transcriptUnderEarlyClarify(previous, toChatMessages(storedRows), request) : null
+
+  return underClarify ?? { messages: previous }
 }
 
 function mergeTileTranscript(
@@ -540,21 +563,22 @@ export function useSessionTileDelegate({
           state => {
             const previousMessages = state.messages.length > 0 ? state.messages : resumeRequestBaselineMessages
 
-            const messages = authoritativeSnapshot
-              ? resumed.messages.length > 0
-                ? overlayConcurrentMessageChanges(
-                    mergeTileTranscript(
-                      resumeRequestBaselineMessages,
-                      toChatMessages(resumed.messages),
-                      cached?.streamId
-                    ),
-                    resumeRequestBaselineMessages,
-                    previousMessages
-                  )
-                : previousMessages
-              : previousMessages.length > 0
-                ? previousMessages
-                : toChatMessages(prefetch?.messages ?? resumed.messages ?? [])
+            const transcript = authoritativeSnapshot
+              ? {
+                  messages:
+                    resumed.messages.length > 0
+                      ? overlayConcurrentMessageChanges(
+                          mergeTileTranscript(
+                            resumeRequestBaselineMessages,
+                            toChatMessages(resumed.messages),
+                            cached?.streamId
+                          ),
+                          resumeRequestBaselineMessages,
+                          previousMessages
+                        )
+                      : previousMessages
+                }
+              : coldResumeTranscript(previousMessages, prefetch?.messages ?? resumed.messages ?? [], runtimeId)
 
             const busyChangedWhileResuming = cached
               ? Boolean(
@@ -578,7 +602,7 @@ export function useSessionTileDelegate({
                 : {}),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
-              messages
+              ...transcript
             }
           },
           storedSessionId

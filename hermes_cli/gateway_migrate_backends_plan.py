@@ -852,8 +852,9 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
     if (plan.unsupported or plan.candidates) and (problem := secret_source_blocker(host)):
         plan.blockers.append(problem)
     if plan.unsupported:
-        _manual_turns(plan, host, force_interrupt)
         _manual_target(plan, host, keep_webapp)
+        if not plan.blockers:
+            _manual_turns(plan, host, force_interrupt)
         return plan
     if not plan.candidates:
         return plan

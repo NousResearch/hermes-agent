@@ -232,6 +232,18 @@ def test_windows_steps_block_when_a_turn_is_running_unless_force_interrupt(home,
     assert 'schtasks /End /TN "Hermes Dashboard"' in out
 
 
+def test_an_already_blocked_windows_plan_reads_no_turns_and_adds_no_turn_blocker(home, capsys):
+    (home / "config.yaml").write_text("model:\n  default: fake-model\nsecrets:\n  vault:\n    enabled: true\n",
+                                      encoding="utf-8")
+    host = WindowsHost(home)
+    host.running_turns = lambda pid, start_time: pytest.fail("turn markers read for an already blocked plan")
+
+    assert engine.cmd_apply(host, _args(dry_run=True, json=True)) == engine.EXIT_BLOCKED
+    blocked = json.loads(capsys.readouterr().out)["plan"]
+    assert len(blocked["blockers"]) == 1 and "external secret source is enabled" in blocked["blockers"][0]
+    assert blocked["unsupported"][0]["steps"] == []
+
+
 def test_where_wmic_works_the_windows_report_reads_and_prints_what_main_does(monkeypatch):
     from hermes_cli import gateway_migrate_backends as gmb
     monkeypatch.setattr(gmb, "os_family", lambda: "win32")

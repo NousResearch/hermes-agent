@@ -244,7 +244,7 @@ def _check_native_assets(declaration: str, clone_dir: str, repo: str, sha: str) 
     if tag_pin.returncode != 0 or _substituted(tag_pin.stdout) != sha:
         raise EntryRejected(f"native_assets tag {assets.tag} must resolve to the catalog pin")
     owner_repo = contract["github_repository"](repo)
-    approvals = json.loads(_NATIVE_REPACK_ALLOWLIST.read_text(encoding="utf-8"))
+    approvals = json.loads(_NATIVE_REPACK_ALLOWLIST.read_text(encoding="utf-8-sig"))
     with tempfile.TemporaryDirectory(prefix="catalog-native-") as staging:
         for target, asset in assets.targets.items():
             identity = {

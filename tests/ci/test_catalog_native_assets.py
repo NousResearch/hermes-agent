@@ -46,7 +46,7 @@ def test_native_provenance_requires_reviewed_source_or_exact_repack(
         entry = zipfile.ZipInfo(member)
         entry.create_system = 3
         entry.external_attr = 0o100755 << 16
-        archive.writestr(entry, b"\xcf\xfa\xed\xfetest host")
+        archive.writestr(entry, bytes.fromhex("cffaedfe0c000001000000000200000015000000") + b"test host")
     digest = hashlib.sha256(published.read_bytes()).hexdigest()
     declaration = {
         "tag": tag,

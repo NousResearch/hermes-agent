@@ -1718,3 +1718,27 @@ def test_the_manual_steps_never_copy_over_or_remove_a_file_kept_for_its_edits(ho
     for step in steps:
         assert step in out  # the run printed the same steps --status returns
 
+
+def test_restore_detach_of_a_hand_started_backend_exits_3_before_any_background_run(home, capsys):
+    """The command the user typed refuses (exit 3) instead of reporting a started background run that
+    can only refuse."""
+    host = FakeHost(home, supervisor="manual")
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    host.calls.clear()
+    capsys.readouterr()
+
+    assert engine.cmd_restore(host, _args(apply=False, restore=True, detach=True)) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert host.spawned == [] and host.calls == [] and engine.read_manifest(home)["state"] == "done"
+    assert "Nothing changed" in out and "without --detach" in out
+
+
+def test_restore_detach_of_a_service_backend_still_starts_the_background_run(home, capsys):
+    host = FakeHost(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    capsys.readouterr()
+
+    assert engine.cmd_restore(host, _args(apply=False, restore=True, detach=True)) == engine.EXIT_OK
+    assert len(host.spawned) == 1 and "--restore" in host.spawned[0]
+

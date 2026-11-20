@@ -576,7 +576,7 @@ listed as done, a file kept for its edits is never copied over or removed (the s
 merge the lines you need by hand before starting the old backend), and a missing backup is never copied. When the rollback cannot prove the gateway is off the old
 address, the old backend stays down and the run ends with manual steps (exit 5). A `--detach` run never
 starts a backend you started by hand again (its transient unit would stop it when the run ends): `--restore
---detach` refuses (exit 3), and a background rollback leaves it down (exit 5) and prints the
+--detach` refuses before it starts a background run (exit 3, under systemd), and a background rollback leaves it down (exit 5) and prints the
 `--restore` command to run from a terminal, which starts it again as it ran.
 On macOS the old backend's LaunchAgent is booted out, disabled (`launchctl disable gui/UID/LABEL`) and its plist
 renamed to `.disabled`, so neither the next login nor a later `launchctl bootstrap` starts it; `--restore` and a

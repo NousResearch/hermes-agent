@@ -71,49 +71,61 @@ def _card(**kw):
     return SimpleNamespace(**{"id": "t_x", "assignee": "worker", "model_override": None, "provider_override": None, **kw})
 
 
-_LAB = {"model": {"provider": "openrouter", "default": "profile-model"},
-        "custom_providers": [{"name": "lab", "base_url": "https://lab.example.test/v1", "model": "entry-model"}]}
+_LAB_ENTRY = [{"name": "lab", "base_url": "https://lab.example.test/v1", "model": "entry-model"}]
 
 
-def test_named_provider_pick_brings_its_entry_model_and_task_model_still_wins():
+@pytest.mark.parametrize("profile_model, card, expected", [
+    ({"provider": "openrouter", "default": "profile-model"}, {"provider_override": "custom:lab"}, "entry-model"),
+    ({"provider": "custom:lab", "default": "profile-model"}, {"provider_override": "custom:lab"}, "entry-model"),
+    ("profile-model", {"provider_override": "custom:lab"}, "entry-model"),
+    ({"provider": "custom:lab"}, {"provider_override": "custom"}, "entry-model"),
+    ({"provider": "openrouter", "default": "profile-model"},
+     {"provider_override": "custom:lab", "model_override": "task-model"}, "task-model"),
+    ({"provider": "openrouter", "default": "profile-model"}, {}, "profile-model"),
+    ({"provider": "custom:lab", "default": "profile-model"}, {"provider_override": "anthropic"}, "profile-model"),
+    ({"provider": "custom:lab"}, {"provider_override": "anthropic"}, "claude-opus-4-6"),
+], ids=["other-route", "same-route-mapping", "string-profile-model", "bare-custom-held-named",
+        "task-model-wins", "no-pick", "different-route-keeps-default", "different-route-catalog"])
+def test_card_model_follows_the_launch_route_pick(profile_model, card, expected, monkeypatch):
+    from hermes_cli import models
     from hermes_cli.kanban_worker_preflight import task_model
 
-    assert task_model(_card(provider_override="custom:lab"), _LAB) == ("entry-model", False)
-    assert task_model(_card(provider_override="custom:lab", model_override="task-model"), _LAB) == ("task-model", False)
-    assert task_model(_card(), _LAB) == ("profile-model", False)
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: {"anthropic": "claude-opus-4-6"}.get(provider, ""))
+    assert task_model(_card(**card), {"model": profile_model, "custom_providers": _LAB_ENTRY}) == (expected, False)
 
 
-def test_owner_asks_a_single_model_loopback_server_the_dispatcher_never_does():
-    import http.server
-    import json
-    import threading
+@pytest.mark.parametrize("config", [
+    {"model": {"provider": "custom", "base_url": "http://127.0.0.1:9/v1"}},
+    {"model": {"provider": "auto"}},
+    {},
+], ids=["loopback", "auto", "unset"])
+def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp_path, monkeypatch):
+    import socket
 
+    from gateway.session_kanban import kanban_launch_policy
+    from hermes_cli import auth
     from hermes_cli.kanban_worker_preflight import task_model
 
-    hits = []
+    opened = []
 
-    class Models(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            hits.append(self.path)
-            body = json.dumps({"data": [{"id": "served-model"}]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+    def no_network(*args, **kwargs):
+        opened.append(args)
+        raise OSError("network blocked by test")
 
-        def log_message(self, *args):
-            pass
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(socket, "socket", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    real_resolve = auth.resolve_provider
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Models)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        config = {"model": {"provider": "custom", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}}
-        assert task_model(_card(), config) == ("", False) and hits == []
-        assert task_model(_card(), config, discover=True) == ("served-model", False)
-        assert hits == ["/v1/models"]
-    finally:
-        server.shutdown()
+    def resolve(requested=None, *args, **kwargs):
+        if str(requested or "auto").strip().lower() == "auto":
+            opened.append(("credential discovery", requested))
+        return real_resolve(requested, *args, **kwargs)
+
+    monkeypatch.setattr(auth, "resolve_provider", resolve)
+    assert task_model(_card(), config) == ("", False)
+    assert kanban_launch_policy(_card(reasoning_effort=None), str(tmp_path), config).model in (None, "")
+    assert opened == []
 
 
 def test_preflight_never_imports_the_gateway_runner(tmp_path):

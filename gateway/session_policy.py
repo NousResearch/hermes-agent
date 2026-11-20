@@ -595,13 +595,20 @@ def _with_entry_pick(params, config):
     return {**params, 'provider': identity}
 
 
+def launch_route_pick(params, config):
+    """``(params, keeps_route)``: *params* with its provider pick normalized as a launch reads it (``auto``
+    dropped, a held entry's bare key or a bare ``custom`` named as its entry), and whether that pick keeps
+    the profile's route. Reads config only, so the kanban dispatcher derives a card's model from it too."""
+    params = _with_entry_pick(_without_auto_pick(params), config)
+    return params, 'provider' in params and _keeps_profile_route(params['provider'], config)
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
-    params = _with_entry_pick(_without_auto_pick(params), config)
-    picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
+    params, picks_profile_entry = launch_route_pick(params, config)
     if 'provider' in params and not picks_profile_entry:
         model = config.setdefault('model', {})
         # A provider pick is a route change: the profile's endpoint, wire protocol and

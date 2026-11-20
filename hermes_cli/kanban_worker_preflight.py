@@ -6,13 +6,14 @@ import shlex
 logger = logging.getLogger(__name__)
 
 
-def task_model(task, config, *, discover=False) -> tuple[str, bool]:
-    """``(model, unresolved)`` the card runs: its ``--model``; a ``--provider`` naming another named
-    endpoint brings that entry's model (as the CLI does); else the profile's own (``model.default``,
-    the claimed welcome trial), the named endpoint's model, then the provider's catalog default. A
-    provider left to credential discovery (``auto``) and a loopback server resolve at turn time:
-    ``discover`` (the owner only) asks them; the dispatcher never probes a credential or a server."""
-    from gateway.session_route_identity import ROUTE_BOUND_KEYS, profile_route_identity, resolved_route
+def task_model(task, config) -> tuple[str, bool]:
+    """``(model, unresolved)`` the card runs: its ``--model``; the model of the entry its ``--provider``
+    names (the pick normalized as a launch reads it, so a bare ``custom`` on a named profile is that
+    entry), as the CLI does; else the profile's own (``model.default``, the claimed welcome trial), the
+    named endpoint's model, then the provider's catalog default. ``auto`` and a loopback server stay
+    ``''`` for the turn to resolve: nothing here probes a credential or a server."""
+    from gateway.session_policy import launch_route_pick
+    from gateway.session_route_identity import ROUTE_BOUND_KEYS, profile_route_identity
     from hermes_cli.anon_auth import trial_model
     from hermes_cli.models import get_default_model_for_provider
     from hermes_cli.runtime_provider import _loopback_hostname
@@ -22,17 +23,19 @@ def task_model(task, config, *, discover=False) -> tuple[str, bool]:
     if task.model_override:
         return task.model_override, False
     block = config.get('model')
-    if isinstance(block, str) and block.strip():
-        return block.strip(), False
     held = dict(block) if isinstance(block, dict) else {}
     picked = str(task.provider_override or '').strip()
-    if picked.lower() not in ('', 'auto') and resolved_route({'provider': picked}, config)[0] != profile_route_identity(config):
-        for stale in ROUTE_BOUND_KEYS:
-            held.pop(stale, None)
-        held['provider'] = picked
-        entry = _get_named_custom_provider(picked, config=config, resolve_credentials=False) or {}
+    pick, keeps_route = launch_route_pick({'provider': picked} if picked else {}, config)
+    if 'provider' in pick:
+        entry = _get_named_custom_provider(pick['provider'], config=config, resolve_credentials=False) or {}
         if str(entry.get('model') or '').strip():
             return str(entry['model']).strip(), False
+        if not keeps_route:
+            for stale in ROUTE_BOUND_KEYS:
+                held.pop(stale, None)
+            held['provider'] = pick['provider']
+    if isinstance(block, str) and block.strip():
+        return block.strip(), False
     model = held.get('default') or held.get('model')
     model = (model.strip() if isinstance(model, str) else '') or trial_model()
     if model:
@@ -43,26 +46,7 @@ def task_model(task, config, *, discover=False) -> tuple[str, bool]:
     model = str(entry.get('model') or '').strip() or ('' if entry or identity == 'auto' else get_default_model_for_provider(identity))
     base_url = str(held.get('base_url') or entry.get('base_url') or '')
     loopback = bool(base_url) and _loopback_hostname(base_url_hostname(base_url))
-    if not model and discover:
-        model = _deferred_model(identity, base_url if loopback else '')
     return model, not model and identity != 'auto' and not loopback
-
-
-def _deferred_model(identity, loopback_url):
-    """The owner's turn-time pick for a deferred route: a loopback server's one loaded model, or the
-    catalog default of the provider credential discovery selects; '' leaves it to the server (as
-    the CLI accepts)."""
-    try:
-        if loopback_url:
-            from hermes_cli.runtime_provider import _auto_detect_local_model
-            return _auto_detect_local_model(loopback_url)
-        if identity == 'auto':
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.models import get_default_model_for_provider
-            return get_default_model_for_provider(resolve_provider('auto'))
-    except Exception:  # health: allow BLE001 -- an optional pick; the turn resolves (or refuses) the route itself
-        logger.debug("kanban deferred model discovery for %s failed", identity, exc_info=True)
-    return ''
 
 
 class ProfileConfigUnavailable(RuntimeError):

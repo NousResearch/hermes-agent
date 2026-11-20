@@ -290,10 +290,12 @@ def test_redirect_and_final_validation_refuse(tmp_path, monkeypatch):
             (tmp_path / "skills/a").symlink_to(outside, target_is_directory=True)
             yield
 
-    monkeypatch.setattr(module, "writer_hold", swap)
-    with pytest.raises(CatalogError):
-        with p.generic(["a/b"]):
-            pytest.fail("final redirect unchecked")
+    with started(tmp_path):
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "writer_hold", swap)
+            with pytest.raises(CatalogError):
+                with p.generic(["a/b"]):
+                    pytest.fail("final redirect unchecked")
     assert list(outside.iterdir()) == []
 
 

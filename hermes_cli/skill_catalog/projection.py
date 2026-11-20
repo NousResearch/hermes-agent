@@ -477,6 +477,12 @@ class Projection:
         targets = tuple(targets)
         deadline = time.monotonic() + 3 if deadline is None else deadline
         with self.transaction(deadline=deadline) as doc:
+            if not doc["registrations"]:
+                # Stock mutators own path policy. The root-exclusive hold still
+                # fences orphan writers without rejecting stock-supported redirects.
+                with FileLease(self.directory / "writer-barrier.lock", deadline=deadline):
+                    yield
+                return
             if any(row["state"] != "ready" for row in doc["registrations"].values()):
                 raise CatalogError("busy", "Catalog installed ownership is reconciling.")
             for path in targets:

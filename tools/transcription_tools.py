@@ -528,7 +528,19 @@ def _transcript_echoes_prompt(transcript: str, prompt: str) -> bool:
     from difflib import SequenceMatcher
 
     heard, hint = _normalize_for_echo(transcript), _normalize_for_echo(prompt)
-    return bool(heard and hint) and SequenceMatcher(None, heard, hint).ratio() >= 0.9
+    # autojunk off: past 200 characters it would junk the hint's common letters and miss the echo.
+    return bool(heard and hint) and SequenceMatcher(None, heard, hint, autojunk=False).ratio() >= 0.9
+
+
+# Built-ins that drop the prompt before the request, so their transcript can't be an echo of it.
+_PROMPTLESS_STT_PROVIDERS = frozenset({"xai", "elevenlabs", "local_command"})
+
+
+def _stt_provider_reads_prompt(provider: str, stt_config: dict[str, Any]) -> bool:
+    if provider in _PROMPTLESS_STT_PROVIDERS:
+        return False
+    # Command providers log the prompt as unsupported and run without it.
+    return provider in BUILTIN_STT_PROVIDERS or _resolve_command_stt_provider_config(provider, stt_config) is None
 
 
 def _route_stt_provider(
@@ -539,7 +551,8 @@ def _route_stt_provider(
     Whisper reads the prompt as text spoken just before the audio, so on silence or faint speech it
     can return the prompt itself as a confident transcript (#155798)."""
     result = _route_stt_provider_once(file_path, provider, stt_config, model, language, prompt)
-    if prompt and result.get("success") and _transcript_echoes_prompt(str(result.get("transcript") or ""), prompt):
+    if (prompt and result.get("success") and _stt_provider_reads_prompt(provider, stt_config)
+            and _transcript_echoes_prompt(str(result.get("transcript") or ""), prompt)):
         logger.warning("STT provider %s returned its prompt as the transcript; retrying without the prompt", provider)
         result = _route_stt_provider_once(file_path, provider, stt_config, model, language, None)
     return result

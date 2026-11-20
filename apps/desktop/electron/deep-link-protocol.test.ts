@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { registerDeepLinkProtocol } from './deep-link-protocol'
+import { isLaunchDeepLink, registerDeepLinkProtocol } from './deep-link-protocol'
 
 function run(env: NodeJS.ProcessEnv, defaultApp = true) {
   const calls: unknown[][] = []
@@ -30,4 +30,14 @@ test('the E2E/dev guard leaves the OS hermes:// handler untouched; normal launch
 
   assert.deepEqual(run({}).calls, [['hermes', '/electron', ['/checkout/.']]])
   assert.deepEqual(run({}, false).calls, [['hermes']])
+})
+
+test('hermes://launch is recognised whatever it carries; no other link is', () => {
+  for (const url of ['hermes://launch', 'hermes://launch/', 'hermes://launch/chat/new?prompt=rm%20-rf', 'hermes-dev://launch?x=1']) {
+    assert.equal(isLaunchDeepLink(new URL(url)), true, url)
+  }
+
+  for (const url of ['hermes://', 'hermes://open/launch', 'hermes://plugin/install?repo=launch', 'hermes://launcher', 'hermes://close-preview']) {
+    assert.equal(isLaunchDeepLink(new URL(url)), false, url)
+  }
 })

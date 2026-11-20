@@ -112,7 +112,7 @@ The Gemini 3.x preview models are served through the `global` endpoint. Regional
 
 ## Reasoning / Thinking
 
-Vertex exposes Gemini's thinking budget through the OpenAI-compatible surface. Hermes maps its reasoning-effort setting onto `extra_body.google.thinking_config` automatically, so `reasoning_effort` works the same way it does on other Gemini surfaces.
+Vertex exposes Gemini's thinking budget through the OpenAI-compatible surface. Hermes maps its reasoning-effort setting onto `extra_body.google.thinking_config` automatically, so `reasoning_effort` works the same way it does on other Gemini surfaces. On Gemini 4 Hydrogen and Neon, the `xhigh`, `max` and `ultra` efforts send the `xhigh` thinking level; Gemini 4 Argon and Carbon stop at `high`. Long decode (output past 64K) is not available on this surface.
 
 ## Diagnostics
 

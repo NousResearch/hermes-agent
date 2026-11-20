@@ -1045,7 +1045,6 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
     started = time.monotonic()
     held_since: Optional[float] = None
     landed = 0
-    reverted = 0
     while True:
         time.sleep(_FILL_VERIFY_INTERVAL_S)
         verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce, expected_origin=page_origin,
@@ -1064,7 +1063,6 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
             return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
                     "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
         landed = int(verified.get("landed", 0) or 0)
-        reverted = int(verified.get("reverted", 0) or 0)
         now = time.monotonic()
         if landed < expected:
             held_since = None
@@ -1075,9 +1073,10 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
         if now - held_since >= _FILL_VERIFY_STABLE_S:
             break
     if landed < expected:
+        # A re-rendered field is in ``missing``, not in ``reverted``: count what did not land.
         return {"success": False, "error_type": "fill_reverted", "filled_fields": 0,
-                "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "
-                          "or were re-rendered. Nothing is filled.")}
+                "error": (f"The page did not keep the value: {expected - landed} of {expected} field(s) "
+                          "reverted or were re-rendered. Nothing is filled.")}
     return {"success": True, "landed": landed}
 
 

@@ -1005,6 +1005,24 @@ class TestBrowserVaultTools:
             out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
         assert out["success"] is False and out["error_type"] == "fill_reverted"
 
+    def test_a_failed_read_back_clears_what_landed_and_counts_what_did_not(self):
+        """All or nothing: a field that kept its value is cleared when another did not, and the error
+        counts every field that did not land, a re-rendered one (``missing``) too."""
+        from tools import browser_vault_tool
+
+        sent = []
+
+        def page(_task_id, expression):
+            sent.append(expression)
+            return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": [0]})}
+
+        fills = [{"index": 0, "value": "alice"}, {"index": 1, "value": "pw"}]
+        with patch.object(browser_vault_tool, "_eval_js_secret", side_effect=page), \
+             patch.object(browser_vault_tool, "_FILL_VERIFY_CEILING_S", 0), \
+             patch.object(browser_vault_tool.time, "sleep"):
+            out = browser_vault_tool._read_back("t", fills, "n", "https://example.com")
+        assert out["error_type"] == "fill_reverted" and "1 of 2 field(s)" in out["error"]
+
     def test_a_value_that_settles_after_a_mask_rewrite_is_a_fill(self, store):
         """The other half of stability: a mask that writes twice reads wrong first, then holds."""
         from tools import browser_vault_tool

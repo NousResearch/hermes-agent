@@ -33,7 +33,7 @@ from urllib.parse import quote, urljoin
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
 from agent.i18n import get_language, t
-from gateway.platforms.base_exec_approval import ea_t
+from gateway.platforms.base import ea_t
 from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)

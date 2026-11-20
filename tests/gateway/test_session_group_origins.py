@@ -8,7 +8,7 @@ exactly one origin, so messages from the two chats never merge and each reply go
 chat it answers.
 
 Real: ``BasePlatformAdapter`` dispatch/lock/delivery, the ``GatewayRunner`` busy path wired by
-``_wire_adapter_handlers``, ``SessionStore`` over a real ``SessionDB``. Fake: the agent turn.
+``_wire_adapter_handlers``, ``SessionStore`` over a real storage handle. Fake: the agent turn.
 """
 
 import asyncio
@@ -23,7 +23,8 @@ from gateway.platforms.base_session_groups import group_turn_lock_for
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key, key_source_for
-from hermes_state import SessionDB
+
+from persistence_assembly import open_persistence, profile_scope
 
 GROUP = SessionSource(platform=Platform.TELEGRAM, chat_id="tg-chat", chat_type="dm")
 
@@ -73,7 +74,7 @@ def _store(tmp_path, db):
 def test_no_group_keeps_every_key_and_row_unchanged(tmp_path):
     tg, _, tg_src, dc_src = _lines()
     assert key_source_for(tg_src) is tg_src and key_source_for(dc_src) is dc_src
-    with SessionDB(db_path=tmp_path / "state.db") as db:
+    with open_persistence(profile_scope(home=tmp_path)) as db:
         store = _store(tmp_path, db)
         runner = object.__new__(GatewayRunner)
         runner.session_store = store
@@ -82,7 +83,7 @@ def test_no_group_keeps_every_key_and_row_unchanged(tmp_path):
         assert tg._source_session_key(tg_src) == build_session_key(tg_src)
         entry = store.get_or_create_session(dc_src)
         assert entry.key_source is None and "key_source" not in entry.to_dict()
-        assert db.get_session(entry.session_id)["source"] == "discord"
+        assert db.sessions.get(entry.session_id).source == "discord"
     event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=tg_src)
     assert group_turn_lock_for(event, "k") is None
 
@@ -109,13 +110,13 @@ def test_only_a_live_source_of_its_own_platform_joins_a_group(grouped):
 def test_restart_recovers_the_shared_session_from_either_chat(tmp_path, grouped):
     _, _, tg_src, dc_src = _lines()
     key = build_session_key(GROUP)
-    with SessionDB(db_path=tmp_path / "state.db") as db:
+    with open_persistence(profile_scope(home=tmp_path)) as db:
         store = _store(tmp_path, db)
         original = store.get_or_create_session(dc_src)
         assert original.session_key == key
         assert original.origin.platform == Platform.DISCORD
         assert original.key_source.platform == Platform.TELEGRAM
-        assert db.get_session(original.session_id)["source"] == "telegram"
+        assert db.sessions.get(original.session_id).source == "telegram"
 
         # Routing index lost: the durable row is found again from both chats.
         for src in (tg_src, dc_src):
@@ -129,15 +130,15 @@ def test_restart_recovers_the_shared_session_from_either_chat(tmp_path, grouped)
         entry = restarted._entries[key]
         assert entry.origin.platform == Platform.DISCORD
         assert entry.key_source == SessionEntry.from_dict(original.to_dict()).key_source
-        db.end_session(original.session_id, "agent_close")
-        assert restarted._stale_entry_verdict(key, entry, db.get_session(original.session_id)) is None
-        assert db.get_session(original.session_id)["end_reason"] is None
+        db.sessions.end(original.session_id, "agent_close")
+        assert restarted._stale_entry_verdict(key, entry, db.sessions.get(original.session_id)) is None
+        assert db.sessions.get(original.session_id).end_reason is None
 
         restarted.update_session(key)
-        assert db.get_session(original.session_id)["source"] == "telegram"
+        assert db.sessions.get(original.session_id).source == "telegram"
         reset = restarted.reset_session(key)
         assert reset.key_source.platform == Platform.TELEGRAM
-        assert db.get_session(reset.session_id)["source"] == "telegram"
+        assert db.sessions.get(reset.session_id).source == "telegram"
 
 
 class _Agent:
@@ -187,7 +188,7 @@ def _gateway(tmp_path, monkeypatch):
     runner._busy_input_mode = "steer"  # without the origin rule, the Discord text steers into Telegram's turn
     runner._is_user_authorized = lambda _source: True
     runner.session_store = SessionStore(sessions_dir=tmp_path / "sessions", config=runner.config)
-    runner.session_store._db = SessionDB(db_path=tmp_path / "state.db")
+    runner.session_store._db = open_persistence(profile_scope(home=tmp_path))
     key = build_session_key(GROUP)
     turns = _Turns(runner, key)
     for adapter in (tg, dc):

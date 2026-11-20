@@ -1368,11 +1368,26 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         raw_group_rules = extra.get("group_rules", {})
         group_rules: dict[str, FeishuGroupRule] = {}
         if isinstance(raw_group_rules, dict):
+            def _policy_for(rule_cfg: dict[str, Any]) -> str:
+                """Explicit ``policy`` wins; otherwise an allowlist implies
+                "allowlist" and a blacklist implies "blacklist". Only a rule
+                with neither list falls back to "open", so a configured list
+                is never silently ignored.
+                """
+                explicit = rule_cfg.get("policy")
+                if explicit is not None:
+                    return str(explicit).strip().lower()
+                if _id_set(rule_cfg.get("allowlist", [])):
+                    return "allowlist"
+                if _id_set(rule_cfg.get("blacklist", [])):
+                    return "blacklist"
+                return "open"
+
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
                 group_rules[str(chat_id)] = FeishuGroupRule(
-                    policy=str(rule_cfg.get("policy", "open")).strip().lower(),
+                    policy=_policy_for(rule_cfg),
                     allowlist=_id_set(rule_cfg.get("allowlist", [])),
                     blacklist=_id_set(rule_cfg.get("blacklist", [])),
                     # Only override when explicitly set — missing vs false must not collapse.

@@ -29,3 +29,20 @@ def test_an_unrecognised_record_state_is_refused_and_kept(home, capsys):
     assert path.read_bytes() == before and host.calls == []
     assert "unrecognized migration state" in capsys.readouterr().out
     assert backend_retired_by_migration(home) is True
+
+
+def test_an_existing_restart_guard_drop_in_is_refused_and_left_alone(home, capsys):
+    """`UNIT.d/hermes-migrated.conf` already exists (the user's own file of that name): the apply refuses
+    (exit 3) before any change instead of overwriting it and removing it on --restore."""
+    from pathlib import Path
+    host = FakeHost(home)
+    guard = Path(host.old_unit_dropin_path({"supervisor": "systemd", "scope": "user",
+                                            "unit": "hermes-dashboard.service"}))
+    guard.parent.mkdir(parents=True)
+    guard.write_text("[Service]\nNice=5\n", encoding="utf-8")
+
+    code = engine.cmd_apply(host, _args())
+    assert guard.read_text(encoding="utf-8") == "[Service]\nNice=5\n"
+    assert code == engine.EXIT_BLOCKED
+    assert host.calls == [] and not engine.manifest_path(home).exists()
+    assert f"{guard} already exists" in capsys.readouterr().out

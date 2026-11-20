@@ -316,15 +316,21 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 
 def _cron_guidance(agent: Any) -> Optional[str]:
     """Proactive-scheduling line when the session can create jobs (directly or through the tool_call bridge).
-    Withheld in cron runs: a job there has no user to approve what it schedules."""
+    Withheld in cron runs: a job there has no user to approve what it schedules. The bridged case reads the
+    toolset selection and the tool's own check, never the built definitions: building them runs dynamic
+    schema hooks that load plugins, which a safe-mode worker must never read."""
     if getattr(agent, "platform", None) == "cron":
         return None
     names = agent.valid_tool_names
     if "cronjob_manage" not in names:
         if "tool_call" not in names:
             return None
-        from agent.tool_executor import _tool_search_scoped_names
-        if "cronjob_manage" not in _tool_search_scoped_names(agent):
+        import model_tools
+        from tools import registry as _registry
+        selected = model_tools._select_tool_names(
+            getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None), True)
+        entry = _registry.registry.get_entry("cronjob_manage") if "cronjob_manage" in selected else None
+        if entry is None or (entry.check_fn is not None and not _registry._check_fn_cached(entry.check_fn)):
             return None
     return CRON_PROACTIVE_GUIDANCE
 

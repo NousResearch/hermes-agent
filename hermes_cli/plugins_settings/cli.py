@@ -41,19 +41,18 @@ def humanize_key(key: str) -> str:
 
 
 def _env_fields(manifest: Mapping[str, Any], declared: set[str]) -> list[dict[str, Any]]:
-    """``requires_env`` entries as fields (skipping names a ``secret`` setting already covers)."""
-    from hermes_cli.config import get_env_value
+    """``requires_env`` entries as fields (skipping names a ``secret`` setting already covers). Masking
+    uses the platform setup's own rule (``password``/``secret``, or a token-shaped name)."""
+    from hermes_cli.config import _platform_manifest_env_entries, get_env_value
     out = []
-    for entry in manifest.get("requires_env") or []:
-        spec = {"name": entry} if isinstance(entry, str) else entry
-        name = str(spec.get("name") or "") if isinstance(spec, Mapping) else ""
-        if not name or name in declared:
+    for name, is_secret, spec in _platform_manifest_env_entries(dict(manifest), optional=False):
+        if name in declared:
             continue
         current = get_env_value(name)
         out.append({"key": name, "type": "env", "label": name, "env": name,
                     "description": str(spec.get("description") or ""), "url": str(spec.get("url") or ""),
-                    "masked": bool(spec.get("secret")), "has_value": current is not None,
-                    "value": None if spec.get("secret") else current})
+                    "masked": is_secret, "has_value": current is not None,
+                    "value": None if is_secret else current})
     return out
 
 
@@ -143,15 +142,26 @@ def _edit_boolean(field, spec) -> Any:
     return _UNCHANGED if idx is None else idx == 0
 
 
-def _edit_json(field, spec) -> Any:
-    raw = _ask_text("New value as JSON or YAML (for example [a, b] or {key: value})", display_value(field))
-    if raw is _UNCHANGED:
-        return raw
-    from hermes_yaml import safe_load
-    value = safe_load(raw)
+def parse_json_value(raw: str) -> Any:
+    """A list/mapping typed as JSON or YAML, restricted to JSON values (an unquoted YAML date or
+    timestamp would save, then break every later listing)."""
+    import hermes_yaml
+    try:
+        value = hermes_yaml.safe_load(raw)
+    except hermes_yaml.YAMLError:
+        raise ValueError("that is not valid JSON or YAML (check the brackets and quotes)") from None
     if not isinstance(value, (list, dict)):
         raise ValueError("expected a list like [a, b] or a mapping like {key: value}")
-    return value
+    try:
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        raise ValueError("use only text, numbers, true/false and nested lists or mappings "
+                         "(quote dates and times)") from None
+
+
+def _edit_json(field, spec) -> Any:
+    raw = _ask_text("New value as JSON or YAML (for example [a, b] or {key: value})", display_value(field))
+    return raw if raw is _UNCHANGED else parse_json_value(raw)
 
 
 def _edit_env(field, spec) -> Any:

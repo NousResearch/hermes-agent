@@ -200,6 +200,243 @@ function Harness({
     }, GRACE_MS)
   }
 
+  const isPlainEnter = (event: React.KeyboardEvent<HTMLDivElement>) => event.key === 'Enter' && !event.shiftKey
+
+  const isChordEnter = (event: React.KeyboardEvent<HTMLDivElement>) =>
+    event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey
+
+  /** Enter, no modifiers, close enough to a composition end to be its commit. */
+  const isImeCommitEnter = (event: React.KeyboardEvent<HTMLDivElement>) =>
+    event.key === 'Enter' &&
+    !event.shiftKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    isPostCompositionCommitEnter(compositionEndedAtRef.current, Date.now())
+
+  /** A repeat is never a press: it must not complete a double tap, drain a
+   *  queue, or start a hold. Swallowed where it means nothing, passed through
+   *  where a bare Enter still breaks the line. */
+  const handleRepeatEnter = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (enterSends || sendOnDoubleTap || sendOnHold || sendOnPause) {
+      event.preventDefault()
+    }
+  }
+
+  const handleChordEnter = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    lastEnterAtRef.current = 0
+
+    if (disabled) {
+      return
+    }
+
+    if (busy) {
+      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+
+      if (editorText !== draftRef.current) {
+        draftRef.current = editorText
+        setDraft(editorText)
+      }
+
+      onQueue(editorText)
+
+      return
+    }
+
+    submitDraft()
+  }
+
+  const handleSteerEnter = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (sendOnDoubleTap) {
+      const steeredAt = Date.now()
+
+      if (steeredAt - lastSteerAtRef.current > doubleEnterMs) {
+        lastSteerAtRef.current = steeredAt
+
+        if (!enterNewline) {
+          event.preventDefault()
+        }
+
+        return
+      }
+
+      lastSteerAtRef.current = 0
+    }
+
+    event.preventDefault()
+    onSteer?.()
+  }
+
+  /** Empty Enter keeps its single press in every mode: there is no line to break
+   *  and no draft to commit, so it only ever moves the queue. */
+  const handleEmptyPress = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    lastEnterAtRef.current = 0
+
+    if (!busy && queued.length > 0) {
+      onDrain()
+
+      return
+    }
+
+    if (busy) {
+      const head = queued[0]
+
+      if (head) {
+        onSendNow?.(head)
+      }
+    }
+  }
+
+  /** Stamps the press and asks ./enter-gesture who owns it, so precedence is
+   *  never mirrored by hand here. */
+  const resolvePressOwner = (): 'doubleTap' | 'pauseOnRelease' | 'pause' | 'none' => {
+    const now = Date.now()
+    const doubleTap = isComposerDoubleTap(now, lastEnterAtRef.current, doubleEnterMs)
+
+    lastEnterAtRef.current = now
+
+    const pausedEnough = sendOnPause && now - typedAtRef.current > typingIdleMs
+
+    const owner = composerEnterPressOwner({ doubleTap, pausedEnough, sendOnDoubleTap, sendOnHold, sendOnPause })
+
+    cancelHold()
+
+    if (sendOnHold) {
+      enterHoldTimerRef.current = window.setTimeout(() => {
+        enterHoldTimerRef.current = undefined
+        commitHeld()
+      }, holdMs)
+    }
+
+    return owner
+  }
+
+  const handleDoubleTapPress = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    event.preventDefault()
+
+    pendingPressRef.current = null
+
+    const editor = editorRef.current
+    const live = editor ? composerPlainText(editor) : ''
+
+    if (enterNewline && editor && live.endsWith('\n')) {
+      editor.textContent = live.replace(/\n+$/, '')
+    }
+
+    cancelHold()
+
+    // The previous press may already have sent the draft, and submitting an
+    // empty composer drains or steers.
+    if (live.trim().length === 0 && attachments.length === 0) {
+      return
+    }
+
+    if (sendGraceFor.includes('doubleTap')) {
+      holdOrSubmit('doubleTap', submitDraft)
+
+      return
+    }
+
+    // Not configured to wait, so this press is the user saying "now": commit
+    // on the spot and take back any window the previous press opened, or it
+    // would fire a second send into an empty composer later.
+    cancelGrace()
+    submitDraft()
+  }
+
+  /** A press during a wait commits it, unless this press can still become a
+   *  hold (the composer's `commitOnPress`). Returns whether it acted. */
+  const handlePressDuringGrace = (event: React.KeyboardEvent<HTMLDivElement>): boolean => {
+    if (!commitOnPress || graceTimerRef.current === undefined) {
+      return false
+    }
+
+    event.preventDefault()
+
+    if (sendOnHold) {
+      pendingPressRef.current = 'commit'
+
+      return true
+    }
+
+    cancelGrace()
+
+    const editor = editorRef.current
+    const live = editor ? composerPlainText(editor) : ''
+
+    if (live.trim().length > 0 || attachments.length > 0) {
+      submitDraft()
+    }
+
+    return true
+  }
+
+  /** No gesture claimed the press: it lands in the composer, or is dropped when
+   *  the user asked for a bare Enter that only stays out of the way. */
+  const handleUnclaimedPress = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // Falls through UNPREVENTED when the press may break the line: the editor
+    // inserts the break, which jsdom does not do, so the tests append it
+    // themselves.
+    if (!enterNewline) {
+      event.preventDefault()
+    }
+  }
+
+  const handleSendGesture = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const owner = resolvePressOwner()
+
+    if (owner === 'doubleTap') {
+      handleDoubleTapPress(event)
+
+      return
+    }
+
+    if (handlePressDuringGrace(event)) {
+      return
+    }
+
+    if (owner === 'pauseOnRelease') {
+      event.preventDefault()
+      pendingPressRef.current = 'pause'
+
+      return
+    }
+
+    if (owner === 'pause') {
+      event.preventDefault()
+      holdOrSubmit('pause', submitDraft)
+
+      return
+    }
+
+    handleUnclaimedPress(event)
+  }
+
+  const handlePlainEnter = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+    const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+
+    if (disabled) {
+      return
+    }
+
+    if (!hasLivePayload) {
+      handleEmptyPress(event)
+
+      return
+    }
+
+    if (enterSends) {
+      event.preventDefault()
+      submitDraft()
+
+      return
+    }
+
+    handleSendGesture(event)
+  }
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // PageUp/PageDown: no text-editing purpose in the single-line editor —
     // swallow the default so the browser cannot scroll the nearest ancestor
@@ -213,49 +450,19 @@ function Harness({
 
     // IME commit guard (lib/ime.ts): a bare Enter on the back of a composition
     // end is that composition's commit, not a send.
-    if (
-      event.key === 'Enter' &&
-      !event.shiftKey &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      isPostCompositionCommitEnter(compositionEndedAtRef.current, Date.now())
-    ) {
+    if (isImeCommitEnter(event)) {
       return
     }
 
-    // A held key repeats, and a repeat is never a press: it must not complete a
-    // double tap, drain a queue, or start a hold.
     if (event.key === 'Enter' && event.repeat) {
-      if (enterSends || sendOnDoubleTap || sendOnHold || sendOnPause) {
-        event.preventDefault()
-      }
+      handleRepeatEnter(event)
 
       return
     }
 
     // ⌘/Ctrl+Enter commits in every configuration (queues while busy).
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
-      event.preventDefault()
-      lastEnterAtRef.current = 0
-
-      if (disabled) {
-        return
-      }
-
-      if (busy) {
-        const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
-
-        if (editorText !== draftRef.current) {
-          draftRef.current = editorText
-          setDraft(editorText)
-        }
-
-        onQueue(editorText)
-
-        return
-      }
-
-      submitDraft()
+    if (isChordEnter(event)) {
+      handleChordEnter(event)
 
       return
     }
@@ -264,176 +471,13 @@ function Harness({
     // shortcuts panel, the settings description and the docs all promise. With
     // the double tap armed it takes the same guard as every other send.
     if (!enterSends && event.key === 'Enter' && event.shiftKey && canSteer) {
-      if (sendOnDoubleTap) {
-        const steeredAt = Date.now()
-
-        if (steeredAt - lastSteerAtRef.current > doubleEnterMs) {
-          lastSteerAtRef.current = steeredAt
-
-          if (!enterNewline) {
-            event.preventDefault()
-          }
-
-          return
-        }
-
-        lastSteerAtRef.current = 0
-      }
-
-      event.preventDefault()
-      onSteer?.()
+      handleSteerEnter(event)
 
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
-      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
-      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
-
-      if (disabled) {
-        return
-      }
-
-      if (!hasLivePayload) {
-        event.preventDefault()
-        lastEnterAtRef.current = 0
-
-        if (!busy && queued.length > 0) {
-          onDrain()
-
-          return
-        }
-
-        if (busy) {
-          const head = queued[0]
-
-          if (head) {
-            onSendNow?.(head)
-          }
-        }
-
-        return
-      }
-
-      if (enterSends) {
-        event.preventDefault()
-        submitDraft()
-
-        return
-      }
-
-      const now = Date.now()
-      const doubleTap = isComposerDoubleTap(now, lastEnterAtRef.current, doubleEnterMs)
-
-      lastEnterAtRef.current = now
-
-      const pausedEnough = sendOnPause && now - typedAtRef.current > typingIdleMs
-
-      const owner = composerEnterPressOwner({
-        doubleTap,
-        pausedEnough,
-        sendOnDoubleTap,
-        sendOnHold,
-        sendOnPause
-      })
-
-      cancelHold()
-
-      if (sendOnHold) {
-        enterHoldTimerRef.current = window.setTimeout(() => {
-          enterHoldTimerRef.current = undefined
-          commitHeld()
-        }, holdMs)
-      }
-
-      if (owner === 'doubleTap') {
-        event.preventDefault()
-
-        pendingPressRef.current = null
-
-        const editor = editorRef.current
-        const live = editor ? composerPlainText(editor) : ''
-
-        if (enterNewline && editor && live.endsWith('\n')) {
-          editor.textContent = live.replace(/\n+$/, '')
-        }
-
-        cancelHold()
-
-        // The previous press may already have sent the draft, and submitting an
-        // empty composer drains or steers.
-        if (live.trim().length === 0 && attachments.length === 0) {
-          return
-        }
-
-        if (sendGraceFor.includes('doubleTap')) {
-          holdOrSubmit('doubleTap', submitDraft)
-
-          return
-        }
-
-        // Not configured to wait, so this press is the user saying "now": commit
-        // on the spot and take back any window the previous press opened, or it
-        // would fire a second send into an empty composer later.
-        cancelGrace()
-        submitDraft()
-
-        return
-      }
-
-      // A press during a wait commits it, unless this press can still become a
-      // hold (the composer's `commitOnPress`).
-      if (commitOnPress && graceTimerRef.current !== undefined) {
-        event.preventDefault()
-
-        if (sendOnHold) {
-          pendingPressRef.current = 'commit'
-
-          return
-        }
-
-        cancelGrace()
-
-        const editor = editorRef.current
-        const live = editor ? composerPlainText(editor) : ''
-
-        if (live.trim().length > 0 || attachments.length > 0) {
-          submitDraft()
-        }
-
-        return
-      }
-
-      if (owner === 'pauseOnRelease') {
-        event.preventDefault()
-        pendingPressRef.current = 'pause'
-
-        return
-      }
-
-      if (owner === 'pause') {
-        event.preventDefault()
-        holdOrSubmit('pause', submitDraft)
-
-        return
-      }
-
-      if (!sendOnDoubleTap) {
-        // Falls through UNPREVENTED when the press may break the line: the
-        // editor inserts the break, which jsdom does not do, so the tests append
-        // it themselves.
-        if (!enterNewline) {
-          event.preventDefault()
-        }
-
-        return
-      }
-
-      // The first press of a possible pair: jsdom does not insert the break, so
-      // the tests append it themselves.
-      if (!enterNewline) {
-        event.preventDefault()
-      }
+    if (isPlainEnter(event)) {
+      handlePlainEnter(event)
     }
   }
 

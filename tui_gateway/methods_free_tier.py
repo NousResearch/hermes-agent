@@ -162,5 +162,18 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"reported": False})
 
 
+@method("in_app_offer.dismiss")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Close the in-app offer for this profile on every surface (Desktop, the Webapp and the
+    dashboard share it), so one person sees one campaign once. A local file write."""
+    try:
+        from hermes_cli import in_app_offer
+        return _ok(rid, {"dismissed": in_app_offer.dismiss(str(params.get("offer_id") or ""))})
+    except Exception:  # the RPC boundary: the client keeps its own record anyway
+        logger.warning("in_app_offer.dismiss failed", exc_info=True)
+        return _ok(rid, {"dismissed": False})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

@@ -294,6 +294,20 @@ method("in_app_offer.report", params=InAppOfferReportParams, result=InAppOfferRe
            "profile was served.")
 
 
+class InAppOfferDismissParams(ProfileParams):
+    offer_id: str
+
+
+class InAppOfferDismissResult(Result):
+    # False only for a blank id or a failed write; the client keeps its own record either way.
+    dismissed: bool
+
+
+method("in_app_offer.dismiss", params=InAppOfferDismissParams, result=InAppOfferDismissResult,
+       doc="Close the in-app offer for this profile on every surface, so free_tier.status (and the "
+           "dashboard's /api/in-app-offer) stop serving it.")
+
+
 class FreeTierClaimNudgeParams(ProfileParams):
     kind: Literal["trial", "connector"] = "trial"
 

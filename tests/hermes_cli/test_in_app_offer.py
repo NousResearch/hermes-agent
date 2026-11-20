@@ -310,3 +310,38 @@ def test_a_guest_with_a_lapsed_access_token_reports_with_its_anon_credential(_si
 
     assert in_app_offer.report_event("offer_1", "shown") is True
     assert _posts[0]["auth"] == "Bearer anon_abc"
+
+
+@pytest.fixture
+def _home(tmp_path, monkeypatch):
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    return tmp_path
+
+
+def test_a_dismissed_offer_is_never_served_again_on_any_surface(_home):
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.dismiss("offer_1") is True
+
+    assert in_app_offer.pending_offer() is None
+    # A later fetch that still carries it changes nothing.
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+    assert in_app_offer.pending_offer() is None
+
+
+def test_dismissals_are_bounded_and_ignore_a_blank_id(_home):
+    for i in range(60):
+        in_app_offer.dismiss(f"offer_{i}")
+
+    assert in_app_offer.dismiss("  ") is False
+    assert len(in_app_offer.dismissed_ids()) == 50
+    assert in_app_offer.dismissed_ids()[-1] == "offer_59"
+
+
+def test_an_unreadable_dismissed_file_reads_as_none(_home):
+    (_home / "in_app_offer_dismissed.json").write_text("{not json")
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.pending_offer() == OFFER

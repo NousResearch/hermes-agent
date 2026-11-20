@@ -14,9 +14,12 @@ the answer exists even for a user whose session never fetches the account: a
 valid JWT serves most account reads locally, and the session-start credits
 seed runs only for a Nous session.
 
-Dismissal is deliberately not stored here. It is a presentation fact and lives
-on the client (keyed by offer id), so the backend never has to be told what the
-user has already seen. The memo only mirrors what the Portal currently serves.
+Dismissals are kept per profile in ``in_app_offer_dismissed.json`` under the
+profile home, and ``pending_offer`` never returns a dismissed offer. Desktop, the
+Webapp and the dashboard keep separate browser storage, so a client-only
+dismissal would show the same person the same offer once per surface; one file
+per profile shows it once. Clients still keep their own record too, which
+covers an older backend without ``dismiss``.
 
 Each memo entry remembers the account it was evaluated for and when. A
 different account on the profile (a logout and another login, a guest that
@@ -46,6 +49,36 @@ _offers: dict[str, tuple[str, float, dict[str, str]]] = {}
 
 #: An offer the Portal has not re-confirmed for this long is dropped.
 MEMO_TTL_SECONDS = 24 * 60 * 60
+
+_DISMISSED_FILE = "in_app_offer_dismissed.json"
+#: Far more than campaigns ever run; keeps the file from growing forever.
+_MAX_DISMISSED = 50
+
+
+def _dismissed_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _DISMISSED_FILE
+
+
+def dismissed_ids() -> list[str]:
+    """Offer ids this profile closed, oldest first. A missing or unreadable file reads as none."""
+    from utils.files import read_json_or_empty
+
+    ids = read_json_or_empty(_dismissed_path()).get("ids")
+    return [i for i in ids if isinstance(i, str) and i] if isinstance(ids, list) else []
+
+
+def dismiss(offer_id: str) -> bool:
+    """Close this offer for the profile for good, on every surface. Returns False for a blank id."""
+    from utils.files import atomic_json_write
+
+    if not isinstance(offer_id, str) or not offer_id.strip():
+        return False
+    with _lock:
+        ids = [i for i in dismissed_ids() if i != offer_id] + [offer_id]
+        atomic_json_write(_dismissed_path(), {"ids": ids[-_MAX_DISMISSED:]}, indent=None)
+    return True
 
 _REQUIRED_STRINGS = ("id", "title", "body", "cta_label", "cta_url")
 
@@ -95,6 +128,8 @@ def pending_offer() -> Optional[dict[str, str]]:
         or time.time() - recorded_at > MEMO_TTL_SECONDS
     ):
         clear()
+        return None
+    if offer["id"] in dismissed_ids():
         return None
     return dict(offer)
 

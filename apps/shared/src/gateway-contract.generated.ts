@@ -733,6 +733,13 @@ export interface InAppOfferReportParams {
 export interface InAppOfferReportResult {
   reported: boolean
 }
+export interface InAppOfferDismissParams {
+  profile?: string | null
+  offer_id: string
+}
+export interface InAppOfferDismissResult {
+  dismissed: boolean
+}
 export interface FreeTierClaimNudgeParams {
   profile?: string | null
   kind?: 'trial' | 'connector'
@@ -6594,6 +6601,8 @@ export interface RpcMethods {
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
   /** Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks). */
   'image.render': { params: ImageRenderParams; result: ImageRenderResult }
+  /** Close the in-app offer for this profile on every surface, so free_tier.status (and the dashboard's /api/in-app-offer) stop serving it. */
+  'in_app_offer.dismiss': { params: InAppOfferDismissParams; result: InAppOfferDismissResult }
   /** Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account. */
   'in_app_offer.refresh': { params: ProfileParams; result: InAppOfferRefreshResult }
   /** Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. Uses the stored token as it is (never refreshing it) and only for the offer this profile was served. */
@@ -7036,6 +7045,7 @@ export const RPC_METHODS = [
   'image.detach',
   'image.generate',
   'image.render',
+  'in_app_offer.dismiss',
   'in_app_offer.refresh',
   'in_app_offer.report',
   'input.detect_drop',

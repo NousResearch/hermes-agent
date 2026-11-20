@@ -79,7 +79,7 @@ export function InAppOfferDialog() {
     <Dialog
       onOpenChange={open => {
         if (!open) {
-          dismissInAppOffer(offer.id)
+          dismissInAppOffer(offer.id, requestGateway)
         }
       }}
       open
@@ -93,14 +93,14 @@ export function InAppOfferDialog() {
         </DialogHeader>
         <p className="text-sm whitespace-pre-line break-words">{offer.body}</p>
         <DialogFooter>
-          <Button onClick={() => dismissInAppOffer(offer.id)} size="sm" variant="outline">
+          <Button onClick={() => dismissInAppOffer(offer.id, requestGateway)} size="sm" variant="outline">
             {t.inAppOffer.dismiss}
           </Button>
           <Button
             onClick={() => {
               openExternalLink(offer.cta_url)
               reportInAppOfferEvent(requestGateway, offer.id, 'clicked')
-              dismissInAppOffer(offer.id)
+              dismissInAppOffer(offer.id, requestGateway)
             }}
             size="sm"
           >

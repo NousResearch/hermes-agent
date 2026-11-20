@@ -124,8 +124,14 @@ export function markInAppOfferShown(): void {
 
 /** Close the offer permanently: it never comes back, even if the campaign
  * still serves it. Re-reads storage first so a dismissal made in another
- * window (same localStorage) is kept rather than overwritten. */
-export function dismissInAppOffer(id: string): void {
+ * window (same localStorage) is kept rather than overwritten. With a gateway,
+ * also records it for the profile (`in_app_offer.dismiss`), so the Webapp and
+ * the dashboard, which keep their own storage, never show it again either. */
+export function dismissInAppOffer(id: string, requestGateway?: FreeTierRequester): void {
+  if (requestGateway) {
+    void requestGateway('in_app_offer.dismiss', { offer_id: id }).catch(() => undefined)
+  }
+
   const stored = storedStringArray(DISMISSED_KEY)
   const next = stored.includes(id) ? stored : [...stored, id].slice(-MAX_DISMISSED_IDS)
 

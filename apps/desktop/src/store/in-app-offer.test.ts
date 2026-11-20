@@ -213,6 +213,20 @@ describe('offer validation', () => {
 })
 
 describe('dismissInAppOffer', () => {
+  it('records the dismissal for the profile, so other surfaces never show it', () => {
+    const requestGateway = vi.fn().mockResolvedValue({ dismissed: true })
+
+    dismissInAppOffer('offer_1', requestGateway)
+
+    expect(requestGateway).toHaveBeenCalledWith('in_app_offer.dismiss', { offer_id: 'offer_1' })
+  })
+
+  it('still closes it locally when the backend lacks the method', () => {
+    dismissInAppOffer('offer_1', vi.fn().mockRejectedValue(new Error('method not found')))
+
+    expect(eligibleOffer(statusWith())).toBeNull()
+  })
+
   it('closes the dialog and never re-opens that offer', () => {
     syncInAppOffer(statusWith(), IDLE)
     dismissInAppOffer(OFFER.id)

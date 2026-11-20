@@ -1681,6 +1681,24 @@
       }
     },
     {
+      "name": "in_app_offer.dismiss",
+      "summary": "Close the in-app offer for this profile on every surface, so free_tier.status (and the dashboard's /api/in-app-offer) stop serving it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InAppOfferDismissParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InAppOfferDismissResult"
+        }
+      }
+    },
+    {
       "name": "in_app_offer.refresh",
       "summary": "Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account.",
       "params": [
@@ -22119,6 +22137,46 @@
           "mode"
         ],
         "title": "ImageRenderResult",
+        "type": "object"
+      },
+      "InAppOfferDismissParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "offer_id": {
+            "title": "Offer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "offer_id"
+        ],
+        "title": "InAppOfferDismissParams",
+        "type": "object"
+      },
+      "InAppOfferDismissResult": {
+        "additionalProperties": false,
+        "properties": {
+          "dismissed": {
+            "title": "Dismissed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dismissed"
+        ],
+        "title": "InAppOfferDismissResult",
         "type": "object"
       },
       "InAppOfferPayload": {

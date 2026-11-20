@@ -239,3 +239,92 @@ def test_reset_hint_is_read_only_from_the_failed_rate_limited_run(kanban_home, m
             last_output="Provider said: HTTP 429: too many requests",
         )
         assert "quota_resets_at" not in _run_metadata(conn, run_id)
+
+
+# ---------------------------------------------------------------------------
+# The shapes production actually emits
+# ---------------------------------------------------------------------------
+# Both were read out of real rate_limited runs on this board, and both name a clock without a
+# calendar day: the weekly Claude wall ("resets 3pm (Asia/Tokyo)") and the Codex five-hour wall
+# ("Limit resets at 09:31 (in 38m)"). The dated-only grammar read neither, so the guard fell back
+# to guessing a backoff while the provider had already said when it would reopen.
+
+
+def _dateless_clock_message(hours_ahead: int = 6) -> str:
+    """The weekly wall's production sentence: clock + zone, no month/day."""
+    zone = ZoneInfo("Asia/Tokyo")
+    when = datetime.now(zone) + timedelta(hours=hours_ahead)
+    hour12 = when.hour % 12 or 12
+    meridiem = "pm" if when.hour >= 12 else "am"
+    return ("Provider said: HTTP 429: Incomplete upstream response (first upstream attempt: status "
+            "429): This request would exceed your account's rate limit.): You've hit your weekly "
+            f"limit \u00b7 resets {hour12}{meridiem} (Asia/Tokyo)")
+
+
+def _delta_clock_message(minutes_ahead: int = 38) -> str:
+    """The subscription wall's production sentence: clock plus the provider's own delta."""
+    when = datetime.now(ZoneInfo("Asia/Tokyo")) + timedelta(minutes=minutes_ahead)
+    return ("Provider said: HTTP 429: The usage limit has been reached\n\n"
+            f"Limit resets at {when:%H:%M} (in {minutes_ahead}m).")
+
+
+def test_hold_reads_the_dateless_weekly_wall(kanban_home, monkeypatch):
+    """A clock-only weekly wall is still a boundary, not a reason to probe every few minutes."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="clock-only wall", assignee="a")
+        run_id = _seed_rate_limited_run(
+            conn, tid, claimer=f"{host}:w", pid=71005, last_output=_dateless_clock_message(6),
+        )
+
+        resets_at = _run_metadata(conn, run_id)["quota_resets_at"]
+        assert resets_at > time.time() + 4 * 3600
+
+        monkeypatch.setattr(kb.time, "time", lambda: resets_at - 3600)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+        monkeypatch.setattr(kb.time, "time", lambda: resets_at + 1)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_hold_reads_a_clock_with_the_providers_delta(kanban_home, monkeypatch):
+    """The provider's own "(in 38m)" is exact even when the clock is written elsewhere."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="delta wall", assignee="a")
+        run_id = _seed_rate_limited_run(
+            conn, tid, claimer=f"{host}:w", pid=71006, last_output=_delta_clock_message(38),
+        )
+
+        resets_at = _run_metadata(conn, run_id)["quota_resets_at"]
+        assert abs(resets_at - (time.time() + 38 * 60)) <= 90
+
+
+def test_guard_recovers_the_hint_the_run_metadata_missed(kanban_home, monkeypatch):
+    """A run booked before the metadata carried the instant still holds to its own output."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", "21600")
+
+    with kbc.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="old metadata", assignee="a")
+        run_id = _seed_rate_limited_run(
+            conn, tid, claimer=f"{host}:w", pid=71007, last_output=_dateless_clock_message(6),
+        )
+        resets_at = _run_metadata(conn, run_id)["quota_resets_at"]
+
+        # Simulate a run booked by the older guard: the instant never reached the run row.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET metadata=NULL WHERE id=?", (run_id,))
+        conn.commit()
+
+        monkeypatch.setattr(kb.time, "time", lambda: resets_at - 3600)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"

@@ -104,10 +104,11 @@ def _rate_limit_reset_hint(
 ) -> Optional[float]:
     """Epoch the failed run's provider said its usage window reopens, or None.
 
-    Only the rate-limited run's own evidence is read: a structured ``resets_at`` the worker
-    recorded, else the provider's words in that run's ``worker_result`` output (managed run) or
-    in the worker log (CLI run). Output from another run — or from a run that did not end on a
-    provider wall — is never consulted, so an unrelated mention of a reset cannot park a card.
+    Only one run's evidence is read: the run in flight when the authority books the death, else
+    the newest closed run (the one ``rate_limit_hold`` already established ended on a provider
+    wall). Its structured ``resets_at``, its ``worker_result`` output (managed run), or its worker
+    log (CLI run) supplies the instant. Output from any other run is never consulted, so an
+    unrelated mention of a reset cannot park a card.
     """
     from agent.retry_utils import reset_instant_from_message
     # Late-bound: the worker-log reader lives in the dispatcher, which imports this module.
@@ -118,6 +119,14 @@ def _rate_limit_reset_hint(
     texts: list[str] = []
     if conn is not None:
         run_id = _kb._current_run_id(conn, task_id)
+        if run_id is None:
+            # Guard time: the quota-walled run is already closed, so its result is the newest row.
+            closed = conn.execute(
+                "SELECT id FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            run_id = int(closed["id"]) if closed is not None else None
         if run_id is not None:
             row = conn.execute(
                 "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? "
@@ -178,6 +187,10 @@ def rate_limit_hold(
     if ended_at is None:
         return None
     resets_at = _kb._json_dict(latest_run["metadata"]).get("quota_resets_at")
+    if not isinstance(resets_at, (int, float)) or isinstance(resets_at, bool):
+        # A run booked before this guard recorded the instant (or whose worker_result landed after
+        # the reap) still names it in its own output: read that run, never a guessed cooldown.
+        resets_at = _rate_limit_reset_hint(conn, task_id)
     if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
         horizon = _resolve_rate_limit_reset_max_seconds()
         if now < float(resets_at) and float(resets_at) - now <= horizon:

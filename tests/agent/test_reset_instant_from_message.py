@@ -61,7 +61,6 @@ def test_relative_wall_is_left_to_the_relative_parser():
     "the parser flag resets Nov 20, 3pm (Asia/Tokyo)",       # no limit word before the verb
     "rate limit resets Nov 20, 3pm (Not/AZone)",             # unreadable zone
     "rate limit resets Nov 20",                              # no time of day
-    "rate limit resets 3pm (Asia/Tokyo)",                    # no date
     "rate limit resets Nov 20, 25pm (Asia/Tokyo)",           # impossible clock
     "rate limit resets Nov 32, 3pm (Asia/Tokyo)",            # impossible day
 ])
@@ -97,3 +96,45 @@ def test_now_defaults_to_the_wall_clock():
     iso = f"rate limit resets {when.strftime('%Y-%m-%dT%H:%M')}"
     assert reset_instant_from_message(iso) is not None
     assert reset_instant_from_message(f"rate limit resets {text}") is None  # no month: not trusted
+
+
+# ---------------------------------------------------------------------------
+# Production's own shapes: a clock without a date
+# ---------------------------------------------------------------------------
+# The weekly/five-hour walls this host actually hits name a wall clock, not a calendar day:
+#   "You've hit your weekly limit · resets 3pm (Asia/Tokyo)"
+#   "Limit resets at 09:31 (in 38m)"
+# A date-only grammar answered None for both, so the guard could only guess a backoff.
+
+
+def test_dateless_clock_with_a_zone_is_the_next_occurrence():
+    text = "You've hit your weekly limit \u00b7 resets 3pm (Asia/Tokyo)"
+    assert reset_instant_from_message(text, now=_epoch(2026, 11, 19, 12)) == _epoch(2026, 11, 19, 15)
+    # Same sentence read after that clock passed: the next one, not a day in the past.
+    assert reset_instant_from_message(text, now=_epoch(2026, 11, 19, 16)) == _epoch(2026, 11, 20, 15)
+
+
+def test_dateless_clock_uses_the_providers_announced_delta():
+    text = ("Provider said: HTTP 429: The usage limit has been reached\n\n"
+            "Limit resets at 09:31 (in 38m).")
+    assert reset_instant_from_message(text, now=_epoch(2026, 11, 20, 8, 53)) == _epoch(2026, 11, 20, 9, 31)
+
+
+def test_announced_delta_corrects_a_clock_written_in_another_zone():
+    now = _epoch(2026, 11, 20, 8, 53)
+    # 00:31 is fifteen hours away on the host clock; the provider means "in 38 minutes".
+    assert reset_instant_from_message("rate limit resets at 00:31 (in 38m)", now=now) == now + 38 * 60
+
+
+def test_unknown_zone_falls_back_to_the_announced_delta():
+    now = _epoch(2026, 11, 20, 8, 53)
+    assert reset_instant_from_message("rate limit resets 3pm (Not/AZone) (in 30m)", now=now) == now + 30 * 60
+
+
+@pytest.mark.parametrize("text", [
+    "the nightly job resets 3pm (Asia/Tokyo)",   # no limit word before the verb
+    "rate limit resets 2026-11-20",              # a date without a clock
+    "rate limit resets at 25:00",                # impossible clock
+])
+def test_dateless_clock_is_only_trusted_for_a_limit(text):
+    assert reset_instant_from_message(text, now=_epoch(2026, 11, 20, 8, 53)) is None

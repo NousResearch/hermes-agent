@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -141,6 +141,23 @@ _ABSOLUTE_RESET_RE = re.compile(
 _MAX_RESET_HORIZON_SECONDS = 14 * 86400.0
 
 
+# Not every wall names a date. The subscription limits this host actually hits say
+#   "You've hit your weekly limit · resets 3pm (Asia/Tokyo)"   (clock + zone, no day)
+#   "Limit resets at 09:31 (in 38m)"                             (clock + the provider's own delta)
+# so a bare clock is read as the NEXT occurrence of that wall-clock time. The provider's delta is
+# a cross-check, not decoration: a zone-less clock may be written in the provider's zone, so when
+# the two disagree the delta wins.
+_CLOCK_RESET_RE = re.compile(
+    r"resets?\s+(?:at\s+)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm)?"
+    r"(?!\s+\d{1,2}:\d{2})(?=[\s(]|[.,;]|$)"
+    r"(?:\s*\((?P<zone>[A-Za-z][A-Za-z0-9_+\-/]*)\))?"
+    r"(?:\s*\(\s*in\s*~?\s*(?P<in_amount>\d+)\s*"
+    r"(?P<in_unit>h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\s*\))?",
+    re.IGNORECASE,
+)
+
+
 def _resolve_message_zone(name: Optional[str]):
     """``tzinfo`` for an IANA name (the host's zone when absent), or None when unknown."""
     if not name:
@@ -193,6 +210,42 @@ def _absolute_reset_instant(match: "re.Match[str]", now: float) -> Optional[floa
     return epoch if now - 86400.0 < epoch <= now + _MAX_RESET_HORIZON_SECONDS else None
 
 
+def _clock_reset_instant(match: "re.Match[str]", now: float) -> Optional[float]:
+    """Epoch of one date-less ``resets <clock>`` match, or None when it cannot be trusted.
+
+    The provider's own ``(in 38m)`` is preferred whenever it is present: it is a delta the provider
+    measured, while a zone-less clock may be written in the provider's zone rather than the host's
+    ("resets at 09:31" is 09:31 for the provider, not necessarily here). Without a delta a bare
+    clock means the next occurrence of that wall-clock time, so a sentence left over from a window
+    that already closed cannot resolve into the past and stall the task for a day.
+    """
+    if match.group("in_amount"):
+        unit = (match.group("in_unit") or "").lower()
+        return now + int(match.group("in_amount")) * (3600.0 if unit.startswith("h") else 60.0)
+    try:
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute") or 0)
+    except (TypeError, ValueError):
+        return None
+    meridiem = (match.group("meridiem") or "").lower()
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        hour = (hour % 12) + (12 if meridiem == "pm" else 0)
+    elif hour > 23:
+        return None
+    if minute > 59:
+        return None
+    tzinfo = _resolve_message_zone(match.group("zone"))
+    if tzinfo is None:  # unknown zone name: the clock is unreadable, the delta is not
+        return None
+    local_now = datetime.fromtimestamp(now, tz=tzinfo)
+    instant = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if instant.timestamp() < now - 60.0:  # that clock already passed: the next one
+        instant += timedelta(days=1)
+    return instant.timestamp()
+
+
 def reset_instant_from_message(message: str, *, now: Optional[float] = None) -> Optional[float]:
     """Epoch a provider's absolute ``resets <when>`` names, or None when the text carries none.
 
@@ -210,6 +263,13 @@ def reset_instant_from_message(message: str, *, now: Optional[float] = None) -> 
             continue
         instant = _absolute_reset_instant(match, reference)
         if instant is not None:
+            return instant
+    for match in _CLOCK_RESET_RE.finditer(str(message)):
+        context = str(message)[max(0, match.start() - 90):match.start()]
+        if not _LIMIT_CONTEXT_RE.search(context):
+            continue
+        instant = _clock_reset_instant(match, reference)
+        if instant is not None and reference - 86400.0 < instant <= reference + _MAX_RESET_HORIZON_SECONDS:
             return instant
     return None
 

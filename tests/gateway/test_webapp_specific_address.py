@@ -270,6 +270,24 @@ def test_a_registration_for_another_address_never_sends_the_browser_there_and_sa
         f"or set {changed} back to that address and restart the gateway.")
 
 
+@pytest.mark.parametrize(("registered", "note"), [
+    (f"http://{BOUND}/auth/callback", None),  # the same address: no port is port 80
+    ("http://192.168.1.20/auth/callback",
+     "Nous sign-in that Settings → Web Access registered returns to http://192.168.1.20:80, but the Webapp now "
+     f"listens on http://{BOUND}:80, so Nous sign-in cannot finish there. Sign in with a password provider, "
+     "or set webapp.host back to that address and restart the gateway."),
+])
+def test_a_registered_callback_with_no_port_is_port_80(tmp_path, registered, note):
+    import json
+    from hermes_cli.webapp_access import sign_in_address
+
+    home = _home(tmp_path, f"webapp:\n  enabled: true\n  host: {BOUND}\n  port: 80\n")
+    record = home / "webapp" / "sign-in-registration.json"
+    record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record.write_text(json.dumps({"portal": "https://portal.example", "client_id": "agent:x", "callback": registered}))
+    assert sign_in_address(home, BOUND, 80, "") == (f"http://{BOUND}:80", note)
+
+
 def test_a_specific_binds_own_public_url_still_wins(monkeypatch, tmp_path):
     runner = _specific_webapp(monkeypatch, tmp_path, registered="http://192.168.1.20:9555/auth/callback",
                               public_url="https://webapp.example.net")

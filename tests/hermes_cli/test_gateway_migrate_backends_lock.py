@@ -122,13 +122,13 @@ race.main()
 
 
 def _route_spawns_the_real_launcher(monkeypatch, env, race_dir, on_spawn=lambda: None, **extra_env):
-    from hermes_cli.web_routers import backend_migration as routes
     monkeypatch.setattr("hermes_cli.web_server_gateway._ACTION_LOG_DIR", race_dir / "action-logs")
-    routes.action_log_path().parent.mkdir(parents=True)
 
-    def spawn_launcher(subcommand, name, *, env_overrides=None):  # the real launcher, in a real process
+    def spawn_launcher(subcommand, name, *, env_overrides=None, log_path=None):  # the real launcher, in a real process
         on_spawn()
-        with routes.action_log_path().open("ab") as log:  # where the route reads the launcher's answer
+        assert log_path is not None
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as log:  # where the route reads the launcher's answer
             return subprocess.Popen([sys.executable, "-c", _LAUNCHER, *subcommand], cwd=_REPO,
                                     env={**env, **(env_overrides or {}), "RACE_HOLD": "0", **extra_env},
                                     stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.DEVNULL)

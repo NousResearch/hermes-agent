@@ -56,7 +56,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
+@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash', 'goal_relaunch_auth'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os
     import subprocess
@@ -70,6 +70,13 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
+    if mode == 'goal_relaunch_auth':
+        from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+        assert receipt['worker_exit'] == KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+        assert receipt['client_exit'][1] == KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+        assert receipt['task_status'] == 'blocked'
+        assert receipt['judgments'] == 1 and receipt['relaunch_requests'] >= 1
+        return
     if mode != 'complete':
         assert receipt['task_status'] == 'ready'
         return

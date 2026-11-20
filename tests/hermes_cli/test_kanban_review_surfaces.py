@@ -290,7 +290,6 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
 
     from tools import kanban_tools as tools
 
-    monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
     monkeypatch.setattr(
         tools,
         "judge_goal",
@@ -323,14 +322,8 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
 
-    from agent import auxiliary_client
     from hermes_cli import goals
 
-    monkeypatch.setattr(
-        auxiliary_client,
-        "get_text_auxiliary_client",
-        lambda purpose: (object(), "judge-model"),
-    )
     monkeypatch.setattr(
         goals,
         "judge_goal",

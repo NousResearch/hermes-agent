@@ -6,7 +6,8 @@ gateway. Sign-in is the user's Nous account (a self-hosted portal client registe
 callback); a gated bind without it would keep the Webapp off. Two shapes:
 
 - ``lan``: ``webapp.host: 0.0.0.0``, opened at ``http://<this machine's LAN address>:<port>``; the
-  wildcard bind engages the sign-in gate and the callback is rebuilt from each request.
+  wildcard bind engages the sign-in gate and the callback is rebuilt from each request. A
+  ``webapp.host`` that already names one address of this machine is kept and opened instead.
 - ``public``: an HTTPS URL the user already runs that forwards to ``127.0.0.1:<port>``.
   ``webapp.public_url`` engages the gate on the loopback bind and fixes the callback.
 
@@ -198,10 +199,11 @@ def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int
     if not nous_signed_in():
         raise WebappAccessError("Sign in to your Nous account under Providers first.")
     if mode == "lan":
-        address = lan_address()
+        host = _lan_host(gateway_home())
+        address = _shown_address(host)
         if address is None:
             raise WebappAccessError("This machine has no network address other devices can reach.")
-        host, pinned = "0.0.0.0", ""
+        pinned = ""
         serving, port = _port_to_serve(gateway_home(), host)
         url = f"http://{address}:{serving}"
     elif mode == "public":
@@ -213,6 +215,25 @@ def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int
     if not nous_signed_in():
         raise WebappAccessError("Sign in to your Nous account under Providers first.")
     return host, port, pinned, f"{url}/auth/callback"
+
+
+def _lan_host(home: Path) -> str:
+    """The host LAN Start binds for *home*'s gateway: the one address of this machine its
+    ``webapp.host`` names (on or off), so a user who chose one interface never ends up listening on
+    every one, else the wildcard."""
+    from gateway.webapp_listener import _specific_address, webapp_settings
+
+    host = webapp_settings(home).host
+    return host if _specific_address(host) else "0.0.0.0"
+
+
+def _shown_address(host: str) -> Optional[str]:
+    """The address, in URL form, other devices open for the Webapp bound to *host*: a specific
+    address itself, else this machine's LAN address."""
+    from gateway.webapp_listener import _specific_address
+    from hermes_cli.url_utils import format_url_host
+
+    return format_url_host(host) if _specific_address(host) else lan_address()
 
 
 #: How many ports above the default Start tries for a standalone profile's Webapp.
@@ -422,7 +443,7 @@ def access_status() -> dict:
         "mode": _mode(settings),
         "port": settings.port,
         "gateway": _gateway_state(home),
-        "lan_address": lan_address(),
+        "lan_address": _shown_address(settings.host),
         "public_url": settings.public_url,
         "nous_signed_in": nous_signed_in(),
     }

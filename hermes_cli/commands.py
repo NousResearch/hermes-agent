@@ -317,6 +317,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                execute="gateway_commands"),
     CommandDef("help", "Show available commands (/help skills lists skill commands, /help <text> filters)", "Info", busy_policy="dispatch",
                execute="gateway_help", args_hint="[skills|<filter>]"),
+    CommandDef("!", "Run a shell command in this process — no model turn, not in chat history",
+               "Info", cli_only=True, args_hint="<command>", busy_policy="dispatch"),
     CommandDef("palette", "Open the fuzzy command palette (also Ctrl+P)", "Info",
                cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",

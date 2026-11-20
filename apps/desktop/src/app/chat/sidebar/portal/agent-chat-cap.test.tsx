@@ -15,7 +15,7 @@ import { makeSessionInfo } from '@/test/session-info'
 
 import { SimplifiedSessionList } from '../simplified-session-list'
 
-import { AGENT_CHAT_CAP, capAgentChats } from './agent-chat-cap'
+import { AGENT_CHAT_CAP, agentChatCount, capAgentChats } from './agent-chat-cap'
 
 const noop = () => {}
 
@@ -113,5 +113,22 @@ describe("an agent card's chats", () => {
   it('offers no Show all row when everything fits', () => {
     render(<AgentChats sessions={chats.slice(0, 3)} />)
     expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
+  })
+})
+
+describe('agentChatCount', () => {
+  it('states the loaded chats when the list holds all of them', () => {
+    expect(agentChatCount(134, false)).toEqual({ value: 134, more: false })
+  })
+
+  it('states the profile\'s own count when the backend sends one, the chats past the page included', () => {
+    expect(agentChatCount(134, true, 1873)).toEqual({ value: 1873, more: false })
+    // A chat listed before the count catches up is still counted.
+    expect(agentChatCount(4, false, 3)).toEqual({ value: 4, more: false })
+  })
+
+  it('states a floor that a new chat does not move when more chats exist than are loaded', () => {
+    expect(agentChatCount(134, true)).toEqual({ value: 100, more: true })
+    expect(agentChatCount(135, true)).toEqual(agentChatCount(134, true))
   })
 })

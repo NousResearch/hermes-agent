@@ -17,6 +17,8 @@ export interface SimplifiedAgentsCopy {
   /** An agent card's second line when nothing else describes it. */
   noChats: string
   chatCount: (count: number) => string
+  /** The same line when more chats exist than the list has loaded: a floor ("100+ chats"). */
+  chatCountAtLeast: (count: number) => string
   /** Under an agent's most recent chats: reveal the rest ("Show all (15)") or fold them back. */
   showAllChats: (count: number) => string
   showFewerChats: string
@@ -47,6 +49,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'Show panel',
     noChats: 'No chats yet',
     chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
+    chatCountAtLeast: n => `${n}+ chats`,
     showAllChats: n => `Show all (${n})`,
     showFewerChats: 'Show less',
     feedbackTitle: 'Why switch back? (optional)',
@@ -75,6 +78,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'Afficher le panneau',
     noChats: 'Aucune discussion',
     chatCount: n => (n === 1 ? '1 discussion' : `${n} discussions`),
+    chatCountAtLeast: n => `${n}+ discussions`,
     showAllChats: n => `Tout afficher (${n})`,
     showFewerChats: 'Afficher moins',
     feedbackTitle: 'Pourquoi revenir en arrière ? (facultatif)',
@@ -103,6 +107,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'Seitenleiste einblenden',
     noChats: 'Noch keine Chats',
     chatCount: n => (n === 1 ? '1 Chat' : `${n} Chats`),
+    chatCountAtLeast: n => `${n}+ Chats`,
     showAllChats: n => `Alle anzeigen (${n})`,
     showFewerChats: 'Weniger anzeigen',
     feedbackTitle: 'Warum zurückwechseln? (optional)',
@@ -131,6 +136,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'Mostrar panel',
     noChats: 'Aún no hay chats',
     chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
+    chatCountAtLeast: n => `${n}+ chats`,
     showAllChats: n => `Mostrar todo (${n})`,
     showFewerChats: 'Mostrar menos',
     feedbackTitle: '¿Por qué volver? (opcional)',
@@ -159,6 +165,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'パネルを表示',
     noChats: 'チャットはまだありません',
     chatCount: n => `${n} 件のチャット`,
+    chatCountAtLeast: n => `${n} 件以上のチャット`,
     showAllChats: n => `すべて表示 (${n})`,
     showFewerChats: '表示を減らす',
     feedbackTitle: '元に戻した理由は？（任意）',
@@ -186,6 +193,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: '显示面板',
     noChats: '还没有对话',
     chatCount: n => `${n} 个对话`,
+    chatCountAtLeast: n => `${n}+ 个对话`,
     showAllChats: n => `显示全部 (${n})`,
     showFewerChats: '收起',
     feedbackTitle: '为什么切换回来？（可选）',
@@ -213,6 +221,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: '顯示面板',
     noChats: '尚無對話',
     chatCount: n => `${n} 個對話`,
+    chatCountAtLeast: n => `${n}+ 個對話`,
     showAllChats: n => `顯示全部 (${n})`,
     showFewerChats: '收合',
     feedbackTitle: '為什麼切換回來？（選填）',
@@ -240,6 +249,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'Показать панель',
     noChats: 'Чатов пока нет',
     chatCount: n => `${n} ${RU_NOUN(n, 'чат', 'чата', 'чатов')}`,
+    chatCountAtLeast: n => `${n}+ чатов`,
     showAllChats: n => `Показать все (${n})`,
     showFewerChats: 'Показать меньше',
     feedbackTitle: 'Почему вернулись? (необязательно)',
@@ -267,6 +277,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     showPanel: 'إظهار اللوحة',
     noChats: 'لا توجد محادثات بعد',
     chatCount: n => (n === 1 ? 'محادثة واحدة' : `${n} محادثات`),
+    chatCountAtLeast: n => `أكثر من ${n} محادثة`,
     showAllChats: n => `عرض الكل (${n})`,
     showFewerChats: 'عرض أقل',
     feedbackTitle: 'لماذا عدت للوضع السابق؟ (اختياري)',

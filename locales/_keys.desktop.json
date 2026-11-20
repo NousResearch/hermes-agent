@@ -5008,6 +5008,7 @@
     "sidebar.toolCallCount",
     "simplifiedAgents.agents",
     "simplifiedAgents.chatCount",
+    "simplifiedAgents.chatCountAtLeast",
     "simplifiedAgents.chats",
     "simplifiedAgents.description",
     "simplifiedAgents.feedbackPlaceholder",

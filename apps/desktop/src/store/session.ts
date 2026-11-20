@@ -1138,6 +1138,9 @@ export const $sessionProfilesTruncated = atom<Record<string, boolean>>({})
 export interface ProfileUsage {
   cost_usd: number
   tokens: number
+  /** How many chats the profile holds, the ones past the loaded page included. Absent from a
+   *  backend older than the count. */
+  sessions?: number
 }
 
 export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})

@@ -195,7 +195,7 @@ export interface SidebarSessionSlice {
   profiles_truncated?: Record<string, boolean>
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
-  profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  profiles_usage?: Record<string, { cost_usd: number; sessions?: number; tokens: number }>
   /** This slice is a failed load, not a successful empty session list. */
   failed?: boolean
   /** Ask the sidebar to offer Retry instead of rendering "No sessions yet". */

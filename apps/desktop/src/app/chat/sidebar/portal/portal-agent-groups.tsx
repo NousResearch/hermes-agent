@@ -14,7 +14,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile } from '@/store/profile'
-import { knownSessionOwner } from '@/store/session'
+import { $sessionProfilesTruncated, $sessionProfilesUsage, knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
 
@@ -26,6 +26,7 @@ import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
 
+import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
 import { PortalAgentMenu } from './portal-agent-menu'
 import { PortalHiddenAgents } from './portal-hidden-agents'
 
@@ -49,8 +50,10 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
   /** A search holds the card open: its disclosure stands down and records nothing. */
   forcedOpen: boolean
   hidden: boolean
-  /** How many of the agent's chats the list holds: the card's second line when no description. */
-  chatCount: number
+  /** How many chats the agent has, as far as the list knows: the card's second line when no description. */
+  chats: AgentChatCount
+  /** Whether any of them is in the list under the card: only then is there something to fold. */
+  listed: boolean
   children: ReactNode
 }
 
@@ -62,7 +65,8 @@ function AgentCard({
   open,
   forcedOpen,
   hidden,
-  chatCount,
+  chats,
+  listed,
   onToggle,
   onOpenAgent,
   pending,
@@ -71,10 +75,16 @@ function AgentCard({
   const { t } = useI18n()
   const c = useHiddenAgentCopy()
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
-  const summary = chatCount ? t.simplifiedAgents.chatCount(chatCount) : t.simplifiedAgents.noChats
+
+  const summary = chats.more
+    ? t.simplifiedAgents.chatCountAtLeast(chats.value)
+    : chats.value
+      ? t.simplifiedAgents.chatCount(chats.value)
+      : t.simplifiedAgents.noChats
+
   const headerItems = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
   // The disclosure is offered only when folding would hide something: chats or plugin chrome.
-  const foldable = chatCount > 0 || headerItems.length > 0
+  const foldable = listed || headerItems.length > 0
 
   return (
     <div
@@ -138,9 +148,24 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const activeProfile = useStore($activeGatewayProfile)
   const focused = useStore($focusedStoredSessionId)
   const tiles = useStore($sessionTiles)
+  const truncated = useStore($sessionProfilesTruncated)
+  const usage = useStore($sessionProfilesUsage)
   const { agents, sessionsByAgent, owner } = props.agents
   const query = props.query.trim().toLowerCase()
   const chatsOf = (agent: SimplifiedAgent) => sessionsByAgent.get(agentKey(agent)) ?? []
+
+  // The page flags and counts are keyed by profile alone and come from the machine the list was read
+  // from: they say nothing about a same-named profile on another machine.
+  const chatCountOf = (agent: SimplifiedAgent) => {
+    const profile = agent.targetProfile || agent.profile
+    const listed = agent.connectionId === owner
+
+    return agentChatCount(
+      chatsOf(agent).length,
+      listed && Boolean(truncated[profile]),
+      listed ? usage[profile]?.sessions : undefined
+    )
+  }
 
   const viewedOwner = focused
     ? (tileOwnerRoute(tiles, props.allSessions, focused) ?? knownSessionOwner(props.allSessions, focused))
@@ -197,10 +222,11 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                   {group.map(agent => (
                     <AgentCard
                       agent={agent}
-                      chatCount={chatsOf(agent).length}
+                      chats={chatCountOf(agent)}
                       forcedOpen={Boolean(query)}
                       hidden={isHidden(agent)}
                       key={agent.id}
+                      listed={chatsOf(agent).length > 0}
                       onOpenAgent={props.onOpenAgent}
                       onToggle={props.onToggle}
                       open={Boolean(query) || (props.expanded[agentKey(agent)] ?? true)}

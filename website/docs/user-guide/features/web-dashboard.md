@@ -565,8 +565,11 @@ the gateway's own service (also for the rollback of an unfinished run), or when 
 exists but cannot be read (move it aside after checking the home by hand; the backups are in
 `backend_migration/`). While a migration is `done`, `--apply` reports nothing to migrate and never
 replaces its backups; `--restore` undoes it. `--restore` refuses (exit 3, the gateway keeps serving) when
-`config.yaml` or `.env` changed after the migration or a backup cannot be read, since putting the backups back
-would lose those edits; it prints the steps to restore by hand. When the rollback cannot prove the gateway is off the old
+`config.yaml` or `.env` changed after the migration wrote it or a backup cannot be read, since putting the backups
+back would lose those edits; it checks again after you confirm, and prints the steps to restore by hand. A rollback,
+`--restore` or the rollback of an interrupted run writes a file back only while it is exactly as the migration wrote
+it: one edited since (or whose backup is gone) is left as it is with your edits, the old backend stays down and the
+run ends with manual steps (exit 5). When the rollback cannot prove the gateway is off the old
 address, the old backend stays down and the run ends with manual steps (exit 5).
 On macOS the old backend's LaunchAgent is booted out, disabled (`launchctl disable gui/UID/LABEL`) and its plist
 renamed to `.disabled`, so neither the next login nor a later `launchctl bootstrap` starts it; `--restore` and a

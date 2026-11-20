@@ -1428,3 +1428,107 @@ def test_a_legacy_hermes_service_is_refused_before_the_gateway_install_could_del
     out = capsys.readouterr().out
     assert "legacy Hermes gateway unit (hermes.service)" in out and "gateway migrate-legacy` first" in out
     _nothing_applied(host, home, before)
+
+
+# --------------------------------------------------------------------------- edits are never written over
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env"])
+def test_edit_during_verification_is_detected_by_restore(home, capsys, name):
+    """Fingerprints are recorded at write_config, not after verification, so edits made during verify
+    are never overwritten by a later --restore."""
+    host = FakeHost(home)
+    edited = []
+    real_status = host.gateway_status
+
+    def edit_during_verify(dial, port):
+        if not edited:
+            p = home / name
+            p.write_text(p.read_text(encoding="utf-8") + "# edited during verify\n", encoding="utf-8")
+            edited.append(True)
+        return real_status(dial, port)
+
+    host.gateway_status = edit_during_verify
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    _restore_refused_and_nothing_changed(host, home, capsys, f"{home / name} changed since the migration")
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env"])
+def test_edit_during_verification_is_kept_when_rollback_runs(home, capsys, name):
+    """If config.yaml or .env is edited during a failing verify, rollback keeps the user's edits,
+    leaves the old backend down, and exits 5 with manual steps."""
+    host = FakeHost(home)
+    host.gateway_lies = True
+    edited = []
+    marker = "# operator edit during verify\n"
+    real_status = host.gateway_status
+
+    def edit_during_verify(dial, port):
+        if not edited:
+            p = home / name
+            p.write_text(p.read_text(encoding="utf-8") + marker, encoding="utf-8")
+            edited.append(True)
+        return real_status(dial, port)
+
+    host.gateway_status = edit_during_verify
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    out = capsys.readouterr().out
+    assert marker in (home / name).read_text(encoding="utf-8")
+    assert host.old["active"] is False
+    assert str(home / name) in out and "edits were kept" in out and "Do this by hand:" in out
+
+
+@pytest.mark.parametrize("mutation", ["edit_config", "delete_backup"])
+def test_change_during_restore_confirm_refuses_without_stopping_gateway(home, capsys, monkeypatch, mutation):
+    """Files or backups that change while the confirmation prompt is open: refused, the gateway keeps
+    serving."""
+    host = FakeHost(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    gw_before, old_before = dict(host.gw), dict(host.old)
+    backup = Path(engine.read_manifest(home)["backups"]["config"])
+
+    def mutate_at_prompt(question, yes):
+        if mutation == "edit_config":
+            (home / "config.yaml").write_text((home / "config.yaml").read_text(encoding="utf-8")
+                                              + "# prompt edit\n", encoding="utf-8")
+        else:
+            backup.unlink()
+        return True
+
+    monkeypatch.setattr(engine, "_confirm", mutate_at_prompt)
+    capsys.readouterr()
+
+    assert engine.restore(host, yes=False) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert host.gw == gw_before and host.old == old_before
+    assert engine.read_manifest(home)["state"] == "done"
+    if mutation == "edit_config":
+        assert "# prompt edit\n" in (home / "config.yaml").read_text(encoding="utf-8")
+        assert str(home / "config.yaml") in out and "edits were kept" in out
+    else:
+        assert str(backup) in out
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env"])
+def test_interrupted_recovery_keeps_edits_made_before_recovery(home, capsys, name):
+    """Recovering a killed run never overwrites operator edits made to config.yaml or .env before
+    recovery runs: it keeps the edits, leaves the old backend down, and exits 5 with manual steps."""
+    host = FakeHost(home)
+    host.fail_at["gateway_start"] = Killed()
+    with pytest.raises(Killed):
+        engine.cmd_apply(host, _args())
+    host.fail_at.clear()
+    marker = "# edit before recovery\n"
+    (home / name).write_text((home / name).read_text(encoding="utf-8") + marker, encoding="utf-8")
+    capsys.readouterr()
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    out = capsys.readouterr().out
+    assert marker in (home / name).read_text(encoding="utf-8")
+    assert host.old["active"] is False
+    assert str(home / name) in out and "edits were kept" in out and "Do this by hand:" in out
+

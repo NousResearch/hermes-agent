@@ -2388,9 +2388,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from tools.skills_tool import find_all_skills, sort_skills
             skills = sort_skills(
-                find_all_skills(
-                    skip_disabled=False, include_editorial=True
-                )
+                find_all_skills(skip_disabled=False)
             )
         except Exception:
             logger.exception("GET /v1/skills failed")

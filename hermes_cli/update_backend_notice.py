@@ -28,7 +28,11 @@ _SCAN_TIMEOUT_SECONDS = 5.0
 def _serves_this_home(item, home: Path, host) -> bool:
     if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
         from hermes_cli.gateway_migrate_backends_plan import _for_this_home
-        return _for_this_home(item, host)
+        try:
+            return _for_this_home(item, host)
+        except Exception:  # one unit that cannot be read must not hide another backend's notice
+            logger.debug("Old backend notice: ownership of %s could not be read", item.unit, exc_info=True)
+            return False
     if item.this_home is not None:
         return bool(item.this_home)
     # A user unit that is not running and names no HERMES_HOME would run this user's own default home; a

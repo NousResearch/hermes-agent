@@ -134,7 +134,9 @@ def test_stable_release_tracks_only_completed_admitted_canary_runs(admit_result,
     assert job["needs"] == ["admit", "complete"]
     assert str(job.get("continue-on-error")).lower() == "true"
     assert job["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
+    assert job["concurrency"]["cancel-in-progress"] == "false"
     ctx = {
+        "github": {"run_id": RUN_ID},
         "needs": {
             "admit": {"result": admit_result, "outputs": {"policy": policy}},
             "complete": {"result": "failure"},
@@ -147,6 +149,9 @@ def test_stable_release_tracks_only_completed_admitted_canary_runs(admit_result,
         },
     }
     assert gha.condition(job["if"], ctx) is tracks
+    # Canary tracking shares the exact lock group as live manual replays so both cannot open a tracker.
+    expected_group = "install-e2e-red-tracker-auto" if policy == "canary" else f"install-e2e-red-tracker-{RUN_ID}"
+    assert gha.render(job["concurrency"]["group"], ctx) == expected_group
     # Diagnostic calls must keep the "Build diagnostic " prefix so red-tracker.mjs ignores them.
     for call in lane_set.DIAGNOSTIC_CALLS:
         assert stable["jobs"][call]["name"].startswith("Build diagnostic "), call

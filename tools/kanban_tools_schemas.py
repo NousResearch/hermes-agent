@@ -176,7 +176,8 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "block on things you can resolve yourself. Goal-mode workers must explain "
+        "a genuine external blocker to the judge; 'dependency' requires an unfinished parent."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),

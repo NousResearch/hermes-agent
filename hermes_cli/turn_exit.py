@@ -57,3 +57,13 @@ def credential_failure_flags(exc) -> dict:
                     "credentials_terminal": bool(exc.relogin_required)}
         exc = exc.__cause__ or exc.__context__
     return {}
+
+
+def kanban_goal_turn_result(result, loop_result):
+    """Don't report an unsettled Goal attempt as the success of its last model turn."""
+    if not loop_result or loop_result["outcome"] != "stopped":
+        return result
+    if turn_exit_code(result, kanban_worker=True) != 0:
+        return result  # Keep native retry, reauthentication and interruption dispositions.
+    return {**result, "failed": True, "completed": False,
+            "error": loop_result["reason"]}

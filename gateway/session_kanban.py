@@ -181,8 +181,8 @@ def bind_worker_context(frame):
     for key, value in (('HERMES_KANBAN_BRANCH', context['branch']), ('HERMES_TENANT', context['tenant'])):
         if value:
             env[key] = value
-    if context['goal_mode']:
-        env['HERMES_KANBAN_GOAL_MODE'] = '1'
+    # The adopted frame, not a possibly inherited value, owns this worker's mode.
+    env['HERMES_KANBAN_GOAL_MODE'] = '1' if context['goal_mode'] else '0'
     from hermes_cli.kanban_db_dispatch import _worker_terminal_timeout_env
     for key in ('TERMINAL_TIMEOUT', 'TERMINAL_MAX_FOREGROUND_TIMEOUT'):
         value = _worker_terminal_timeout_env(context['max_runtime_seconds'], os.environ.get(key))
@@ -426,7 +426,7 @@ def _run_task_turns(agent, frame, history, context):
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
     recover_failed_kanban_turns(recover, lambda: result, task_id=context['task_id'],
                                 claim_check=lambda: _bound_claim_is_live(context))
-    from hermes_cli.turn_exit import turn_exit_code
+    from hermes_cli.turn_exit import kanban_goal_turn_result, turn_exit_code
     # Only a settled turn may continue the goal loop: an exhausted or denied recovery reaches
     # the honest exit path without re-entering the model under an unprovable claim.
     if not context['goal_mode'] or turn_exit_code(result, kanban_worker=True) != 0:
@@ -439,13 +439,13 @@ def _run_task_turns(agent, frame, history, context):
             return kb.goal_run_status(conn, context['task_id'], context['run_id'])
     def block(reason):
         with connect_closing() as conn:
-            kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
+            return kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
         result = agent.run_conversation(prompt, conversation_history=_stored_conversation(agent),
                                         turn_author=KANBAN_TURN_AUTHOR)
-        return result.get('final_response', '')
-    run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
+        return result
+    outcome = run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,
-        first_response=result.get('final_response', ''))
-    return result
+        first_response=result.get('final_response', ''), claim_is_live=lambda: _bound_claim_is_live(context))
+    return kanban_goal_turn_result(result, outcome)

@@ -3125,13 +3125,12 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    expected_open_parents: Optional[list[tuple[str, str]]] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
-    re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
-    promote it into a context-free respawn. ``transient`` still counts
-    toward the loop breaker so a forever-flaky task escalates. True on any
-    transition.
+    re-kinded to ``needs_input`` unless the caller requires an exact snapshot of
+    open parents (``expected_open_parents``). Returns True if the transition landed.
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
@@ -3171,12 +3170,9 @@ def block_task(
             })
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
-        requested_kind = kind
-        rekind_reason = None
-        # ``dependency`` only waits on incomplete parents. A worker filing that
-        # kind with none open would park in ``todo`` and ``recompute_ready``
-        # would promote+respawn it context-free on the next tick. Re-kind to
-        # ``needs_input`` so it is sticky until a human unblocks.
+        requested_kind, rekind_reason = kind, None
+        if expected_open_parents is not None and unsatisfied_parents(conn, task_id) != expected_open_parents:
+            return False
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
@@ -3199,8 +3195,12 @@ def block_task(
                 """
         params = (*params, task_id)
         if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
+            # A Goal verdict can arrive after the lease expired but before reclaim.
+            sql += (" AND current_run_id = ? AND (NOT goal_mode OR (status = 'running' AND claim_expires >= ?"
+                    " AND EXISTS (SELECT 1 FROM task_runs WHERE id = tasks.current_run_id"
+                    " AND ended_at IS NULL AND claim_expires >= ?)))")
+            now = int(time.time())
+            params = (*params, int(expected_run_id), now, now)
         if conn.execute(sql, params).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(

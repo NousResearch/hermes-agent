@@ -38,6 +38,7 @@ class Model(BaseHTTPRequestHandler):
         has_result = any(m['role'] == 'tool' for m in messages)
         message = {'role': 'assistant', 'content': 'OWNED_COMPLETE'}
         finish = 'stop'
+        status = 200
         if messages and not body.get('tools'):
             message['content'] = json.dumps({'verdict': 'done', 'reason': 'Owned acceptance satisfied'})
         elif messages and (not has_result or messages[-1]['role'] == 'user'):
@@ -48,10 +49,14 @@ class Model(BaseHTTPRequestHandler):
         payload = json.dumps({'id': 'owned', 'choices': [{'index': 0, 'message': message, 'finish_reason': finish}],
             'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}).encode()
         kind = 'application/json'
-        if body.get('stream'):
+        if self.server.mode == 'goal_relaunch_auth' and body.get('tools') and has_result and messages[-1]['role'] == 'user':
+            self.server.relaunch_requests += 1
+            status = 401
+            payload = b'{"error":{"message":"Invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}'
+        elif body.get('stream'):
             payload = ('data: ' + json.dumps({'id': 'owned', 'choices': [{'index': 0, 'delta': message, 'finish_reason': finish}]}) + '\n\ndata: [DONE]\n\n').encode()
             kind = 'text/event-stream'
-        self.send_response(200)
+        self.send_response(status)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(payload)))
         self.end_headers()
@@ -66,6 +71,7 @@ def main():
     os.environ['HERMES_KANBAN_HOME'] = str(home)
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     peer.requests = []
+    peer.relaunch_requests = 0
     peer.mode = os.environ.get('KANBAN_PROBE_MODE', 'complete')
     peer.blocked, peer.release = threading.Event(), threading.Event()
     threading.Thread(target=peer.serve_forever, daemon=True).start()
@@ -94,7 +100,7 @@ def main():
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
             workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
-            goal_mode=peer.mode == 'complete', goal_max_turns=2,
+            goal_mode=peer.mode in {'complete', 'goal_relaunch_auth'}, goal_max_turns=2,
             max_runtime_seconds=3600 if peer.mode == 'timeout' else None)
     env = dict(os.environ)
     receipt, clients = {}, []
@@ -168,6 +174,12 @@ def main():
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'crashed', receipt
                     elif peer.mode == 'timeout':
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'timed_out', receipt
+                    if peer.mode == 'goal_relaunch_auth':
+                        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+                        judgments = sum(m['role'] == 'system' and m['content'] == JUDGE_SYSTEM_PROMPT
+                                        for request in peer.requests for m in request['messages'])
+                        receipt.update(worker_exit=worker_exit_code(kb.kanban_db_path(board='owned'), params),
+                                       relaunch_requests=peer.relaunch_requests, judgments=judgments)
             finally:
                 subprocess.Popen = original_popen
             if peer.mode != 'complete':

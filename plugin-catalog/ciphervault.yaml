@@ -1,13 +1,13 @@
 name: ciphervault
 repo: https://github.com/samuel-1-avson/CipherVault
-sha: 21c11f33ecb881dad29815c24f199419e7ed3361
+sha: 4dbc39f10ebbc8df537768c0dcb4c4568db4dd05
 subdir: "plugins/ciphervault"
 description: "Zero-knowledge secret backup for AI coding agents — masked sprawl scan, RAM-only run with exact-value output scrubbing, encrypted snapshots, pre_tool_call leak guard, and a secret source for Hermes itself. Disclosure — `ciphervault_run` runs a model-chosen command with vault secrets in its environment after Hermes's approval prompt, and an \"always\" grant covers every later command matching that execution envelope (program, profile, inline code hash, network mode, and allow_keys); `ciphervault_secret_generate` and `ciphervault_secret_prompt` write keys into one env file inside an existing vault (never elsewhere, never in the Hermes home) only after Hermes's approval prompt, and never replace an existing key without the user's explicit yes; when a vault is present, a one-line workspace posture note (status flags, profile and pending key names, never values) is added to the model's context; in a workspace with a vault, or when a tool call names a path inside one, every other tool result is passed through the CipherVault CLI for scrubbing (withheld if that scrub or its audit receipt fails) and logged by hash to that vault's audit chain, each `ciphervault_run` approval request and replicated push sends a signed audit checkpoint (entry count + head hash) to your configured operator fleet (default `op1`–`op3.cipherv.online`), recovery drills query that fleet, and `hermes ciphervault bootstrap` downloads a checksum-pinned CLI binary from the author's GitHub releases into the plugin's folder."
 maintainer: samuel-1-avson
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.8.0"
+version: "0.8.1"
 readme: true
 capabilities:
   provides_tools:

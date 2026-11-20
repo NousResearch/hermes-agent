@@ -548,7 +548,17 @@ def _(rid, params: dict) -> dict:
             from tui_gateway import server
             server.begin_local_desktop_boot()
     return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
-                     "canonical_clarify_batch": True})
+                     "canonical_clarify_batch": True, "client_activity": True})
+
+
+@method("client.activity")
+def _(rid, params: dict) -> dict:
+    """Whether the user is at the calling client, for the sessions it shows (gateway/session_presence.py).
+    A transport that keeps no presence accepts it and keeps nothing."""
+    from gateway.session_presence import report
+    if problem := report(_caller_transport(), params):
+        return _err(rid, 4001, problem)
+    return _ok(rid, {})
 
 
 @method("ping")

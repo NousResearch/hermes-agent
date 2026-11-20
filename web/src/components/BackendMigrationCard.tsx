@@ -153,6 +153,15 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
     setPlan(r.body);
   };
 
+  // After a rolled-back run (everything was put back): read the plan again and offer the move as it stands now.
+  const tryAgain = async () => {
+    const r = await backendMigrationApi.plan();
+    if (!alive.current || r.status !== 200 || !r.body) return;
+    setPlan(r.body);
+    setRefusal(null);
+    setView(null);
+  };
+
   const checkAgain = () => {
     if (!followed) return;
     setView({ kind: followed.requestedAt !== null && followed.confirmed !== false ? "starting" : "checking" });
@@ -182,7 +191,8 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
 
         {refusal && <RefusalNotice refusal={refusal} />}
 
-        {view && <Progress view={view} profile={profile} commands={commands} onCheckAgain={followed ? checkAgain : undefined} />}
+        {view && <Progress view={view} profile={profile} commands={commands} onCheckAgain={followed ? checkAgain : undefined}
+          onTryAgain={() => void tryAgain()} />}
       </CardContent>
 
       <ConfirmDialog
@@ -284,11 +294,12 @@ function Cmd({ children }: { children: string }) {
   return <code className="select-all">{children}</code>;
 }
 
-function Progress({ view, profile, commands, onCheckAgain }: {
+function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
   view: PollView;
   profile: string | null;
   commands: MigrateCommands | null;
   onCheckAgain?: () => void;
+  onTryAgain?: () => void;
 }) {
   const status = migrateCommand(profile, "--status", commands);
   const checkAgain = onCheckAgain && (
@@ -354,8 +365,15 @@ function Progress({ view, profile, commands, onCheckAgain }: {
       );
     case "rolledBack":
       return (
-        <div className="text-warning" data-slot="backend-migration-rolled-back">
-          The move did not work, so everything was put back the way it was. Reason: {view.reason}
+        <div className="flex flex-col gap-2 text-warning" data-slot="backend-migration-rolled-back">
+          <span>The move did not work, so everything was put back the way it was. Reason: {view.reason}</span>
+          {onTryAgain && (
+            <div>
+              <Button size="sm" ghost className="uppercase" onClick={onTryAgain}>
+                Try again
+              </Button>
+            </div>
+          )}
         </div>
       );
     case "manual":

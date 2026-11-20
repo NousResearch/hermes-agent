@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
+from hermes_constants import named_profile_home, named_profile_is_live
+
 from . import disk_cleanup as dg
 
 logger = logging.getLogger(__name__)
@@ -225,7 +227,14 @@ def _handle_slash(raw_args: str) -> Optional[str]:
     handler = _SUBCOMMANDS.get(argv[0])
     if handler is None:
         return f"Unknown subcommand: {argv[0]}\n\n{_HELP_TEXT}"
-    return handler(argv)
+    try:
+        return handler(argv)
+    except FileNotFoundError as exc:
+        # A session still bound to a deleted/renamed profile: the state boundary refused to recreate it.
+        home = named_profile_home(dg.get_hermes_home())
+        if home is None or named_profile_is_live(home):
+            raise
+        return f"Profile '{home.name}' no longer exists; disk-cleanup did nothing. {exc}"
 
 
 def register(ctx) -> None:

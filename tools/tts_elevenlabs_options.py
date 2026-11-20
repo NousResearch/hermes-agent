@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 _VOICE_SETTING_KEYS = frozenset({
@@ -39,7 +39,7 @@ def _allowed_convert_options(convert_method: Any) -> frozenset[str]:
     return frozenset(allowed - _CONTROLLED_CONVERT_KEYS)
 
 
-def _convert_options(el_config: Dict[str, Any], convert_method: Any) -> Dict[str, Any]:
+def _convert_options(el_config: dict[str, Any], convert_method: Any) -> dict[str, Any]:
     raw = el_config.get("convert_options", el_config.get("options", {}))
     if raw in (None, {}):
         return {}
@@ -70,7 +70,7 @@ def _normalized_speed(value: Any) -> Optional[float]:
     return max(ELEVENLABS_SPEED_MIN, min(ELEVENLABS_SPEED_MAX, speed))
 
 
-def _voice_settings(el_config: Dict[str, Any], tts_config: Optional[Dict[str, Any]]) -> Any:
+def _voice_settings(el_config: dict[str, Any], tts_config: Optional[dict[str, Any]]) -> Any:
     nested = el_config.get("voice_settings")
     if nested is not None and not isinstance(nested, dict):
         raise ValueError("tts.elevenlabs.voice_settings must be a mapping")
@@ -97,9 +97,9 @@ def _voice_settings(el_config: Dict[str, Any], tts_config: Optional[Dict[str, An
 
 def build_elevenlabs_convert_kwargs(
     *, text: str, voice_id: str, model_id: str, output_format: str,
-    el_config: Dict[str, Any], tts_config: Optional[Dict[str, Any]] = None,
+    el_config: dict[str, Any], tts_config: Optional[dict[str, Any]] = None,
     convert_method: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build and validate kwargs before calling the ElevenLabs SDK.
 
     Option values are validated, never filtered by ``model_id``: whether a model honors, ignores or

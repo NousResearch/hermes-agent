@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
+from gateway.session_queued_controls import queued_controls
 from hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, list_session_admissions,
     recover_session_inputs,
@@ -249,3 +250,24 @@ async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeyp
                                                      for r in authority._pending_rows(REF))}
     assert pending['follower'].get('controls') == ['steer', 'replace']
     assert not pending['head'].get('controls'), 'a started row has no queued-row controls'
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_flag_cli_turn_keeps_the_queued_row_steerable(tmp_path, monkeypatch):
+    """The Desktop rides ``clarify_batch`` on every prompt.submit (a per-viewer capability), but a
+    steer injects text into the running turn and never runs the row's turn, and a reverted steer
+    re-queues the same row with the flag intact: such a row keeps both verbs. A ``cli_turn_v1``
+    field that changes the turn itself (api_text / model_override / turn_author) keeps
+    disqualifying, and a mixed envelope still does."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    queued = {'status': 'queued', 'target_session_id': 's'}
+    assert queued_controls(authority, {**queued, 'payload': {'text': 'hello'}}) == ['steer', 'replace']
+    assert queued_controls(authority, {**queued, 'payload': {
+        'text': 'hello', 'cli_turn_v1': {'clarify_batch': True}}}) == ['steer', 'replace']
+    assert not queued_controls(authority, {**queued, 'payload': {
+        'text': 'hello', 'cli_turn_v1': {'model_override': 'other'}}})
+    assert not queued_controls(authority, {**queued, 'payload': {
+        'text': 'hello', 'cli_turn_v1': {'clarify_batch': True, 'api_text': 'x'}}})
+    assert not queued_controls(authority, {**queued, 'payload': {
+        'text': 'hello', 'cli_turn_v1': 'not-a-mapping'}})

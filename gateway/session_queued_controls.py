@@ -22,6 +22,13 @@ from hermes_state_runtime import (
 # A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
 # native envelopes and automation rows are whole turns: neither verb may drop what they carry.
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+# ``cli_turn_v1`` fields that change how a turn is presented or answered, never what it runs: a
+# Desktop viewer declares ``clarify_batch`` on EVERY submit (client.ts) so the clarify tool can ask
+# its questions as one form. A steer injects text into the running claim and never runs the row's
+# turn itself, and an undelivered steer re-queues this same row with the field intact
+# (revert_steer_input), so nothing is dropped on any path and such a row keeps both verbs.
+# api_text / model_override / turn_author change the turn itself and keep disqualifying.
+_CLI_TURN_VIEWER_FIELDS = frozenset({'clarify_batch'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
 # ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
@@ -54,7 +61,11 @@ def queued_controls(authority, row):
     lists none, so its clients show none)."""
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+    extra = set(payload) - _TEXT_ONLY
+    cli_turn = payload.get('cli_turn_v1')
+    if isinstance(cli_turn, dict) and set(cli_turn) <= _CLI_TURN_VIEWER_FIELDS:
+        extra.discard('cli_turn_v1')  # viewer presentation flags ride every Desktop submit (see above)
+    if (row.get('status') != 'queued' or extra or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
             or not _interactive(authority, row['target_session_id'])):
         return []

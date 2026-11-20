@@ -22,6 +22,10 @@ def test_managed_worker_snapshot_home_and_secret_boundary(tmp_path, monkeypatch,
     from agent import secret_scope
     from gateway.session_managed_worker import _worker_env
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope, get_terminal_scope
+    from tui_gateway import launch_profile_policy
+
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_source_writes", {})
 
     real = tmp_path / "real"
     launch = tmp_path / ".hermes"
@@ -39,6 +43,11 @@ def test_managed_worker_snapshot_home_and_secret_boundary(tmp_path, monkeypatch,
                  "LAUNCH_PRIVATE": "launch-only", "OPENAI_API_KEY": "launch-provider",
                  "AUXILIARY_VISION_API_KEY": "internal-never-forward"}.items():
         monkeypatch.setenv(k, v)
+    # Capture the launch owner's mode first; the opposite live value below is
+    # secondary-context pollution, not the authority for the owner.
+    monkeypatch.setenv("TERMINAL_HOME_MODE", mode)
+    launch_profile_policy.capture_launch_env()
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile" if mode == "real" else "real")
     before = dict(os.environ)
     secret_scope.set_multiplex_active(True)
     home_token = hc.set_hermes_home_override(str(target))
@@ -64,3 +73,44 @@ def test_managed_worker_snapshot_home_and_secret_boundary(tmp_path, monkeypatch,
         hc.reset_hermes_home_override(home_token)
         secret_scope.set_multiplex_active(False)
     assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("container,mode", [(False, "profile"), (True, "real")],
+                         ids=["native-profile", "container-real"])
+def test_managed_worker_preserves_frozen_launch_home_mode(tmp_path, monkeypatch, container, mode):
+    import hermes_constants as hc
+    from agent import secret_scope
+    from gateway.session_managed_worker import _worker_env
+    from hermes_scope import current_state
+    from tui_gateway import launch_profile_policy
+
+    real = tmp_path / "real"
+    launch = tmp_path / ".hermes"
+    routed = launch / "profiles" / "worker"
+    real.mkdir()
+    (launch / "home").mkdir(parents=True)
+    (routed / "home").mkdir(parents=True)
+    (launch / "config.yaml").write_text("terminal: {}\n")
+    (routed / "config.yaml").write_text("terminal: {}\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(hc, "_PINNED_PROCESS_HERMES_HOME", str(launch))
+    monkeypatch.setattr(hc, "is_container", lambda: container)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_source_writes", {})
+    for key, value in {"HOME": str(real), "HERMES_REAL_HOME": str(real),
+                       "HERMES_HOME": str(launch), "TERMINAL_HOME_MODE": mode}.items():
+        monkeypatch.setenv(key, value)
+    launch_profile_policy.capture_launch_env()
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "real" if mode == "profile" else "profile")
+    before_env = dict(os.environ)
+    before_state = current_state()
+    secret_scope.set_multiplex_active(True)
+    try:
+        child = _worker_env(SimpleNamespace(profile_id=str(launch)))
+        assert child["HOME"] == str(launch / "home" if mode == "profile" else real)
+        target = _worker_env(SimpleNamespace(profile_id=str(routed)))
+        assert target["HOME"] == str(routed / "home" if container else real)
+        assert current_state() is before_state
+        assert dict(os.environ) == before_env
+    finally:
+        secret_scope.set_multiplex_active(False)

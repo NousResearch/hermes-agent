@@ -441,10 +441,15 @@ def _worker_env(authority, policy=None):
     from agent.runtime_scope import bind_state, scope_for_profile
     bypass = policy is not None and policy.ignore_user_config
     terminal = json.loads(policy.terminal_json) if bypass else None
+    # Only the process owner's ordinary policy receives its frozen launch
+    # overlay; routed profiles and frozen recovery policies own their settings.
+    from agent.secret_scope import _is_process_home
+    from tui_gateway.launch_profile_policy import launch_terminal_env
+    overlay = launch_terminal_env() if not bypass and _is_process_home(home) else None
     # Bind the owner atomically before even the first HOME projection. Recovery uses
     # its frozen policy, never the ignored user YAML or a caller's refusal.
     with bind_state(scope_for_profile(home), secrets=build_profile_secret_scope(home),
-                    hydrate_secrets=False, terminal_policy=terminal):
+                    hydrate_secrets=False, terminal_policy=terminal, env_overlay=overlay):
         env = build_subprocess_env(base=strip_launch_profile_env(os.environ.copy(), home),
                                    scrub_secrets=True, base_is_snapshot=True)
         secrets = build_profile_secret_scope(home)

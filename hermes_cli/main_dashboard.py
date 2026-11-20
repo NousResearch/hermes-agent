@@ -577,7 +577,7 @@ def _finalize_update_output(state):
             log_file.close()
 
 
-def _report_dashboard_status() -> int:
+def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 0) -> int:
     """Print live listening dashboard/serve processes and return the count.
 
     Serve-mode backends are INCLUDED: ``--stop`` kills them, so hiding them from
@@ -592,14 +592,16 @@ def _report_dashboard_status() -> int:
     )
     from gateway.status import _pid_exists
     binds = _ledger_serve_binds()
-    # The installed `hermes` runs this CLI under a launcher whose argv is this same `dashboard --status`
+    # A launcher that runs this CLI as its child (the Windows one) has this same `dashboard --status` argv
     # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
     # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
-    # listener itself. The only address this home's gateway is asked about is the peer the probe
-    # connected to for such a launcher, unless a listed backend holds a listener covering that peer
+    # listener itself. The installed POSIX launcher execs instead, so the address this --status names
+    # is probed here too. The only address this home's gateway is asked about is the peer that probe
+    # connected to, unless a listed backend holds a listener covering that peer
     # (a listed process with no covering listener there is listed, not credited).
     ancestors: set[int] | None = None
-    unclaimed: list[tuple[str, int]] = []
+    own = _dashboard_listening(status_host, status_port) if status_port > 0 else None
+    unclaimed: list[tuple[str, int]] = [(own, status_port)] if own else []
     candidates: list[tuple[int, str, str, tuple[str, int]]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)

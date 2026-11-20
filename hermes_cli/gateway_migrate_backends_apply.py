@@ -1237,9 +1237,25 @@ def _non_file_config_backend() -> Optional[str]:
             f"the steps in the docs. Nothing changed.")
 
 
+def _gateway_service_blockers(host, plan: BackendPlan) -> None:
+    """Refusals about the gateway service itself (another home's unit, a legacy ``hermes.service``): they
+    hold for any plan, a manual-only one too."""
+    from hermes_cli.gateway_migrate_backends_plan import hermes_command
+    if (other := host.foreign_gateway_home()) is not None:
+        unit = (plan.gateway or {}).get("unit") or "the gateway service"
+        plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "
+                             f"would restart, stop or remove that home's gateway. Run the migration from that "
+                             f"home, or remove its service there first, then run this again. Nothing changed.")
+    if host.legacy_gateway_units():
+        plan.blockers.append("A legacy Hermes gateway unit (hermes.service) is installed: installing the gateway "
+                             "would stop, disable and delete it, and a rollback or --restore could not bring it "
+                             f"back. Run `{hermes_command(host.home, powershell=os.name == 'nt')} gateway "
+                             "migrate-legacy` first, then run this again. Nothing changed.")
+
+
 def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -> None:
     """Refusals the apply path adds to the plan before anything changes (shown by the dry run too)."""
-    from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home, hermes_command
+    from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home
     rec, item = plan.rec, plan.item
     if (non_file := _non_file_config_backend()) is not None:
         plan.blockers.append(non_file)
@@ -1252,16 +1268,7 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
                              f"({format_address(plan.old_probe_host, plan.old_port)}/api/auth/providers did not "
                              f"answer), so the move could not check that the gateway offers the same ones. Check "
                              f"that the old backend answers there, then run this again. Nothing changed.")
-    if (other := host.foreign_gateway_home()) is not None:
-        unit = (plan.gateway or {}).get("unit") or "the gateway service"
-        plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "
-                             f"would restart, stop or remove that home's gateway. Run the migration from that "
-                             f"home, or remove its service there first, then run this again. Nothing changed.")
-    if host.legacy_gateway_units():
-        plan.blockers.append("A legacy Hermes gateway unit (hermes.service) is installed: installing the gateway "
-                             "would stop, disable and delete it, and a rollback or --restore could not bring it "
-                             f"back. Run `{hermes_command(host.home, powershell=os.name == 'nt')} gateway "
-                             "migrate-legacy` first, then run this again. Nothing changed.")
+    _gateway_service_blockers(host, plan)
     if plan.running_turns is None and not force_interrupt and not plan.blockers:
         # None is "cannot be read", never 0: stopping the old backend could cut off a reply being written.
         plan.blockers.append("The old backend's running turns cannot be read, so this command cannot prove no "

@@ -148,6 +148,9 @@ class TestVaultStore:
         assert normalize_origin("https://Example.com:443/login?x=1") == "https://example.com"
         assert normalize_origin("http://localhost:8931/") == "http://localhost:8931"
         assert normalize_origin("http://site.test:80") == "http://site.test"
+        # An IPv6 literal keeps its brackets, the way ``window.location.origin`` gives it.
+        assert normalize_origin("http://[::1]:8080/login") == "http://[::1]:8080"
+        assert normalize_origin("https://[2001:DB8::1]:443") == "https://[2001:db8::1]"
         with pytest.raises(VaultError):
             normalize_origin("example.com")
 

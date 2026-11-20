@@ -1120,6 +1120,17 @@
   gap: 0.25rem;
 }
 
+/* Their lines are Nous/Body Regular: the check-in's at .8 (18677:28720), the offer's in full ink
+   (18677:28610). */
+:root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer) .discovery-landing-subtitle {
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-developer-offer .discovery-landing-subtitle {
+  color: var(--portal-text-primary);
+}
+
 /* A suggestion (18677:28722): the welcome row's shape, its action in the meta voice at .8 and a
    chevron at the end. */
 :root[data-shell='portal'] .discovery-check-in-rows > li {

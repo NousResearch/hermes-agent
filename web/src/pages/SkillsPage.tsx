@@ -30,6 +30,7 @@ import {
   Plus,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { buildLearnNavigationState } from "@/lib/learn-handoff";
 import type {
   SkillInfo,
   ToolsetInfo,
@@ -247,11 +248,10 @@ export default function SkillsPage() {
     if (dir) segs.push(`local source: ${dir}`);
     if (url) segs.push(`URL: ${url}`);
     if (text) segs.push(text);
-    // Flatten to a single line — the chat composer submits on the first Enter.
-    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
-    if (!composed) return;
+    const learnState = buildLearnNavigationState(segs.join("; "));
+    if (!learnState) return;
     setLearnOpen(false);
-    navigate(`/chat?learn=${encodeURIComponent(composed)}`);
+    navigate("/chat", { state: learnState });
   }, [learnDir, learnUrl, learnText, navigate]);
   const openEditEditor = useCallback((skillName: string) => {
     setEditorSkill(skillName);

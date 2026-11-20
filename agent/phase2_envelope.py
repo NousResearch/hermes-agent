@@ -339,6 +339,19 @@ def _env_nonnegative_number(value: Any) -> bool:
         return False
 
 
+def _env_absolute_path(value: Any) -> bool:
+    """True for a path that is absolute after home expansion; never raises."""
+
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return Path(value).expanduser().is_absolute()
+    except (RuntimeError, OSError, ValueError):
+        # ``~missing-user`` raises RuntimeError from expanduser(); the validator
+        # must report a field error, not escape its caller's boundary.
+        return False
+
+
 def _env_nonempty_strings(value: Any, *, allow_empty: bool = True) -> bool:
     return (
         isinstance(value, (list, tuple))
@@ -377,7 +390,7 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
         value = envelope.get(field)
         if not isinstance(value, str) or value not in allowed:
             errors.append(field)
-    if not _env_nonempty_strings(envelope.get("roots"), allow_empty=False) or any(not Path(root).expanduser().is_absolute() for root in envelope["roots"]):
+    if not _env_nonempty_strings(envelope.get("roots"), allow_empty=False) or any(not _env_absolute_path(root) for root in envelope["roots"]):
         errors.append("roots")
 
     permissions = envelope.get("permissions")
@@ -387,7 +400,7 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
     for field in ("read", "write", "spawn"):
         values = permissions.get(field)
         if not _env_nonempty_strings(values) or field in {"read", "write"} and any(
-            not Path(value).expanduser().is_absolute() for value in (values or [])
+            not _env_absolute_path(value) for value in (values or [])
         ):
             errors.append(f"permissions.{field}")
 

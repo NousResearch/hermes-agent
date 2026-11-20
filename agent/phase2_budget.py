@@ -130,11 +130,11 @@ class Phase2BudgetMixin(ABC):
                     allocation.get("metadata"), "budget allocation metadata"
                 ),
             })
-        current = _utc(now)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                current = _utc(now)
                 graph_id, node_id, fence, latest_envelope = self._load_live_authority(
                     conn, envelope, current, action="reserve budget"
                 )
@@ -223,11 +223,11 @@ class Phase2BudgetMixin(ABC):
             raise AuthorityError("actual_tokens must be a non-negative integer")
         if actual_usd is not None:
             _budget_decimal(actual_usd, "actual_usd")
-        current = _utc(now)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                current = _utc(now)
                 reservation = conn.execute(
                     "SELECT * FROM authority_events WHERE event_id = ? AND kind = 'BUDGET_RESERVED'",
                     (reservation_id,),

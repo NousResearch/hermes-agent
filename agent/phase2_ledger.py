@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, NamedTuple
 
 from hermes_constants import get_hermes_home
+from sqlite_support import apply_wal_with_fallback
 
 from agent.phase2_budget import Phase2BudgetMixin
 from agent.phase2_envelope import (
@@ -173,7 +174,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
     def _connect(self) -> sqlite3.Connection:
         conn = _open_phase2_sqlite(self.db_path, timeout=5.0)
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            apply_wal_with_fallback(conn, db_label="phase2_authority.db")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = sqlite3.Row
             self._ensure_schema(conn)
@@ -221,6 +222,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 prev_event_hash TEXT,
                 event_hash TEXT NOT NULL UNIQUE
             );
+            CREATE INDEX IF NOT EXISTS authority_events_node_lookup
+                ON authority_events(graph_id, node_id, kind, fence, id);
             CREATE TRIGGER IF NOT EXISTS sealed_plans_no_update
             BEFORE UPDATE ON sealed_plans BEGIN
                 SELECT RAISE(ABORT, 'sealed_plans is immutable');
@@ -473,13 +476,13 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         """Persist an immutable plan and its nodes, returning the planner hash."""
 
         graph_id, nodes = self._validate_plan(plan, policy_hash)
-        sealed_at = _utc(now)
         canonical_plan = json.loads(_sealed_json(plan))
         planner_hash = _canonical_hash(canonical_plan)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                sealed_at = _utc(now)
                 if conn.execute(
                     "SELECT 1 FROM sealed_plans WHERE graph_id = ?", (graph_id,)
                 ).fetchone():
@@ -689,7 +692,6 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         remain globally single-use.
         """
 
-        granted_at = _utc(now)
         if not isinstance(holder, str) or not holder.strip():
             raise AuthorityError("lease holder is required")
         if not isinstance(attempt_id, str) or not attempt_id.strip():
@@ -705,6 +707,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                granted_at = _utc(now)
                 plan, node = self._load_plan_node(conn, graph_id, node_id)
                 deadline = _parse_time(node["deadline_utc"])
                 expires = _expiry_from_ttl(granted_at, ttl)
@@ -833,11 +836,11 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
 
         if state not in _ATTEMPT_SETTLEMENTS:
             raise AuthorityError("invalid attempt settlement state")
-        settled_at = _utc(now)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                settled_at = _utc(now)
                 graph_id, node_id, authority = self._authority_gate(
                     conn, envelope, action="settle"
                 )
@@ -903,11 +906,11 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         ):
             if not isinstance(value, str) or not value.strip():
                 raise AuthorityError(f"{field} must be a non-empty string")
-        recorded_at = _utc(now)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                recorded_at = _utc(now)
                 self._load_plan_node(conn, graph_id, node_id)
                 authority = self._node_authority(conn, graph_id, node_id)
                 if (
@@ -1027,7 +1030,6 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         or terminal lease.
         """
 
-        renewed_at = _utc(now)
         ttl = _nonnegative_number(ttl_s, "ttl_s")
         if ttl == 0:
             raise AuthorityError("ttl_s must be greater than zero")
@@ -1035,6 +1037,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                renewed_at = _utc(now)
                 graph_id, node_id, authority = self._authority_gate(
                     conn, envelope, action="renew"
                 )
@@ -1104,11 +1107,11 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         authorize execution.
         """
 
-        revoked_at = _utc(now)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                revoked_at = _utc(now)
                 graph_id, node_id, authority = self._authority_gate(
                     conn, envelope, action="revoke"
                 )
@@ -1162,11 +1165,11 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         """
 
         result_hash = _valid_sha256(result_hash, "result_hash")
-        completed_at = _utc(now)
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                completed_at = _utc(now)
                 try:
                     record = self._accept_result(
                         conn, envelope, result_hash, completed_at
@@ -1457,12 +1460,12 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         closed.
         """
 
-        current = _utc(now)
         reconciled_count = 0
         with _DB_LOCK:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                current = _utc(now)
                 rows = conn.execute(
                     "SELECT * FROM authority_events ORDER BY id"
                 ).fetchall()

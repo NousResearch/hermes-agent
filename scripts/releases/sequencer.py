@@ -33,8 +33,12 @@ def _key(version: str) -> tuple[int, int, int]:
 
 
 def plan(claims: list[dict], *, head: str | None,
-         requested_version: str | None = None) -> list[dict]:
-    """Return each eligible draft flip immediately followed by its head advance."""
+         requested_version: str | None = None, unfinished: str | None = None) -> list[dict]:
+    """Return each eligible draft flip immediately followed by its head advance.
+
+    ``unfinished`` names the release at the head whose advance stopped after the head moved
+    (_unfinished_desktop_head): it advances again, before anything newer.
+    """
     ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
     head_key = _key(head) if head is not None else None
     steps: list[dict] = []
@@ -46,6 +50,14 @@ def plan(claims: list[dict], *, head: str | None,
         state = claim["state"]
 
         if head_key is not None and version_key <= head_key:
+            if state == "published" and version == unfinished:
+                if version_key != head_key:
+                    # A newer release already moved the aliases; repeating this one would roll them back.
+                    raise ValueError(f"refusing to finish {version} under the newer head {head}: "
+                                     f"its candidate pointer names another release")
+                log(f"  plan {version}: at the head, but its candidate pointer names another release — advance again")
+                steps.append({"advance": version})
+                continue
             if state in {"published", "burned"}:
                 log(f"  plan {version}: {state}, at or below head {head} — nothing to do")
                 continue
@@ -374,31 +386,28 @@ def channel_head(desktop_head: str | None, records: list[dict],
 STABLE_POINTER = "releases/stable/release-candidates.json"
 
 
-def _settle_stable_pointer(env: dict, head: str | None, records: list[dict], read_archive) -> None:
-    """Finish a desktop advance whose last write, the candidate pointer, failed.
+def _unfinished_desktop_head(env: dict, records: list[dict], read_archive) -> str | None:
+    """The protected desktop head's version when its candidate pointer does not name it.
 
-    publish_release writes the pointer only after the protected head moves, so a failed pointer
-    write leaves the head on the release and plan() sees nothing left to do. The pointer is the
-    source channel's update target and the next release's upgrade baseline, so repeat the advance
-    (idempotent once the head is there) until the pointer names the head's candidate.
+    publish_release writes the pointer last, after the head moves, and the Docker aliases move
+    after that. A failed pointer write therefore leaves the head on a release whose advance did
+    not finish, which plan() would otherwise count as done. The pointer is the source channel's
+    update target and the next release's upgrade baseline.
     """
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases
 
+    head = channel_releases.stable_head_version(env)
     record = next((row for row in records if row["version"] == head and row["state"] == "published"
                    and lane_set.advances_desktop(row["lanes"])), None)
     if record is None:
-        return
+        return None
     candidate = json.loads(read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json"))
     try:
         pointer = json.loads(read_archive(STABLE_POINTER))
     except ChannelError:
         pointer = None  # the head's own pointer write never landed
-    if pointer == candidate:
-        return
-    log(f"The protected head is {head} but {STABLE_POINTER} names another release: finishing its advance")
-    with tempfile.TemporaryDirectory() as directory:
-        channel_releases.advance_stable(env, record, Path(directory))
+    return None if pointer == candidate else head
 
 
 def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
@@ -483,8 +492,9 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     with group("Read the stable channel head"):
         head = read_head()
         log(f"Channel head: {head or '(none)'}")
+        unfinished = _unfinished_desktop_head(env, records, read_archive) if advance_head is None else None
     with group("Plan"):
-        steps = plan(records, head=head, requested_version=requested)
+        steps = plan(records, head=head, requested_version=requested, unfinished=unfinished)
         log("Steps: " + (", ".join(f"{kind} {version}" for step in steps
                                    for kind, version in step.items()) or "(none)"))
     by_version = {record["version"]: record for record in records}
@@ -544,9 +554,6 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
         if reached != expected:
             raise ValueError("Stable protected head did not reach the planned version")
     if production:
-        # Verify proved the head reached the last advance; with none it is still the one read above.
-        head = next((step["advance"] for step in reversed(steps) if "advance" in step), head)
-        _settle_stable_pointer(env, head, list(final.values()), read_archive)
         _reconcile_store(env, list(final.values()), read_archive)
     log("Stable sequencer finished: " + (", ".join(
         f"{kind} {version}" for step in steps for kind, version in step.items()) or "nothing to do"))

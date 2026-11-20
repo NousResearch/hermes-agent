@@ -1725,6 +1725,18 @@ export interface Translations extends NoticeTranslations {
       restored: string
       deleteConfirm: (title: string) => string
       autoArchiveTitle: string
+      subagentsTitle: string
+      subagentsIntro: string
+      showSubagentsTitle: string
+      showSubagentsDesc: string
+      showSubagentsNone: string
+      showSubagentsActive: string
+      showSubagentsAll: string
+      subagentOpenTitle: string
+      subagentOpenDesc: string
+      subagentOpenTab: string
+      subagentOpenWindow: string
+      subagentSettingsFailed: string
       autoArchiveDesc: string
       autoArchiveDaysLabel: string
       autoArchiveDaysUnit: string
@@ -4106,6 +4118,9 @@ export interface Translations extends NoticeTranslations {
     }
     tool: {
       copyCode: string
+      openSubagent: string
+      openSubagentNumbered: (n: number) => string
+      openSubagentFailed: string
       renderingImage: string
       copyOutput: string
       copyCommand: string

@@ -368,6 +368,8 @@ does not start a shell anywhere else.
 
 While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents).
 
+Clicking a subagent (a delegate card row, a row in this frame, or the **Open subagent** button on an async delegation's completion row) opens its session. By default it pops into its own watch window (a new browser tab in the Webapp); set **Settings → Sessions → Subagents → Open subagents in** to **Tab** (`desktop.subagent_open: tab`) to open it as an in-app tab beside the parent chat instead. The same page decides whether subagent runs appear in the sidebar: **None**, **Active** (only running ones) or **All** (`sessions.show_subagents`).
+
 ### Git review & worktrees
 
 For sessions running inside a Git repository, the app has a built-in source-control surface:

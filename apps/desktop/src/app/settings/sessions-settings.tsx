@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Tip } from '@/components/ui/tooltip'
 import {
   deleteSession,
@@ -19,7 +20,7 @@ import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
-import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { Archive, ArchiveOff, FolderOpen, GitFork, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { confirm } from '@/store/confirm'
@@ -29,6 +30,14 @@ import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCw
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
+import {
+  normalizeSubagentOpenMode,
+  setSubagentOpenModeFromConfig,
+  showSubagentsConfigValue,
+  type SubagentOpenMode,
+  subagentSidebarMode,
+  type SubagentSidebarMode
+} from '@/store/subagent-display'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -57,6 +66,14 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
     return (
       <SettingsContent>
         <DefaultProjectDirSetting />
+      </SettingsContent>
+    )
+  }
+
+  if (subpage === 'subagents') {
+    return (
+      <SettingsContent>
+        <SubagentSettings />
       </SettingsContent>
     )
   }
@@ -158,6 +175,8 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
   return (
     <SettingsContent>
       {includeDefaultDirectory && <DefaultProjectDirSetting />}
+
+      {includeDefaultDirectory && <SubagentSettings />}
 
       <AutoArchiveSetting />
 
@@ -330,6 +349,129 @@ function AutoArchiveSetting() {
           title={s.autoArchiveDaysLabel}
         />
       )}
+    </div>
+  )
+}
+
+// Subagent display: whether delegate runs join the sidebar (sessions.show_subagents:
+// false | "active" | true, filtered by the backend) and where a subagent click opens
+// it (desktop.subagent_open: window | tab). Both are config.yaml keys of the active
+// profile, saved as sparse patches like AutoArchiveSetting; the open mode applies
+// at once, the sidebar on its next refresh. No gateway restart is involved.
+function SubagentSettings() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
+  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  const [sidebarMode, setSidebarMode] = useState<SubagentSidebarMode>('none')
+  const [openMode, setOpenMode] = useState<SubagentOpenMode>('window')
+
+  useEffect(() => {
+    if (!window.hermesDesktop) {
+      return
+    }
+
+    let alive = true
+
+    void getHermesConfigRecord()
+      .then(record => {
+        if (!alive) {
+          return
+        }
+
+        const sessions = (record.sessions ?? {}) as Record<string, unknown>
+        const desktop = (record.desktop ?? {}) as Record<string, unknown>
+        setConfig(record)
+        setSidebarMode(subagentSidebarMode(sessions.show_subagents))
+        setOpenMode(normalizeSubagentOpenMode(desktop.subagent_open))
+      })
+      .catch(() => {
+        // Leave the controls unmounted if config can't be read.
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const persist = useCallback(
+    async (patch: HermesConfigRecord, rollback: () => void) => {
+      if (!config) {
+        return
+      }
+
+      try {
+        // Sparse patch: PUT /api/config deep-merges; echoing the cached snapshot
+        // would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfig(patch, peekConfigReadOrigin(config))
+      } catch (err) {
+        rollback()
+        notifyError(err, s.subagentSettingsFailed)
+      }
+    },
+    [config, s.subagentSettingsFailed]
+  )
+
+  if (!config) {
+    return null
+  }
+
+  const sidebarOptions = [
+    { id: 'none', label: s.showSubagentsNone },
+    { id: 'active', label: s.showSubagentsActive },
+    { id: 'all', label: s.showSubagentsAll }
+  ] as const satisfies readonly { id: SubagentSidebarMode; label: string }[]
+
+  const openOptions = [
+    { id: 'tab', label: s.subagentOpenTab },
+    { id: 'window', label: s.subagentOpenWindow }
+  ] as const satisfies readonly { id: SubagentOpenMode; label: string }[]
+
+  return (
+    <div className="mb-6">
+      <SectionHeading icon={GitFork} page title={s.subagentsTitle} />
+      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {s.subagentsIntro}
+      </p>
+      <ListRow
+        action={
+          <SegmentedControl
+            onChange={mode => {
+              const previous = sidebarMode
+              triggerHaptic('selection')
+              setSidebarMode(mode)
+              void persist({ sessions: { show_subagents: showSubagentsConfigValue(mode) } }, () =>
+                setSidebarMode(previous)
+              )
+            }}
+            options={sidebarOptions}
+            value={sidebarMode}
+          />
+        }
+        description={s.showSubagentsDesc}
+        id={settingElementId(SETTING_IDS.sessions.showSubagents)}
+        title={s.showSubagentsTitle}
+      />
+      <ListRow
+        action={
+          <SegmentedControl
+            onChange={mode => {
+              const previous = openMode
+              triggerHaptic('selection')
+              setOpenMode(mode)
+              setSubagentOpenModeFromConfig(mode)
+              void persist({ desktop: { subagent_open: mode } }, () => {
+                setOpenMode(previous)
+                setSubagentOpenModeFromConfig(previous)
+              })
+            }}
+            options={openOptions}
+            value={openMode}
+          />
+        }
+        description={s.subagentOpenDesc}
+        id={settingElementId(SETTING_IDS.sessions.subagentOpen)}
+        title={s.subagentOpenTitle}
+      />
     </div>
   )
 }

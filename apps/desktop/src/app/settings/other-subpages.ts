@@ -26,7 +26,8 @@ export const OTHER_SUBPAGES: Record<string, SettingsSubpage[]> = {
   ],
   sessions: [
     { id: 'archived', labelKey: 'archivedSessions' },
-    { id: 'default-directory', labelKey: 'defaultDirectory' }
+    { id: 'default-directory', labelKey: 'defaultDirectory' },
+    { id: 'subagents', labelKey: 'subagentSessions' }
   ],
   vault: [
     { id: 'credentials', labelKey: 'vaultCredentials' },

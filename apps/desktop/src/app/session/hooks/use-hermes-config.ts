@@ -21,6 +21,7 @@ import {
   setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
+import { setSubagentOpenModeFromConfig } from '@/store/subagent-display'
 import { setShowToolActivityFromConfig } from '@/store/tool-activity'
 import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
@@ -161,6 +162,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
+        setSubagentOpenModeFromConfig(config.desktop?.subagent_open)
 
         if (!canPublish()) {
           return

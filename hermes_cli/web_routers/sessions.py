@@ -667,6 +667,26 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
         "changed": bool(path and latest != path[0])}
 
 
+@manage_router.get("/api/sessions/{session_id}/subagents/{subagent_id}")
+async def get_session_subagent_child(session_id: str, subagent_id: str, profile: Optional[str] = None):
+    """The stored session of delegated child *subagent_id* of *session_id* (the dispatch result's
+    ``subagent_ids``), so a viewer can open it after the live roster forgot it (a finished async
+    delegation, a reloaded transcript). Only a child whose ancestry reaches this conversation."""
+    def _child(store):
+        from gateway.session_ancillary import _compression_lineage
+        from tools.delegate_tool_sessions import stored_child_session
+
+        sid = _resolve_session_id(store, session_id) or session_id
+        child = stored_child_session(store, subagent_id, _compression_lineage(store, sid))
+        if not child:
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        record = store.sessions.get(child)
+        return {"session_id": sid, "subagent_id": subagent_id, "child_session_id": child,
+                "running": bool(record is not None and record.as_session_row().get("ended_at") is None)}
+
+    return await asyncio.to_thread(_with_db, profile, _child, read_only=True)
+
+
 def _stored_tool_call_labels(message: dict) -> dict:
     from agent.display import tool_labels_for_call
     from tools.tool_labels import BRIDGE_TOOL_NAMES

@@ -495,6 +495,8 @@ export interface HermesConfig {
   }
   desktop?: {
     font_family?: string
+    /** Where a subagent click opens its session: `window` (default) or `tab`. */
+    subagent_open?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]

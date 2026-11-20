@@ -85,6 +85,7 @@ const SUBPAGE_ICONS: Record<string, IconComponent> = {
   notificationSounds: Volume2,
   archivedSessions: Archive,
   defaultDirectory: FolderOpen,
+  subagentSessions: GitFork,
   vaultCredentials: KeyRound,
   vaultSources: Lock,
   appUpdates: Download,

@@ -92,6 +92,7 @@ import {
 } from '@/store/session'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
+import { $subagentOpenMode } from '@/store/subagent-display'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
@@ -1066,7 +1067,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       requestSessionResume(sessionId)
     }
 
-    openSession(sessionId, navigate)
+    // desktop.subagent_open: tab: a delegated child nested in the sidebar opens
+    // as a new tab beside its parent chat instead of replacing it.
+    openSession(sessionId, navigate, session?.source === 'subagent' && $subagentOpenMode.get() === 'tab' ? 'tab' : 'in-place')
   }
 
   // The controller's entire callback surface, gathered into the stable

@@ -433,6 +433,18 @@ function contentRefusedMeta(
   return message.contentRefused ? { contentRefused: message.contentRefused } : {}
 }
 
+// The async-result fields (delegate completion card) ride metadata.custom on the
+// system row, set only when present; extracted to keep toRuntimeMessage in budget.
+function asyncResultMeta(
+  message: ChatMessage
+): Partial<Pick<ChatMessage, 'asyncDelegationId' | 'asyncResult' | 'asyncResultKind'>> {
+  return {
+    ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
+    ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+    ...(message.asyncDelegationId ? { asyncDelegationId: message.asyncDelegationId } : {})
+  }
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -473,8 +485,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       metadata: {
         custom: {
           ...timelineMeta,
-          ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
-          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...asyncResultMeta(message),
           ...contentRefusedMeta(message)
         }
       }

@@ -2561,13 +2561,13 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
-        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
-        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
-        # theme's face. The terminal pane is terminal.font_family.
+        # CSS font-family for chat and UI text (e.g. "OpenDyslexic"), in front of the theme's sans stack
+        # so missing glyphs fall through. Empty = the theme's face; the terminal pane is terminal.font_family.
         "font_family": "",
-        # Git repo discovery for the Projects sidebar. Empty roots are a safe
-        # no-op; users must explicitly configure roots for filesystem scanning.
-        # Session-derived projects remain available.
+        # Where a clicked subagent opens: "window" = own watch window (browser tab in the Webapp), "tab" = in-app tab.
+        "subagent_open": "window",
+        # Git repo discovery for the Projects sidebar. Empty roots are a safe no-op; users must
+        # explicitly configure roots for filesystem scanning. Session-derived projects remain available.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],

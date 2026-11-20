@@ -44,6 +44,8 @@ export type ChatMessage = {
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'
+  /** The async delegation a completion row reports (the id in its `[ASYNC DELEGATION ...]` header). */
+  asyncDelegationId?: string
   timestamp?: number
   completedAt?: number
   pending?: boolean

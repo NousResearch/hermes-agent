@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { canOpenSubagent, openSubagentSession } from '@/app/open-subagent'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS } from '@/components/chat/scaffold-row'
@@ -16,7 +17,6 @@ import { displayModelName } from '@/lib/model-status-label'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $subagentsBySession } from '@/store/subagents'
-import { openSessionInNewWindow } from '@/store/windows'
 
 import {
   type DelegateRow,
@@ -68,7 +68,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   const parentSessionId = useStore(useSessionView().$storedId)
   const { t } = useI18n()
   const copy = t.assistant.tool
-  const { sessionId } = row
+  const { sessionId, subagentId } = row
   const live = isDelegateRowLive(row.status)
   const elapsed = useElapsedSeconds(live, `delegate:${row.id}`)
   const activity = row.activity.slice(-TICKER_DEPTH)
@@ -84,8 +84,10 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
     !live && row.durationSeconds ? formatDurationSeconds(row.durationSeconds) : ''
   ].filter(Boolean)
 
-  // Only a child that reported its own session id has somewhere to go.
-  const open = sessionId ? () => void openSessionInNewWindow(sessionId, { watch: true, parentSessionId }) : undefined
+  // A child that reported its own session id, or whose subagent id the call's
+  // result names (a finished background delegation), has somewhere to go.
+  const target = { childSessionId: sessionId, parentSessionId, subagentId }
+  const open = canOpenSubagent(target) ? () => void openSubagentSession(target) : undefined
 
   // The scaffold mark goes on the goal row, NEVER on this wrapper: it fades to
   // 0.67, and opacity opens a stacking context around the ticker's transformed

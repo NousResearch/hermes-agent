@@ -840,3 +840,20 @@ def test_manual_plan_runs_gateway_safety_refusals_and_withholds_steps(home, spaw
     plan = data["plan"]
     assert any(expected_reason in b for b in plan["blockers"]), plan["blockers"]
     assert plan["unsupported"] and all(u["steps"] == [] for u in plan["unsupported"]), plan["unsupported"]
+
+
+def test_unknown_turns_blocks_inside_old_cgroup_and_respects_force_interrupt(home, spawned, monkeypatch):
+    """Stripping the cgroup-only blocker before ``_owner_blockers`` keeps the unknown-turns warning when
+    the answering server runs inside the old unit, and ``force_interrupt=True`` clears that blocker."""
+    monkeypatch.setattr(gateway_migrate_backends_plan, "_own_cgroup_inside", lambda plan: True)
+    client = _client(home, monkeypatch, running_turns=None)
+    plan = client.get("/api/gateway/migrate/backends/plan").json()["plan"]
+    assert any("running turns cannot be read" in b for b in plan["blockers"]), plan["blockers"]
+    assert not any("runs inside" in b for b in plan["blockers"]), plan["blockers"]
+
+    blocked = client.post("/api/gateway/migrate/backends/apply", json={})
+    assert (blocked.status_code, blocked.json()["error"]) == (409, "blocked")
+
+    forced = client.post("/api/gateway/migrate/backends/apply", json={"force_interrupt": True})
+    assert forced.status_code == 200, forced.text
+    assert "--force-interrupt" in spawned[-1]["argv"]

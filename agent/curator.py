@@ -883,7 +883,75 @@ def _safe_curated_report() -> list[dict[str, Any]]:
     return []
 
 
-def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_names: set[str]) -> tuple:
+class _PreCuratorDecision(NamedTuple):
+    """Resolved outcome of ``pre_curator_run`` hooks."""
+
+    skip: bool = False
+    skip_llm: bool = False
+    skip_reason: Optional[str] = None
+    prompt: Optional[str] = None
+
+
+def _llm_candidate_names() -> list[str]:
+    """Candidate skill names eligible for the curator LLM pass."""
+    disabled = get_disabled_skill_names()
+    return [
+        str(r["name"]) for r in _safe_curated_report()
+        if r.get("name") and not skill_usage.is_bundled(r["name"]) and r["name"] not in disabled
+    ]
+
+
+def _apply_pre_curator_run_hook(
+    *, trigger: str, dry_run: bool, consolidate: bool,
+) -> _PreCuratorDecision:
+    """Fire ``pre_curator_run``; fail-open. Plugins may observe (None), augment the LLM prompt
+    (``prompt`` / ``append_prompt``), skip the LLM pass (``action='skip_llm'``), or skip the
+    entire curator run (``action='skip'``)."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook("pre_curator_run"):
+            return _PreCuratorDecision()
+        candidates = _llm_candidate_names()
+        results = invoke_hook(
+            "pre_curator_run",
+            trigger=trigger,
+            dry_run=bool(dry_run),
+            consolidate=bool(consolidate),
+            candidate_count=len(candidates),
+            candidates=candidates,
+            prompt=CURATOR_REVIEW_PROMPT,
+        )
+        effective_prompt: Optional[str] = None
+        appends: list[str] = []
+        skip_llm = False
+        skip_llm_reason: Optional[str] = None
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action") or "").strip().lower()
+            if action == "skip":
+                reason = str(item.get("reason") or "").strip() or None
+                return _PreCuratorDecision(skip=True, skip_reason=reason)
+            if action == "skip_llm":
+                skip_llm = True
+                skip_llm_reason = str(item.get("reason") or "").strip() or skip_llm_reason
+            if isinstance(item.get("prompt"), str) and item["prompt"].strip():
+                effective_prompt = item["prompt"]
+            if isinstance(item.get("append_prompt"), str) and item["append_prompt"].strip():
+                appends.append(item["append_prompt"].strip())
+        if appends:
+            base = effective_prompt if effective_prompt is not None else CURATOR_REVIEW_PROMPT
+            effective_prompt = base + "\n\n" + "\n\n".join(appends)
+        return _PreCuratorDecision(skip_llm=skip_llm, skip_reason=skip_llm_reason, prompt=effective_prompt)
+    except Exception as exc:
+        logger.debug("pre_curator_run hook failed (fail-open): %s", exc, exc_info=True)
+        return _PreCuratorDecision()
+
+
+def _consolidation_pass(
+    prefix: str, auto_summary: str, dry_run: bool, before_names: set[str],
+    *, base_prompt: Optional[str] = None,
+) -> tuple:
     """The LLM half of a run: fork (unless no candidates), then append the rename map (`old-name → umbrella`) so users
     needn't dig into REPORT.md. Returns ``(final_summary, llm_meta)``; never raises."""
     try:
@@ -896,7 +964,8 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             # prune_builtins: archival is the deterministic pass's job, and
             # the bundled policy is archive-only. Hard rule #1 therefore
             # stands unqualified.
-            prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+            review_prompt = base_prompt if base_prompt is not None else CURATOR_REVIEW_PROMPT
+            prompt = f"{review_prompt}\n\n{candidate_list}"
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)
@@ -930,6 +999,20 @@ def run_curator_review(
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(UTC)
     hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
+    decision = _apply_pre_curator_run_hook(trigger=trigger, dry_run=dry_run, consolidate=consolidate)
+    if decision.skip:
+        reason = decision.skip_reason or "plugin hook"
+        summary = f"skipped ({reason})"
+        _notify(on_summary, f"curator: {summary}")
+        return {
+            "started_at": start.isoformat(),
+            "auto_transitions": {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
+            "summary_so_far": summary,
+            "skipped": True,
+            "skip_reason": decision.skip_reason,
+        }
+    if decision.skip_llm:
+        consolidate = False
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
@@ -967,11 +1050,21 @@ def run_curator_review(
         before_report = _safe_curated_report()
         before_names = set(_by_name(before_report))
         if consolidate:
-            final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
+            if decision.prompt is not None:
+                final_summary, llm_meta = _consolidation_pass(
+                    prefix, auto_summary, dry_run, before_names, base_prompt=decision.prompt,
+                )
+            else:
+                final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
         else:
             # Prune-only run: record it and write a report, but never fork.
-            final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
-            llm_meta = _llm_meta("skipped (consolidation off)")
+            skip_label = (
+                f"skipped by hook ({decision.skip_reason})" if decision.skip_llm and decision.skip_reason
+                else "skipped by hook" if decision.skip_llm
+                else "skipped (consolidation off)"
+            )
+            final_summary = f"{prefix}{auto_summary}; llm: {skip_label}"
+            llm_meta = _llm_meta(skip_label)
         elapsed = (datetime.now(UTC) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.

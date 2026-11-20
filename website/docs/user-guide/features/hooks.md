@@ -478,6 +478,9 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
 | `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
+| `pre_background_review` | Directive/control | On the background-review worker thread, right before the review fork builds its agent. Return `None` to observe, `{"action": "skip", "reason": ...}` to override/skip the built-in pass, or `{"prompt": ..., "append_prompt": ..., "extra_tools": [...]}` to augment the review prompt/whitelist (prompt-cache parity preserved). | `session_id`, `review_memory`, `review_skills`, `explicit`, `focus`, `prompt`, `model`, `provider`, `routed`, `message_count`, `skills_loaded`, `extra_tools` | Review prompt and loaded skill names; no raw transcript body. |
+| `post_background_review` | Observer | Once per background review pass after completion (`ok`, `error`, `cancelled`, or `skipped`). Return ignored. | `session_id`, `review_memory`, `review_skills`, `explicit`, `focus`, `model`, `provider`, `routed`, `outcome`, `result_kind`, `actions`, `tool_calls`, `skills_touched`, `usage`, `duration_seconds`, `error`, `skip_reason` | Summary lines, touched skill names, tool call outcomes, and token usage. |
+| `pre_curator_run` | Directive/control | Before a curator pass runs automatic transitions or its LLM consolidation fork. Return `None` to observe, `{"action": "skip" \| "skip_llm", "reason": ...}` to override/skip, or `{"prompt": ..., "append_prompt": ...}` to augment the curator LLM prompt. | `trigger`, `dry_run`, `consolidate`, `candidate_count`, `candidates`, `prompt` | Candidate skill names and review prompt. |
 | `post_curator_run` | Observer | After a curator pass wrote its per-run report (`logs/curator/<run>/run.json` + `REPORT.md`), in the process that ran the pass. Return ignored. | `run_dir`, `run_json_path`, `report_md_path`, `dry_run` | Local filesystem paths; the report names skills. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
@@ -1206,6 +1209,55 @@ def my_callback(session_id: str, kind: str, reason: str, **kwargs):
 **Return value:** Ignored. A callback that raises is logged and skipped; the compaction is already committed and is unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
 
 **Use cases:** Re-inject session context after compaction, refresh an external index, count compactions.
+
+### `pre_background_review`
+
+Fires on the background-review worker thread immediately before a background memory/skill review fork builds its `AIAgent`. Plugins can observe, augment the review prompt or dispatch-side tool whitelist, or override/skip the built-in pass cleanly without touching core agent files or invalidating the parent session's prompt cache.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    session_id: str, review_memory: bool, review_skills: bool, explicit: bool,
+    focus: str | None, prompt: str, model: str, provider: str, routed: bool,
+    message_count: int, skills_loaded: list[str], extra_tools: list[str], **kwargs,
+):
+```
+
+**Return value:** `None` (observe), `{"action": "skip", "reason": "..."}` (skip the built-in fork; `post_background_review` still fires with `outcome="skipped"`), or a dict with `prompt` (full replacement, last writer wins), `append_prompt` (appended in registration order), and/or `extra_tools` (list of tool names additively admitted to the fork's dispatch whitelist). Fail-open: exceptions are logged and skipped.
+
+### `post_background_review`
+
+Observer fired once after every background memory/skill review pass finishes (`ok`, `error`, `cancelled`, or `skipped`).
+
+**Callback signature:**
+
+```python
+def my_callback(
+    session_id: str, review_memory: bool, review_skills: bool, explicit: bool,
+    focus: str | None, model: str, provider: str, routed: bool, outcome: str,
+    result_kind: str, actions: list[str], tool_calls: list[dict],
+    skills_touched: list[str], usage: dict, duration_seconds: float,
+    error: str | None, skip_reason: str | None, **kwargs,
+):
+```
+
+**Return value:** Ignored. Fail-open.
+
+### `pre_curator_run`
+
+Fires before a curator pass runs automatic transitions and (when `consolidate=True`) its LLM consolidation pass. Symmetric partner to `post_curator_run`.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    trigger: str, dry_run: bool, consolidate: bool,
+    candidate_count: int, candidates: list[str], prompt: str, **kwargs,
+):
+```
+
+**Return value:** `None` (observe), `{"action": "skip", "reason": "..."}` (skip the entire pass), `{"action": "skip_llm", "reason": "..."}` (run deterministic transitions only, skip the LLM fork), or a dict with `prompt` (replacement) and/or `append_prompt` (appended guidance). Fail-open.
 
 ### `post_curator_run`
 

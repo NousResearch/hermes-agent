@@ -395,7 +395,7 @@ def test_notice_runs_after_clearing_restart_marker_and_still_prints_when_restart
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(update_cmd_maint, "_refresh_dashboard_after_update", lambda **kwargs: set())
     monkeypatch.setattr(update_receipt, "_code_identity", lambda **kwargs: {})
-    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: order.append("migrate"))
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda outcome, rows_expected: [
         {"profile": "default", "pid": 1234, "state": "current"}])
     monkeypatch.setattr(update_cmd_fleet, "_clear_fleet_restart_pending_marker", lambda: order.append("clear"))
@@ -413,7 +413,7 @@ def test_notice_runs_after_clearing_restart_marker_and_still_prints_when_restart
         fleet_verify._verify_fleet_after_update(
             _restart(["hermes-gateway"]), _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
     out = capsys.readouterr().out
-    assert order == ["clear", "notice"]
+    assert order == ["clear", "migrate", "notice"]
     assert "Found an old Hermes backend for this profile: stub." in out
 
     order.clear()
@@ -431,8 +431,60 @@ def test_notice_runs_after_clearing_restart_marker_and_still_prints_when_restart
     assert "Found an old Hermes backend for this profile: stub." in out
 
 
+def test_keyboard_interrupt_in_notice_leaves_every_required_step_done(monkeypatch):
+    """Ctrl-C during the notice wait cannot skip any required post-update step on either path."""
+    from hermes_cli import (
+        update_backend_notice,
+        update_cmd,
+        update_cmd_fleet,
+        update_cmd_fleet_verify as fleet_verify,
+        update_cmd_maint,
+        update_receipt,
+    )
+    from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
+
+    steps: list[str] = []
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr(update_cmd_maint, "_refresh_dashboard_after_update", lambda **kwargs: set())
+    monkeypatch.setattr(update_receipt, "_code_identity", lambda **kwargs: {})
+    monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda outcome, rows_expected: [
+        {"profile": "default", "pid": 1234, "state": "current"}])
+    monkeypatch.setattr(update_receipt, "finalize_update_receipt", lambda *args, **kwargs: steps.append("receipt"))
+    monkeypatch.setattr(update_cmd_fleet, "_clear_fleet_restart_pending_marker", lambda: steps.append("clear"))
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: steps.append("migrate"))
+
+    def interrupt_notice(*args, **kwargs):
+        steps.append("notice")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(update_backend_notice, "print_old_backend_notice", interrupt_notice)
+    plan = UpdatePlan(profiles=["default"], runtimes=[RuntimeRecord("gateway", "default", 1234, "systemd"),
+                                                      RuntimeRecord("serve", "default", 4321, "manual-serve")])
+
+    with pytest.raises(KeyboardInterrupt):
+        with update_receipt.update_receipt_scope():
+            update_receipt.begin_update_receipt()
+            fleet_verify._verify_fleet_after_update(
+                _restart(["hermes-gateway"]), _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+    assert steps == ["receipt", "clear", "migrate", "notice"]
+
+    steps.clear()
+    incomplete = _GatewayRestartOutcome(
+        incomplete=True, phase_errors=[], pre_restart_gateway_pids=[1234], restarted_services=["hermes-gateway"],
+        failed_or_stale_units=["hermes-dashboard"], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set())
+    monkeypatch.setattr(fleet_verify, "_record_owed_gateway_inventory", lambda *args, **kwargs: steps.append("owed"))
+    with pytest.raises(KeyboardInterrupt):
+        with update_receipt.update_receipt_scope():
+            update_receipt.begin_update_receipt()
+            fleet_verify._verify_fleet_after_update(
+                incomplete, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+    assert steps == ["owed", "receipt", "notice"]
+
+
 def test_a_hanging_scan_times_out_at_the_deadline_and_prints_nothing(monkeypatch, capsys):
-    """A hanging backend scan cannot delay the update past the notice's overall deadline."""
+    """The caller waits at most the deadline for a hanging backend scan and prints nothing on timeout."""
     import hermes_cli.gateway_migrate_backends as backends
     from hermes_cli.update_backend_notice import print_old_backend_notice
 
@@ -446,13 +498,14 @@ def test_a_hanging_scan_times_out_at_the_deadline_and_prints_nothing(monkeypatch
 
     monkeypatch.setattr(backends, "collect_backends", hanging_scan)
     plan = UpdatePlan(runtimes=[RuntimeRecord("serve", "default", 7, "manual-serve")])
+    deadline = 0.2
     t0 = time.monotonic()
     try:
-        print_old_backend_notice(plan, None, timeout=0.1)
+        print_old_backend_notice(plan, None, timeout=deadline)
         elapsed = time.monotonic() - t0
         assert started.is_set()
         assert not release.is_set()
-        assert elapsed < 2.0
+        assert deadline * 0.8 <= elapsed < 2.0
         assert capsys.readouterr().out == ""
     finally:
         release.set()

@@ -40,6 +40,12 @@ process that was already running when the profile was marked still answers slash
 backend on another profile's home takes the profile with the request.
 ``config.yaml`` itself is still read (``hermes status`` and ``hermes config`` show it).
 
+Nor does a host process maintain the home. The maintenance a start runs once per installed
+revision (``hermes_cli.boot_bootstrap``: the config migration, which first copies ``config.yaml``
+and ``.env`` beside themselves, among other steps) runs before any command can refuse, for every
+``hermes`` command and the gateway process. For a marked home it runs no step and records nothing,
+so it stays owed and the first start after the marker is gone does it.
+
 The marker is the file ``<hermes root>/profiles_run_elsewhere/<profile>.json``. It lives under the
 Hermes root and never inside a profile home, so the profile's backend cannot remove it. The file's
 presence is the marker; its contents (``{"plugin": ..., "since": ...}``) only name the owner in

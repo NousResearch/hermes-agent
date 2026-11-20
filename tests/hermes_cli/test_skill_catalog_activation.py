@@ -202,6 +202,58 @@ def test_cold_search_public_work_starts_before_bootstrap_join(client, cold, monk
     assert manager._discovered
 
 
+def test_cold_waiter_saturation_does_not_delay_stock_search(monkeypatch):
+    import asyncio
+    from starlette.requests import Request
+    from hermes_cli.skill_catalog import bootstrap, http
+    from hermes_cli.web_routers import skills
+    from tools import skills_hub_search
+    from tests.waiting import async_wait_until
+
+    release = threading.Event()
+    waiting = []
+    tasks = []
+    original = bootstrap.lookup
+
+    def parked(_profile, task, _home):
+        try:
+            assert release.wait(10)
+        finally:
+            task.done.set()
+
+    def lookup(*args, **kwargs):
+        waiting.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(bootstrap, '_run', parked)
+    monkeypatch.setattr(bootstrap, 'lookup', lookup)
+    monkeypatch.setattr(skills, '_hub_sources', lambda profile: [])
+    monkeypatch.setattr(skills, '_installed_hub_identifiers', lambda profile: {})
+    monkeypatch.setattr(skills_hub_search, 'parallel_search_sources', lambda *a, **k: ([], {}, []))
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+        request = Request(dict(type='http', method='GET', path='/api/skills/hub/official',
+                               query_string=b'', headers=[]))
+        try:
+            tasks.extend(asyncio.create_task(http._selected_service(request, None, time.monotonic() + 8))
+                         for _ in range(2))
+            assert await async_wait_until(lambda: len(waiting) == 2, timeout=3)
+            # Both synchronous waiters remain parked until after the stock result.
+            result = await asyncio.wait_for(skills.search_skills_hub(q='hello'), timeout=2)
+            assert result['results'] == []
+            assert not any(task.done() for task in tasks)
+        finally:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tuple(bootstrap._active.values()):
+                if task.thread is not None:
+                    task.thread.join(3)
+
+    asyncio.run(run())
+
+
 def test_official_uses_one_absolute_bootstrap_and_availability_deadline(client, cold, monkeypatch):
     from hermes_cli.skill_catalog import http
     manager = cold()

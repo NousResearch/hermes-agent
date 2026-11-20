@@ -5,8 +5,11 @@ including validation errors and background hub action serialization. Provider
 references never reach that handler while this profile has live catalogs.
 """
 import asyncio
+import contextvars
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -34,6 +37,30 @@ class CatalogRoute(APIRoute):
 def _service(profile, *, deadline=None):
     from hermes_cli.skill_catalog.bootstrap import lookup
     return lookup(profile, deadline=deadline)
+
+
+_lookup_lock = threading.Lock()
+_lookup_slots = threading.BoundedSemaphore(4)
+_lookup_executor = None
+
+
+async def _lookup_service(profile, deadline):
+    """Cold joins own bounded capacity, never the stock public-search executor."""
+    global _lookup_executor
+    if not _lookup_slots.acquire(blocking=False):
+        raise CatalogError('busy', 'Catalog discovery is busy.')
+    try:
+        with _lookup_lock:
+            if _lookup_executor is None:
+                _lookup_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='catalog-lookup')
+        context = contextvars.copy_context()
+        future = _lookup_executor.submit(context.run, _service, profile, deadline=deadline)
+    except BaseException:
+        _lookup_slots.release()
+        raise
+    # Cancellation does not free capacity while the actual waiter is still alive.
+    future.add_done_callback(lambda _future: _lookup_slots.release())
+    return await asyncio.wrap_future(future)
 
 
 class _Body(dict):
@@ -86,14 +113,14 @@ async def _selected_service(request, hint, deadline):
         candidates = dict.fromkeys(value for value in selectors if type(value) is str)
         for profile in candidates or (None,):
             try:
-                service = await asyncio.to_thread(_service, profile, deadline=deadline)
+                service = await _lookup_service(profile, deadline)
             except HTTPException:
                 continue
             if service is not None:
                 raise CatalogError('invalid_request', 'Ambiguous catalog profiles.')
         return None
     profile = next(iter(profiles or queries), None)
-    return await asyncio.to_thread(_service, profile, deadline=deadline)
+    return await _lookup_service(profile, deadline)
 
 
 def _invoke(service, method, *args, **kwargs):

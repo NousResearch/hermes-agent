@@ -596,8 +596,8 @@ def _report_dashboard_status() -> int:
     # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
     # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
     # listener itself. The only address this home's gateway is asked about is the peer the probe
-    # connected to for such a launcher, unless a listed backend proven to listen on that port answered
-    # at that same peer (a listed process the OS shows with no listener there is listed, not credited).
+    # connected to for such a launcher, unless a listed backend holds a listener covering that peer
+    # (a listed process with no covering listener there is listed, not credited).
     ancestors: set[int] | None = None
     unclaimed: list[tuple[str, int]] = []
     candidates: list[tuple[int, str, str, tuple[str, int]]] = []
@@ -620,9 +620,13 @@ def _report_dashboard_status() -> int:
     live = [(pid, command, mode) for pid, command, mode, _ in candidates]
     gateway_note = None
     if unclaimed:
-        from hermes_cli.web_server_port_holder import gateway_webapp_summary
-        held = {address for pid, _, _, address in candidates
-                if address in unclaimed and _process_listens_on(pid, address[1]) is not False}
+        from hermes_cli.web_server_port_holder import _binds_overlap, _listening_addresses, gateway_webapp_summary
+        held = {
+            (peer, port) for pid, _, _, (peer, port) in candidates
+            if (peer, port) in unclaimed and any(
+                _binds_overlap(bound, peer, port) for bound in _listening_addresses(pid, port)
+            )
+        }
         asked = [peer for peer in dict.fromkeys(unclaimed) if peer not in held]
         gateway_note = next(filter(None, (gateway_webapp_summary(*peer) for peer in asked)), None)
 

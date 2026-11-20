@@ -202,3 +202,38 @@ def test_a_process_with_no_listener_is_still_listed_but_does_not_hide_the_gatewa
     assert f"PID {pid} " not in out, out
     assert any(line.startswith(f"    PID {stuck.pid} [serve]: ") for line in out.splitlines()), out
     assert any(line.startswith("The Hermes gateway") for line in out.splitlines()), out
+
+
+def test_a_backend_listening_on_another_address_of_the_same_port_does_not_hide_the_gateway(tmp_path):
+    """A listed process whose argv probes 127.0.0.1:P (reaching the gateway) while its own socket
+    listens on 127.0.0.2:P holds port P on a different address: it stays listed, and the gateway is
+    still named."""
+    stand_in = tmp_path / "bin"
+    stand_in.mkdir()
+    script = stand_in / "hermes"
+    script.write_text(
+        "import signal, socket, sys\n"
+        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
+        "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "sock.bind(('127.0.0.2', port))\n"
+        "sock.listen(1)\n"
+        "print('READY', flush=True)\n"
+        "signal.pause()\n",
+        encoding="utf-8",
+    )
+    with live_gateway(tmp_path) as gateway:
+        other = subprocess.Popen(
+            [sys.executable, str(script), "serve", "--port", str(gateway.port)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
+        try:
+            assert other.stdout is not None and other.stdout.readline().strip() == "READY"
+            pid, code, out = _status(gateway.env, "--port", str(gateway.port))
+        finally:
+            os.killpg(other.pid, signal.SIGTERM)
+            other.wait(timeout=10)
+    assert code == 0, out
+    assert f"PID {pid} " not in out, out
+    assert _lists(out, other.pid, gateway.port), out
+    assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out

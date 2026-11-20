@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli.backend_migration_marker import backend_retired_by_migration
 from tests.hermes_cli.test_gateway_migrate_backends_apply import FakeHost, _args
@@ -74,3 +76,46 @@ def test_a_turn_started_after_preflight_is_interrupted_with_force_interrupt(home
 
     assert engine.cmd_apply(host, _args(force_interrupt=True)) == engine.EXIT_OK
     assert "old_stop" in host.calls
+
+
+@pytest.fixture
+def managed(home, tmp_path, monkeypatch):
+    """A real managed scope (HERMES_MANAGED_DIR/config.yaml), set up as the managed-config tests do."""
+    import hermes_cli.config as cfg
+    from hermes_cli import managed_scope
+    folder = tmp_path / "managed"
+    folder.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(folder))
+
+    def write(body):
+        (folder / "config.yaml").write_text(body, encoding="utf-8")
+        cfg._LOAD_CONFIG_CACHE.clear()
+        cfg._RAW_CONFIG_CACHE.clear()
+        managed_scope.invalidate_managed_cache()
+    yield folder, write
+    managed_scope.invalidate_managed_cache()
+
+
+@pytest.mark.parametrize(("body", "key"), [("webapp:\n  enabled: false\n", "webapp.enabled"),
+                                           ("webapp:\n  port: 8000\n", "webapp.port")])
+def test_a_managed_webapp_setting_that_overrides_the_move_is_refused_before_any_change(
+        home, managed, capsys, body, key):
+    folder, write = managed
+    write(body)
+    host = FakeHost(home)
+    before = {n: (home / n).read_bytes() for n in ("config.yaml", ".env")}
+
+    code = engine.cmd_apply(host, _args())
+
+    out = capsys.readouterr().out
+    assert "old_stop" not in host.calls and host.old == {"enabled": True, "active": True}
+    assert code == engine.EXIT_BLOCKED, out
+    assert host.calls == [] and not engine.manifest_path(home).exists()
+    assert {n: (home / n).read_bytes() for n in ("config.yaml", ".env")} == before
+    assert key in out and str(folder / "config.yaml") in out, out
+
+
+def test_a_managed_webapp_block_that_agrees_with_the_move_does_not_block(home, managed):
+    _folder, write = managed
+    write("webapp:\n  enabled: true\n  host: 0.0.0.0\n  port: 9119\n")  # what the move writes
+    assert engine.cmd_apply(FakeHost(home), _args()) == engine.EXIT_OK

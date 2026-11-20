@@ -488,16 +488,28 @@ class SystemHost:
     def dotenv(self) -> dict[str, str]:
         return _dotenv_file(str(self.home / ".env"))
 
-    def effective_config(self) -> dict:
+    def effective_config(self, user: Optional[dict] = None) -> dict:
         """This home's config as the gateway sees it (defaults, ``${VAR}`` expansion, the managed
-        overlay), built from the file as written: ``load_config``'s merge without its writes (it
-        creates the home layout and backs up config.yaml on a cache miss)."""
+        overlay last), built from the file as written (or from *user*, a user layer to judge instead):
+        ``load_config``'s merge without its writes (it creates the home layout and backs up config.yaml
+        on a cache miss)."""
         import copy
         from hermes_cli.config import (
             DEFAULT_CONFIG, _canonicalize_config, _deep_merge, _expand_env_vars, _merge_managed_overlay,
         )
-        merged = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), self.read_config())
+        merged = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), self.read_config() if user is None else user)
         return _merge_managed_overlay(_expand_env_vars(_canonicalize_config(merged)))[0]
+
+    def migrated_webapp_settings(self, values: dict):
+        """The gateway's ``webapp_settings`` once *values* are written to ``config.yaml``, with the managed
+        overlay applied after them, as the gateway applies it."""
+        import copy
+        from gateway.webapp_listener import webapp_settings
+        from hermes_cli.config import _set_nested
+        user = copy.deepcopy(self.read_config())
+        for key, value in values.items():
+            _set_nested(user, key, value)
+        return webapp_settings(self.home, document=self.effective_config(user))
     def set_config(self, values: dict, *, expect: Optional[str]) -> bytes:
         """Set *values* in ``config.yaml`` (the file config backend: the apply refuses any other); returns
         the exact bytes published. *expect* is the sha256 of the backup the migration took (None: there was

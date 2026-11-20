@@ -57,6 +57,22 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
     return patch("agent.auxiliary_client.call_llm", mock_fn), mock_fn
 
 
+@pytest.mark.parametrize(
+    ("task", "timeout", "config", "legacy_default", "expected"),
+    [
+        ("triage_specifier", None, {"auxiliary": {"triage_specifier": {"timeout": 600}}}, 120, 600),
+        ("kanban_decomposer", None, {}, 180, 180),
+        ("triage_specifier", 30, {"auxiliary": {"triage_specifier": {"timeout": 600}}}, 120, 30),
+    ],
+)
+def test_auxiliary_timeout_uses_explicit_then_config_then_legacy_default(
+    monkeypatch, task, timeout, config, legacy_default, expected,
+):
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
+
+    assert spec._auxiliary_timeout(task, timeout, legacy_default) == expected
+
+
 # ---------------------------------------------------------------------------
 # JSON extraction helpers
 # ---------------------------------------------------------------------------
@@ -137,5 +153,4 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
         assert kb.get_task(conn, outside).status == "triage"
         # The inside task was promoted.
         assert kb.get_task(conn, inside).status in {"todo", "ready"}
-
 

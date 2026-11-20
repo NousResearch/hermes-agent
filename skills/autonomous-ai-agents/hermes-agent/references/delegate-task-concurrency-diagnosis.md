@@ -44,7 +44,8 @@ hermes config get delegation.max_concurrent_children
 
 # 2. Did Hermes' truncator or rejector actually fire?
 #    search_files(pattern="Truncated.*delegate_task|Too many tasks", path="~/.hermes/logs/agent.log")
-#    Read the newest hits; if neither line appears, neither cap path executed.
+#    Matches come back oldest first, 50 at a time; for the newest, repeat with offset=total_count-50.
+#    If neither line appears, neither cap path executed.
 
 # 3. Confirm the resolver returns what config says (in venv with hermes on path)
 python -c "from tools.delegate_tool import _get_max_concurrent_children; \

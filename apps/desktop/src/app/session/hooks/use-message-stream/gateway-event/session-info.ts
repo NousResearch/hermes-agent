@@ -6,6 +6,8 @@ import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
+import { settleQueuedLaunchPick } from '@/store/composer-queued-pick'
+import { dismissNotification } from '@/store/notifications'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -18,6 +20,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   applySessionTitle,
+  getComposerSelectionScope,
   sessionMatchesStoredId,
   setActiveSessionId,
   setCurrentBranch,
@@ -43,6 +46,16 @@ import {
 
 import { payTurnEndReport, runningEdge } from './turn-end-report'
 import type { GatewayEventContext } from './types'
+
+function settleQueuedModelNotice({ sessionId, payload, fromActiveSource }: GatewayEventContext): void {
+  if (!sessionId || typeof payload?.model !== 'string' || !fromActiveSource()) {
+    return
+  }
+
+  if (settleQueuedLaunchPick(sessionId, payload.model, getComposerSelectionScope())) {
+    dismissNotification(`model-pick-deferred-${sessionId}`)
+  }
+}
 
 /**
  * Whether a `session.info` payload's `stored_session_id` may be treated as the
@@ -315,6 +328,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         payload?.stored_session_id || undefined
       )
     }
+
+    settleQueuedModelNotice(ctx)
 
     // The running→busy transition must reach EVERY session, not just the
     // active one. The `apply` gate above correctly scopes view-only side

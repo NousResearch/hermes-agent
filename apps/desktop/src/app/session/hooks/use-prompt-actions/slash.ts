@@ -82,6 +82,7 @@ import {
   isSessionIdCandidate,
   renderCommandsCatalog,
   renderRpcResult,
+  slashExecText,
   slashStatusText,
   type SubmitTextOptions,
   withSessionNotFoundResume
@@ -356,7 +357,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         void surfaceModelSwitchConfirm<GuardedModelSwitchResult & SlashExecResponse>({
           confirmMessage: refusal.confirm_message,
           failureMessage: copy.modelSwitchFailed,
-          finish: confirmed => render(confirmed?.output || '/model: no output'),
+          finish: confirmed => render(slashExecText(confirmed, '/model: no output')),
           model: refusal.target_model,
           requestConfirmed: () =>
             requestGateway<GuardedModelSwitchResult & SlashExecResponse>('slash.exec', {
@@ -534,7 +535,6 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
-          const body = output?.output || `/${name}: no output`
 
           // `/goal status|pause|resume|clear` come back as plain exec output
           // ("⊙ Goal (active, 3/20 turns): …", "⏸ Goal paused: …", "✓ Goal
@@ -544,7 +544,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             applyGoalStatusText(sessionId, output.output)
           }
 
-          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+          renderSlashOutput(slashExecText(output, `/${name}: no output`))
 
           return
         } catch (error) {

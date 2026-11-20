@@ -494,7 +494,7 @@ export interface ConfigGetParams {
 }
 /** Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``, ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``, ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``. */
 export interface ConfigGetResult {
-  value?: string | null
+  value?: string | boolean | null
   display?: string | null
   tool_progress?: string | null
   model?: string | null
@@ -4009,11 +4009,15 @@ export interface SlashExecParams {
   session_id: string
   command: string
   profile?: string | null
+  confirm_expensive_model?: boolean
 }
 /** Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to ``command.dispatch`` — that method's directive fields with ``type`` set. */
 export interface SlashExecResult {
   output?: string | null
   warning?: string | null
+  confirm_required?: boolean | null
+  confirm_message?: string | null
+  target_model?: string | null
   type?: DispatchType | null
   target?: string | null
   message?: string | null
@@ -5495,7 +5499,7 @@ export interface CanonicalReplaceQueuedParams {
   title_preview?: string | null
 }
 export interface CanonicalConfigGetResult {
-  value?: string | null
+  value?: string | boolean | null
   display?: string | null
   tool_progress?: string | null
   model?: string | null

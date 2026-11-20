@@ -13,8 +13,8 @@ import {
   modelOptionsQueryKey,
   requestModelOptions
 } from '@/lib/model-options'
-import { noteQueuedLaunchPick } from '@/store/composer-queued-pick'
-import { notify, notifyError } from '@/store/notifications'
+import { noteQueuedLaunchPick, settleQueuedLaunchPick } from '@/store/composer-queued-pick'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -279,6 +279,7 @@ export function useModelControls({
       }
 
       const before = readSnapshot()
+      const runtimeBefore = liveSessionId ? $sessionStates.get()[liveSessionId] : undefined
       const composerScope = getComposerSelectionScope()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
@@ -287,9 +288,15 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
+        }
+      }
+
+      const cacheSelection = (provider: string, model: string) => {
+        updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
+      }
+
+      const paintAppliedSelection = () => {
+        if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: selection.model,
@@ -297,10 +304,6 @@ export function useModelControls({
             reasoningEffortWire: ''
           }))
         }
-      }
-
-      const cacheSelection = (provider: string, model: string) => {
-        updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
       }
 
       const restoreSnapshot = (snapshot: ModelPickSnapshot) => {
@@ -312,13 +315,7 @@ export function useModelControls({
           setCurrentModelTransient(snapshot.model)
           setCurrentProviderTransient(snapshot.provider)
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: snapshot.model,
-            provider: snapshot.provider,
-            reasoningEffortWire: snapshot.reasoningEffortWire
-          }))
+
         }
 
         cacheSelection(snapshot.provider, snapshot.model)
@@ -382,24 +379,42 @@ export function useModelControls({
           ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
         })
 
-      const finishSwitch = (result: ModelSwitchResponse | undefined, token: number) => {
+      const finishSwitch = (result: ModelSwitchResponse | undefined, token: number, latest: boolean) => {
         noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection : null, composerScope, token)
 
         // A pick made DURING a turn is queued by the gateway and applied at the
-        // next turn start (`deferred`). Re-fetching now would answer with the
-        // model still running and repaint the old name over the user's choice —
-        // the switch publishes session.info when it lands, and that is what
-        // re-syncs every surface.
+        // next turn start (`deferred`). Keep the live pill on the model that is
+        // still answering this turn; the sticky composer pick remains the
+        // queued target, and session.info paints it when the owner applies it.
         if (!result?.deferred) {
+          if (latest) {
+            dismissNotification(`model-pick-deferred-${liveSessionId}`)
+            paintAppliedSelection()
+          }
+
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })
-        } else {
-          notify({
-            id: `model-pick-deferred-${liveSessionId}`,
-            kind: 'info',
-            message: t.shell.modelMenu.pickDeferred(selection.model)
-          })
+        } else if (latest) {
+          const current = $sessionStates.get()[liveSessionId]
+
+          const targetIsLive = runtimeBefore && current &&
+            (runtimeBefore.model !== selection.model || runtimeBefore.provider !== selection.provider) &&
+            current.model === selection.model && current.provider === selection.provider
+
+          if (targetIsLive) {
+            settleQueuedLaunchPick(liveSessionId, selection.model, composerScope)
+            dismissNotification(`model-pick-deferred-${liveSessionId}`)
+          } else {
+            cacheSelection(current?.provider ?? before.provider, current?.model ?? before.model)
+
+            notify({
+              id: `model-pick-deferred-${liveSessionId}`,
+              kind: 'info',
+              message: t.shell.modelMenu.pickDeferred(selection.model),
+              ...(touchesPrimary ? { durationMs: 0, persistent: true } : {})
+            })
+          }
         }
       }
 
@@ -449,11 +464,13 @@ export function useModelControls({
             },
             requestConfirmed: () => requestSwitch(true),
             finish: result => {
+              const latest = retryToken !== null && !isPickSuperseded(pickKey, retryToken)
+
               if (retryToken !== null) {
                 settleModelPick(pickKey, retryToken, true)
               }
 
-              finishSwitch(result, retryToken ?? pickToken)
+              finishSwitch(result, retryToken ?? pickToken, latest)
             },
             rollback: () => {
               const repaint = retryToken === null ? restored : settleModelPick(pickKey, retryToken, false)
@@ -467,8 +484,9 @@ export function useModelControls({
           return false
         }
 
+        const latest = !isPickSuperseded(pickKey, pickToken)
         settleModelPick(pickKey, pickToken, true)
-        finishSwitch(result, pickToken)
+        finishSwitch(result, pickToken, latest)
 
         return true
       } catch (err) {

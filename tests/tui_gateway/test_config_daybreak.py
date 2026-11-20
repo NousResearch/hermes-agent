@@ -13,6 +13,7 @@ import hermes_yaml as yaml
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.registry import CANONICAL_METHODS, METHODS, check_result
 
 
 @pytest.fixture
@@ -30,6 +31,17 @@ def homes(tmp_path, monkeypatch):
 
 def _call(method, **params):
     return server._methods[method](1, params)
+
+
+def test_daybreak_boolean_result_validates_on_both_gateway_wires(homes):
+    launch, _worker = homes
+    for enabled in (False, True):
+        (launch / "config.yaml").write_text(f"agent:\n  daybreak: {str(enabled).lower()}\n", encoding="utf-8")
+        server._cfg_cache = server._cfg_sig = server._cfg_path = None
+        result = _call("config.get", key="daybreak")["result"]
+        assert result == {"value": enabled}
+        check_result(METHODS["config.get"], result)
+        check_result(CANONICAL_METHODS["config.get"], result)
 
 
 def test_the_switch_round_trips_through_agent_daybreak(homes):

@@ -8364,6 +8364,9 @@
                 "type": "string"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
             ],
@@ -13300,6 +13303,9 @@
             "anyOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "boolean"
               },
               {
                 "type": "null"
@@ -43790,6 +43796,11 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "confirm_expensive_model": {
+            "default": false,
+            "title": "Confirm Expensive Model",
+            "type": "boolean"
           }
         },
         "required": [
@@ -43826,6 +43837,42 @@
             ],
             "default": null,
             "title": "Warning"
+          },
+          "confirm_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Required"
+          },
+          "confirm_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Message"
+          },
+          "target_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Model"
           },
           "type": {
             "anyOf": [

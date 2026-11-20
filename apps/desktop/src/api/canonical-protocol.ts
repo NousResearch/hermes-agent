@@ -102,6 +102,10 @@ export function pickerModelMutation(value: unknown): { model: string; provider: 
 
 function mutationSummary(operation: string, value: Record<string, unknown>): string {
   if (operation === 'model') {
+    if (value.status === 'deferred') {
+      return `Model switch to ${value.model} queued for the next turn; it has not applied yet.`
+    }
+
     // `/model reset` already on the configured default answers with the owner's note.
     return typeof value.note === 'string' ? value.note : `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}`
   }

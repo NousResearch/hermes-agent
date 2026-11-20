@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { confirm } from '@/store/confirm'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -87,6 +88,7 @@ function resetStores() {
   setCurrentModelSource('')
   setCurrentProvider('')
   SessionStates.$sessionStates.set({})
+  tile.delegate = null
 }
 
 describe('useModelControls stale pick ordering', () => {
@@ -131,6 +133,17 @@ describe('useModelControls stale pick ordering', () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
+    const first = { ...createClientSessionState('stored-1'), model: 'fable-5', provider: 'nous' }
+    const second = { ...createClientSessionState('stored-2'), model: 'gpt-6.1-luna', provider: 'openai' }
+    SessionStates.$sessionStates.set({ 'session-1': first, 'session-2': second })
+    tile.delegate = {
+      updateSession: (id: string, update: (state: typeof first) => typeof first) => {
+        const next = update(SessionStates.$sessionStates.get()[id]!)
+        SessionStates.$sessionStates.set({ ...SessionStates.$sessionStates.get(), [id]: next })
+
+        return next
+      }
+    }
 
     const pending = deferred<never>()
     const requestGateway = vi.fn(() => pending.promise)
@@ -150,6 +163,8 @@ describe('useModelControls stale pick ordering', () => {
 
     expect($currentModel.get()).toBe('gpt-6.1-luna')
     expect($currentProvider.get()).toBe('openai')
+    expect(SessionStates.$sessionStates.get()['session-1']).toMatchObject({ model: 'fable-5', provider: 'nous' })
+    expect(SessionStates.$sessionStates.get()['session-2']).toMatchObject({ model: 'gpt-6.1-luna', provider: 'openai' })
     expect(notifyError).not.toHaveBeenCalled()
   })
 

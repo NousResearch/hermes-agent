@@ -1044,6 +1044,8 @@ def _(rid, params: dict) -> dict:
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})
+    if base == "model" and arg.strip():
+        return _slash_model_switch(rid, params, arg)
     if base in _WORKER_BLOCKED_COMMANDS and _is_snapshot_restore(arg):
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
@@ -1074,9 +1076,10 @@ def _(rid, params: dict) -> dict:
     worker, err = _slash_worker_for(rid, sid, session)
     if err:
         return err
-    # A transcript-writing slash (/model X, /compress) claims the chat BEFORE the worker runs: the worker's CLI
-    # writes the session row first, and the live mirror's gate would refuse only after that.
-    writes = base in {"compress", "compact"} or (base == "model" and bool(arg.strip()))
+    # A transcript-writing slash (/compress) claims the chat BEFORE the worker runs:
+    # the worker's CLI writes the session row first, and the live mirror's gate
+    # would refuse only after that. /model selections use config.set above.
+    writes = base in {"compress", "compact"}
     try:
         with _transcript_claim(session) if writes and session else contextlib.nullcontext():
             output = worker.run(cmd)

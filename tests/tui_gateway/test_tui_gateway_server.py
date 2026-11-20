@@ -9927,7 +9927,9 @@ def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
         server._sessions.pop("sid", None)
 
 
-def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch):
+@pytest.mark.parametrize("method", ["config.set", "slash.exec"])
+@pytest.mark.parametrize("guard_source", ["cost", "large_context"])
+def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch, method, guard_source):
     class _Agent:
         provider = "openrouter"
         model = "old/model"
@@ -9935,8 +9937,11 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
         api_key = "sk-or"
         switched = False
 
-        def switch_model(self, **_kwargs):
+        def switch_model(self, **kwargs):
             self.switched = True
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.base_url = kwargs["base_url"]
 
     result = types.SimpleNamespace(
         success=True,
@@ -9954,44 +9959,38 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
     )
 
     agent = _Agent()
+    if guard_source == "large_context":
+        agent.context_compressor = types.SimpleNamespace(last_prompt_tokens=177_968)
+        monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *a, **k: None)
     server._sessions["sid"] = _session(agent=agent)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "openai/gpt-5.5-pro --provider openrouter",
-            },
-        }
-    )
+    model_arg = "openai/gpt-5.5-pro --provider openrouter --session"
+    params = ({"session_id": "sid", "key": "model", "value": model_arg}
+              if method == "config.set" else
+              {"session_id": "sid", "command": f"/model {model_arg}"})
+    resp = server.handle_request({"id": "1", "method": method, "params": params})
 
     assert resp["result"]["confirm_required"] is True
-    assert agent.switched is False
+    if guard_source == "large_context":
+        assert "LARGE CONTEXT MODEL SWITCH" in resp["result"]["confirm_message"]
+    if method == "slash.exec":
+        assert "Model switched" not in resp["result"]["output"]
+    assert (agent.model, agent.provider, agent.base_url) == ("old/model", "openrouter", "")
 
-    confirmed = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "openai/gpt-5.5-pro --provider openrouter",
-                "confirm_expensive_model": True,
-            },
-        }
-    )
+    confirmed = server.handle_request({"id": "2", "method": method,
+                                       "params": {**params, "confirm_expensive_model": True}})
 
     assert confirmed["result"]["confirm_required"] is False
-    assert confirmed["result"]["value"] == "openai/gpt-5.5-pro"
-    assert agent.switched is True
+    if method == "config.set":
+        assert confirmed["result"]["value"] == "openai/gpt-5.5-pro"
+    else:
+        assert "Model switched: openai/gpt-5.5-pro" in confirmed["result"]["output"]
+    assert (agent.model, agent.provider, agent.base_url) == (
+        "openai/gpt-5.5-pro", "openrouter", "https://openrouter.ai/api/v1")
 
 
 def test_config_set_model_global_persists(monkeypatch):
@@ -10536,7 +10535,8 @@ def test_config_set_model_records_per_session_override_not_env(monkeypatch):
         server._sessions.clear()
 
 
-def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
+@pytest.mark.parametrize("method", ["config.set", "slash.exec"])
+def test_config_set_model_switches_agent_without_touching_env(monkeypatch, method):
     """A /model switch mutates the target session's agent in place and records
     a per-session override; it does NOT write HERMES_MODEL / HERMES_TUI_PROVIDER
     etc. into the shared process environment.
@@ -10555,6 +10555,7 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         def switch_model(self, **kwargs):
             self.model = kwargs["new_model"]
             self.provider = kwargs["new_provider"]
+            self.base_url = kwargs["base_url"]
 
         def _build_system_prompt(self, _system_message=None):
             return f"Model: {self.model}\nProvider: {self.provider}"
@@ -10612,25 +10613,26 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "anthropic/claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        model_arg = "anthropic/claude-sonnet-4.6 --provider anthropic --session"
+        params = ({"session_id": "sid", "key": "model", "value": model_arg}
+                  if method == "config.set" else
+                  {"session_id": "sid", "command": f"/model {model_arg}"})
+        resp = server.handle_request({"id": "1", "method": method, "params": params})
 
-        assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
+        if method == "config.set":
+            assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
+        else:
+            assert "Model switched: anthropic/claude-sonnet-4.6" in resp["result"]["output"]
         # Agent switched in place...
         assert agent.model == "anthropic/claude-sonnet-4.6"
         assert agent.provider == "anthropic"
+        assert agent.base_url == "https://api.anthropic.com"
         # ...override recorded on the session...
         assert session["model_override"]["model"] == "anthropic/claude-sonnet-4.6"
         assert session["model_override"]["provider"] == "anthropic"
+        assert session["model_override"]["base_url"] == "https://api.anthropic.com"
+        assert (db.model_config["model"], db.model_config["provider"], db.model_config["base_url"]) == (
+            "anthropic/claude-sonnet-4.6", "anthropic", "https://api.anthropic.com")
         # ...the persisted prompt snapshot tracks the new runtime identity too.
         # Without this, the next turn restored the old system prompt from the DB:
         # API calls went to the new model, but "what model are you?" still read
@@ -14860,7 +14862,8 @@ def test_clear_pending_without_sid_clears_all():
 # ---------------------------------------------------------------------------
 
 
-def test_config_set_model_defers_while_running(monkeypatch):
+@pytest.mark.parametrize("method", ["config.set", "slash.exec"])
+def test_config_set_model_defers_while_running(monkeypatch, method):
     """/model via config.set queues the pick during an in-flight turn instead
     of rejecting or racing the worker thread."""
     seen = {"called": False}
@@ -14873,21 +14876,18 @@ def test_config_set_model_defers_while_running(monkeypatch):
 
     server._sessions["sid"] = _session(running=True)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "anthropic/claude-sonnet-4.6",
-                },
-            }
-        )
+        params = ({"session_id": "sid", "key": "model", "value": "anthropic/claude-sonnet-4.6"}
+                  if method == "config.set" else
+                  {"session_id": "sid", "command": "/model anthropic/claude-sonnet-4.6"})
+        resp = server.handle_request({"id": "1", "method": method, "params": params})
         assert not resp.get("error")
         result = resp["result"]
-        assert result["deferred"] is True
-        assert result["value"] == "anthropic/claude-sonnet-4.6"
+        if method == "config.set":
+            assert result["deferred"] is True
+            assert result["value"] == "anthropic/claude-sonnet-4.6"
+        else:
+            assert "queued for the next turn" in result["output"]
+            assert "Model switched" not in result["output"]
         assert not seen["called"], (
             "_apply_model_switch ran mid-turn — would race the worker thread "
             "reading agent.model / agent.client; it must defer to turn start"

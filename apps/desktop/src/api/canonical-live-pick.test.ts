@@ -35,6 +35,19 @@ test('a composer pick is the session-scoped mutate; a busy session answers defer
     operation: 'model', payload: { model: 'picked', provider: 'custom' }, expected_revision: 4, expected_generation: 2 }) }])
 })
 
+test('a typed model pick queued during a turn says it has not applied yet', async () => {
+  const { client } = await attached(params => ({
+    session_id: 's', operation: 'model', status: 'deferred', model: (params.payload as { model: string }).model, revision: 4
+  }))
+
+  const result = await client.request<{ output: string }>('slash.exec', {
+    session_id: 's', command: 'model gpt-6.2-sol --provider openai-codex --session'
+  })
+
+  expect(result.output).toContain('queued for the next turn')
+  expect(result.output).toContain('has not applied yet')
+})
+
 test('a fence refusal naming fresh fences is retried once at them, never looped', async () => {
   const stale = () => { throw new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation', revision: 6, execution_generation: 3 } }) }
   let attempts = 0

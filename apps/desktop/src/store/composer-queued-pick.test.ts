@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { noteQueuedLaunchPick } from './composer-queued-pick'
+import { noteQueuedLaunchPick, settleQueuedLaunchPick } from './composer-queued-pick'
 import { getComposerSelectionScope, setComposerSelectionOwner, setConnection } from './session'
 import { dropTilesForProfile, migrateTilesForProfile } from './session-states'
 
@@ -17,6 +17,16 @@ afterEach(() => {
 })
 
 describe('a queued launch pick follows its profile', () => {
+  it('stays queued on the old model heartbeat and clears when session.info reports the target', () => {
+    queueOn('work')
+    const scope = getComposerSelectionScope()
+
+    expect(settleQueuedLaunchPick('s1', 'old-model', scope)).toBe(false)
+    expect(window.localStorage.getItem(key('work'))).not.toBeNull()
+    expect(settleQueuedLaunchPick('s1', 'm', scope)).toBe(true)
+    expect(window.localStorage.getItem(key('work'))).toBeNull()
+  })
+
   it('to its new name on rename', () => {
     queueOn('work')
     migrateTilesForProfile('work', 'home')

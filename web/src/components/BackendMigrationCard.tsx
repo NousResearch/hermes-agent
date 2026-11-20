@@ -13,6 +13,7 @@ import {
   foundBackend,
   impactLines,
   isInFlight,
+  isFileNote,
   isThisRun,
   isUnresolved,
   migrateCommand,
@@ -351,7 +352,7 @@ function Progress({ view, profile, commands, onCheckAgain }: {
           <ol className="list-decimal pl-6">
             {view.steps.map((s) => (
               <li key={s}>
-                <code>{qualifyCommands(s, profile)}</code>
+                {isFileNote(s) ? qualifyCommands(s, profile) : <code>{qualifyCommands(s, profile)}</code>}
               </li>
             ))}
           </ol>

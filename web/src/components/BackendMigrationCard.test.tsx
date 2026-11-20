@@ -160,6 +160,26 @@ describe("BackendMigrationCard", () => {
     expect(manual).toContain("start it again from a terminal, without --detach: hermes -p work gateway migrate --backends --restore");
   });
 
+  it("shows the engine's per-file notes as words to follow, never as commands to copy", async () => {
+    const notes = [
+      "/h/config.yaml was restored from its backup (nothing to do for it)",
+      "keep /h/.env as it is (it was edited after the migration wrote it): merge the lines you need from "
+        + "/h/backend_migration/env.bak into it by hand before you start the old backend",
+    ];
+    const missing = "the backup /h/backend_migration/env.bak of .env is missing: recover it, or put /h/.env back "
+      + "as it was before the migration by hand, before you start the old backend";
+    const commands = ["hermes -p work gateway uninstall", "systemctl --user start hermes-dashboard.service"];
+    await render(planWith({ nothing_to_do: true }, {
+      ...none, state: "failed", step: "verify", started_at: 10, finished_at: 20,
+      message: "verify failed; rollback incomplete: x", reason: "verify failed",
+      manual_steps: [commands[0], ...notes, missing, commands[1]],
+    }));
+    const manual = container.querySelector('[data-slot="backend-migration-manual"]')!;
+    expect([...manual.querySelectorAll("li")].map((li) => li.textContent))
+      .toEqual([commands[0], ...notes, missing, commands[1]]);
+    expect([...manual.querySelectorAll("li code")].map((c) => c.textContent)).toEqual(commands);
+  });
+
   it("reports a rolled-back run with its reason even when nothing is left to move", async () => {
     await render(planWith({ nothing_to_do: true }, {
       ...none, state: "rolled_back", step: "verify", started_at: 10, finished_at: 20,
@@ -307,6 +327,14 @@ describe("readPoll", () => {
     // Also shown for a refused apply, where nothing was moved.
     expect(warning).not.toMatch(/since the move/i);
     expect(view.lines[2]).toBe(step);
+  });
+
+  it("leaves the save-both-files warning out when the steps already say what to do with each file", () => {
+    const keep = "keep /h/.env as it is (it was edited after the migration wrote it): merge the lines you need from "
+      + "/h/backend_migration/env.bak into it by hand before you start the old backend";
+    const refused = { ...run("failed"), refused: true, message: "did not start", manual_steps: ["hermes -p work gateway uninstall", keep] };
+    const view = readPoll({ kind: "status", status: refused }, asked, at(2));
+    expect(view).toEqual({ kind: "notStarted", lines: ["did not start", "hermes -p work gateway uninstall", keep] });
   });
 
   it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {

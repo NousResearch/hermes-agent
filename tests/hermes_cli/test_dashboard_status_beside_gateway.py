@@ -7,9 +7,10 @@ line naming the gateway that serves the Webapp. A host running a real old backen
 same listing as before (control), except that the launcher is no longer listed beside the backend when
 ``--status`` names the backend's port.
 
-The installed ``hermes`` runs the CLI under a launcher process whose argv is the same ``hermes dashboard
---status``; the tests launch through such a launcher (a script named ``hermes`` that runs the CLI as its
-child, not ``exec``), which is the process the old scan listed. The scan is machine-wide (not scoped to a
+A launcher that runs the CLI as its child (the Windows one) has the same argv ``hermes dashboard --status``;
+most tests launch through such a launcher (a script named ``hermes`` that runs the CLI as its child, not
+``exec``), which is the process the old scan listed. The installed POSIX launcher ``exec``s the CLI
+instead; the exec-launcher test covers that shape. The scan is machine-wide (not scoped to a
 home), so assertions name PIDs rather than counting lines.
 """
 import contextlib
@@ -236,4 +237,19 @@ def test_a_backend_listening_on_another_address_of_the_same_port_does_not_hide_t
     assert code == 0, out
     assert f"PID {pid} " not in out, out
     assert _lists(out, other.pid, gateway.port), out
+    assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out
+
+
+def test_status_through_an_exec_launcher_names_the_gateway(tmp_path):
+    """The installed POSIX launcher ``exec``s the CLI, so no launcher process carries ``--status``: the
+    address it names is probed directly, and the gateway holding it is named."""
+    launcher = tmp_path / "exec-hermes"
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m hermes_cli.main "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    with live_gateway(tmp_path) as gateway:
+        proc = subprocess.run([str(launcher), "dashboard", "--status", "--port", str(gateway.port)], cwd=REPO_ROOT,
+                              env=gateway.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              timeout=120, check=False)
+    out = proc.stdout
+    assert proc.returncode == 0, out
     assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out

@@ -658,6 +658,25 @@ def test_a_malformed_extra_url_warns_without_the_oauth_redirect_claim(monkeypatc
     assert "redirect" not in text.lower()
 
 
+@pytest.mark.parametrize("entry, shown", [
+    ("https://hermes.example.com:not-a-port", "hermes.example.com:not-a-port"),
+    ("https://hermes.example.com:99999", "hermes.example.com:99999"),
+    ("https://:8443", ":8443"),
+    ("   ", "<empty>"),
+])
+def test_an_extra_url_with_a_bad_authority_or_blank_is_skipped_with_a_warning(
+        monkeypatch, tmp_path, caplog, entry, shown):
+    from hermes_cli.dashboard_auth import prefix
+    from hermes_cli.web_server_boundary import _dashboard_public_hosts
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {"extra_public_urls": [entry]})
+    prefix._warned_malformed_public_urls.clear()
+    with caplog.at_level("WARNING"):
+        assert prefix.resolve_extra_public_urls() == ()
+    assert shown in caplog.text and "extra_public_urls" in caplog.text
+    assert "hermes.example.com" not in _dashboard_public_hosts()
+
+
 @pytest.mark.parametrize("origin, trusted", [
     ("https://localhost:8443", True),    # extra_public_urls: a second loopback proxy
     ("https://localhost:8444", False),   # another loopback port

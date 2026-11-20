@@ -91,9 +91,10 @@ def _normalise_public_url(raw: Optional[str]) -> str:
         return ""
     try:
         parsed = urllib.parse.urlparse(url)
+        port_ok = parsed.port is None or parsed.port > 0  # .port raises on ``host:abc`` / out of range
     except ValueError:
         return ""
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or not port_ok:
         return ""
     return url.rstrip("/")
 
@@ -157,7 +158,7 @@ def resolve_extra_public_urls() -> tuple[str, ...]:
         if clean:
             urls.append(clean)
         else:
-            cleaned = str(item).strip()
+            cleaned = str(item).strip() or "<empty>"  # _warn_once skips "", but a blank entry is a typo
             _warn_once(
                 _warned_malformed_public_urls, ("extra_public_urls", cleaned), cleaned,
                 "dashboard.extra_public_urls entry %r was skipped because it is not a valid "

@@ -47,6 +47,11 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   page. Closed by default: the plugin declares `capabilities:
   ['preview.executeJavaScript']` and the user allows it per page origin
   ([Preview page scripts](#preview-page-scripts)).
+- **`ctx.confirmAction`** — ask the user to confirm one exact action a local
+  service proposed, in a native dialog; only Confirm yields an app-signed
+  receipt the service verifies before acting. Closed unless the plugin
+  declares `capabilities: ['confirm.action']`
+  ([Confirmed actions](#confirmed-actions)).
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`captureGatewayFileDownload()`** — capture a gateway file-save action
@@ -169,7 +174,8 @@ interface HermesPlugin {
    *  user flips the switch. */
   defaultEnabled?: boolean
   /** Sensitive doors this plugin uses, declared up front. Today:
-   *  'preview.executeJavaScript' (ctx.preview). An undeclared door refuses. */
+   *  'preview.executeJavaScript' (ctx.preview) and 'confirm.action'
+   *  (ctx.confirmAction). An undeclared door refuses. */
   capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
   register: (ctx: PluginContext) => void
@@ -210,6 +216,9 @@ interface PluginContext {
   /** Script in the preview Browser page — declared capability + per-origin user consent
    *  (see "Preview page scripts"). */
   preview: PluginPreview
+  /** Native confirmation of one service-proposed action; signed receipt on Confirm only
+   *  (see "Confirmed actions"). */
+  confirmAction: (proposal: PluginActionProposal) => Promise<PluginActionConfirmation>
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
 }
@@ -1860,6 +1869,91 @@ Reach the page only through this door. Querying or creating a `<webview>`
 (`document.querySelector('webview')`) bypasses the declaration and the
 consent, and fails the catalog's `desktop surface` lint (`preview guest
 reach`). A popped-out Browser window is not bridged.
+
+### Confirmed actions — `ctx.confirmAction` {#confirmed-actions}
+
+A local service (your plugin's backend, or a process it talks to) sometimes
+needs proof that the **user** confirmed one exact proposal, not just that some
+plugin code called its API. A renderer dialog cannot prove that: plugin code
+runs in the same page and could click it. `ctx.confirmAction` asks Electron's
+main process to show a **native** dialog, which page code cannot drive. Only
+Confirm returns a receipt, signed by the app.
+
+```js
+export default {
+  id: 'doc-sync',
+  capabilities: ['confirm.action'],
+  register(ctx) {
+    async function apply(proposal) {
+      // proposal comes from the service: { actionId, revision, serviceInstance, nonce, title, detail }
+      const result = await ctx.confirmAction({ ...proposal, profile: 'default', expiresInMs: 60_000 })
+
+      if (result.status !== 'approved') return result.status // cancelled · expired · busy · refused · unavailable
+      return ctx.rest('/apply', { method: 'POST', body: result.receipt })
+    }
+  }
+}
+```
+
+- **Proposal.** `actionId`, `revision` and `serviceInstance` are printable
+  tokens (`[A-Za-z0-9._:@/+=-]`, at most 200 chars); `profile` is a Hermes
+  profile name; `nonce` is the service's single-use challenge (16 to 128 chars
+  of `[A-Za-z0-9_-]`); `title` (200 chars) and `detail` (2,000 chars) are
+  plain text, with control and bidi characters replaced. `expiresInMs` is
+  clamped to between 5 s and 10 min (default 2 min). The dialog shows the
+  title, the detail, every bound id and the requesting plugin id. Cancel is
+  the default button.
+- **Results.** `approved` carries `receipt: { payload, signature, keyId }`.
+  `cancelled`, `expired` (the dialog closes itself at expiry) and `busy`
+  (another confirmation is open) carry nothing to verify. `refused` means a
+  bad proposal or an undeclared capability, and `unavailable` means an older
+  shell. None of these ever authorize anything.
+- **Receipt.** `payload` is the exact signed UTF-8 JSON: `v: 1`,
+  `type: 'hermes.desktop.action-confirmation'`, `keyId`, `decision:
+  'approved'`, `plugin`, `actionId`, `revision`, `profile`, `serviceInstance`,
+  `nonce`, `title`, `detail`, `confirmedAt`, `expiresAt`. `signature` is
+  base64 Ed25519 over those bytes.
+- **Key.** On the first confirmation of a launch, the app writes the public
+  key to `$HERMES_HOME/desktop/action-confirmation-key.json` (`{ v, alg:
+  'Ed25519', keyId, publicKey: <SPKI PEM>, createdAt, pid }`). The private key
+  is generated per launch and never leaves memory. A receipt whose `keyId`
+  does not match the file is from another launch: reject it.
+
+The `plugin` field is what the renderer claimed and is shown to the user for
+context. The binding the service relies on is the user's click on the
+displayed action, revision, profile, service instance and nonce.
+
+**The service owns everything after the signature.** Verify the signature
+over `payload` **before** parsing it. Then check every bound field against the
+proposal you issued for that `nonce`: a changed `revision` means the user
+approved something that no longer exists, so reject it and issue a new
+proposal. Record the receipt against the nonce **before** acting. On
+redelivery (a reconnect, a retried POST), return the recorded outcome and do
+not act again. Never replay an operation whose outcome is unknown. A
+reference verifier in Python:
+
+```python
+import base64, json
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+def verify_receipt(hermes_home, receipt, proposal):
+    key = json.loads((hermes_home / "desktop" / "action-confirmation-key.json").read_text())
+    if receipt["keyId"] != key["keyId"]:
+        raise PermissionError("receipt signed by another Desktop launch")
+    payload = receipt["payload"].encode("utf-8")
+    load_pem_public_key(key["publicKey"].encode()).verify(base64.b64decode(receipt["signature"]), payload)
+    claims = json.loads(payload)  # parse only after the signature holds
+    if claims["type"] != "hermes.desktop.action-confirmation" or claims["decision"] != "approved":
+        raise PermissionError("not an approval")
+    for field in ("actionId", "revision", "profile", "serviceInstance", "nonce"):
+        if claims[field] != proposal[field]:
+            raise PermissionError(f"{field} differs from the proposal")
+    return claims
+```
+
+`electron/plugin-confirmation-contract.test.ts` is the maintained contract.
+It covers one accepted confirmation, a changed-revision rejection, a reconnect
+that does not act twice, and cancel and expiry yielding nothing.
 
 ### Desktop appearance settings — `host.settings`
 

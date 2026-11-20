@@ -525,6 +525,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:pluginFiles:changed', listener)
     }
   },
+  confirmPluginAction: (pluginId, proposal) => ipcRenderer.invoke('hermes:pluginConfirm:request', pluginId, proposal),
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
     worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),

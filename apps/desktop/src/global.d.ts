@@ -568,6 +568,9 @@ declare global {
         /** A grant was added or revoked in any window; returns an unsubscribe. */
         onChanged?: (callback: (change: { pluginId: string }) => void) => () => void
       }
+      /** `ctx.confirmAction`: main shows the native confirmation and signs a
+       *  receipt only on Confirm. Older shells lack it. */
+      confirmPluginAction?: (pluginId: string, proposal: HermesActionProposal) => Promise<HermesActionConfirmation>
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
@@ -817,6 +820,32 @@ export interface HermesPluginFolderGrant {
   path: string
   grantedAt: string
 }
+
+/** What a plugin asks the user to confirm. Ids are printable tokens; `nonce`
+ *  is the service's single-use challenge (16–128 of `[A-Za-z0-9_-]`). */
+export interface HermesActionProposal {
+  actionId: string
+  revision: string
+  profile: string
+  serviceInstance: string
+  nonce: string
+  title: string
+  detail?: string
+  /** Clamped to 5 s – 10 min; default 2 min. */
+  expiresInMs?: number
+}
+
+/** `payload` is the exact Ed25519-signed UTF-8 JSON receipt. */
+export interface HermesSignedActionReceipt {
+  payload: string
+  signature: string
+  keyId: string
+}
+
+export type HermesActionConfirmation =
+  | { status: 'approved'; receipt: HermesSignedActionReceipt }
+  | { status: 'cancelled' | 'expired' | 'busy' }
+  | { status: 'refused' | 'unavailable'; error: string }
 
 export type HermesPluginFilesResult<T extends object = Record<string, unknown>> =
   ({ ok: true } & T) | { ok: false; error: string; message: string }

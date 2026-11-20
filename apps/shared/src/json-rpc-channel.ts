@@ -231,6 +231,8 @@ export class JsonRpcRequestChannel {
   private backendClarifyBatch = false
   /** The generation the client label was announced on: once per connection, not per `gateway.ready`. */
   private announcedTo: JsonRpcTransport | null = null
+  /** The bound generation's backend keeps `client.activity` reports (`client.capabilities`). */
+  private backendClientActivity = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
     Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
@@ -265,6 +267,11 @@ export class JsonRpcRequestChannel {
     return this.backendClarifyBatch
   }
 
+  /** Whether the bound generation's backend keeps `client.activity` reports; a client sends none otherwise. */
+  get clientActivity(): boolean {
+    return this.backendClientActivity
+  }
+
   get connected(): boolean {
     return this.transport !== null
   }
@@ -276,6 +283,7 @@ export class JsonRpcRequestChannel {
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
     this.backendClarifyBatch = false
+    this.backendClientActivity = false
 
     // First on the socket, before the owner's own requests: the backend reads frames in order, and its
     // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
@@ -289,6 +297,8 @@ export class JsonRpcRequestChannel {
   detach(error: Error): void {
     this.stopHeartbeat()
     this.transport = null
+    // Nothing is known about the next backend until its own `client.capabilities` answer.
+    this.backendClientActivity = false
     this.rejectAllPending(error)
   }
 
@@ -578,6 +588,7 @@ export class JsonRpcRequestChannel {
         if (this.transport === transport) {
           this.backendCountsDeclines = result?.declines_not_shown === true
           this.backendClarifyBatch = result?.canonical_clarify_batch === true
+          this.backendClientActivity = result?.client_activity === true
         }
       })
       .catch(() => undefined)

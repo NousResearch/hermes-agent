@@ -81,11 +81,17 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
     assert calls[-1] == ("mark", "declared-failure", False)
 
 
-def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
+@pytest.mark.parametrize("evidence", [
+    "The export subagent timed out after 30 minutes waiting on the database.",
+    "Yesterday's export logged [blocked_config] before the worker stopped.",
+    "Yesterday's export logged [blocked_config:silent] before the worker stopped.",
+])
+def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch, evidence):
     """The agent's own evidence reaches the operator as written, not re-diagnosed by the
     provider-error heuristics (a child that "timed out" is not a model-service timeout)."""
+    from cron.incidents import list_incidents
+
     delivered = []
-    evidence = "The export subagent timed out after 30 minutes waiting on the database."
     _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
     # Delivery rides the durable queue on the canonical path; the composed content is what lands.
     monkeypatch.setattr(
@@ -97,6 +103,8 @@ def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
     assert len(delivered) == 1
     assert evidence.rstrip(".") in delivered[0]
     assert "model service" not in delivered[0]
+    (incident,) = list_incidents()
+    assert (incident["failure_type"], incident["error"]) == ("agent", evidence)
 
 
 def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):

@@ -253,6 +253,64 @@ describe('JsonRpcRequestChannel', () => {
     expect(params()).toHaveLength(3)
   })
 
+  it('announces which client it is in a call of its own after server_requests, once per connection', async () => {
+    const client = { kind: 'desktop', name: 'hermes-desktop', version: '2.1.0' }
+    const errors: unknown[] = []
+
+    const channel = new JsonRpcRequestChannel({
+      clientIdentity: () => client,
+      desktopLocal: () => true,
+      onUncorrelatedError: error => errors.push(error),
+      requestIdPrefix: 'c'
+    })
+
+    const ready = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { payload: {}, type: 'gateway.ready' } })
+
+    const settle = async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+
+    for (let generation = 0; generation < 2; generation += 1) {
+      const { sent, transport } = spyTransport()
+      const frames = () => sent.map(frame => JSON.parse(frame) as { id: string; method: string; params: unknown })
+
+      channel.attach(transport)
+      // The label is ready before gateway.ready: it still waits for server_requests.
+      await settle()
+      channel.handleFrame(ready)
+      await settle()
+      channel.handleFrame(ready)
+      await settle()
+      expect(frames().map(frame => frame.params)).toEqual([
+        { desktop_local: true },
+        { server_requests: true },
+        { client },
+        { server_requests: true }
+      ])
+
+      // An older backend refuses the unknown param for this one call; that is swallowed and the socket goes on.
+      for (const frame of frames()) {
+        channel.handleFrame(
+          JSON.stringify(
+            'client' in (frame.params as object)
+              ? { error: { code: 4000, message: 'invalid params for client.capabilities: client' }, id: frame.id, jsonrpc: '2.0' }
+              : { id: frame.id, jsonrpc: '2.0', result: {} }
+          )
+        )
+      }
+    }
+
+    expect(errors).toEqual([])
+
+    const plain = spyTransport()
+    const quiet = new JsonRpcRequestChannel({ requestIdPrefix: 'p' })
+    quiet.attach(plain.transport)
+    quiet.handleFrame(ready)
+    await settle()
+    expect(plain.sent.map(frame => (JSON.parse(frame) as { params: unknown }).params)).toEqual([{ server_requests: true }])
+  })
+
   it('sends a not-shown decline only to a backend that advertised counting it', async () => {
     // An older backend settles a request on the first error frame, so a bystander window's decline
     // would beat the owner's answer (#113348): there `decline` must stay silent.

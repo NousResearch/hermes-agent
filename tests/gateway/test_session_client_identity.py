@@ -175,7 +175,7 @@ async def test_runtime_describe_advertises_the_client_parameter(tmp_path, monkey
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
     try:
         described = (await conn.dispatch({'id': 0, 'method': 'runtime.describe', 'params': {}}))['result']
-        assert 'session-client-v1' in described['capabilities']
+        assert {'session-client-v1', 'client-identity-v1', 'client-activity-v1'} <= set(described['capabilities'])
         assert 'client' in described['session_create']['parameters']
         refused = await conn.dispatch({'id': 1, 'method': 'session.create', 'params': {
             'request_id': 'w', 'source': 'tui', 'client': {'name': 'x', 'extra': 1}}})

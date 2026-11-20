@@ -476,24 +476,37 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
     address = _address_of(item, host) if item else None
     old_host, old_port = address if address else (None, None)
     why = _UNSUPPORTED[kind] if address or item is None else _UNSUPPORTED[kind] + " " + _UNSUPPORTED["unknown-address"]
+    env = _manual_launcher_env(item, kind, host)  # names only leave this function
+    keys: list[str] = []
+    if kind == "windows" or (item is not None and item.supervisor == "systemd" and item.unit and item.scope):
+        dotenv = host.dotenv()
+        keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
+    url = resolve_public_url(host.effective_config(), backend_url_env(host, env))
     if kind == "windows":
         from hermes_cli.gateway_migrate_backends_windows import manual_steps as windows_steps
-        env = (host.process_env(item.pid) if item is not None and item.pid else None) or {}
-        dotenv = host.dotenv()
-        keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
-        return item, why, windows_steps(old_host, old_port, item, env_keys=keys, home=str(host.home),
-                                        public_url=resolve_public_url(host.effective_config(),
-                                                                      backend_url_env(host, env)))
-    keys: list[str] = []
-    env: dict = {}
-    if item is not None and item.supervisor == "systemd" and item.unit and item.scope:
-        env = host.unit_launcher_env(item.unit, item.scope)  # names only leave this function
-        dotenv = host.dotenv()
-        keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
-    elif item is not None and item.pid:
-        env = host.process_env(item.pid) or {}
-    url = resolve_public_url(host.effective_config(), backend_url_env(host, env))
+        return item, why, windows_steps(old_host, old_port, item, env_keys=keys, home=str(host.home), public_url=url)
     return item, why, manual_steps(old_host, old_port, item, env_keys=keys, home=str(host.home), public_url=url)
+
+
+def _manual_launcher_env(item: Optional[BackendItem], kind: str, host) -> dict:
+    """The environment a by-hand backend was launched with (in memory only): a systemd unit's own,
+    else its process's; empty when neither can be read."""
+    if item is None:
+        return {}
+    if kind != "windows" and item.supervisor == "systemd" and item.unit and item.scope:
+        return host.unit_launcher_env(item.unit, item.scope) or {}
+    return (host.process_env(item.pid) if item.pid else None) or {}
+
+
+def _manual_public_url(plan: BackendPlan, host) -> None:
+    """A by-hand plan copies the old backend's public URL too: one the gateway refuses blocks it, with
+    the automatic plan's words, until webapp.public_url is set to an accepted one."""
+    item = plan.unsupported[0][0]
+    if item is None:
+        return
+    env = _manual_launcher_env(item, _supervisor_kind(item, host), host)
+    if problem := resolve_public_url(host.effective_config(), backend_url_env(host, env))[1]:
+        plan.blockers.append(_url_blocker(problem))
 
 
 def _select(plan: BackendPlan, items: list[BackendItem], address, host) -> None:
@@ -632,9 +645,13 @@ def secret_source_blocker(host) -> Optional[str]:
 def _public_url(plan: BackendPlan, cfg: dict, env: Optional[dict]) -> None:
     plan.public_url, problem = resolve_public_url(cfg, env)
     if problem:
-        plan.blockers.append(f"{problem} is not one the gateway accepts as webapp.public_url: it must be http:// "
-                             f"or https:// with no credentials, query or fragment. Fix it, or set "
-                             f"webapp.public_url yourself (its value is not printed here).")
+        plan.blockers.append(_url_blocker(problem))
+
+
+def _url_blocker(problem: str) -> str:
+    return (f"{problem} is not one the gateway accepts as webapp.public_url: it must be http:// or https:// "
+            f"with no credentials, query or fragment. Fix it, or set webapp.public_url yourself (its value is "
+            f"not printed here).")
 
 
 def _address(plan: BackendPlan, host, keep_webapp: bool) -> None:
@@ -886,6 +903,7 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.blockers.append(problem)
     if plan.unsupported:
         _manual_target(plan, host, keep_webapp)
+        _manual_public_url(plan, host)
         if not plan.blockers:
             _manual_turns(plan, host, force_interrupt)
         return plan

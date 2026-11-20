@@ -202,9 +202,13 @@ export function blockerAdvice(blocker: string, byHand = false): { text: string; 
     : ". Or move anyway (those replies are cut off).";
   const unknown = byHand ? ". Or show the steps anyway (following them cuts off any reply being written)."
     : ". Or move anyway (any reply being written is cut off).";
+  // "To move it, confirm it is idle, then re-run with --force-interrupt": the card's own action instead.
+  const unknownThen = byHand ? ", then show the steps anyway (following them cuts off any reply being written)."
+    : ", then move anyway (any reply being written is cut off).";
   const text = blocker
     .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\.?/, running)
     .replace(/,? ?or re-run with --force-interrupt \(any running turn is interrupted\)\.?/, unknown)
+    .replace(/,? then re-run with --force-interrupt( \(any running turn is interrupted\))?\.?/, unknownThen)
     .replace(/Re-run with --detach\.?/, "");
   return { text: text.trim(), canForce };
 }

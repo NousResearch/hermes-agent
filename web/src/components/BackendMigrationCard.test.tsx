@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 
 import { BackendMigrationCard } from "./BackendMigrationCard";
 import { containerPlans, systemSystemdPlans } from "./BackendMigrationCard.plans.fixture";
+import { unknownActivityBlocker } from "./BackendMigrationCard.engine.fixture";
 import {
   applyOutcome,
   blockerAdvice,
@@ -134,11 +135,12 @@ describe("BackendMigrationCard", () => {
   });
 
   it("shows unknown turn activity as the engine's blocker, and Move anyway with the engine's warning", async () => {
-    const unknown = "Cannot tell whether turns are running on the old backend (its turn activity could not be read). "
-      + "Confirm it is idle, or re-run with --force-interrupt (any running turn is interrupted).";
-    await render(planWith({ running_turns: null, blockers: [unknown] }));
+    // The plan route's blocker for an unreadable turn-marker file: it names the file.
+    const marker = unknownActivityBlocker.split("checked: ")[1].split(". To move it")[0];
+    await render(planWith({ running_turns: null, blockers: [unknownActivityBlocker] }));
     expect(moveButton()?.disabled).toBe(true);
-    expect(container.textContent).toContain("its turn activity could not be read). Confirm it is idle. Or move anyway");
+    expect(container.textContent).toContain(`${marker}. To move it, confirm it is idle, then move anyway (any reply `
+      + "being written is cut off).");
     expect(container.textContent).not.toContain("--force-interrupt");
     await act(async () => button("Move anyway")!.click());
     expect(document.body.textContent).toContain(
@@ -202,8 +204,9 @@ describe("BackendMigrationCard", () => {
       }));
       await render(initial);
       expect(button("Move anyway")).toBeUndefined();
-      expect(container.textContent).toContain("Or show the steps anyway");
+      expect(container.textContent).toMatch(/[Oo]r show the steps anyway|then show the steps anyway/);
       expect(container.textContent).not.toContain("move anyway");
+      expect(container.textContent).not.toContain("--force-interrupt");
       expect(container.querySelectorAll("ol li code")).toHaveLength(0);
       await act(async () => button("Show the steps anyway")!.click());
       expect(calls).toHaveLength(1);
@@ -214,9 +217,8 @@ describe("BackendMigrationCard", () => {
       expect(button("Show the steps anyway")).toBeUndefined();
     });
 
-    // Enable at restack onto the engine fix that adds the running-turn sentence to every forced by-hand plan,
-    // after capturing the fixture's `running.forced` payloads again: today's Linux engine leaves it out.
-    it.skip.each(cases.slice(0, 2))("with %s says the steps cut the running reply off once they are shown", async (_what, payloads) => {
+    // The engine adds the running-turn sentence to every forced by-hand plan, on Linux as on Windows.
+    it.each(cases.slice(0, 2))("with %s says the steps cut the running reply off once they are shown", async (_what, payloads) => {
       vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payloads.forced),
         { status: 200, headers: { "Content-Type": "application/json" } })));
       await render(asPlan(payloads.held));

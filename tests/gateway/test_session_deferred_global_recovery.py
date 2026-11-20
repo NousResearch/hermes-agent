@@ -177,3 +177,23 @@ async def test_deferred_global_publication_survives_an_owner_restart_without_a_p
         await owner.close()
         authority.persistence.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_owner_cannot_publish_a_deferred_global_default(deferred_global):
+    from gateway.session_deferred_pick import repair_global_publication
+    from persistence import FenceStale
+    state = deferred_global
+    state.failing['enabled'] = False
+    before = (state.home / 'config.yaml').read_bytes()
+    attempts = list(state.attempts)
+    runtime = state.authority.persistence.runtime
+    epoch = runtime.begin_epoch(instance_id='replacement-owner')
+    assert epoch > state.authority.epoch
+
+    with pytest.raises(FenceStale, match='stale_epoch'):
+        await repair_global_publication(state.authority, state.ref)
+
+    assert state.attempts == attempts
+    assert (state.home / 'config.yaml').read_bytes() == before
+    assert runtime.deferred_global_model_result(state.sid) is not None

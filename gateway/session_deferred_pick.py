@@ -61,10 +61,13 @@ async def repair_global_publication(authority, ref, *, request=None, locked=Fals
     from gateway.session_mutations import global_model_selection_lock
     from gateway.session_mutation_model import persist_global_selection
     from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import FenceStale, StaleFenceKind
     async with nullcontext() if locked else global_model_selection_lock(authority):
         runtime = authority_persistence(authority).runtime
         result = await asyncio.to_thread(runtime.deferred_global_model_result, ref.session_id, request=request)
         if result is not None:
+            if await asyncio.to_thread(runtime.current_epoch) != authority.epoch:
+                raise FenceStale(StaleFenceKind.STALE_EPOCH, 'runtime_epoch', str(authority.epoch))
             # The profile fence, not a later session-local generation, owns this publication.
             await asyncio.to_thread(persist_global_selection, authority, ref, result)
             await asyncio.to_thread(runtime.finish_deferred_global_model_publication, authority.epoch,

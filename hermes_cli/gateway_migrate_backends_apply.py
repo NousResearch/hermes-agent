@@ -310,14 +310,20 @@ class ChangedDuringRun(StepFailed):
         self.nothing_written = nothing_written
 
 
-def _written(host, write, values, m: dict, key: str, name: str, *, nothing_yet: bool) -> Optional[str]:
-    """sha256 of the exact bytes *write* published, which it writes only over the bytes backed up."""
+def _written(run: Run, write, values, key: str, name: str, *, nothing_yet: bool) -> Optional[str]:
+    """sha256 of the exact bytes *write* published, which it writes only over the bytes backed up. The
+    record says "writing" (which no digest equals) until then, so a run killed between the rename and the
+    next save is never taken for one that did not write the file."""
     from hermes_cli.gateway_migrate_backends_host import FileChangedSinceBackup
+    m, before = run.data, _backup_digest(run.data, key)
+    m["files_after_apply"][name] = "writing"
+    run.save()
     try:
-        data = write(values, expect=_backup_digest(m, key))
+        data = write(values, expect=before)
     except FileChangedSinceBackup as exc:
+        m["files_after_apply"][name] = before  # refused before its write: the file is the user's
         raise ChangedDuringRun(str(exc), nothing_written=nothing_yet) from exc
-    return hashlib.sha256(data).hexdigest() if data is not None else _file_digest(Path(host.home) / name)
+    return hashlib.sha256(data).hexdigest() if data is not None else _file_digest(Path(run.host.home) / name)
 
 
 def _apply_steps(run: Run, plan: BackendPlan) -> float:
@@ -336,10 +342,10 @@ def _apply_steps(run: Run, plan: BackendPlan) -> float:
     # rollback or --restore writes a file back only while it still matches, so later edits are kept.
     written = m["files_after_apply"] = {name: _backup_digest(m, key) for key, name in _RESTORED_FILES}
     if writes := env_writes(plan):
-        written[".env"] = _written(host, host.set_env, writes, m, "env", ".env", nothing_yet=True)
+        written[".env"] = _written(run, host.set_env, writes, "env", ".env", nothing_yet=True)
         run.save()
         print(f"  ✓ .env: {', '.join(sorted(writes))} (mode 600; values not shown)")
-    written["config.yaml"] = _written(host, host.set_config, plan.config_writes(), m, "config", "config.yaml",
+    written["config.yaml"] = _written(run, host.set_config, plan.config_writes(), "config", "config.yaml",
                                       nothing_yet=not writes)
     print(f"  ✓ config.yaml: {', '.join(plan.config_writes())}")
     run.step("write_config", "done")

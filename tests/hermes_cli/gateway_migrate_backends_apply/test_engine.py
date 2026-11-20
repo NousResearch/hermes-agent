@@ -1689,6 +1689,28 @@ def test_the_fingerprint_is_the_written_bytes_not_a_later_read(home, capsys, mon
     assert (home / "config.yaml").read_text(encoding="utf-8").endswith(edit)
 
 
+def test_a_run_killed_after_publishing_config_yaml_is_never_reported_rolled_back(home, monkeypatch):
+    """Killed between config.yaml's rename and the journal's next save: recovery cannot tell the migration's
+    bytes from an edit, so it keeps the file and ends incomplete (exit 5) instead of reporting rolled_back."""
+    from hermes_cli import gateway_migrate_backends_host as hostmod
+    host = FakeHost(home)
+    real_publish = hostmod._publish
+
+    def killed_after_the_config_rename(staged, path):
+        data = real_publish(staged, path)
+        if path.name == "config.yaml":
+            raise Killed()
+        return data
+
+    monkeypatch.setattr(hostmod, "_publish", killed_after_the_config_rename)
+    with pytest.raises(Killed):
+        engine.cmd_apply(host, _args())
+    monkeypatch.setattr(hostmod, "_publish", real_publish)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+    assert engine.read_manifest(home)["state"] == "failed"
+
+
 def test_the_manual_steps_never_copy_over_or_remove_a_file_kept_for_its_edits(home, capsys):
     """config.yaml put back, .env kept because it was edited: no step copies the backup over .env or removes
     it; the steps name its backup and say to merge by hand. --status returns the same steps."""

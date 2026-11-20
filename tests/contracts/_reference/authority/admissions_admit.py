@@ -26,7 +26,7 @@ from persistence.authority.admissions import (
 from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, admission_fingerprint
 from persistence.conversation.messages import NewMessage, ReplaceMode, RewindPlan
 from persistence.core.canonical import canonical_json
-from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CapabilityUnsupported
+from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CapabilityUnsupported, FenceStale, StaleFenceKind
 from persistence.core.identity import MessageId, SessionId
 from session_rules.automation import folded_payload
 
@@ -131,7 +131,7 @@ class AdmitMixin:
         if rewrite is not None:
             self._rewrite(rewrite)
         if hosted is not None:
-            self._hosted_check(hosted)
+            self._hosted_check(hosted, session_id)
         if fold is not None:
             # The folded completion must still be the queued tail on this target, but for the skipped ticks.
             row = authority["admissions"].get(fold.admission_id)
@@ -175,11 +175,15 @@ class AdmitMixin:
         except Exception as exc:
             raise RetryRewriteRefused(rewrite.session_id, str(exc)) from exc
 
-    def _hosted_check(self, guard: Any) -> None:
+    def _hosted_check(self, guard: Any, session_id: str) -> None:
         """The hosted member check, refusing ``permission_denied``."""
         try:
             from ..gateway.hosted_rooms import hosted_member_check
         except ImportError as exc:
             raise CapabilityUnsupported("hosted_member_check") from exc
-        if not hosted_member_check(self._backend, guard, operation="submit"):
+        from persistence.gateway.hosted_rooms import HostedAttemptGuard
+        if not isinstance(guard, HostedAttemptGuard) and not hosted_member_check(self._backend, guard, operation="submit"):
             raise AuthorityRefusal("permission_denied")
+        closed = self._state().snapshot.get("closed_hosted_attempts", {}).get(session_id, ())
+        if guard.task is not None and (guard.task.task_id, guard.generation) in closed:
+            raise FenceStale(StaleFenceKind.STALE_GENERATION, "authority", "")

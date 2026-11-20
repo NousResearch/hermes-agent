@@ -547,6 +547,17 @@ class SQLiteHostedRoomRepository:
         with translated():
             self._store.holder()._execute_write(persist)
 
+    def find_or_close_attempt(self, *, epoch: int, session_id: str, room_id: str, task_id: str, generation: int,
+                              principal: str, owner: OwnerRule) -> Mapping[str, JsonValue] | None:
+        from ._hosted_attempts import find_or_close_attempt
+
+        def lookup(conn):
+            _epoch(conn, epoch)
+            return find_or_close_attempt(conn, session_id=session_id, room_id=room_id, task_id=task_id,
+                                         generation=generation, principal=principal, owner=owner)
+        with translated():
+            return self._store.holder()._execute_write(lookup)
+
     # Titles and hides a room session; a title another session holds raises ``TitleConflict``.
     def label_room_session(self, *, epoch: int, session_id: str, title: str) -> None:
         def label(conn: sqlite3.Connection) -> None:

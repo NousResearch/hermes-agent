@@ -350,3 +350,20 @@ def test_prune_published_terminal_tasks_drops_only_published_outcomes_past_the_b
     assert prune(retention_seconds=10.0) == 1
     assert [task["identity"].task_id for task in driver.list_tasks(placement="profile", room_id=ROOM)] == ["task-3", "task-4"]
     assert prune(retain=0) == 0
+
+
+def test_deferred_stop_keeps_its_answer_and_rejects_another_attempts_cancellation(backend, scope_a):
+    store = backend.open(scope_a)
+    lease, attempt = _running(store)
+    driver = store.hosted_room_driver
+    identity = attempt.identity
+    driver.begin_task_cancel(identity, placement="profile", cancel_id="stop", expected_cancel_generation=0, now=111)
+    driver.defer_unconfirmed_stop(identity, lease, placement="profile", expected_execution_generation=1,
+                                 expected_cancel_generation=1, reason="unconfirmed", now=112)
+    with pytest.raises(StaleTaskError):
+        driver.complete_task_cancel(identity, placement="profile", cancel_id="stop", expected_execution_generation=2,
+                                    expected_cancel_generation=1, now=113)
+    result = driver.settle_stopping_task(identity, lease, placement="profile", expected_execution_generation=1,
+                                         expected_cancel_generation=1, settlement_id="answer", status="settled",
+                                         result={"text": "kept"}, now=114)
+    assert (result["status"], result["result"]) == ("settled", {"text": "kept"})

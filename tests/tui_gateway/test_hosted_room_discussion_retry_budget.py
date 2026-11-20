@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import threading
 import time
-from types import SimpleNamespace
+from tests.tui_gateway.test_hosted_room_service import _server
 
 from gateway import hosted_room_driver as driver
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -25,7 +24,7 @@ def store_fixture(tmp_path):
 
 
 def _service(store) -> HostedRoomService:
-    server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+    server = _server()
     service = HostedRoomService(server, store=store, placement="profile")
     service.local_profiles = lambda: PROFILES
     return service

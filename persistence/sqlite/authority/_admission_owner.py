@@ -59,7 +59,7 @@ def authorize_admission(holder, conn, *, epoch, principal_id, session_id, reques
     if rewrite is not None:
         _retry_rewrite(holder, conn, rewrite)
     if hosted is not None:
-        _hosted_authorize_write(conn, epoch, hosted)
+        _hosted_authorize_write(conn, epoch, session_id, hosted)
     if fold is not None:
         _fold_queued(conn, fold.admission_id, session_id, fold.skip_ids)
 
@@ -141,15 +141,21 @@ def _retry_rewrite(holder, conn, rewrite):
 
 
 # The hosted room's member check: the epoch must be current and the member still allowed to submit.
-def _hosted_authorize_write(conn, epoch, guard):
+def _hosted_authorize_write(conn, epoch, session_id, guard):
     # Admission checks must share the FIFO writer's snapshot. Opening
     # another transaction here would reintroduce the revocation race.
+    from persistence.gateway.hosted_rooms import HostedAttemptGuard
+    from ..gateway._hosted_attempts import closed_attempt_key
     from ..gateway.hosted_rooms import _member_authorized_locked
     _epoch(conn, epoch)
-    # Raise to refuse rather than return False: a guard that only returns False
-    # is ignored wherever the admission hook signals refusal by raising.
-    if not _member_authorized_locked(conn, guard, operation='submit'):
+    # Colocated membership already rejects a stopped or replaced task. A destination
+    # using source attestation has only the durable key to fence its delayed submit.
+    if not isinstance(guard, HostedAttemptGuard) and not _member_authorized_locked(conn, guard, operation='submit'):
         raise AuthorityRefusal('permission_denied')
+    if guard.task is not None and guard.generation is not None:
+        key = closed_attempt_key(session_id, guard.task.task_id, guard.generation)
+        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone():
+            raise AuthorityRefusal('stale_generation')
 
 
 def close_discarded_turn(holder, conn, row, notice=None, *, replace_after=None, display_metadata=None):

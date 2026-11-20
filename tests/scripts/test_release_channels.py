@@ -742,6 +742,199 @@ def test_a_canary_advances_its_own_head_from_its_accepted_candidate_only(tmp_pat
         assert json.loads(objects["releases/canary/release-candidates.json"]) == second["accepted"]
 
 
+def test_failed_head_promotion_leaves_canary_retention_pointer_on_live_head(tmp_path, monkeypatch):
+    """A newer canary whose feed promotion or head advance fails must leave the retention pointer
+    protecting the still-live canary; retrying after a post-promotion pointer write fault converges."""
+    from scripts.releases import channel_releases, r2, stable
+    from scripts.releases.channels import ChannelPublisher, preview_identity
+    from hermes_cli.release_channels import ChannelError, canonical_json
+
+    identity = preview_identity("canary", "4" * 16)
+    commit = "e" * 40
+
+    def canary(stamp):
+        tag = f"canary.{stamp}-v2.0.0"
+        claim = {"schema": 1, "kind": "canary", "version": "2.0.0", "commit": commit,
+                 "lanes": sorted(lane_set.CANARY), "lanesRevision": lane_set.LANES_REVISION,
+                 "requireGreen": False}
+        return {"tag": tag, "version": f"2.0.0+canary.{stamp}", "claim": claim,
+                "windows": channel_releases.canary_windows_version(tag)}
+
+    with object_server() as (url, objects, _headers, _requests, _faults):
+        pub = publisher(url)
+        base = pub.public_base
+        objects["releases/channels/canary.json"] = canonical_json({
+            "schema": 1, "name": "canary", "repository": pub.repository, "policy": "canary-release",
+            "state": "active", "revision": 1, "nextSequence": 1, "head": None, "identity": identity})
+        monkeypatch.setattr(r2, "credentials", lambda: (pub.store.creds, url, "bucket"))
+        monkeypatch.setattr(r2, "public_base_url", lambda: base)
+        monkeypatch.setattr(r2, "put", lambda **kw: pub.store.put(kw["key"], Path(kw["file"]).read_bytes()))
+
+        first, second = canary("20261021T064100Z"), canary("20261022T064100Z")
+        for item, name in ((first, "first"), (second, "second")):
+            _stage_accepted_native(tmp_path, objects, identity, item["tag"], commit, item["version"],
+                                   item["windows"], "canary")
+            item["accepted"] = _accepted_candidate(pub, identity, item["tag"], commit, item["version"],
+                                                   item["windows"], tmp_path / f"staged-{name}")
+        current = dict(first)
+        fail_feeds = [False]
+        fail_head = [False]
+        real_promote_protected = ChannelPublisher.promote_protected
+
+        def output(argv):
+            if argv[:3] == ["git", "tag", "-l"]:
+                return json.dumps(current["claim"])
+            if argv[:3] == ["gh", "release", "edit"]:
+                return ""
+            raise AssertionError(f"unexpected command {argv}")
+
+        def promote_feeds(_candidate, _root, _base):
+            if fail_feeds[0]:
+                raise RuntimeError("injected feed upload error")
+
+        def guarded_promote(self, *args, **kwargs):
+            if fail_head[0]:
+                raise ChannelError("injected head CAS conflict")
+            return real_promote_protected(self, *args, **kwargs)
+
+        monkeypatch.setattr(channel_releases, "admit_transaction",
+                            lambda policy, env, **_kw: (current["tag"], commit))
+        monkeypatch.setattr(stable, "output", output)
+        monkeypatch.setattr(channel_releases, "accepted_stable",
+                            lambda _pub, _env, _tag, _commit, _epoch, *, lanes: current["accepted"])
+        monkeypatch.setattr(channel_releases, "promote_stable_feeds", promote_feeds)
+        monkeypatch.setattr(channel_releases, "product_identity", lambda _tag: dict(identity))
+        monkeypatch.setattr(ChannelPublisher, "promote_protected", guarded_promote)
+        env = {"GITHUB_REPOSITORY": pub.repository,
+               "GITHUB_WORKFLOW_REF": f"{pub.repository}/.github/workflows/stable-release.yml@refs/heads/main"}
+
+        channel_releases.publish_release("canary-release", env, tmp_path / "first")
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == first["accepted"]
+
+        current.update(second)
+        fail_feeds[0] = True
+        with pytest.raises(RuntimeError, match="injected feed upload error"):
+            channel_releases.publish_release("canary-release", env, tmp_path / "second-feed-fail")
+        assert pub.reader.resolve("canary").manifest["request"]["releaseTag"] == first["tag"]
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == first["accepted"]
+
+        fail_feeds[0], fail_head[0] = False, True
+        with pytest.raises(ChannelError, match="injected head CAS conflict"):
+            channel_releases.publish_release("canary-release", env, tmp_path / "second-head-fail")
+        assert pub.reader.resolve("canary").manifest["request"]["releaseTag"] == first["tag"]
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == first["accepted"]
+
+        # Transient pointer write failure after head promotion converges on retry.
+        fail_head[0] = False
+        real_write = ChannelPublisher._write
+        fail_pointer = [True]
+
+        def flaky_pointer_write(self, key, value, etag=None):
+            if key == "releases/canary/release-candidates.json" and fail_pointer[0]:
+                fail_pointer[0] = False
+                raise ChannelError("injected transient pointer write failure")
+            return real_write(self, key, value, etag)
+
+        monkeypatch.setattr(ChannelPublisher, "_write", flaky_pointer_write)
+        with pytest.raises(ChannelError, match="injected transient pointer write failure"):
+            channel_releases.publish_release("canary-release", env, tmp_path / "second-pointer-fail")
+        assert pub.reader.resolve("canary").manifest["request"]["releaseTag"] == second["tag"]
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == first["accepted"]
+
+        channel_releases.publish_release("canary-release", env, tmp_path / "second-retry")
+        assert pub.reader.resolve("canary").manifest["request"]["releaseTag"] == second["tag"]
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == second["accepted"]
+
+
+def test_first_new_shape_canary_promotes_over_live_legacy_canary_head(tmp_path, monkeypatch):
+    """The first canary.<stamp>-vX.Y.Z claim promotes cleanly over a live legacy
+    v<stable>+canary.<stamp> protected head, while an older new-shape claim is refused."""
+    from scripts.releases import channel_releases, r2, stable
+    from scripts.releases.channels import preview_identity
+    from hermes_cli.release_channels import ChannelError, canonical_json
+
+    identity = preview_identity("canary", "5" * 16)
+    commit = "f" * 40
+    legacy_tag = "v0.23.2+canary.20261119T064637Z"
+    legacy_version = "0.23.2+canary.20261119T064637Z"
+    legacy_windows = "26.1119.6.4637"
+
+    with object_server() as (url, objects, _headers, _requests, _faults):
+        pub = publisher(url)
+        base = pub.public_base
+        objects["releases/channels/canary.json"] = canonical_json({
+            "schema": 1, "name": "canary", "repository": pub.repository, "policy": "canary-release",
+            "state": "active", "revision": 1, "nextSequence": 1, "head": None, "identity": identity})
+        monkeypatch.setattr(r2, "credentials", lambda: (pub.store.creds, url, "bucket"))
+        monkeypatch.setattr(r2, "public_base_url", lambda: base)
+        monkeypatch.setattr(r2, "put", lambda **kw: pub.store.put(kw["key"], Path(kw["file"]).read_bytes()))
+
+        # Seed a live legacy v<stable>+canary.<stamp> head (already written in R2 before
+        # the controller migration) with no retention pointer yet.
+        legacy_req = pub.allocate_protected("canary", commit, "0.23.2", release_tag=legacy_tag,
+                                            version=legacy_version, windows_version=legacy_windows,
+                                            identity=identity, policy="canary-release",
+                                            release_gate=lambda _r: True)
+        legacy_manifest = put_build(objects, legacy_req)
+        pub.verify_build = lambda pinned, actual: pinned == legacy_req and actual == legacy_manifest
+        pub.promote_protected(legacy_req["buildId"], policy="canary-release", release_gate=lambda _r: True)
+        before_head = pub.reader.resolve("canary")
+        assert before_head.manifest["request"]["releaseTag"] == legacy_tag
+        assert "releases/canary/release-candidates.json" not in objects
+
+        def new_canary(stamp):
+            tag = f"canary.{stamp}-v0.23.2"
+            claim = {"schema": 1, "kind": "canary", "version": "0.23.2", "commit": commit,
+                     "lanes": sorted(lane_set.CANARY), "lanesRevision": lane_set.LANES_REVISION,
+                     "requireGreen": False}
+            item = {"tag": tag, "version": f"0.23.2+canary.{stamp}", "claim": claim,
+                    "windows": channel_releases.canary_windows_version(tag)}
+            _stage_accepted_native(tmp_path, objects, identity, item["tag"], commit, item["version"],
+                                   item["windows"], "canary")
+            item["accepted"] = _accepted_candidate(pub, identity, item["tag"], commit, item["version"],
+                                                   item["windows"], tmp_path / f"staged-{stamp}")
+            return item
+
+        older = new_canary("20261118T064100Z")
+        newer = new_canary("20261120T064100Z")
+        current = dict(older)
+        promoted = []
+
+        def output(argv):
+            if argv[:3] == ["git", "tag", "-l"]:
+                return json.dumps(current["claim"])
+            if argv[:3] == ["gh", "release", "edit"]:
+                return ""
+            raise AssertionError(f"unexpected command {argv}")
+
+        monkeypatch.setattr(channel_releases, "admit_transaction",
+                            lambda policy, env, **_kw: (current["tag"], commit))
+        monkeypatch.setattr(stable, "output", output)
+        monkeypatch.setattr(channel_releases, "accepted_stable",
+                            lambda _pub, _env, _tag, _commit, _epoch, *, lanes: current["accepted"])
+        monkeypatch.setattr(channel_releases, "promote_stable_feeds",
+                            lambda candidate, _root, _base: promoted.append(candidate))
+        monkeypatch.setattr(channel_releases, "product_identity", lambda _tag: dict(identity))
+        env = {"GITHUB_REPOSITORY": pub.repository,
+               "GITHUB_WORKFLOW_REF": f"{pub.repository}/.github/workflows/stable-release.yml@refs/heads/main"}
+
+        # Older new-shape canary is rejected against the live legacy head without mutating R2.
+        with pytest.raises(ChannelError, match="stale"):
+            channel_releases.publish_release("canary-release", env, tmp_path / "older")
+        assert pub.reader.resolve("canary").manifest["request"]["releaseTag"] == legacy_tag
+        assert "releases/canary/release-candidates.json" not in objects
+        assert not promoted
+
+        # Newer new-shape canary advances the live legacy head cleanly and installs the retention pointer.
+        current.update(newer)
+        channel_releases.publish_release("canary-release", env, tmp_path / "newer")
+        after_head = pub.reader.resolve("canary")
+        assert after_head.manifest["request"]["releaseTag"] == newer["tag"]
+        assert after_head.terminal["head"]["sequence"] > before_head.terminal["head"]["sequence"]
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == newer["accepted"]
+        assert promoted == [newer["accepted"]]
+
+
 def test_protected_transaction_refuses_custom_workflow_and_unpublished_release(monkeypatch):
     from scripts.releases import channel_releases
     from hermes_cli.release_channels import ChannelError

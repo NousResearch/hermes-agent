@@ -838,7 +838,7 @@ def test_unknown_turns_blocks_inside_old_cgroup_and_respects_force_interrupt(hom
     monkeypatch.setattr(gateway_migrate_backends_plan, "_own_cgroup_inside", lambda plan: True)
     client = _client(home, monkeypatch, running_turns=None)
     plan = client.get("/api/gateway/migrate/backends/plan").json()["plan"]
-    assert any("running turns cannot be read" in b for b in plan["blockers"]), plan["blockers"]
+    assert any("turn activity could not be read" in b for b in plan["blockers"]), plan["blockers"]
     assert not any("runs inside" in b for b in plan["blockers"]), plan["blockers"]
 
     blocked = client.post("/api/gateway/migrate/backends/apply", json={})
@@ -944,3 +944,23 @@ def test_two_profiles_launching_at_once_each_read_only_their_own_answer(home, wo
         t.join(timeout=30)
     for p in ("default", "work"):
         assert (answers[p].status_code, answers[p].json()["message"]) == (409, f"{p} reason"), answers[p].text
+
+
+def test_a_restore_of_a_hand_started_backend_answers_with_the_engines_refusal(home, spawned, monkeypatch):
+    """``--restore --detach`` of a hand-started old backend exits 3 in the launcher itself with a refusal line:
+    the route answers 409 ``not_started`` with the engine's own message (which names the terminal command)."""
+    message = ("Nothing changed: the old backend was started by hand, and a background run is a transient systemd "
+               "unit that stops what it starts when the run ends. Restore from a terminal, without --detach: "
+               "hermes -p default gateway migrate --backends --restore.")
+
+    def spawn(subcommand, name, *, env_overrides=None, output=None):
+        spawned.append(list(subcommand))
+        output.write((json.dumps({"detached": False, "mode": "restore", "outcome": "refused",
+                                  "message": message}) + "\n").encode())
+        return SimpleNamespace(pid=795, poll=lambda: 3, wait=lambda timeout=None: 3)
+
+    monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
+    engine.write_manifest(home, _manifest("done", started_at=1.0))
+    r = _client(home, monkeypatch).post("/api/gateway/migrate/backends/restore")
+    assert (r.status_code, r.json()["error"], r.json()["message"]) == (409, "not_started", message), r.text
+    assert "--restore" in spawned[-1]

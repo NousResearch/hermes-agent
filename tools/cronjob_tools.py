@@ -1111,7 +1111,8 @@ def cronjob(
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
         if handler is not None:
-            return _with_staged_script(a, None, lambda: handler(a))
+            # Only create stages a script: list stays read-only even when handed script_content.
+            return _with_staged_script(a, None, lambda: handler(a)) if normalized == "create" else handler(a)
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
         # Job resolution precedes the action check (an unknown action on a missing job
@@ -1146,15 +1147,22 @@ def _with_staged_script(a: dict[str, Any], job: Optional[dict[str, Any]], run) -
     if staged.error:
         return tool_error(staged.error, success=False)
     a["script"] = name
+
+    def undo() -> None:
+        # Re-checked at undo time: another call may have saved a job on this file while ours waited
+        # for its approval, and that job's script must survive our rollback.
+        if not any(str(other.get("script") or "").strip() == name for other in list_jobs(include_disabled=True)
+                   if not job or other.get("id") != job.get("id")):
+            staged.discard()
     try:
         result = run()
     except Exception:
-        staged.discard()
+        undo()
         raise
     outcome = json.loads(result)
     # A saved job keeps its script even when a later step (scheduler registration) failed.
     if not outcome.get("success") and not outcome.get("job_saved"):
-        staged.discard()
+        undo()
     return result
 
 

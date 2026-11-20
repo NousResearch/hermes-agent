@@ -103,9 +103,9 @@ def _registration_client(record: dict) -> Optional[tuple[str, str]]:
     return (client_id, portal) if isinstance(client_id, str) and client_id.startswith("agent:") else None
 
 
-def _registered_callback(record: dict) -> Optional[tuple[Optional[str], Optional[int]]]:
+def _registered_callback(record: dict) -> Optional[tuple[Optional[str], int]]:
     """``(hostname, port)`` of the ``http://…/auth/callback`` Web Access last registered Nous sign-in
-    at for the Webapp on the LAN, or None."""
+    at for the Webapp on the LAN (port 80 when the URL names none), or None."""
     try:
         parts = urlsplit(record["callback"])
         recorded_port = parts.port
@@ -113,7 +113,7 @@ def _registered_callback(record: dict) -> Optional[tuple[Optional[str], Optional
         return None
     if (parts.scheme, parts.path, parts.query, parts.fragment) != ("http", "/auth/callback", "", ""):
         return None
-    return None if parts.username is not None else (parts.hostname, recorded_port)
+    return None if parts.username is not None else (parts.hostname, 80 if recorded_port is None else recorded_port)
 
 
 def registered_lan_origin(home: Path, port: int) -> Optional[str]:
@@ -147,9 +147,9 @@ def sign_in_address(home: Path, bound_host: str, port: int, public_url: str) -> 
     callback = _registered_callback(record)
     if callback is None or callback == (bound_host, port):
         return own, None
-    registered = bind_origin(callback[0] or "", callback[1] or 80) or f"http://{callback[0]}:{callback[1]}"
+    registered = bind_origin(callback[0] or "", callback[1]) or f"http://{callback[0]}:{callback[1]}"
     changed = " and ".join(key for key, same in (("webapp.host", callback[0] == bound_host),
-                                                  ("webapp.port", (callback[1] or 80) == port)) if not same)
+                                                  ("webapp.port", callback[1] == port)) if not same)
     return own, (f"Nous sign-in that Settings → Web Access registered returns to {registered}, but the Webapp "
                  f"now listens on {own}, so Nous sign-in cannot finish there. Sign in with a password provider, "
                  f"or set {changed} back to that address and restart the gateway.")

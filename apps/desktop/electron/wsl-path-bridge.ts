@@ -123,20 +123,17 @@ export function setWslBridgeActive(active: boolean): void {
   setWslBridgeProfileState(activeWslBridgeProfile, active)
 }
 
-export function isWslBridgeActive(profile?: null | string): boolean {
+/** Whether this profile's backend is local, so its POSIX paths belong to this host. */
+function isWslBridgeLocal(profile?: null | string): boolean {
   const key = profile == null ? activeWslBridgeProfile : normalizeWslBridgeProfile(profile)
-  const configured = wslBridgeProfiles.get(key)
 
-  if (configured !== undefined) {
-    // A local backend doesn't imply this Windows host has WSL; remote
-    // profiles short-circuit before the registry query.
-    return configured && isWslAvailable()
-  }
+  return wslBridgeProfiles.get(key) ?? true
+}
 
-  const detected = isWslAvailable()
-  wslBridgeProfiles.set(key, detected)
-
-  return detected
+export function isWslBridgeActive(profile?: null | string): boolean {
+  // A local backend doesn't imply this Windows host has WSL; remote
+  // profiles short-circuit before the registry query.
+  return isWslBridgeLocal(profile) && isWslAvailable()
 }
 
 /**
@@ -258,13 +255,21 @@ export function resolvePickerDefaultPath(
   // Remote-gateway POSIX paths can't be opened via wsl.exe — no-op the bridge
   // so the native dialog gets the raw path (it falls back gracefully) instead
   // of triggering a wsl.exe spawn / install prompt. (#66433)
-  if (!isWslBridgeActive(profile)) {
+  if (!isWslBridgeLocal(profile)) {
     return defaultPath
   }
 
   const value = String(defaultPath).trim()
 
-  return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
+  if (!value.startsWith('/') || WIN_DRIVE_RE.test(value)) {
+    return defaultPath
+  }
+
+  // `/mnt/<drive>` maps to the drive itself and needs no WSL; any other POSIX
+  // path waits on a registered distribution.
+  return WSL_MOUNT_RE.test(value.replace(/\\/g, '/')) || isWslAvailable()
+    ? wslPosixToWindowsAccessible(value, distro)
+    : defaultPath
 }
 
 /**

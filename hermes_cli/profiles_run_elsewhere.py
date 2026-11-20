@@ -222,6 +222,9 @@ def run_elsewhere_for_home(home: str | Path) -> RunElsewhere | None:
 
 # home -> (the directory it led to, (marker folder, marker file) per reading of the home, their stamp, marked)
 _HOME_ANSWERS: dict[str, tuple[tuple, tuple[tuple[str, str], ...], tuple, bool]] = {}
+# Room for every profile of a host, which the served list asks about at each rescan; a process
+# that asks about more homes than this starts over.
+_HOME_ANSWERS_KEPT = 4096
 
 
 def _home_target(home: str) -> tuple:
@@ -273,7 +276,7 @@ def home_runs_elsewhere(home: str | Path) -> bool:
                     for profile, folder in ((profile, run_elsewhere_dir(root)) for profile, root in readings))
     stamp = _marker_stamp(markers)  # before asking: a change made while asking shows at the next call
     entry = next((e for e in (run_elsewhere(profile, root=root) for profile, root in readings) if e is not None), None)
-    if len(_HOME_ANSWERS) >= 256:  # homes are few; a process that asks about many starts over
+    if len(_HOME_ANSWERS) >= _HOME_ANSWERS_KEPT:
         _HOME_ANSWERS.clear()
     if entry is None or entry.folder_error is None:
         _HOME_ANSWERS[key] = (target, markers, stamp, entry is not None)
@@ -291,12 +294,11 @@ def keys_note_for_this_home() -> str | None:
 
 
 def without_profiles_run_elsewhere(profiles: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
-    """*profiles* (``(name, home)`` pairs of this process's root) minus the marked ones. An
-    unreadable marker folder leaves none: the host cannot tell which profiles it may run."""
-    listing = _read_folder(run_elsewhere_dir())
-    if listing.error is not None:
-        return []
-    return [(name, home) for name, home in profiles if name not in listing.names]
+    """*profiles* (``(name, home)`` pairs of this process's root) minus the marked ones. Each is
+    asked by its home (:func:`home_runs_elsewhere`), not by its name, so a second name that leads
+    to a marked profile's home (a link among the profiles) is left out with it. An unreadable
+    marker folder leaves none: the host cannot tell which profiles it may run."""
+    return [(name, home) for name, home in profiles if not home_runs_elsewhere(home)]
 
 
 def require_home_runs_here(home: str | Path | None = None) -> None:
@@ -341,10 +343,9 @@ def exit_if_profile_runs_elsewhere(command: str | None, *, exit_code: int = 1) -
 def profile_exists_here(name: str) -> bool:
     """Whether this host may start work for *name*: the profile exists and no plugin runs it
     elsewhere."""
-    from hermes_cli.profiles import normalize_profile_name, profile_exists
-    if not profile_exists(name):
-        return False
-    return run_elsewhere(normalize_profile_name(name)) is None
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+    # Asked by home, as the served list is: the name may be a link to a marked profile's home.
+    return profile_exists(name) and not home_runs_elsewhere(get_profile_dir(name))
 
 
 def _same_path(a: Path, b: Path) -> bool:

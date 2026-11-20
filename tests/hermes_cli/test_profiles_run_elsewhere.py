@@ -384,3 +384,87 @@ def test_dispatcher_never_claims_a_card_for_a_marked_profile(root, all_assignees
         control = kb.create_task(conn, title="on this host", assignee="dev")
         res = kbd.dispatch_once(conn, dry_run=True)
         assert [t for t, _a, _w in res.spawned] == [control]
+
+
+# ── a second name for a marked profile's home ──────────────────────────────────────────────────
+
+
+def _link(link: Path, target: Path) -> None:
+    """Make *link* lead to the folder *target*: a symlink, or on Windows a junction when this
+    account may not create symlinks. Skips where the OS offers neither."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        if os.name != "nt":
+            pytest.skip(f"cannot create a directory symlink here: {exc}")
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+
+
+@pytest.fixture
+def alias(root):
+    """``profiles/alias``, a link to the home of ``ops``: the same profile under a second name."""
+    _link(root / "profiles" / "alias", root / "profiles" / "ops")
+    return root / "profiles" / "alias"
+
+
+def test_a_link_to_a_marked_profiles_home_is_not_served_either(root, alias):
+    """The served list asks by home: marking ``ops`` takes its other name out with it."""
+    from hermes_cli.profiles import profiles_to_serve
+
+    assert _names(profiles_to_serve(True)) == ["default", "alias", "dev", "ops"]
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    assert pre.run_elsewhere_for_home(alias).profile == "ops"
+    assert _names(profiles_to_serve(True)) == ["default", "dev"]
+    assert _names(profiles_to_serve(True, include_run_elsewhere=True)) == ["default", "alias", "dev", "ops"]
+
+    pre.clear_profile_run_elsewhere("ops", "sandbox-plugin")
+    assert _names(profiles_to_serve(True)) == ["default", "alias", "dev", "ops"]
+
+
+def test_dashboard_refuses_requests_scoped_to_a_link_to_a_marked_profiles_home(root, alias):
+    from fastapi import HTTPException
+    from hermes_cli import web_server_cron
+
+    assert web_server_cron._cron_profile_home("alias")[0] == "alias"
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    with pytest.raises(HTTPException) as refused:
+        web_server_cron._cron_profile_home("alias")
+    assert refused.value.status_code == 409
+    assert "'ops'" in refused.value.detail and "sandbox-plugin" in refused.value.detail
+
+
+def test_dispatcher_never_claims_a_card_for_a_link_to_a_marked_profiles_home(root, alias, all_assignees_spawnable):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kb.init_db()
+    assert pre.profile_exists_here("alias") is True
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    assert pre.profile_exists_here("alias") is False and pre.profile_exists_here("dev") is True
+    with kbc.connect() as conn:
+        linked = kb.create_task(conn, title="sandboxed, under its other name", assignee="alias")
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert res.skipped_nonspawnable == [linked] and res.spawned == []
+
+
+def test_the_served_list_of_a_large_host_is_answered_from_stats(root, monkeypatch):
+    """The list asks about every profile at each rescan. The kept answers hold a whole host's
+    profiles, so a rescan with nothing changed reads no home and no marker folder again."""
+    from hermes_cli.profiles import profiles_to_serve
+
+    for index in range(300):
+        home = root / "profiles" / f"p{index:03d}"
+        home.mkdir()
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    pre.mark_profile_run_elsewhere("p007", "sandbox-plugin")
+    first = _names(profiles_to_serve(True))
+    assert len(first) == 302 and "p007" not in first  # default, dev, ops and 299 of the 300
+
+    read_again = []
+    readings = pre._home_readings
+    monkeypatch.setattr(pre, "_home_readings", lambda home: read_again.append(home) or readings(home))
+    assert _names(profiles_to_serve(True)) == first
+    assert read_again == []

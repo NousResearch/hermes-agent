@@ -186,10 +186,11 @@ def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
-    from hermes_cli.profiles_run_elsewhere import run_elsewhere
-    if (elsewhere := run_elsewhere(canon)) is not None:
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    home = profiles_mod.get_profile_dir(canon)
+    if (elsewhere := run_elsewhere_for_home(home)) is not None:  # by home: the name may be a link to a marked one
         raise HTTPException(status_code=409, detail=elsewhere.message())
-    return canon, profiles_mod.get_profile_dir(canon)
+    return canon, home
 
 
 def _annotate_cron_job(

@@ -670,8 +670,14 @@ def test_empty_wrapup_reply_keeps_tools_off_and_repeats_the_wrapup_hint():
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
+        patch.object(agent, "_buffer_diagnostic_status") as diagnostics,
     ):
         result = agent.run_conversation("search repeatedly")
+
+    # The status says what was actually sent, not the generic "nudging to continue".
+    statuses = [str(c.args[0]) for c in diagnostics.call_args_list if c.args]
+    assert any("guardrail wrap-up" in s for s in statuses), statuses
+    assert not any("nudging to continue" in s for s in statuses), statuses
 
     calls = agent.client.chat.completions.create.call_args_list
     sent_tools = [kw.get("tools") for _, kw in calls]

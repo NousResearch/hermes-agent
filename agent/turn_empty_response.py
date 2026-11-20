@@ -339,15 +339,24 @@ def recover_empty_response(
         # Clear stale narration so it doesn't resurface on a later empty response.
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
-        logger.info("Empty response after tool calls — nudging model " "to continue processing")
-        agent._buffer_diagnostic_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
         # After the guardrail wrap-up the generic nudge ("continue with the task") reads
-        # as permission to resume the halted loop; repeat the wrap-up hint instead.
-        agent._empty_response_retry_hint = (
-            GUARDRAIL_WRAPUP_HINT
-            if getattr(agent, "_toolguard_wrapup_used", False) is True
-            else _EMPTY_TOOL_RESPONSE_NUDGE
-        )
+        # as permission to resume the halted loop; repeat the wrap-up hint instead, and
+        # say so, so a log reader does not think tools were re-armed.
+        if getattr(agent, "_toolguard_wrapup_used", False) is True:
+            logger.info(
+                "Empty guardrail wrap-up reply — re-sending the wrap-up hint, tools stay off"
+            )
+            agent._buffer_diagnostic_status(
+                "⚠️ Model returned empty after the guardrail wrap-up — "
+                "asking again for a final answer, no tools"
+            )
+            agent._empty_response_retry_hint = GUARDRAIL_WRAPUP_HINT
+        else:
+            logger.info("Empty response after tool calls — nudging model to continue processing")
+            agent._buffer_diagnostic_status(
+                "⚠️ Model returned empty after tool calls — nudging to continue"
+            )
+            agent._empty_response_retry_hint = _EMPTY_TOOL_RESPONSE_NUDGE
         final_response = None
         return _verdict("continue")
 

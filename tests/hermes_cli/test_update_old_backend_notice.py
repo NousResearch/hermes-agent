@@ -316,6 +316,7 @@ def test_a_notice_that_raises_never_fails_the_update(broken, monkeypatch, capsys
     assert cleared == [True]
 
 
+@pytest.mark.platforms("posix")  # the fake systemd reads POSIX unit paths
 def test_stopped_sibling_user_unit_is_not_named_while_this_homes_unit_is(tmp_path, monkeypatch):
     """Stopped user units use the planner's ownership check: `-p/--profile` in ExecStart and a later
     `EnvironmentFile=` overriding `HERMES_HOME` exclude sibling units just as the dry run does."""
@@ -377,6 +378,7 @@ def test_stopped_sibling_user_unit_is_not_named_while_this_homes_unit_is(tmp_pat
     assert "hermes-dashboard-envfile.service" not in notice
 
 
+@pytest.mark.platforms("posix")  # the fake systemd reads POSIX unit paths
 def test_a_stopped_system_unit_is_judged_by_the_planner_too(tmp_path, monkeypatch):
     """A stopped systemd system unit is named exactly when the dry run would move it: by its User= and the
     environment systemd gives it, so a later `EnvironmentFile=` that picks a sibling home excludes it."""

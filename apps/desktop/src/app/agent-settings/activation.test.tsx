@@ -11,6 +11,7 @@ import { selectConnection } from '@/store/connections'
 import type * as ConnectionsStore from '@/store/connections'
 import type * as FleetRosterStore from '@/store/fleet-roster'
 import type * as GatewayStore from '@/store/gateway'
+import type * as ProfileStore from '@/store/profile'
 import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
 import {
   getRememberedSessionId,
@@ -50,6 +51,11 @@ vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<typeof GatewayStore>()),
   activeGatewayConnectionId: () => 'local',
   retireLocalProfileGateways: vi.fn(() => $activeGatewayProfile.set('default'))
+}))
+// The harness has no backend: the list re-read after a rename resolves at once instead of retrying.
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<typeof ProfileStore>()),
+  refreshProfiles: vi.fn(async () => undefined)
 }))
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
@@ -98,6 +104,10 @@ function mount(entry = destination) {
     </MemoryRouter>
   )
 }
+
+// The dialog finishes a beat after its last await (the telemetry move, then the list re-read):
+// let it settle inside the test, not after the file's environment is gone.
+const renameSettled = () => act(async () => void (await new Promise(resolve => setTimeout(resolve, 0))))
 
 beforeEach(() => {
   localStorage.clear()
@@ -201,6 +211,8 @@ it.each(['stay', 'leave', 'refresh'] as const)(
       expect($activeGatewayProfile.get()).toBe('renamed')
       expect(screen.getByRole('button', { name: /^Rename: / })).toBeTruthy()
     }
+
+    await renameSettled()
   }
 )
 
@@ -215,4 +227,5 @@ it('follows a renamed agent the window was only viewing without activating it', 
   )
   expect(selectConnection).not.toHaveBeenCalled()
   expect($activeGatewayProfile.get()).toBe('default')
+  await renameSettled()
 })

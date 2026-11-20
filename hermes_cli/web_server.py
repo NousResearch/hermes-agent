@@ -94,20 +94,22 @@ def _gateway_owns_cron(name: str, home) -> bool:
 
 
 def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) -> None:
-    """Tick the cron scheduler from inside the desktop dashboard backend.
+    """Tick the cron scheduler from inside a Desktop-owned dashboard backend.
 
-    The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
-    this a cron created in the app would never fire (no live adapters; delivery
-    falls back to the per-platform send path). The primary backend outlives the
-    per-profile pool (reaped after ~10 idle minutes), so it ticks EVERY local
-    profile's store like a multiplex gateway; external providers keep the
-    single-store behavior (registries are not profile-scoped). Cross-process
-    safe: the built-in tick takes the per-store ``cron/.tick.lock``.
+    ``is_desktop_owned_backend`` holds for the SSH remote spawn (``serve
+    --ssh-session-token-file``); a local Desktop attaches to the host gateway,
+    whose own ticker covers every profile. That backend is not a gateway, so
+    without this a cron created in the app would never fire on that host (no
+    live adapters; delivery falls back to the per-platform send path). It ticks
+    EVERY local profile's store like a multiplex gateway, gated per tick against
+    a gateway that owns it; external providers keep the single-store behavior
+    (registries are not profile-scoped). Cross-process safe: the built-in tick
+    takes the per-store ``cron/.tick.lock``.
 
-    Every local profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
-    desktop pools per-profile backends and reaps them after ~10 idle minutes, so a secondary profile's
-    ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
-    ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
+    Every profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
+    old per-profile Desktop backends each ticked only their own store and stopped with it, so a
+    secondary profile's jobs silently stopped firing until the user next opened it ("tasks on the
+    sleeping profile could be idle" — community report, Aug 2026).
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
     from hermes_constants import get_hermes_home, profile_name_for_home
@@ -387,7 +389,8 @@ async def host_header_middleware(request: Request, call_next):
     # app.state.bound_host is set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
+        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset()),
+        bool(getattr(app.state, "loopback_companion", None)),
     ):
         return JSONResponse(
             status_code=400,
@@ -1476,6 +1479,8 @@ def _start_server_runtime(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # Only the gateway's Webapp listener binds a loopback socket beside a specific address.
+    app.state.loopback_companion = None
     # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
     # launcher's preselected profile instead of silently running in the launch scope (#73085).
     app.state.initial_profile = str(initial_profile or "")

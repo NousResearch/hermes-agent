@@ -1,14 +1,15 @@
 import { renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 import { en } from '@/i18n/en'
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from '@/store/desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from '@/store/desktop-metrics-test-locks'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { useOldNameRows } from './old-name-rows'
@@ -23,6 +24,7 @@ function recorded(): string {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -30,7 +32,10 @@ beforeEach(() => {
   $shellChoice.set(true)
 })
 
-afterEach(() => resetDesktopMetricsForTests())
+afterEach(() => {
+  resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
+})
 
 it('offers the renamed place for a classic word, named as the rail names it', () => {
   const { result } = renderHook(() => useOldNameRows('sessions', true, go))
@@ -45,11 +50,11 @@ it('offers nothing outside the redesign or for an ordinary query', () => {
   expect(renderHook(() => useOldNameRows('quarterly', true, go)).result.current).toEqual([])
 })
 
-it('counts a whole classic word once per opening, by its code only, and only with consent', () => {
+it('counts a whole classic word once per opening, by its code only, and only with consent', async () => {
   renderHook(() => useOldNameRows('profiles', true, go))
   expect(recorded()).toBe('')
 
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
 
   const { rerender } = renderHook(({ query }) => useOldNameRows(query, true, go), {
     initialProps: { query: 'cro' }

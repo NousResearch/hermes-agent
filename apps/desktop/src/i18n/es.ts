@@ -3788,7 +3788,10 @@ export const esOverrides = {
   },
   composer: {
     message: 'Mensaje',
-    wakingProfile: profile => `Despertando ${profile}…`,
+    switchingProfile: profile => `Cambiando a ${profile}…`,
+    switchingProfileSlow: 'Aún conectando. Los mensajes que envíes ahora esperarán y llegarán a este agente.',
+    switchProfileFailed: profile => `No se pudo cambiar a ${profile}`,
+    willSendTo: profile => `Se enviará a ${profile}`,
     placeholderStarting: 'Iniciando Hermes...',
     placeholderReconnecting: 'Reconectando con Hermes…',
     placeholderFollowUp: 'Enviar seguimiento',
@@ -4945,6 +4948,7 @@ export const esOverrides = {
       branchNewChat: 'Ramificar en chat nuevo',
       react: 'Reaccionar',
       dismissError: 'Descartar error',
+      responseContinuing: 'Continuando…',
       responseStopped: 'Respuesta detenida',
       ...esErrorLayers,
       errorCodes: {

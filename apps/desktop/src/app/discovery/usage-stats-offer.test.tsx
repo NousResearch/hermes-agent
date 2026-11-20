@@ -2,11 +2,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import { ComposerStatusStack } from '@/app/chat/composer/status-stack'
 import { CreateAccountCard } from '@/app/chat/sidebar/portal/create-account-card'
 import { UsageStatsCard } from '@/app/chat/sidebar/portal/usage-stats-card'
 import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { en } from '@/i18n/en'
+import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
+import { immediateMetricsLocks } from '@/store/desktop-metrics-test-locks'
+import type * as GatewayStore from '@/store/gateway'
 import { $guidanceLedger, GUIDANCE_LEDGER_KEY } from '@/store/guidance-ledger'
 import { $traySeen } from '@/store/notification-tray'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -28,6 +32,13 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
 
+// The consent host and the sidebar card dial the focused (connection, profile) directly.
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<typeof GatewayStore>()),
+  requestGatewayForAgent: (_connection: unknown, _profile: unknown, method: string, params?: Record<string, unknown>) =>
+    requestGateway(method, params)
+}))
+
 // Onboarding's due check answered "not due": the consent host may read the answer.
 markOnboardingDecided()
 
@@ -35,6 +46,7 @@ const copy = usageStatsCopy('en')
 const tray = discoveryCopy('en').tray
 const initialOnboarding = $desktopOnboarding.get()
 const initialProfile = $activeGatewayProfile.get()
+const initialScope = $apiRequestScope.get()
 const UNDECIDED: SharedMetricsConsent = { enabled: false, send: false, decided: false }
 
 /** The backend: `shared_metrics.status` reads the stored answer, `shared_metrics.set` writes it. */
@@ -69,7 +81,7 @@ function renderApp() {
         <UsageStatsCard />
       </div>
       <ComposerStatusStack queue={null} sessionId="chat" />
-      <SharedMetricsConsentDialog enabled profile="havoc" requestGateway={requestGateway} />
+      <SharedMetricsConsentDialog enabled profile="havoc" />
     </MemoryRouter>
   )
 }
@@ -85,6 +97,11 @@ async function openTray() {
 
 beforeEach(() => {
   window.localStorage.clear()
+  // The metrics hook binds the focused owner; a first-run answer applies its gate to that owner.
+  immediateMetricsLocks()
+  $apiRequestScope.set({ connectionId: null, profile: 'havoc' })
+  resetDesktopMetricsForTests()
+  bindDesktopMetrics(null, '|havoc')
   $shellChoice.set(true)
   $guidanceLedger.set({})
   $traySeen.set([])
@@ -95,6 +112,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  resetDesktopMetricsForTests()
+  $apiRequestScope.set(initialScope)
   requestGateway.mockReset()
   $shellChoice.set(null)
   $guidanceLedger.set({})

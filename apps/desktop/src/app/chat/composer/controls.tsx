@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReadableAtom } from 'nanostores'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -18,6 +19,7 @@ import { ComposerSignUpLink } from '../../discovery/sign-up-link'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { sendButtonDisabled } from './paused-reply'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
@@ -40,7 +42,7 @@ const keepEditorFocus = (event: { preventDefault: () => void }) => {
 
 interface ConversationProps {
   active: boolean
-  level: number
+  levelStore: ReadableAtom<number>
   muted: boolean
   status: ConversationStatus
   onEnd: () => void
@@ -63,6 +65,7 @@ export function ComposerControls({
   hideModelPill = false,
   minimal = false,
   redesigned = false,
+  sendWhileDisabled,
   state,
   voiceStatus,
   onDictate,
@@ -84,6 +87,8 @@ export function ComposerControls({
   hideModelPill?: boolean
   minimal?: boolean
   redesigned?: boolean
+  /** Send stays usable while `disabled`: a send now is held in the queue (a reply paused for its continuation). */
+  sendWhileDisabled?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -184,6 +189,7 @@ export function ComposerControls({
         onStartConversation={conversation.onStart}
         redesigned={redesigned}
         sendLabel={sendLabel}
+        sendWhileDisabled={sendWhileDisabled}
       />
       {/* The way out of HUD mode, riding the controls row rather than floating
           above the bar. The old chip lived in a 26px transparent strip reserved
@@ -205,6 +211,7 @@ interface ComposerPrimaryActionProps {
   onStartConversation: () => void
   redesigned: boolean
   sendLabel: string
+  sendWhileDisabled?: boolean
 }
 
 /** Empty classic drafts start voice; an active turn stops only with no payload. */
@@ -215,7 +222,8 @@ function ComposerPrimaryAction({
   hasComposerPayload,
   onStartConversation,
   redesigned,
-  sendLabel
+  sendLabel,
+  sendWhileDisabled
 }: ComposerPrimaryActionProps) {
   const { t } = useI18n()
 
@@ -231,7 +239,7 @@ function ComposerPrimaryAction({
       <Button
         aria-label={label}
         className={redesigned ? 'composer-send-label' : PRIMARY_ICON_BTN}
-        disabled={disabled || !canSubmit}
+        disabled={sendButtonDisabled(disabled, canSubmit, sendWhileDisabled)}
         onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
         onMouseDown={keepEditorFocus}
         size={redesigned ? 'sm' : undefined}
@@ -358,7 +366,7 @@ function HudWindowButtons() {
 
 function ConversationPill({
   disabled,
-  level,
+  levelStore,
   muted,
   onEnd,
   onStopTurn,
@@ -432,7 +440,7 @@ function ConversationPill({
         }}
         type="button"
       >
-        <ConversationIndicator level={level} listening={listening} speaking={speaking} />
+        <ConversationIndicator levelStore={levelStore} listening={listening} speaking={speaking} />
         <span>{c.endShort}</span>
       </Button>
       <span className="sr-only" role="status">
@@ -443,14 +451,18 @@ function ConversationPill({
 }
 
 function ConversationIndicator({
-  level,
+  levelStore,
   listening,
   speaking
 }: {
-  level: number
+  levelStore: ReadableAtom<number>
   listening: boolean
   speaking: boolean
 }) {
+  // Only the indicator subscribes to the audio meter. The level used to be
+  // React state in ChatBar, so every meter report re-rendered the composer.
+  const level = useStore(levelStore)
+
   if (speaking) {
     return <Loader2 className={cn('animate-spin', iconSize.xs)} />
   }

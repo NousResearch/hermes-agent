@@ -1,9 +1,25 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
+import { useDesktopMetrics } from '@/app/contrib/hooks/use-desktop-metrics'
+import type { HermesConnection } from '@/global'
+import {
+  $desktopMetricsGate,
+  bindDesktopMetrics,
+  captureDesktopMetricsGate,
+  recordLongFrames,
+  resetDesktopMetricsForTests,
+  tickDesktopMetrics
+} from '@/store/desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from '@/store/desktop-metrics-test-locks'
 import type * as GatewayStore from '@/store/gateway'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 import type { SharedMetricsConsent } from '@/store/shared-metrics'
+import { pageStorage } from '@/test/page-storage'
 
 const requestGatewayForAgent = vi.fn()
 
@@ -12,7 +28,6 @@ vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<typeof GatewayStore>()),
   requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
 }))
-vi.mock('@/store/desktop-metrics', () => ({ recordOnboarding: vi.fn(), setDesktopMetricsGate: vi.fn() }))
 
 const { en } = await import('@/i18n/en')
 const { SharedMetricsSettings } = await import('./shared-metrics-settings')
@@ -39,9 +54,47 @@ const setCalls = () =>
     .filter(call => call[2] === 'shared_metrics.set')
     .map(call => ({ enabled: call[3].enabled, send: call[3].send }))
 
+const initialOwner = {
+  connection: $connection.get(),
+  profile: $activeGatewayProfile.get(),
+  settings: $settingsScopeOverride.get(),
+  requestScope: $apiRequestScope.get()
+}
+
+const sourceConnection: HermesConnection = {
+  baseUrl: 'http://profile.invalid',
+  connectionId: 'source-server',
+  isFullscreen: false,
+  logs: [],
+  mode: 'remote',
+  nativeOverlayWidth: 0,
+  profile: 'default',
+  token: 'test',
+  windowButtonPosition: null,
+  wsUrl: 'ws://profile.invalid/ws'
+}
+
+beforeEach(() => {
+  immediateMetricsLocks()
+  pageStorage().clear()
+  resetDesktopMetricsForTests()
+  $connection.set(sourceConnection)
+  $activeGatewayProfile.set('default')
+  $settingsScopeOverride.set(null)
+  $apiRequestScope.set({ connectionId: 'source-server', profile: 'default' })
+  bindDesktopMetrics(null, 'source-server|default')
+})
+
 afterEach(() => {
   cleanup()
   requestGatewayForAgent.mockReset()
+  resetDesktopMetricsForTests()
+  $connection.set(initialOwner.connection)
+  $activeGatewayProfile.set(initialOwner.profile)
+  $settingsScopeOverride.set(initialOwner.settings)
+  $apiRequestScope.set(initialOwner.requestScope)
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 describe('SharedMetricsSettings', () => {
@@ -75,5 +128,113 @@ describe('SharedMetricsSettings', () => {
     const share = await screen.findByRole('switch', { name: copy.sendLabel })
     await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
     expect(share.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it.each([true, false])('reconciles a saved opt-in after focus retires its cohort (backend enabled=%s)', async enabled => {
+    const off = { enabled: false, send: false, decided: true }
+    const on = { enabled: true, send: true, decided: true }
+    const focusRead = Promise.withResolvers<SharedMetricsConsent>()
+    const saved = Promise.withResolvers<SharedMetricsConsent>()
+    let stored = off
+    let holdFocusRead = false
+
+    requestGatewayForAgent.mockImplementation(async (_connection, _profile, method) => {
+      if (method === 'shared_metrics.set') {
+        return saved.promise
+      }
+
+      if (method === 'shared_metrics.status') {
+        if (holdFocusRead) {
+          holdFocusRead = false
+
+          return focusRead.promise
+        }
+
+        return stored
+      }
+
+      return { recorded: true }
+    })
+
+    renderHook(() => useDesktopMetrics({
+      enabled: true,
+      gatewayOpen: true,
+      pathname: '/settings',
+      profile: 'default'
+    }))
+    render(<SharedMetricsSettings />)
+    const share = await screen.findByRole('switch', { name: copy.sendLabel })
+    await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
+    await waitFor(() => expect($desktopMetricsGate.get()).toBe('off'))
+
+    holdFocusRead = true
+    fireEvent.focus(window)
+    await waitFor(() => expect(holdFocusRead).toBe(false))
+    fireEvent.click(share)
+    await waitFor(() => expect(setCalls()).toEqual([{ enabled: true, send: true }]))
+    await act(async () => {
+      focusRead.resolve(off)
+      await focusRead.promise
+    })
+    expect($desktopMetricsGate.get()).toBe('off')
+
+    // The successful save response can itself be older than a subsequent withdrawal.
+    await act(async () => {
+      stored = enabled ? on : off
+      saved.resolve(on)
+      await saved.promise
+    })
+
+    await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
+    expect($desktopMetricsGate.get()).toBe(enabled ? 'on' : 'off')
+    expect(share.getAttribute('aria-checked')).toBe(String(enabled))
+  })
+
+  it('keeps the newly focused connection collecting when an old connection finishes opting out', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-27T12:00:00Z'))
+    const off = Promise.withResolvers<SharedMetricsConsent>()
+    const report = vi.fn().mockResolvedValue({ recorded: true })
+
+    requestGatewayForAgent.mockImplementation(async (_connection, _profile, method) =>
+      method === 'shared_metrics.set'
+        ? off.promise
+        : { enabled: true, send: true, decided: true }
+    )
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
+    render(<SharedMetricsSettings />)
+    const share = await screen.findByRole('switch', { name: copy.sendLabel })
+
+    await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(share)
+    await waitFor(() => expect(setCalls()).toEqual([{ enabled: false, send: false }]))
+
+    await act(async () => {
+      $connection.set({ ...sourceConnection, connectionId: 'target-server' })
+      // The focus change publishes its request scope before the metrics hook rebinds to it.
+      $apiRequestScope.set({ connectionId: 'target-server', profile: 'default' })
+      bindDesktopMetrics(report, 'target-server|default')
+      await setMetricsGate(captureDesktopMetricsGate, 'on')
+    })
+    await waitFor(() => expect($desktopMetricsGate.get()).toBe('on'))
+    const targetShare = await screen.findByRole('switch', { name: copy.sendLabel })
+    await waitFor(() => expect(targetShare.hasAttribute('disabled')).toBe(false))
+    recordLongFrames([120])
+    await act(async () => {
+      off.resolve({ enabled: false, send: false, decided: true })
+      await off.promise
+    })
+
+    expect($desktopMetricsGate.get()).toBe('on')
+    expect(targetShare.getAttribute('aria-checked')).toBe('true')
+    vi.setSystemTime(new Date('2026-09-28T12:00:00Z'))
+    tickDesktopMetrics()
+    await waitFor(() => expect(report).toHaveBeenCalledWith(
+      'shared_metrics.desktop_long_frames',
+      expect.objectContaining({
+        day: '2026-09-27',
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      })
+    ))
   })
 })

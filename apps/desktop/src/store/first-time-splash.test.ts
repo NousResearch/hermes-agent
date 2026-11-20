@@ -1,13 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import {
   $firstTimeSplash,
   $firstTimeSplashReopenable,
@@ -35,6 +36,7 @@ function settle(verdict: 'existing' | 'fresh' | 'unknown') {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -45,7 +47,10 @@ beforeEach(() => {
   $firstTimeSplash.set(null)
 })
 
-afterEach(() => resetDesktopMetricsForTests())
+afterEach(() => {
+  resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
+})
 
 describe('who gets which splash', () => {
   it('a new install gets the first-time splash, never the rename splash', () => {
@@ -109,12 +114,12 @@ describe('the first-time splash', () => {
     expect($firstTimeSplash.get()).toBe('reopened')
   })
 
-  it('records closed codes only behind consent: shown, each row once per showing, how it closed', () => {
+  it('records closed codes only behind consent: shown, each row once per showing, how it closed', async () => {
     settle('fresh')
     closeFirstTimeSplash('nav')
     expect(recorded()).toBe('')
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     reopenFirstTimeSplash()
     noteFirstTimeSplashRow('theme')
     noteFirstTimeSplashRow('theme')

@@ -45,7 +45,7 @@ it('moves local preferences on profile rename and deletes only the exact target 
   prefs.setSidebarAgentHidden(remote, true)
   prefs.$sidebarAgentExpanded.set({ [prefs.agentSidebarKey(local)]: false, [prefs.agentSidebarKey(remote)]: true })
   const { migrateTilesForProfile, dropTilesForProfile } = await import('./session-states')
-  migrateTilesForProfile('research', 'renamed')
+  await migrateTilesForProfile('research', 'renamed')
   const renamed = prefs.agentSidebarKey({ connectionId: 'local', profile: 'renamed' })
   expect(prefs.$hiddenSidebarAgents.get()).toEqual([renamed, prefs.agentSidebarKey(remote)])
   expect(prefs.$sidebarAgentExpanded.get()).toEqual({ [renamed]: false, [prefs.agentSidebarKey(remote)]: true })

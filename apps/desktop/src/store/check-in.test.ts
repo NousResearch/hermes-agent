@@ -1,14 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 
 import { $checkInDue, $checkInReopenable, answerCheckIn, dismissCheckIn, reopenCheckIn } from './check-in'
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import { $guidanceLedger } from './guidance-ledger'
 import { $shellChoice } from './shell-variant'
 import { noteTaskFinished } from './starter-ideas'
@@ -20,6 +21,7 @@ const recorded = () =>
     .join('')
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -28,7 +30,10 @@ beforeEach(() => {
   $guidanceLedger.set({ renameSplash: 'not_applicable' })
 })
 
-afterEach(() => resetDesktopMetricsForTests())
+afterEach(() => {
+  resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
+})
 
 describe('the check-in (C7)', () => {
   it('is due after two chats in which a task finished, not one', () => {
@@ -69,13 +74,13 @@ describe('the check-in (C7)', () => {
     expect($checkInReopenable.get()).toBe(false)
   })
 
-  it('counts its answers as closed codes, behind consent', () => {
+  it('counts its answers as closed codes, behind consent', async () => {
     noteTaskFinished('chat-a')
     noteTaskFinished('chat-b')
     answerCheckIn('going_well')
     expect(recorded()).toBe('')
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     answerCheckIn('could_be_better')
     dismissCheckIn()
 

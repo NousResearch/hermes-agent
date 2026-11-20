@@ -18,6 +18,8 @@
  *     this via the public `/api/status` field `auth_required: true`.
  */
 
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
+
 // Bare + prefixed variants of the session cookies the gateway may set,
 // depending on its deploy shape (HTTPS direct → __Host-, behind a path prefix
 // → __Secure-, loopback HTTP → bare). Mirrors
@@ -515,11 +517,7 @@ function normalizeSshConfig(entry) {
   // name used by the remote Hermes installation. Preserve an explicit mapping
   // when it is a valid Hermes profile identifier; otherwise fall back to the
   // historical same-name behavior in the caller.
-  const remoteProfile = String(entry.remoteProfile || '').trim()
-
-  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
-    out.remoteProfile = remoteProfile
-  }
+  Object.assign(out, normalizeRemoteProfileName(entry.remoteProfile))
 
   return out
 }
@@ -618,7 +616,7 @@ function profileRemoteOverride(config, profile) {
 function normalizeRemoteProfileName(value) {
   const remoteProfile = String(value || '').trim()
 
-  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+  if (PROFILE_ID_ARG_RE.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
     return { remoteProfile }
   }
 

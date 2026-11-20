@@ -1,7 +1,7 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { recordOnboarding, setDesktopMetricsGate } from './desktop-metrics'
+import { captureDesktopMetricsGate, recordOnboarding } from './desktop-metrics'
 
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
 export const SHARED_METRICS_DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics'
@@ -92,20 +92,26 @@ export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null):
 export async function answerSharedMetricsOffer(
   request: SharedMetricsRequester,
   choice: SharedMetricsChoice,
-  isCurrent?: () => boolean
+  profileScope: string
 ): Promise<void> {
-  const consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
+  const applyGate = await captureDesktopMetricsGate(profileScope)
+  let consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
 
-  if (isCurrent && !isCurrent()) {
-    return
+  // A late answer still withdraws its original cohort, but cannot answer another profile's offer.
+  if (!(await applyGate(consent.enabled ? 'on' : 'off'))) {
+    // A focus refresh may retire this cohort mid-save. Re-read under a fresh capture:
+    // replaying the saved answer instead could resurrect a newer withdrawal.
+    const applyCurrent = await captureDesktopMetricsGate(profileScope)
+    const current = await readSharedMetricsConsent(request)
+
+    if (!current?.decided || !(await applyCurrent(current.enabled ? 'on' : 'off', current.decided))) {
+      return
+    }
+
+    consent = current
   }
 
-  if (consent) {
-    // Gate first: the consent answer is itself a first-run step, counted only when it opted in.
-    setDesktopMetricsGate(consent.enabled ? 'on' : 'off')
-    recordOnboarding('consent', 'completed')
-  }
-
+  recordOnboarding('consent', 'completed')
   $sharedMetricsConsent.set(consent)
   $sharedMetricsDetailsOpen.set(false)
 }

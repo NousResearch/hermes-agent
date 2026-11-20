@@ -129,7 +129,7 @@ export function RenameProfileDialog({
       // remembered ids keyed by the old name must follow, or every open
       // dials a backend that no longer exists (#111868).
       if (!isDefault && local) {
-        migrateTilesForProfile(currentName, trimmed)
+        await migrateTilesForProfile(currentName, trimmed)
       } else if (!isDefault && owner) {
         migrateAgentSidebarPreferences({ connectionId: owner.connectionId, profile: currentName }, trimmed)
       }

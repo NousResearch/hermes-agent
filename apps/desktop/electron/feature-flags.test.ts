@@ -26,7 +26,7 @@ test('--local in argv opts into local models on any channel and platform', () =>
 })
 
 test('isCanaryTag recognizes canary stamps and rejects stable/dev tags', () => {
-  assert.equal(isCanaryTag('v0.28.0+canary.20260818T123456Z'), true)
+  assert.equal(isCanaryTag('canary.20260818T123456Z-v0.28.0'), true)
   assert.equal(isCanaryTag('v0.28.0-canary.20260818'), false)
   assert.equal(isCanaryTag('v0.28.0+canary.20260818123456'), false)
   assert.equal(isCanaryTag('v0.28.0'), false)

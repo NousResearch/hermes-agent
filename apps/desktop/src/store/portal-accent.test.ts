@@ -5,10 +5,11 @@ import { isSharedPreferenceKey } from '@/lib/ui-preferences/keys'
 
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import { pickPortalAccent, PORTAL_ACCENTS } from './portal-accent'
 import { $shellChoice } from './shell-variant'
 
@@ -27,6 +28,7 @@ async function load() {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -35,6 +37,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   delete document.documentElement.dataset.portalAccent
   resetDesktopMetricsForTests()
 })
@@ -70,19 +73,19 @@ describe('the redesign’s accent', () => {
     expect((await load()).$portalAccent.get()).toBe('blue')
   })
 
-  it('counts a pick by its colour’s code, behind consent', () => {
+  it('counts a pick by its colour’s code, behind consent', async () => {
     pickPortalAccent('pink')
     expect(recorded()).toBe('')
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     pickPortalAccent('orange')
     pickPortalAccent('orange')
 
     expect(recorded()).toContain('"ia.theme_pick.color_orange|click":1')
   })
 
-  it('counts every one of the eight colours, the bright ones included', () => {
-    setDesktopMetricsGate('on')
+  it('counts every one of the eight colours, the bright ones included', async () => {
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
 
     for (const accent of PORTAL_ACCENTS.filter(accent => accent !== 'blue')) {
       pickPortalAccent(accent)

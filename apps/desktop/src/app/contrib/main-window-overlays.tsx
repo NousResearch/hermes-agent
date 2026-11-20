@@ -35,7 +35,7 @@ export function MainWindowOverlays({
         requestGateway={requestGateway}
       />
       <OnboardingEnd />
-      <SharedMetricsConsentDialog enabled={enabled} profile={profile} requestGateway={requestGateway} />
+      <SharedMetricsConsentDialog enabled={enabled} profile={profile} />
       <FreeTierSignInDialog onSelectModel={onSelectModel} />
     </>
   )

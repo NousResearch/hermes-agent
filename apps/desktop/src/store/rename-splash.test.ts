@@ -1,14 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 import { existingUserVerdict } from '@/lib/existing-user'
 
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import { $guidanceLedger, GUIDANCE_LEDGER_KEY } from './guidance-ledger'
 import {
   $renameSplash,
@@ -30,6 +31,7 @@ function recorded(): string {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -39,7 +41,10 @@ beforeEach(() => {
   $renameSplash.set(null)
 })
 
-afterEach(() => resetDesktopMetricsForTests())
+afterEach(() => {
+  resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
+})
 
 describe('existing-user verdict', () => {
   it('decides nothing until the session list has answered and first-run setup is off screen', () => {
@@ -99,12 +104,12 @@ describe('rename splash', () => {
     expect($guidanceLedger.get().renameSplash).toBe('seen')
   })
 
-  it('records closed codes only behind consent: shown, each row once per showing, how it closed, reopened', () => {
+  it('records closed codes only behind consent: shown, each row once per showing, how it closed, reopened', async () => {
     considerRenameSplash('existing')
     dismissRenameSplash('nav')
     expect(recorded()).toBe('')
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     reopenRenameSplash()
     noteRenameSplashRow('library')
     noteRenameSplashRow('library')

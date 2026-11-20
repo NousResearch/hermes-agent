@@ -15,15 +15,17 @@ import { $commandPaletteOpen } from '@/store/command-palette'
 import {
   bindDesktopMetrics,
   cancelPendingBackendDrop,
+  captureDesktopMetricsGate,
   noteInteraction,
   recordFeatureUse,
   recordFriction,
+  recordLongFrames,
   routeArea,
   setDesktopBotCount,
-  setDesktopMetricsGate,
   slowFrameBucket,
   tickDesktopMetrics,
   trackArea,
+  trackDesktopVisibleTime,
   trackFlow
 } from '@/store/desktop-metrics'
 import { $findInPage } from '@/store/find-in-page'
@@ -34,7 +36,6 @@ import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/p
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
 import {
-  $sharedMetricsConsent,
   readSharedMetricsConsent,
   type SharedMetricsConsent,
   sharedMetricsProfileRequester
@@ -56,7 +57,8 @@ function botCount(): number {
   return byConnection || $profiles.get().length
 }
 
-/** Long frames (Long Animation Frames where available, else long tasks) while the window is visible. */
+/** Long frames (Long Animation Frames where available, else long tasks) while the window is visible:
+ *  every one into the day's histogram, the 100 ms+ ones also as capped slow_frame friction. */
 function observeSlowFrames(): () => void {
   if (typeof PerformanceObserver === 'undefined') {
     return () => undefined
@@ -79,7 +81,11 @@ function observeSlowFrames(): () => void {
       return
     }
 
-    for (const entry of list.getEntries()) {
+    const entries = list.getEntries()
+
+    recordLongFrames(entries.map(entry => entry.duration))
+
+    for (const entry of entries) {
       const bucket = slowFrameBucket(entry.duration)
 
       if (bucket) {
@@ -128,6 +134,8 @@ export function useDesktopMetrics({
 
   // The focused profile and its collection switch: re-read on attach, profile switch and window
   // focus (a CLI or another window may have changed it meanwhile).
+  // Keyed on `scope` too: any publication revokes the bound owner (store/desktop-metrics), so
+  // rebind even when the derived key is unchanged (the launch profile becoming named, say).
   useEffect(() => {
     if (!enabled || !gatewayOpen) {
       bindDesktopMetrics(null)
@@ -136,16 +144,20 @@ export function useDesktopMetrics({
     }
 
     let cancelled = false
+    const profileScope = `${connectionId ?? ''}|${profileKey}`
 
-    const refresh = () =>
-      void readSharedMetricsConsent(request).then(consent => {
-        // An unreadable answer (older backend, flap) keeps the last known gate.
-        if (!cancelled && $apiRequestScope.get() === scope && consent) {
-          setDesktopMetricsGate(gateFor(consent), consent.decided)
+    const refresh = () => {
+      void captureDesktopMetricsGate(profileScope).then(async applyGate => {
+        const consent = await readSharedMetricsConsent(request)
+
+        // A delayed withdrawal still revokes its original cohort after a switch or rename.
+        if (consent && (!cancelled || !consent.enabled)) {
+          await applyGate(gateFor(consent), consent.decided)
         }
       })
+    }
 
-    bindDesktopMetrics(request, `${connectionId ?? ''}|${profileKey}`)
+    bindDesktopMetrics(request, profileScope)
     refresh()
     window.addEventListener('focus', refresh)
 
@@ -154,19 +166,6 @@ export function useDesktopMetrics({
       window.removeEventListener('focus', refresh)
     }
   }, [connectionId, enabled, gatewayOpen, profileKey, request, scope])
-
-  // A first-run answer or a Settings change lands in the consent atom.
-  useEffect(() => {
-    if (!enabled) {
-      return
-    }
-
-    return $sharedMetricsConsent.listen(consent => {
-      if ($apiRequestScope.get() === scope && consent) {
-        setDesktopMetricsGate(gateFor(consent), consent.decided)
-      }
-    })
-  }, [enabled, scope])
 
   useEffect(() => {
     const area = enabled
@@ -212,11 +211,8 @@ export function useDesktopMetrics({
       }
     })()
 
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        tickDesktopMetrics()
-      }
-    }
+    const stopVisibleTime = trackDesktopVisibleTime(DAY_TICK_MS + 60_000)
+    const onVisibility = () => tickDesktopMetrics()
 
     const stops = [
       $commandPaletteOpen.listen(overlay('command_palette')),
@@ -245,7 +241,8 @@ export function useDesktopMetrics({
     window.addEventListener('keydown', onInteraction, { capture: true, passive: true })
     window.addEventListener('wheel', onInteraction, { capture: true, passive: true })
     document.addEventListener('visibilitychange', onVisibility)
-    const tick = window.setInterval(() => tickDesktopMetrics(), DAY_TICK_MS)
+
+    const tick = window.setInterval(tickDesktopMetrics, DAY_TICK_MS)
 
     return () => {
       stops.forEach(stop => stop())
@@ -255,6 +252,7 @@ export function useDesktopMetrics({
       window.removeEventListener('wheel', onInteraction, { capture: true })
       document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(tick)
+      stopVisibleTime()
     }
   }, [enabled])
 }

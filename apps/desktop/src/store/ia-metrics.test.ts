@@ -6,27 +6,24 @@ import schema from '../../../../hermes_cli/observability/schemas/hermes.shared_m
 
 import {
   bindDesktopMetrics,
-  DESKTOP_METRICS_STATE_KEY,
+  captureDesktopMetricsGate,
   recordAction,
   recordFeatureUse,
   recordFriction,
   recordOnboarding,
   resetDesktopMetricsForTests,
-  setDesktopMetricsGate,
   tickDesktopMetrics
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate, settleMetrics, storedMetricsAggregate } from './desktop-metrics-test-locks'
 import { captureIaRecorder, recordIaAction } from './ia-metrics'
 import { IA_ACTION_IDS } from './ia-metrics-contract'
 import { $shellChoice } from './shell-variant'
 
-function stored(): string {
-  return Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '')
-    .filter(key => key.startsWith(DESKTOP_METRICS_STATE_KEY))
-    .map(key => window.localStorage.getItem(key))
-    .join('')
-}
+// Aggregate writes land after a short coordination phase: settle before reading.
+const stored = storedMetricsAggregate
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'private-gateway', profile: 'private-profile' })
@@ -35,39 +32,45 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   resetDesktopMetricsForTests()
   vi.useRealTimers()
 })
 
-it('collects only consenting v2 interactions and closed codes, never identity or arbitrary strings', () => {
+it('collects only consenting v2 interactions and closed codes, never identity or arbitrary strings', async () => {
   recordIaAction('ia.rail.capabilities')
   expect(stored()).toBe('')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   recordIaAction('ia.rail.capabilities')
   recordIaAction('private-session-title' as Parameters<typeof recordIaAction>[0])
+  await settleMetrics()
   expect(stored()).toContain('ia.rail.capabilities|click')
   expect(stored()).not.toMatch(/private-/)
   $shellChoice.set(false)
   recordIaAction('ia.rail.chat')
+  await settleMetrics()
   expect(stored()).not.toContain('ia.rail.chat')
-  setDesktopMetricsGate('off')
+  await setMetricsGate(captureDesktopMetricsGate, 'off')
   expect(stored()).toBe('')
 })
 
-it('drops async results after a scope or consent change, including opt-out then opt-in', () => {
-  setDesktopMetricsGate('on')
+it('drops async results after a scope or consent change, including opt-out then opt-in', async () => {
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   const record = captureIaRecorder()
   record('ia.pin.pinned')
+  await settleMetrics()
   expect(stored()).toContain('ia.pin.pinned|state')
   $apiRequestScope.set({ connectionId: 'another', profile: 'private-profile' })
   record('ia.pin.unpinned')
+  await settleMetrics()
   expect(stored()).not.toContain('ia.pin.unpinned')
   bindDesktopMetrics(null, 'another|private-profile')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   const pending = captureIaRecorder()
-  setDesktopMetricsGate('off')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'off')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   pending('ia.pin.failed')
+  await settleMetrics()
   expect(stored()).not.toContain('ia.pin.failed')
 })
 
@@ -85,9 +88,10 @@ it.each([
   const settle = () => vi.advanceTimersByTimeAsync(0)
 
   bindDesktopMetrics(requestA, alphaKey)
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   const oldRecorder = captureIaRecorder()
   oldRecorder('ia.pin.pinned')
+  await settle()
   const alphaState = stored()
   requestA.mockClear()
 
@@ -101,21 +105,23 @@ it.each([
   recordFeatureUse('projects')
   recordFriction('error_toast', 'timeout')
   recordOnboarding('guide', 'reached')
-  setDesktopMetricsGate('on') // A late consent answer cannot re-open A's gate.
+  await setMetricsGate(captureDesktopMetricsGate, 'on') // A late consent answer cannot re-open A's gate.
   bindDesktopMetrics(requestA, alphaKey) // Nor can an obsolete binding.
   beforeBind('ia.view.chat')
   tickDesktopMetrics()
+  await settle()
   expect(stored()).toBe(alphaState)
   expect(requestA).not.toHaveBeenCalled()
 
   bindDesktopMetrics(requestB, betaKey)
-  setDesktopMetricsGate('off')
+  await setMetricsGate(captureDesktopMetricsGate, 'off')
   captureIaRecorder()('ia.view.chat')
   recordIaAction('ia.rail.chat')
+  await settle()
   expect(stored()).toBe(alphaState)
   expect(requestB).not.toHaveBeenCalled()
 
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   beforeBind('ia.view.chat') // Dropped work must not revive after binding/consent.
   oldRecorder('ia.pin.failed')
   const boundRecorder = captureIaRecorder()
@@ -129,6 +135,7 @@ it.each([
   bindDesktopMetrics(null, betaKey)
   vi.setSystemTime(Date.UTC(2026, 8, 28, 12))
   tickDesktopMetrics()
+  await settle()
   expect(stored()).toContain('"pending":[{')
   bindDesktopMetrics(requestB, betaKey)
   await settle()
@@ -144,7 +151,7 @@ it.each([
 
   $apiRequestScope.set(alpha)
   bindDesktopMetrics(requestA, alphaKey)
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   await settle()
   expect(requestA.mock.calls).toEqual([
     ['shared_metrics.desktop_daily', expect.objectContaining({

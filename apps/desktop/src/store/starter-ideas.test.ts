@@ -5,10 +5,11 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import { $guidanceLedger, GUIDANCE_LEDGER_KEY } from './guidance-ledger'
 import { $sessions } from './session'
 import { $shellChoice } from './shell-variant'
@@ -32,6 +33,7 @@ function recorded(): string {
 const NEWCOMER = { renameSplash: 'not_applicable' } as const
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -40,7 +42,10 @@ beforeEach(() => {
   $guidanceLedger.set(NEWCOMER)
 })
 
-afterEach(() => resetDesktopMetricsForTests())
+afterEach(() => {
+  resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
+})
 
 describe('a newcomer’s starter ideas', () => {
   it('show until two chats have had a task finish, then leave on their own', () => {
@@ -94,11 +99,11 @@ describe('a newcomer’s starter ideas', () => {
     })
   })
 
-  it('record content-free codes only behind consent: the idea picked, leaving on their own once, Hide, Show', () => {
+  it('record content-free codes only behind consent: the idea picked, leaving on their own once, Hide, Show', async () => {
     noteStarterIdeaPicked('clean_inbox')
     expect(recorded()).toBe('')
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     noteStarterIdeaPicked('research_options')
     noteTaskFinished('chat-a')
     noteTaskFinished('chat-b')

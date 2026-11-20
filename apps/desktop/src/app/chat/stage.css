@@ -68,19 +68,14 @@
   }
 }
 
-/* Profile wake / sync notices over the stage: flat 6px plates in body type. */
-:root[data-shell='portal'] :is([data-slot='chat-swap-pill'], [data-slot='chat-sync-badge']) {
+/* Profile switch / sync notice over the stage: a flat 6px plate in body type. */
+:root[data-shell='portal'] [data-slot='chat-switch-pill'] {
   border: 0;
   border-radius: var(--portal-radius-surface);
-  background: var(--ui-bg-elevated);
+  background-color: var(--ui-bg-elevated);
   box-shadow: none;
   font-family: var(--portal-font-body);
   letter-spacing: var(--portal-tracking-ui);
-}
-
-:root[data-shell='portal'] [data-slot='chat-swap-pill'] {
-  padding: 0.5rem 0.75rem;
-  font-size: var(--portal-type-meta-size);
 }
 
 /* The stage header (the machine // agent line, and an extra tile's Agent settings) is a transparent row

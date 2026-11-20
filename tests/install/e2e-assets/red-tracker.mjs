@@ -64,7 +64,7 @@ export function planTracker(run, jobs, openIssue) {
   const lines = [
     `**${run.display_title}** (${run.html_url}, started ${run.created_at}) finished **${run.conclusion}** with ${red.length} red job(s).`,
     '',
-    'This issue is rewritten in place by `.github/workflows/install-e2e-red.yml` after every Canary E2E run a canary starts, and closed by the first green one. Root-cause each class below; a historical-release limitation that cannot be fixed goes into `tests/install/e2e-assets/known-failures.json`.',
+    'This issue is rewritten in place by `.github/workflows/install-e2e-red.yml` after every Canary release run, and closed by the first green one. Root-cause each class below; a historical-release limitation that cannot be fixed goes into `tests/install/e2e-assets/known-failures.json`.',
     '',
     '### Red jobs by failure class',
   ];

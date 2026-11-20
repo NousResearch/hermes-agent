@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 import type { SidebarSessionsResponse } from '@/api/sessions'
@@ -6,10 +6,10 @@ import { makeSessionInfo } from '@/test/session-info'
 
 import {
   bindDesktopMetrics,
-  DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  captureDesktopMetricsGate,
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate, settleMetrics, storedMetricsAggregate } from './desktop-metrics-test-locks'
 import { captureIaPinCounts } from './ia-pin-metrics'
 import { $shellChoice } from './shell-variant'
 
@@ -22,29 +22,31 @@ const page = (sessions = [] as ReturnType<typeof row>[]): SidebarSessionsRespons
   messaging: { sessions: [] }
 })
 
-const actions = () => {
-  const key = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '').find(key =>
-    key.startsWith(DESKTOP_METRICS_STATE_KEY)
-  )
+// Aggregate writes land after a short coordination phase.
+const actions = async () => {
+  await settleMetrics()
+  const stored = storedMetricsAggregate()
 
-  return key ? JSON.parse(window.localStorage.getItem(key)!).today.actions : {}
+  return stored ? JSON.parse(stored).today.actions : {}
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $shellChoice.set(true)
   $apiRequestScope.set({ connectionId: 'alpha', profile: 'default' })
   bindDesktopMetrics(null, 'alpha|default')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
 })
 afterEach(() => {
+  vi.unstubAllGlobals()
   resetDesktopMetricsForTests()
   $shellChoice.set(false)
   $apiRequestScope.set({ connectionId: null, profile: null })
 })
 
-it('counts backfilled pins beyond the recency window, deduplicates slices and separates the consenting owner', () => {
+it('counts backfilled pins beyond the recency window, deduplicates slices and separates the consenting owner', async () => {
   const snapshot = page([
     ...Array.from({ length: 50 }, (_, i) => row(`recent-${i}`, 'default', false)),
     row('old-pin'),
@@ -58,43 +60,43 @@ it('counts backfilled pins beyond the recency window, deduplicates slices and se
 
   snapshot.cron.sessions = [row('old-pin')]
   captureIaPinCounts('all')(snapshot)
-  expect(actions()['ia.pin_count.overflow|state']).toBe(1)
-  expect(actions()['ia.profile_pin_count.three|state']).toBe(1)
-  expect(JSON.stringify(actions())).not.toMatch(/private-agent|alpha|beta|old-pin/)
+  expect((await actions())['ia.pin_count.overflow|state']).toBe(1)
+  expect((await actions())['ia.profile_pin_count.three|state']).toBe(1)
+  expect(JSON.stringify(await actions())).not.toMatch(/private-agent|alpha|beta|old-pin/)
 })
 
-it('reports confirmed empty lists but does not fabricate totals from failed or legacy reads', () => {
+it('reports confirmed empty lists but does not fabricate totals from failed or legacy reads', async () => {
   captureIaPinCounts('all')({ ...page(), recents: { sessions: [], failed: true } })
   captureIaPinCounts('all')({ ...page(), errors: [{ profile: 'default', error: 'offline' }] })
   captureIaPinCounts('all')(page([{ ...row('legacy'), pinned: undefined }]))
-  expect(actions()).toEqual({})
+  expect(await actions()).toEqual({})
   captureIaPinCounts('all')(page())
-  expect(actions()['ia.pin_count.zero|state']).toBe(1)
-  expect(actions()['ia.profile_pin_count.zero|state']).toBe(1)
+  expect((await actions())['ia.pin_count.zero|state']).toBe(1)
+  expect((await actions())['ia.profile_pin_count.zero|state']).toBe(1)
 })
 
-it('keeps a successful profile sample when another profile fails, but skips the total and mismatched scope', () => {
+it('keeps a successful profile sample when another profile fails, but skips the total and mismatched scope', async () => {
   captureIaPinCounts('all')({ ...page([row('pin')]), profiles_failed: { research: { failed: true } } })
-  expect(actions()).toEqual({ 'ia.profile_pin_count.one|state': 1 })
+  expect(await actions()).toEqual({ 'ia.profile_pin_count.one|state': 1 })
   captureIaPinCounts('research')(page([row('pin', 'research')]))
-  expect(actions()['ia.profile_pin_count.zero|state']).toBeUndefined()
+  expect((await actions())['ia.profile_pin_count.zero|state']).toBeUndefined()
 })
 
-it('does not collect before consent, after revocation, across a gateway switch, or with v2 disabled', () => {
-  setDesktopMetricsGate('off')
+it('does not collect before consent, after revocation, across a gateway switch, or with v2 disabled', async () => {
+  await setMetricsGate(captureDesktopMetricsGate, 'off')
   const beforeConsent = captureIaPinCounts('all')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   beforeConsent(page())
   const pending = captureIaPinCounts('all')
-  setDesktopMetricsGate('off')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'off')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   pending(page())
   const oldOwner = captureIaPinCounts('all')
   $apiRequestScope.set({ connectionId: 'beta', profile: 'default' })
   bindDesktopMetrics(null, 'beta|default')
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   oldOwner(page())
   $shellChoice.set(false)
   captureIaPinCounts('all')(page())
-  expect(actions()).toEqual({})
+  expect(await actions()).toEqual({})
 })

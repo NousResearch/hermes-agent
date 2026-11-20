@@ -1,3 +1,4 @@
+import type * as ProfileId from '@hermes/shared/profile-id'
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -7,10 +8,22 @@ import { browserDefaultProjectDirKey, browserFolderBasePath } from '@/lib/browse
 import { browserStartupProfileKey } from '@/lib/browser-startup-profile'
 import { $shellChoice } from '@/store/shell-variant'
 
-import { CreateProfileDialog } from './create-profile-dialog'
+import { CreateProfileDialog, isValidProfileName } from './create-profile-dialog'
 
 const api = vi.hoisted(() => ({ createProfile: vi.fn(async () => ({})), updateProfileSoul: vi.fn(async () => ({})) }))
 vi.mock('@/hermes', () => api)
+
+// The dialog's name check takes its grammar from PROFILE_ID_ARG_RE (state-24, #155595): the owner is
+// swappable here so a test can prove the check follows it rather than a copied regex.
+const owner = vi.hoisted(() => ({ re: null as null | RegExp }))
+vi.mock('@hermes/shared/profile-id', async importOriginal => {
+  const actual = await importOriginal<typeof ProfileId>()
+
+  return {
+    ...actual,
+    PROFILE_ID_ARG_RE: { test: (value: string) => (owner.re ?? actual.PROFILE_ID_ARG_RE).test(value) }
+  }
+})
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
@@ -49,6 +62,20 @@ it.each([true, false])(
     }
   }
 )
+
+it('accepts exactly the names PROFILE_ID_ARG_RE accepts, after trimming', () => {
+  expect(isValidProfileName(' work ')).toBe(true)
+  expect(isValidProfileName('zz.custom')).toBe(false)
+
+  owner.re = /^zz\.[a-z]+$/
+
+  try {
+    expect(isValidProfileName(' zz.custom ')).toBe(true)
+    expect(isValidProfileName('work')).toBe(false)
+  } finally {
+    owner.re = null
+  }
+})
 
 it('does not let a new browser profile inherit the prefs a deleted one left under its name', async () => {
   const win = window as Window & { __HERMES_BASE_PATH__?: string }

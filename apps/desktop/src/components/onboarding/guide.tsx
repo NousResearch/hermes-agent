@@ -14,6 +14,7 @@ import {
   startManualOnboarding
 } from '@/store/onboarding'
 import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
+import { normalizeProfileKey } from '@/store/profile'
 import {
   $guideRecovery,
   $guideScope,
@@ -166,11 +167,8 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
 
   const chooseConsent = (choice: SharedMetricsChoice) =>
     act(async () => {
-      await answerSharedMetricsOffer(request, choice, () => {
-        const active = captureOnboardingScope()
-
-        return active.connectionId === scope.connectionId && active.profile === scope.profile
-      })
+      // Pinned to the guide's owner: an answer that lands after a switch saves but opens no gate.
+      await answerSharedMetricsOffer(request, choice, `${scope.connectionId ?? ''}|${normalizeProfileKey(scope.profile)}`)
       setConsent(await request<SharedMetricsConsent>('shared_metrics.status'))
     })
 

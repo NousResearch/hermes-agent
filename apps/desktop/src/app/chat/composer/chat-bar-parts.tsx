@@ -1,7 +1,11 @@
+import { useStore } from '@nanostores/react'
+
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $petActive } from '@/store/pet'
+import { $petOverlayActive } from '@/store/pet-overlay'
 
 import { COMPOSER_FADE_BACKGROUND } from './composer-utils'
 
@@ -103,7 +107,16 @@ export function QueuedEditBanner({ onExit }: { onExit: (action: 'cancel' | 'save
   )
 }
 
+// Vibe hearts rise from the composer only when no pet is out (else they play
+// on the pet). Keep the pet subscriptions with this reaction-event surface.
 export function ComposerHeartField() {
+  const petActive = useStore($petActive)
+  const petOverlayActive = useStore($petOverlayActive)
+
+  if (petActive || petOverlayActive) {
+    return null
+  }
+
   return (
     <HeartField
       className="absolute inset-x-0 z-30"

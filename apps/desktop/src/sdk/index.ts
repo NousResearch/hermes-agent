@@ -48,7 +48,6 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
-import { shellCopy } from '@/lib/shell-copy'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -116,6 +115,7 @@ import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
+  pluginRouteGoneMessage,
   pluginRouteStillRegistered,
   requestPluginProfile
 } from './profile-request'
@@ -556,12 +556,6 @@ async function awaitProfileActivation(
   // by mutation: removing it changed no test outcome.
 }
 
-const routeGoneMessage = (profile: string) =>
-  shellCopy({
-    classic: `The ${profile} gateway is no longer available.`,
-    redesign: `The machine running ${profile} is no longer available.`
-  })
-
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -797,8 +791,9 @@ export const host = {
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
    *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
-   *  resolver (prewarmProfileBackend): a pointer sweep across a
-   *  multi-source roster must not spawn past the pool cap either.
+   *  resolver (prewarmProfileBackend): its throttle covers a pointer sweep
+   *  across a multi-source roster, and an SSH source is never warmed
+   *  (connect-on-demand, #89756).
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {
@@ -1117,7 +1112,7 @@ export const host = {
           // (explicit): a synthesized local route is never in getProfileRoutes,
           // so checking it would spuriously abort a local bot's hydration retry.
           if (explicitRoute && !(await pluginRouteStillRegistered(explicitRoute))) {
-            throw new Error(routeGoneMessage(targetProfile))
+            throw new Error(pluginRouteGoneMessage(targetProfile))
           }
 
           // Logged per attempt so a support bundle shows the retry happened at
@@ -1982,6 +1977,9 @@ export {
 /** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
  *  an unparseable colour, never a fake 0). */
 export { contrastRatio } from '@hermes/shared/color'
+/** THE profile-id grammar (`^[a-z0-9][a-z0-9_-]{0,63}$`, Python's PROFILE_ID_RE), so a plugin
+ *  that names a profile validates it exactly as the backend will. */
+export { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at

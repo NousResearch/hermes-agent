@@ -11,7 +11,6 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
-import { $introHoldsThread } from '@/components/onboarding/first-run/intro'
 import { IntroCopy } from '@/components/onboarding/first-run/intro-copy'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
@@ -28,10 +27,8 @@ import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $introView } from '@/store/onboarding-intro'
-import { $petActive } from '@/store/pet'
-import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $profileSwitchFailure } from '@/store/profile-switch-state'
 import {
   $connection,
   $contextSuggestions,
@@ -50,9 +47,8 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
-import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
+import { isAuxiliaryWindow } from '@/store/windows'
 
 import { ChatDiscovery } from '../discovery/chat-discovery'
 import { useIntroUnlessHeld } from '../discovery/held-exchange'
@@ -61,7 +57,7 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { dropOverlayKind, useShowChatBar } from './chat-surface-state'
-import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
+import { ChatSwitchIndicator } from './chat-switch-indicator'
 import { ChatBar, ChatBarFallback } from './composer'
 import { ComposerHeartField } from './composer/chat-bar-parts'
 import { FloatingComposerSurface } from './composer/floating-surface'
@@ -71,11 +67,12 @@ import {
   useComposerScope,
   useComposerSurfaceId
 } from './composer/scope'
+import { useSwitchSendTarget } from './composer/send-target-hint'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile } from './hooks/use-composer-actions'
 import { useConversationFileDrop } from './hooks/use-conversation-file-drop'
 import { shouldShowIntro } from './intro-visibility'
-import { useChatLanding, useComposerLanding } from './landing'
+import { useChatLanding, useClassicIntro, useComposerLanding } from './landing'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -527,13 +524,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
-  const setupGuide = useStore($setupGuideOnboarding)
-  const classicPrimary = !setupGuide && isPrimary && isMainWindow()
-  const introHoldsThread = useStore($introHoldsThread) && classicPrimary
-
-  const guideStarted =
-    useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended') && !setupGuide
-
+  const { classicPrimary, guideStarted, introHoldsThread } = useClassicIntro(isPrimary)
   const activeSessionId = useStore(view.$runtimeId)
 
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
@@ -563,15 +554,13 @@ const ChatViewContent = memo(function ChatViewContent({
   const currentCwd = useStore(view.$cwd)
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
-  // A pet anywhere (in-window or popped out) owns the hearts; composer only when none.
-  const petActive = useStore($petActive)
-  const petOverlayActive = useStore($petOverlayActive)
-  const petPresent = petActive || petOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
   const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const hydrationSyncProfile = useStore($hydrationSyncProfile)
+  const profileSwitchFailure = useStore($profileSwitchFailure)
+  const switchTarget = useSwitchSendTarget()
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -766,6 +755,13 @@ const ChatViewContent = memo(function ChatViewContent({
         />
       )}
 
+      {/* Profile switch status (rail picks, bot wakes, paint-first sync). In
+          flow above the thread — never over it — and primary-only: a switch
+          re-homes the primary surface; a tile keeps showing its own session. */}
+      {isPrimary && (
+        <ChatSwitchIndicator failure={profileSwitchFailure} syncing={hydrationSyncProfile} target={switchTarget} />
+      )}
+
       {/* Mounted for the primary AND every tile, each scoped to its own session
           so a tiled/background session's blocking prompt surfaces instead of
           stalling to timeout. */}
@@ -805,16 +801,10 @@ const ChatViewContent = memo(function ChatViewContent({
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
           {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
-          {/* Vibe hearts rise from the composer only when no pet is out (else
-              they play on the pet). Fired by the core `reaction` event. */}
-          {!petPresent && <ComposerHeartField />}
+          <ComposerHeartField />
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
-          {/* Paint-first wake (#89843): transcript is live, profile gate still
-              settling in the background — subtle badge, not an overlay. */}
-          {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
         {/* Docked composers overlay their pane; the shared float escapes pane
             clipping through a stable portal host without remounting its editor. */}

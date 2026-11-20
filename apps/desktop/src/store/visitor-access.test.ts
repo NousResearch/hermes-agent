@@ -4,10 +4,11 @@ import { $apiRequestScope } from '@/api/client'
 
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   DESKTOP_METRICS_STATE_KEY,
-  resetDesktopMetricsForTests,
-  setDesktopMetricsGate
+  resetDesktopMetricsForTests
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import { $shellChoice } from './shell-variant'
 import { $signInFailed, $signUpRequired, $visitorAccess, installVisitorAccess, startSignUp } from './visitor-access'
 
@@ -21,6 +22,7 @@ function recorded(): string {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'gateway', profile: 'default' })
@@ -31,6 +33,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   delete (window as HostWindow).__HERMES_SIGN_UP_URL__
   window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
@@ -65,12 +68,12 @@ describe('visitor access on this page', () => {
     expect($signUpRequired.get()).toBe(false)
   })
 
-  it('leaves for sign up, to come back here, and counts where it started', () => {
+  it('leaves for sign up, to come back here, and counts where it started', async () => {
     const assign = vi.fn()
     vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })
     $visitorAccess.set({ kind: 'sign_up_required', signUpUrl: 'https://portal.example/sign-up' })
     $signInFailed.set(true)
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
 
     startSignUp('chat')
 

@@ -4,7 +4,12 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
-import { bindDesktopMetrics, resetDesktopMetricsForTests, setDesktopMetricsGate } from '@/store/desktop-metrics'
+import {
+  bindDesktopMetrics,
+  captureDesktopMetricsGate,
+  resetDesktopMetricsForTests
+} from '@/store/desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from '@/store/desktop-metrics-test-locks'
 import { $portalPreferred, $shellChoice } from '@/store/shell-variant'
 import { ThemeProvider } from '@/themes/context'
 
@@ -32,6 +37,7 @@ function renderSettings(subpage = 'general') {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
   resetDesktopMetricsForTests()
   localStorage.clear()
@@ -42,6 +48,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   cleanup()
   resetDesktopMetricsForTests()
   $shellChoice.set(false)
@@ -49,7 +56,7 @@ afterEach(() => {
 })
 
 it('restores the original sidebar immediately and accepts one optional reason inline', async () => {
-  setDesktopMetricsGate('on')
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   renderSettings()
   fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
   expect($portalPreferred.get()).toBe(false)
@@ -68,7 +75,7 @@ it('restores the original sidebar immediately and accepts one optional reason in
 })
 
 it('does not ask for feedback or report a disable when usage sharing is off', async () => {
-  setDesktopMetricsGate('off')
+  await setMetricsGate(captureDesktopMetricsGate, 'off')
   renderSettings()
   fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
   expect($portalPreferred.get()).toBe(false)
@@ -77,8 +84,8 @@ it('does not ask for feedback or report a disable when usage sharing is off', as
   expect(request).not.toHaveBeenCalled()
 })
 
-it('lets users ignore feedback and removes it when they re-enable or revoke consent', () => {
-  setDesktopMetricsGate('on')
+it('lets users ignore feedback and removes it when they re-enable or revoke consent', async () => {
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
   renderSettings('window-layout')
   const toggle = screen.getByRole('switch', { name: 'Redesigned interface' })
   fireEvent.click(toggle)
@@ -86,6 +93,8 @@ it('lets users ignore feedback and removes it when they re-enable or revoke cons
   fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
   expect(screen.queryByRole('combobox', { name: 'Why switch back? (optional)' })).toBeNull()
   fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
-  act(() => setDesktopMetricsGate('off'))
+  await act(async () => {
+    await setMetricsGate(captureDesktopMetricsGate, 'off')
+  })
   expect(screen.queryByRole('combobox', { name: 'Why switch back? (optional)' })).toBeNull()
 })

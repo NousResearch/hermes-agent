@@ -1366,3 +1366,66 @@ def test_a_forced_by_hand_plan_with_running_turns_warns_above_its_steps(home, ca
     assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
     text = capsys.readouterr().out
     assert _RUNNING in text and text.index(_RUNNING) < text.index("Steps, in this order")
+
+
+# --- review round 5: the unknown-activity blocker says how it clears and which files caused it
+
+_PROMPT = "prompt-text-never-printed-3e1f"
+
+
+def _bad_markers(home: Path) -> list[Path]:
+    """In *home*'s served profile ``work``, a marker file that is no JSON (it quotes a prompt); in *home*
+    itself, a marker the old backend wrote before writers were stamped (no writer_pid); and a marker path
+    that cannot be opened as a file. Returns the paths, as the plan must name them."""
+    from tui_gateway import turn_marker
+    work = home / "profiles" / "work"
+    work.mkdir(parents=True)
+    (work / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+    corrupt, writerless = turn_marker._marker_path(work), turn_marker._marker_path(home)
+    corrupt.parent.mkdir(parents=True)
+    corrupt.write_text('{"s": {"prompt": "' + _PROMPT + '"', encoding="utf-8")
+    writerless.parent.mkdir(parents=True)
+    writerless.write_text(json.dumps({"s": {"prompt": _PROMPT, "started_at": 1.0}}), encoding="utf-8")
+    other = home / "profiles" / "other"
+    other.mkdir()
+    (other / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+    unopenable = turn_marker._marker_path(other)
+    unopenable.mkdir(parents=True)  # a directory where the file should be: open() fails
+    return sorted([corrupt, writerless, unopenable], key=str)
+
+
+def test_the_marker_reader_lists_every_file_that_makes_activity_unknown(home):
+    paths = _bad_markers(home)
+
+    host = SystemHost(home)
+    assert host.running_turns(_BACKEND_PID, None) is None  # the contract the apply path reads
+    assert host.unknown_turn_files(_BACKEND_PID, None) == [str(p) for p in paths]
+
+
+def test_a_readable_marker_set_lists_no_file(home):
+    assert SystemHost(home).unknown_turn_files(_BACKEND_PID, None) == []
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_the_unknown_activity_blocker_says_how_it_clears_and_names_each_file(home, capsys, manual):
+    paths = _bad_markers(home)
+    host = (ManualHost if manual else FakeHost)(home, host="127.0.0.1")
+    host.running_turns = SystemHost.running_turns.__get__(host, SystemHost)
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED and out["plan"]["running_turns"] is None
+    (blocker,) = [b for b in out["plan"]["blockers"] if "Cannot tell whether turns are running" in b]
+    assert "confirm it is idle, then re-run with --force-interrupt" in blocker
+    assert all(str(p) in blocker for p in paths), blocker
+    assert _PROMPT not in json.dumps(out)
+
+
+def test_a_by_hand_backend_without_api_health_says_why_its_activity_is_unknown(home, capsys, no_health_backend):
+    host = no_health_host(ManualHost, home, no_health_backend)
+
+    code, out = _plan(host, capsys)
+
+    (blocker,) = [b for b in out["plan"]["blockers"] if "Cannot tell whether turns are running" in b]
+    assert code == engine.EXIT_BLOCKED and "older than v2026.7.30" in blocker and "GET /api/health" in blocker
+    assert "confirm it is idle, then re-run with --force-interrupt" in blocker

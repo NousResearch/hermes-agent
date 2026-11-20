@@ -1368,20 +1368,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
-            # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
-            # passed through (see note near the bottom of this function; _redact_strict_url_credentials
-            # handles the opt-in case). The uppercase regex above is all-caps-only, so it never matches URL
-            # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
-        # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
-        # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
-        # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are
-        # intentionally passed through (see note near the bottom of this function); _DB_CONNSTR_RE still
-        # guards connection-string passwords. Extra gate: every _CFG_*_RE match requires a secret keyword in
-        # the key, so a text without any secret keyword cannot match — skipping is exact. This matters
-        # because _CFG_DOTTED_RE backtracks quadratically on long unbroken [A-Za-z0-9_.\-] runs (e.g.
-        # base64/hex blobs in compaction payloads); the linear keyword scan prevents that pathological path
-        # on secret-free text.
+        # Skip URL params; the exact keyword gate prevents quadratic _CFG_DOTTED_RE scans on opaque blobs.
         if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
             text = _CFG_DOTTED_RE.sub(_redact_env, text)
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)

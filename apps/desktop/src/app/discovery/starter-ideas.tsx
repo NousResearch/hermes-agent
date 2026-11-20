@@ -63,8 +63,8 @@ interface StarterIdeasProps {
 }
 
 /**
- * A newcomer's four starter ideas under the composer, with Hide; once they are gone, Show ideas
- * (479:4114, 486:4227, 486:5035; rules in store/starter-ideas.ts). An idea is sent like a typed
+ * A newcomer's four starter ideas under the composer, with Hide ideas under them; once they are gone,
+ * Show ideas (18677:28385, 18677:28493; rules in store/starter-ideas.ts). An idea is sent like a typed
  * message, through the composer, so it meets everything a typed one does (a visitor who must sign up
  * gets it held). Hiding or bringing the ideas back keeps focus on the control that replaces the one
  * pressed.
@@ -86,43 +86,41 @@ export function StarterIdeas({ target }: StarterIdeasProps) {
   return (
     <div className="discovery-ideas" data-slot="starter-ideas" ref={regionRef}>
       {state === 'ideas' ? (
-        <ul aria-label={copy.ideasLabel} className="discovery-ideas-list">
-          {STARTER_IDEAS.map(idea => (
-            <li key={idea}>
-              <Button
-                className="discovery-idea"
-                onClick={() => {
-                  noteStarterIdeaPicked(idea)
+        <>
+          <ul aria-label={copy.ideasLabel} className="discovery-ideas-list">
+            {STARTER_IDEAS.map(idea => (
+              <li key={idea}>
+                <Button
+                  className="discovery-idea"
+                  onClick={() => {
+                    noteStarterIdeaPicked(idea)
 
-                  // No composer to send through right now: the idea waits in it instead.
-                  if (!requestComposerSubmit(copy.ideas[idea], { target })) {
-                    requestComposerInsert(copy.ideas[idea], { target })
-                    requestComposerFocus(target)
-                  }
-                }}
-                variant="secondary"
-              >
-                <IdeaGlyph idea={idea} />
-                {copy.ideas[idea]}
-              </Button>
-            </li>
-          ))}
-          <li>
-            <Button
-              aria-label={copy.hideLabel}
-              className="discovery-ideas-toggle"
-              onClick={() => {
-                hideStarterIdeas()
-                keepFocusAcrossSwap()
-              }}
-              size="inline"
-              variant="text"
-            >
-              {copy.hide}
-              <Codicon name="close" />
-            </Button>
-          </li>
-        </ul>
+                    // No composer to send through right now: the idea waits in it instead.
+                    if (!requestComposerSubmit(copy.ideas[idea], { target })) {
+                      requestComposerInsert(copy.ideas[idea], { target })
+                      requestComposerFocus(target)
+                    }
+                  }}
+                  variant="secondary"
+                >
+                  <IdeaGlyph idea={idea} />
+                  {copy.ideas[idea]}
+                </Button>
+              </li>
+            ))}
+          </ul>
+          <Button
+            className="discovery-ideas-toggle"
+            onClick={() => {
+              hideStarterIdeas()
+              keepFocusAcrossSwap()
+            }}
+            size="inline"
+            variant="text"
+          >
+            {copy.hide}
+          </Button>
+        </>
       ) : (
         <Button
           className="discovery-ideas-toggle"

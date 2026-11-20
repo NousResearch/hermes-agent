@@ -455,19 +455,28 @@
   visibility: hidden;
 }
 
+:root[data-shell='portal'] .discovery-welcome-place-lines {
+  display: grid;
+}
+
+/* The line and the example share one cell; the one not speaking keeps its room, unseen. */
+:root[data-shell='portal'] .discovery-welcome-place-line {
+  grid-area: 1 / 1;
+}
+
 :root[data-shell='portal'] .discovery-welcome-place-line[data-example],
 :root[data-shell='portal']
   .discovery-welcome-places:is(:hover, :focus-within)
   > li[data-active]
   .discovery-welcome-place-line:not([data-example]) {
-  display: none;
+  visibility: hidden;
 }
 
 :root[data-shell='portal']
   .discovery-welcome-places:is(:hover, :focus-within)
   > li[data-active]
   .discovery-welcome-place-line[data-example] {
-  display: inline;
+  visibility: visible;
 }
 
 :root[data-shell='portal'] .discovery-welcome-place:focus-visible {
@@ -873,6 +882,9 @@
 /* Four chips in two rows under the composer, 16 apart (18695:18475). */
 :root[data-shell='portal'] .discovery-ideas {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1rem;
   padding-block-start: 1.5rem;
   padding-inline: 5px;
 }
@@ -925,9 +937,10 @@
   outline-offset: var(--portal-focus-ring-outset);
 }
 
-/* Hide and Show ideas: small quiet text actions. */
+/* Hide ideas and Show ideas: small quiet mono text actions under the chips (18677:28385, 18677:28493). */
 :root[data-shell='portal'] .discovery-ideas-toggle {
   color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
   font-size: var(--portal-type-meta-size);
 }
 

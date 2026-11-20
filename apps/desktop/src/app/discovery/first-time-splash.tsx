@@ -115,9 +115,12 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
                 <PlaceGlyph place={row} />
                 <span aria-hidden className="discovery-welcome-place-text">
                   <span className="discovery-welcome-place-name">{names[row]}</span>
-                  <span className="discovery-welcome-place-line">{copy.lines[row].line}</span>
-                  <span className="discovery-welcome-place-line" data-example="">
-                    {copy.lines[row].example}
+                  {/* Both in one cell: the row is as tall as the longer, so none moves when one speaks. */}
+                  <span className="discovery-welcome-place-lines">
+                    <span className="discovery-welcome-place-line">{copy.lines[row].line}</span>
+                    <span className="discovery-welcome-place-line" data-example="">
+                      {copy.lines[row].example}
+                    </span>
                   </span>
                 </span>
                 {isSeen && (

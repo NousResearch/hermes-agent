@@ -328,18 +328,19 @@ describe('the starter ideas', () => {
       within(list)
         .getAllByRole('button')
         .map(button => button.textContent)
-    ).toEqual([...ideas, copy.landing.hide])
+    ).toEqual(ideas)
+    expect(screen.getByRole('button', { name: copy.landing.hide })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: copy.landing.ideas.clean_inbox }))
     expect(sent).toHaveBeenCalledWith(copy.landing.ideas.clean_inbox)
     stop()
   })
 
-  it('Hide takes them away and leaves Show ideas focused; Show ideas brings them back, focused', async () => {
+  it('Hide ideas takes them away and leaves Show ideas focused; Show ideas brings them back, focused', async () => {
     $guidanceLedger.set(NEWCOMER)
     const { stop } = renderIdeas()
 
-    fireEvent.click(screen.getByRole('button', { name: copy.landing.hideLabel }))
+    fireEvent.click(screen.getByRole('button', { name: copy.landing.hide }))
     expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
     const show = screen.getByRole('button', { name: copy.landing.showIdeas })
     await vi.waitFor(() => expect(show.ownerDocument.activeElement).toBe(show))

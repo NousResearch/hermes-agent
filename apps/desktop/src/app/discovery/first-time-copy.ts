@@ -58,8 +58,6 @@ export interface FirstTimeCopy {
     ideasLabel: string
     ideas: Record<StarterIdea, string>
     hide: string
-    /** The Hide button's accessible name. */
-    hideLabel: string
     showIdeas: string
     /** The composer's resting text while the ideas are shown, and once they are gone. */
     placeholderIdeas: string
@@ -173,8 +171,7 @@ const en: FirstTimeCopy = {
       summarize_document: 'Summarise a long document',
       clean_inbox: 'Clean up my inbox'
     },
-    hide: 'Hide',
-    hideLabel: 'Hide ideas',
+    hide: 'Hide ideas',
     showIdeas: 'Show ideas',
     placeholderIdeas: 'Give Hermes a task',
     placeholderRetired: 'Give your agent a task'
@@ -287,8 +284,7 @@ const fr: FirstTimeCopy = {
       summarize_document: 'Résume un long document',
       clean_inbox: 'Fais le tri dans ma boîte mail'
     },
-    hide: 'Masquer',
-    hideLabel: 'Masquer les idées',
+    hide: 'Masquer les idées',
     showIdeas: 'Afficher des idées',
     placeholderIdeas: 'Confiez une tâche à Hermes',
     placeholderRetired: 'Confiez une tâche à votre agent'
@@ -401,8 +397,7 @@ const de: FirstTimeCopy = {
       summarize_document: 'Ein langes Dokument zusammenfassen',
       clean_inbox: 'Mein Postfach aufräumen'
     },
-    hide: 'Ausblenden',
-    hideLabel: 'Ideen ausblenden',
+    hide: 'Ideen ausblenden',
     showIdeas: 'Ideen zeigen',
     placeholderIdeas: 'Gib Hermes eine Aufgabe',
     placeholderRetired: 'Gib deinem Agenten eine Aufgabe'
@@ -515,8 +510,7 @@ const es: FirstTimeCopy = {
       summarize_document: 'Resume un documento largo',
       clean_inbox: 'Ordena mi bandeja de entrada'
     },
-    hide: 'Ocultar',
-    hideLabel: 'Ocultar ideas',
+    hide: 'Ocultar ideas',
     showIdeas: 'Mostrar ideas',
     placeholderIdeas: 'Dale una tarea a Hermes',
     placeholderRetired: 'Dale una tarea a tu agente'
@@ -629,8 +623,7 @@ const ja: FirstTimeCopy = {
       summarize_document: '長いドキュメントを要約して',
       clean_inbox: '受信トレイを整理して'
     },
-    hide: '非表示',
-    hideLabel: 'アイデアを非表示',
+    hide: 'アイデアを非表示',
     showIdeas: 'アイデアを表示',
     placeholderIdeas: 'Hermes にタスクを任せる',
     placeholderRetired: 'エージェントにタスクを任せる'
@@ -743,8 +736,7 @@ const zh: FirstTimeCopy = {
       summarize_document: '总结一份长文档',
       clean_inbox: '整理我的收件箱'
     },
-    hide: '隐藏',
-    hideLabel: '隐藏灵感',
+    hide: '隐藏灵感',
     showIdeas: '显示灵感',
     placeholderIdeas: '给 Hermes 布置任务',
     placeholderRetired: '给你的智能体布置任务'
@@ -857,8 +849,7 @@ const zhHant: FirstTimeCopy = {
       summarize_document: '摘要一份長文件',
       clean_inbox: '整理我的收件匣'
     },
-    hide: '隱藏',
-    hideLabel: '隱藏靈感',
+    hide: '隱藏靈感',
     showIdeas: '顯示靈感',
     placeholderIdeas: '交辦任務給 Hermes',
     placeholderRetired: '交辦任務給你的代理'
@@ -971,8 +962,7 @@ const ru: FirstTimeCopy = {
       summarize_document: 'Кратко перескажи длинный документ',
       clean_inbox: 'Разбери мою почту'
     },
-    hide: 'Скрыть',
-    hideLabel: 'Скрыть идеи',
+    hide: 'Скрыть идеи',
     showIdeas: 'Показать идеи',
     placeholderIdeas: 'Дайте Hermes задачу',
     placeholderRetired: 'Дайте агенту задачу'
@@ -1085,8 +1075,7 @@ const ar: FirstTimeCopy = {
       summarize_document: 'لخّص مستندًا طويلًا',
       clean_inbox: 'نظّم صندوق بريدي'
     },
-    hide: 'إخفاء',
-    hideLabel: 'إخفاء الأفكار',
+    hide: 'إخفاء الأفكار',
     showIdeas: 'عرض الأفكار',
     placeholderIdeas: 'أعطِ Hermes مهمة',
     placeholderRetired: 'أعطِ وكيلك مهمة'

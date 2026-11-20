@@ -1,21 +1,25 @@
 name: ceo-pack
+title: CEO Pack
 repo: https://github.com/tradersurfer/ceo-pack
-sha: 28fe9ae947cbb777d9aa10a91c15dbb6d3454928
-description: >-
-  CEO Pack — a CEO orchestration layer for Hermes. Brief, route, plan, assign,
-  call, verify, log, with Hermes as COO. One owner and one due date per task,
-  Type 1 / Type 2 decision gating, credential-safe tool calls, and owner
-  approval for external actions. v0.4.0 adds seat aliases, head-CEO config,
-  capability checks, opt-in business-data reading, and generalized closeout
-  (Q1-Q4 + monthly). Free model default is Nemotron 3 Ultra free, with GLM
-  Flash free fallback and paid Claude Sonnet 5.5 / Opus 5.5 overrides the user
-  chooses. The plugin returns model choices; it does not call a model itself
-  (stdlib-only, catalog-safe).
+sha: 0d019941743f4f885797874679862204a465ddc3
+description: "CEO Pack gives you an AI C-suite inside Hermes. You say what your business needs in plain words, and the pack turns it into a plan — it works out which seat should own each job (money, legal, marketing, tech, operations, or the chief of staff), assigns it, and checks the work before calling it done. Anything big, priced, or hard to undo stops and asks for your approval first, so you stay the boss. v0.5.0 adds a dashboard tab with a live org chart, task board and approval center, a persistent task registry, delegation you can configure from chat, and a native Desktop plugin. Every answer is ELI5 — plain words a business owner can follow. For developers — stdlib-only, no network calls and no model calls. The plugin routes and verifies work on your Hermes model, suggests a free model by default, and keeps every task, decision, and run in a local registry. Disclosure — Type 1 approval is flag-not-block in v0.5.0: a task flagged approval_required waits for your approval in chat or the dashboard, but the assignment call itself does not block an unapproved task; a blocking pre_tool_call gate is design-only."
 maintainer: tradersurfer93
 tier: community
 category: tools
-requires_hermes: ">=0.21.6"
-version: "0.4.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/tradersurfer/ceo-pack/blob/0d019941743f4f885797874679862204a465ddc3/README.md
+image: https://raw.githubusercontent.com/tradersurfer/ceo-pack/0d019941743f4f885797874679862204a465ddc3/assets/ceo-pack-cover-v040.jpg
+screenshots:
+  - https://raw.githubusercontent.com/tradersurfer/ceo-pack/0d019941743f4f885797874679862204a465ddc3/assets/readme/ceo-pack-dashboard-org.png
+  - https://raw.githubusercontent.com/tradersurfer/ceo-pack/0d019941743f4f885797874679862204a465ddc3/assets/readme/ceo-pack-dashboard-board.png
+readme: true
+platforms: []
+known_issues:
+  - Type 1 approval is flag-not-block in v0.5.0: a task flagged approval_required waits for owner approval in chat or the dashboard, but ceo_task_assign does not block an unapproved task; a blocking pre_tool_call gate is design-only.
+  - Plugins are per-profile: install in the default profile (or the profile you work in); ceo-pack does not appear in other profiles.
+  - The Desktop page needs a full Desktop app restart after updating (the shell syncs the desktop file at startup, not on reload); the gateway must also restart for live seat times.
+  - No ceo_task_complete tool yet; ceo_assign does not track duplicates; ceo_task_create has no due-date field (use ceo_assign for dated work).
+version: "0.5.0"
 capabilities:
   provides_tools:
     - ceo_brief
@@ -32,6 +36,13 @@ capabilities:
     - ceo_performance_check
     - ceo_status_check
     - ceo_roster
+    - ceo_task_create
+    - ceo_task_status
+    - ceo_task_list
+    - ceo_task_approve
+    - ceo_task_assign
+    - ceo_run_create
+    - ceo_run_status
   provides_hooks:
     - post_tool_call
   provides_middleware: []

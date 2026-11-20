@@ -66,3 +66,26 @@ def test_compaction_fences_stale_observer_and_keeps_replay_digests(store, monkey
         store.webhook_deliveries.publish(epoch=epoch, record=replace(
             claimed, value={**claimed.value, 'state': 'settled'}))
     assert store.webhook_deliveries.get(WebhookLedger.ORIGIN, proposed.origin_id) == compacted
+
+
+def test_closed_writer_never_initializes_a_recreated_recipient(store):
+    from persistence import StoreReplaced
+    from persistence.sqlite import _registry
+    store.sessions.create(NewSession(session_id='recipient-chat', source='cli'))
+    epoch = store.runtime.begin_epoch(instance_id='recipient-owner')
+    pin = store.webhook_deliveries.capture_incarnation()
+    home = store.scope.profile_dir
+    _registry.close_all_under(home)
+    moved = home.with_name(home.name + '-retired')
+    home.rename(moved)
+    home.mkdir()
+    try:
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
+            store.webhook_deliveries.require_incarnation(pin)
+        with pytest.raises((AuthorityRefusal, StoreReplaced)):
+            store.admissions.admit(epoch=epoch, principal_id='bot', session_id='recipient-chat',
+                request_id='old-obligation', payload={'text': 'must not enter replacement'}, incarnation=pin)
+        assert not (home / 'state.db').exists()
+    finally:
+        home.rename(home.with_name(home.name + '-refused'))
+        moved.rename(home)

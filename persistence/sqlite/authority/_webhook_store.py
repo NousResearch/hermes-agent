@@ -59,6 +59,7 @@ def publish(conn, *, epoch, change, native, claim, gate):
     value = dict(change.value)
     if value.get('origin_id') != change.origin_id:
         raise AuthorityRefusal('invalid_params')
+    prior = {}
     if raw:
         prior = json.loads(raw[0])
         if prior.get('payload_compacted_at'):

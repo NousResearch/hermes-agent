@@ -5,7 +5,7 @@ import json
 
 from persistence.authority.admissions import AdmissionGate, raise_gate
 from persistence.authority.webhooks import StoreIncarnation, WebhookLedger, WebhookRecord
-from persistence.core.errors import AuthorityRefusal, StoreReplaced
+from persistence.core.errors import AuthorityRefusal
 from .._backend import register_repository
 from ._runtime import _epoch, refused
 from . import _webhook_store as store
@@ -88,12 +88,16 @@ class SQLiteWebhookDeliveryRepository:
                 return store.capture(holder, conn)
 
     def require_incarnation(self, expected: StoreIncarnation) -> None:
-        try:
-            with refused():
-                holder = self._store.holder()
-                holder._execute_write(lambda conn: store.require_incarnation(holder, conn, expected))
-        except StoreReplaced:
-            raise AuthorityRefusal('admission_conflict') from None
+        with refused():
+            # The expected proof names an already-open writer. A registry sweep
+            # must not reacquire/initialize a replacement before this check.
+            if self._store._held is None:
+                raise AuthorityRefusal('admission_conflict')
+            holder = self._store.holder(reacquire=False)
+            with holder._lock:
+                if holder._conn is None:
+                    raise AuthorityRefusal('admission_conflict')
+                store.require_incarnation(holder, holder._conn, expected)
 
 
 register_repository('webhook_deliveries', SQLiteWebhookDeliveryRepository, {'webhook_delivery_fences': True})

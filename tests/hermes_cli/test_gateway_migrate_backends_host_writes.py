@@ -203,6 +203,39 @@ def test_existing_env_is_private_before_the_first_secret_is_written(tmp_path, mo
     assert modes == [0o600, 0o600] and stat.S_IMODE(env.stat().st_mode) == 0o600
 
 
+@pytest.mark.platforms("linux", "macos")
+def test_the_staged_env_copy_is_private_from_creation_to_rename_over_a_world_readable_env(tmp_path, monkeypatch):
+    """The migration's checked write of a 0644 .env: the staged copy that receives the new passwords and
+    signing key is never readable by group or others, from its first byte to its rename into place."""
+    import hashlib
+    from hermes_cli import config
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    env = tmp_path / ".env"
+    env.write_text("OPENAI_API_KEY=x\n", encoding="utf-8")
+    os.chmod(env, 0o644)
+    seen: list[tuple[str, int]] = []
+    real_save, real_publish = config.save_env_value, host_module._publish
+
+    def save(key, value, env_path=None):
+        seen.append(("before " + key, stat.S_IMODE(Path(env_path).stat().st_mode)))
+        real_save(key, value, env_path=env_path)
+        seen.append(("after " + key, stat.S_IMODE(Path(env_path).stat().st_mode)))
+
+    def publish(staged, path):
+        seen.append(("rename", stat.S_IMODE(staged.stat().st_mode)))
+        return real_publish(staged, path)
+
+    monkeypatch.setattr(config, "save_env_value", save)
+    monkeypatch.setattr(host_module, "_publish", publish)
+    SystemHost(tmp_path).set_env({"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "t2-throwaway-pw"},
+                                 expect=hashlib.sha256(env.read_bytes()).hexdigest())
+
+    assert [label for label, _ in seen] == ["before HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+                                            "after HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "rename"]
+    assert all(mode & 0o077 == 0 for _, mode in seen), seen
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600 and "t2-throwaway-pw" in env.read_text(encoding="utf-8")
+
+
 def test_a_live_hand_started_backend_is_found_only_by_a_backend_command_line_on_the_port(tmp_path, monkeypatch):
     from hermes_cli.gateway_migrate_backends import BackendItem
 

@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.auxiliary_client import call_llm
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.message_metadata import DATA_USE
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
@@ -290,9 +290,13 @@ def _merge_slot_extra_body(slot_extra_body: Any, caller_extra_body: Any) -> Any:
     return caller_extra_body or dict(slot_extra_body)
 
 
-def _agent_cache_opts(agent: Any) -> tuple[Any, Any]:
-    """The live agent's ``(_cache_disabled, _cache_ttl)``; ``(None, None)`` without an agent."""
-    return (None, None) if agent is None else (getattr(agent, "_cache_disabled", None), getattr(agent, "_cache_ttl", None))
+def _agent_cache_opts(agent: Any) -> tuple[Any, Any, bool]:
+    """The live agent's ``(_cache_disabled, _cache_ttl, _cache_ttl_auto)``; ``(None, None, False)``
+    without an agent. ``auto`` rides with the tier so the per-destination clamp matches the main loop."""
+    if agent is None:
+        return None, None, False
+    return (getattr(agent, "_cache_disabled", None), getattr(agent, "_cache_ttl", None),
+            bool(getattr(agent, "_cache_ttl_auto", False)))
 
 
 def _with_cache_disabled(runtime: dict[str, Any], cache_disabled: Any) -> dict[str, Any]:
@@ -333,7 +337,7 @@ def _touch_fanout_progress(agent: Any, description: str) -> None:
 
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]], runtime: dict[str, Any], *, cache_disabled: bool | None = None,
-    cache_ttl: str | None = None,
+    cache_ttl: str | None = None, cache_ttl_auto: bool = False,
 ) -> list[dict[str, Any]]:
     """Apply cache_control to an advisor/aggregator request when its route honors it.
 
@@ -365,7 +369,8 @@ def _maybe_apply_moa_cache_control(
         # None → "5m"; cache-disabled routes already returned above. Envelope routes
         # reject part-level markers in tool_result.content[].
         return apply_anthropic_cache_control(
-            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
+            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url,
+                                                     auto=cache_ttl_auto),
             native_anthropic=native_layout,
             tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
         )
@@ -414,7 +419,8 @@ def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[st
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
-    cache_disabled: bool | None = None, cache_ttl: str | None = None, agent: Any = None,
+    cache_disabled: bool | None = None, cache_ttl: str | None = None, cache_ttl_auto: bool = False,
+    agent: Any = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model; return ``(label, text, accounting)``. Never raises:
     a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool."""
@@ -434,7 +440,8 @@ def _run_reference(
         trimmed = _trim_messages_for_reference(
             messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
         )
-        trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
+        trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl,
+                                                 cache_ttl_auto=cache_ttl_auto)
 
         # Providers may gate premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's user-initiated request headers.
@@ -642,7 +649,7 @@ def _run_references_parallel(
     interrupted = False
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
-    cache_disabled, cache_ttl = _agent_cache_opts(agent)
+    cache_disabled, cache_ttl, cache_ttl_auto = _agent_cache_opts(agent)
 
     def collect(done: set[Any]) -> None:
         nonlocal completed
@@ -676,6 +683,7 @@ def _run_references_parallel(
                     context_length_cache=ctx_len_cache,
                     cache_disabled=cache_disabled,
                     cache_ttl=cache_ttl,
+                    cache_ttl_auto=cache_ttl_auto,
                     agent=agent,
                 )
             ] = idx
@@ -1077,6 +1085,9 @@ class MoAChatCompletions:
         self._accounting_lock = threading.Lock()
         # Real aggregator slot so cost accounting prices the acting turn at its model.
         self.last_aggregator_slot: Any = None
+        # Resolved aggregator destination + the cache facts of the payload sent (prompt-cache clock).
+        self.last_aggregator_route: Any = None
+        self.last_aggregator_attempt: Any = None
         # Full-turn trace parts from a cache-MISS create(), flushed by consume_and_save_trace.
         self._pending_trace: Any = None
         # Per-advisor metrics for observability hooks; NOT consumed (post_api_request
@@ -1187,13 +1198,13 @@ class MoAChatCompletions:
             # copies, so the prepared state stays canonical. Tri-state: only pass a bool when a live agent
             # snapshot exists. See #76085.
             _agent = getattr(self, "_agent", None)
-            cache_disabled, cache_ttl = _agent_cache_opts(_agent)
+            cache_disabled, cache_ttl, cache_ttl_auto = _agent_cache_opts(_agent)
             # Agent TTL + stable system prefix so MoA does not regress 1h → 5m.
             agg_messages, tools = plan_cache_sections_for_destination(
                 planning_messages, tools, provider=agg_runtime.get("provider") or "",
                 base_url=agg_runtime.get("base_url") or "", api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "", cache_disabled=cache_disabled, cache_ttl=cache_ttl,
-                static_system_prefix=getattr(_agent, "_cached_system_prompt_static", None),
+                cache_ttl_auto=cache_ttl_auto, static_system_prefix=getattr(_agent, "_cached_system_prompt_static", None),
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))
@@ -1213,6 +1224,10 @@ class MoAChatCompletions:
         agg_messages, tools = self._plan_aggregator_cache(
             prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
         )
+        # The prompt-cache clock reads the resolved destination and the payload actually sent, not the
+        # configured slot (which has no base_url/api_mode) or the virtual preset's request.
+        from agent.prompt_cache_clock import attempt_facts
+        self.last_aggregator_route = {k: agg_runtime.get(k) for k in ("provider", "model", "base_url", "api_mode")}
         trace = self._pending_trace
         if trace is not None:
             trace["aggregator_label"] = _slot_label(aggregator)
@@ -1241,6 +1256,7 @@ class MoAChatCompletions:
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        self.last_aggregator_attempt = attempt_facts({"messages": agg_messages, "tools": tools, "extra_body": agg_extra_body})
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1255,6 +1271,8 @@ class MoAChatCompletions:
                 "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
             )
             agg_messages = retry_messages
+            self.last_aggregator_attempt = attempt_facts({"messages": agg_messages, "tools": tools,
+                                                          "extra_body": agg_extra_body})
             agg_response = send(messages=agg_messages)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
@@ -1497,6 +1515,14 @@ class MoAClient:
     @property
     def last_aggregator_slot(self) -> Any:
         return getattr(self.chat.completions, "last_aggregator_slot", None)
+
+    @property
+    def last_aggregator_route(self) -> Any:
+        return getattr(self.chat.completions, "last_aggregator_route", None)
+
+    @property
+    def last_aggregator_attempt(self) -> Any:
+        return getattr(self.chat.completions, "last_aggregator_attempt", None)
 
     def consume_and_save_trace(self, session_id: Any = None, aggregator_output_fallback: Any = None) -> None:
         return self.chat.completions.consume_and_save_trace(session_id, aggregator_output_fallback=aggregator_output_fallback)

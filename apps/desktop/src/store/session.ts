@@ -33,6 +33,12 @@ import { clearUnreadOnOpen } from './session-unread-remote'
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
 
+export interface ComposerModelSelection {
+  model: string
+  provider: string
+  source: ComposerModelSource
+}
+
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
@@ -602,7 +608,7 @@ export function resolveComposerSessionKey(
  *
  *  Two reasons the server drops a row we must keep:
  *
- *  1. A brand-new session's first user message isn't flushed to the SessionDB
+ *  1. A brand-new session's first user message isn't flushed to the session store
  *     until its turn is persisted, so `listSessions(min_messages=1)` skips
  *     sessions that are mid-first-response. Because every `message.complete`
  *     triggers a full refresh, a hard replace makes concurrent new chats vanish
@@ -1483,10 +1489,12 @@ function rescopeComposerSelection(nextScope: string | null): void {
 /** Publish an exact registry route before active-profile effects can persist a
  * forced default. A registry id is authority even while its descriptive
  * HermesConnection lookup is unavailable. */
+/** The composer storage scope of the (connection, profile) owner. */
+export const composerScopeForOwner = (connectionId: string, profile: string): string =>
+  `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
+
 export function setComposerSelectionOwner(connectionId: string, profile: string): void {
-  rescopeComposerSelection(
-    `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
-  )
+  rescopeComposerSelection(composerScopeForOwner(connectionId, profile))
 }
 
 /** Fail closed while a successful legacy profile activation has no descriptor. */
@@ -1562,7 +1570,7 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // list refresh — so the green dot survives an app restart, and a session that
 // finished while the app was CLOSED still comes up unread. The explicit
 // Mark-as-unread toggle rides the BACKEND watermark instead
-// (SessionDB.set_session_read, session-unread-remote.ts). Written by
+// (the store's sessions.set_read, session-unread-remote.ts). Written by
 // session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
@@ -1738,6 +1746,48 @@ export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 
   return source === 'default' || source === 'manual' ? source : ''
+}
+
+/** The owner's sticky choice, not the runtime/fallback currently painted in the pill. */
+export const getComposerModelSelection = (): ComposerModelSelection => ({
+  model: storedComposerString(COMPOSER_MODEL_KEY) ?? '',
+  provider: storedComposerString(COMPOSER_PROVIDER_KEY) ?? '',
+  source: getCurrentModelSource()
+})
+
+/** Which owner's saved pick the composer reads now; fences a write that outlives an await. */
+export const getComposerSelectionScope = (): null | string => composerSelectionScope
+
+export const restoreComposerModelSelection = (): void => {
+  const selection = getComposerModelSelection()
+
+  if (selection.model !== $currentModel.get() || selection.provider !== $currentProvider.get()) {
+    // The wire level described the outgoing chat's route.
+    $currentReasoningEffortWire.set('')
+  }
+
+  setCurrentModelTransient(selection.model)
+  setCurrentProviderTransient(selection.provider)
+}
+
+/** A saved pick that turned out not to apply hands new chats back to the Settings default, rather than
+ *  guess which earlier pick to restore. In the storage of the owner `scope` that saved it, which the answer
+ *  can outlive, and only while that exact route is still its saved pick. */
+export const releaseComposerModelSelection = (route: { model: string; provider: string }, scope: null | string) => {
+  if (
+    scope === null ||
+    storedString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`) !== 'manual' ||
+    storedString(`${COMPOSER_MODEL_KEY}${scope}`) !== route.model ||
+    (storedString(`${COMPOSER_PROVIDER_KEY}${scope}`) ?? '') !== route.provider
+  ) {
+    return
+  }
+
+  if (scope === composerSelectionScope) {
+    setCurrentModelSource('default')
+  } else {
+    persistString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`, 'default')
+  }
 }
 
 // Reactive mirror of the persisted source so UI (the composer pill's

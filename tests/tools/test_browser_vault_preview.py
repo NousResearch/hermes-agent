@@ -38,8 +38,10 @@ class PreviewWindow:
         expression = request["expression"]
         if "location.href" in expression:
             result = self.origin + "/login"
-        elif "data-hermes-vault-slot\", nonce" in expression:
+        elif 'setAttribute("data-hermes-vault-slot-" + nonce' in expression:
             result = json.dumps(CONTROLS)
+        elif "reverted" in expression:  # read-back pass: the page kept the value
+            result = json.dumps({"landed": 1, "reverted": 0, "missing": []})
         else:
             result = json.dumps({"filled": 1})
         return json.dumps({"success": True, "result": result})
@@ -83,8 +85,11 @@ def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
         "action": "fill", "handle": meta.id, "target": "preview"}, InlineToolContext(effective_task_id="t"))
     result = json.loads(raw)
     assert result["success"] is True and result["filled_fields"] == 1 and result["origin"] == ORIGIN, result
-    assert window.ops() == ["open", "evaluate", "evaluate", "evaluate", "close"]
-    assert json.dumps(password) in window.calls[-2]["expression"]
+    # inspection, origin pre-check, fill, read-back polls, unstamp — all on the one pinned tab
+    ops = window.ops()
+    assert ops[0] == "open" and ops[-1] == "close" and set(ops[1:-1]) == {"evaluate"} and len(ops) >= 7
+    secret_calls = [c["expression"] for c in window.calls if json.dumps(password) in c.get("expression", "")]
+    assert secret_calls  # the fill and the read-back both carry the value; neither leaks it
     assert password not in raw
     # A page can echo its input into its text, an element label or an error.
     echoed = json.dumps({"success": True, "text": password, "elements": [{"label": password}], password: 1})

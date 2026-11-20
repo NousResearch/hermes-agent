@@ -8,12 +8,13 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_authority import LiveSession
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
-    get_session_admission, recover_session_inputs, register_worker_execution)
+from persistence.core.errors import AuthorityRefusal
+from persistence.workers.executions import WorkerKind
+from tests.fixtures.storage_seed import seed_session
 
 
 def session(owner):
-    owner.db.create_session('s', source='telegram')
+    seed_session(owner.persistence, 's', 'telegram')
     owner.sessions['s'] = LiveSession(SessionSource(Platform.TELEGRAM, 'chat'), 'route')
     return SessionRef(owner.profile_id, 's')
 
@@ -21,22 +22,22 @@ def session(owner):
 @pytest.mark.asyncio
 async def test_busy_head_keeps_api_waiter_until_the_worker_finish_answers_it(owner, monkeypatch):
     """session_busy is transient: an API turn queued behind a compute worker must get its answer
-    once the worker finishes, not RuntimeStoreError('session_busy') (HTTP 409) for accepted work."""
+    once the worker finishes, not AuthorityRefusal('session_busy') (HTTP 409) for accepted work."""
     from gateway.session_worker import worker_request
-    owner.db.create_session('s', source='api_server')
+    seed_session(owner.persistence, 's', 'api_server')
     owner.sessions['s'] = LiveSession(SessionSource(Platform.API_SERVER, 'chat'), 'route')
     ref = SessionRef(owner.profile_id, 's')
-    register_worker_execution(owner.db, epoch=owner.epoch, execution_id='worker', session_id='s',
-        generation=0, kind='compute', adoption_secret='private')
-    row = admit_session_input(owner.db, epoch=owner.epoch, principal_id='api', session_id='s',
-                              request_id='queued', payload={'text': 'next'})
-    waiter = owner.waiters.setdefault(row['admission_id'], asyncio.get_running_loop().create_future())
+    owner.persistence.worker_executions.register(epoch=owner.epoch, execution_id='worker', session_id='s',
+        generation=0, kind=WorkerKind.COMPUTE, adoption_secret='private')
+    row, _ = owner.persistence.admissions.admit(epoch=owner.epoch, principal_id='api', session_id='s',
+                                                request_id='queued', payload={'text': 'next'})
+    waiter = owner.waiters.setdefault(row.admission_id, asyncio.get_running_loop().create_future())
     async def execute(authority, ref, row):
         return 'done'
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
     monkeypatch.setattr('gateway.session_api_turn.check_api_turn', lambda *a, **k: None)
     await owner._drain(ref)
-    assert get_session_admission(owner.db, admission_id=row['admission_id'])['status'] == 'queued'
+    assert owner.persistence.admissions.get(admission_id=row.admission_id).status == 'queued'
     # Process identity is independent of this test's real receipt and scheduler path.
     monkeypatch.setattr('gateway.session_worker._claim', lambda *args: 'private')
     connection = SimpleNamespace(authority=owner, actor=SessionActor('human', owner.profile_id,
@@ -45,7 +46,7 @@ async def test_busy_head_keeps_api_waiter_until_the_worker_finish_answers_it(own
         execution_id='worker', generation=0, pid=1, birth=1, secret='private', epoch=owner.epoch,
         sequence=1, operation='execution.finish', payload={}), operation='persist')
     await owner.sessions['s'].task
-    assert get_session_admission(owner.db, admission_id=row['admission_id'])['outcome'] == 'completed'
+    assert owner.persistence.admissions.get(admission_id=row.admission_id).outcome == 'completed'
     assert waiter.done() and waiter.exception() is None, f'accepted work reported as {waiter.exception()!r}'
     assert waiter.result() == 'done'
 
@@ -55,21 +56,21 @@ async def test_unknown_managed_execution_releases_all_observers_without_false_se
     from gateway import session_managed_worker
     lost_execution = getattr(session_managed_worker, 'ManagedExecutionUnknown', asyncio.CancelledError)
     ref = session(owner)
-    rows = [admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
-        request_id=name, payload={'text': name}) for name in ('lost', 'follower')]
-    waiters = [owner.waiters.setdefault(row['admission_id'], asyncio.get_running_loop().create_future()) for row in rows]
+    rows = [owner.persistence.admissions.admit(epoch=owner.epoch, principal_id='human', session_id='s',
+        request_id=name, payload={'text': name})[0] for name in ('lost', 'follower')]
+    waiters = [owner.waiters.setdefault(row.admission_id, asyncio.get_running_loop().create_future()) for row in rows]
     async def execute(authority, ref, row):
-        authority.epoch = begin_runtime_epoch(authority.db, instance_id='recovery')
-        recover_session_inputs(authority.db, epoch=authority.epoch)
+        authority.epoch = authority.persistence.runtime.begin_epoch(instance_id='recovery')
+        authority.persistence.admissions.recover(epoch=authority.epoch)
         raise lost_execution('worker lost')
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
     await owner._drain(ref)
     for waiter in waiters:
         assert waiter.done()
-        with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+        with pytest.raises(AuthorityRefusal, match='unknown_execution'):
             await waiter
     assert owner.sessions['s'].event_stream.execution == {}
-    assert [get_session_admission(owner.db, admission_id=row['admission_id'])['status'] for row in rows] == ['unknown', 'queued']
+    assert [owner.persistence.admissions.get(admission_id=row.admission_id).status for row in rows] == ['unknown', 'queued']
 
 
 @pytest.mark.asyncio
@@ -79,8 +80,8 @@ async def test_a_lost_execution_drops_its_deferred_reset(owner, monkeypatch):
     must not survive it and fire, with a stale session entry, after the next settled turn."""
     from gateway.session_managed_worker import ManagedExecutionUnknown
     ref = session(owner)
-    admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
-                        request_id='lost', payload={'text': 'lost'})
+    owner.persistence.admissions.admit(epoch=owner.epoch, principal_id='human', session_id='s',
+                                       request_id='lost', payload={'text': 'lost'})
     fired = []
 
     async def stale_reset():
@@ -88,8 +89,8 @@ async def test_a_lost_execution_drops_its_deferred_reset(owner, monkeypatch):
 
     async def execute(authority, ref, row):
         authority.deferred_resets['route'] = stale_reset
-        authority.epoch = begin_runtime_epoch(authority.db, instance_id='recovery')
-        recover_session_inputs(authority.db, epoch=authority.epoch)
+        authority.epoch = authority.persistence.runtime.begin_epoch(instance_id='recovery')
+        authority.persistence.admissions.recover(epoch=authority.epoch)
         raise ManagedExecutionUnknown('worker lost')
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
     await owner._drain(ref)

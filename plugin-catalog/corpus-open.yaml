@@ -1,0 +1,43 @@
+name: corpus-open
+title: Corpus Open
+repo: https://github.com/teakesdev/corpus-open
+sha: 6694628ff017b58b432e77485885e86128f5ff19
+version: "0.6.0"
+description: "For pro se and self-represented litigants: people handling their own lawsuit or court case without a lawyer. Legal citation checking for AI drafts. Under every reply, a citation guard lists each case, statute and code cite with what CourtListener (case law), Corpus (statutes from all 50 states) and the person's own case file hold at it, and flags a fake (hallucinated) citation before it reaches a court filing; a cite that cannot exist is caught with no lookup at all. A quote guard refuses a write that misquotes a filed document or cites the wrong page. Each session opens with the case's court deadlines, and an intake skill interviews the person one plain question at a time. Twelve tools keep a local litigation case folder (labeled facts with sources, evidence, deadlines, brief check, a packet for an attorney deciding whether to take the case, court rules, hash verification), /matter shows it, and Hermes Desktop gets a Case pane. Disclosure — cite checks are on by default for every case and send bare citations (never case text) to CourtListener (only once a key is set) and corpuslaw.us; each request is logged in the case folder, and checks can be turned off per case or everywhere (citation_guard local). Case files stay on the computer. The CourtListener key is read through Hermes's secret settings, falling back to the key the kit's own matter.py saves in ~/.config/matter-kit. On a session's first turn it adds the case's deadlines to the agent's context, and it asks for Hermes approval before shell or file commands that look like they change a registered case document. /matter watch on writes a deadline-check script into Hermes's scripts folder and prints a cron command for you to run; it schedules nothing itself. PDFs are read with the local pdftotext program when installed. Not a lawyer and not legal advice."
+maintainer: teakesdev
+tier: community
+category: tools
+docs_url: https://github.com/teakesdev/corpus-open#readme
+requires_hermes: ">=0.21.6"
+readme: true
+image: https://raw.githubusercontent.com/teakesdev/corpus-open/6694628ff017b58b432e77485885e86128f5ff19/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/teakesdev/corpus-open/6694628ff017b58b432e77485885e86128f5ff19/docs/media/01-matter-check.png
+  - https://raw.githubusercontent.com/teakesdev/corpus-open/6694628ff017b58b432e77485885e86128f5ff19/docs/media/02-quote-guard-refused.png
+  - https://raw.githubusercontent.com/teakesdev/corpus-open/6694628ff017b58b432e77485885e86128f5ff19/docs/media/03-matter-demo.png
+  - https://raw.githubusercontent.com/teakesdev/corpus-open/6694628ff017b58b432e77485885e86128f5ff19/docs/media/04-deadlines.png
+  - https://raw.githubusercontent.com/teakesdev/corpus-open/6694628ff017b58b432e77485885e86128f5ff19/docs/media/05-case-pane.png
+known_issues:
+  - Looking up case citations needs a free CourtListener key. Statute and code citations need none, up to Corpus's 250 lookups a month from one network; a free Corpus key raises that.
+  - It checks that a source exists at a citation, not that the source says what a draft claims. It is not legal advice.
+platforms: []
+capabilities:
+  provides_tools:
+    - matter_status
+    - matter_fact_add
+    - matter_fact_list
+    - matter_deadline_list
+    - matter_trigger_list
+    - matter_trigger_fire
+    - matter_packet_render
+    - matter_brief_check
+    - matter_rules_show
+    - matter_cite_check
+    - matter_verify
+    - matter_ingest_path
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

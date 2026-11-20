@@ -74,11 +74,33 @@ test('ticket minting runs the payload python, never the CLI shim', () => {
     shim: '/p/bin/hermes'
   }
 
-  const runtime = payloadTicketRuntime(payload)
+  const runtime = payloadTicketRuntime(payload, {}, 'win32')
 
   assert.equal(runtime.ticketCommand, payload.storePython)
   assert.notEqual(runtime.ticketCommand, payload.shim)
   assert.deepEqual(runtime.ticketEnv, { PYTHONPATH: payloadPythonPath(payload) })
+})
+
+test('the ticket bridge caches bytecode where the POSIX bin launchers do, outside the bundle', () => {
+  const payload = {
+    storePython: '/App.app/p/tools/python',
+    repoDir: '/App.app/p/repo',
+    sitePackages: '/App.app/p/site'
+  }
+
+  const prefix = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform = 'darwin') =>
+    payloadTicketRuntime(payload, env, platform).ticketEnv.PYTHONPYCACHEPREFIX
+
+  assert.equal(prefix({ HOME: '/Users/u' }), '/Users/u/.cache/hermes-pycache')
+  assert.equal(prefix({ HOME: '/home/u' }, 'linux'), '/home/u/.cache/hermes-pycache')
+  assert.equal(prefix({ HOME: '/Users/u', XDG_CACHE_HOME: '/Users/u/xdg' }), '/Users/u/xdg/hermes-pycache')
+  assert.equal(prefix({ HOME: '/Users/u', PYTHONPYCACHEPREFIX: '/Users/u/mine' }), '/Users/u/mine')
+  assert.equal(
+    prefix({ HOME: '/Users/u', PYTHONPYCACHEPREFIX: '', XDG_CACHE_HOME: '' }),
+    '/Users/u/.cache/hermes-pycache'
+  )
+  // A baked Windows payload reads its own pycs from a read-only tree, as its launcher does.
+  assert.equal(prefix({ LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, 'win32'), undefined)
 })
 
 // ─── update channel helpers ─────────────────────────────────────────

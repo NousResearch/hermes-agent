@@ -10,7 +10,9 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tools.file_tools import read_file_tool
 
 
@@ -145,26 +147,27 @@ def test_retained_bytes_count_toward_reclaim_and_full_compression_still_progress
 
 
 def test_retention_is_in_durable_prune_payload_and_rolls_back_on_write_failure(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("retention", source="cli")
+        seed_session(store, "retention", "cli")
         body = _body()
         rows = _history(_pair("instructions", "read_file", {"path": "/project/AGENTS.md"}, body))
-        db.append_messages_batch("retention", rows)
+        seed_messages(store, "retention", *rows)
         c = _compressor()
-        c._session_db, c._session_id = db, "retention"
-        messages = db.get_messages_as_conversation("retention")
-        with patch.object(db, "rewrite_pruned_rows", side_effect=RuntimeError("synthetic write failure")):
+        c._session_db, c._persistence, c._session_id = store, store, "retention"
+        messages = conversation(store, "retention")
+        with patch.object(store.messages, "rewrite_pruned_rows", side_effect=RuntimeError("synthetic write failure")) as rewrite:
             same, count = c.prune_tool_results_only(messages, current_tokens=120000)
+        rewrite.assert_called_once()
         assert same is messages and count == 0
-        assert db.get_messages_as_conversation("retention") == messages
+        assert conversation(store, "retention") == messages
         pruned, count = c.prune_tool_results_only(messages, current_tokens=120000)
         assert count > 0
-        durable = db.get_messages_as_conversation("retention")
+        durable = conversation(store, "retention")
         assert _result(durable, "instructions") == body
         assert [row["content"] for row in durable] == [row["content"] for row in pruned]
     finally:
-        db.close()
+        store.close()
 
 
 @pytest.mark.parametrize("whole_call", [False, True])

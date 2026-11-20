@@ -158,3 +158,27 @@ def test_concurrent_load_waits_for_the_first_load(tmp_path, monkeypatch):
         for name in tuple(sys.modules):
             if name.startswith("test_plugin_loader_package."):
                 sys.modules.pop(name, None)
+
+
+def test_parent_shells_run_from_their_own_package_folders(tmp_path, monkeypatch):
+    """A parent package nested below another one (``hermes_agent.plugins.memory`` once ``plugins`` moves)
+    runs its own ``__init__.py``, found through the import system, not a folder under ``plugins/``."""
+    memory = tmp_path / "test_loader_root" / "plugins" / "memory"
+    (memory / "demo").mkdir(parents=True)
+    for package in (memory.parents[1], memory.parent, memory):
+        (package / "__init__.py").write_text("SHELL = __file__\n", encoding="utf-8")
+    (memory / "demo" / "__init__.py").write_text("LOADED = True\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    parents = ("test_loader_root", "test_loader_root.plugins", "test_loader_root.plugins.memory")
+
+    try:
+        module = load_plugin_module(f"{parents[-1]}.demo", memory / "demo", parents=parents,
+                                    logger=logging.getLogger(__name__))
+
+        assert module is not None and module.LOADED is True
+        assert [getattr(sys.modules.get(name), "SHELL", None) for name in parents] == [
+            str(memory.parents[1] / "__init__.py"), str(memory.parent / "__init__.py"), str(memory / "__init__.py")]
+    finally:
+        for name in tuple(sys.modules):
+            if name.partition(".")[0] == "test_loader_root":
+                sys.modules.pop(name, None)

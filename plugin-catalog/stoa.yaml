@@ -1,22 +1,22 @@
 name: stoa
 title: Stoa
 repo: https://github.com/jarrett-del/hermes-stoa
-sha: 9215f6ba5b6df357f0d41faeb49d89e8924342bd
-description: "The CRM for Hermes Agent, a lightweight one you talk to: map a market, find the leads, run the pipeline and see it through to cash. Hermes runs it and you approve: what it finds waits for your yes or no, and every change can be taken back. Optional paid lookups and network calls happen only with your own keys; the README's Disclosure section lists everything it reads, writes and sends. Disclosure — optional network calls to api.peopledatalabs.com (paid per result, capped), api.exa.ai and public-api.granola.ai only when their keys are set; dictation on the page is the browser's own speech recognition (in Chrome, Google's service) and runs only while its button is on; reads the notes folder, .csv and .tsv files in its imports folder, a folder you name or the working directory, and a file you drop on the page; writes only inside its own data folder, including daily backup copies of each pipeline; scheduled jobs reach the desk only when you add cron to its channels setting, and then change only what its autonomy setting allows (by default they only log what they find and leave every other change waiting for your approval; \"Run it\" lets them make any change); the automations offered under /blueprint run only when you switch them on, and the Google Sheet ones use your own Google connection in Hermes; invoices and payments are records kept on the desk, never sent or charged; a Slack button works only for the person a card was posted for or the people listed in slack_users; with allow_gateway_injection a button click queues one agent turn in the thread; the page's dock sends what you type to a visible conversation of its own. Hermes Agent Plugin Hackathon entry."
+sha: ab1e6a393a4120b431f679848e896e9b71b8b3e4
+description: "The CRM for Hermes Agent, a lightweight one you talk to: map a market, find the leads, run the pipeline, see it through to cash, and read it back in reports Stoa counts itself. Hermes runs it and you approve: what it finds waits for your yes or no, and every change can be taken back. Optional paid lookups and network calls happen only with your own keys; the README's Disclosure section lists everything it reads, writes and sends. Disclosure — optional network calls to api.peopledatalabs.com (paid per result, capped), api.exa.ai, public-api.granola.ai and api.fireflies.ai only when their keys are set (from Granola and Fireflies it reads summaries, never a transcript); dictation on the page is the browser's own speech recognition (in Chrome, Google's service) and runs only while its button is on; reads call notes (Markdown, text, Word, subtitle and web-page files) in the notes folders you name and up to three folders below them, handing a PDF there to the agent to read; a connector of Hermes's own that you name as holding notes is read by the agent with that connector's tools, never by the plugin; reads .csv and .tsv files in its imports folder, a folder you name or the working directory, and a file you drop on the page; writes only inside its own data folder, including daily backup copies of each pipeline, and deletes outside it only Hermes's own copy of a file you dropped in its talk box (in the profile's attachments or images folder), seven days after it was dropped or the days you set, or when you press Remove under Setup: never a file from another chat; scheduled jobs reach the desk only when you add cron to its channels setting, and then change only what its autonomy setting allows (by default they only log what they find and leave every other change waiting for your approval; \"Run it\" lets them make any change); the automations offered under /blueprint run only when you switch them on, and the Google Sheet ones use your own Google connection in Hermes; invoices and payments are records kept on the desk, never sent or charged; a Slack button works only for the person a card was posted for or the people listed in slack_users; with allow_gateway_injection a button click queues one agent turn in the thread; the page's dock, and the market map's research, each send what you type or press to a visible conversation of their own, on the model you pick for it from Hermes's own list; two hooks (post_api_request, post_llm_call) count the model calls, tokens and Hermes's estimated cost of turns that work on a market map, counts only, with no prompt or reply read or kept; a file you drop on the page's talk box (other than a CSV, which the desk reads itself) is handed to Hermes with your next message through the gateway's own attach calls, as the app's chat box does, and Hermes keeps a copy of it until Stoa removes it as said above; reports are counted by the plugin from its own database with no model, and only when you press Ask Hermes about a report, or ask in a chat, do its figures (counts and totals, no list of people) go to the model; pressing Test beside a key makes one small request to that key's service; Look for a folder checks a few usual folders for notes when pressed, counting files and opening none. Hermes Agent Plugin Hackathon entry."
 maintainer: jarrett-del
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.15.0"
+version: "0.26.3"
 platforms: [linux, macos]
-image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/banner.jpg
+image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-today.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-pipeline.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-searches.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-cash.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-undo.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-market.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/desktop-market.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/desktop-market-priority.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/desktop-map-facts.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/desktop-today.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/desktop-pipeline.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/ab1e6a393a4120b431f679848e896e9b71b8b3e4/docs/desktop-reports.jpg
 capabilities:
   provides_tools:
     - gtm_pipeline
@@ -31,6 +31,10 @@ capabilities:
     - gtm_contact
     - gtm_invoice
     - gtm_group
-  provides_hooks: []
+    - gtm_report
+  provides_hooks:
+    - post_api_request
+    - post_llm_call
   provides_middleware: []
   requires_env: []
+

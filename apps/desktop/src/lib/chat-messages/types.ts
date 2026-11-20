@@ -17,6 +17,11 @@ export interface TimelinePartMetadata {
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Stored reply a live `text` tail part already shows ahead of its stream (a
+   * reconnect page's body the live row adopted): its raw text and the segment
+   * offset it reaches, so the stream's deltas that repeat it (including ones
+   * past a chunk the reconnect lost) are not drawn twice. */
+  storedTail?: { end: number; text: string }
   /** Stored tool result without a matching assistant call in the loaded page.
    *  Render for history, but never treat it as authoritative Todo state. */
   unpairedStoredToolResult?: boolean

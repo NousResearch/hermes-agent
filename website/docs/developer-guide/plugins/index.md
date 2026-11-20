@@ -312,6 +312,84 @@ documented ABCs instead of internals. The full old-to-new map is the
 [`COMPAT_MANIFEST.md`](https://github.com/NousResearch/hermes-agent/blob/5912ed81ed9/COMPAT_MANIFEST.md)
 from the last commit that shipped the layer.
 
+### `hermes_state` deprecated: use the storage interface
+
+Session storage sits behind a storage interface: typed contracts in `persistence/` and one entry point, `persistence_assembly`. The `SessionDB` class and the `hermes_state_*` modules are removed. For outside plugins, `hermes_state` and `hermes_state_registry` stay as temporary compatibility modules under the [deprecation policy](#deprecation-policy) above. They forward the names in the table below to the storage interface and hold no SQL or database connection of their own.
+
+- The first use of a name from either module warns once per process, naming the replacement and the removal release.
+- The modules are supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
+- Names not in the table are not carried: the old class's mixins and the SQLite backend's own helpers have no public replacement, and `hermes plugins validate` reports an import of one.
+
+| `hermes_state` name | Replacement |
+|---|---|
+| `SessionDB()`, `SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`, `open_persistence(profile_scope(home=path.parent))`; release the handle with `close()` or a `with` block. An agent given a `SessionDB` as `session_db` borrows the handle it holds when the agent is built, so keep that `SessionDB` open for the agent's life: its `close()` releases the handle, and its reopen after `close()` gives the agent no new one |
+| `SessionDB(read_only=True)` | `with open_persistence_reader(profile_scope().profile_dir) as store:` (never creates, migrates or repairs the store) |
+| `AsyncSessionDB(db)` | `store.aio`: the same repositories, awaitable, each call run off the event loop |
+| `DEFAULT_DB_PATH` | `persistence_assembly.store_location(profile_scope())` |
+| `create_session`, `end_session`, `reopen_session` | `store.sessions.create(NewSession(...))`, `store.sessions.end`, `store.sessions.reopen` |
+| `append_message` | `store.messages.append(session_id, NewMessage(...))` |
+| `hermes_state_registry.acquire(db_path=None)`, `release(db)`, `release_or_close(db)` | `open_persistence(profile_scope())` and the handle's `close()`; the stand-in's `acquire` opens a `SessionDB` of its own for each caller and both releases close it |
+| `get_messages` | `store.messages.read_transcript(session_id)`; `as_wire_row()` gives the old dict |
+| `list_gateway_sessions(platform=None, active_only=True)` | `store.sessions.list_gateway_sessions(platform=..., active_only=...)`; `{**e.session.as_session_row(), "last_active": e.last_active}` gives each old dict |
+| `get_messages_as_conversation` | `store.messages.read_conversation(session_id)`; `as_openai_message()` gives each old dict |
+| `get_session` | `store.sessions.get(session_id)`; `as_session_row()` gives the old dict |
+| `list_sessions_rich`, `session_count` | `store.sessions.list_sessions(SessionQuery(...), SessionWindow(...))`, `store.sessions.count_sessions()` |
+| `set_session_title`, `resolve_session_by_title`, `get_next_title_in_lineage` | `store.sessions.set_title`, `store.sessions.resolve_by_title`, `store.sessions.next_title_in_lineage` |
+| `resolve_session_id` | `store.sessions.resolve_id`: the exact id, else the one id the prefix matches |
+| `search_messages` | `store.search.search_messages`, which returns `SearchHit` records |
+| `export_session`, `export_all`, `prune_sessions` | `store.maintenance.export_session`, `store.maintenance.export_all`, `store.maintenance.prune_sessions` |
+| `delete_session`, `clear_messages` | `store.sessions.delete`, `store.messages.replace_transcript(session_id, [], ReplaceMode.DESTRUCTIVE)` |
+| `get_meta`, `set_meta`, `list_meta_prefix` | `store.state_meta.get`, `store.state_meta.set`, `store.state_meta.list_prefix` |
+| `StateDbCorruptError`, `StateDbReplacedError` | `persistence.StoreQuarantined`, `persistence.StoreReplaced` |
+| `SessionCompressionInProgressError`, `DeletedWalGenerationError` | `persistence.CompressionInProgress`, `persistence.DeletedWalGeneration` |
+| `SessionResumeTooLargeError`, `SessionExportTooLargeError` | `persistence.conversation.messages.ResumeTooLarge`, `persistence.ExportTooLarge` |
+| `classify_persistence_error`, `is_sqlite_lock_error`, `is_malformed_db_error` | the same names in `storage_errors` |
+| `apply_wal_with_fallback`, `apply_database_pragmas` | the same names in `sqlite_support`, for a plugin's own SQLite file |
+| `storage_state`, `storage_corrupt_reason` | `persistence_assembly.storage_health(profile_scope()).storage_state()` |
+| `get_hermes_home`, `mkdir_under_hermes_home` | the same names in `hermes_constants` |
+| `format_session_db_unavailable`, `get_last_init_error` | the same names in `storage_user_copy` |
+| `resolved_max_resume_messages`, `resolved_max_export_messages` | the same names in `storage_limits` |
+| `preflight_db_writability`, `read_only_db_uri` | the same names in `sqlite_support`, for a plugin's own SQLite file |
+| `holder_pid_checkable`, `make_user_dir` | `process_identity.holder_pid_checkable`, `hermes_dir_acl.make_user_dir` |
+| `WriterMutexTimeout`, `maintain_after_commit`, `write_site`, `writer_mutex_until`, `note_read_pool_exhausted` | none: the SQLite backend's own writer and read-pool helpers, carried unchanged for the stand-in's life; a store's verbs do their own writes and reads |
+| `divert_session_transcript_jsonl(session_id, messages)` | `session_rescue.divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")` |
+| `session_db`, the `SessionDB` a context engine's `bind_session_state` and `on_session_start` receive | `persistence`, the agent's store handle, passed beside it to a hook that accepts that keyword ([Context engine plugins](../context-engine-plugin.md#session-storage)) |
+
+`NewSession` and `SessionQuery`/`SessionWindow` come from `persistence.conversation.sessions`; `NewMessage` and `ReplaceMode` from `persistence.conversation.messages`. A dashboard route that listed sessions migrates like this:
+
+```python
+# Before
+from hermes_state import SessionDB
+
+db = SessionDB(read_only=True)
+try:
+    rows = db.list_sessions_rich(limit=50)
+finally:
+    db.close()
+
+# After
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence_assembly import open_persistence_reader, profile_scope
+
+with open_persistence_reader(profile_scope().profile_dir) as store:
+    rows = [entry.as_list_row() for entry in store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50))]
+```
+
+[Session Storage](../session-storage.md#common-operations) shows the repositories in use.
+
+#### Turn helpers kept for pinned catalog plugins
+
+The same refactor moved a few turn helpers into `session_rules.turns` and folded `hermes_state_wal` into `sqlite_support`. The catalog's pinned OpenViking (2.1.2), Honcho (1.2.0) and holographic (0.29.x) memory plugins import them from their old place at load time, and a catalog repin does not change an installed plugin's source, so these exact names stay importable as an exception to the rule above:
+
+| Old import | Defined now in |
+|---|---|
+| `agent.message_content.flatten_message_text`, `_text_from_part` | `session_rules.turns` |
+| `agent.skill_commands.extract_user_instruction_from_skill_message` | `session_rules.turns` |
+| `hermes_state_common.TITLE_SOURCE_DERIVED`, `TITLE_SOURCE_LLM` | the values stored in `sessions.title_source` |
+| `hermes_state_wal` (the whole module, e.g. `apply_wal_with_fallback`) | `sqlite_support` |
+
+They follow the `hermes_state` window: supported through v0.26 and removed no earlier than v0.27.0. No other moved name is carried. A plugin should import from `session_rules.turns` and `sqlite_support` now.
+
 ## What you're building
 
 A **calculator** plugin with two tools:
@@ -999,6 +1077,12 @@ Config and state have different owners: settings are user-visible behavior in
 
 ### Settings form in the Desktop
 
+The same declaration also gives your plugin a terminal editor: `hermes plugins config <name>`
+lists every `config_schema` key and every `requires_env` variable with its current value and
+edits them one at a time (choices and `bool` as pickers, `secret` and `secret: true` env
+entries masked). It saves through the same writers as the form below, so no CLI code is
+needed either. Give each key a `label` and `description`: they are all the user sees.
+
 Every key you declare in the manifest's `config_schema` renders as a row on the
 plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the
 plugin's Capabilities → Plugins row opens it). No
@@ -1323,6 +1407,38 @@ def fetch_models(base_url, api_key):
     request = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
     with open_credentialed_url(request, timeout=10) as response:
         return response.read()
+```
+
+### Read a Retry-After header the way Hermes does
+
+A rate-limited API (HTTP 429 or 503) often says how long to wait in a `Retry-After` header, as a
+number of seconds or as an HTTP date. `agent.retry_utils.parse_retry_after_seconds(value)` turns
+either form into seconds. Pass the header value or the whole headers mapping; with a mapping it
+tries `Retry-After` and then `retry-after`. It returns a float clamped at `0.0`, or `None` when the
+header is absent or cannot be parsed, so the caller picks its own fallback wait.
+
+```python
+import time
+
+from agent.retry_utils import parse_retry_after_seconds
+
+def wait_before_retry(response, fallback=5.0):
+    seconds = parse_retry_after_seconds(response.headers)
+    time.sleep(fallback if seconds is None else seconds)
+```
+
+### Send the Hermes User-Agent header
+
+`hermes_cli.version_info.hermes_user_agent(product)` returns `<product>/<Hermes version>`, for
+example `Hermes-Agent/0.23.1`, for the `User-Agent` header of a request your plugin sends. Pass the
+product name the service knows your integration by; the default is `hermes-cli`. Call it where the
+request is built, not at module level: on a source checkout it reads the version from git.
+
+```python
+from hermes_cli.version_info import hermes_user_agent
+
+def request_headers(api_key):
+    return {"Authorization": f"Bearer {api_key}", "User-Agent": hermes_user_agent("Hermes-Agent")}
 ```
 
 ### Ship a language pack
@@ -1660,7 +1776,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `tui_gateway/session_lifecycle.py` `_finalize_session` |
 | `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
 | `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `tui_gateway/session_registry.py` `_start_session_services`; `gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
-| `on_session_delete` | `hermes_state_common.py` `emit_session_deleted` |
+| `on_session_delete` | `session_retention.py` `emit_session_deleted` |
 | `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
 | `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
 | `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |

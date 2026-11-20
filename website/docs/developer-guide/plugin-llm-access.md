@@ -839,8 +839,26 @@ when nothing was started.
   is written to the transcript or the session database.
 * The fork is cancelled as soon as the session starts its next turn,
   whether it is running, starting or still deferred; a deferred fork
-  then never launches. `timeout` (seconds, at most 1800) adds a wall
-  clock. Both are cooperative: they interrupt the fork, which stops at
+  then never launches. A turn a plugin injects (`ctx.inject_message`,
+  including from the fork's own tool handler) is the exception: it
+  waits up to 120 seconds for the session's running background review
+  and running forks to finish, then cancels whatever is still running,
+  so do not rely on an injected turn to cancel background work. A person
+  never waits behind that grace: a message a person sends to the session
+  while the injected turn waits ends the wait at once, whatever
+  `display.busy_input_mode` makes of it, and the background work is
+  cancelled as for any person's turn. A message that is queued (queue
+  mode, an interrupt, any message before the injected turn has an agent)
+  runs as its own turn after the injected one, in the order they
+  arrived; a steer (steer mode or `/steer`) or an interrupt-mode
+  correction that redirects the turn goes into the injected turn itself.
+  Another plugin's injected message does not end the wait. A gateway
+  shutdown, restart or profile retirement ends the wait the same way,
+  inside the shutdown's drain budget. The
+  injected turn starts from the gateway's own context: its tool calls
+  carry no `turn_origin`, even when the fork injected it. `timeout`
+  (seconds, at most 1800) adds a wall clock. Both are cooperative:
+  they interrupt the fork, which stops at
   its next interrupt check, and the handle settles when the fork's
   worker exits. A provider call that ignores the interrupt holds the
   handle open until it returns, so wait with a bound (`handle.wait(t)`).

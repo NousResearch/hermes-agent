@@ -382,7 +382,9 @@ def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
             and mcp_server_enabled(v) and not _connect_cooldown_active(k)}
         stale_cached = [_core._servers[keys[k]] for k, v in servers.items()
                         if keys[k] in _core._servers and mcp_server_enabled(v)
-                        and getattr(_core._servers[keys[k]], "session", None) is None]
+                        and getattr(_core._servers[keys[k]], "session", None) is None
+                        # Recycled on purpose (idle/lifetime limit): dormant until its next tool call.
+                        and getattr(_core._servers[keys[k]], "_recycled_reason", None) is None]
         for srv_name in new_servers:
             _core._server_connecting.add(keys[srv_name])
             _core._server_scope_keys[keys[srv_name]] = current_scope

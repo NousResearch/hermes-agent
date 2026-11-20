@@ -22,7 +22,6 @@ import {
 } from '@/lib/visitor-access'
 
 import { recordIaAction } from './ia-metrics'
-import { IA_ACTIONS } from './ia-metrics-contract'
 import { $portalShell } from './shell-variant'
 
 export const $visitorAccess = atom<VisitorAccess>(OPEN_ACCESS)
@@ -61,13 +60,6 @@ export function installVisitorAccess(): void {
 
 export type SignUpEntry = 'chat' | 'sidebar' | 'splash' | 'tray'
 
-type CountedEntry = (typeof IA_ACTIONS.sign_up)[number]
-
-// The metrics contract is closed and mirrored by the backend's export validator, which does not name
-// the sidebar's card yet: a sign up from it is counted once both sides do.
-const isCountedEntry = (from: SignUpEntry): from is CountedEntry =>
-  (IA_ACTIONS.sign_up as readonly string[]).includes(from)
-
 /** Leave for sign up, which returns to this same place (this chat, this page) when it is done. A
  *  no-op where sign up is not required. */
 export function startSignUp(from: SignUpEntry): void {
@@ -77,10 +69,7 @@ export function startSignUp(from: SignUpEntry): void {
     return
   }
 
-  if (isCountedEntry(from)) {
-    recordIaAction(`ia.sign_up.${from}`)
-  }
-
+  recordIaAction(`ia.sign_up.${from}`)
   $signInFailed.set(false)
   window.location.assign(signUpHref(access.signUpUrl, window.location.href))
 }

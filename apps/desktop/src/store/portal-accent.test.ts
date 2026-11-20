@@ -9,7 +9,7 @@ import {
   resetDesktopMetricsForTests,
   setDesktopMetricsGate
 } from './desktop-metrics'
-import { pickPortalAccent } from './portal-accent'
+import { pickPortalAccent, PORTAL_ACCENTS } from './portal-accent'
 import { $shellChoice } from './shell-variant'
 
 function recorded(): string {
@@ -79,5 +79,14 @@ describe('the redesign’s accent', () => {
     pickPortalAccent('orange')
 
     expect(recorded()).toContain('"ia.theme_pick.color_orange|click":1')
+  })
+
+  it('counts every one of the eight colours, the bright ones included', () => {
+    setDesktopMetricsGate('on')
+
+    for (const accent of PORTAL_ACCENTS.filter(accent => accent !== 'blue')) {
+      pickPortalAccent(accent)
+      expect(recorded()).toContain(`"ia.theme_pick.color_${accent}|click":1`)
+    }
   })
 })

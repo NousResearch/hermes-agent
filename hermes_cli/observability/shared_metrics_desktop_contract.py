@@ -45,9 +45,9 @@ DESKTOP_IA_ACTIONS = {
                    'first_time_library', 'first_time_theme'),
     "starter_chip": ('morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'),
     "starter_chips": ('hidden_auto', 'hidden_user', 'shown_again'),
-    "sign_up": ('splash', 'tray', 'chat'),
+    "sign_up": ('splash', 'tray', 'chat', 'sidebar'),
     "theme_pick": ('mode_light', 'mode_dark', 'color_blue', 'color_violet', 'color_green', 'color_orange',
-                   'color_pink'),
+                   'color_pink', 'color_red', 'color_yellow', 'color_cyan'),
     "alias_search": ('sessions', 'profiles', 'artifacts', 'cron', 'gateways'),
 }
 DESKTOP_IA_AREAS = (

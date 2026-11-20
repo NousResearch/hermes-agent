@@ -14,7 +14,6 @@
 import { persistentAtom } from '@/lib/persisted'
 
 import { recordIaAction } from './ia-metrics'
-import { IA_ACTIONS } from './ia-metrics-contract'
 
 /** In the order the swatches show. Blue is the redesign's own brand. */
 export const PORTAL_ACCENTS = ['blue', 'violet', 'pink', 'red', 'orange', 'yellow', 'green', 'cyan'] as const
@@ -30,24 +29,13 @@ export const $portalAccent = persistentAtom<PortalAccent>(PORTAL_ACCENT_KEY, 'bl
   encode: value => (value === 'blue' ? null : value)
 })
 
-type CountedPick = (typeof IA_ACTIONS.theme_pick)[number]
-
-const isCountedPick = (pick: string): pick is CountedPick => (IA_ACTIONS.theme_pick as readonly string[]).includes(pick)
-
 export function pickPortalAccent(accent: PortalAccent): void {
   if ($portalAccent.get() === accent) {
     return
   }
 
   $portalAccent.set(accent)
-
-  // The metrics contract is closed and mirrored by the backend's export validator, which names the
-  // first five colours; red, yellow and cyan are counted once both sides name them.
-  const pick = `color_${accent}` as const
-
-  if (isCountedPick(pick)) {
-    recordIaAction(`ia.theme_pick.${pick}`)
-  }
+  recordIaAction(`ia.theme_pick.color_${accent}`)
 }
 
 /** main.tsx, before first render: mirror the accent onto `<html>` and follow every change. */

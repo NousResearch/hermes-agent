@@ -52,10 +52,22 @@ export const IA_ACTIONS = {
   starter_chip: ['morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'],
   // The ideas leaving (on their own after two finished chats, or by Hide) and coming back (Show ideas).
   starter_chips: ['hidden_auto', 'hidden_user', 'shown_again'],
-  // Sign up started, by where: the first-time splash, the notifications tray, or a held chat.
-  sign_up: ['splash', 'tray', 'chat'],
-  // "Make it yours" in the first-time splash: a light / dark pick, or one of the five colours.
-  theme_pick: ['mode_light', 'mode_dark', 'color_blue', 'color_violet', 'color_green', 'color_orange', 'color_pink'],
+  // Sign up started, by where: the first-time splash, the notifications tray, a held chat (or the
+  // composer's link beside it), or the chat sidebar's Create an Account card.
+  sign_up: ['splash', 'tray', 'chat', 'sidebar'],
+  // "Make it yours" in the first-time splash: a light / dark pick, or one of the eight colours.
+  theme_pick: [
+    'mode_light',
+    'mode_dark',
+    'color_blue',
+    'color_violet',
+    'color_green',
+    'color_orange',
+    'color_pink',
+    'color_red',
+    'color_yellow',
+    'color_cyan'
+  ],
   // A ⌘K query that is one of the classic words, by word (never the query itself).
   alias_search: ['sessions', 'profiles', 'artifacts', 'cron', 'gateways']
 } as const

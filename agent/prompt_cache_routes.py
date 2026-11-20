@@ -112,11 +112,19 @@ def _save(path: Path, data: dict[str, dict[str, Any]]) -> None:
 
 def _push(entry: dict[str, Any], field: str, gap: float, session_id: str = "") -> None:
     """Append ``gap`` (and, for misses, the session it came from in ``<field>_sessions``), keeping the
-    last :data:`_GAPS_KEPT`."""
-    entry[field] = ([*entry.get(field, []), round(gap, 1)])[-_GAPS_KEPT:]
-    if field != "hit_gaps":
-        sessions = [*entry.get(f"{field}_sessions", []), session_id][-_GAPS_KEPT:]
-        entry[f"{field}_sessions"] = sessions
+    last :data:`_GAPS_KEPT`. A full session-tagged list drops the oldest sample of a session that has
+    another one, so a chat that keeps missing cannot push out the only sample of the second session a
+    rule needs (the rule would vanish with no new evidence against it)."""
+    gaps = [*entry.get(field, []), round(gap, 1)]
+    if field == "hit_gaps":
+        entry[field] = gaps[-_GAPS_KEPT:]
+        return
+    sessions = [*entry.get(f"{field}_sessions", []), session_id]
+    sessions = ([""] * len(gaps) + sessions)[-len(gaps):]  # older entries kept no sessions
+    while len(gaps) > _GAPS_KEPT:
+        drop = next((i for i, sid in enumerate(sessions) if sessions.count(sid) > 1), 0)
+        del gaps[drop], sessions[drop]
+    entry[field], entry[f"{field}_sessions"] = gaps, sessions
 
 
 def _sessions(entry: dict[str, Any], field: str, keep: Optional[list[bool]] = None) -> int:
@@ -174,11 +182,15 @@ def observe(*, provider: str, base_url: str, model: str, explicit: bool, read: i
         logger.debug("prompt-cache route store not written (%s)", exc)
 
 
-def _entry(key: str, now: float) -> dict[str, Any]:
+def _store(now: float) -> dict[str, dict[str, Any]]:
     try:
-        return _load(_path(), now).get(key) or {}
+        return _load(_path(), now)
     except OSError:
         return {}
+
+
+def _entry(key: str, now: float) -> dict[str, Any]:
+    return _store(now).get(key) or {}
 
 
 def learned_lifetime(entry: dict[str, Any], tier_s: float) -> Optional[float]:
@@ -198,7 +210,22 @@ def rule_for(provider: str, base_url: str, model: str, explicit: bool, *, tier_s
     """The learned rule in effect for a route: ``no-cache`` | ``write-on-hit`` | ``short-lived`` |
     ``lifetime:<s>`` (warm on that lifetime instead of the tier), or None."""
     now = time.time() if now is None else now
-    entry = _entry(route_key(provider, base_url, model, explicit), now)
+    return _rule(_entry(route_key(provider, base_url, model, explicit), now), tier_s)
+
+
+def warming_rule(provider: str, base_url: str, model: str, marked: bool, *, tier_s: Optional[float] = None,
+                 now: Optional[float] = None) -> Optional[str]:
+    """:func:`rule_for` the request's own cache, from one read of the store. An unmarked request whose
+    markers were dropped because the explicit cache never read back is ``no-cache`` too, until its
+    automatic cache proves a read of its own."""
+    data = _store(time.time() if now is None else now)
+    rule = _rule(data.get(route_key(provider, base_url, model, marked)) or {}, tier_s)
+    if rule is not None or marked or (data.get(route_key(provider, base_url, model, False)) or {}).get("reads"):
+        return rule
+    return "no-cache" if _rule(data.get(route_key(provider, base_url, model, True)) or {}, None) == "no-cache" else None
+
+
+def _rule(entry: dict[str, Any], tier_s: Optional[float]) -> Optional[str]:
     if not entry:
         return None
     if (not entry.get("reads") and int(entry.get("attempts", 0)) >= MIN_SAMPLES
@@ -217,21 +244,16 @@ def rule_for(provider: str, base_url: str, model: str, explicit: bool, *, tier_s
 def marker_preference(provider: str, base_url: str, model: str, *, now: Optional[float] = None) -> Optional[bool]:
     """Learned marker choice for a model: False when its explicit cache never reads back, True when its
     automatic cache dies early while the explicit one reads, else None (the route's policy stands)."""
-    now = time.time() if now is None else now
-    if rule_for(provider, base_url, model, True, now=now) == "no-cache":
+    data = _store(time.time() if now is None else now)
+    explicit = data.get(route_key(provider, base_url, model, True)) or {}
+    if _rule(explicit, None) == "no-cache":
         return False
-    implicit = _entry(route_key(provider, base_url, model, False), now)
-    explicit = _entry(route_key(provider, base_url, model, True), now)
+    implicit = data.get(route_key(provider, base_url, model, False)) or {}
     from agent.prompt_caching import TTL_SECONDS
 
     if explicit.get("reads") and implicit and learned_lifetime(implicit, TTL_SECONDS["30m"]) is not None:
         return True
     return None
-
-
-def implicit_ever_read(provider: str, base_url: str, model: str, *, now: Optional[float] = None) -> bool:
-    now = time.time() if now is None else now
-    return bool(_entry(route_key(provider, base_url, model, False), now).get("reads"))
 
 
 def display_rule(rule: Optional[str]) -> Optional[str]:

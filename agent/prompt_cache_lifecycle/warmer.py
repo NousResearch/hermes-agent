@@ -82,17 +82,11 @@ def learned_window(agent: Any, window: tuple[float, float], marked: bool
     ``(None, rule)`` when keep-alives cannot pay on it (``no-cache``, ``write-on-hit``, or a learned
     lifetime too short to warm), the window shortened to a learned lifetime (never lengthened past the
     tier), or unchanged."""
-    from agent.prompt_cache_routes import rule_for
+    from agent.prompt_cache_routes import warming_rule
 
     deadline, tier_s = window
     route = (getattr(agent, "provider", ""), getattr(agent, "base_url", ""), getattr(agent, "model", ""))
-    rule = rule_for(*route, marked, tier_s=tier_s)
-    if rule is None and not marked:
-        # Markers were dropped because the explicit cache never read back: the automatic one is no better
-        # until it proves a read of its own.
-        from agent.prompt_cache_routes import implicit_ever_read
-
-        rule = None if implicit_ever_read(*route) or rule_for(*route, True) != "no-cache" else "no-cache"
+    rule = warming_rule(*route, marked, tier_s=tier_s)
     if rule is None:
         return window, None
     if not rule.startswith("lifetime:"):

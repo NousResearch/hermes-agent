@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fmtDayTime } from '@/lib/time'
 import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
-import type { CronJob, SessionInfo } from '@/types/hermes'
+import type { CronJob } from '@/types/cron'
+import type { SessionInfo } from '@/types/hermes'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 

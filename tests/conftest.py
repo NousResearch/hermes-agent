@@ -1223,6 +1223,40 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
+def _checkout_souls() -> set[str]:
+    """``SOUL.md`` files git does not track in the checkout: the mark a Hermes home seeded there."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(PROJECT_ROOT), "ls-files", "--others", "--exclude-standard",
+                              "--", "SOUL.md", "*/SOUL.md"], capture_output=True, text=True, timeout=30,
+                             check=False)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return set(out.stdout.split()) if out.returncode == 0 else set()
+
+
+def pytest_sessionstart(session):
+    session.config._checkout_souls_before = _checkout_souls()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """The whole-run backstop for ``_checkout_home_guard``: that fixture only sees the in-process
+    ``initialize_home``; a subprocess peer, ``finish_profile_layout`` or any other seeding path also
+    leaves an untracked ``SOUL.md`` in the checkout, which fails the run here."""
+    before = getattr(session.config, "_checkout_souls_before", None)
+    if before is None or hasattr(session.config, "workerinput"):  # xdist: the controller checks once
+        return
+    new = sorted(_checkout_souls() - before)
+    for rel in new:  # created by this run: removed, so a retry seeds it again and fails the same way
+        (PROJECT_ROOT / rel).unlink(missing_ok=True)
+    if new:
+        message = (f"ERROR: tests seeded Hermes homes inside the repo checkout: {new}; a relative home or cwd "
+                   "(use usefixtures('authority_cwd_in_tmp') or run the child with cwd=tmp_path)")
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        reporter.write_line(message, red=True) if reporter is not None else print(message, file=sys.stderr)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 def pytest_unconfigure(config):
     _reap_session_hermes_processes(config)
     _remove_relocated_basetemp(config)

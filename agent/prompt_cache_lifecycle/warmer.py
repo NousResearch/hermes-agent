@@ -309,7 +309,7 @@ class PromptCacheWarmer:
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
             deadline_at=window[0], is_current=_is_current, api_mode=api_mode,
             witness=context_witness(agent), billing=self._billing_snapshot(),
-            idle_ok=human_paced(agent) and idle_warming_allowed(agent), budget=budget,
+            idle_ok=human_paced(agent) and idle_warming_allowed(agent, marked=self._marked), budget=budget,
             upstream=response_upstream(response), stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, api_mode),
         )
         with self._lock:
@@ -784,7 +784,7 @@ class PromptCacheWarmer:
         (``_record``) cannot price the refresh's cache read or the miss's cache write: a missing
         cache rate must not read as free and approve a refresh whose saving is unknown."""
         decision = evaluate_economics(self._pricing(), cached_tokens, uncached_tokens, **spend,
-                                      output_tokens=replay_output_cap(self.agent.model))
+                                      output_tokens=replay_output_cap(self.agent.model), marked=self._marked)
         if decision.action == "warm" and not self._cache_costs_known(cached_tokens, uncached_tokens):
             return CacheWarmingDecision(
                 warm_cost=decision.warm_cost, miss_cost=decision.miss_cost,

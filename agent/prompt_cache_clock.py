@@ -97,6 +97,9 @@ class CacheEvent:
     session_id: str = ""
     generation: Optional[int] = None  # SessionDB.prompt_cache_generation when recorded
     upstream: Optional[str] = None  # :func:`response_upstream` of the reply, when the wire names it
+    #: The tier the session asks for (``agent._cache_ttl``) when it differs from what was sent: a 1h chat on a
+    #: route clamped to 5m sends 5m, and a restart must still know the chat had upgraded.
+    session_tier: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -540,7 +543,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
         tier=min(coverage, key=coverage.__getitem__) if coverage else None,
         confidence=confidence if coverage else UNKNOWN, reason=reason, coverage=coverage,
         guaranteed_until=guaranteed, estimated_until=estimated, session_id=session_id, generation=generation,
-        upstream=upstream,
+        upstream=upstream, session_tier=_session_tier(agent, ctx.requested_ttl),
     )
     agent._prompt_cache_clock_restored = True  # a live event supersedes a store that could not be read
     _set_event(agent, event, mark=mark)
@@ -590,6 +593,11 @@ def record_unobserved_cache_response(agent: Any, usage: Any, *, reason: str) -> 
     agent._prompt_cache_clock_restored = True
     _set_event(agent, event)
     return event
+
+
+def _session_tier(agent: Any, requested: Optional[str]) -> Optional[str]:
+    tier = getattr(agent, "_cache_ttl", None)
+    return tier if isinstance(tier, str) and tier != requested else None
 
 
 # ── Persistence ─────────────────────────────────────────────────────────────

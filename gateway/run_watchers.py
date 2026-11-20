@@ -229,8 +229,8 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     def _decide_compact_then_release(self, key: str, agent, release: Callable[[], None]) -> None:
         jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
-        if key in jobs:
-            release()
+        if key in jobs:  # that job still runs on this agent: free it once the job is done, not under it
+            jobs[key].add_done_callback(release)
             return
         task = self._retain_background_task(asyncio.ensure_future(self._compact_then_release_job(key, agent)))
         jobs[key] = task

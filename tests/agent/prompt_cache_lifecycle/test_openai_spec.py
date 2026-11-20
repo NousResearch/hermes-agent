@@ -126,3 +126,25 @@ def test_a_keep_alive_served_at_ultrafast_is_billed_at_the_served_tier():
     warmer._refresh(warmer._run)
     # gpt-6.1-sol Ultrafast, $/M: input 12, output 60, cache read 0.60 (Standard would be 1/6 of it)
     assert agent.session_estimated_cost_usd == pytest.approx(100 * 12e-6 + 1 * 60e-6 + 39_900 * 0.6e-6)
+
+
+def test_an_auto_chat_still_on_5m_idle_warms_its_unmarked_cache_and_prices_the_miss_as_input(monkeypatch):
+    """The adaptive 5m start gates marked requests only; the automatic 30m cache is idle-warmed, and its
+    keep-alive budget is the input-rate miss it prevents (no write surcharge)."""
+    from agent.prompt_cache_lifecycle import economics
+    from agent.prompt_cache_lifecycle.tier import adaptive_start_tier
+
+    seen = []
+    real = economics.evaluate_economics
+    monkeypatch.setattr(pcl.warmer, "evaluate_economics", lambda *a, **k: seen.append(k.get("marked")) or real(*a, **k))
+    agent = _agent("deepseek/deepseek-v4-flash")
+    agent._cache_ttl_auto = True
+    agent._cache_ttl = adaptive_start_tier(agent, "1h")
+    assert agent._cache_ttl == "5m"
+    request = {"model": agent.model, "max_tokens": 4096, "messages": [
+        {"role": "system", "content": "sys " * 9000}, {"role": "user", "content": "hi"}]}
+    assert _respond(agent, request) is None
+    pcl.end_turn_prompt_cache_warming(agent)
+    run = pcl.get_prompt_cache_warmer(agent)._run
+    assert run is not None and run.idle_ok and run.ttl_s == 1800
+    assert seen and set(seen) == {False}

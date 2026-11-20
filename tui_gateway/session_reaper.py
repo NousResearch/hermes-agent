@@ -652,7 +652,7 @@ def _cache_expiry_submit(job: Callable[..., Any], *args: Any) -> concurrent.futu
 
 def _cache_expiry_candidates() -> list[tuple[str, dict, str]]:
     """Due sessions as ``(sid, session, action)``: the claim (``PromptCacheWarmer.claim_edge``) latched
-    each one's stretch and says whether it is compacted or offloaded."""
+    each one's stretch and says whether it is compacted or offloaded. Each returned sid is in flight."""
     with _sessions_lock:
         live = list(_sessions.items())
     with _cache_expiry_lock:
@@ -668,6 +668,10 @@ def _cache_expiry_candidates() -> list[tuple[str, dict, str]]:
         with _session_profile_runtime_scope(session):
             action = warmer.claim_edge()
         if action:
+            # In flight from the claim on: a reaper running before the tick queues the job must wait
+            # behind it (``_compact_then_close``), not close the session and strand the latched claim.
+            with _cache_expiry_lock:
+                _cache_expiry_in_flight.add(sid)
             picked.append((sid, session, action))
     return picked
 
@@ -741,8 +745,6 @@ def _cache_expiry_tick() -> list[concurrent.futures.Future]:
     survives the hop); a sid already in flight is never claimed again. Returns the queued futures."""
     futures = []
     for sid, session, action in _cache_expiry_candidates():
-        with _cache_expiry_lock:
-            _cache_expiry_in_flight.add(sid)
         futures.append(_cache_expiry_submit(_cache_expiry_job, sid, session, action))
     return futures
 

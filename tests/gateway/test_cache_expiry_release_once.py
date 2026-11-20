@@ -108,3 +108,26 @@ async def test_a_due_scans_claim_is_run_by_the_release_job_that_raced_it():
     await runner._compact_idle_sessions_before_cache_expiry()
     await asyncio.gather(*release_job)
     assert ran == [("k1", "compact")], "the claimed compaction was dropped"
+
+
+@pytest.mark.asyncio
+async def test_an_eviction_behind_a_queued_due_job_releases_the_agent_after_that_job():
+    """The due scan queued a job for this chat (waiting for a slot); an eviction now must not empty the
+    agent under it: the release waits for the job, then runs exactly once."""
+    runner, agent = _runner(action="compact")
+    agent._session_messages = ["m"]
+    gate, seen = asyncio.Event(), []
+
+    async def _job(key, live_agent, slots, action="compact"):
+        await gate.wait()
+        seen.append(list(live_agent._session_messages))
+
+    runner._compact_before_cache_expiry = _job
+    await runner._compact_idle_sessions_before_cache_expiry()
+    assert runner._compact_then_release("k1", agent) is True
+    await asyncio.sleep(0)
+    assert runner.released == []  # still held by the queued job
+    gate.set()
+    await asyncio.gather(*list(runner._cache_expiry_jobs.values()))
+    await asyncio.sleep(0)
+    assert seen == [["m"]] and runner.released == ["k1"]

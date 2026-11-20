@@ -9,8 +9,9 @@ upgraded a session stays on 1h: the choice is kept per session id (an agent rebu
 by gateway eviction, the child session a compaction continues in) and read back from the session's stored
 clock after a restart (its last request asked for 1h).
 
-Before the upgrade no idle keep-alive is sent: the chat has not shown a pause yet, and the first long
-one pays a single 5m rewrite and then upgrades. Keep-alives while a tool runs are unchanged. Explicit
+Before the upgrade no idle keep-alive is sent on a marked request: the chat has not shown a pause yet,
+and the first long one pays a single 5m rewrite and then upgrades. An unmarked (automatic) cache has no
+tier to pay for and is warmed as usual. Keep-alives while a tool runs are unchanged. Explicit
 pins (``cache_ttl: 5m`` / ``1h``) and machine-paced sessions never take this path.
 """
 
@@ -56,14 +57,15 @@ def _upgraded(session_id: Optional[str]) -> bool:
 
 def _session_upgraded(agent: Any) -> bool:
     """The session already asks for 1h: remembered in this process, or its stored clock (restored on a
-    resumed or rebuilt agent) was last written by a 1h request, so 1h markers match what is cached."""
+    resumed or rebuilt agent) was last written by a 1h request, or by a 1h session on a route clamped
+    to 5m (``session_tier``). The route clamp still decides what is sent, so the markers match the cache."""
     from agent.prompt_cache_clock import CacheEvent, cache_window
 
     if _upgraded(getattr(agent, "session_id", None)):
         return True
     cache_window(agent)  # restores the stored clock once per agent
     event = getattr(agent, "_prompt_cache_clock", None)
-    return isinstance(event, CacheEvent) and event.requested_ttl == UPGRADED_TIER
+    return isinstance(event, CacheEvent) and UPGRADED_TIER in (event.requested_ttl, event.session_tier)
 
 
 def carry_cache_tier(old_session_id: Optional[str], new_session_id: Optional[str]) -> None:
@@ -103,9 +105,13 @@ def maybe_upgrade_cache_tier(agent: Any, *, now: Optional[float] = None) -> bool
     return True
 
 
-def idle_warming_allowed(agent: Any) -> bool:
-    """Idle keep-alives (after a turn ends) only once an adaptive chat has upgraded to 1h."""
-    return not getattr(agent, "_cache_ttl_adaptive", False) or getattr(agent, "_cache_ttl", None) == UPGRADED_TIER
+def idle_warming_allowed(agent: Any, *, marked: bool = True) -> bool:
+    """Idle keep-alives (after a turn ends) only once an adaptive chat has upgraded to 1h. The tier is
+    what the markers ask for, so an unmarked request (an automatic cache, 30m whatever the tier) is not
+    held back by it: it pays no 1h premium, and its cache stays warm long past the 5m start, so the
+    pause that would upgrade it never reads as one while it is warm."""
+    return (not marked or not getattr(agent, "_cache_ttl_adaptive", False)
+            or getattr(agent, "_cache_ttl", None) == UPGRADED_TIER)
 
 
 def tier_pending(agent: Any) -> bool:

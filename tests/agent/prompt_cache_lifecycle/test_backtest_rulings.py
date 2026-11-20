@@ -248,3 +248,60 @@ def test_3_a_downgrade_needs_two_sessions_no_upstream_switch_and_never_undercuts
             record_cache_response(agent, CanonicalUsage(input_tokens=3, cache_write_tokens=6013), model=agent.model,
                                   provider="nous", base_url=_NOUS, api_mode="chat_completions", upstream=upstream)
     assert rule("claude-c") is None, "an upstream switch was learned as a miss"
+
+
+# ── Post-merge follow-ups: the tier gate, its restore, and the unmarked miss price ─────────────────
+
+def test_an_unmarked_automatic_cache_is_idle_warmed_before_the_tier_upgrade():
+    """The 5m start tier is what markers ask for: an unmarked request's automatic cache pays no 1h
+    premium and stays warm past five minutes, so it is idle-warmed like any other."""
+    from agent.prompt_cache_lifecycle.tier import adaptive_start_tier, idle_warming_allowed
+
+    agent = _chat()
+    agent._cache_ttl = adaptive_start_tier(agent, "1h")
+    assert agent._cache_ttl == "5m"
+    assert idle_warming_allowed(agent, marked=False) is True
+    assert idle_warming_allowed(agent) is False  # a marked 5m chat still waits for its first pause
+
+
+def test_a_restart_keeps_the_upgrade_of_a_session_on_a_route_clamped_to_5m():
+    import json
+    import time
+    from dataclasses import asdict
+
+    from agent.prompt_cache_clock import record_cache_response
+    from agent.prompt_cache_lifecycle import tier
+    from agent.prompt_caching import effective_cache_ttl
+    from agent.usage_pricing import CanonicalUsage
+
+    route = dict(provider="bedrock", base_url="https://bedrock.example", model="vendor-sonnet")
+
+    def _bedrock(store=None):
+        return _chat(**route, session_id="clamped", _cache_ttl_auto=True, _cache_ttl_adaptive=True, _cache_ttl="5m",
+                     _session_db=store)
+
+    live = _bedrock()
+    live._cache_ttl = "1h"  # upgraded at its first pause; the Bedrock auto clamp still sends 5m
+    sent = effective_cache_ttl("1h", **route, auto=True)
+    assert sent == "5m"
+    event = record_cache_response(live, CanonicalUsage(input_tokens=3, cache_write_tokens=6013), **route,
+                                  api_mode="anthropic_messages", attempt={"sent_at": time.time(), "marker_ttl": sent})
+    assert event.requested_ttl == "5m" and event.session_tier == "1h"
+
+    class _Store:
+        def get_prompt_cache_clock(self, session_id):
+            return {"clock": json.dumps(asdict(event)), "generation": None}
+
+    tier._UPGRADED.clear()  # a new process
+    restored = _bedrock(_Store())
+    assert tier.maybe_upgrade_cache_tier(restored, now=time.time() + 10) and restored._cache_ttl == "1h"
+
+
+def test_an_unmarked_miss_is_priced_at_the_input_rate():
+    """An automatic cache's miss re-reads the prefix as plain input: no write surcharge to save."""
+    rates = SimpleNamespace(input_cost_per_million=1.9, output_cost_per_million=16,
+                            cache_read_cost_per_million=0.19, cache_write_cost_per_million=2.4)
+    marked = pcl.evaluate_economics(rates, 100_000, spent_usd=0.19)
+    unmarked = pcl.evaluate_economics(rates, 100_000, spent_usd=0.19, marked=False)
+    assert round(marked.miss_cost, 4) == 0.221 and marked.action == "warm"
+    assert round(unmarked.miss_cost, 4) == 0.171 and unmarked.action == "stop"

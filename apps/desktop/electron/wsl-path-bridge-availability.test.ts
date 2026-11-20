@@ -136,3 +136,31 @@ test('non-Windows keeps profile behaviour without registry calls', async () => {
   assert.equal(bridge.isWslBridgeActive('remote'), false)
   assert.deepEqual(io.calls, [])
 })
+
+test('no WSL: the picker still maps a drive alias to its native folder', async () => {
+  const bridge = await loadBridge({})
+
+  // A local or unknown profile's `/mnt/c/...` default opens at C:\..., which
+  // needs no WSL. Other POSIX paths stay as written.
+  bridge.setWslBridgeProfileState('local', true)
+  assert.equal(bridge.resolvePickerDefaultPath('/mnt/c/projects', undefined, 'local'), 'C:\\projects')
+  assert.equal(bridge.resolvePickerDefaultPath('/mnt/c/projects', undefined, 'unknown'), 'C:\\projects')
+  assert.equal(bridge.resolvePickerDefaultPath('/srv/project', undefined, 'local'), '/srv/project')
+  assert.ok(io.calls.every(call => call.exe === 'reg.exe'))
+})
+
+test('no WSL: an unknown profile maps a drive alias whatever ran first', async () => {
+  const bridge = await loadBridge({})
+
+  // A read on the same profile before the picker must not change its answer.
+  assert.equal(bridge.resolveLocalReadPath('/srv/project', undefined, 'unknown'), '/srv/project')
+  assert.equal(bridge.resolvePickerDefaultPath('/mnt/c/projects', undefined, 'unknown'), 'C:\\projects')
+})
+
+test('remote profiles keep a drive alias as written in the picker', async () => {
+  const bridge = await loadBridge({})
+
+  bridge.setWslBridgeProfileState('remote', false)
+  assert.equal(bridge.resolvePickerDefaultPath('/mnt/c/projects', undefined, 'remote'), '/mnt/c/projects')
+  assert.deepEqual(io.calls, [])
+})

@@ -69,9 +69,22 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
     sig.append((str(root), mtime, tuple(names)))
     if depth <= 0:
         return
+    hermes_home = ""
+    with suppress(Exception):
+        from hermes_constants import get_hermes_home
+        hermes_home = str(get_hermes_home())
     for name in names:
         if name not in EXCLUDED_SKILL_DIRS and not (is_skill and name in SKILL_SUPPORT_DIRS):
-            _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
+            sub = os.path.join(root, name)
+            if hermes_home and sub == hermes_home:
+                # A skill root that merely CONTAINS the Hermes home (patched/edge layouts)
+                # must not ride along into home internals: gate scan caches under
+                # <home>/cache/skill_scans would otherwise invalidate the signature on
+                # every scan (catalog re-parse thrash). The catalog never lists skills
+                # from home internals; skill roots inside the home are unaffected —
+                # this only skips descending into *home itself* as a child node.
+                continue
+            _dir_tree_signature(sub, sig, depth - 1)
 
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
@@ -232,11 +245,16 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
     collecting candidates, so it asks for hidden rows too."""
     from agent.skill_utils import (
-        TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
+        TIER_PROJECT, is_disabled_entry, iter_gated_skill_files, iter_project_skill_files,
+        resolve_skill_catalog)
     cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
-    signature = _skills_scan_signature([d for _t, d in roots], disabled)
+    # Enforcement mode is part of the signature: a flip from audit-only to
+    # HERMES_SKILL_GATE_ENFORCE=1 mid-process must re-gate the catalog instead
+    # of serving a pre-flip listing.
+    enforce = os.environ.get("HERMES_SKILL_GATE_ENFORCE", "").strip().lower() in ("1", "true", "yes")
+    signature = (_skills_scan_signature([d for _t, d in roots], disabled), enforce)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
@@ -244,8 +262,10 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
     scanned = []
-    for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
-        _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
+    for tier, scan_dir in roots:  # every tier goes through its quarantine chokepoint
+        _iter = (iter_project_skill_files  # project: unconditional fail-closed gate
+                 if tier == TIER_PROJECT
+                 else lambda d, _t=tier: iter_gated_skill_files(d, _t))  # non-project: enforcement-keyed
         for skill_md in _iter(scan_dir):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue

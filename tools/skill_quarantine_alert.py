@@ -7,6 +7,13 @@ and must fail open — an escalation error may never break the load hook
 Mechanics (addendum §6.2):
 - Trigger file instead of direct kanban_create from plugin/gate code — the
   kanban kernel picks the file up and creates the audit card.
+- The trigger file is a JSON **array** of pending events. The writer
+  accumulates (never overwrites): a second, different content hash must not
+  clobber an event the kernel has not consumed yet. Consumption contract for
+  the kernel reader: create one audit card per pending event (deduped by
+  ``content_hash`` within the batch), then rewrite the file to the events it
+  did NOT consume — or remove it when empty. The writer merges with whatever
+  the consumer left in place, so both sides race safely on the same file.
 - Dedupe by content hash: re-loads of the same violating payload never ping
   again; the ledger only counts repeats.
 - Findings are reduced to ``(file, line, rule, severity)`` — payload quotes
@@ -79,7 +86,7 @@ def notify_skill_finding(tier: str, skill_md: Path, provenance: dict, enforce: b
             # Same content hash: the card pipeline already has (or dead-lettered)
             # this payload — counting is the only fresh information.
         else:
-            _atomic_write_text(trigger_path, json.dumps(event, indent=2) + "\n")
+            _queue_trigger_event(trigger_path, event)
             logger.warning("skill finding triggered audit card: tier=%s verdict=%s skill=%s (see %s)",
                            tier, verdict, event["skill"], trigger_path)
         ledger[content_hash] = {"first_seen": event["first_seen"], "count": event["count"]}
@@ -88,6 +95,24 @@ def notify_skill_finding(tier: str, skill_md: Path, provenance: dict, enforce: b
             logger.info("skill finding repeat (content_hash=%s, count=%s) — no new card", content_hash, event["count"])
     except Exception:
         logger.debug("skill quarantine escalation unavailable — failing open", exc_info=True)
+
+
+def _queue_trigger_event(trigger_path: Path, event: dict) -> None:
+    """Append one new event to the pending-events array, merging with whatever
+    the kernel consumer left in the file. A same-content_hash entry that is
+    still pending is dropped here: it will be carded by the earlier entry."""
+    try:
+        pending = json.loads(trigger_path.read_text(encoding="utf-8"))
+        if not isinstance(pending, list):
+            pending = []
+    except Exception:
+        pending = []
+    new_hash = str(event.get("content_hash") or "")
+    new_event_dirname = str(event.get("skill") or "")
+    if not any(str(e.get("content_hash")) == new_hash and str(e.get("skill")) == new_event_dirname
+               for e in pending if isinstance(e, dict)):
+        pending.append(event)
+    _atomic_write_text(trigger_path, json.dumps(pending, indent=2) + "\n")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

@@ -679,7 +679,6 @@ def iter_project_skill_files(project_dir: Path):
 # side fails open.
 _TIER_SCAN_SOURCES = {TIER_PROJECT: "project-local", TIER_LOCAL: "profile-local",
                       TIER_CREATE_DIR: "create-dir", TIER_EXTERNAL: "external-dir"}
-_TIER_QUARANTINE_CACHE: dict[tuple, bool] = {}  # (tier-or-source, skill_dir) -> quarantined
 
 
 def _scan_and_gate(skill_md, source: str) -> bool:
@@ -687,10 +686,6 @@ def _scan_and_gate(skill_md, source: str) -> bool:
     ``scan_skill_cached`` (content-hash cached), escalate findings, decide
     quarantine strictly by enforcement flag."""
     skill_dir = Path(skill_md).parent
-    try:
-        key = (source, str(skill_dir.resolve()))
-    except OSError:
-        key = (source, str(skill_dir))
     try:
         from tools.skills_guard import scan_skill_cached
         from hermes_constants import get_hermes_home
@@ -718,7 +713,6 @@ def _scan_and_gate(skill_md, source: str) -> bool:
         logger.warning("%s skill scan failed — %s: %s", source,
                        "quarantining (fail closed)" if enforce else "audit-only, not enforcing",
                        skill_dir, exc_info=True)
-    _TIER_QUARANTINE_CACHE[key] = quarantined
     return quarantined
 
 
@@ -739,11 +733,6 @@ def is_quarantined_plugin_skill(skill_md) -> bool:
     content-hash keyed, so a registry payload that mutates after install
     re-surfaces at the next offer-time load without any reinstall."""
     return _scan_and_gate(skill_md, "plugin-registry")
-
-
-def clear_skill_scan_caches() -> None:
-    """Test helper: drop the module-level verdict caches."""
-    _TIER_QUARANTINE_CACHE.clear()
 
 
 def iter_gated_skill_files(root: Path, tier: int):

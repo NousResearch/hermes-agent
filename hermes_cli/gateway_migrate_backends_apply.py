@@ -314,10 +314,16 @@ def _apply_steps(run: Run, plan: BackendPlan) -> float:
             raise StepFailed(f"the Webapp bundle is still missing after the build: {reason}")
     run.step("webapp_bundle", "done")
     run.step("write_config")
+    # Each file's fingerprint as this run writes it (a file it does not write keeps its backup's): a
+    # rollback or --restore writes a file back only while it still matches, so later edits are kept.
+    written = m["files_after_apply"] = {name: _backup_digest(m, key) for key, name in _RESTORED_FILES}
     if writes := env_writes(plan):
         host.set_env(writes)
+        written[".env"] = _file_digest(host.home / ".env")
+        run.save()
         print(f"  ✓ .env: {', '.join(sorted(writes))} (mode 600; values not shown)")
     host.set_config(plan.config_writes())
+    written["config.yaml"] = _file_digest(host.home / "config.yaml")
     print(f"  ✓ config.yaml: {', '.join(plan.config_writes())}")
     run.step("write_config", "done")
     run.step("gateway_service")
@@ -385,7 +391,6 @@ def apply(host, plan: BackendPlan, *, detached: bool = False) -> int:
     linger = host.linger()
     run.data["linger_after"] = linger
     run.data["outage_seconds"] = round(outage, 2)
-    run.data["files_after_apply"] = _file_digests(host.home)  # --restore refuses once these change
     run.finish("done", f"migrated: the gateway serves {run.data['new_address']}")
     gap = (f"old backend retired; {run.data['old_address']} no longer answers" if plan.keep_webapp
            else f"old address unavailable for {outage:.1f}s")
@@ -425,21 +430,44 @@ def _restore_file(home: Path, name: str, backup: Optional[str], mode: Optional[i
         os.chmod(target, mode)
 
 
-#: The files a --restore puts back from its backups. Their digests after the apply are recorded, so a
-#: restore never overwrites edits made since.
+#: The files a rollback or --restore puts back from its backups. Their digests as the apply wrote them
+#: are recorded, so neither overwrites edits made since.
 _RESTORED_FILES = (("config", "config.yaml"), ("env", ".env"))
 
 
+def _file_digest(path: Path) -> Optional[str]:
+    """sha256 of *path* (None: absent; "unreadable" when it cannot be read)."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).exists() else None
+    except OSError:
+        return "unreadable"
+
+
 def _file_digests(home: Path) -> dict:
-    """sha256 of each restored file (None: absent; "unreadable" when it cannot be read)."""
-    out: dict = {}
-    for _key, name in _RESTORED_FILES:
-        path = Path(home) / name
-        try:
-            out[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-        except OSError:
-            out[name] = "unreadable"
-    return out
+    return {name: _file_digest(Path(home) / name) for _key, name in _RESTORED_FILES}
+
+
+def _backup_digest(m: dict, key: str) -> Optional[str]:
+    backup = (m.get("backups") or {}).get(key)
+    return _file_digest(Path(backup)) if isinstance(backup, str) else None
+
+
+def _put_back(home: Path, m: dict, key: str, name: str) -> None:
+    """Write ``home/name`` back from its backup, checked immediately before the write: only while it is
+    exactly as this migration wrote it and the backup can be read. Otherwise nothing is written (the
+    caller keeps the old backend down and prints the manual steps)."""
+    target, backups = Path(home) / name, m["backups"]
+    now, backup = _file_digest(target), backups.get(key)
+    if backup is not None and _backup_digest(m, key) in (None, "unreadable"):
+        raise StepFailed(f"the backup of {name} ({backup}) is missing or cannot be read, so {target} was not "
+                         f"written back; your edits were kept")
+    if now != "unreadable" and now == _backup_digest(m, key):
+        return  # already as before the migration (an earlier, interrupted rollback put it back)
+    recorded = m.get("files_after_apply")
+    if now == "unreadable" or not isinstance(recorded, dict) or name not in recorded or now != recorded[name]:
+        raise StepFailed(f"{target} changed since the migration wrote it, so it was not written back and your "
+                         f"edits were kept; merge them with {backup or 'nothing (it did not exist before)'} by hand")
+    _restore_file(home, name, backup, backups.get(f"{key}_mode"))
 
 
 def _restore_files_problem(home: Path, m: dict) -> Optional[str]:
@@ -537,7 +565,6 @@ def _undo(run: Run, errors: list[str]) -> None:
     backend stays down and the run ends incomplete (exit 5) instead of leaving two session owners."""
     host, m = run.host, run.data
     gw_before, rec = m["gateway"], m["old_backend"]
-    backups = m["backups"]
     phase = _phases(run)
     safe = [True]  # may the old backend be started again?
 
@@ -559,10 +586,8 @@ def _undo(run: Run, errors: list[str]) -> None:
         attempt("stopped the gateway", lambda: host.gateway_verb("stop"), guards=True)
     phase("restore_files")
     if _entered(m, "write_config"):
-        attempt("restored config.yaml", lambda: _restore_file(host.home, "config.yaml", backups["config"],
-                                                              backups.get("config_mode")), guards=True)
-        attempt("restored .env", lambda: _restore_file(host.home, ".env", backups["env"], backups.get("env_mode")),
-                guards=True)
+        for key, name in _RESTORED_FILES:
+            attempt(f"restored {name}", lambda key=key, name=name: _put_back(host.home, m, key, name), guards=True)
     phase("restore_gateway_service")
     if _entered(m, "gateway_service"):
         if not gw_before["installed"]:
@@ -745,14 +770,8 @@ def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -
     return EXIT_ROLLED_BACK if final_state == "rolled_back" else EXIT_OK
 
 
-def restore(host, *, yes: bool, detached: bool = False) -> int:
-    m = read_manifest(host.home)
-    if m is None or m.get("state") != "done":
-        state = "no migration recorded" if m is None else f"the last run is {m.get('state')!r}, not 'done'"
-        print(f"✗ Nothing to restore: {state} ({manifest_path(host.home)}).")
-        if detached:
-            record_refusal(host, mode="restore", reason=f"nothing to restore: {state}", exit_code=EXIT_BLOCKED)
-        return EXIT_BLOCKED
+def _restore_refused(host, m: dict, detached: bool) -> Optional[int]:
+    """The exit code of a --restore that must change nothing (prints why and the manual steps), else None."""
     if (reason := _symlinked(host.home)) is not None:
         print(f"✗ Nothing changed: {reason}.")
         if detached:
@@ -761,7 +780,8 @@ def restore(host, *, yes: bool, detached: bool = False) -> int:
     if (problem := _restore_files_problem(host.home, m)) is not None:
         # Checked before any service is touched: putting the backups back would lose those edits.
         m.setdefault("home", str(host.home))
-        reason = f"{problem}; a restore would overwrite it, so the gateway keeps serving"
+        reason = (f"{problem}; a restore would overwrite it, so nothing was written: your edits were kept and the "
+                  f"gateway keeps serving")
         print(f"✗ Nothing changed: {reason}.")
         print("  To restore by hand, keeping your edits: merge them into the backup copies named below (or "
               "re-apply them after), then run these steps:")
@@ -781,10 +801,25 @@ def restore(host, *, yes: bool, detached: bool = False) -> int:
                            old_address=m.get("old_address", ""), new_address=m.get("new_address", ""),
                            manual_steps=_manual_rollback_steps(m))
         return EXIT_ROLLBACK_INCOMPLETE
+    return None
+
+
+def restore(host, *, yes: bool, detached: bool = False) -> int:
+    m = read_manifest(host.home)
+    if m is None or m.get("state") != "done":
+        state = "no migration recorded" if m is None else f"the last run is {m.get('state')!r}, not 'done'"
+        print(f"✗ Nothing to restore: {state} ({manifest_path(host.home)}).")
+        if detached:
+            record_refusal(host, mode="restore", reason=f"nothing to restore: {state}", exit_code=EXIT_BLOCKED)
+        return EXIT_BLOCKED
+    if (refused := _restore_refused(host, m, detached)) is not None:
+        return refused
     clear_refusal(host.home)
     if not _confirm(f"Restore {m['old_address']} to the old backend?", yes):
         print("Aborted; nothing changed.")
         return EXIT_OK
+    if (refused := _restore_refused(host, m, detached)) is not None:
+        return refused  # checked again: the files or backups may have changed while the prompt was open
     from gateway.status import get_process_start_time
     # The restore is its own run: UIs tell it from the earlier migration by started_at.
     m.update(kind="restore", state="running", step=RESTORE_STEPS[0], pid=os.getpid(),

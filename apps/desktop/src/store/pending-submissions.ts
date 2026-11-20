@@ -16,12 +16,18 @@ const unstored = new Map<string, PendingSubmission>()
 // One journal write, best effort: a browser origin at its storage quota refuses the setItem, and
 // the message the user typed is not the cache's to refuse (#156129). The refused entry lives in
 // this window's memory instead; cross-window sharing and reload recovery degrade, sends do not.
-function journalEntry(key: string, entry: PendingSubmission): void {
+// Whether the write landed is part of the contract: the v1 migration may only drain a slice once
+// every copy it replaced actually persisted.
+function journalEntry(key: string, entry: PendingSubmission): boolean {
   try {
     window.localStorage.setItem(key, JSON.stringify(entry))
     unstored.delete(key)
+
+    return true
   } catch {
     unstored.set(key, entry)
+
+    return false
   }
 }
 
@@ -135,15 +141,27 @@ function writeEntries(session: string, before: Record<string, PendingSubmission>
     // Migration guarantee: EVERY surviving entry must be readable from its v2 key before the
     // slice dies — the loop above skips entries that are unchanged this snapshot (they may live
     // only in v1), so this copy, not the diff loop, is what v1-only records migrate through.
-    for (const [id, entry] of Object.entries(after)) { journalEntry(entryKey(session, id), entry) }
-    delete legacy[session]
+    // A quota-refused copy holds the slice closed: the receipt stays durable in the copy the
+    // origin has already accepted (reads merge the slice and prefer any v2 key that did land),
+    // and the next reconcile retries the drain. Deleting the slice before its v2 successor
+    // landed demoted an already-persisted receipt to this window's memory — a reload lost the
+    // card and its fence to the very quota the write refused.
+    let migrated = true
 
-    // A quota-refused legacy rewrite only delays draining the stale slice, and reads prefer the
-    // per-entry keys anyway.
-    try {
-      if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
-      else { window.localStorage.removeItem(LEGACY_KEY) }
-    } catch { /* the drained slice survives in the v2 keys */ }
+    for (const [id, entry] of Object.entries(after)) {
+      if (!journalEntry(entryKey(session, id), entry)) { migrated = false }
+    }
+
+    if (migrated) {
+      delete legacy[session]
+
+      // A quota-refused legacy rewrite only delays draining the stale slice, and reads prefer the
+      // per-entry keys anyway.
+      try {
+        if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
+        else { window.localStorage.removeItem(LEGACY_KEY) }
+      } catch { /* the drained slice survives in the v2 keys */ }
+    }
   }
 }
 

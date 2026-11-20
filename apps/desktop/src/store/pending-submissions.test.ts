@@ -364,3 +364,43 @@ it('a first reconcile of a v1 session migrates UNCHANGED receipts into v2 keys b
   expect(JSON.parse(String(window.localStorage.getItem(v2Key)))).toMatchObject({ id: 'hold', text: 'still pending', status: 'queued' })
   expect(JSON.parse(String(window.localStorage.getItem(legacyKey) ?? '{}')).migrated).toBeUndefined()
 })
+
+// The drain must not outrun its own writes: a quota-refused v2 copy may not delete the v1 slice
+// still holding the receipt (#156129 review). A reload is a fresh module instance — this window's
+// memory is gone — so only what storage kept carries the pending card and its reconciliation fence.
+it('a quota-refused v1 migration holds the slice until the v2 write lands and reloads from storage', async () => {
+  const legacyKey = 'hermes.desktop.pendingSubmissions.v1'
+  const v2Key = 'hermes.desktop.pendingSubmissions.v2:' + JSON.stringify(['quota', 'hold'])
+  window.localStorage.setItem(legacyKey, JSON.stringify({ quota: { hold: { id: 'hold', text: 'persisted at the wall', status: 'queued' } } }))
+
+  const real = window.localStorage.setItem.bind(window.localStorage)
+
+  const spy = vi.spyOn(window.localStorage, 'setItem').mockImplementation((key: string, value: string) => {
+    // Storage fixture: the v2 journal refuses wholesale, the v1 blob still accepts writes.
+    if (String(key).startsWith('hermes.desktop.pendingSubmissions.v2:')) { throw new DOMException('exceeded the quota', 'QuotaExceededError') }
+
+    real(key, value)
+  })
+
+  try {
+    reconcilePendingSubmissions('quota', [{ admission_id: 'hold', status: 'queued', user: 'persisted at the wall' }])
+  } finally {
+    spy.mockRestore()
+  }
+
+  // The refused copy held the slice closed: the already-persisted receipt is still in storage...
+  expect(JSON.parse(String(window.localStorage.getItem(legacyKey))).quota.hold).toMatchObject({ id: 'hold', status: 'queued' })
+  expect(window.localStorage.getItem(v2Key)).toBeNull()
+
+  // ...and a fresh module instance — a reload, the in-memory copy gone — still reads the card
+  // and still counts the session as holding an unsettled admission.
+  vi.resetModules()
+  const fresh = await import('./pending-submissions')
+  expect(fresh.readPendingSubmissions('quota').hold).toMatchObject({ text: 'persisted at the wall', status: 'queued' })
+  expect(fresh.journaledPendingSessions()).toContain('quota')
+
+  // Storage healthy again: the next reconcile lands the v2 copy, then drains the slice.
+  fresh.reconcilePendingSubmissions('quota', [{ admission_id: 'hold', status: 'queued', user: 'persisted at the wall' }])
+  expect(JSON.parse(String(window.localStorage.getItem(legacyKey) ?? '{}')).quota).toBeUndefined()
+  expect(JSON.parse(String(window.localStorage.getItem(v2Key)))).toMatchObject({ id: 'hold', status: 'queued' })
+})

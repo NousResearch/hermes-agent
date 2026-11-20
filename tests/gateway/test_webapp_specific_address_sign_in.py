@@ -144,6 +144,26 @@ def test_a_specific_address_checks_the_host_a_wildcard_bind_cannot(tmp_path, stu
     assert asyncio.run(host_answers(ADDRESS, "https://hermes.example.net"))["hermes.example.net"] == 200
 
 
+def test_a_dashboard_bound_to_the_address_after_the_mount_closed_refuses_a_loopback_host(tmp_path, stub_sign_in):
+    """The loopback socket goes with the mount: a standalone dashboard bound to the same address later
+    in the process (no loopback socket) refuses a loopback Host through the real Host check, as main does."""
+    from hermes_cli import web_server
+
+    async def scenario() -> dict:
+        mount = _mount(tmp_path, ADDRESS)
+        await mount.ensure()
+        await mount.close()
+        web_server.app.state.bound_host = ADDRESS  # as ``hermes dashboard --host <address>`` binds it
+        transport = httpx.ASGITransport(app=web_server.app, client=REMOTE_PEER)
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://{ADDRESS}:{PORT}") as client:
+            return {host: (await client.get("/api/status", headers={"Host": host})).status_code
+                    for host in (f"localhost:{PORT}", f"127.0.0.1:{PORT}", f"{ADDRESS}:{PORT}")}
+
+    answers = asyncio.run(scenario())
+    assert answers[f"localhost:{PORT}"] == answers[f"127.0.0.1:{PORT}"] == 400
+    assert answers[f"{ADDRESS}:{PORT}"] != 400
+
+
 def test_without_a_sign_in_provider_a_specific_address_is_refused_like_a_wildcard_bind(tmp_path, stub_sign_in):
     from hermes_cli.dashboard_auth import clear_providers
 

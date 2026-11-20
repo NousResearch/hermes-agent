@@ -129,6 +129,7 @@ class GatewayDashboardMount:
             self.web.app.state.gateway_runner = None
             self.web.app.state.session_authority = None
             self.web.app.state.withhold_session_token = False
+            self.web.app.state.loopback_companion = None  # a listener mounted next has no loopback socket
             if hasattr(self.web.app.state, "listener_public_url"):
                 delattr(self.web.app.state, "listener_public_url")
             if self._replaced_session_token is not None:

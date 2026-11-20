@@ -752,6 +752,21 @@ def test_a_by_hand_move_blocks_when_the_webapp_is_already_enabled_elsewhere(home
     assert entry["steps"] == []  # nothing that would set webapp.port 9119 over the Webapp on 9200
 
 
+@pytest.mark.parametrize("turns", [2, None])
+def test_a_by_hand_move_blocks_on_active_or_unknown_turns_unless_force_interrupt(home, capsys, turns):
+    host = ManualHost(home, host="127.0.0.1")
+    host.turns = turns
+
+    code, out = _plan(host, capsys)
+    assert code == engine.EXIT_BLOCKED and out["plan"]["running_turns"] == turns
+    assert any("--force-interrupt" in b for b in out["plan"]["blockers"])
+    assert out["plan"]["unsupported"][0]["steps"] == []
+
+    code, out = _plan(host, capsys, force_interrupt=True)
+    assert code == engine.EXIT_UNSUPPORTED and out["plan"]["running_turns"] == turns
+    assert out["plan"]["unsupported"][0]["steps"]
+
+
 def test_a_by_hand_move_never_plans_keep_webapp_address(home, capsys):
     _webapp(home, "  enabled: true\n  host: 127.0.0.1\n  port: 9200\n")
 

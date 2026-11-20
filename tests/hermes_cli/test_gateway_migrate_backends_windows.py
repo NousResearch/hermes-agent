@@ -5,6 +5,7 @@ dump, a process table, files in a temporary Startup folder); nothing here needs 
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from pathlib import Path
@@ -215,12 +216,20 @@ def test_windows_dry_run_exits_6_changes_nothing_and_prints_the_task_steps(home,
     assert _PASSWORD not in out and "chmod" not in out and "&&" not in out
 
 
-def test_windows_steps_warn_when_a_turn_is_running_on_the_old_backend(home, capsys):
+def test_windows_steps_block_when_a_turn_is_running_unless_force_interrupt(home, capsys):
     host = WindowsHost(home)
     host.turns = 1
 
-    assert engine.cmd_apply(host, _args(dry_run=True)) == engine.EXIT_UNSUPPORTED
-    assert "1 turn(s) are running on it now: stopping it interrupts them" in capsys.readouterr().out
+    assert engine.cmd_apply(host, _args(dry_run=True, json=True)) == engine.EXIT_BLOCKED
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["plan"]["running_turns"] == 1
+    assert blocked["plan"]["unsupported"][0]["steps"] == []
+    assert any("--force-interrupt" in b for b in blocked["plan"]["blockers"])
+
+    assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    out = capsys.readouterr().out
+    assert "1 turn(s) are running on it now: stopping it interrupts them" in out
+    assert 'schtasks /End /TN "Hermes Dashboard"' in out
 
 
 def test_where_wmic_works_the_windows_report_reads_and_prints_what_main_does(monkeypatch):

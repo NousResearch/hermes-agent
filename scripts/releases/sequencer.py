@@ -33,12 +33,11 @@ def _key(version: str) -> tuple[int, int, int]:
 
 
 def plan(claims: list[dict], *, head: str | None,
-         requested_version: str | None = None, unfinished: str | None = None) -> list[dict]:
+         requested_version: str | None = None, unfinished: dict | None = None) -> list[dict]:
     """Return each eligible draft flip immediately followed by its head advance.
 
-    ``unfinished`` names the desktop head whose advance stopped after the head moved
-    (_unfinished_desktop_head). At the head it advances again, before anything newer; under a
-    newer head only its desktop advance repeats (``finish``), since that release owns the aliases.
+    ``unfinished`` is the step that finishes the desktop head whose advance stopped after the head
+    moved (_unfinished_desktop_head); it runs before anything newer.
     """
     ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
     head_key = _key(head) if head is not None else None
@@ -51,10 +50,10 @@ def plan(claims: list[dict], *, head: str | None,
         state = claim["state"]
 
         if head_key is not None and version_key <= head_key:
-            if state == "published" and version == unfinished:
-                kind = "advance" if version_key == head_key else "finish"
+            if state == "published" and unfinished is not None and version in unfinished.values():
+                kind, = unfinished
                 log(f"  plan {version}: its advance did not finish after the head moved — {kind} again")
-                steps.append({kind: version})
+                steps.append(unfinished)
                 continue
             if state in {"published", "burned"}:
                 log(f"  plan {version}: {state}, at or below head {head} — nothing to do")
@@ -384,31 +383,34 @@ def channel_head(desktop_head: str | None, records: list[dict],
 STABLE_POINTER = "releases/stable/release-candidates.json"
 
 
-def _aliases_behind(record: dict, records: list[dict]) -> bool:
-    """Whether the Docker aliases provably miss ``record``, the desktop and channel head.
+def _alias_state(record: dict, records: list[dict]) -> str:
+    """Who holds the Docker aliases relative to ``record``: "newer", "behind" or "current".
 
-    A digest a newer published release carries means that release owns the aliases, and an
-    alias that cannot be read proves nothing: either way the aliases are left alone, so a
-    registry error between two probes can never roll them back.
+    A digest a newer published release carries means that release owns the aliases (the
+    channel head read can have missed it on a registry error). An alias that cannot be read
+    proves nothing and counts as current, so neither case can roll the aliases back.
     """
     from scripts.releases import docker
 
     alias = docker.stable_alias_digest()
-    newer = {row["docker_manifest_digest"] for row in records if row["state"] == "published"
-             and _key(row["version"]) > _key(record["version"])}
-    if alias is None or alias in newer:
-        return False
-    return alias != record["docker_manifest_digest"] or docker.stable_desktop_alias_behind(record["claim_tag"])
+    if alias in {row["docker_manifest_digest"] for row in records if row["state"] == "published"
+                 and _key(row["version"]) > _key(record["version"])}:
+        return "newer"
+    if alias is not None and (alias != record["docker_manifest_digest"]
+                              or docker.stable_desktop_alias_behind(record["claim_tag"])):
+        return "behind"
+    return "current"
 
 
-def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None) -> str | None:
-    """The protected desktop head's version when its advance did not finish.
+def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None) -> dict | None:
+    """The step that finishes the protected desktop head's advance, or None when it finished.
 
     publish_release writes the candidate pointer last, after the head moves, and the Docker
     aliases move after that, slim before desktop, so a failure there leaves the head on a
     release that plan() would otherwise count as done. The pointer is the source channel's
-    update target and the next release's upgrade baseline. The Docker aliases count only while
-    this release is the head: a newer release owns them otherwise.
+    update target and the next release's upgrade baseline. A full ``advance`` repeats the
+    Docker promotion too; while a newer release owns the aliases only the desktop advance
+    repeats (``finish``).
     """
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases
@@ -423,9 +425,15 @@ def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head:
         pointer = json.loads(read_archive(STABLE_POINTER))
     except ChannelError:
         pointer = None  # the head's own pointer write never landed
-    if pointer != candidate:
-        return desktop
-    return desktop if desktop == head and "docker" in record["lanes"] and _aliases_behind(record, records) else None
+    if desktop != head:
+        aliases = "newer"  # a newer release holds the channel head, and with it the aliases
+    elif "docker" in record["lanes"]:
+        aliases = _alias_state(record, records)
+    else:
+        aliases = "current"
+    if aliases == "newer":
+        return {"finish": desktop} if pointer != candidate else None
+    return {"advance": desktop} if pointer != candidate or aliases == "behind" else None
 
 
 def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:

@@ -814,10 +814,13 @@ def test_an_unfinished_head_under_a_newer_release_repeats_only_its_desktop_advan
     assert events == [("feed", "0.21.5")]
 
 
-def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monkeypatch):
+@pytest.mark.parametrize("pointer_current", [True, False])
+def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monkeypatch, pointer_current):
     """A newer Docker-only 0.21.6 owns the aliases. The first alias probe fails, so the channel head
     falls back to the desktop head 0.21.5; the next probe sees 0.21.6's digest, which is that
-    release's, not a sign 0.21.5's promotion stopped."""
+    release's, not a sign 0.21.5's promotion stopped. A stale 0.21.5 pointer still gets its
+    desktop advance, without the Docker promotion that would move the aliases back."""
+    from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases, docker, sequencer, store
 
     archived = json.dumps({"tag": "v0.21.5", "packages": []}).encode()
@@ -830,6 +833,15 @@ def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monke
     tags["v0.21.6"][2].update(dockerManifestDigest=newer, candidateManifestSha256=None)  # builds no bundle
     for row in releases:
         row.update(draft=False, published_at="2026-09-22T01:00:00Z")
+    objects = {"releases/tag/rc.1-v0.21.5/release-candidates.json": archived}
+    if pointer_current:
+        objects["releases/stable/release-candidates.json"] = archived
+
+    def read_archive(key):
+        if key not in objects:
+            raise ChannelError(f"Release archive object is unavailable: {key}")
+        return objects[key]
+
     _registry(monkeypatch, {"rc.1-v0.21.5": SLIM, "rc.1-v0.21.5-desktop": DESKTOP, "rc.1-v0.21.6": newer,
                             "stable-desktop": "sha256:" + "f" * 64})
     probes = []
@@ -845,16 +857,21 @@ def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monke
     registry_inspect = docker._inspect
     monkeypatch.setattr(docker, "_inspect", inspect)
     events = []
-    monkeypatch.setattr(channel_releases, "advance_stable",
-                        lambda _env, record, _root: events.append(("feed", record["version"])))
+
+    def advance(_env, record, _root):
+        events.append(("feed", record["version"]))
+        objects["releases/stable/release-candidates.json"] = archived
+
+    monkeypatch.setattr(channel_releases, "advance_stable", advance)
     monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.5")
     monkeypatch.setattr(docker, "promote_stable",
                         lambda claim_tag, _digest, _release_tag: events.append(("aliases", claim_tag)))
     monkeypatch.setattr(store, "release_from_env", lambda *_a: None)
 
-    sequencer.reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run, read_archive=lambda _key: archived)
+    steps = sequencer.reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run, read_archive=read_archive)
 
-    assert events == [("aliases", "rc.1-v0.21.6")]
+    assert steps == ([] if pointer_current else [{"finish": "0.21.5"}]) + [{"advance": "0.21.6"}]
+    assert events == ([] if pointer_current else [("feed", "0.21.5")]) + [("aliases", "rc.1-v0.21.6")]
     assert len(probes) >= 2
 
 

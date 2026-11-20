@@ -5,6 +5,7 @@ import {
   createLearnHandoffController,
   formatLearnCommand,
   hasLearnSeedState,
+  isUserInitiatedTerminalInput,
   type LearnSocketLike,
   normalizeLearnSeed,
   readLearnSeedFromState,
@@ -294,5 +295,39 @@ describe("createLearnHandoffController", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("isUserInitiatedTerminalInput", () => {
+  it("recognizes user typing, editing keys, and bracketed paste", () => {
+    expect(isUserInitiatedTerminalInput("a")).toBe(true);
+    expect(isUserInitiatedTerminalInput("draft text")).toBe(true);
+    expect(isUserInitiatedTerminalInput("\r")).toBe(true);
+    expect(isUserInitiatedTerminalInput("\u007f")).toBe(true);
+    expect(isUserInitiatedTerminalInput("\u001b[A")).toBe(true);
+    expect(isUserInitiatedTerminalInput("\u001b[200~pasted draft\u001b[201~")).toBe(
+      true,
+    );
+    expect(
+      isUserInitiatedTerminalInput("\u001b[200~line 1\rline 2\u001b[201~"),
+    ).toBe(true);
+  });
+
+  it("ignores empty input and terminal-generated replies or focus/mouse events", () => {
+    expect(isUserInitiatedTerminalInput("")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[1;1R")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[?1;2c")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[>0;276;0c")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[?2004;1$y")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[I")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[O")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b]11;rgb:0000/0000/0000\u001b\\")).toBe(
+      false,
+    );
+    expect(isUserInitiatedTerminalInput("\u001bP>|xterm.js(6.0.0)\u001b\\")).toBe(
+      false,
+    );
+    expect(isUserInitiatedTerminalInput("\u001b[<0;12;5M")).toBe(false);
+    expect(isUserInitiatedTerminalInput("\u001b[?1;2c\u001b[1;1R")).toBe(false);
   });
 });

@@ -251,8 +251,11 @@ export default function SkillsPage() {
     const learnState = buildLearnNavigationState(segs.join("; "));
     if (!learnState) return;
     setLearnOpen(false);
-    navigate("/chat", { state: learnState });
-  }, [learnDir, learnUrl, learnText, navigate]);
+    const target = selectedProfile
+      ? `/chat?profile=${encodeURIComponent(selectedProfile)}`
+      : "/chat";
+    navigate(target, { state: learnState });
+  }, [learnDir, learnUrl, learnText, navigate, selectedProfile]);
   const openEditEditor = useCallback((skillName: string) => {
     setEditorSkill(skillName);
     setEditorOpen(true);

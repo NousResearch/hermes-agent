@@ -99,6 +99,7 @@ import {
 } from "@/lib/terminal-font-refit";
 import { generateChannelId } from "@/lib/chat-channel-id";
 import { sendCopyLastCommand } from "@/lib/chat-copy-last";
+import { isUserInitiatedTerminalInput } from "@/lib/learn-handoff";
 import { useLearnHandoff } from "@/lib/use-learn-handoff";
 import { CopyLastButton } from "@/lib/chat-copy-last-button";
 import {
@@ -1491,7 +1492,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
         );
         ptyInputLineRef.current = normalized.nextLine;
-        if (ptyInputLineRef.current) learnHandoff.onUserInput();
+        if (isUserInitiatedTerminalInput(normalized.data)) learnHandoff.onUserInput();
         if (normalized.normalized) {
           mobileReplacementInputUntilRef.current = 0;
         }

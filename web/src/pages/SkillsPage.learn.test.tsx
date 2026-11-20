@@ -11,14 +11,19 @@ const apiMocks = vi.hoisted(() => ({
   getSkillsHubTaps: vi.fn(async () => ({ taps: [] })),
 }));
 
+const profileScopeState = vi.hoisted(() => ({
+  selectedProfile: "",
+}));
+
 vi.mock("@/lib/api", () => ({
   api: apiMocks,
 }));
 vi.mock("@/contexts/useProfileScope", () => ({
   useProfileScope: () => ({
-    selectedProfile: "default",
-    activeProfile: "default",
+    profile: profileScopeState.selectedProfile,
+    currentProfile: "default",
     profiles: [],
+    setProfile: vi.fn(),
   }),
 }));
 vi.mock("@/contexts/usePageHeader", () => ({
@@ -57,6 +62,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  profileScopeState.selectedProfile = "";
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -130,6 +136,48 @@ describe("SkillsPage Learn a skill handoff", () => {
       pathname: "/chat",
       search: "",
       state: { learnSeed: "workflow notes second line" },
+    });
+  });
+
+  it("preserves ?profile= on /chat navigation when a non-empty profile is selected", async () => {
+    profileScopeState.selectedProfile = "work";
+    let chatLocation: { pathname: string; search: string; state: unknown } | null = null;
+    function ChatSpy() {
+      const loc = useLocation();
+      chatLocation = { pathname: loc.pathname, search: loc.search, state: loc.state };
+      return <div data-testid="chat-spy" />;
+    }
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MemoryRouter initialEntries={["/skills?profile=work"]}>
+            <Routes>
+              <Route path="/skills" element={<SkillsPage />} />
+              <Route path="/chat" element={<ChatSpy />} />
+            </Routes>
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+
+    const openBtn = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Learn a skill"),
+    );
+    await act(async () => openBtn!.click());
+
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => setNativeValue(textarea, "profile scoped skill"));
+
+    const submitBtn = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Learn it"),
+    );
+    await act(async () => submitBtn!.click());
+
+    expect(chatLocation).toEqual({
+      pathname: "/chat",
+      search: "?profile=work",
+      state: { learnSeed: "profile scoped skill" },
     });
   });
 });

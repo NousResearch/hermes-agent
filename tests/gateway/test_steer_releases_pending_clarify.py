@@ -40,7 +40,7 @@ class _Receiver:
 def _no_leaked_clarify():
     """Drop the entry this module registers, whatever the test's outcome."""
     yield
-    clarify_gateway.resolve_gateway_clarify(CLARIFY_ID, clarify_gateway.CANCELLED)
+    clarify_gateway.resolve_gateway_clarify(CLARIFY_ID, clarify_gateway.CANCELLED, session_key=SESSION_KEY)
     clarify_gateway.wait_for_response(CLARIFY_ID, 0.01)
     clarify_gateway.clear_session(SESSION_KEY)
 

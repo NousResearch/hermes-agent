@@ -752,6 +752,7 @@ def cmd_install(
     from hermes_cli.plugin_provider_requests import requires_auth_notice
     if notice := requires_auth_notice(installed_manifest):
         console.print(f"[yellow]{notice}[/yellow]")
+    _pc()._settings_cli().print_settings_hint(console, installed_name, target)
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:

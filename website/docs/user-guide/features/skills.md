@@ -1081,6 +1081,8 @@ On each sync, Hermes recomputes the hash of your local copy and compares it to t
 
 Generated runtime caches inside a skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and a `.pyc` sitting next to its `.py`) are not part of the hash, so running a skill's helper script never marks it user-modified or hides it from `hermes skills list-modified` / `diff`.
 
+If a skill leaves the bundle, `hermes update` reports any non-archived local copy that isn't managed by the Skills Hub. The summary distinguishes skills that moved to the official optional catalog from skills that no longer ship. This notice does not delete, overwrite, or install a skill.
+
 The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
 
 `hermes skills reset` is the escape hatch:

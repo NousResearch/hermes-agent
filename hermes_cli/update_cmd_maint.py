@@ -497,6 +497,14 @@ def _report_catalog_plugin_updates() -> None:
     report_catalog_updates_after_hermes_update(home, _sibling_profile_homes(home))
 
 
+def _retired_skill_sync_statuses(result: dict) -> list[str]:
+    return [
+        f"{label} (local copy kept): {', '.join(names)}"
+        for key, label in (("retired_optional", "moved to optional"), ("retired_removed", "removed from the bundle"))
+        if (names := result.get(key))
+    ]
+
+
 def _print_bundled_skills_sync_report() -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
     from tools.skills_sync import sync_skills
@@ -512,7 +520,12 @@ def _print_bundled_skills_sync_report() -> None:
         print(f"  − {len(result['cleaned'])} removed from manifest")
     if result.get("relocated"):
         print(f"  → {len(result['relocated'])} moved to new upstream paths: {', '.join(result['relocated'])}")
-    if not result["copied"] and not result.get("updated"):
+    retired = _retired_skill_sync_statuses(result)
+    for status in retired:
+        print(f"  ! {status}")
+    if retired:
+        print("    These local copies no longer receive bundled updates.")
+    if not result["copied"] and not result.get("updated") and not retired:
         print("  ✓ Skills are up to date")
 
 
@@ -823,6 +836,7 @@ def _profile_skill_sync_status(r) -> str:
         count = len(r.get(key, []))
         if count:
             parts.append(fmt.format(count))
+    parts.extend(_retired_skill_sync_statuses(r))
     return ", ".join(parts) if parts else "up to date"
 
 

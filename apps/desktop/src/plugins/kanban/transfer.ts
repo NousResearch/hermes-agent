@@ -51,8 +51,19 @@ export async function runImportBoardFlow(os: PluginOs, k: KanbanText): Promise<n
   // app uploads the archive and hands back the copy it staged, which is a path
   // this backend can read. Asking the first door first keeps the native case
   // on the user's file and never opens two dialogs.
-  const picked =
-    (await os.pickOpenPath(options)) ?? (await os.pickBrowserFile?.(options))?.path ?? null
+  //
+  // The browser pick rejects when the upload fails — a board archive over the
+  // browser's size cap, or a gateway that refused it — and that has to reach
+  // the user as an error, not as the silence a cancel produces.
+  let picked: null | string
+
+  try {
+    picked = (await os.pickOpenPath(options)) ?? (await os.pickBrowserFile?.(options))?.path ?? null
+  } catch (error) {
+    host.notify({ kind: 'error', message: errText(error) })
+
+    return null
+  }
 
   if (!picked) {
     return null

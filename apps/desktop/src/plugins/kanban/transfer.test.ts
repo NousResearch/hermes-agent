@@ -65,6 +65,24 @@ describe('runImportBoardFlow', () => {
     expect(boardApi.importBoard).toHaveBeenCalledWith('/home/u/.hermes/uploads/web-5c1f0a9b2d3e4f60-ops.tar.gz')
   })
 
+  it('reports a failed browser upload instead of doing nothing', async () => {
+    // The picker rejects when the archive is over the browser's size cap or the
+    // gateway refuses it. Board archives carry hundreds of megabytes of
+    // attachments, so this is the common path in a browser, not an edge: it has
+    // to say something rather than look like the user cancelled.
+    const os = osWith({
+      pickBrowserFile: vi.fn().mockRejectedValue(new Error('The file is larger than 16 MiB, the largest file the browser can attach.'))
+    })
+
+    await expect(runImportBoardFlow(os, k)).resolves.toBeNull()
+
+    expect(boardApi.importBoard).not.toHaveBeenCalled()
+    expect(doors.notify).toHaveBeenCalledWith({
+      kind: 'error',
+      message: 'The file is larger than 16 MiB, the largest file the browser can attach.'
+    })
+  })
+
   it('stays a no-op when both pickers are cancelled, and on a shell without the browser door', async () => {
     boardApi.importBoard.mockResolvedValue(imported)
 

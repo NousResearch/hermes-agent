@@ -1624,25 +1624,42 @@ To reach a picked file in **both** renderers, ask the two doors in order:
 ```ts
 const options = { filters: [{ extensions: ['csv'], name: 'CSV' }], title: 'Open a sheet' }
 
-// Native: the user's own path. Browser-hosted: null, no dialog, nothing staged.
-const native = await ctx.os.pickOpenPath(options)
+try {
+  // Native: the user's own path. Browser-hosted: null, no dialog, nothing staged.
+  const native = await ctx.os.pickOpenPath(options)
 
-// Browser-hosted: the page picks, the app uploads, and you get the copy the
-// backend holds plus the name the file had. Native: null (there is nothing
-// staged to describe).
-const upload = native ? null : await ctx.os.pickBrowserFile?.(options)
+  // Browser-hosted: the page picks, the app uploads, and you get the copy the
+  // backend holds plus the name the file had. Native: null (there is nothing
+  // staged to describe).
+  const upload = native ? null : await ctx.os.pickBrowserFile?.(options)
 
-const path = native ?? upload?.path ?? null
+  const path = native ?? upload?.path ?? null
+
+  if (path) {
+    // Read it through your own rest backend.
+  }
+} catch (error) {
+  // The browser upload failed (too large, or the gateway refused it).
+  // Not a cancel — tell the user.
+}
 ```
 
 `pickBrowserFile` resolves `{ name, path }`: `path` is on the **backend's**
 filesystem and inside the Hermes home (`<profile home>/uploads/`), so read it
 through your own `rest` backend and expect a guard that refuses the home to
 refuse it. `name` is what the file was called where the user picked it, which
-is what to show them — the staged name carries a `web-<hex>-` prefix.
-Feature-detect it on older hosts (`ctx.os.pickBrowserFile?.(…)`), and prefer
-`pickOpenPath` first so the native case keeps the user's own file and never
-opens two dialogs.
+is what to show them — the `web-<hex>-` prefix the staging adds is stripped
+whether or not the bridge can name the file itself.
+
+It resolves `null` when there is nothing to describe (the native app, where
+`pickOpenPath` is the door) and when the user cancels, and it **rejects** when
+the upload fails — a file over the browser's 16 MiB cap, a gateway that
+refused it, a dropped connection. Catch it: a rejected pick is not a cancel,
+and treating the two alike is how an import button ends up doing nothing.
+
+Feature-detect it on older hosts (`ctx.os.pickBrowserFile?.(…)` — the member is
+optional for exactly that reason), and prefer `pickOpenPath` first so the
+native case keeps the user's own file and never opens two dialogs.
 
 ### Files — `ctx.files` {#plugin-files}
 

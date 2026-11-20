@@ -16,6 +16,7 @@ import type { ReadableAtom } from 'nanostores'
 
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 import {
   listPluginAppActions,
   type PluginAppActionId,
@@ -23,7 +24,6 @@ import {
   type PluginRunActionResult,
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
@@ -91,10 +91,12 @@ export interface PluginOs {
   /** The other half of the ladder, for a browser-hosted Desktop: pick a file
    *  in the page, which the app uploads to the backend and answers with the
    *  copy it staged plus the name the file had. Resolves null in the native
-   *  app, where `pickOpenPath` is the door, and null on cancel. Reach for
+   *  app, where `pickOpenPath` is the door, and null on cancel. Rejects when
+   *  the upload itself fails (over the browser's size cap, or refused by the
+   *  gateway) so a plugin can tell that from a cancel. Reach for
    *  `pickOpenPath` first and this second; feature-detect on older hosts:
    *  `ctx.os.pickBrowserFile?.(…)`. */
-  pickBrowserFile: (options?: PluginFileDialogOptions) => Promise<null | PluginPickedUpload>
+  pickBrowserFile?: (options?: PluginFileDialogOptions) => Promise<null | PluginPickedUpload>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
 }
@@ -290,23 +292,6 @@ function createPluginOs(pluginId: string): PluginOs {
     }
   }
 
-  // And again for the picker that answers with the upload it described.
-  const attemptPick = async (
-    run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<null | PluginPickedUpload>
-  ) => {
-    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
-
-    if (!bridge) {
-      return null
-    }
-
-    try {
-      return await run(bridge)
-    } catch {
-      return null
-    }
-  }
-
   return {
     notify: input => dispatchPluginNativeNotification(pluginId, input),
     openExternal: url =>
@@ -324,7 +309,7 @@ function createPluginOs(pluginId: string): PluginOs {
         // another staged copy behind (#156470). The capability is unavailable
         // here, so it answers the documented null — the same answer
         // pickSavePath gives without selectSavePath — and stages nothing.
-        if (isBrowserHostedDesktop()) {
+        if (!hostHas('pluginNativeFileDialog')) {
           return null
         }
 
@@ -332,29 +317,35 @@ function createPluginOs(pluginId: string): PluginOs {
 
         return picked?.[0] ?? null
       }),
-    pickBrowserFile: options =>
-      attemptPick(async bridge => {
-        // The other half of the ladder: this door only means anything where the
-        // page did the picking. In the native shell there is no upload to
-        // describe, so it answers null and pickOpenPath is the door.
-        if (!isBrowserHostedDesktop()) {
-          return null
-        }
+    pickBrowserFile: async options => {
+      const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
 
-        const picked = await bridge.selectPaths?.({ ...options, multiple: false })
-        const path = picked?.[0]
+      // The other half of the ladder: this door only means anything where the
+      // page did the picking. In the native shell there is no upload to
+      // describe, so it answers null and pickOpenPath is the door.
+      if (!bridge || !hostHas('pluginBrowserFilePicker')) {
+        return null
+      }
 
-        if (!path) {
-          return null
-        }
+      // A cancel resolves an empty list, and the upload it triggers rejects for
+      // its own reasons: over the browser's size cap, or refused by the gateway.
+      // Those are not the user changing their mind, so they surface to the
+      // plugin — flattening them to null here would make a failed import
+      // indistinguishable from a cancelled one.
+      const picked = await bridge.selectPaths?.({ ...options, multiple: false })
+      const path = picked?.[0]
 
-        // The name the user's file had, from the bridge that staged it. An older
-        // browser bridge has no lookup, and the staged name still ends in the
-        // user's name after `web-<hex>-`.
-        const name = bridge.getStagedFileDisplayName?.(path) || path.split(/[\\/]/).pop() || path
+      if (!path) {
+        return null
+      }
 
-        return { name, path }
-      }),
+      // The name the user's file had, from the bridge that staged it. An older
+      // browser bridge has no lookup, so strip the `web-<hex>-` prefix staging
+      // adds rather than showing the user a name they never typed.
+      const staged = path.split(/[\\/]/).pop() || path
+
+      return { name: bridge.getStagedFileDisplayName?.(path) || staged.replace(/^web-[0-9a-f]{16}-/, ''), path }
+    },
     pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
     writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))

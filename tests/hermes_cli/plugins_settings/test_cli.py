@@ -69,3 +69,20 @@ def test_list_values_are_json_safe_and_bad_input_is_a_readable_refusal():
     for raw in ("[2026-11-20]", "[a, b", "plain text"):
         with pytest.raises(ValueError):
             cli.parse_json_value(raw)
+
+
+def test_install_offer_asks_only_a_person_and_names_what_is_still_needed(plugin_home, monkeypatch, capsys):
+    """Scripts never get a question (stdin is never read); a required empty setting is named."""
+    from rich.console import Console
+    plugin_dir = plugin_home / "plugins" / "demo-plugin"
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("a non-interactive install must not prompt"))
+    cli.offer_settings_after_install(Console(), "demo-plugin", plugin_dir)
+    assert "hermes plugins config demo-plugin" in capsys.readouterr().out
+
+    (plugin_dir / "plugin.yaml").write_text(MANIFEST.replace(
+        "api_key: {type: secret, env: DEMO_API_KEY}", "api_key: {type: secret, env: DEMO_API_KEY, required: true}"),
+        encoding="utf-8")
+    fields = cli.collect_fields("demo-plugin", plugin_dir, {})
+    assert cli._missing_required(fields) == ["API key"]
+    monkeypatch.setenv("DEMO_API_KEY", "sk-demo-not-real")
+    assert cli._missing_required(cli.collect_fields("demo-plugin", plugin_dir, {})) == []

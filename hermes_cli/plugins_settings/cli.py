@@ -235,10 +235,45 @@ def run_editor(name: str, plugin_id: str, plugin_dir: Optional[Path], manifest: 
         status = _edit_one(plugin_id, plugin_dir, fields[idx], schema.get(fields[idx]["key"], {}))
 
 
-def print_settings_hint(console, name: str, plugin_dir: Optional[Path]) -> None:
-    """After install: point at the editor when the plugin declares settings."""
-    if _manifest_config_schema(plugin_dir):
-        console.print(f"[dim]Change its settings any time: hermes plugins config {name}[/dim]")
+def _missing_required(fields: list[dict[str, Any]]) -> list[str]:
+    """Labels of required settings with no value (a stored secret counts as a value)."""
+    return [f["label"] for f in fields if f.get("required") and not (
+        f.get("has_value") if f.get("masked") or f["type"] == "env" else f.get("value") not in (None, ""))]
+
+
+def offer_settings_after_install(console, name: str, plugin_dir: Optional[Path], *, brief: bool = False) -> None:
+    """Last step of an install: show the plugin's settings and offer the editor.
+
+    Only a person at a terminal is asked (a TTY, not ``HERMES_NONINTERACTIVE``, not a *brief*
+    setup-wizard install); everyone else gets the one-line pointer. The default answer is No unless
+    a required setting is still empty. Runs after everything else, so a Ctrl-C here leaves a complete install.
+    """
+    from hermes_cli import plugins_cmd as pc
+    from hermes_cli.setup import is_noninteractive
+    if plugin_dir is None or not _manifest_config_schema(plugin_dir) or (match := pc._find_plugin_entry(name)) is None:
+        return
+    pname, _version, _desc, _source, _dir, key = match
+    if brief or is_noninteractive() or not pc._is_tty():
+        console.print(f"[dim]Change its settings any time: hermes plugins config {pname}[/dim]")
+        return
+    manifest = pc._read_manifest(plugin_dir)
+    fields = collect_fields(key, plugin_dir, manifest)
+    console.print(f"\n[bold]{pname}[/bold] settings:")
+    for field in fields:
+        console.print(f"  {_row(field)}", markup=False, highlight=False)
+    missing = _missing_required(fields)
+    if missing:
+        console.print(f"[yellow]Still needed: {', '.join(missing)}[/yellow]")
+    question = "Edit these now? [Y/n]: " if missing else "Edit these now? [y/N]: "
+    try:
+        answer = input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        answer = "n"
+    if (answer in ("y", "yes")) or (missing and answer == ""):
+        run_editor(pname, key, plugin_dir, manifest)
+    else:
+        console.print(f"[dim]Change them any time: hermes plugins config {pname}[/dim]")
 
 
 def cmd_config(name: str) -> None:

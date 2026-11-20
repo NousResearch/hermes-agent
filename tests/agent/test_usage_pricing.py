@@ -126,18 +126,16 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 def test_normalize_usage_prefers_nested_reasoning_over_top_level():
-    """When both a nested reasoning_tokens bucket and a top-level one are present,
-    the nested (OpenAI-standard) bucket wins."""
-    usage = SimpleNamespace(
-        prompt_tokens=1000,
-        completion_tokens=300,
-        output_tokens_details=SimpleNamespace(reasoning_tokens=500),
-        reasoning_tokens=999,  # intentionally different — must be ignored
-    )
+    """Precedence: output_tokens_details, then completion_tokens_details, then top-level."""
+    def usage(**extra):
+        return SimpleNamespace(prompt_tokens=1000, completion_tokens=300, reasoning_tokens=999, **extra)
 
-    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+    both = usage(output_tokens_details=SimpleNamespace(reasoning_tokens=500),
+                 completion_tokens_details=SimpleNamespace(reasoning_tokens=400))
+    completion_only = usage(completion_tokens_details=SimpleNamespace(reasoning_tokens=400))
 
-    assert normalized.reasoning_tokens == 500
+    assert normalize_usage(both, provider="openai", api_mode="chat_completions").reasoning_tokens == 500
+    assert normalize_usage(completion_only, provider="openai", api_mode="chat_completions").reasoning_tokens == 400
 
 
 def test_normalize_usage_falls_back_to_top_level_reasoning_tokens():

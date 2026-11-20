@@ -625,3 +625,31 @@ def test_docker_alias_steps_use_docker_driver_buildx_not_blacksmith_builder():
     )
     assert "--repository" in canary_promote["run"] and "--public-base" in canary_promote["run"]
     assert "CLOUDFLARE_R2_PUBLIC_URL" in canary_promote["env"]
+
+
+def test_sandbox_image_ignores_canary_completions_of_stable_release():
+    """Canaries run Stable Release too; sandbox-image.yml must only rebuild on green stable runs,
+    never on Canary release completions (whose merge step would reject the canary title anyway)."""
+    build_if = workflow("sandbox-image.yml")["jobs"]["build"]["if"]
+    base = {
+        "event_name": "workflow_run",
+        "repository": "NousResearch/hermes-agent",
+        "event": {
+            "workflow_run": {
+                "conclusion": "success",
+                "head_repository": {"full_name": "NousResearch/hermes-agent"},
+                "display_title": "Stable release rc.1-v0.23.3",
+            }
+        },
+    }
+    assert gate(build_if, {}, {}, github=base)
+    canary_run = {
+        **base,
+        "event": {
+            "workflow_run": {
+                **base["event"]["workflow_run"],
+                "display_title": "Canary release canary.20261120T064100Z-v0.23.3",
+            }
+        },
+    }
+    assert not gate(build_if, {}, {}, github=canary_run)

@@ -1,10 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useCallback } from 'react'
 
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { FileText } from '@/lib/icons'
 import { OLD_NAME_ALIASES, type RenamedDestination } from '@/lib/old-name-aliases'
 import { $cronJobs } from '@/store/cron'
 import { dismissRenameSplash, noteRenameSplashRow, type RenameSplashRow } from '@/store/rename-splash'
@@ -61,8 +61,20 @@ interface RenameSplashProps {
   reopened: boolean
 }
 
-/** "Hermes got a new look" (Figma M1 205:4586): each classic noun, struck through, beside the name
- *  the redesign gives it, the user's own count of it, and where it lives now. */
+/** Each renamed place's glyph: the rail's own (Library the file the welcome draws); Machines the
+ *  server Figma draws. */
+function RenamedGlyph({ row }: { row: RenamedDestination }) {
+  if (row === 'library') {
+    return <FileText aria-hidden className="discovery-welcome-glyph" />
+  }
+
+  const name = { chats: 'comment-discussion', agents: 'robot', routines: 'clock', machines: 'server' }[row]
+
+  return <Codicon aria-hidden className="discovery-welcome-glyph" name={name} />
+}
+
+/** "Hermes got a new look" (Figma E5 18677:29814): each classic noun beside the name the redesign
+ *  gives it, what it is for, and the user's own count of it, in the welcome's card. */
 export function RenameSplash({ reopened }: RenameSplashProps) {
   const { locale } = useI18n()
   const copy = useDiscoveryCopy()
@@ -71,55 +83,41 @@ export function RenameSplash({ reopened }: RenameSplashProps) {
   const number = new Intl.NumberFormat(locale)
   const onEscape = useCallback(() => leave('escape', reopened), [reopened])
 
-  const rows: SplashRow<RenameSplashRow>[] = [
-    // The rows are the alias table's renames, in its order: one list of what was renamed.
-    ...OLD_NAME_ALIASES.map(({ code: classic, destination: row }) => {
-      const count = counts[row]
-      const shown = count && (count.more ? copy.renameSplash.atLeast(number.format(count.value)) : number.format(count.value))
-      const renamed = copy.renameSplash.renamed(copy.classicNames[classic], current[row])
+  // The rows are the alias table's renames, in its order: one list of what was renamed.
+  const rows: SplashRow<RenameSplashRow>[] = OLD_NAME_ALIASES.map(({ code: classic, destination: row }) => {
+    const count = counts[row]
 
-      return {
-        id: row,
-        name: shown ? `${renamed} (${shown})` : renamed,
-        label: (
-          <>
-            <span className="discovery-rename-classic">{copy.classicNames[classic]}</span>
-            <Codicon className="discovery-rename-arrow" name="arrow-right" />
-            <span className="discovery-rename-current">{current[row]}</span>
-          </>
-        ),
-        meta: shown || undefined,
-        detail: copy.renameSplash.lines[row],
-        spot: row
-      }
-    }),
-    {
-      id: 'notifications',
-      name: `${copy.renameSplash.newBadge}: ${copy.renameSplash.notifications}`,
+    const shown =
+      count && (count.more ? copy.renameSplash.atLeast(number.format(count.value)) : number.format(count.value))
+
+    const renamed = copy.renameSplash.renamed(copy.classicNames[classic], current[row])
+
+    return {
+      id: row,
+      glyph: <RenamedGlyph row={row} />,
+      name: shown ? `${renamed} (${shown})` : renamed,
       label: (
         <>
-          <span className="discovery-rename-classic">
-            <Badge variant="default">{copy.renameSplash.newBadge}</Badge>
-          </span>
-          <span className="discovery-rename-current">{copy.renameSplash.notifications}</span>
+          {copy.classicNames[classic]}
+          <Codicon className="discovery-rename-arrow" name="arrow-right" />
+          {current[row]}
         </>
       ),
-      detail: copy.renameSplash.lines.notifications,
-      spot: 'notifications'
+      line: copy.renameSplash.lines[row],
+      meta: shown || undefined,
+      spot: row
     }
-  ]
+  })
 
   return (
     <SplashSurface
-      eyebrow={copy.renameSplash.eyebrow}
-      footer={
-        <>
-          <p className="discovery-splash-footnote">{copy.renameSplash.footnote}</p>
-          <Button onClick={() => leave('button', reopened)} size="lg">
-            {copy.renameSplash.done}
-          </Button>
-        </>
+      actions={
+        <Button className="discovery-welcome-action" onClick={() => leave('button', reopened)}>
+          {copy.renameSplash.done}
+        </Button>
       }
+      eyebrow={copy.renameSplash.eyebrow}
+      footnote={copy.renameSplash.footnote}
       kind="rename"
       listLabel={copy.renameSplash.listLabel}
       onEscape={onEscape}

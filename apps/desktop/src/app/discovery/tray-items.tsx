@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { X } from '@/lib/icons'
 import { $checkInReopenable, reopenCheckIn } from '@/store/check-in'
@@ -45,7 +46,8 @@ export interface TrayItemDefinition extends TrayItemSource {
 }
 
 interface TrayCardViewProps {
-  eyebrow?: string
+  /** The row's glyph: a codicon name. */
+  glyph: string
   title: string
   description?: string
   action: { label: string; run: () => void }
@@ -54,23 +56,30 @@ interface TrayCardViewProps {
   unseen: boolean
 }
 
-/** The tray's one card shape: a caption, a display title, a sentence, one action. Items compose it
- *  so every entry reads alike; an item that needs a different shape renders its own. */
-export function TrayCard({ action, clear, description, eyebrow, title, unseen }: TrayCardViewProps) {
+/** The tray's one row shape (Figma E6 18677:29931): a glyph, the title and its line, the action at
+ *  the end with its chevron, in the welcome card's row language. Items compose it so every entry
+ *  reads alike; an item that needs a different shape renders its own. */
+export function TrayCard({ action, clear, description, glyph, title, unseen }: TrayCardViewProps) {
   const copy = useDiscoveryCopy()
 
   return (
     <article className="discovery-tray-card" data-slot="tray-card" data-unseen={unseen || undefined}>
-      {(eyebrow || unseen) && (
-        <p className="discovery-tray-card-eyebrow">
+      <Codicon aria-hidden className="discovery-welcome-glyph" name={glyph} />
+      <div className="discovery-welcome-place-text">
+        <h3 className="discovery-welcome-place-name discovery-tray-card-title">
+          {title}
           {unseen && <Badge variant="default">{copy.tray.newBadge}</Badge>}
-          {eyebrow}
-        </p>
-      )}
-      <h3 className="discovery-tray-card-title">{title}</h3>
-      {description && <p className="discovery-tray-card-description">{description}</p>}
-      <Button className="discovery-tray-card-action" onClick={action.run} size="sm" variant="outline">
+        </h3>
+        {description && <p className="discovery-welcome-place-line">{description}</p>}
+      </div>
+      <Button
+        className="discovery-check-in-action discovery-tray-card-action"
+        onClick={action.run}
+        size="inline"
+        variant="text"
+      >
         {action.label}
+        <Codicon aria-hidden className="discovery-check-in-chevron" name="chevron-right" />
       </Button>
       {clear && (
         <Tip label={clear.label}>
@@ -124,7 +133,8 @@ function AppUpdateCard({ close, unseen }: TrayCardProps) {
           startActiveUpdate($pendingUpdate.get()?.target)
         }
       }}
-      eyebrow={copy.eyebrow}
+      description={copy.description}
+      glyph="zap"
       title={copy.title}
       unseen={unseen}
     />
@@ -138,7 +148,7 @@ function NewVersionCard({ unseen }: TrayCardProps) {
     <TrayCard
       action={{ label: copy.refresh, run: () => window.location.reload() }}
       description={copy.description}
-      eyebrow={copy.eyebrow}
+      glyph="zap"
       title={copy.title}
       unseen={unseen}
     />
@@ -158,6 +168,7 @@ function RenameSplashCard({ close, unseen }: TrayCardProps) {
         }
       }}
       description={copy.description}
+      glyph="robot"
       title={copy.title}
       unseen={unseen}
     />
@@ -181,6 +192,7 @@ function SignUpCard({ close, unseen }: TrayCardProps) {
         }
       }}
       description={copy.tray.signUp.description}
+      glyph="account"
       title={copy.tray.signUp.title}
       unseen={unseen}
     />
@@ -200,6 +212,7 @@ function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
         }
       }}
       description={copy.description}
+      glyph="sparkle"
       title={copy.title}
       unseen={unseen}
     />
@@ -222,6 +235,7 @@ function CheckInCard({ close, unseen }: TrayCardProps) {
         }
       }}
       description={copy.description}
+      glyph="comment"
       title={copy.title}
       unseen={unseen}
     />
@@ -252,6 +266,7 @@ function UsageStatsCard({ close, dismiss, unseen }: TrayCardProps) {
         }
       }}
       description={copy.description}
+      glyph="graph"
       title={copy.title}
       unseen={unseen}
     />

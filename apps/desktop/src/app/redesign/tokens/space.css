@@ -87,7 +87,7 @@
      its seen tile, 20 on a starter idea. */
   --portal-welcome-glyph: 1rem;
   --portal-idea-glyph: 1.25rem;
-  /* The notice strip (app/shell/butterbar.tsx: a new version, the terms) is one 24px row at the window's
+  /* The notice strip (app/shell/butterbar.tsx: the terms) is one 24px row at the window's
      floor, under the frame; while it shows, the status bar stands on it rather than over it. */
   --portal-notice-strip-height: 1.5rem;
   /* The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library,

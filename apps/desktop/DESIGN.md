@@ -913,7 +913,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
 | `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyphs (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in its seen tile, 20 on a starter idea. |
 | `--portal-idea-glyph` | `1.25rem` | ″ |  |
-| `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: a new version, the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
+| `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
 | `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
 | `--portal-column-conversation` | `40rem` | ″ |  |
 | `--portal-column-conversation-inset` | `0px` | ″ |  |
@@ -1232,22 +1232,25 @@ Onboarding and discovery (Figma "Hermes web app onboarding and discovery", Phase
 redesign only. A **splash** fills the chat area, never the window: it is the workspace pane's cover
 (`KeptChatRoutes`' `cover`), so whatever it covers is inert and gets its focus back, while the rail
 and the chat sidebar stay live and any click in them closes it (the click still goes where it was
-going); it takes focus when opened from the tray and closes on Escape (`useSplashFrame`). The rename
-splash (`SplashSurface`) is a heading, rows and a footer: each row is one
-line, says more while it is hovered, focused or tapped, and rings its real place in the nav with a
-dashed elbow (`NavSpotlight`, `--portal-layer-spotlight`), following that place every frame and
-drawing nothing when it is not on screen. The active row is the brand selection. Figma paints
-splashes on the brand fill; here a splash shows the launch's own artwork under a stage veil that
-thins toward the far side (Figma's text scrim), so it follows the artwork and both themes. The
-rename splash (M1) is the first; Escape, its button or a nav click marks it seen through the one
-guidance seam (`store/guidance-ledger.ts`).
+going); it takes focus when opened from the tray and closes on Escape (`useSplashFrame`). Every
+splash is the stage itself in the welcome's language: the launch's artwork under the stage veil,
+edge to edge, and the 640 column with an eyebrow, the display title, one card of rows and the way
+out. The rename splash ("Hermes got a new look", Figma E5 18677:29814, `SplashSurface`) is the
+first: one row per rename in the alias table ("Sessions → Chats"), its line and the person's own
+count; a row a pointer, focus or tap reaches rings its real place in the nav with a dashed elbow
+(`NavSpotlight`, `--portal-layer-spotlight`), following that place every frame and drawing nothing
+when it is not on screen; nothing is lit at rest. Escape, its button or a nav click marks it seen
+through the one guidance seam (`store/guidance-ledger.ts`).
 
-The **notifications tray** is the rail's bell (above the account and status controls) opening a
-rail popover. Its items are a typed table (`TRAY_ITEMS` in `tray-items.tsx`): each publishes a
-state atom (`null` = not listed; `news` = a token for what it announces) and a card, usually the
-shared `TrayCard` (caption, title, sentence, one action). The bell carries a brand-ink dot while
-any listed item has news not yet seen; opening the tray sees it, and the cards that were new say
-so until it closes. Community posts from the frames are not built.
+The **notifications tray** ("Notifications & updates", Figma E6 18677:29931) is the rail's bell
+(above the account and status controls) opening a rail popover; Figma draws a sheet, the redesign
+keeps the popover. Its items are a typed table (`TRAY_ITEMS` in `tray-items.tsx`): each publishes a
+state atom (`null` = not listed; `news` = a token for what it announces) and a row, usually the
+shared `TrayCard` (glyph, title, line, the action with its chevron), all in one welcome card. Under
+the card: Open introduction (while the rename splash can be reopened), Mark all read (while a row
+says New) and the footnote. The bell carries a brand-ink dot while any listed item has news not yet
+seen; opening the tray sees it, and the rows that were new say so until it closes or Mark all read.
+Community posts from the frames are not built.
 
 The **usage-stats offer** (Figma 1335:32952, 1365:34379) is the redesign's place for classic's
 composer strip: a card at the foot of the chat sidebar (`usage-stats-card.tsx`, its own slot under
@@ -1260,11 +1263,12 @@ shows there. The card's × answers nothing: it moves the question into the tray 
 guidance ledger, so it survives reloads) until it is answered or the tray item's × clears it
 (`store/usage-stats-offer.ts`). The copy promises a random ID, never anonymity.
 
-A Webapp tab that was open when a newer build was deployed (W1) says so in the notice strip
-(`Butterbar`) and in the tray, and never reloads under the person: the new build loads at the next
-new chat while nothing is running, on the next visit, or from "Refresh now"
-(`store/new-version.ts`, `lib/deployed-build.ts`). While the strip shows, the status bar stands on
-it (`--portal-notice-strip-height`) rather than over its message.
+A Webapp tab that was open when a newer build was deployed (E4 18677:29704) says so in the chat,
+over the composer in the developer-view offer's place (`update-ready-notice.tsx`: the info line,
+Refresh now and Later), and in the tray, and never reloads under the person: the new build loads at
+the next new chat while nothing is running, on the next visit, or from "Refresh now"
+(`store/new-version.ts`, `lib/deployed-build.ts`). Later puts the chat's notice away for the page;
+the tray keeps it.
 
 The **first-time splash** ("Welcome to Hermes", Figma "Prod - Desktop" › Onboarding 18695:17147) is
 the second splash, for a new install (the verdict the rename splash records as `not_applicable`). It

@@ -1,277 +1,37 @@
-/* The redesign's discovery surfaces: the splash in the chat area (Figma M1 205:4586, 1A 477:4004),
-   its nav spotlight, and the notifications tray (17:4451, 479:4114). Figma draws the splash on the
-   brand fill with the wing art; here it is the stage's own art under a veil that thins toward the
-   far side (Figma's "Text scrim"), so it follows the launch's artwork and both themes. */
+/* The redesign's discovery surfaces: the splashes in the chat area (Onboarding 18695:17147, E5
+   18677:29814), the rename splash's nav spotlight, the notifications tray (E6 18677:29931) and the
+   landing's guidance. Every splash is the stage's own art under its veil, so it follows the
+   launch's artwork and both themes. */
 
-/* ── Splash ──────────────────────────────────────────────────────────────────────────────────── */
-
+/* A splash is the stage itself, not a card on it: the stage's own veil over the art, edge to edge,
+   so the chat sidebar can come back beside it (18695:17294) with nothing moving but the stage's
+   width. */
 :root[data-shell='portal'] .discovery-splash-layer {
   position: absolute;
   z-index: var(--portal-layer-stage-overlay);
   inset: 0;
   display: flex;
-  padding: var(--portal-space-tight);
   container: discovery-splash / inline-size;
 }
 
+/* The held reply's way in is the one brand gesture on it, so it wears the accent. */
+:root[data-shell='portal'] .discovery-held-reply [data-variant='default'] {
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+/* ── The splashes: first-time, recovery, rename ─────────────────────────────────────────────── */
+
 :root[data-shell='portal'] .discovery-splash {
-  --discovery-scrim-toward: to right;
-  /* Where the scrim ends: the art at full strength on the far side, past the text. */
-  --discovery-scrim-end: transparent;
-  /* The struck-through classic word's column, so the arrows and new names line up. */
-  --discovery-classic-column: 6rem;
-  /* Where a row's longer line starts: under the row's own text. */
-  --discovery-detail-indent: 0.875rem;
+  /* The text's inset in the 640 column (Figma's content inset, 32). */
+  --discovery-welcome-inset: 2rem;
   position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  border: 1px solid var(--portal-stroke-hairline);
-  border-radius: var(--portal-radius-panel);
-  background:
-    var(--artwork-stage-noise),
-    linear-gradient(
-      var(--discovery-scrim-toward),
-      var(--portal-surface-stage) 35%,
-      var(--portal-surface-stage-veil) 60%,
-      var(--discovery-scrim-end)
-    ),
-    var(--artwork-paint);
-  background-color: var(--portal-surface-canvas);
-  background-blend-mode: normal, normal, var(--artwork-blend);
   color: var(--portal-text-primary);
-}
-
-:root[data-shell='portal'] .discovery-splash:dir(rtl) {
-  --discovery-scrim-toward: to left;
-}
-
-/* The rename splash's line starts under the new name, past the struck word and the arrow. */
-:root[data-shell='portal'] .discovery-splash[data-splash='rename'] {
-  --discovery-detail-indent: calc(0.875rem + var(--discovery-classic-column) + 0.875rem + 1.5rem);
-}
-
-/* Programmatic focus lands on the surface so Tab starts inside it; it is not a control, so it draws no
-   ring (Chromium counts a focus moved on load as keyboard focus and would ring the whole stage). */
-:root[data-shell='portal'] .discovery-splash:focus {
-  outline: none;
-}
-
-/* Figma's corner marks, 14px arms inset 15px from the frame. */
-:root[data-shell='portal'] .discovery-splash-brackets {
-  --discovery-mark: linear-gradient(var(--portal-text-tertiary), var(--portal-text-tertiary));
-  position: absolute;
-  inset: 0.9375rem;
-  pointer-events: none;
-  background:
-    var(--discovery-mark) left top / 0.875rem 1px no-repeat,
-    var(--discovery-mark) left top / 1px 0.875rem no-repeat,
-    var(--discovery-mark) right top / 0.875rem 1px no-repeat,
-    var(--discovery-mark) right top / 1px 0.875rem no-repeat,
-    var(--discovery-mark) left bottom / 0.875rem 1px no-repeat,
-    var(--discovery-mark) left bottom / 1px 0.875rem no-repeat,
-    var(--discovery-mark) right bottom / 0.875rem 1px no-repeat,
-    var(--discovery-mark) right bottom / 1px 0.875rem no-repeat;
-}
-
-:root[data-shell='portal'] .discovery-splash-content {
-  display: flex;
-  flex-direction: column;
-  inline-size: 100%;
-  max-inline-size: 39.5rem;
-  /* Top-anchored, a sixth of the way down on a tall stage: a row opening its line grows the list
-     downward and never moves the heading. */
-  padding-block: clamp(2.5rem, 16vh, 9rem) 2.5rem;
-  padding-inline: 4.5rem 2.5rem;
-}
-
-:root[data-shell='portal'] .discovery-splash-eyebrow {
-  margin: 0;
-  color: var(--portal-text-secondary);
-  font-family: var(--portal-font-mono);
-  font-size: var(--portal-type-micro-size);
-  letter-spacing: var(--portal-tracking-caption);
-  text-transform: uppercase;
-}
-
-:root[data-shell='portal'] .discovery-splash-title {
-  margin: 0.875rem 0 0;
-  font-family: var(--portal-font-display);
-  font-size: var(--portal-type-display-xl-size);
-  font-weight: 300;
-  letter-spacing: var(--portal-tracking-display);
-  line-height: 1.1;
-}
-
-:root[data-shell='portal'] .discovery-splash-subtitle {
-  max-inline-size: 30rem;
-  margin: 0.75rem 0 0;
-  color: var(--portal-text-secondary);
-  font-size: var(--portal-type-body-size);
-  line-height: 1.5;
-}
-
-:root[data-shell='portal'] .discovery-splash-rows {
-  margin: 1.75rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-:root[data-shell='portal'] .discovery-splash-row {
-  border-block-end: 1px solid var(--portal-stroke-divider);
-  border-inline-start: 2px solid transparent;
-}
-
-/* The active row is the selection: the brand selection fill and the brand edge (U17). */
-:root[data-shell='portal'] .discovery-splash-row[data-active] {
-  border-inline-start-color: var(--portal-surface-brand);
-  background-color: var(--portal-surface-brand-selected);
-}
-
-:root[data-shell='portal'] .discovery-splash-row-button {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  inline-size: 100%;
-  min-block-size: 2.875rem;
-  padding-block: 0.75rem;
-  padding-inline: 0.875rem 0.75rem;
-  border: 0;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: start;
-}
-
-:root[data-shell='portal'] .discovery-splash-row-button:focus-visible {
-  outline: var(--portal-focus-ring-width) solid var(--portal-text-brand);
-  outline-offset: var(--portal-focus-ring-inset);
-}
-
-:root[data-shell='portal'] .discovery-splash-row-label {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 0.75rem;
-  min-inline-size: 0;
-}
-
-:root[data-shell='portal'] .discovery-rename-classic {
-  flex: none;
-  overflow: hidden;
-  inline-size: var(--discovery-classic-column);
-  color: var(--portal-text-tertiary);
-  font-size: var(--portal-type-ui-size);
-  text-decoration: line-through;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-:root[data-shell='portal'] .discovery-rename-arrow {
-  flex: none;
-  color: var(--portal-text-tertiary);
-}
-
-:root[data-shell='portal'] .discovery-rename-arrow:dir(rtl) {
-  transform: scaleX(-1);
-}
-
-:root[data-shell='portal'] .discovery-rename-current {
-  overflow: hidden;
-  font-size: var(--portal-type-body-size);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The NEW row has no classic word: its badge takes that column and the name lines up with the others
-   (one arrow's width further on). */
-:root[data-shell='portal'] .discovery-rename-classic:has([data-slot='badge']) {
-  inline-size: calc(var(--discovery-classic-column) + 0.875rem + 0.75rem);
-  text-decoration: none;
-}
-
-:root[data-shell='portal'] .discovery-splash-row-meta {
-  flex: none;
-  color: var(--portal-text-secondary);
-  font-family: var(--portal-font-mono);
-  font-size: var(--portal-type-meta-size);
-  font-variant-numeric: tabular-nums;
-}
-
-:root[data-shell='portal'] .discovery-splash-row-detail {
-  margin: 0;
-  padding-block: 0 0.75rem;
-  padding-inline: var(--discovery-detail-indent) 0.75rem;
-  color: var(--portal-text-secondary);
-  font-size: var(--portal-type-ui-size);
-  line-height: 1.4;
-}
-
-:root[data-shell='portal'] .discovery-splash-footer {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1.25rem;
-  margin-block-start: 1.5rem;
-}
-
-/* The splash's way in is the one brand gesture on it (the app's primary actions, as in pages and
-   dialogs), so it wears the accent. */
-:root[data-shell='portal'] :is(.discovery-splash-footer, .discovery-held-reply) [data-variant='default'] {
-  background-color: var(--portal-surface-brand);
-  color: var(--portal-text-on-brand);
-}
-
-:root[data-shell='portal'] .discovery-splash-footnote {
-  margin: 0;
-  color: var(--portal-text-tertiary);
-  font-family: var(--portal-font-mono);
-  font-size: var(--portal-type-micro-size);
-  letter-spacing: var(--portal-tracking-ui);
-}
-
-/* A narrow splash (a compact window, < 640 in breakpoints.ts, or a stage the chat sidebar and a tool
-   panel squeeze to the same width): the text spans it, so the veil never thins under it; the struck
-   word and the detail come in closer. */
-@container discovery-splash (max-width: 39.98rem) {
-  :root[data-shell='portal'] .discovery-splash {
-    --discovery-classic-column: 4.5rem;
-    --discovery-scrim-end: var(--portal-surface-stage-veil);
-  }
-
-  :root[data-shell='portal'] .discovery-splash-content {
-    padding: 2.5rem 1rem 1.5rem;
-  }
-
-  :root[data-shell='portal'] .discovery-splash-row-detail {
-    padding-inline-start: 0.875rem;
-  }
-}
-
-/* Touch: a row is a 44px target. */
-@media (hover: none), (pointer: coarse) {
-  :root[data-shell='portal'] .discovery-splash-row-button {
-    min-block-size: var(--portal-touch-target);
-  }
-}
-
-/* ── First-time splash (Onboarding 18695:17147, 18695:18059) ───────────────────────────────── */
-
-/* It is the stage itself, not a card on it: the stage's own veil over the art, edge to edge, so the
-   chat sidebar can come back beside it (18695:17294) with nothing moving but the stage's width. */
-:root[data-shell='portal'] .discovery-splash-layer:has(> :is([data-splash='first-time'], [data-splash='recovery'])) {
-  padding: 0;
-}
-
-:root[data-shell='portal'] .discovery-splash:is([data-splash='first-time'], [data-splash='recovery']) {
-  /* The text's inset in the 640 column (Figma's content inset, 32). */
-  --discovery-welcome-inset: 2rem;
-  border: 0;
-  border-radius: 0;
   background: var(--artwork-stage-noise), linear-gradient(var(--portal-surface-stage-veil)), var(--artwork-paint);
   background-color: var(--portal-surface-canvas);
   background-blend-mode: normal, normal, var(--artwork-blend);
@@ -307,9 +67,16 @@
     .discovery-welcome-eyebrow-row,
     .discovery-welcome-heading,
     .discovery-welcome-lead,
-    .discovery-welcome-actions
+    .discovery-welcome-actions,
+    .discovery-welcome-footnote
   ) {
   padding-inline: var(--discovery-welcome-inset);
+}
+
+/* Programmatic focus lands on the surface so Tab starts inside it; it is not a control, so it draws no
+   ring (Chromium counts a focus moved on load as keyboard focus and would ring the whole stage). */
+:root[data-shell='portal'] .discovery-splash:focus {
+  outline: none;
 }
 
 /* While a row speaks, everything else steps back (18695:17294): the heading, the other rows, the
@@ -386,6 +153,10 @@
   font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-welcome-subtitle[data-tone='regular'] {
+  font-weight: 400;
 }
 
 :root[data-shell='portal'] .discovery-welcome-subtitle[data-tone='compact'] {
@@ -468,7 +239,8 @@
 :root[data-shell='portal']
   .discovery-welcome-places:is(:hover, :focus-within)
   > li[data-active]
-  .discovery-welcome-place-line:not([data-example]) {
+  .discovery-welcome-place-lines
+  > :not([data-example]) {
   visibility: hidden;
 }
 
@@ -516,6 +288,29 @@
   line-height: 1.2;
 }
 
+/* A row's count (E5 18677:29831): Nous/Metadata at .8, an 88px column at the end. */
+:root[data-shell='portal'] .discovery-welcome-place-meta {
+  flex: none;
+  min-inline-size: 5.5rem;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+/* The arrow between a classic name and its new one, at the name's size. */
+:root[data-shell='portal'] .discovery-rename-arrow {
+  margin-inline: 0.25rem;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  vertical-align: -0.0625em;
+}
+
+:root[data-shell='portal'] .discovery-rename-arrow:dir(rtl) {
+  transform: scaleX(-1);
+}
+
 /* Seen (18695:17833): the band's 30px chrome tile with a checked box at the chrome ink. */
 :root[data-shell='portal'] .discovery-welcome-seen {
   display: inline-flex;
@@ -538,6 +333,15 @@
 
 :root[data-shell='portal'] .discovery-welcome-seen .codicon {
   font-size: var(--portal-welcome-glyph);
+}
+
+/* Under the actions: how else it closes (E5's Nous/Metadata at .6). */
+:root[data-shell='portal'] .discovery-welcome-footnote {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.3;
 }
 
 /* "Select your style" / "Ready to get started?": Nous/Body Medium .8, then Nous/Metadata. */
@@ -596,9 +400,7 @@
 
 /* While the splash is up the rail lights only the place a row is pointing at (18695:17294,
    18695:17488): the open destination's selection stands down. */
-:root[data-shell='portal']:has(.discovery-splash:is([data-splash='first-time'], [data-splash='recovery']))
-  [data-slot='global-nav']
-  .portal-chrome-button[aria-current='page'] {
+:root[data-shell='portal']:has(.discovery-splash) [data-slot='global-nav'] .portal-chrome-button[aria-current='page'] {
   background-color: var(--portal-rail-fill);
   color: var(--portal-rail-ink);
 }
@@ -925,7 +727,7 @@
 /* A narrow stage (a phone, < 640 in breakpoints.ts, or a squeezed one): the column takes the stage
    less a 16px gutter, the text and cards inset 16. */
 @container discovery-splash (max-width: 39.98rem) {
-  :root[data-shell='portal'] .discovery-splash:is([data-splash='first-time'], [data-splash='recovery']) {
+  :root[data-shell='portal'] .discovery-splash {
     --discovery-welcome-inset: 1rem;
   }
 
@@ -1051,11 +853,15 @@
   margin-block-end: 1rem;
 }
 
-:root[data-shell='portal'] .discovery-landing-greeting:is([data-moment='back'], [data-moment='away']) .discovery-landing-heading {
+:root[data-shell='portal']
+  .discovery-landing-greeting:is([data-moment='back'], [data-moment='away'])
+  .discovery-landing-heading {
   gap: 1rem;
 }
 
-:root[data-shell='portal'] .discovery-landing-greeting:is([data-moment='back'], [data-moment='away']) .discovery-landing-subtitle {
+:root[data-shell='portal']
+  .discovery-landing-greeting:is([data-moment='back'], [data-moment='away'])
+  .discovery-landing-subtitle {
   color: var(--portal-text-tertiary);
   font-weight: 400;
   line-height: 1.5;
@@ -1094,7 +900,7 @@
   padding-inline: 0;
 }
 
-:root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer) {
+:root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer, .discovery-update-notice) {
   --discovery-welcome-inset: 2rem;
   display: flex;
   flex-direction: column;
@@ -1133,11 +939,11 @@
 
 /* A suggestion (18677:28722): the welcome row's shape, its action in the meta voice at .8 and a
    chevron at the end. */
-:root[data-shell='portal'] .discovery-check-in-rows > li {
+:root[data-shell='portal'] :is(.discovery-check-in-rows, .discovery-tray-items) > li {
   position: relative;
 }
 
-:root[data-shell='portal'] .discovery-check-in-rows > li + li::before {
+:root[data-shell='portal'] :is(.discovery-check-in-rows, .discovery-tray-items) > li + li::before {
   position: absolute;
   inset-block-start: 0;
   inset-inline: 0;
@@ -1194,7 +1000,7 @@
 
 /* C6: floated over the conversation just above the composer, in the column, on the stage's own
    flattened fill so the transcript under it never shows through. */
-:root[data-shell='portal'] .discovery-developer-offer {
+:root[data-shell='portal'] :is(.discovery-developer-offer, .discovery-update-notice) {
   position: absolute;
   z-index: var(--portal-layer-stage-overlay);
   inset-block-end: calc(var(--composer-measured-height) + 1rem);
@@ -1207,7 +1013,7 @@
   translate: -50% 0;
 }
 
-:root[data-shell='portal'] .discovery-developer-offer:dir(rtl) {
+:root[data-shell='portal'] :is(.discovery-developer-offer, .discovery-update-notice):dir(rtl) {
   translate: 50% 0;
 }
 
@@ -1387,6 +1193,29 @@
   outline-offset: 2px;
 }
 
+/* E4 (18677:29704): a newer build's notice over the composer, in the developer offer's place: the
+   info line on the chrome fill, then Refresh now and Later. */
+:root[data-shell='portal'] .discovery-update-notice {
+  padding-inline: var(--discovery-welcome-inset);
+}
+
+:root[data-shell='portal'] .discovery-update-notice-line {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-chrome);
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-update-notice-line > .discovery-welcome-glyph {
+  margin-block-start: 0.125rem;
+}
+
 /* ── Notifications tray ──────────────────────────────────────────────────────────────────────── */
 
 /* The bell's dot is news, not trouble: the brand ink, where Routines' alert dot is the error ink. */
@@ -1395,16 +1224,25 @@
 }
 
 :root[data-shell='portal'] .discovery-tray {
+  /* The card's text inset in a popover: the welcome's 32 at half. */
+  --discovery-welcome-inset: 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  inline-size: 20rem;
+  gap: 1.5rem;
+  inline-size: 27rem;
   max-inline-size: calc(100vw - 1rem);
   max-block-size: calc(100dvh - 2rem);
   overflow-y: auto;
-  padding: 1rem;
+  padding: 1.5rem 1rem;
 }
 
+:root[data-shell='portal']
+  .discovery-tray
+  > :is(.discovery-tray-title, .discovery-tray-empty, .discovery-welcome-actions, .discovery-welcome-footnote) {
+  padding-inline: var(--discovery-welcome-inset);
+}
+
+/* "Notifications & updates": the display face at the popover's size. */
 :root[data-shell='portal'] .discovery-tray-title {
   margin: 0;
   font-family: var(--portal-font-display);
@@ -1420,62 +1258,41 @@
   font-size: var(--portal-type-ui-size);
 }
 
+/* The rows sit in the welcome card at the popover's inset (E6 18677:29931). */
 :root[data-shell='portal'] .discovery-tray-items {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  padding-block: 0.5rem;
 }
 
 :root[data-shell='portal'] .discovery-tray-card {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.375rem;
-  padding: 0.875rem;
-  border: 1px solid var(--portal-stroke-hairline);
-  border-radius: var(--portal-radius-card);
-  background-color: var(--portal-surface-card);
-}
-
-:root[data-shell='portal'] .discovery-tray-card-eyebrow {
-  display: flex;
   align-items: center;
-  gap: 0.375rem;
-  margin: 0;
-  color: var(--portal-text-tertiary);
-  font-size: var(--portal-type-caption-size);
-  letter-spacing: var(--portal-tracking-caption);
-  text-transform: uppercase;
+  gap: 1rem;
+  min-block-size: 4rem;
+  padding-block: 0.75rem;
 }
 
 :root[data-shell='portal'] .discovery-tray-card-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
   margin: 0;
-  font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: 400;
 }
 
-:root[data-shell='portal'] .discovery-tray-card-description {
+:root[data-shell='portal'] .discovery-tray-card .discovery-welcome-place-line {
   margin: 0;
-  color: var(--portal-text-secondary);
-  font-size: var(--portal-type-ui-size);
-  line-height: 1.4;
 }
 
-:root[data-shell='portal'] .discovery-tray-card-action {
-  margin-block-start: 0.25rem;
+:root[data-shell='portal'] .discovery-tray-card-action[data-size] {
+  min-inline-size: 0;
+  gap: 0.75rem;
 }
 
-/* An item that can leave the tray carries an × at its top end; the text keeps clear of it. */
-:root[data-shell='portal'] .discovery-tray-card:has(> .discovery-tray-card-clear) {
-  position: relative;
-  padding-inline-end: 2.25rem;
+:root[data-shell='portal'] .discovery-tray-card-action:hover {
+  color: var(--portal-text-primary);
 }
 
 :root[data-shell='portal'] .discovery-tray-card-clear {
-  position: absolute;
-  inset-block-start: 0.5rem;
-  inset-inline-end: 0.5rem;
+  flex: none;
 }

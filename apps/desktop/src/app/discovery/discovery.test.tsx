@@ -15,6 +15,7 @@ import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session
 import { $shellChoice } from '@/store/shell-variant'
 import type { SessionInfo } from '@/types/hermes'
 
+import { ChatDiscovery } from './chat-discovery'
 import { discoveryCopy } from './discovery-copy'
 import { NotificationBell } from './notification-tray'
 import { SplashCoveredRoutes } from './splash-layer'
@@ -22,7 +23,8 @@ import { SplashCoveredRoutes } from './splash-layer'
 const copy = discoveryCopy('en')
 const chat = { id: 'chat-1', title: 'Quarterly plan' } as SessionInfo
 
-/** The redesigned shell's pieces the splash deals with: the rail (with its bell) and the chat area. */
+/** The redesigned shell's pieces the splash deals with: the rail (with its bell) and the chat area
+ *  with what discovery lays over it. */
 function renderShell() {
   return render(
     <MemoryRouter>
@@ -33,7 +35,20 @@ function renderShell() {
         <NotificationBell />
       </nav>
       <main>
-        <SplashCoveredRoutes chat={<Route element={<textarea aria-label="Message" />} index />} pages={null} />
+        <SplashCoveredRoutes
+          chat={
+            <Route
+              element={
+                <>
+                  <textarea aria-label="Message" />
+                  <ChatDiscovery primary routedSessionId="chat-1" />
+                </>
+              }
+              index
+            />
+          }
+          pages={null}
+        />
       </main>
     </MemoryRouter>
   )
@@ -130,30 +145,33 @@ describe('the rename splash in the shell', () => {
       $sessionsLoading.set(false)
     })
 
+    const renamed = copy.renameSplash.renamed(copy.classicNames.artifacts, 'Library')
+    const line = copy.renameSplash.lines.library
+
     expect(screen.getByRole('button', { name: /Artifacts, now Library/ }).getAttribute('aria-label')).toBe(
-      copy.renameSplash.renamed(copy.classicNames.artifacts, 'Library')
+      `${renamed}: ${line}`
     )
 
     act(() => $itemIndex.set({ local: { snapshot, refreshing: false, error: null, failures: [] } }))
     expect(screen.getByRole('button', { name: /Artifacts, now Library/ }).getAttribute('aria-label')).toBe(
-      `${copy.renameSplash.renamed(copy.classicNames.artifacts, 'Library')} (0)`
+      `${renamed} (0): ${line}`
     )
   })
 
-  it('shows a row’s line and where it points when that row is hovered or focused', () => {
+  it('says every row’s line at rest, and lights a row’s place only once it is hovered or focused', () => {
     renderShell()
     act(() => {
       $sessions.set([chat])
       $sessionsLoading.set(false)
     })
 
-    const library = screen.getByRole('button', { name: /Artifacts, now Library/ })
-    const line = screen.getByText(copy.renameSplash.lines.library)
-    expect(line.hidden).toBe(true)
+    expect(screen.getByText(copy.renameSplash.lines.library)).toBeTruthy()
+    expect(window.document.querySelector('[data-slot="nav-spotlight"]')).toBeNull()
 
+    const library = screen.getByRole('button', { name: /Artifacts, now Library/ })
     fireEvent.focus(library)
-    expect(library.getAttribute('aria-expanded')).toBe('true')
-    expect(line.hidden).toBe(false)
+    expect(library.closest('li')?.hasAttribute('data-active')).toBe(true)
+    expect(window.document.querySelector('[data-slot="nav-spotlight"]')).not.toBeNull()
   })
 })
 
@@ -186,6 +204,36 @@ describe('the notifications tray', () => {
     const entry = within(screen.getByRole('dialog', { name: copy.tray.title })).getByRole('article')
     expect(within(entry).getByText(copy.newVersion.title)).toBeTruthy()
     expect(within(entry).getByRole('button', { name: copy.newVersion.refresh })).toBeTruthy()
+  })
+
+  it('reopens the introduction from its own button, and Mark all read clears the New marks', () => {
+    renderShell()
+    act(() => $guidanceLedger.set({ renameSplash: 'seen' }))
+    fireEvent.click(screen.getByRole('button', { name: copy.tray.title }))
+
+    const tray = screen.getByRole('dialog', { name: copy.tray.title })
+    expect(within(tray).getByText(copy.tray.footnote)).toBeTruthy()
+    fireEvent.click(within(tray).getByRole('button', { name: copy.tray.markAllRead }))
+    expect(within(tray).queryByText(copy.tray.newBadge)).toBeNull()
+    expect(within(tray).queryByRole('button', { name: copy.tray.markAllRead })).toBeNull()
+
+    fireEvent.click(within(tray).getByRole('button', { name: copy.tray.openIntroduction }))
+    expect($renameSplash.get()).toBe('reopened')
+    expect(splash()).not.toBeNull()
+  })
+
+  it('says a newer build in the chat without reloading; Later puts it away and the tray keeps it', () => {
+    renderShell()
+    act(() => $newVersionReady.set(true))
+
+    const notice = screen.getByRole('region', { name: copy.newVersion.title })
+    expect(within(notice).getByText(copy.newVersion.notice)).toBeTruthy()
+    fireEvent.click(within(notice).getByRole('button', { name: copy.newVersion.later }))
+    expect(screen.queryByRole('region', { name: copy.newVersion.title })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: copy.tray.title }))
+    const entry = within(screen.getByRole('dialog', { name: copy.tray.title })).getByRole('article')
+    expect(within(entry).getByText(copy.newVersion.title)).toBeTruthy()
   })
 
   it('lists nothing for a new install and says so', () => {

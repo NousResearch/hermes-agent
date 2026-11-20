@@ -122,6 +122,8 @@ interface PaletteItem {
   active?: boolean
   /** Static trailing combo hint for a modifier-variant select (e.g. `mod+enter`). */
   comboHint?: string
+  /** A second line under the label (the redesign's renamed places: "Formerly Sessions"). */
+  description?: string
   /** Short note beside the label — state the row acts on (a version, a count). */
   detail?: string
   /** `state` when the row will change what `detail` says (a toggle's on/off). */
@@ -356,15 +358,24 @@ const PaletteRow = memo(function PaletteRow({
       value={paletteValue(item)}
     >
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className={cn('truncate', modPreview && 'text-muted-foreground/80')}>
-        {modPreview ? (
-          item.modLabel
-        ) : (
-          /* Same per-term split as scoreItem's AND matcher, so the emphasis
-             shows exactly which words earned the row its rank. */
-          <HighlightMatches query={search.split(/\s+/)} text={item.label} />
-        )}
-      </span>
+      {item.description ? (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate">
+            <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+          </span>
+          <span className="truncate font-mono text-xs text-muted-foreground">{item.description}</span>
+        </span>
+      ) : (
+        <span className={cn('truncate', modPreview && 'text-muted-foreground/80')}>
+          {modPreview ? (
+            item.modLabel
+          ) : (
+            /* Same per-term split as scoreItem's AND matcher, so the emphasis
+               shows exactly which words earned the row its rank. */
+            <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+          )}
+        </span>
+      )}
       {item.detail && (
         <span className={cn(HUD_NOTE, HUD_NOTE_VARIANT[item.detailVariant ?? 'muted'])}>{item.detail}</span>
       )}

@@ -7,37 +7,51 @@ import type { OldNameAlias } from '@/lib/old-name-aliases'
  *  are the rail's own labels, read from the catalog where the rail reads them; this module holds
  *  only the classic words they replace and the surfaces' own sentences. */
 export interface DiscoveryCopy {
-  /** The words the classic interface used, as it showed them: the rename splash strikes them
-   *  through, and ⌘K matches them in this language. */
+  /** The words the classic interface used, as it showed them: the rename splash names them, and
+   *  ⌘K matches them in this language. */
   classicNames: Record<OldNameAlias['code'], string>
   tray: {
+    /** The bell's accessible name. */
     title: string
+    /** The tray's own heading. */
+    heading: string
     /** The bell's accessible description while something in the tray is new. */
     unseen: string
     empty: string
     newBadge: string
+    /** Clears the New marks the tray opened with. */
+    markAllRead: string
+    footnote: string
+    /** Reopens the rename splash. */
+    openIntroduction: string
   }
   renameItem: { title: string; description: string; action: string }
-  updateItem: { eyebrow: string; title: string; action: string }
-  newVersion: { eyebrow: string; title: string; description: string; notice: string; refresh: string }
+  updateItem: { title: string; description: string; action: string }
+  newVersion: {
+    eyebrow: string
+    title: string
+    description: string
+    notice: string
+    refresh: string
+    /** Puts the notice in the chat away; the tray keeps it. */
+    later: string
+  }
   renameSplash: {
     eyebrow: string
     title: string
     subtitle: string
     /** The rows' list, for assistive tech. */
     listLabel: string
-    /** The row's accessible name, as its strike-through and arrow show it. */
+    /** The row's accessible name, as its arrow shows it. */
     renamed: (classic: string, current: string) => string
-    lines: Record<'agents' | 'chats' | 'library' | 'machines' | 'notifications' | 'routines', string>
-    notifications: string
-    newBadge: string
+    lines: Record<'agents' | 'chats' | 'library' | 'machines' | 'routines', string>
     /** A count with more beyond the loaded page ("128+"). */
     atLeast: (count: string) => string
     footnote: string
     done: string
   }
-  /** A ⌘K row for a renamed place, found by its classic word. */
-  formerly: (current: string, classic: string) => string
+  /** A ⌘K row's second line for a renamed place, found by its classic word ("Formerly Sessions"). */
+  formerlyLine: (classic: string) => string
 }
 
 const en: DiscoveryCopy = {
@@ -50,44 +64,46 @@ const en: DiscoveryCopy = {
   },
   tray: {
     title: 'Notifications',
+    heading: 'Notifications & updates',
     unseen: 'Something new',
     empty: 'Nothing new right now.',
-    newBadge: 'New'
+    newBadge: 'New',
+    markAllRead: 'Mark all read',
+    footnote: 'Updates stay here until you clear them.',
+    openIntroduction: 'Open introduction'
   },
   renameItem: {
-    title: 'New names, same stuff',
-    description: 'See where everything lives in the new look.',
+    title: 'Hermes got a new look',
+    description: 'See the new names and where your work lives',
     action: 'Open'
   },
-  updateItem: { eyebrow: 'Update available', title: 'A new version of Hermes is ready', action: 'Update' },
+  updateItem: { title: 'Update available', description: 'Install when you’re ready', action: 'Update' },
   newVersion: {
     eyebrow: 'Update ready',
     title: 'A new version of Hermes is ready',
     description: 'It loads when you start a new chat. Nothing you’re doing is lost.',
-    notice: 'A new version of Hermes is ready. It loads when you start a new chat, nothing you’re doing is lost.',
-    refresh: 'Refresh now'
+    notice: 'A new Hermes is ready. It loads when you start a new chat.',
+    refresh: 'Refresh now',
+    later: 'Later'
   },
   renameSplash: {
-    eyebrow: '// Hermes update',
+    eyebrow: 'Welcome back / What moved',
     title: 'Hermes got a new look',
-    subtitle: 'New names, same concepts. Hover or click below to see where they live now.',
+    subtitle: 'New names, familiar concepts. Select a row to find its new home.',
     listLabel: 'What was renamed',
     renamed: (classic, current) => `${classic}, now ${current}`,
     lines: {
-      chats: 'Each chat now sits under the agent that ran it.',
-      agents: 'Each agent keeps its own settings, skills and memory.',
-      library: 'Everything Hermes made, from every chat, in one place.',
-      routines: 'Tasks your agents run on a schedule, on their own.',
-      machines: 'The computers your agents run on.',
-      notifications: 'Finished routines and updates land here, including this page.'
+      chats: 'Each chat sits under the agent that ran it',
+      agents: 'Your experts, with their settings and memory',
+      library: 'Everything your agents make',
+      routines: 'Tasks that keep running on a schedule',
+      machines: 'Where your agents run'
     },
-    notifications: 'Notifications',
-    newBadge: 'New',
     atLeast: count => `${count}+`,
-    footnote: 'Click anywhere in the nav to close this. You can come back anytime from notifications.',
+    footnote: 'Click a navigation item or press Esc to close. Reopen from Notifications.',
     done: 'Let’s get to work'
   },
-  formerly: (current, classic) => `${current}, formerly ${classic}`
+  formerlyLine: classic => `Formerly ${classic}`
 }
 
 const fr: DiscoveryCopy = {
@@ -100,50 +116,46 @@ const fr: DiscoveryCopy = {
   },
   tray: {
     title: 'Notifications',
+    heading: 'Notifications et mises à jour',
     unseen: 'Du nouveau',
     empty: 'Rien de nouveau pour l’instant.',
-    newBadge: 'Nouveau'
+    newBadge: 'Nouveau',
+    markAllRead: 'Tout marquer comme lu',
+    footnote: 'Les mises à jour restent ici jusqu’à ce que vous les effaciez.',
+    openIntroduction: 'Ouvrir la présentation'
   },
   renameItem: {
-    title: 'Nouveaux noms, mêmes choses',
-    description: 'Voyez où tout se trouve dans la nouvelle interface.',
+    title: 'Hermes fait peau neuve',
+    description: 'Voyez les nouveaux noms et où se trouve votre travail',
     action: 'Ouvrir'
   },
-  updateItem: {
-    eyebrow: 'Mise à jour disponible',
-    title: 'Une nouvelle version de Hermes est prête',
-    action: 'Mettre à jour'
-  },
+  updateItem: { title: 'Mise à jour disponible', description: 'Installez quand vous voulez', action: 'Mettre à jour' },
   newVersion: {
     eyebrow: 'Mise à jour prête',
     title: 'Une nouvelle version de Hermes est prête',
     description: 'Elle se charge quand vous lancez une nouvelle discussion. Rien de ce que vous faites n’est perdu.',
-    notice:
-      'Une nouvelle version de Hermes est prête. Elle se charge quand vous lancez une nouvelle discussion, rien de ce que vous faites n’est perdu.',
-    refresh: 'Actualiser'
+    notice: 'Une nouvelle version de Hermes est prête. Elle se charge quand vous lancez une nouvelle discussion.',
+    refresh: 'Actualiser',
+    later: 'Plus tard'
   },
   renameSplash: {
-    eyebrow: '// Mise à jour de Hermes',
+    eyebrow: 'Bon retour / Ce qui a changé',
     title: 'Hermes fait peau neuve',
-    subtitle: 'Nouveaux noms, mêmes concepts. Survolez ou cliquez ci-dessous pour voir où ils se trouvent.',
+    subtitle: 'Nouveaux noms, concepts familiers. Choisissez une ligne pour trouver sa nouvelle place.',
     listLabel: 'Ce qui a été renommé',
     renamed: (classic, current) => `${classic}, désormais ${current}`,
     lines: {
-      chats: 'Chaque discussion se range sous l’agent qui l’a menée.',
-      agents: 'Chaque agent garde ses propres réglages, compétences et mémoire.',
-      library: 'Tout ce que Hermes a créé, de chaque discussion, au même endroit.',
-      routines: 'Des tâches que vos agents exécutent seuls, selon un planning.',
-      machines: 'Les ordinateurs sur lesquels tournent vos agents.',
-      notifications: 'Les routines terminées et les mises à jour arrivent ici, y compris cette page.'
+      chats: 'Chaque discussion se range sous l’agent qui l’a menée',
+      agents: 'Vos experts, avec leurs réglages et leur mémoire',
+      library: 'Tout ce que créent vos agents',
+      routines: 'Des tâches qui tournent selon un planning',
+      machines: 'Là où tournent vos agents'
     },
-    notifications: 'Notifications',
-    newBadge: 'Nouveau',
     atLeast: count => `${count}+`,
-    footnote:
-      'Cliquez n’importe où dans la navigation pour fermer. Vous pouvez y revenir à tout moment depuis les notifications.',
+    footnote: 'Cliquez dans la navigation ou appuyez sur Échap pour fermer. Rouvrez depuis les notifications.',
     done: 'Au travail'
   },
-  formerly: (current, classic) => `${current}, anciennement ${classic}`
+  formerlyLine: classic => `Anciennement ${classic}`
 }
 
 const de: DiscoveryCopy = {
@@ -156,49 +168,46 @@ const de: DiscoveryCopy = {
   },
   tray: {
     title: 'Benachrichtigungen',
+    heading: 'Benachrichtigungen & Updates',
     unseen: 'Etwas Neues',
     empty: 'Gerade nichts Neues.',
-    newBadge: 'Neu'
+    newBadge: 'Neu',
+    markAllRead: 'Alle als gelesen markieren',
+    footnote: 'Updates bleiben hier, bis du sie entfernst.',
+    openIntroduction: 'Einführung öffnen'
   },
   renameItem: {
-    title: 'Neue Namen, gleiche Dinge',
-    description: 'Sieh nach, wo jetzt alles zu finden ist.',
+    title: 'Hermes sieht jetzt neu aus',
+    description: 'Sieh dir die neuen Namen an und wo deine Arbeit liegt',
     action: 'Öffnen'
   },
-  updateItem: {
-    eyebrow: 'Update verfügbar',
-    title: 'Eine neue Version von Hermes ist bereit',
-    action: 'Aktualisieren'
-  },
+  updateItem: { title: 'Update verfügbar', description: 'Installier es, wann du willst', action: 'Aktualisieren' },
   newVersion: {
     eyebrow: 'Update bereit',
     title: 'Eine neue Version von Hermes ist bereit',
     description: 'Sie lädt, wenn du einen neuen Chat startest. Nichts, woran du arbeitest, geht verloren.',
-    notice:
-      'Eine neue Version von Hermes ist bereit. Sie lädt, wenn du einen neuen Chat startest, nichts, woran du arbeitest, geht verloren.',
-    refresh: 'Jetzt neu laden'
+    notice: 'Eine neue Version von Hermes ist bereit. Sie lädt, wenn du einen neuen Chat startest.',
+    refresh: 'Jetzt neu laden',
+    later: 'Später'
   },
   renameSplash: {
-    eyebrow: '// Hermes-Update',
+    eyebrow: 'Willkommen zurück / Was sich geändert hat',
     title: 'Hermes sieht jetzt neu aus',
-    subtitle: 'Neue Namen, gleiche Konzepte. Zeig auf eine Zeile oder klick sie an, um zu sehen, wo sie jetzt liegen.',
+    subtitle: 'Neue Namen, vertraute Konzepte. Wähl eine Zeile, um zu sehen, wo sie jetzt liegt.',
     listLabel: 'Was umbenannt wurde',
     renamed: (classic, current) => `${classic}, jetzt ${current}`,
     lines: {
-      chats: 'Jeder Chat liegt jetzt unter dem Agenten, der ihn geführt hat.',
-      agents: 'Jeder Agent behält seine eigenen Einstellungen, Skills und Erinnerungen.',
-      library: 'Alles, was Hermes erstellt hat, aus jedem Chat, an einem Ort.',
-      routines: 'Aufgaben, die deine Agenten selbstständig nach Zeitplan ausführen.',
-      machines: 'Die Computer, auf denen deine Agenten laufen.',
-      notifications: 'Fertige Routinen und Updates landen hier, auch diese Seite.'
+      chats: 'Jeder Chat liegt unter dem Agenten, der ihn geführt hat',
+      agents: 'Deine Experten, mit ihren Einstellungen und Erinnerungen',
+      library: 'Alles, was deine Agenten erstellen',
+      routines: 'Aufgaben, die nach Zeitplan weiterlaufen',
+      machines: 'Wo deine Agenten laufen'
     },
-    notifications: 'Benachrichtigungen',
-    newBadge: 'Neu',
     atLeast: count => `${count}+`,
-    footnote: 'Klick irgendwo in die Navigation, um das zu schließen. Unter Benachrichtigungen findest du es jederzeit wieder.',
+    footnote: 'Klick in die Navigation oder drück Esc, um zu schließen. Unter Benachrichtigungen findest du es wieder.',
     done: 'Los geht’s'
   },
-  formerly: (current, classic) => `${current}, früher ${classic}`
+  formerlyLine: classic => `Früher ${classic}`
 }
 
 const es: DiscoveryCopy = {
@@ -211,49 +220,46 @@ const es: DiscoveryCopy = {
   },
   tray: {
     title: 'Notificaciones',
+    heading: 'Notificaciones y actualizaciones',
     unseen: 'Hay novedades',
     empty: 'Nada nuevo por ahora.',
-    newBadge: 'Nuevo'
+    newBadge: 'Nuevo',
+    markAllRead: 'Marcar todo como leído',
+    footnote: 'Las actualizaciones se quedan aquí hasta que las borres.',
+    openIntroduction: 'Abrir la presentación'
   },
   renameItem: {
-    title: 'Nombres nuevos, lo mismo de siempre',
-    description: 'Mira dónde está todo con el nuevo diseño.',
+    title: 'Hermes tiene un nuevo aspecto',
+    description: 'Mira los nuevos nombres y dónde está tu trabajo',
     action: 'Abrir'
   },
-  updateItem: {
-    eyebrow: 'Actualización disponible',
-    title: 'Hay una nueva versión de Hermes lista',
-    action: 'Actualizar'
-  },
+  updateItem: { title: 'Actualización disponible', description: 'Instálala cuando quieras', action: 'Actualizar' },
   newVersion: {
     eyebrow: 'Actualización lista',
     title: 'Hay una nueva versión de Hermes lista',
     description: 'Se carga cuando empiezas un chat nuevo. No se pierde nada de lo que estás haciendo.',
-    notice:
-      'Hay una nueva versión de Hermes lista. Se carga cuando empiezas un chat nuevo, no se pierde nada de lo que estás haciendo.',
-    refresh: 'Actualizar ahora'
+    notice: 'Hay una nueva versión de Hermes lista. Se carga cuando empiezas un chat nuevo.',
+    refresh: 'Actualizar ahora',
+    later: 'Más tarde'
   },
   renameSplash: {
-    eyebrow: '// Actualización de Hermes',
+    eyebrow: 'Bienvenido de nuevo / Qué ha cambiado',
     title: 'Hermes tiene un nuevo aspecto',
-    subtitle: 'Nombres nuevos, mismos conceptos. Pasa el cursor o haz clic abajo para ver dónde están ahora.',
+    subtitle: 'Nombres nuevos, conceptos conocidos. Elige una fila para ver dónde está ahora.',
     listLabel: 'Qué cambió de nombre',
     renamed: (classic, current) => `${classic}, ahora ${current}`,
     lines: {
-      chats: 'Cada chat ahora está bajo el agente que lo llevó.',
-      agents: 'Cada agente conserva su propia configuración, habilidades y memoria.',
-      library: 'Todo lo que Hermes creó, de cada chat, en un solo lugar.',
-      routines: 'Tareas que tus agentes ejecutan solos, según un horario.',
-      machines: 'Los ordenadores en los que funcionan tus agentes.',
-      notifications: 'Las rutinas terminadas y las actualizaciones llegan aquí, incluida esta página.'
+      chats: 'Cada chat está bajo el agente que lo llevó',
+      agents: 'Tus expertos, con su configuración y su memoria',
+      library: 'Todo lo que crean tus agentes',
+      routines: 'Tareas que siguen funcionando según un horario',
+      machines: 'Donde funcionan tus agentes'
     },
-    notifications: 'Notificaciones',
-    newBadge: 'Nuevo',
     atLeast: count => `${count}+`,
-    footnote: 'Haz clic en cualquier parte de la navegación para cerrar. Puedes volver cuando quieras desde las notificaciones.',
+    footnote: 'Haz clic en la navegación o pulsa Esc para cerrar. Vuelve a abrirlo desde Notificaciones.',
     done: 'Manos a la obra'
   },
-  formerly: (current, classic) => `${current}, antes ${classic}`
+  formerlyLine: classic => `Antes ${classic}`
 }
 
 const ja: DiscoveryCopy = {
@@ -266,44 +272,46 @@ const ja: DiscoveryCopy = {
   },
   tray: {
     title: '通知',
+    heading: '通知とアップデート',
     unseen: '新着あり',
     empty: '今は新しいお知らせはありません。',
-    newBadge: '新着'
+    newBadge: '新着',
+    markAllRead: 'すべて既読にする',
+    footnote: 'アップデートは消去するまでここに残ります。',
+    openIntroduction: '紹介を開く'
   },
   renameItem: {
-    title: '名前が変わっても、中身は同じ',
-    description: '新しいデザインでどこに何があるかを確認できます。',
+    title: 'Hermes が新しくなりました',
+    description: '新しい名前と、作業の置き場所を確認',
     action: '開く'
   },
-  updateItem: { eyebrow: 'アップデートあり', title: 'Hermes の新しいバージョンの準備ができました', action: 'アップデート' },
+  updateItem: { title: 'アップデートあり', description: '準備ができたらインストール', action: 'アップデート' },
   newVersion: {
     eyebrow: 'アップデート準備完了',
     title: 'Hermes の新しいバージョンの準備ができました',
     description: '新しいチャットを始めたときに読み込まれます。作業中の内容は失われません。',
-    notice: 'Hermes の新しいバージョンの準備ができました。新しいチャットを始めたときに読み込まれ、作業中の内容は失われません。',
-    refresh: '今すぐ更新'
+    notice: 'Hermes の新しいバージョンの準備ができました。新しいチャットを始めると読み込まれます。',
+    refresh: '今すぐ更新',
+    later: 'あとで'
   },
   renameSplash: {
-    eyebrow: '// Hermes アップデート',
+    eyebrow: 'おかえりなさい / 変わったところ',
     title: 'Hermes が新しくなりました',
-    subtitle: '名前は新しく、考え方はそのまま。下の項目にカーソルを合わせるかクリックすると、今の場所がわかります。',
+    subtitle: '名前は新しく、考え方はそのまま。行を選ぶと新しい場所がわかります。',
     listLabel: '名前が変わったもの',
     renamed: (classic, current) => `${classic} は ${current} になりました`,
     lines: {
-      chats: '各チャットは、それを実行したエージェントの下に並びます。',
-      agents: '各エージェントは自分の設定、スキル、メモリーを持ちます。',
-      library: 'Hermes がすべてのチャットで作ったものを、一か所に。',
-      routines: 'エージェントがスケジュールに沿って自動で行うタスク。',
-      machines: 'エージェントが動くコンピューター。',
-      notifications: '完了したルーティンやアップデートはここに届きます。このページもここから開けます。'
+      chats: '各チャットは、それを実行したエージェントの下に並びます',
+      agents: '設定とメモリーを持つ、あなたのエキスパート',
+      library: 'エージェントが作ったものすべて',
+      routines: 'スケジュールに沿って動き続けるタスク',
+      machines: 'エージェントが動く場所'
     },
-    notifications: '通知',
-    newBadge: '新着',
     atLeast: count => `${count}+`,
-    footnote: 'ナビゲーションのどこかをクリックすると閉じます。通知からいつでも戻れます。',
+    footnote: 'ナビゲーションをクリックするか Esc キーで閉じます。通知からもう一度開けます。',
     done: 'さっそく始める'
   },
-  formerly: (current, classic) => `${current}（旧: ${classic}）`
+  formerlyLine: classic => `旧: ${classic}`
 }
 
 const zh: DiscoveryCopy = {
@@ -316,44 +324,46 @@ const zh: DiscoveryCopy = {
   },
   tray: {
     title: '通知',
+    heading: '通知与更新',
     unseen: '有新内容',
     empty: '暂时没有新内容。',
-    newBadge: '新'
+    newBadge: '新',
+    markAllRead: '全部标为已读',
+    footnote: '更新会一直留在这里，直到你清除。',
+    openIntroduction: '打开介绍'
   },
   renameItem: {
-    title: '名字变了，内容没变',
-    description: '看看新界面里各项内容在哪里。',
+    title: 'Hermes 换了新面貌',
+    description: '看看新名字，以及你的工作在哪里',
     action: '打开'
   },
-  updateItem: { eyebrow: '有可用更新', title: 'Hermes 新版本已就绪', action: '更新' },
+  updateItem: { title: '有可用更新', description: '准备好时再安装', action: '更新' },
   newVersion: {
     eyebrow: '更新已就绪',
     title: 'Hermes 新版本已就绪',
     description: '开始新对话时就会加载。你正在做的事不会丢失。',
-    notice: 'Hermes 新版本已就绪。开始新对话时就会加载，你正在做的事不会丢失。',
-    refresh: '立即刷新'
+    notice: 'Hermes 新版本已就绪。开始新对话时就会加载。',
+    refresh: '立即刷新',
+    later: '稍后'
   },
   renameSplash: {
-    eyebrow: '// Hermes 更新',
+    eyebrow: '欢迎回来 / 有哪些变化',
     title: 'Hermes 换了新面貌',
-    subtitle: '名字是新的，概念不变。将鼠标悬停或点击下方条目，看看它们现在在哪里。',
+    subtitle: '名字是新的，概念还是熟悉的。选择一行，看看它的新位置。',
     listLabel: '改名的内容',
     renamed: (classic, current) => `${classic}，现在叫 ${current}`,
     lines: {
-      chats: '每个对话现在都归在运行它的智能体下面。',
-      agents: '每个智能体都有自己的设置、技能和记忆。',
-      library: 'Hermes 在所有对话中做出的内容，集中在一处。',
-      routines: '智能体按计划自动执行的任务。',
-      machines: '运行智能体的电脑。',
-      notifications: '完成的例行任务和更新都会出现在这里，包括这一页。'
+      chats: '每个对话都归在运行它的智能体下面',
+      agents: '你的专家，带着各自的设置和记忆',
+      library: '智能体做出的一切',
+      routines: '按计划持续运行的任务',
+      machines: '智能体运行的地方'
     },
-    notifications: '通知',
-    newBadge: '新',
     atLeast: count => `${count}+`,
-    footnote: '点击导航中的任意位置即可关闭。你随时可以从通知中再次打开。',
+    footnote: '点击导航中的项目或按 Esc 关闭。可从通知中再次打开。',
     done: '开始工作'
   },
-  formerly: (current, classic) => `${current}（原 ${classic}）`
+  formerlyLine: classic => `原 ${classic}`
 }
 
 const zhHant: DiscoveryCopy = {
@@ -366,44 +376,46 @@ const zhHant: DiscoveryCopy = {
   },
   tray: {
     title: '通知',
+    heading: '通知與更新',
     unseen: '有新內容',
     empty: '目前沒有新內容。',
-    newBadge: '新'
+    newBadge: '新',
+    markAllRead: '全部標為已讀',
+    footnote: '更新會一直留在這裡，直到你清除。',
+    openIntroduction: '開啟介紹'
   },
   renameItem: {
-    title: '名稱變了，內容沒變',
-    description: '看看新介面裡各項內容在哪裡。',
+    title: 'Hermes 換了新面貌',
+    description: '看看新名稱，以及你的工作在哪裡',
     action: '開啟'
   },
-  updateItem: { eyebrow: '有可用更新', title: 'Hermes 新版本已就緒', action: '更新' },
+  updateItem: { title: '有可用更新', description: '準備好時再安裝', action: '更新' },
   newVersion: {
     eyebrow: '更新已就緒',
     title: 'Hermes 新版本已就緒',
     description: '開始新對話時就會載入。你正在做的事不會遺失。',
-    notice: 'Hermes 新版本已就緒。開始新對話時就會載入，你正在做的事不會遺失。',
-    refresh: '立即重新整理'
+    notice: 'Hermes 新版本已就緒。開始新對話時就會載入。',
+    refresh: '立即重新整理',
+    later: '稍後'
   },
   renameSplash: {
-    eyebrow: '// Hermes 更新',
+    eyebrow: '歡迎回來 / 有哪些變化',
     title: 'Hermes 換了新面貌',
-    subtitle: '名稱是新的，概念不變。將游標停在下方項目上或點一下，看看它們現在在哪裡。',
+    subtitle: '名稱是新的，概念還是熟悉的。選一列，看看它的新位置。',
     listLabel: '改名的內容',
     renamed: (classic, current) => `${classic}，現在叫 ${current}`,
     lines: {
-      chats: '每個對話現在都歸在執行它的智慧體底下。',
-      agents: '每個智慧體都有自己的設定、技能和記憶。',
-      library: 'Hermes 在所有對話中做出的內容，集中在一處。',
-      routines: '智慧體依排程自動執行的工作。',
-      machines: '執行智慧體的電腦。',
-      notifications: '完成的例行任務和更新都會出現在這裡，包括這一頁。'
+      chats: '每個對話都歸在執行它的智慧體底下',
+      agents: '你的專家，帶著各自的設定和記憶',
+      library: '智慧體做出的一切',
+      routines: '依排程持續執行的工作',
+      machines: '智慧體執行的地方'
     },
-    notifications: '通知',
-    newBadge: '新',
     atLeast: count => `${count}+`,
-    footnote: '點一下導覽列的任何地方即可關閉。你隨時可以從通知再次開啟。',
+    footnote: '點一下導覽列的項目或按 Esc 關閉。可從通知再次開啟。',
     done: '開始工作'
   },
-  formerly: (current, classic) => `${current}（原 ${classic}）`
+  formerlyLine: classic => `原 ${classic}`
 }
 
 const ru: DiscoveryCopy = {
@@ -416,45 +428,46 @@ const ru: DiscoveryCopy = {
   },
   tray: {
     title: 'Уведомления',
+    heading: 'Уведомления и обновления',
     unseen: 'Есть новое',
     empty: 'Пока ничего нового.',
-    newBadge: 'Новое'
+    newBadge: 'Новое',
+    markAllRead: 'Отметить всё прочитанным',
+    footnote: 'Обновления остаются здесь, пока вы их не уберёте.',
+    openIntroduction: 'Открыть знакомство'
   },
   renameItem: {
-    title: 'Новые названия, всё то же самое',
-    description: 'Посмотрите, где что находится в новом интерфейсе.',
+    title: 'Hermes выглядит по-новому',
+    description: 'Новые названия и где теперь ваша работа',
     action: 'Открыть'
   },
-  updateItem: { eyebrow: 'Доступно обновление', title: 'Новая версия Hermes готова', action: 'Обновить' },
+  updateItem: { title: 'Доступно обновление', description: 'Установите, когда будете готовы', action: 'Обновить' },
   newVersion: {
     eyebrow: 'Обновление готово',
     title: 'Новая версия Hermes готова',
     description: 'Она загрузится, когда вы начнёте новый чат. Ничего из того, что вы делаете, не потеряется.',
-    notice:
-      'Новая версия Hermes готова. Она загрузится, когда вы начнёте новый чат, ничего из того, что вы делаете, не потеряется.',
-    refresh: 'Обновить сейчас'
+    notice: 'Новая версия Hermes готова. Она загрузится, когда вы начнёте новый чат.',
+    refresh: 'Обновить сейчас',
+    later: 'Позже'
   },
   renameSplash: {
-    eyebrow: '// Обновление Hermes',
+    eyebrow: 'С возвращением / Что изменилось',
     title: 'Hermes выглядит по-новому',
-    subtitle: 'Новые названия, те же понятия. Наведите курсор или нажмите на строку ниже, чтобы увидеть, где они теперь.',
+    subtitle: 'Новые названия, знакомые понятия. Выберите строку, чтобы найти её новое место.',
     listLabel: 'Что переименовано',
     renamed: (classic, current) => `${classic}, теперь ${current}`,
     lines: {
-      chats: 'Каждый чат теперь находится под агентом, который его вёл.',
-      agents: 'У каждого агента свои настройки, навыки и память.',
-      library: 'Всё, что Hermes создал во всех чатах, в одном месте.',
-      routines: 'Задачи, которые ваши агенты сами выполняют по расписанию.',
-      machines: 'Компьютеры, на которых работают ваши агенты.',
-      notifications: 'Завершённые рутины и обновления приходят сюда, включая эту страницу.'
+      chats: 'Каждый чат находится под агентом, который его вёл',
+      agents: 'Ваши эксперты, с их настройками и памятью',
+      library: 'Всё, что создают ваши агенты',
+      routines: 'Задачи, которые работают по расписанию',
+      machines: 'Где работают ваши агенты'
     },
-    notifications: 'Уведомления',
-    newBadge: 'Новое',
     atLeast: count => `${count}+`,
-    footnote: 'Нажмите в любом месте навигации, чтобы закрыть. Вернуться сюда можно в любой момент из уведомлений.',
+    footnote: 'Нажмите на пункт навигации или Esc, чтобы закрыть. Открыть снова можно из уведомлений.',
     done: 'За работу'
   },
-  formerly: (current, classic) => `${current}, раньше ${classic}`
+  formerlyLine: classic => `Раньше: ${classic}`
 }
 
 const ar: DiscoveryCopy = {
@@ -467,44 +480,46 @@ const ar: DiscoveryCopy = {
   },
   tray: {
     title: 'الإشعارات',
+    heading: 'الإشعارات والتحديثات',
     unseen: 'يوجد جديد',
     empty: 'لا جديد الآن.',
-    newBadge: 'جديد'
+    newBadge: 'جديد',
+    markAllRead: 'تعليم الكل كمقروء',
+    footnote: 'تبقى التحديثات هنا حتى تمسحها.',
+    openIntroduction: 'فتح التعريف'
   },
   renameItem: {
-    title: 'أسماء جديدة، والأشياء نفسها',
-    description: 'اعرف مكان كل شيء في الشكل الجديد.',
+    title: 'Hermes بشكل جديد',
+    description: 'اطّلع على الأسماء الجديدة وأين يوجد عملك',
     action: 'فتح'
   },
-  updateItem: { eyebrow: 'تحديث متاح', title: 'إصدار جديد من Hermes جاهز', action: 'تحديث' },
+  updateItem: { title: 'تحديث متاح', description: 'ثبّته عندما تكون جاهزًا', action: 'تحديث' },
   newVersion: {
     eyebrow: 'التحديث جاهز',
     title: 'إصدار جديد من Hermes جاهز',
     description: 'يُحمَّل عندما تبدأ محادثة جديدة. لن يضيع شيء مما تعمل عليه.',
-    notice: 'إصدار جديد من Hermes جاهز. يُحمَّل عندما تبدأ محادثة جديدة، ولن يضيع شيء مما تعمل عليه.',
-    refresh: 'التحديث الآن'
+    notice: 'إصدار جديد من Hermes جاهز. يُحمَّل عندما تبدأ محادثة جديدة.',
+    refresh: 'التحديث الآن',
+    later: 'لاحقًا'
   },
   renameSplash: {
-    eyebrow: '// تحديث Hermes',
+    eyebrow: 'مرحبًا بعودتك / ما الذي تغيّر',
     title: 'Hermes بشكل جديد',
-    subtitle: 'أسماء جديدة، والمفاهيم نفسها. مرّر المؤشر أو انقر أدناه لترى مكانها الآن.',
+    subtitle: 'أسماء جديدة، ومفاهيم مألوفة. اختر صفًا لتجد مكانه الجديد.',
     listLabel: 'ما الذي تغيّر اسمه',
     renamed: (classic, current) => `${classic}، أصبحت ${current}`,
     lines: {
-      chats: 'كل محادثة أصبحت تحت الوكيل الذي أجراها.',
-      agents: 'لكل وكيل إعداداته ومهاراته وذاكرته.',
-      library: 'كل ما صنعه Hermes، من كل محادثة، في مكان واحد.',
-      routines: 'مهام ينفّذها وكلاؤك وحدهم وفق جدول.',
-      machines: 'الحواسيب التي يعمل عليها وكلاؤك.',
-      notifications: 'الروتينات المكتملة والتحديثات تصل إلى هنا، ومنها هذه الصفحة.'
+      chats: 'كل محادثة تحت الوكيل الذي أجراها',
+      agents: 'خبراؤك، بإعداداتهم وذاكرتهم',
+      library: 'كل ما يصنعه وكلاؤك',
+      routines: 'مهام تستمر في العمل وفق جدول',
+      machines: 'حيث يعمل وكلاؤك'
     },
-    notifications: 'الإشعارات',
-    newBadge: 'جديد',
     atLeast: count => `${count}+`,
-    footnote: 'انقر في أي مكان من شريط التنقل لإغلاق هذه الصفحة. يمكنك العودة إليها متى شئت من الإشعارات.',
+    footnote: 'انقر عنصرًا في شريط التنقل أو اضغط Esc للإغلاق. أعد فتحها من الإشعارات.',
     done: 'لنبدأ العمل'
   },
-  formerly: (current, classic) => `${current}، سابقًا ${classic}`
+  formerlyLine: classic => `سابقًا ${classic}`
 }
 
 const COPY: Record<BundledLocale, DiscoveryCopy> = { en, fr, de, es, ja, zh, 'zh-hant': zhHant, ru, ar }

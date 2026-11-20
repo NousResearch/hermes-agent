@@ -35,7 +35,9 @@ afterEach(() => resetDesktopMetricsForTests())
 it('offers the renamed place for a classic word, named as the rail names it', () => {
   const { result } = renderHook(() => useOldNameRows('sessions', true, go))
 
-  expect(result.current[0]?.items.map(item => item.label)).toEqual([`${en.simplifiedAgents.chats}, formerly Sessions`])
+  expect(result.current[0]?.items.map(({ description, label }) => [label, description])).toEqual([
+    [en.simplifiedAgents.chats, 'Formerly Sessions']
+  ])
 })
 
 it('offers nothing outside the redesign or for an ordinary query', () => {

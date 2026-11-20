@@ -25,6 +25,19 @@ export interface DeployedBuildProbe {
 /** Becomes true once a newer build is seen and stays so until the page reloads into it. */
 export const $newVersionReady = atom(false)
 
+/** "Later" put the chat's notice away for this page; the tray keeps the build waiting. */
+const $newVersionNoticeAway = atom(false)
+
+/** The chat says a newer build is waiting (E4), until Later. */
+export const $newVersionNoticeShown = computed(
+  [$newVersionReady, $newVersionNoticeAway],
+  (ready, away) => ready && !away
+)
+
+export function putNewVersionNoticeAway(): void {
+  $newVersionNoticeAway.set(true)
+}
+
 export const $applyConditions = computed(
   [$workingSessionIds, $voiceStreamPaintOwners],
   (working, voice): ApplyConditions => ({ workingChats: working.length, voiceActive: voice > 0 })

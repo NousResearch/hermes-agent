@@ -19,6 +19,7 @@ const DESTINATIONS: Record<RenamedDestination, { icon: IconComponent; route: str
 }
 
 interface OldNameRow {
+  description: string
   icon: IconComponent
   id: string
   keywords: string[]
@@ -27,8 +28,8 @@ interface OldNameRow {
 }
 
 /**
- * The redesign's ⌘K answer to a classic word (Figma 63:3642): typing "sessions" offers "Chats,
- * formerly Sessions" first. The words come from the alias table (lib/old-name-aliases.ts) plus the
+ * The redesign's ⌘K answer to a classic word (Figma E7 18677:30045): typing "sessions" offers Chats
+ * first, "Formerly Sessions" under it. The words come from the alias table (lib/old-name-aliases.ts) plus the
  * classic word of the current language. A query that is a whole classic word counts once per open
  * of the palette, by the word's code (never the query).
  */
@@ -66,7 +67,8 @@ export function useOldNameRows(
             icon: DESTINATIONS[destination].icon,
             id: `renamed-${destination}`,
             keywords: [...words, classic],
-            label: copy.formerly(names[destination], classic),
+            label: names[destination],
+            description: copy.formerlyLine(classic),
             run: go(DESTINATIONS[destination].route)
           }
         ]

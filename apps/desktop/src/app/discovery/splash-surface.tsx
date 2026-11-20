@@ -8,14 +8,16 @@ import { type NavSpot, NavSpotlight } from './nav-spotlight'
 
 export interface SplashRow<Id extends string = string> {
   id: Id
-  /** The row's one visible line. */
+  /** The row's glyph: the place's own. */
+  glyph: ReactNode
+  /** The row's name line. */
   label: ReactNode
   /** The row's accessible name: what `label` and `meta` say together, in words. */
   name: string
-  /** Trailing detail on the row's line (a count). */
+  /** The row's second line, under its name. */
+  line: string
+  /** Trailing detail on the row (a count). */
   meta?: ReactNode
-  /** The sentence shown while the row is hovered, focused or picked. */
-  detail?: string
   /** The place in the nav the row lights up while active. */
   spot?: NavSpot
 }
@@ -30,7 +32,9 @@ export interface SplashSurfaceProps<Id extends string> {
   listLabel: string
   rows: readonly SplashRow<Id>[]
   /** Under the rows: the splash's own way out (a button, a sign-up). */
-  footer: ReactNode
+  actions: ReactNode
+  /** Under the actions: how else it closes. */
+  footnote: string
   /** Escape was pressed while nothing above the splash wanted it. */
   onEscape: () => void
   /** A row became active by the person's hand (hover, focus or click), not by default. */
@@ -90,15 +94,15 @@ export function useSplashFrame(takeFocus: boolean, onEscape: () => void): RefObj
 }
 
 /**
- * A splash that fills the chat area while the nav stays live: a heading, a list of rows that each
- * say one thing (and say more, and light up their place in the nav, while active), and a footer.
- * The rename splash is one. The first row starts active, so the splash shows what it does before
- * anyone touches it; a pointer or focus moves the highlight, a click or tap leaves it on that row
- * (touch has no hover).
+ * A splash on the stage in the welcome's language (Figma E5 18677:29814): the 640 column with a
+ * heading, one card of rows (glyph, name, line, count), the way out and a footnote. A row a pointer,
+ * focus or tap reaches lights its place in the nav; nothing is lit until then, and a tap leaves it
+ * on that row (touch has no hover). The rename splash is one.
  */
 export function SplashSurface<Id extends string>({
+  actions,
   eyebrow,
-  footer,
+  footnote,
   kind,
   listLabel,
   onEscape,
@@ -117,7 +121,7 @@ export function SplashSurface<Id extends string>({
     activeRowRef.current = node
   }, [])
 
-  const [picked, setPicked] = useState<Id | null>(rows[0]?.id ?? null)
+  const [picked, setPicked] = useState<Id | null>(null)
   const [hovered, setHovered] = useState<Id | null>(null)
   const [focused, setFocused] = useState<Id | null>(null)
   const activeId = hovered ?? focused ?? picked
@@ -138,27 +142,29 @@ export function SplashSurface<Id extends string>({
       ref={surfaceRef}
       tabIndex={-1}
     >
-      <span aria-hidden className="discovery-splash-brackets" />
-      <div className="discovery-splash-content">
-        <p className="discovery-splash-eyebrow">{eyebrow}</p>
-        <h1 className="discovery-splash-title" id={`${id}-title`}>
-          {title}
-        </h1>
-        <p className="discovery-splash-subtitle" id={`${id}-subtitle`}>
-          {subtitle}
-        </p>
-        <ul aria-label={listLabel} className="discovery-splash-rows" onPointerLeave={() => setHovered(null)}>
+      <div className="discovery-welcome">
+        <p className="discovery-welcome-eyebrow">{eyebrow}</p>
+        <div className="discovery-welcome-heading">
+          <h1 className="discovery-welcome-title" id={`${id}-title`}>
+            {title}
+          </h1>
+          <p className="discovery-welcome-subtitle" data-tone="regular" id={`${id}-subtitle`}>
+            {subtitle}
+          </p>
+        </div>
+        <ul
+          aria-label={listLabel}
+          className="discovery-welcome-card discovery-welcome-places"
+          onPointerLeave={() => setHovered(null)}
+        >
           {rows.map(row => {
             const isActive = row.id === active?.id
-            const detailId = `${id}-${row.id}-detail`
 
             return (
-              <li className="discovery-splash-row" data-active={isActive || undefined} key={row.id}>
+              <li data-active={isActive || undefined} key={row.id}>
                 <button
-                  aria-controls={row.detail ? detailId : undefined}
-                  aria-expanded={row.detail ? isActive : undefined}
-                  aria-label={row.name}
-                  className="discovery-splash-row-button"
+                  aria-label={`${row.name}: ${row.line}`}
+                  className="discovery-welcome-place"
                   onBlur={() => setFocused(current => (current === row.id ? null : current))}
                   onClick={() => activate(row.id, setPicked)}
                   onFocus={() => activate(row.id, setFocused)}
@@ -170,23 +176,23 @@ export function SplashSurface<Id extends string>({
                   ref={isActive ? bindActiveRow : undefined}
                   type="button"
                 >
-                  <span className="discovery-splash-row-label">{row.label}</span>
+                  {row.glyph}
+                  <span aria-hidden className="discovery-welcome-place-text">
+                    <span className="discovery-welcome-place-name">{row.label}</span>
+                    <span className="discovery-welcome-place-line">{row.line}</span>
+                  </span>
                   {row.meta !== undefined && (
-                    <span aria-hidden className="discovery-splash-row-meta">
+                    <span aria-hidden className="discovery-welcome-place-meta">
                       {row.meta}
                     </span>
                   )}
                 </button>
-                {row.detail && (
-                  <p className="discovery-splash-row-detail" hidden={!isActive} id={detailId}>
-                    {row.detail}
-                  </p>
-                )}
               </li>
             )
           })}
         </ul>
-        <div className="discovery-splash-footer">{footer}</div>
+        <div className="discovery-welcome-actions">{actions}</div>
+        <p className="discovery-welcome-footnote">{footnote}</p>
       </div>
       {active?.spot && <NavSpotlight anchor={activeRowRef} key={active.id} spot={active.spot} />}
     </section>

@@ -42,6 +42,10 @@ on:
         required: false
         type: string
         default: HEAD
+      desktop-recovery:
+        description: 'Check recovery from the already-running source Desktop app on the selected CLI leg.'
+        type: boolean
+        default: false
       tag-has-desktop:
         description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
         required: false
@@ -167,12 +171,17 @@ jobs:
         id: update
         run: |
           set -euo pipefail
-          tests/install/macos-desktop-e2e.sh --phase update \
+          recovery=()
+          if [ "$DESKTOP_RECOVERY" = true ]; then
+            recovery=(--check-desktop-recovery)
+          fi
+          tests/install/macos-desktop-e2e.sh --phase update ${recovery[@]+"${recovery[@]}"} \
             --update-method '${{ inputs.update-method }}' \
             --install-ref '${{ inputs.install-ref }}' \
             --dmg-url '${{ inputs.dmg-url }}'
         env:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          DESKTOP_RECOVERY: ${{ inputs.desktop-recovery }}
 
       # Only the classifier's receipt (tests/install/KNOWN_FAILURES.md) turns
       # a failed update into a non-red known-failure cell in the report.

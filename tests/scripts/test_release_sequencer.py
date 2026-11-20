@@ -234,6 +234,15 @@ def _final_message(version, attempt, commit, *, release_id, epoch=1_790_000_000)
     }
 
 
+def _without_confirmed_ux_blockers(run):
+    def fixture(argv):
+        if argv[:4] == ["gh", "api", "--paginate", "--slurp"] and (
+                "/issues?" in argv[-1] or "/issues/157333/comments?" in argv[-1]):
+            return "[[]]"
+        return run(argv)
+    return fixture
+
+
 def _discover_run(tags, releases=(), workflow_runs=()):
     def run(argv):
         if argv[:2] == ["git", "fetch"]:
@@ -259,7 +268,7 @@ def _discover_run(tags, releases=(), workflow_runs=()):
             return json.dumps([{"workflow_runs": list(workflow_runs)}])
         raise AssertionError(argv)
 
-    return run
+    return _without_confirmed_ux_blockers(run)
 
 
 def test_discover_reads_an_attempt_ref_and_keeps_the_version():
@@ -510,7 +519,7 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
             return json.dumps(release)
         raise AssertionError(argv)
 
-    return tags, releases, run
+    return tags, releases, _without_confirmed_ux_blockers(run)
 
 
 def test_reconcile_discovers_custody_flips_then_advances_oldest_first():

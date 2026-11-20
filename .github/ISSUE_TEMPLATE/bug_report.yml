@@ -52,6 +52,62 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: user_journey
+    attributes:
+      label: User Journey and Recovery (optional)
+      description: Which step stopped, what did Hermes show, and how could you continue? Mention if you had to switch surfaces, edit files, reinstall, or ask for help.
+      placeholder: "Desktop update said it was complete, but the app still offered only an installer. Quitting and rerunning the updater in Terminal worked."
+
+  - type: dropdown
+    id: ux_surface
+    attributes:
+      label: UX surface
+      description: Optional. Used to propose UX impact independently of engineering severity.
+      options:
+        - Unknown
+        - Desktop
+        - Terminal
+        - Telegram
+        - Discord
+
+  - type: dropdown
+    id: ux_journey
+    attributes:
+      label: UX journey
+      description: Optional. Used to propose UX impact independently of engineering severity.
+      options:
+        - Unknown
+        - Install / setup
+        - Sign-in / provider setup
+        - First reply
+        - Return to a conversation
+        - Update / recovery
+
+  - type: dropdown
+    id: ux_progress
+    attributes:
+      label: UX progress
+      description: Optional. Used to propose UX impact independently of engineering severity.
+      options:
+        - Unknown
+        - Blocked or falsely reports success
+        - Disrupted but usable
+        - Works as expected
+
+  - type: dropdown
+    id: ux_recovery
+    attributes:
+      label: UX recovery
+      description: Optional. Used to propose UX impact independently of engineering severity.
+      options:
+        - Unknown
+        - Clear action in the same surface
+        - Terminal or another surface required
+        - Manual files or configuration required
+        - Reinstall or outside help required
+        - No recovery found
+
   - type: dropdown
     id: component
     attributes:

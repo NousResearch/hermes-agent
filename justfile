@@ -237,3 +237,18 @@ migrate-branch *args:
     if python="$(git rev-parse --git-path migrate-branch/python)" && [ -f "$python" ]; then \
         PYTHONPATH="$PWD" "$(cat "$python")" scripts/move/migrate_branch.py "$@"; \
     else scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/migrate_branch.py "$@"; fi
+
+# Propose UX impact and refresh linked fixes for one issue (requires gh write access)
+[group('maintain')]
+ux-triage issue:
+    scripts/hermes-python -m scripts.ux_blockers triage --issue '{{issue}}' --output ux-triage.json
+
+# Read the live confirmed-blocker gate for one immutable release candidate
+[group('maintain')]
+ux-gate candidate:
+    scripts/hermes-python -m scripts.ux_blockers gate --candidate '{{candidate}}' --output ux-gate.json
+
+# Refresh the curated Hermes audit's public lifecycle metadata
+[group('maintain')]
+ux-report:
+    scripts/hermes-python -m scripts.ux_blockers report --snapshot .github/ux-blockers/hermes-first-wave-2026-11-18.json --output ux-audit.json

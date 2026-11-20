@@ -1,0 +1,54 @@
+name: UX blocker system checks
+
+on:
+  push:
+    paths:
+      - 'scripts/ux_blockers/**'
+      - 'scripts/releases/**'
+      - 'tests/scripts/test_ux_blockers.py'
+      - 'tests/scripts/test_release_sequencer.py'
+      - '.github/workflows/ux-blockers*.yml'
+      - '.github/workflows/stable-release*.yml'
+      - '.github/ISSUE_TEMPLATE/bug_report.yml'
+      - '.github/ux-blockers/**'
+  pull_request:
+    paths:
+      - 'scripts/ux_blockers/**'
+      - 'scripts/releases/**'
+      - 'tests/scripts/test_ux_blockers.py'
+      - 'tests/scripts/test_release_sequencer.py'
+      - '.github/workflows/ux-blockers*.yml'
+      - '.github/workflows/stable-release*.yml'
+      - '.github/ISSUE_TEMPLATE/bug_report.yml'
+      - '.github/ux-blockers/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Verify the built-in token can read repository permissions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/hermes-python - <<'PY'
+          import os
+          from scripts.ux_blockers.github import GitHub
+          api = GitHub(os.environ["GITHUB_REPOSITORY"])
+          writers = api.pages(f"{api.prefix}/collaborators?permission=push&per_page=100")
+          assert writers, "No independently enumerated repository writer"
+          assert api.trusted(writers[0]["login"]), "Writer permission lookup failed"
+          print("Known repository writer permission verified")
+          PY
+      - name: Test triage, candidate dispositions and publication barriers
+        run: scripts/run_tests.sh -j 2 --file-timeout 180 --file-retries 0 tests/scripts/test_ux_blockers.py tests/scripts/test_release_sequencer.py -q

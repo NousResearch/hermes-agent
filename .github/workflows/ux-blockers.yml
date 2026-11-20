@@ -1,0 +1,56 @@
+name: UX blocker triage
+
+on:
+  issues:
+    types: [opened, edited, reopened, closed, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_target:
+    types: [opened, edited, synchronize, closed, reopened]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to assess (blank refreshes known UX reports)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+# Coalesce events only for the same issue. Every run reads its complete live state.
+concurrency:
+  group: ux-blocker-${{ github.event.issue.number || inputs.issue || 'refresh' }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    # Bot edits must not retrigger their own comment refresh indefinitely.
+    if: github.event_name != 'issue_comment' || github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Always run trusted base code. Never fetch a fork ref or execute report/PR text.
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Assess journeys and refresh fixing PR relationships
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UX_LEDGER_ISSUE: ${{ vars.UX_LEDGER_ISSUE || '157333' }}
+          ISSUE_NUMBER: ${{ inputs.issue || '' }}
+        run: |
+          args=()
+          if [ -n "$ISSUE_NUMBER" ]; then args+=(--issue "$ISSUE_NUMBER"); fi
+          python3 -m scripts.ux_blockers triage --event "$GITHUB_EVENT_PATH" "${args[@]}" --output ux-triage.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ux-triage
+          path: ux-triage.json
+          if-no-files-found: ignore
+          retention-days: 14

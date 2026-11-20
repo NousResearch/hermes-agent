@@ -83,7 +83,7 @@ import { fileURLToPath } from 'node:url';
  *   One column of the plan: install `from`, update to `to`.
  *
  * @typedef {{name: string, leg_id: string, install_method: string, update_method: string,
- *            install_ref: string, update_ref: UpdateTarget, tag_has_desktop?: boolean}} MatrixEntry
+ *            install_ref: string, update_ref: UpdateTarget, tag_has_desktop?: boolean, desktop_recovery?: true}} MatrixEntry
  */
 
 /**
@@ -245,6 +245,7 @@ export function generateEnvironments(spec) {
 export function buildMatrices(envs, tags) {
   /** @type {Record<Os, {include: MatrixEntry[]}>} */
   const byOs = { linux: { include: [] }, windows: { include: [] }, macos: { include: [] } };
+  const recoveryBaseline = tags.find((tag) => tag.desktop)?.ref;
   for (const env of envs) {
     for (const start of startsFor(tags)) {
       const name = `${env.os}: ${env.install} -> ${env.update} (${start.from} -> ${start.to})`;
@@ -261,6 +262,12 @@ export function buildMatrices(envs, tags) {
         // its run workflow can natively skip pre-desktop tags.
         tag_has_desktop: start.desktop,
       };
+      // Only the first sampled Desktop-capable release gets the running-app
+      // recovery check, including when a manual dispatch selects one release.
+      if (env.os === 'macos' && env.install === 'desktop-installer@latest'
+          && env.update === 'hermes-update' && start.from === recoveryBaseline) {
+        entry.desktop_recovery = true;
+      }
       byOs[env.os].include.push(entry);
     }
   }

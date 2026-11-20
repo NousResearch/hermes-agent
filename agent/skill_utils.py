@@ -2,10 +2,12 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import contextlib
 import hashlib
 import logging
 import os
 import re
+import stat
 import sys
 import threading
 from pathlib import Path, PurePath
@@ -877,13 +879,17 @@ def is_skill_description_truncated_for_prompt(frontmatter: dict[str, Any]) -> bo
 
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*; prunes
-    EXCLUDED_SKILL_DIRS and support dirs of skill roots."""
+    EXCLUDED_SKILL_DIRS and support dirs of skill roots. A *filename* that is not a regular file
+    (a FIFO, socket, or link to a device) is skipped: reading it would block or never end."""
     matches: list[str] = []
     for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
         has_skill_md = "SKILL.md" in files
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         if filename in files:
-            matches.append(os.path.join(root, filename))
+            path = os.path.join(root, filename)
+            with contextlib.suppress(OSError):
+                if stat.S_ISREG(os.stat(path).st_mode):
+                    matches.append(path)
     yield from map(Path, sorted(matches))
 
 

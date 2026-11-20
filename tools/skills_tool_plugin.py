@@ -33,7 +33,8 @@ def _fail(error: str, **extra) -> str:
 def _read_skill_text(path: Path) -> str:
     """utf-8-sig + errors="replace": user-authored SKILL.md may carry a Notepad BOM or stray
     bytes; pinning UTF-8 keeps skill_view deterministic across host locales."""
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    from utils.files import read_regular_text
+    return read_regular_text(path, errors="replace")
 
 
 def _truncate_description(description: str) -> str:

@@ -235,7 +235,8 @@ def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
     try:
         from agent.skill_utils import parse_frontmatter
 
-        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000]
+        from utils.files import read_regular_text
+        content = read_regular_text(skill_md, errors="replace")[:4000]
         frontmatter, _ = parse_frontmatter(content)
     except OSError:
         logger.debug("frontmatter read failed for %s", skill_md, exc_info=True)

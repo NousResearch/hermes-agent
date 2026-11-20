@@ -21,9 +21,10 @@ def native_manifest_file(plugin_dir: Path) -> Path | None:
 
 def read_native_manifest(path: Path) -> dict:
     import hermes_yaml as yaml
+    from utils.files import read_regular_text
 
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+        data = yaml.safe_load(read_regular_text(path))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"Could not read plugin manifest {path}: {exc}") from exc
     if data is None:

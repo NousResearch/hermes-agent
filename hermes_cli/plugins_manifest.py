@@ -556,7 +556,8 @@ def parse_manifest_file(
         if yaml is None:
             logger.warning("ruamel.yaml not installed – cannot load %s", manifest_file)
             return None
-        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
+        from utils.files import read_regular_text
+        data = fast_safe_load(read_regular_text(manifest_file)) or {}
         if not isinstance(data, Mapping):
             logger.warning("Failed to parse %s: top level must be a mapping, got %s (#14066)",
                            manifest_file, type(data).__name__)

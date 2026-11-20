@@ -18,8 +18,9 @@ plugin makes (``hermes_cli.plugin_validate_private_imports.hermes_import_sites``
 
 An import resolves when its module exists in the tree (directly or through ``hermes_agent/compat/moves.py``)
 and, for ``from module import name``, the module defines ``name`` at top level, has a submodule of that
-name, or answers names dynamically (a module ``__getattr__`` or a star import). What a still-present name
-DOES is not checked.
+name, is a name a module ``__getattr__`` can answer (judged by the strings it, its helpers and its lookup
+tables spell), or comes from a star import or a write through ``globals()``. What a still-present name DOES
+is not checked.
 """
 
 from __future__ import annotations
@@ -241,8 +242,13 @@ def _is_globals_call(node: ast.AST) -> bool:
 def _binds_names_at_runtime(tree: ast.Module) -> bool:
     """A module that writes names through ``globals()`` binds names no parse can list: it hands the dict to a
     call (``registry.export(globals())``), mutates it (``globals().update(...)``) or assigns into it. Reading
-    it (``globals().get(name)``, ``globals()[name]``) binds nothing."""
-    for node in ast.walk(tree):
+    it (``globals().get(name)``, ``globals()[name]``) binds nothing, nor does a module ``__getattr__`` caching
+    a name it answers or a ``__dir__`` listing them."""
+    stack: list[ast.AST] = [tree]
+    while stack:
+        node = stack.pop()
+        stack += [child for child in ast.iter_child_nodes(node) if not (
+            node is tree and isinstance(child, ast.FunctionDef) and child.name in ("__getattr__", "__dir__"))]
         if isinstance(node, ast.Call) and any(_is_globals_call(arg) for arg in [*node.args, *(k.value for k in node.keywords)]):
             return True
         if isinstance(node, ast.Attribute) and _is_globals_call(node.value) and node.attr in ("update", "setdefault", "__setitem__"):
@@ -252,9 +258,33 @@ def _binds_names_at_runtime(tree: ast.Module) -> bool:
     return False
 
 
+def _hook_strings(tree: ast.Module, hook: ast.FunctionDef) -> set[str]:
+    """The names a PEP 562 ``__getattr__`` can answer, approximated by the strings in import-time code (its
+    lookup tables, ``__all__``), in the hook and in the module functions it reaches by calling them by name;
+    other functions' strings (``getattr(args, "x")``) are not names it serves."""
+    defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    called: set[str] = set()
+    todo: list[ast.AST] = [hook]
+    while todo:
+        for n in ast.walk(todo.pop()):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in defs.keys() - called:
+                called.add(n.func.id)
+                todo.append(defs[n.func.id])
+    found: set[str] = set()
+    stack: list[ast.AST] = [tree]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            found.add(node.value)
+        scoped = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda))
+        if not scoped or node is hook or getattr(node, "name", None) in called:
+            stack += ast.iter_child_nodes(node)
+    return found
+
+
 def _top_level_names(source: str) -> tuple[set[str], bool]:
-    """Names a module binds at top level (through ``if``/``try``/``with`` blocks too) and whether it
-    can answer other names (a module ``__getattr__``, a star import, or a write through ``globals()``)."""
+    """Names a module binds at top level (through ``if``/``try``/``with`` blocks too) or can answer through a
+    module ``__getattr__``, and whether it binds others no parse can list (a star import, a ``globals()`` write)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
@@ -267,7 +297,8 @@ def _top_level_names(source: str) -> tuple[set[str], bool]:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
-            dynamic |= node.name == "__getattr__"
+            if node.name == "__getattr__":
+                names |= _hook_strings(tree, node)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 dynamic |= alias.name == "*"

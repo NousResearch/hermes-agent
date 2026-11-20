@@ -131,10 +131,97 @@ def test_removing_a_name_a_pinned_plugin_imports_is_named_and_a_kept_spelling_is
         ("__init__.py:2", "tools.registry.registry_helper")]
 
 
+MOVED = 'MOVES: dict[str, str] = {"tools.old": "tools.new"}\n'
+TWO_LEVELS = ("try:\n    from tools.a import x\n    try:\n        from tools.b import y\n    except ImportError:\n"
+              "        from tools.c import y\nexcept ImportError:\n    x = None\n")
+ELSE_AND_TYPING = ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from tools.registry import only_typing\n"
+                   "try:\n    import json\nexcept ImportError:\n    json = None\nelse:\n    from tools.registry import helper\n")
+
+
+@pytest.mark.parametrize("plugin, base, change, expected", [
+    # Dropping a compat key, with no other file touched, unmaps the old module name.
+    ("from tools.old import helper\n", {"tools/new.py": "helper = 1\n", "hermes_agent/compat/moves.py": MOVED},
+     {"hermes_agent/compat/moves.py": "MOVES: dict[str, str] = {}\n"}, [("__init__.py:1", "tools.old.helper")]),
+    # ``from package import submodule`` is the submodule's file.
+    ("from tools import registry\n", {"tools/__init__.py": "", "tools/registry.py": ""}, {"tools/registry.py": None},
+     [("__init__.py:1", "tools.registry")]),
+    # A name that moves behind a star import still imports.
+    ("from tools.registry import helper\n", {"tools/registry.py": "helper = 1\n"},
+     {"tools/registry.py": "from tools._impl import *\n", "tools/_impl.py": "helper = 1\n"}, []),
+    # A body whose nested try fails as a whole does not run, whatever its own imports do.
+    (TWO_LEVELS, {"tools/a.py": "x = 1\n", "tools/b.py": "y = 1\n", "tools/c.py": "y = 1\n"},
+     {"tools/b.py": "", "tools/c.py": ""}, [("__init__.py:4", "tools.b.y"), ("__init__.py:6", "tools.c.y")]),
+    # An ``else:`` block is checked like any plain import; a ``TYPE_CHECKING`` import never loads.
+    (ELSE_AND_TYPING, {"tools/registry.py": "helper = only_typing = 1\n"}, {"tools/registry.py": ""},
+     [("__init__.py:9", "tools.registry.helper")]),
+])
+def test_what_counts_as_a_lost_import(tmp_path, plugin, base, change, expected):
+    source, core = tmp_path / "plugin", tmp_path / "core"
+    for repo in (source, core, tmp_path / "work"):
+        repo.mkdir()
+    _git(source, "init", "-q")
+    _git(core, "init", "-q")
+    index = {"demo": cci.index_entry(_Entry(source, _commit(source, {"__init__.py": plugin})), tmp_path / "work")}
+    _commit(core, {"hermes_agent/compat/moves.py": "MOVES: dict[str, str] = {}\n", **base})
+    assert _check(core, index, change) == expected
+
+
+def test_a_symlink_in_the_plugin_repository_is_not_followed(tmp_path):
+    source = tmp_path / "plugin"
+    for repo in (source, tmp_path / "work"):
+        repo.mkdir()
+    (tmp_path / "outside.py").write_text("from tools.registry import helper\n", encoding="utf-8")
+    _git(source, "init", "-q")
+    (source / "link.py").symlink_to(tmp_path / "outside.py")
+    row = cci.index_entry(_Entry(source, _commit(source, {"__init__.py": ""})), tmp_path / "work")
+    assert not row.error and row.imports == cci.CoreImports((), ())
+
+
 def test_a_fallback_nested_in_the_handler_keeps_the_plugin_working(index, core):
     assert _check(core[0], index, {"plugins/plugin_storage.py": None}) == []
     # With the nested fallback gone too, the plugin runs on neither: the surviving branch is named.
     assert _check(core[0], index, {"hermes_constants.py": None}) == [("__init__.py:12", "hermes_constants.get_hermes_home")]
+
+
+# A PEP 562 __getattr__ like core's facades: it serves a lookup table through a helper and caches what it serves.
+LAZY = """\
+_LAZY = {"OLD_NAME": "tools.registry_core"}
+
+
+def unrelated(args):
+    return getattr(args, "registry_helper", None)
+
+
+def _legacy(name):
+    return name == "LEGACY_NAME"
+
+
+def _former(name):
+    if _legacy(name) or name in _LAZY:
+        return object()
+    raise AttributeError(name)
+
+
+def __getattr__(name):
+    globals()[name] = value = _former(name)
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY))
+"""
+
+
+def test_a_module_getattr_answers_only_the_names_it_spells(index, core):
+    repo, _base = core
+    _commit(repo, {"tools/registry.py": "def registry_helper(): ...\n" + LAZY})
+    assert _check(repo, index, {"tools/registry.py": LAZY}) == [("__init__.py:2", "tools.registry.registry_helper")]
+    for served_by in ('"OLD_NAME"', '"LEGACY_NAME"'):  # its lookup table, a helper of its helper
+        _commit(repo, {"tools/registry.py": "def registry_helper(): ...\n" + LAZY})
+        assert _check(repo, index, {"tools/registry.py": LAZY.replace(served_by, '"registry_helper"')}) == []
+    # Never served on the base, so dropping the hook breaks nothing that worked there.
+    _commit(repo, {"tools/registry.py": LAZY})
+    assert _check(repo, index, {"tools/registry.py": "def other(): ...\n"}) == []
 
 
 def test_the_label_lets_an_intended_break_through(index, core, monkeypatch, capsys):
@@ -154,3 +241,20 @@ def test_a_failed_read_or_a_moved_subdir_is_read_again(index):
     entry.subdir = "media"
     assert not row.is_current(entry)
     assert not cci.Row(row.sha, "", row.imports, error="Could not connect to server").is_current(_Entry(Path("."), row.sha))
+
+
+@pytest.mark.parametrize(("module", "breaks"), [
+    # A read binds nothing, so the removed name is a break.
+    ("def read(name):\n    return globals()[name]\n", True),
+    # A write through globals() can bind any name, so it stands in for the removed one.
+    ("def export(namespace):\n    namespace['registry_helper'] = export\n\n\nexport(globals())\n", False),
+    ("def bind():\n    globals().update(registry_helper=bind)\n\n\nbind()\n", False),
+])
+def test_only_a_globals_write_can_stand_in_for_a_removed_name(index, core, module, breaks):
+    assert _check(core[0], index, {"tools/registry.py": module}) == (
+        [("__init__.py:2", "tools.registry.registry_helper")] if breaks else [])
+
+
+def test_an_import_already_broken_on_the_base_is_not_this_changes_break(index, core):
+    _commit(core[0], {"tools/registry.py": "def other(): ...\n"})
+    assert _check(core[0], index, {"tools/registry.py": "def other(): ...\ndef another(): ...\n"}) == []

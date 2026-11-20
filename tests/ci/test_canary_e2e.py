@@ -1,9 +1,9 @@
-"""Canary E2E runs a stable claim's E2E calls on the commit each successful canary tagged.
+"""Canary E2E is manual-only now that Stable Release runs the canary suites directly;
+install-e2e-red.yml tracks Canary release completions of Stable Release.
 
 The real workflow files are evaluated with the repo's Actions-expression evaluator
 for each way a run starts, and the commit step is replayed in Bash.
 """
-import os
 from pathlib import Path
 
 import pytest
@@ -23,15 +23,6 @@ def load(name: str) -> dict:
     return YAML(typ="base").load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
-def after_canary(conclusion: str = "success", branch: str = "main", repository: str = UPSTREAM) -> dict:
-    """A run started by Canary Release finishing; github.sha is main's tip by then."""
-    return {"github": {"event_name": "workflow_run", "repository": repository, "sha": MAIN_TIP, "run_id": RUN_ID,
-                       "event": {"repository": {"default_branch": "main"},
-                                 "workflow_run": {"conclusion": conclusion, "head_branch": branch,
-                                                  "head_sha": CANARY_COMMIT}}},
-            "inputs": {}}
-
-
 def dispatched(commit: str = "") -> dict:
     return {"github": {"event_name": "workflow_dispatch", "repository": UPSTREAM, "sha": MAIN_TIP, "run_id": RUN_ID,
                        "event": {}},
@@ -43,40 +34,23 @@ def resolved_commit(ctx: dict) -> str:
     return workflow_steps.outputs(step, ctx)["commit"]
 
 
-def test_the_trigger_chain_names_real_workflows():
+def test_canary_e2e_is_manual_only_and_red_tracker_watches_stable_release():
     canary_e2e = load("canary-e2e.yml")
-    assert canary_e2e["on"]["workflow_run"]["workflows"] == [load("canary-release.yml")["name"]]
-    assert load("install-e2e-red.yml")["on"]["workflow_run"]["workflows"] == [canary_e2e["name"]]
-
-
-@pytest.mark.parametrize(("ctx", "runs"), [
-    (after_canary(), True),
-    (after_canary(conclusion="failure"), False),
-    (after_canary(conclusion="cancelled"), False),
-    (after_canary(branch="fix/some-branch"), False),
-    (after_canary(repository="someone/hermes-agent"), False),
-    (dispatched(), True),
-])
-def test_only_a_successful_upstream_canary_on_the_default_branch_starts_it(ctx, runs):
-    workflow = load("canary-e2e.yml")
-    assert gha.condition(workflow["jobs"]["resolve"]["if"], ctx) is runs
-    # Only automatic runs that test share the queue: GitHub keeps one pending run per group,
-    # so a run that skips or a dispatch in it would replace a queued set (cancel-in-progress off).
-    queued = ctx["github"]["event_name"] == "workflow_run" and runs
-    group = gha.render(workflow["concurrency"]["group"], ctx)
-    assert group == ("canary-e2e-auto" if queued else f"canary-e2e-{RUN_ID}")
-    assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    # Daily canaries run ci, install-e2e, and windows-live inside Stable Release;
+    # keeping workflow_run on canary-e2e.yml would run the ~1,400-minute set twice.
+    assert set(canary_e2e["on"]) == {"workflow_dispatch"}
+    assert load("install-e2e-red.yml")["on"]["workflow_run"]["workflows"] == [load("stable-release.yml")["name"]]
 
 
 @pytest.mark.parametrize(("ctx", "commit"), [
-    (after_canary(), CANARY_COMMIT),
     (dispatched(CANARY_COMMIT), CANARY_COMMIT),
     (dispatched(), MAIN_TIP),
 ])
-def test_the_commit_under_test_is_the_canarys_not_mains_tip(ctx, commit):
+def test_the_commit_under_test_is_the_dispatched_commit_or_head(ctx, commit):
     assert resolved_commit(ctx) == commit
-    # The tracker names the tested commit from the run title, not the run's head_sha.
     assert gha.render(load("canary-e2e.yml")["run-name"], ctx) == f"Canary E2E on {commit}"
+    assert gha.render(load("canary-e2e.yml")["concurrency"]["group"], ctx) == f"canary-e2e-{RUN_ID}"
+    assert load("canary-e2e.yml")["concurrency"]["cancel-in-progress"] == "false"
 
 
 def test_a_dispatched_commit_must_be_a_full_sha():
@@ -84,48 +58,11 @@ def test_a_dispatched_commit_must_be_a_full_sha():
         resolved_commit(dispatched("main"))
 
 
-def _tested_step() -> dict:
-    return next(s for s in load("canary-e2e.yml")["jobs"]["resolve"]["steps"] if s.get("id") == "tested")
-
-
-# workflow_steps memoizes a replay per process by its rendered script and env, not PATH, so a
-# fake gh can't vary the answer for the same inputs: each case tests its own commit.
-@pytest.mark.parametrize(("commit", "passed_commits", "tested"), [
-    ("a" * 40, [MAIN_TIP, "a" * 40], "true"),
-    ("b" * 40, [MAIN_TIP], None),
-    ("c" * 40, [], None),
-])
-def test_a_commit_an_automatic_run_already_passed_is_not_run_again(tmp_path, monkeypatch, commit, passed_commits,
-                                                                   tested):
-    """A quiet day resumes the last canary, which succeeds again on the same commit."""
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    (tmp_path / "titles").write_text("".join(f"Canary E2E on {c}\n" for c in passed_commits), encoding="utf-8")
-    (fake / "gh").write_text(f'#!/bin/sh\necho "$*" > {tmp_path}/args\ncat {tmp_path}/titles\n', encoding="utf-8")
-    (fake / "gh").chmod(0o755)
-    monkeypatch.setattr(os, "defpath", f"{fake}{os.pathsep}{os.defpath}")
-    ctx = after_canary()
-    ctx["steps"] = {"commit": {"outputs": {"commit": commit}}}
-    out = workflow_steps.outputs(_tested_step(), ctx).get("tested")
-    assert out == tested
-    # Only automatic successes count: a dispatched or red run of the commit is no reason to skip.
-    args = (tmp_path / "args").read_text(encoding="utf-8")
-    assert "canary-e2e.yml/runs?" in args and "event=workflow_run" in args and "status=success" in args
-    for name, job in load("canary-e2e.yml")["jobs"].items():
-        if "uses" in job:
-            needs = {"resolve": {"outputs": {"commit": commit, "tested": out or ""}}}
-            assert gha.condition(job["if"], {"needs": needs}) is (tested is None), name
-
-
-def test_a_dispatch_always_runs_the_set():
-    assert gha.condition(_tested_step()["if"], dispatched(CANARY_COMMIT)) is False
-
-
-def test_every_call_is_the_claims_call_on_the_canary_commit():
+def test_every_call_is_the_claims_call_on_the_dispatched_commit():
     canary_jobs = load("canary-e2e.yml")["jobs"]
     claim_jobs = load("stable-release.yml")["jobs"]
     calls = {name: job for name, job in canary_jobs.items() if "uses" in job}
-    # The claim's whole E2E set: a dropped call is a suite the daily run stops covering.
+    # The claim's whole E2E set: a dropped call is a suite manual dispatches stop covering.
     assert {job["uses"] for job in calls.values()} == {
         "./.github/workflows/ci.yaml",
         "./.github/workflows/install-e2e.yml",
@@ -136,7 +73,7 @@ def test_every_call_is_the_claims_call_on_the_canary_commit():
         assert job["with"]["commit"] == "${{ needs.resolve.outputs.commit }}", name
         claim = [c for c in claim_jobs.values() if c.get("uses") == job["uses"]]
         assert len(claim) == 1, f"{name}: stable-release.yml calls {job['uses']} {len(claim)} times"
-        # The claim tag is the only input a canary has no value for.
+        # The claim tag is the only input a manual commit dispatch has no value for.
         expected = {k: v for k, v in claim[0]["with"].items() if k not in {"commit", "exclude-ref"}}
         assert {k: v for k, v in job["with"].items() if k != "commit"} == expected, name
         # A nested job asking for more than the caller grants fails the run at startup.
@@ -164,7 +101,7 @@ def _call_closure(rel: str, seen: set[str]) -> None:
 
 
 def test_artifacts_are_named_for_the_commit_under_test():
-    """Under this caller github.sha is main's tip, so a name built from it labels the wrong commit."""
+    """Under a commit-pinned dispatch github.sha is main's tip, so a name built from it labels the wrong commit."""
     called: set[str] = set()
     for job in load("canary-e2e.yml")["jobs"].values():
         if "uses" in job:
@@ -178,18 +115,28 @@ def test_artifacts_are_named_for_the_commit_under_test():
         assert MAIN_TIP not in str(gha.render(name, ctx)), f"{rel}: {name}"
 
 
-@pytest.mark.parametrize(("started_by", "conclusion", "tracks"), [
-    ("workflow_run", "failure", True),
-    ("workflow_run", "success", True),
-    ("workflow_run", "skipped", False),
-    ("workflow_dispatch", "failure", False),
+@pytest.mark.parametrize(("overrides", "tracks"), [
+    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "conclusion": "failure"}, True),
+    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "conclusion": "success"}, True),
+    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "conclusion": "skipped"}, False),
+    ({"display_title": "Stable release rc.1-v0.23.3", "conclusion": "failure"}, False),
+    ({"display_title": "Stable release rc.1-v0.23.3", "conclusion": "success"}, False),
+    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "event": "push"}, False),
+    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3",
+      "head_repository": {"full_name": "fork/hermes-agent"}}, False),
 ])
-def test_the_tracker_follows_only_runs_a_canary_started(started_by, conclusion, tracks):
-    ctx = {"github": {"event_name": "workflow_run", "run_id": RUN_ID,
-                      "event": {"workflow_run": {"event": started_by, "conclusion": conclusion}}},
+def test_the_tracker_follows_only_canary_runs_of_stable_release(overrides, tracks):
+    workflow_run = {
+        "event": "workflow_dispatch",
+        "conclusion": "failure",
+        "head_repository": {"full_name": UPSTREAM},
+        **overrides,
+    }
+    ctx = {"github": {"event_name": "workflow_run", "repository": UPSTREAM, "run_id": RUN_ID,
+                      "event": {"workflow_run": workflow_run}},
            "inputs": {}}
     workflow = load("install-e2e-red.yml")
     assert gha.condition(workflow["jobs"]["track"]["if"], ctx) is tracks
-    # Only runs that track share the queue, so one that won't can't replace a queued result.
+    # Only runs that track share the queue, so stable or skipped runs can't replace a queued result.
     group = gha.render(workflow["concurrency"]["group"], ctx)
     assert group == ("install-e2e-red-tracker-auto" if tracks else f"install-e2e-red-tracker-{RUN_ID}")

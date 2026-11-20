@@ -36,6 +36,11 @@ def test_windows_resolution_picks_cmd_wrapper_from_npm_bin_over_posix_shim(tmp_p
 
     pyright_cmd = _npm_shim_pair(tmp_path / "node_modules" / ".bin", "pyright")
     langserver_cmd = _npm_shim_pair(tmp_path / "node_modules" / ".bin", "pyright-langserver")
+    # _make_spec / _detect_python ask pm for the node env and the python package; both lookups are
+    # checkout-location dependent and irrelevant to the assertion, so stub them.
+    import pm
+    monkeypatch.setattr(pm, "env_for", lambda name: dict(os.environ))
+    monkeypatch.setattr(pm, "installed_package", lambda name: None)
     ctx = servers.ServerContext(workspace_root=str(tmp_path), binary_overrides={"pyright": [str(pyright_cmd)]})
     spec = servers._spawn_pyright(str(tmp_path), ctx)
     assert spec is not None and spec.command[0] == str(langserver_cmd)

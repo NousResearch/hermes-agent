@@ -964,3 +964,21 @@ def test_a_restore_of_a_hand_started_backend_answers_with_the_engines_refusal(ho
     r = _client(home, monkeypatch).post("/api/gateway/migrate/backends/restore")
     assert (r.status_code, r.json()["error"], r.json()["message"]) == (409, "not_started", message), r.text
     assert "--restore" in spawned[-1]
+
+
+@pytest.mark.parametrize("turns", [1, None])
+def test_a_by_hand_plan_held_by_chat_activity_lists_its_steps_when_forced(home, spawned, monkeypatch, turns):
+    """The card's "Show the steps anyway": the read-only plan with force_interrupt lists a by-hand plan's steps
+    (exit 6) where the plain one only blocks, and starts nothing."""
+    host = ManualUnitHost(home)
+    host.turns = turns
+    monkeypatch.setattr(routes, "_host", lambda target_home: host)
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    held = client.get("/api/gateway/migrate/backends/plan").json()
+    assert held["exit_code"] == engine.EXIT_BLOCKED and held["plan"]["blockers"], held["plan"]
+    assert all(u["steps"] == [] for u in held["plan"]["unsupported"])
+    forced = client.get("/api/gateway/migrate/backends/plan", params={"force_interrupt": "true"}).json()
+    assert forced["exit_code"] == engine.EXIT_UNSUPPORTED and forced["plan"]["blockers"] == [], forced["plan"]
+    assert forced["plan"]["unsupported"][0]["steps"]
+    assert spawned == []

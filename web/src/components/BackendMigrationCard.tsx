@@ -146,6 +146,13 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
     }
   };
 
+  // A by-hand plan held by chat activity: the forced read-only plan lists its steps (no move is asked for).
+  const showStepsAnyway = async () => {
+    const r = await backendMigrationApi.plan({ force_interrupt: true });
+    if (!alive.current || r.status !== 200 || !r.body) return;
+    setPlan(r.body);
+  };
+
   const checkAgain = () => {
     if (!followed) return;
     setView({ kind: followed.requestedAt !== null && followed.confirmed !== false ? "starting" : "checking" });
@@ -169,7 +176,8 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
         </div>
 
         {p && foundBackend(p) && !finished && (
-          <PlanDetails plan={p} profile={profile} busy={busy} onMove={(force) => setConfirm({ force })} />
+          <PlanDetails plan={p} profile={profile} busy={busy} onMove={(force) => setConfirm({ force })}
+            onShowSteps={() => void showStepsAnyway()} />
         )}
 
         {refusal && <RefusalNotice refusal={refusal} />}
@@ -202,13 +210,15 @@ function confirmText(oldAddress: string | null | undefined, force: boolean, turn
 }
 
 /** What the move would change, what blocks it, and the Move / Move anyway buttons. */
-function PlanDetails({ plan: p, profile, busy, onMove }: {
+function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
   plan: BackendMigrationPlan;
   profile: string | null;
   busy: boolean;
   onMove: (force: boolean) => void;
+  onShowSteps: () => void;
 }) {
   const blockers = p.blockers ?? [];
+  const byHand = p.unsupported.length > 0;
   const canForce = blockers.length > 0 && blockers.every((b) => blockerAdvice(b).canForce);
   return (
     <>
@@ -229,7 +239,7 @@ function PlanDetails({ plan: p, profile, busy, onMove }: {
       ))}
       {blockers.map((b) => (
         <div key={b} className="text-warning" data-slot="backend-migration-blocker">
-          • {blockerAdvice(b).text}
+          • {blockerAdvice(b, byHand).text}
         </div>
       ))}
       {!busy && (
@@ -243,9 +253,14 @@ function PlanDetails({ plan: p, profile, busy, onMove }: {
           >
             Move
           </Button>
-          {canForce && (
+          {canForce && !byHand && (
             <Button size="sm" ghost className="uppercase text-warning" onClick={() => onMove(true)}>
               Move anyway
+            </Button>
+          )}
+          {canForce && byHand && (
+            <Button size="sm" ghost className="uppercase text-warning" onClick={onShowSteps}>
+              Show the steps anyway
             </Button>
           )}
         </div>

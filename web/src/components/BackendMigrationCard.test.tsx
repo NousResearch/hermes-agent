@@ -180,6 +180,50 @@ describe("BackendMigrationCard", () => {
     expect([...manual.querySelectorAll("li code")].map((c) => c.textContent)).toEqual(commands);
   });
 
+  describe("a by-hand plan blocked by chat activity", () => {
+    const steps = ["hermes -p work config set webapp.port 9119", "docker restart hermes"];
+    const blocked = (blocker: string, running_turns: number | null) => planWith({
+      running_turns,
+      unsupported: [{ supervisor: "container", unit: null, instructions: "Run the steps below.", steps: [] }],
+      blockers: [blocker],
+    });
+    const cases: [string, string, number | null, string][] = [
+      ["a running chat",
+        "1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted).",
+        1, "Run the steps below. 1 turn(s) are running on it now: stopping it interrupts them, so let them finish first."],
+      ["unknown chat activity",
+        "Cannot tell whether turns are running on the old backend (its turn activity could not be read). Confirm it is idle, or re-run with --force-interrupt (any running turn is interrupted).",
+        null, "Run the steps below. Its turn activity could not be read, so turns may be running on it now: stopping it interrupts them."],
+    ];
+    it.each(cases)("with %s offers to show the steps anyway: one forced plan read, never a move", async (_what, blocker, turns, warned) => {
+      const initial = blocked(blocker, turns);
+      const forced = { ...initial, exit_code: 6,
+        plan: { ...initial.plan, blockers: [], unsupported: [{ ...initial.plan.unsupported[0], instructions: warned, steps }] } };
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+        calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+        return new Response(JSON.stringify(forced), { status: 200, headers: { "Content-Type": "application/json" } });
+      }));
+      await render(initial);
+      expect(button("Move anyway")).toBeUndefined();
+      expect(container.textContent).toContain("Or show the steps anyway");
+      expect(container.textContent).not.toContain("move anyway");
+      expect(container.querySelectorAll("ol li code")).toHaveLength(0);
+      await act(async () => button("Show the steps anyway")!.click());
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatch(/^GET .*\/api\/gateway\/migrate\/backends\/plan\?force_interrupt=true/);
+      expect(container.textContent).toContain(warned);
+      expect([...container.querySelectorAll("ol li code")].map((c) => c.textContent)).toEqual(steps);
+      expect(button("Show the steps anyway")).toBeUndefined();
+    });
+
+    it("leaves a movable plan's Move anyway as it is", async () => {
+      await render(planWith({ blockers: [cases[0][1]] }));
+      expect(button("Move anyway")).toBeDefined();
+      expect(button("Show the steps anyway")).toBeUndefined();
+    });
+  });
+
   it("reports a rolled-back run with its reason even when nothing is left to move", async () => {
     await render(planWith({ nothing_to_do: true }, {
       ...none, state: "rolled_back", step: "verify", started_at: 10, finished_at: 20,

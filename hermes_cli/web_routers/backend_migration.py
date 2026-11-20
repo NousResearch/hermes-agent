@@ -373,6 +373,24 @@ class _Detached:
         return None
 
 
+def _manual_gateway_blockers(host, plan) -> None:
+    """The engine's foreign-home and legacy-unit gateway refusals for manual-only plans: withhold steps
+    whenever either conflict stands."""
+    from hermes_cli.gateway_migrate_backends_plan import hermes_command
+    if (other := host.foreign_gateway_home()) is not None:
+        unit = (plan.gateway or {}).get("unit") or "the gateway service"
+        plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "
+                             f"would restart, stop or remove that home's gateway. Run the migration from that "
+                             f"home, or remove its service there first, then run this again. Nothing changed.")
+    if host.legacy_gateway_units():
+        plan.blockers.append("A legacy Hermes gateway unit (hermes.service) is installed: installing the gateway "
+                             "would stop, disable and delete it, and a rollback or --restore could not bring it "
+                             f"back. Run `{hermes_command(host.home, powershell=os.name == 'nt')} gateway "
+                             "migrate-legacy` first, then run this again. Nothing changed.")
+    if plan.blockers:
+        plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
+
+
 def _build_plan(host, body: ApplyBody):
     """The plan the button's run would follow, as ``--apply --dry-run`` reports it (with the apply path's
     own refusals), for a run started with ``--detach``."""
@@ -385,6 +403,8 @@ def _build_plan(host, body: ApplyBody):
                       force_interrupt=body.force_interrupt)
     if plan.rec and not plan.unsupported:
         _owner_blockers(_Detached(host), plan)
+    elif plan.unsupported:
+        _manual_gateway_blockers(host, plan)
     if plan.rec and plan.rec.get("supervisor") == "systemd" and _own_cgroup_inside(plan):
         # The button's run is always --detach: "this command runs inside the old unit" is true of THIS
         # process, not of the run it starts outside that unit.

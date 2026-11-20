@@ -187,6 +187,24 @@
       }
     },
     {
+      "name": "bot_delivery.list",
+      "summary": "Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotDeliveryListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotDeliveryListResult"
+        }
+      }
+    },
+    {
       "name": "bot_relay.deliver",
       "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
       "params": [
@@ -7359,6 +7377,134 @@
         ],
         "title": "BillingStepUpVerificationPayload",
         "type": "object"
+      },
+      "BotDeliveryListParams": {
+        "additionalProperties": false,
+        "description": "``profile`` is the SENDER bot; it routes the call to that profile's connection.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotDeliveryListParams",
+        "type": "object"
+      },
+      "BotDeliveryListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/BotDeliveryRow"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sender",
+          "deliveries"
+        ],
+        "title": "BotDeliveryListResult",
+        "type": "object"
+      },
+      "BotDeliveryRow": {
+        "additionalProperties": false,
+        "description": "``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last\nwrite (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``)\nfor ``failed`` \u2014 ``unknown_outcome`` means the target may have acted: never resend it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_handle": {
+            "title": "Target Handle",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotDeliveryState"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Waiting On"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "target",
+          "target_handle",
+          "state",
+          "since",
+          "preview"
+        ],
+        "title": "BotDeliveryRow",
+        "type": "object"
+      },
+      "BotDeliveryState": {
+        "enum": [
+          "queued",
+          "claimed",
+          "working",
+          "waiting_on_you",
+          "failed"
+        ],
+        "title": "BotDeliveryState",
+        "type": "string"
       },
       "BotRelayDeliverParams": {
         "additionalProperties": false,
@@ -16125,7 +16271,7 @@
       },
       "CronJobRow": {
         "additionalProperties": true,
-        "description": "``tools/cronjob_job_args.py::_format_job``.",
+        "description": "``cron/job_args.py::_format_job``.",
         "properties": {
           "job_id": {
             "title": "Job Id",
@@ -24431,7 +24577,7 @@
       },
       "MessageCompletePayload": {
         "additionalProperties": false,
-        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /\n``compute_host_bridge`` (``text`` + ``status``).",
+        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) /\n``compute_host_bridge`` (``text`` + ``status``).",
         "properties": {
           "text": {
             "anyOf": [
@@ -24846,7 +24992,7 @@
       },
       "MessageReaction": {
         "additionalProperties": true,
-        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "description": "One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is\nstamped once announced.",
         "properties": {
           "emoji": {
             "title": "Emoji",
@@ -28805,7 +28951,7 @@
       },
       "PluginScanFinding": {
         "additionalProperties": false,
-        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "description": "One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked.",
         "properties": {
           "pattern_id": {
             "title": "Pattern Id",
@@ -30012,7 +30158,7 @@
       },
       "PreviewClosePayload": {
         "additionalProperties": false,
-        "description": "``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab.",
+        "description": "``tools/preview_tool.py``; ``url`` '' closes every tab.",
         "properties": {
           "url": {
             "default": "",
@@ -33707,6 +33853,28 @@
             "default": {},
             "title": "Coverage",
             "type": "object"
+          },
+          "warming_off": {
+            "default": false,
+            "title": "Warming Off",
+            "type": "boolean"
+          },
+          "tier_pending": {
+            "default": false,
+            "title": "Tier Pending",
+            "type": "boolean"
+          },
+          "learned": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Learned"
           }
         },
         "required": [
@@ -35310,7 +35478,7 @@
       },
       "RollbackRestoreResult": {
         "additionalProperties": true,
-        "description": "``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
+        "description": "``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
         "properties": {
           "success": {
             "title": "Success",
@@ -39978,7 +40146,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
+        "description": "``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -40106,7 +40274,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
         "properties": {
           "filters": {
             "anyOf": [

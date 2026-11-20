@@ -33,9 +33,9 @@ async def test_discord_tool_long_reply_uses_file(monkeypatch):
     import json
     import aiohttp
     from gateway.config import Platform
-    from tools.send_message_tool import _send_to_platform
+    from gateway.outbound.send import _send_to_platform
     from plugins.platforms.discord import adapter as dc
-    from tests.tools.test_send_message_tool import _StreamingAiohttpResponse, _discord_entry
+    from tests.gateway.outbound.test_send_message_tool import _StreamingAiohttpResponse, _discord_entry
     calls = []
     class Session:
         def __init__(self, **kwargs): pass

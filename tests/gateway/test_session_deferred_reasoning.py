@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from tests.fixtures.storage_read import session_row
 from tests.gateway.test_session_mutation_model_busy import _owner, _run_turn, _running_model
 from tests.waiting import async_wait_until
 
@@ -37,7 +38,7 @@ async def test_levels_picked_during_a_running_turn_apply_to_the_next_turn_in_pic
         await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
         await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
         for n, (operation, payload) in enumerate(picks):
-            snap = db.get_session(ref.session_id)
+            snap = session_row(authority.persistence, ref.session_id)
             reply = await owner.dispatch({'id': n, 'method': 'session.mutate', 'params': {
                 'session_id': ref.session_id, 'request_id': f'pick-{n}', 'expected_revision': snap['runtime_revision'],
                 'expected_generation': snap['runtime_generation'], 'operation': operation, 'payload': payload}})
@@ -61,7 +62,6 @@ async def test_a_pick_committed_after_the_turn_settles_supersedes_only_what_it_p
     from gateway import session_deferred_pick
     from gateway.session_contract import Submission
     from gateway.session_policy import policy_for_source
-    import hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
     seen, state = [], {}
 
@@ -75,7 +75,7 @@ async def test_a_pick_committed_after_the_turn_settles_supersedes_only_what_it_p
         return 'ok'
 
     async def pick(n, operation, payload):
-        snap = db.get_session(ref.session_id)
+        snap = session_row(authority.persistence, ref.session_id)
         reply = await owner.dispatch({'id': n, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': f'pick-{n}', 'expected_revision': snap['runtime_revision'],
             'expected_generation': snap['runtime_generation'], 'operation': operation, 'payload': payload}})
@@ -92,7 +92,7 @@ async def test_a_pick_committed_after_the_turn_settles_supersedes_only_what_it_p
         monkeypatch.setattr(session_deferred_pick, 'apply_deferred_pick', lambda *a: asyncio.sleep(0))
         release.set()
         await async_wait_until(
-            lambda: rt.get_session_admission(db, admission_id=first.admission_id)['status'] == 'terminal',
+            lambda: authority.persistence.admissions.get(admission_id=first.admission_id).status == 'terminal',
             timeout=10, what='the running turn settled')
         assert await pick(1, operation, payload) is None  # committed now, not deferred
         monkeypatch.setattr(session_deferred_pick, 'apply_deferred_pick', apply)

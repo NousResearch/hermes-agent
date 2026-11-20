@@ -54,13 +54,11 @@ def _clean_approval_env(monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
-    approval_module._pending.clear()
     approval_module._denial_tally.clear()
     set_approval_callback(None)
     yield
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
-    approval_module._pending.clear()
     approval_module._denial_tally.clear()
     set_approval_callback(None)
 

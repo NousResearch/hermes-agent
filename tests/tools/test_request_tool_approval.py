@@ -3,7 +3,7 @@
 
 These verify that a plugin-driven approval reuses the SAME machinery as a
 Tier-2 dangerous-command match: session/permanent allowlist, the CLI prompt,
-the gateway submit_pending path, cron_mode, and fail-closed timeouts.
+the gateway pending path, cron_mode, and fail-closed timeouts.
 """
 
 import pytest

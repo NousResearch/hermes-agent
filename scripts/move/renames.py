@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import ast
+import functools
+import re
 import subprocess
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 
@@ -14,6 +18,84 @@ def current_name(name: str, renames: dict[str, str]) -> str | None:
         if old in renames:
             return renames[old] + name[len(old):]
     return None
+
+
+def emptied_folders(tree: Iterable[str], paths: Iterable[tuple[str, str]]) -> frozenset[str]:
+    """Folders the move took away: those above a moved file whose every tracked file moved.
+
+    ``tree`` is every tracked path before the move. A folder that keeps one file stayed, however many left it.
+    """
+    moved = {old for old, _ in paths}
+    kept = {str(parent) for path in tree if path not in moved for parent in PurePosixPath(path).parents}
+    above = {str(parent) for old in moved for parent in PurePosixPath(old).parents}
+    return frozenset(above - kept - {"."})
+
+
+@dataclass(frozen=True)
+class MovedPaths:
+    """What a move took away, as path text: the files it renamed and the folders it emptied."""
+    paths: tuple[tuple[str, str], ...]
+    emptied: frozenset[str]
+
+    @functools.cached_property
+    def path_pattern(self) -> re.Pattern | None:
+        """Path-shaped text that starts with the top-level name of a moved path; ``find_path`` checks it."""
+        tops = sorted({PurePosixPath(old).parts[0] for old, _ in self.paths}, key=len, reverse=True)
+        return re.compile(r"(?<![\w/.-])((?:" + "|".join(map(re.escape, tops)) + r")(?:/[\w.-]+)*/?)") if tops else None
+
+    @functools.cached_property
+    def old_tree(self) -> frozenset[str]:
+        """Every old file path this move renamed and every folder it emptied."""
+        return frozenset(old for old, _ in self.paths) | self.emptied
+
+    def find_path(self, text: str) -> tuple[str, str] | None:
+        """(old, new) for the first moved file or folder ``text`` names: a top-level file, a folder followed by a file
+        or folder that moved with it (``tools/registry.py``, ``tools/environments/``; never ``tools/list``), or the
+        whole string being a moved folder (``"tools/"``)."""
+        if self.path_pattern is None:
+            return None
+        if text.endswith("/") and text[:-1] in self.old_tree and "/" not in text[:-1]:
+            return text, self.new_path.get(text, "")
+        for match in self.path_pattern.finditer(text):
+            parts = match.group(1).rstrip("/").split("/")
+            for size in range(len(parts), 0, -1):
+                old = "/".join(parts[:size])
+                if old in self.old_tree and (size > 1 or old.endswith(".py")):
+                    folder = not old.endswith(".py")
+                    return old + "/" * folder, self.new_path.get(old + "/" * folder, "")
+        return None
+
+    @functools.cached_property
+    def new_path(self) -> dict[str, str]:
+        return dict(self.old_paths())
+
+    @functools.cached_property
+    def folders(self) -> frozenset[str]:
+        """The name of the outermost file or folder each moved path lost: ``tools`` for a package that moved whole,
+        ``model_tools.py`` for a root file, ``blueprints.py`` for a file that left a folder that stays."""
+        out = set()
+        for old, _ in self.paths:
+            parts = PurePosixPath(old).parts
+            out.add(next(parts[size - 1] for size in range(1, len(parts) + 1)
+                         if "/".join(parts[:size]) in self.old_tree))
+        return frozenset(out)
+
+    @functools.cached_property
+    def departed_files(self) -> frozenset[str]:
+        """Names of the files that left a folder that stays. The folder's own name names nothing that moved, so a
+        path join that ends in one of these is the only trace of the old place, whatever holds the folder."""
+        return frozenset(PurePosixPath(old).name for old, _ in self.paths
+                         if PurePosixPath(old).parent != PurePosixPath(".")
+                         and str(PurePosixPath(old).parent) not in self.emptied)
+
+    def old_paths(self) -> list[tuple[str, str]]:
+        """Old -> new path text a by-path literal can carry: each moved file and each moved directory."""
+        pairs = {old: new for old, new in self.paths if old.endswith(".py")}
+        for old, new in self.paths:
+            old_dir, new_dir = str(PurePosixPath(old).parent), str(PurePosixPath(new).parent)
+            if old_dir in self.emptied and old_dir != new_dir:
+                pairs[old_dir + "/"] = new_dir + "/"
+        return sorted(pairs.items(), key=lambda item: -len(item[0]))
 
 
 def renamed_paths(repo: Path, commit: str) -> list[tuple[str, str]]:

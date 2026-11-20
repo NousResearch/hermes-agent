@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from tools import delegate_tool_config
+from tools.delegate_tool_config import _get_max_concurrent_children, _get_max_spawn_depth
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -61,18 +63,27 @@ def _release_resume(sid: str, spec: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def _transcript_store(parent_agent: Any) -> Iterator[Any]:
-    """A handle on the db FILE the parent's children write to (``_open_child_session_db``), or None. Never the
+    """A handle on the store the parent's children write to (``_open_child_session_db``), or None. Never the
     parent's own object: a gateway parent holds an async wrapper whose methods are coroutines."""
-    db_path = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
-    if not isinstance(db_path, (str, Path)):
+    from persistence_assembly import Persistence, open_persistence, profile_scope
+    parent_db = getattr(parent_agent, "_session_db", None)
+    db_path = getattr(parent_db, "db_path", None)
+    if isinstance(parent_db, Persistence):
+        scope = parent_db.scope
+    elif isinstance(db_path, (str, Path)):
+        scope = profile_scope(home=Path(db_path).parent)
+    else:
         yield None
         return
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(db_path)
-    try:
-        yield db
-    finally:
-        release_or_close(db)
+    with open_persistence(scope) as store:
+        yield store
+
+
+def _conversation(store: Any, session_id: str) -> list[dict[str, Any]]:
+    """The child's saved transcript as the conversation its next turn replays (a user;user wedge healed)."""
+    from persistence.conversation.messages import ConversationRequest
+    return [m.as_openai_message() for m in store.messages.read_conversation(
+        session_id, ConversationRequest(repair_alternation=True))]
 
 
 def _refusal(parent_agent: Any) -> Optional[str]:
@@ -88,7 +99,6 @@ def _refusal(parent_agent: Any) -> Optional[str]:
     if is_spawn_paused():
         return ("Delegation spawning is paused. Clear the pause via the TUI (`p` in /agents) or the "
                 "`delegation.pause` RPC before retrying.")
-    from tools.delegate_tool import _get_max_spawn_depth
     depth, max_spawn = getattr(parent_agent, "_delegate_depth", 0), _get_max_spawn_depth()
     if isinstance(depth, int) and depth >= max_spawn:  # the same limit a spawn from here hits
         return f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn})."
@@ -97,13 +107,12 @@ def _refusal(parent_agent: Any) -> Optional[str]:
 
 def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """A resume spec from the durable record: its route re-resolved from the task's own routing request."""
-    from tools.delegate_tool import _load_config
     from tools.delegate_tool_routes import resolve_task_routes
     request = record.get("route_request")
     if not isinstance(request, dict) or not record.get("session_id"):
         return None, (f"Subagent '{sid}' ran on a route that cannot be rebuilt after a restart. "
                       "Spawn a new task instead.")
-    routes, err = resolve_task_routes([{"goal": record.get("goal"), **request}], _load_config(), parent_agent)
+    routes, err = resolve_task_routes([{"goal": record.get("goal"), **request}], delegate_tool_config._load_config(), parent_agent)
     if err or not routes or routes[0].error:
         return None, err or (routes[0].error if routes else "no route")
     return {**record, "route": routes[0], "endpoint": tuple(record.get("endpoint") or ()) or None}, None
@@ -155,8 +164,7 @@ def _start(
     """Rebuild, hydrate and dispatch the continued child: ``(tool result JSON, None)`` or ``(None, error)`` when
     it was refused before anything ran."""
     from tools.delegate_tool import (
-        DEFAULT_MAX_ITERATIONS, _build_children, _get_max_concurrent_children, _load_config, _oneshot_spawn_budget,
-        _parent_live_home,
+        DEFAULT_MAX_ITERATIONS, _build_children, _oneshot_spawn_budget, _parent_live_home,
     )
     from tools.delegate_tool_dispatch import _Batch, _capture_origin, _run_batch
     from tools.delegation_live_log import create_live_transcripts
@@ -169,7 +177,7 @@ def _start(
             return None, "Not continued: this session cannot receive a detached result."
     with _transcript_store(parent_agent) as db:
         session_id = _segment_tip(db, sid, spec["session_id"])
-        history = db.get_messages_as_conversation(session_id, repair_alternation=True) if db is not None else []
+        history = _conversation(db, session_id) if db is not None else []
         if not history:
             return None, f"Subagent '{sid}' has no saved transcript to continue from. Spawn a new task instead."
         err = _oneshot_spawn_budget(parent_agent, 1)
@@ -183,14 +191,14 @@ def _start(
         origin = _capture_origin()  # before the build: child construction clobbers the session-id binding
         children, err = _build_children(
             [{"goal": spec["goal"], "context": spec.get("context")}], [None], [route], top_role="leaf",
-            max_iterations=_load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS), parent_agent=parent_agent,
+            max_iterations=delegate_tool_config._load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS), parent_agent=parent_agent,
             live_deleg_id=live_id, live_writers=writers,
             rebuild=[{"toolsets": spec.get("toolsets") or None, "model": spec.get("model") or route.creds["model"],
                       "subagent_id": sid, "session_id": session_id, "expect_endpoint": spec.get("endpoint")}],
         )
         if err:
             return None, err
-        db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
+        db.sessions.reopen(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
         children[0][2]._delegate_run_origin = run_origin  # a parent's own continue ends automatic resumes of it
         from tools.delegate_tool_resumable import hold_claim, last_workspace

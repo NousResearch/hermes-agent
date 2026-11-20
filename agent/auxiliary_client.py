@@ -141,7 +141,7 @@ from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -1368,7 +1368,7 @@ class _CodexCompletionsAdapter:
             _responses_tools,
             _role_message_item,
             _wire_model_identity,
-            classify_responses_route,
+            apply_developer_instructions_if_needed, classify_responses_route,
         )
         from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
@@ -1501,8 +1501,8 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
-        # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
         from agent.transports.codex import _sanitize_astra_request_kwargs
+        apply_developer_instructions_if_needed(resp_kwargs, wire_model, is_xai_responses=is_xai)
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
@@ -1921,7 +1921,7 @@ def _read_nous_auth() -> Optional[dict]:
         return {
             "access_token": getattr(entry, "access_token", ""),
             "refresh_token": getattr(entry, "refresh_token", None),
-            "agent_key": getattr(entry, "agent_key", None),
+            "agent_key": getattr(entry, "agent_key", None), "obtained_at": getattr(entry, "obtained_at", None), "agent_key_obtained_at": getattr(entry, "agent_key_obtained_at", None),
             "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
             "portal_base_url": getattr(entry, "portal_base_url", None),
             "client_id": getattr(entry, "client_id", None),
@@ -1949,11 +1949,11 @@ def _read_nous_auth() -> Optional[dict]:
 def _nous_api_key(provider: dict) -> str:
     """Extract a usable Nous inference JWT from stored auth state."""
     from hermes_cli.auth import _nous_invoke_jwt_is_usable
-    for token_key, expiry_key in (("agent_key", "agent_key_expires_at"), ("access_token", "expires_at")):
+    for token_key, expiry_key, arrival_key in (("agent_key", "agent_key_expires_at", "agent_key_obtained_at"), ("access_token", "expires_at", "obtained_at")):
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
             continue
-        if _nous_invoke_jwt_is_usable(token, scope=provider.get("scope"), expires_at=provider.get(expiry_key)):
+        if _nous_invoke_jwt_is_usable(token, scope=provider.get("scope"), expires_at=provider.get(expiry_key), obtained_at=provider.get(arrival_key)):
             return token
     return ""
 
@@ -1978,7 +1978,7 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
 
     def _entry_state(e: Any) -> dict[str, Any]:
         return {k: getattr(e, k, None) for k in (
-            "agent_key", "agent_key_expires_at", "access_token", "expires_at", "scope")}
+            "agent_key", "agent_key_expires_at", "agent_key_obtained_at", "access_token", "expires_at", "scope")}
 
     if force_refresh or not _agent_key_is_usable(_entry_state(entry), _nous_min_key_ttl_seconds()):
         try:
@@ -3009,18 +3009,11 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
         return None, None
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     # A model-scoped cooldown spares the key's other models.
-    pool_present, entry = _select_pool_entry("anthropic", requested_model or model)
-    if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
-    else:
-        # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
-        entry = None
-        token = explicit_api_key or resolve_anthropic_token()
-    if not token:
-        return None, None
+    pool_present, entry = _select_pool_entry("anthropic", requested_model or model)  # (False, None) when absent
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
     # Anthropic-compatible; a foreign host (Codex, OpenRouter) would 401 every aux call.
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
+    model_cfg: Any = {}
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
@@ -3046,6 +3039,13 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
             )
             return None, None
         base_url = override_url
+    from hermes_cli.runtime_provider import anthropic_foundry_key  # Foundry: never the OAuth token (#154242)
+    if explicit_api_key or base_url_host_matches(base_url, "azure.com"):
+        token = explicit_api_key or anthropic_foundry_key(model_cfg, base_url, requested_model or model)
+    else:  # pool absent/empty: legacy resolver so a dead entry can't wedge aux
+        token = _pool_runtime_api_key(entry) if entry is not None else resolve_anthropic_token()
+    if not token:
+        return None, None
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
     if _aux_probe_active():
@@ -5529,7 +5529,7 @@ def resolve_vision_provider_client(
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Max-tokens kwarg for the auxiliary provider: direct OpenAI, a custom endpoint whose profile declares
     it, and newer OpenAI-family models (by ``model`` name: custom endpoints fronting gpt-5.x) need max_completion_tokens."""
-    from agent.provider_route_hooks import route_answer
+    from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
     _custom_base = _current_custom_base_url()
     direct_openai_family = not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None and (
         base_url_hostname(_custom_base) == "api.openai.com"
@@ -5850,7 +5850,7 @@ def _get_cached_client(
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
     effective_api_key = api_key
-    if not effective_api_key:
+    if not effective_api_key and _normalize_aux_provider(provider) != "anthropic":  # it picks its own (#154242)
         from hermes_cli.runtime_provider import choose_pool_key
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
         with contextlib.suppress(Exception):  # an unreadable pool leaves the resolver's own key, as before
@@ -6589,7 +6589,7 @@ def _build_call_kwargs(
 
 
 def _validate_llm_response(
-    response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
+    response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None, client: Any = None,
 ) -> Any:
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
@@ -6600,15 +6600,15 @@ def _validate_llm_response(
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
     hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    an empty route. See #23270. *client* produced *response*; only its credential's cost lookup reads it.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
     response = _unwrap_data_envelope(response, task)
-    from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    from agent.aux_accounting import ServingCredential, record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url, serving=ServingCredential.of(client))
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -7081,7 +7081,7 @@ class _ChatStreamAccumulator:
         if delta is None:
             return False
         made_progress = False
-        from agent.message_content import flatten_message_text
+        from session_rules.turns import flatten_message_text
 
         piece = flatten_message_text(getattr(delta, "content", None), sep="")
         if piece:
@@ -8027,7 +8027,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary() -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -8048,9 +8048,8 @@ def _call_llm_impl(
                         request_provider, req.base_info or req.resolved_base_url),
                 ),
             ),
-            task, **validate_kw,
-        )
-    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info)
+            task, provider=request_provider, base_url=req.base_info, client=client)
+    resp, exc = _outcome(_primary)
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)
@@ -8199,12 +8198,13 @@ async def _async_call_llm_impl(
         return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async,
                                             provider=request_provider)
 
-    async def _primary(**validate_kw: Any) -> Any:
+    async def _primary() -> Any:
         import asyncio
         return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(
-            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate), task, **validate_kw)
+            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate),
+            task, provider=request_provider, base_url=req.base_info, client=client)
     # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()). (PR #16587)
-    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info))
+    resp, exc = await _aoutcome(_primary())
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)

@@ -863,6 +863,15 @@ If you work on several long-running projects, topics keep their context separate
 
 Each topic gets its own conversation session, history, and context — completely isolated from the others.
 
+With BotFather **Threaded Mode** on, Telegram also stamps a thread id on ordinary DM messages (a reply inside a thread, or a client that opens a new thread per question), and by default each of those threads is its own session too. If one DM keeps fanning out into parallel sessions you didn't ask for, set `platforms.telegram.extra.dm_threads: shared`: the whole DM becomes one session (one history, one turn at a time), and replies still go back to the thread each message came from. Topics declared in `extra.dm_topics` and `/topic` multi-session lanes stay isolated either way. The default, `per_thread`, keeps one session per thread; any other value logs a warning and is treated as `per_thread`.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      dm_threads: shared   # per_thread (default) | shared
+```
+
 ### Configuration
 
 :::caution Prerequisites
@@ -1310,7 +1319,7 @@ Behavior:
 - `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
 - A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
 - Use `*` in any of these to allow any sender/chat.
-- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`.
+- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env` or an external secret source still wins over `config.yaml`; one only inherited from the gateway's process environment does not.
 - This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
 
 ### Migration from before PR #17686
@@ -1541,6 +1550,24 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 :::tip
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
+
+## Typing Indicator
+
+While a turn runs, the bot shows "typing…" by calling `sendChatAction` every few seconds. Some
+Telegram clients move the view while that indicator is on, so your last message can appear to
+jump up the chat until the reply arrives ([#40885](https://github.com/NousResearch/hermes-agent/issues/40885)).
+To turn the indicator off for Telegram:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        typing_indicator: false   # default true
+```
+
+With it off, the bot makes no `sendChatAction` calls at all. Replies, progress messages and
+reactions still work as before.
 
 ## Per-Channel Prompts
 

@@ -26,7 +26,7 @@ def test_drained_delivery_outcome_is_written_back(tmp_path, monkeypatch, transpo
         return {"success": transport_ok, "message_id": "r",
                 "error": None if transport_ok else "transport refused"}
 
-    monkeypatch.setattr("tools.send_message_tool._send_to_platform", send)
+    monkeypatch.setattr("gateway.outbound.send._send_to_platform", send)
     monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
     if drain_timing == "before_bookkeeping":
         from cron import delivery_queue

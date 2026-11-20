@@ -408,7 +408,11 @@ POST http://host:8644/webhooks/<route>
 POST http://host:8644/p/coder/webhooks/<route>
 ```
 
-An unknown or unconfigured profile in the prefix returns `404`. The shared
+An unknown or unconfigured profile in the prefix returns `404`. On the
+`api_server` listener the body is
+`{"error": "Unknown or unconfigured profile", "code": "profile_unknown"}`;
+clients should key on `code` (gateways before it send the `error` sentence
+alone). The shared
 listener is the default profile's `api_server` port (or its `webhook` port when
 no API server is enabled); it serves three kinds of profile-prefixed paths:
 
@@ -464,7 +468,7 @@ using the default listener's existing credentials.
   is enabled only on a secondary profile. A shared-bot satellite (no bot of
   its own, reached through `profile_routes`) delivers through the shared bot
   only to a chat a route maps to it, the same rule as its cron jobs and its
-  `send_message` sends and reactions; any other target, including an unrouted
+  `send_message` sends; any other target, including an unrouted
   home channel, fails (502). On every platform except Telegram, Slack, Matrix
   and Mattermost (whose thread ids are scoped to a chat), a `thread_id` target
   needs a route that names that `thread_id`; a chat-only route does not cover
@@ -627,7 +631,7 @@ are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
 model routing all behave per-profile exactly as they do with separate gateways.
 
 Outbound identity is per profile too. A turn running for profile `P` that calls
-the `send_message` tool (send, react, media) posts through `P`'s own bot;
+the `send_message` tool (send, media) posts through `P`'s own bot;
 so do the "Gateway shutting down/restarted" and `/update` notices for `P`'s
 sessions, `/loop` wakeups set from `P`'s chats, and the Discord
 unauthorized-slash operator alert of `P`'s Discord bot (to `P`'s home
@@ -672,7 +676,7 @@ profile and never shares with the default or any sibling:
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | Slash-command gating (`allow_admin_from`, `user_allowed_commands`, `group_allow_admin_from`; see [Slash commands](../reference/slash-commands.md)) | The profile whose bot received the message — a secondary's own platform `extra` block governs its bots, not the default profile's | Fail closed: a served profile whose config the multiplexer has not loaded is gated with an **empty** admin list and no user-enabled commands, so only the always-allowed floor (`/help`, `/whoami`) runs — never the default profile's open policy |
-| HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
+| HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401` (API server) or `404` (webhook routes, including a bad signature); delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
 | Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_ALLOW_BOTS`, `*_PROXY`, Discord `allow_mentions`, Matrix `allowed_users` / `ignore_user_patterns`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card / public URL, WhatsApp bridge policy, Yuanbao home channel) | The owning profile, in this order: explicit `.env` value → its `config.yaml` → the adapter's default | The adapter's documented default — never the default profile's setting. Single-profile installs keep env-over-YAML exactly as each platform page documents |
 | `MEDIA:` attachment denylist | Every home under `profiles/` plus the default home, enumerated at check time | A turn can never attach another profile's `.env`, `auth.json`, `state.db`, sessions or token stores |
@@ -879,7 +883,7 @@ delivery to that user's DM without an extra route. The routed profile does not n
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 
-A routed profile's `send_message` sends and reactions, and plugin
+A routed profile's `send_message` sends, and plugin
 `ctx.platform_actions`, follow the same target rule, with one addition: during a
 turn, the conversation that turn came from also qualifies whenever the inbound
 route matcher would hand it to that profile. That covers guild-only routes, a

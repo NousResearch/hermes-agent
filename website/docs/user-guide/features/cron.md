@@ -852,6 +852,13 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
   thread's session, so a reply in-thread continues with full context. A
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
   delivery's follow-up discussion isolated.
+  A job created *inside* a Telegram topic (or another thread) keeps delivering to
+  that topic instead, since its origin pins it. To give such jobs a fresh thread
+  per run too, set `platforms.telegram.extra.cron_fresh_thread_per_run: true`
+  (Telegram forum topics; Discord cannot nest a thread inside the job's thread,
+  so a Discord job created in a thread keeps delivering there). It only affects
+  deliveries back to the job's own topic; an explicit `chat_id:thread_id` target
+  is never overridden.
 - **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
   is mirrored into the target DM session instead (the origin DM, or the home DM
   for fallback and bare-platform jobs) — the DM itself is the continuation surface.

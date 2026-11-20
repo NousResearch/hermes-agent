@@ -305,7 +305,7 @@ from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_p
 
 from plugins.platforms.telegram.telegram_chunking import (
     separate_chunk_indicator_from_fence as _separate_chunk_indicator_from_fence, split_formatted_mdv2, split_raw_carrying_emphasis)
-from plugins.platforms.telegram.telegram_split import _strip_mdv2
+from plugins.platforms.telegram.telegram_split import _strip_mdv2, quotable_text
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
@@ -987,15 +987,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """
         if chat_id is None or thread_id is None:
             return
-        db = getattr(getattr(self, "_session_store", None), "_db", None)
-        if db is None or not hasattr(db, "delete_telegram_topic_binding"):
+        persistence = getattr(getattr(self, "_session_store", None), "persistence", None)
+        if persistence is None:
             return
         try:
             profile_name = (metadata or {}).get("hermes_profile") or getattr(self, "_hermes_profile_name", None) or "default"
-            removed = db.delete_telegram_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
+            removed = persistence.routing.delete_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
         except Exception:
             logger.debug(
-                "[%s] delete_telegram_topic_binding failed for chat=%s thread=%s — skipping prune",
+                "[%s] delete_topic_binding failed for chat=%s thread=%s — skipping prune",
                 self.name, chat_id, thread_id, exc_info=True)
             return
         if removed:
@@ -1332,15 +1332,19 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return isinstance(result.raw_response, dict) and bool(result.raw_response.get("delivery_uncertain"))
 
     @staticmethod
-    async def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
-        """Index rich content we sent: Telegram won't echo it back in reply_to_message.
+    async def _record_sent_text(chat_id: Any, message_id: Any, content: str) -> None:
+        """Index the text of a message we sent: Telegram does not echo a message body back in
+        ``reply_to_message``, so a later quote-reply can only be resolved from this index.
+
+        Covers BOTH send paths (rich ``sendRichMessage`` and legacy MarkdownV2 ``sendMessage``)
+        and the legacy finalize edit — anything the user can see and quote.
 
         Awaited so the store's read-modify-write + ``os.replace`` runs off the loop."""
-        try:
-            from gateway import rich_sent_store
-            await rich_sent_store.record_async(str(chat_id), str(message_id), content)
-        except Exception:
-            pass
+        from gateway import rich_sent_store
+        # The store never raises (a failed index write must not fail a send that landed), so its
+        # result is the only signal: a broken index silently degrades every later quote-reply.
+        if not await rich_sent_store.record_async(str(chat_id), str(message_id), content):
+            logger.warning("[Telegram] failed to index sent message %s for quote-reply recovery", message_id)
 
     async def _try_send_rich(
         self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
@@ -1380,7 +1384,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if message_id is None:  # accepted with no id: delivery unknown, never proof of it (#147616)
             from plugins.platforms.telegram.telegram_send_errors import idless_send_result
             return idless_send_result(self.name, chat_id, "sendRichMessage")
-        await self._record_rich_sent(chat_id, message_id, content)
+        await self._record_sent_text(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id))
 
     def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:
@@ -1419,7 +1423,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return None
             return self._rich_transient_result(exc, "rich editMessageText")
         # Mirror the fresh-send index: a streamed final finalized via edit is otherwise never recorded.
-        await self._record_rich_sent(chat_id, message_id, content)
+        await self._record_sent_text(chat_id, message_id, content)
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -3433,6 +3437,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return self._with_partial_send(outcome, chunks[len(delivered) - prior:], delivered)
             msg, used_thread_fallback = outcome
             delivered.append(str(msg.message_id))
+            # Telegram echoes no body in ``reply_to_message``: a later quote-reply resolves only here.
+            await self._record_sent_text(chat_id, msg.message_id, quotable_text(chunk, mdv2=True))
         await self._retrigger_typing(chat_id, metadata)
         return SendResult(
             success=True, message_id=delivered[0] if delivered else None,
@@ -3509,6 +3515,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self._edit_text(chat_id, message_id, plain)
         return False
 
+    async def _after_legacy_edit(
+        self, chat_id: str, message_id: str, content: str, plain: str, finalize: bool, saturated_preview: bool) -> None:
+        """Bookkeeping once a legacy edit landed: remember a saturated preview (dedup), index a final."""
+        if saturated_preview:
+            self._last_overflow_preview[(str(chat_id), str(message_id))] = content
+        if finalize:
+            # The finalized text is what the user sees and quotes: keep it resolvable (#147287).
+            await self._record_sent_text(chat_id, message_id, quotable_text(content))
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[dict[str, Any]] = None,
    ) -> SendResult:
@@ -3578,8 +3593,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         warn = "[%s] MarkdownV2 edit failed, falling back to plain text: %s"
         try:
             await self._edit_markdown_or_plain(chat_id, message_id, formatted, plain, warn)
-            if _saturated_preview:
-                self._last_overflow_preview[_preview_key] = content
+            await self._after_legacy_edit(chat_id, message_id, content, plain, finalize, _saturated_preview)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -3613,6 +3627,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 await asyncio.sleep(wait)
                 try:
                     await self._edit_markdown_or_plain(chat_id, message_id, formatted, plain, warn)
+                    await self._after_legacy_edit(chat_id, message_id, content, plain, finalize, _saturated_preview)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
@@ -3692,61 +3707,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     async def _edit_overflow_split(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool, metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Split an oversized edit across the existing message + continuations: edit ``message_id`` with
-        chunk 1, send the rest as replies to the previous chunk, return ``message_id=<last-chunk-id>`` so
-        the consumer keeps editing the newest message. ``success=False`` only if the first-chunk edit fails."""
-        raw_chunks, chunks = split_raw_carrying_emphasis(
-            content, self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len,
-            formatted_len=(lambda chunk: utf16_len(self.format_message(chunk))) if finalize else None)
-        if len(chunks) <= 1:
-            chunks = [content]  # defensive: a single chunk just edits normally
-        first_chunk = chunks[0]
-        try:
-            if finalize:
-                await self._edit_markdown_or_plain(
-                    chat_id, message_id, _separate_chunk_indicator_from_fence(self.format_message(first_chunk)), _strip_mdv2(first_chunk),
-                    "[%s] Overflow split: MarkdownV2 first-chunk edit failed, falling back to plain text: %s")
-            else:
-                await self._edit_text(chat_id, message_id, first_chunk)
-        except Exception as e:
-            if "not modified" not in str(e).lower():  # identical first chunk still sends continuations
-                logger.error("[%s] Overflow split: first-chunk edit failed: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
-                return SendResult(success=False, error=_redact_telegram_error_text(e))
-        # Continuations call self._bot.send_message directly to skip self.send's pre-chunking.
-        continuation_ids: list[str] = []
-        delivered_chunks = [first_chunk]
-        prev_id = message_id
-        thread_id = self._metadata_thread_id(metadata)
-        for chunk in chunks[1:]:
-            reply_to_id = int(prev_id) if prev_id else None
-            thread_kwargs = self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id)
-            sent_msg = await self._send_overflow_continuation(chat_id, chunk, reply_to_id, thread_kwargs, thread_id, metadata, finalize)
-            flood = sent_msg if isinstance(sent_msg, SendResult) else None  # flood-refused: the caller holds off
-            if sent_msg is None or flood:
-                # Partial delivery: do NOT report success — the consumer would treat it as final delivery.
-                logger.warning("[%s] Overflow split: stopped at %d/%d chunks delivered", self.name, 1 + len(continuation_ids), len(chunks))
-                delivered_prefix = "".join(re.sub(r" \(\d+/\d+\)$", "", delivered) for delivered in raw_chunks[:len(delivered_chunks)])
-                raw = {
-                    "partial_overflow": True, "delivered_chunks": 1 + len(continuation_ids),
-                    "total_chunks": len(chunks), "last_message_id": prev_id, "delivered_prefix": delivered_prefix,
-                    "continuation_message_ids": tuple(continuation_ids)}
-                if flood and finalize:
-                    # A flood refusal posted nothing, so the rest is certain-undelivered: hand it over in the
-                    # shape _resume_partial_send sends (the MarkdownV2 continuation text), as send() does.
-                    raw["undelivered_chunks"] = tuple(
-                        _separate_chunk_indicator_from_fence(self.format_message(rest)) for rest in chunks[len(delivered_chunks):])
-                    raw["delivered_message_ids"] = (str(message_id), *continuation_ids)
-                return SendResult(
-                    success=False, message_id=prev_id, retryable=True, retry_after=flood and flood.retry_after,
-                    error=flood.error if flood else "overflow_continuation_failed", raw_response=raw,
-                    continuation_message_ids=tuple(continuation_ids))
-            new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
-            continuation_ids.append(new_id)
-            delivered_chunks.append(chunk)
-            prev_id = new_id
-        last_id = continuation_ids[-1] if continuation_ids else message_id
-        logger.debug("[%s] Overflow split delivered %d chunks; last_id=%s", self.name, 1 + len(continuation_ids), last_id)
-        return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))
+        """Edit chunk 1 into ``message_id``, send the rest as continuations (``telegram_overflow_edit``)."""
+        from plugins.platforms.telegram.telegram_overflow_edit import edit_overflow_split
+        return await edit_overflow_split(self, chat_id, message_id, content, finalize=finalize, metadata=metadata)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal (False).
@@ -5140,7 +5103,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             asyncio.get_running_loop().time() + max(0.0, budget))
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
+        """Send typing indicator.
+
+        ``typing_indicator: false`` is checked here, at the one ``sendChatAction`` call: the turn's
+        progress, proxy and follow-up paths call this directly, not through ``_keep_typing`` (#40885)."""
+        if not getattr(getattr(self, "config", None), "typing_indicator", True):
+            return
         if not self._bot or not typing_may_fire(self, chat_id):
             return
         _is_dm_topic: bool = False
@@ -6224,7 +6192,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self.handle_message(self._apply_telegram_group_observe_attribution(event))
             return
         event = self._apply_telegram_group_observe_attribution(event)
-        claim_pending_text(self, msg, event)  # before the first await: the question typed just before waits for us
+        claim_pending_text(self, msg, event)  # before the first await: the comment typed just before waits for us
         # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
         if msg.photo:
             try:
@@ -6246,6 +6214,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4")
         elif msg.document and await self._cache_inbound_document(msg, event):
             return
+        absorb_claimed_text(self, msg, event)  # the comment sent just before this attachment joins its turn
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
@@ -6298,11 +6267,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             from hermes_cli.config import load_config  # deep-copied: _setup_dm_topics writes thread_ids into it
             dm_topics = load_config().get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics", [])
-            if not dm_topics:
-                self._dm_topics_config = []
+            if not dm_topics:  # config.extra too: session keys read declared topics there (dm_threads)
+                self._dm_topics_config = self.config.extra["dm_topics"] = []
                 self._dm_topic_chat_ids = set()
                 return
-            self._dm_topics_config = dm_topics
+            self._dm_topics_config = self.config.extra["dm_topics"] = dm_topics
             self._dm_topic_chat_ids = {str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry}
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")
@@ -6415,6 +6384,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 # didn't quote (#22619). Fall back to the full replied-to message text / caption when no
                 # native quote is present.
                 reply_to_text = None
+        if not reply_to_text:
+            # The quoted body is unrecoverable: Telegram echoed nothing and the sent index has no
+            # entry. Say so — a silently dropped quote makes the agent answer a question whose
+            # subject it cannot see, and nothing in the logs shows why.
+            logger.warning(
+                "[%s] reply_to_id=%s carries no recoverable text: Telegram echoed no body and the sent index has no entry",
+                self.name, reply_to_id)
         return reply_to_id, reply_to_text
 
     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:

@@ -27,3 +27,14 @@ def sanitize_persisted_error(error: Optional[str]) -> Optional[str]:
         logger.warning("Failed to redact cron error before persisting it", exc_info=True)
         return "[REDACTED - redaction failed]"
     return text[:MAX_PERSISTED_ERROR_CHARS]
+
+
+def scrub_retained_stamps(job: dict) -> None:
+    """Scrub, in place, the sticky stamps a run outcome keeps (``last_failure``, ``last_fire_error``).
+
+    Stamps written before #155355 can hold raw credentials, and every run outcome rewrites
+    jobs.json while keeping whichever of them it doesn't replace.
+    """
+    for retained in (job.get("last_failure"), job.get("last_fire_error")):
+        if isinstance(retained, dict) and retained.get("detail"):
+            retained["detail"] = sanitize_persisted_error(str(retained["detail"]))

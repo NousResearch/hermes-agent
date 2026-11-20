@@ -26,6 +26,7 @@ import { clearActiveSessionTodos } from '@/store/todos'
 
 import { segmentStamp } from '../segment-identity'
 
+import { oweTurnEndReport } from './turn-end-report'
 import type { GatewayEventContext } from './types'
 
 function firstBillingLine(text: string): string {
@@ -422,6 +423,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+
+    // This turn's end-of-turn report is still to come, and may arrive after the
+    // next turn's message.start (turn-end-report.ts).
+    deps.updateSessionState(sessionId, state => oweTurnEndReport(state))
 
     // The view mirrors this runtime only while bound to it (settled-turns.ts).
     noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)

@@ -28,7 +28,7 @@ from gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_cli._subprocess_compat import pid_exists_stdlib, process_start_time_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
@@ -272,18 +272,15 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
-# stays import-light (hermes_constants + stdlib only).
-_PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort label: ``<root>/profiles/<name>`` -> name, root home -> "default", else None."""
+    from hermes_constants import PROFILE_ID_RE
+
     try:
         canonical = _canonical_hermes_home(home)
     except Exception:
         return None
-    if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
+    if canonical.parent.name == "profiles" and PROFILE_ID_RE.match(canonical.name):
         return canonical.name
     import hermes_constants
     default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
@@ -297,10 +294,12 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
 def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     """Profile label of a scoped-lock owner (None: PID-only wording): the validated ``profile``
     field stamped by :func:`acquire_scoped_lock`, else inferred from ``hermes_home`` (old locks)."""
+    from hermes_constants import PROFILE_ID_RE
+
     if not isinstance(record, dict):
         return None
     profile = record.get("profile")
-    if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
+    if isinstance(profile, str) and PROFILE_ID_RE.match(profile.strip()):
         return profile.strip()
     home = record.get("hermes_home")
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None
@@ -487,12 +486,9 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     spawn against the live value *on the same host*, the differing units across
     platforms are irrelevant — only same-source equality matters.
     """
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 (ticks) after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
-        return int(stat_path.read_bytes().rsplit(b")", 1)[1].split()[19])
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
+    ticks = process_start_time_stdlib(pid)
+    if ticks is not None:
+        return ticks
 
     # No /proc (macOS / Windows): psutil, quantized to centiseconds for stable equality.
     # process_birth: macOS's clock-step-stable kernel start (#140580); unchanged with no step.
@@ -780,7 +776,7 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
-    from hermes_state_pidns import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
+    from process_identity import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),

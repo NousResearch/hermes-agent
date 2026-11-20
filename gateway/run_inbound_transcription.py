@@ -188,7 +188,7 @@ class GatewayInboundTranscriptionMixin:
                     if clip_memo is not None:
                         clip_memo[path] = (transcript, note)
                 else:
-                    logger.debug("Transcribing user voice: %s", path)
+                    logger.info("Transcribing user voice: %s", path)
                     transcript, note = await self._transcribe_one_clip(
                         path, transcribe_audio, transcribe_audio_local_fallback,
                     )

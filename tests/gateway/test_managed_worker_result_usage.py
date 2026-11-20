@@ -5,6 +5,7 @@ import io
 
 from agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
 from hermes_cli.oneshot import _USAGE_KEYS
+from tests.fixtures.storage_seed import seed_session
 
 
 def _run_conversation_result():
@@ -64,32 +65,43 @@ def test_worker_result_frame_carries_the_billing_block():
 
 
 def _usage_db(tmp_path):
-    from hermes_state import SessionDB
-    return SessionDB(db_path=tmp_path / 'state.db')
+    from persistence_assembly import open_persistence, profile_scope
+    return open_persistence(profile_scope(home=tmp_path))
+
+
+def _update_tokens(db, session_id, *, api_call_count, model, **tokens):
+    """One per-call usage write of a worker: queued and flushed to the session row."""
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    db.usage.queue_usage(session_id, UsageDelta(tokens=TokenCounts(**tokens), api_call_count=api_call_count,
+                                                route=BillingRoute(model=model)))
+    db.usage.flush_usage()
 
 
 def _settle(db, reservation, tip):
     """Settle as the owner does: the tip is whatever the owner's execution row names (compression moves it there)."""
     from types import SimpleNamespace
     from gateway.session_managed_worker import _settled_session_usage
-    db._execute_write(lambda conn: conn.execute(
+    from persistence_assembly import open_persistence
+    from tests.fixtures.storage_holder import raw_holder
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
         "INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
         "VALUES('exec',?,'compute',1,1,'running','d')", (tip,)))
     try:
-        return _settled_session_usage(SimpleNamespace(db=db), reservation, {'model': 'm'}, 'exec')['session_usage']
+        with open_persistence(db.scope) as store:
+            return _settled_session_usage(SimpleNamespace(persistence=store), reservation, {'model': 'm'}, 'exec')['session_usage']
     finally:
-        db._execute_write(lambda conn: conn.execute("DELETE FROM worker_executions WHERE execution_id='exec'"))
+        raw_holder(db)._execute_write(lambda conn: conn.execute("DELETE FROM worker_executions WHERE execution_id='exec'"))
 
 
 def test_settled_usage_sums_the_compression_lineage_a_worker_rotated_through(tmp_path):
     """A managed worker that compresses mid-turn moves its writes to the child session while the owner's reservation still names the parent; the settled turn-end usage covers the whole lineage."""
     db = _usage_db(tmp_path)
     with db:
-        db.create_session('root', source='cli')
-        db.update_token_counts('root', input_tokens=200, output_tokens=50, api_call_count=2, model='m')
-        db.end_session('root', 'compression')
-        db.create_session('tip', source='cli', parent_session_id='root')
-        db.update_token_counts('tip', input_tokens=300, output_tokens=70, cache_read_tokens=100, api_call_count=1, model='m')
+        seed_session(db, 'root', 'cli')
+        _update_tokens(db, 'root', input_tokens=200, output_tokens=50, api_call_count=2, model='m')
+        db.sessions.end('root', 'compression')
+        seed_session(db, 'tip', 'cli', parent_session_id='root')
+        _update_tokens(db, 'tip', input_tokens=300, output_tokens=70, cache_read_tokens=100, api_call_count=1, model='m')
         settled = _settle(db, 'root', 'tip')
     assert (settled['input_tokens'], settled['output_tokens'], settled['cache_read_tokens'], settled['api_calls']) == (500, 120, 100, 3)
     assert settled['prompt_tokens'] == 600 and settled['total_tokens'] == 720
@@ -99,13 +111,13 @@ def test_settled_usage_follows_a_branch_through_its_own_compression(tmp_path):
     """A branched session that compresses mid-turn sums itself and its continuation, never the conversation it was branched from."""
     db = _usage_db(tmp_path)
     with db:
-        db.create_session('origin', source='cli')
-        db.update_token_counts('origin', input_tokens=9000, output_tokens=900, api_call_count=9, model='m')
-        db.create_session('branch', source='cli', parent_session_id='origin', model_config={'_branched_from': 'origin'})
-        db.update_token_counts('branch', input_tokens=200, output_tokens=50, api_call_count=2, model='m')
-        db.end_session('branch', 'compression')
-        db.create_session('tip', source='cli', parent_session_id='branch', model_config={'_branched_from': 'origin'})
-        db.update_token_counts('tip', input_tokens=300, output_tokens=70, api_call_count=1, model='m')
+        seed_session(db, 'origin', 'cli')
+        _update_tokens(db, 'origin', input_tokens=9000, output_tokens=900, api_call_count=9, model='m')
+        seed_session(db, 'branch', 'cli', parent_session_id='origin', model_config={'_branched_from': 'origin'})
+        _update_tokens(db, 'branch', input_tokens=200, output_tokens=50, api_call_count=2, model='m')
+        db.sessions.end('branch', 'compression')
+        seed_session(db, 'tip', 'cli', parent_session_id='branch', model_config={'_branched_from': 'origin'})
+        _update_tokens(db, 'tip', input_tokens=300, output_tokens=70, api_call_count=1, model='m')
         settled = _settle(db, 'branch', 'tip')
     assert (settled['input_tokens'], settled['output_tokens'], settled['api_calls']) == (500, 120, 3)
 
@@ -114,14 +126,14 @@ def test_settled_usage_ignores_a_stale_sibling_of_the_continuation(tmp_path):
     """A closed sibling under a compressed parent (an orphaned websocket session) is not part of the turn's lineage; only the path to the tip the execution ended on counts."""
     db = _usage_db(tmp_path)
     with db:
-        db.create_session('root', source='cli')
-        db.update_token_counts('root', input_tokens=10, api_call_count=1, model='m')
-        db.end_session('root', 'compression')
-        db.create_session('stale', source='cli', parent_session_id='root')
-        db.update_token_counts('stale', input_tokens=1000, api_call_count=5, model='m')
-        db.end_session('stale', 'ws_orphan_reap')
-        db.create_session('live', source='cli', parent_session_id='root')
-        db.update_token_counts('live', input_tokens=20, api_call_count=1, model='m')
+        seed_session(db, 'root', 'cli')
+        _update_tokens(db, 'root', input_tokens=10, api_call_count=1, model='m')
+        db.sessions.end('root', 'compression')
+        seed_session(db, 'stale', 'cli', parent_session_id='root')
+        _update_tokens(db, 'stale', input_tokens=1000, api_call_count=5, model='m')
+        db.sessions.end('stale', 'ws_orphan_reap')
+        seed_session(db, 'live', 'cli', parent_session_id='root')
+        _update_tokens(db, 'live', input_tokens=20, api_call_count=1, model='m')
         from_root = _settle(db, 'root', 'live')
         from_live = _settle(db, 'live', 'live')
     assert (from_root['input_tokens'], from_root['api_calls']) == (30, 2)
@@ -132,17 +144,18 @@ def test_settled_usage_ignores_the_worker_reported_session_id(tmp_path):
     """The result frame's ``session_id`` is worker output: settlement reads the tip from the owner's execution row, so a frame naming a sibling or a foreign session changes nothing."""
     from types import SimpleNamespace
     from gateway.session_managed_worker import _settled_session_usage
+    from persistence_assembly import open_persistence, profile_scope
     db = _usage_db(tmp_path)
-    with db:
-        db.create_session('mine', source='cli')
-        db.update_token_counts('mine', input_tokens=10, api_call_count=1, model='m')
-        db.end_session('mine', 'compression')
-        db.create_session('sibling', source='cli', parent_session_id='mine')
-        db.update_token_counts('sibling', input_tokens=5000, api_call_count=50, model='m')
-        db.create_session('foreign', source='cli')
-        db.update_token_counts('foreign', input_tokens=7000, api_call_count=70, model='m')
+    with db, open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(db, 'mine', 'cli')
+        _update_tokens(db, 'mine', input_tokens=10, api_call_count=1, model='m')
+        db.sessions.end('mine', 'compression')
+        seed_session(db, 'sibling', 'cli', parent_session_id='mine')
+        _update_tokens(db, 'sibling', input_tokens=5000, api_call_count=50, model='m')
+        seed_session(db, 'foreign', 'cli')
+        _update_tokens(db, 'foreign', input_tokens=7000, api_call_count=70, model='m')
         for claimed in ('sibling', 'foreign'):
-            settled = _settled_session_usage(SimpleNamespace(db=db), 'mine', {'model': 'm', 'session_id': claimed})['session_usage']
+            settled = _settled_session_usage(SimpleNamespace(persistence=store), 'mine', {'model': 'm', 'session_id': claimed})['session_usage']
             assert (settled['input_tokens'], settled['api_calls']) == (10, 1)
 
 

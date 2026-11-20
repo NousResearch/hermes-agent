@@ -68,6 +68,24 @@ async def send_reply_document(adapter: Any, chat_id: str, file_path: str, captio
     return await redo(None)
 
 
+_CODE_REGION_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+
+
+def quotable_text(text: str, *, mdv2: bool = False) -> str:
+    """The sent-text index entry for a chunk: ``_strip_mdv2`` outside code, code kept verbatim.
+
+    Emphasis stripping inside code would turn ``a*b*c`` into ``abc`` in the quote the model later
+    reads. ``mdv2``: *text* is already MarkdownV2, whose code escapes only a backslash and a
+    backtick, so only those unescape; raw markdown code is kept exactly."""
+    out, pos = [], 0
+    for match in _CODE_REGION_RE.finditer(text or ""):
+        out.append(_strip_mdv2(text[pos:match.start()]))
+        out.append(re.sub(r"\\([`\\])", r"\1", match.group(0)) if mdv2 else match.group(0))
+        pos = match.end()
+    out.append(_strip_mdv2((text or "")[pos:]))
+    return "".join(out)
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes

@@ -166,9 +166,7 @@ except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 
 
-# Backward-compat constants (built once after discovery)
-TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
-
+# Backward-compat constant (built once after discovery)
 TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 
 # Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).
@@ -855,6 +853,7 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     dispatch_kwargs: dict[str, Any] = {
         "task_id": ids.task_id, "session_id": ids.session_id, "conversation_id": ids.conversation_id}
     if function_name == "execute_code":
+        dispatch_kwargs["turn_id"] = ids.turn_id
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
@@ -955,10 +954,14 @@ def handle_function_call(
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
             ), duration_ms=_elapsed_ms(start))
+        # The caller's skip_* flags describe the WRAPPER call it already policed, never the
+        # underlying tool: forwarding them left the real tool with no pre_tool_call hook,
+        # no request middleware and no execution middleware at all. Same rule as the
+        # connector batch re-dispatch (tools/connectors/dispatch.py).
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
-            skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
-            skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
+            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+            skip_tool_execution_middleware=False, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 
@@ -1000,10 +1003,11 @@ def handle_function_call(
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 
     except Exception as e:
+        from storage_user_copy import error_type_name
         error_msg = f"Error executing {function_name}: {e!s}"
         logger.exception(error_msg)
         return _emit(tool_error(_sanitize_tool_error(error_msg)), duration_ms=_elapsed_ms(start),
-                     status="error", error_type=type(e).__name__, error_message=str(e))
+                     status="error", error_type=error_type_name(e), error_message=str(e))
 
 
 # =============================================================================

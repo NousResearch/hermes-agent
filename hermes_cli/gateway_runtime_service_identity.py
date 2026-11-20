@@ -356,14 +356,24 @@ def _masked_literals(line: str) -> str:
 # The launcher's lines after its env block; None slots hold values, which _vbs_identity checks one by one.
 _LAUNCHER_TAIL = ('existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then', None, 'Else', None,
                   'End If', None, None)
+# The waiting launcher (#146976) maps stop exits to 0 (the owned-exit line is shape-checked by
+# _vbs_identity) and quits with the gateway's code.
+_WAITING_LAUNCHER_TAIL = (*_LAUNCHER_TAIL, "If code = 78 Then code = 0", None, "WScript.Quit code")
 
 
-def _tail_mismatch(tail: list[str]) -> int | None:
+def launcher_pid_file(hermes_home: str) -> str:
+    """The ``gateway.pid`` the waiting launcher checks for an owned exit 1: ``gateway.status._get_pid_path``
+    of the home it sets (a Windows path; joined as text so both hosts render the same line)."""
+    return hermes_home.rstrip("\\/") + "\\gateway.pid"
+
+
+def _tail_mismatch(tail: list[str], waits: bool = False) -> int | None:
     """Offset of the first tail line that breaks the template's shape, or None when it holds."""
-    for offset, expected in enumerate(_LAUNCHER_TAIL):
+    shape = _WAITING_LAUNCHER_TAIL if waits else _LAUNCHER_TAIL
+    for offset, expected in enumerate(shape):
         if offset == len(tail) or expected not in (None, tail[offset]):
             return offset
-    return len(_LAUNCHER_TAIL) if len(tail) > len(_LAUNCHER_TAIL) else None
+    return len(shape) if len(tail) > len(shape) else None
 
 
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
@@ -373,7 +383,10 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
     lines = script.splitlines()
     if len(lines) < 16 or not lines[0].startswith("' "):
         _unverified("the launcher does not start with the installer's header")
-    fixed = ["Option Explicit", "Dim sh, env, existing_pp",
+    # Two installer generations: the waiting launcher (``Dim ... code``, #146976) and the one installs
+    # made before it still run (returns at once) until the next install or update re-renders it.
+    waits = lines[2:3] == ["Dim sh, env, existing_pp, code"]
+    fixed = ["Option Explicit", "Dim sh, env, existing_pp, code" if waits else "Dim sh, env, existing_pp",
              'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")']
     if lines[1:5] != fixed:
         _unverified("the launcher's setup lines are not the installer's")
@@ -388,7 +401,7 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         env[match[1]] = match[2][1:-1].replace('""', '"')
         index += 1
     tail = lines[index:]
-    mismatch = _tail_mismatch(tail)
+    mismatch = _tail_mismatch(tail, waits)
     if mismatch is not None:
         index += mismatch
         line = _masked_literals(lines[index]) if index < len(lines) else "<end of file>"
@@ -397,9 +410,16 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         _unverified("the launcher's PYTHONPATH lines are not the installer's")
     if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
         _unverified("the launcher's working-directory line is not the installer's")
-    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
+    run = re.fullmatch(r'code = sh\.Run\((' + literal + r'), 0, True\)' if waits else r'sh.Run (' + literal + r'), 0, False',
+                       tail[7])
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified("the launcher has no Run line or does not set HERMES_SUPERVISED_CHILD")
+    if waits:
+        owned = re.fullmatch(r'If code = 1 And CreateObject\("Scripting\.FileSystemObject"\)\.FileExists\(('
+                             + literal + r')\) Then code = 0', tail[9])
+        pid_file = owned[1][1:-1].replace('""', '"') if owned else None
+        if pid_file is None or pid_file != launcher_pid_file(env.get("HERMES_HOME", "")):
+            _unverified("the launcher's exit mapping is not the installer's")
     command = run[1][1:-1].replace('""', '"')
     if "%" in command or "%" in env.get("HERMES_HOME", ""):
         _unverified("the launcher command or HERMES_HOME contains %")

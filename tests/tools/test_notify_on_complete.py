@@ -163,7 +163,7 @@ class TestCompletionQueue:
 
 class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+        with patch("tools.process_registry._checkpoint_path", return_value=tmp_path / "procs.json"):
             s = _make_session(notify_on_complete=True)
             registry._running[s.id] = s
             registry._write_checkpoint()
@@ -181,7 +181,7 @@ class TestCheckpointNotify:
             "pid": os.getpid(),
             "task_id": "t1",
         }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        with patch("tools.process_registry._checkpoint_path", return_value=checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 1
             s = registry.get("proc_live")

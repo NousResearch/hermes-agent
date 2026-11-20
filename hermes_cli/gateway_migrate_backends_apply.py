@@ -1107,8 +1107,13 @@ def _plan_changed(host, plan: BackendPlan, expected: str, *, as_json: bool, deta
 
 def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -> None:
     """Refusals the apply path adds to the plan before anything changes (shown by the dry run too)."""
+    from hermes_cli.config_backend import _FILE_BACKEND, BACKEND_ENV, get_config_backend
     from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home, hermes_command
     rec, item = plan.rec, plan.item
+    if (backend := get_config_backend()) is not _FILE_BACKEND:
+        plan.blockers.append(f"{BACKEND_ENV}={backend.name} keeps the settings outside config.yaml, but the migration "
+                             f"backs up, rolls back and restores only config.yaml, so it needs the file config "
+                             f"backend. Move this home by hand with the steps in the docs. Nothing changed.")
     if (other := host.foreign_gateway_home()) is not None:
         unit = (plan.gateway or {}).get("unit") or "the gateway service"
         plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "

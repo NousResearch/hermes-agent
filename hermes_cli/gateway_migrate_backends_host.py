@@ -228,8 +228,10 @@ class SystemHost:
         from gateway.status import get_process_start_time
         return get_process_start_time(pid)
 
-    def running_turns(self, pid: int, start_time) -> int:
-        """Turns the old backend *pid* is running now: its live turn markers in this home.
+    def running_turns(self, pid: int, start_time) -> Optional[int]:
+        """Turns the old backend *pid* is running now: its live turn markers in this home, or None when
+        activity cannot be determined (an existing marker file cannot be read or parsed, is not a JSON
+        object, or a marker's writer state is unknown).
 
         The old backend writes a durable marker at every turn start and clears it on any conclusion
         (``tui_gateway.turn_marker``), stamped with its own pid and start time, so a marker whose
@@ -237,10 +239,35 @@ class SystemHost:
         from tui_gateway import turn_marker
         from hermes_cli.profiles import profiles_to_serve
         from hermes_constants import hermes_home_key
-        profiles = profiles_to_serve(True, include_standalone=True, include_parked=True)
+        try:
+            profiles = profiles_to_serve(True, include_standalone=True, include_parked=True)
+        except OSError:
+            return None
         homes = {hermes_home_key(self.home), *(hermes_home_key(h) for _, h in profiles)}
-        return sum(1 for h in homes for e in turn_marker._load(turn_marker._marker_path(h)).values()
-                   if e.get("writer_pid") == pid and turn_marker.marker_writer_state(e) == "alive")
+        count = 0
+        for h in homes:
+            path = turn_marker._marker_path(h)
+            try:
+                with open(path, encoding="utf-8-sig") as fh:
+                    data = json.load(fh)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                return None
+            if not isinstance(data, dict):
+                return None
+            for entry in data.values():
+                if not isinstance(entry, dict):
+                    return None
+                writer_pid = entry.get("writer_pid")
+                if isinstance(writer_pid, int) and not isinstance(writer_pid, bool) and writer_pid > 0 and writer_pid != pid:
+                    continue
+                state = turn_marker.marker_writer_state(entry)
+                if state == "unknown":
+                    return None
+                if state == "alive":
+                    count += 1
+        return count
 
     # ------------------------------------------------------------------ config / env
 

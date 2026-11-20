@@ -727,8 +727,21 @@ def _turns_before_restart(plan: BackendPlan, host) -> Optional[int]:
         return None
 
 
+def _turns_blocker(plan: BackendPlan, force_interrupt: bool) -> None:
+    if force_interrupt:
+        return
+    if plan.running_turns is None:
+        plan.blockers.append("Cannot tell whether turns are running on the old backend (its turn activity could "
+                             "not be read). Confirm it is idle, or re-run with --force-interrupt (any running "
+                             "turn is interrupted).")
+    elif plan.running_turns > 0:
+        plan.blockers.append(f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to "
+                             f"finish, or re-run with --force-interrupt (they are interrupted).")
+
+
 def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if not plan.rec["was_active"]:
+        plan.running_turns = 0
         return
     status = host.http_status(plan.old_probe_host, plan.old_port)
     if status is not None and status.get("health") == "missing":
@@ -755,9 +768,9 @@ def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
                             "providers": provider_names(providers) if isinstance(providers, list) else None}
     if plan.item and plan.item.pid:
         plan.running_turns = host.running_turns(plan.item.pid, plan.rec.get("start_time"))
-    if plan.running_turns and not force_interrupt:
-        plan.blockers.append(f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to "
-                             f"finish, or re-run with --force-interrupt (they are interrupted).")
+    else:
+        plan.running_turns = None
+    _turns_blocker(plan, force_interrupt)
 
 
 def provider_names(raw) -> list[str]:

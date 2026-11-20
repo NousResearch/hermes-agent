@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 _SHOW_PROPS = ("MainPID", "ActiveState", "UnitFileState", "FragmentPath", "ExecStart", "ControlGroup",
                "Environment", "EnvironmentFiles", "User")
 _TIMEOUT = 30
+#: The transient unit a ``--detach`` run is (``<prefix><seconds>.service``): what it starts dies with it.
+DETACHED_UNIT_PREFIX = "hermes-backend-migration-"
 HEALTH_TIMEOUT = 3  # seconds for the by-hand plan's one GET /api/health
 
 
@@ -912,7 +914,7 @@ class SystemHost:
         # The caller's env unscrubbed (the run reads the same credentials), pinned to this home.
         env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False,
                                    extra={"HERMES_HOME": str(self.home)})
-        unit = f"hermes-backend-migration-{int(time.time())}"
+        unit = f"{DETACHED_UNIT_PREFIX}{int(time.time())}"
         systemd_run = locate_command("systemd-run").command
         if systemd_run and self.gateway_kind() == "systemd":
             cmd = [systemd_run, "--user", "--collect", f"--unit={unit}", "--quiet",

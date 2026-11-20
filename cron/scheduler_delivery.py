@@ -580,11 +580,15 @@ def cron_delivery_targets() -> list[dict]:
 
 
 def _origin_thread_is_stale(origin: dict) -> bool:
-    """True when a Slack origin's thread is a stale creation-turn artifact. Thread-per-message
-    Slack stamps each top-level message id as the session thread (a KEY, not a location); old jobs
-    carry it as ``origin.thread_id``. Heuristic: if the origin chat IS the Slack home chat, the
-    pinned thread is that artifact and delivery goes top-level (or to the home target's thread)."""
+    """Apply the Slack home-chat fallback to unclassified origins from older captures.
+
+    Slack uses a top-level message's ID as its session thread key. Old jobs may have persisted
+    that key as a route. Modern capture compares it to the triggering message and marks threads
+    it deliberately keeps, including the conversation for a near-term one-shot.
+    """
     if str(origin.get("platform") or "").lower() != "slack" or not origin.get("thread_id"):
+        return False
+    if origin.get("thread_id_verified") is True:
         return False
     home_chat = _get_home_target_chat_id("slack")
     return bool(home_chat) and str(origin.get("chat_id")) == str(home_chat)

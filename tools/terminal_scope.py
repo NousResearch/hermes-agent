@@ -217,6 +217,10 @@ def build_profile_terminal_scope(
         # value that differs from the default can prove a choice made there.
         if env_overlay.get("TERMINAL_DOCKER_IMAGE") not in (None, default_image):
             image_pinned = True
+    # Instance-managed dotenv is applied after profile/launcher dotenv and before YAML.
+    managed_env = managed_scope.load_managed_env()
+    scope.update((k, str(v)) for k, v in managed_env.items() if k.startswith("TERMINAL_"))
+    image_pinned = image_pinned or "TERMINAL_DOCKER_IMAGE" in managed_env
     # Read config.yaml directly, not via read_raw_config() (which collapses "missing" and
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"

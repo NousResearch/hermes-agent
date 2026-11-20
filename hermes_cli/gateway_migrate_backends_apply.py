@@ -358,6 +358,9 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
     print("  ✓ the gateway is installed and enabled as a user service")
     run.step("gateway_service", "done")
     rec = m["old_backend"]
+    if (changed := _changed_since_check(host, rec)) is not None:
+        raise StepFailed(f"the old backend changed since the check ({changed}), so the stop would reach a process "
+                         f"the checks never saw. The old backend has not been stopped; run this command again.")
     if not force_interrupt and rec.get("pid") and (late := _turns_now(host, rec)) is not None:
         raise StepFailed(f"{late} The old backend has not been stopped.")
     run.step("stop_old_backend")
@@ -388,6 +391,25 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
         raise StepFailed(f"verification failed after {VERIFY_SECONDS:.0f}s: {why[0]}")
     run.step("verify", "done")
     return stopped_at
+
+
+def _changed_since_check(host, rec: dict) -> Optional[str]:
+    """How the old backend's process differs from the snapshot right before the stop (pid and start time,
+    read as the plan read them), else None. The stop acts on the unit or job by name, so a replacement process
+    started meanwhile would be stopped unchecked. Unknown counts as changed."""
+    # A read that raises fails the step like this answer does: the run rolls back before the stop.
+    if rec["supervisor"] == "manual":
+        now = (rec.get("pid"), rec.get("start_time")) if host.same_process(rec.get("pid"), rec.get("start_time")) \
+            else (None, None)
+    else:
+        items = [i for i in host.backends() if i.unit == rec.get("unit") and i.scope == rec.get("scope")]
+        pid = next((i.pid for i in items if i.running and i.pid), None)
+        now = (pid, host.start_time(pid) if pid else None)
+    was = (rec.get("pid") if rec.get("was_active") else None, rec.get("start_time") if rec.get("was_active") else None)
+    if now == was and (now[0] is None or now[1] is not None):
+        return None
+    describe = lambda ident: f"pid {ident[0]}" if ident[0] else "not running"
+    return f"it was {describe(was)} at the check and is {describe(now)} now"
 
 
 def _turns_now(host, rec: dict) -> Optional[str]:

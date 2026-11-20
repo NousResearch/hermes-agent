@@ -538,7 +538,7 @@ class _KanbanNotification:
         self.send_passive = mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
-        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = self.receipt = ""
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -612,6 +612,9 @@ class _KanbanNotification:
             task_id=sub["task_id"], status=_status, title=self.title,
             assignee=task.assignee if task else "", board=self.board_slug,
         )
+        # The wake's own first line ("[kanban] Task <id> <status>.") is what a local chat's idle
+        # classic CLI opens the turn with (``gateway.wake._local_receipt``).
+        self.receipt = synth.splitlines()[0]
         # Label as an automatic notification and carry the handoff so the
         # creator inspects the board instead of re-decomposing.
         if self.wake_handoff:
@@ -688,7 +691,8 @@ class _KanbanNotification:
                 raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
             await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
-                               notification_category="diagnostic" if self.wake_diagnostic else "result")
+                               notification_category="diagnostic" if self.wake_diagnostic else "result",
+                               display_text=self.receipt)
         self._log_woke()
 
     async def _send_event(self, ev: Any, msg: str) -> bool:

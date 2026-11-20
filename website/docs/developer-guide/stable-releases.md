@@ -377,15 +377,15 @@ claim's green policy and lanes like every other canary channel. The canary's
 Termux packages go to `hermes-canary` under a pool prefix named by its tag, just
 as a stable attempt's go to `hermes-stable` under its attempt ref.
 
-Pull requests and pushes to `main` run no E2E suite. After each successful
-`Canary Release`, `Canary E2E` (`canary-e2e.yml`) runs a claim's E2E calls (full
-CI with `release: true`, install/update E2E, Windows live E2E) on the commit that
-canary tagged, so an E2E regression shows up within a day of landing rather than
-at the next claim. A commit an automatic run already passed is not run again
-(a canary with no new commits resumes its last tag). It only reports: the
-canary does not wait for it, and
-`install-e2e-red.yml` keeps one `install-e2e-red` issue open while the latest run
-is red.
+Pull requests and pushes to `main` run no E2E suite. Each daily `Canary Release`
+dispatches `Stable Release` with the canary claim tag, running full CI with
+`release: true`, install/update E2E, and Windows live E2E directly inside the
+canary pipeline so an E2E regression shows up within a day of landing rather than
+at the next stable claim. Scheduled runs pass `--no-require-green` so a red suite
+reports without blocking canary publication once the candidate builds and smokes
+pass, and `stable-release.yml`'s `track-canary-red` job keeps one
+`install-e2e-red` issue open while the latest canary run is red (`install-e2e-red.yml`
+remains available for manual dry-run preview/replay).
 
 ## Canary and one-off desktop identities
 

@@ -169,3 +169,57 @@ def test_replacement_never_targets_itself(home, monkeypatch):
     monkeypatch.setattr(replace, "_install_root", lambda: home)
     monkeypatch.setattr(replace, "_identify", lambda h, timeout: (home, _owner_payload(home, os.getpid(), 1)))
     assert replace.replace_incompatible_owner(home, deadline=time.monotonic() + 5) == "owner_unverified"
+
+
+# --- a service-managed old owner (#143144, #143547 GW-31) --------------------------------------------
+
+def test_the_units_own_deactivation_after_a_replacement_is_waited_out(home, monkeypatch):
+    """Stopping a systemd-run old owner leaves its unit ``deactivating`` for a moment (ExecStopPost runs,
+    then ``Restart=`` relaunches it). That window is this call's own stop, not a refusal: ensure waits
+    it out instead of failing the client with ``Gateway draining: service_draining``."""
+    from hermes_cli import gateway_runtime_service as service
+    _script(monkeypatch, [GatewayDiscovery("incompatible", reason_code="runtime_protocol"),
+                          GatewayDiscovery("absent"), GatewayDiscovery("absent"), GatewayDiscovery("absent"),
+                          GatewayDiscovery("absent"), _ready(home)])
+    monkeypatch.setattr(replace, "replace_incompatible_owner", lambda h, *, deadline: None)
+    probes = []
+
+    def discover_service(h, deadline):
+        probes.append(h)
+        if len(probes) == 1:
+            raise service.RuntimeStartError("service_draining", "draining")
+        return service.ExistingService("systemd", ("systemctl", "--user", "start", "hermes-gateway.service"), True)
+
+    monkeypatch.setattr(service, "discover_existing_gateway_service", discover_service)
+
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+
+    assert result.state == "ready", (result.state, result.reason_code)
+    assert len(probes) >= 2
+
+
+def test_service_draining_without_a_replacement_is_still_reported(home, monkeypatch):
+    """Only this call's own stop is waited out; a unit someone else is stopping stays a verdict."""
+    from hermes_cli import gateway_runtime_service as service
+    _script(monkeypatch, [GatewayDiscovery("absent")])
+
+    def discover_service(h, deadline):
+        raise service.RuntimeStartError("service_draining", "draining")
+
+    monkeypatch.setattr(service, "discover_existing_gateway_service", discover_service)
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code) == ("draining", "service_draining")
+
+
+def test_an_old_owner_relaunched_after_the_stop_names_the_remedy_that_refreshes_its_service(home, monkeypatch):
+    """A unit still pinned to the old install brings the old gateway straight back after the stop.
+    ``hermes gateway stop`` cannot fix that (the next ensure's ``systemctl start`` relaunches the same
+    pin); ``hermes gateway restart`` rewrites the unit to this install first, so it is the remedy."""
+    _script(monkeypatch, [GatewayDiscovery("incompatible", reason_code="runtime_protocol")])
+    monkeypatch.setattr(replace, "replace_incompatible_owner", lambda h, *, deadline: None)
+
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+
+    assert (result.state, result.reason_code) == ("incompatible", "runtime_protocol")
+    assert "hermes gateway restart" in result.detail
+    assert "hermes gateway stop" not in result.detail

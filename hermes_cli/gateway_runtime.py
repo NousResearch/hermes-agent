@@ -387,7 +387,12 @@ def _fenced_verdict(home: Path, timeout: float) -> GatewayDiscovery:
     return GatewayDiscovery("draining", reason_code="update_paused")
 
 
-_REPLACE_FAILED_DETAIL = "an older Hermes gateway still owns this profile after a stop; run: hermes gateway stop"
+# Reached only when the owner this call stopped is back: something relaunched it, typically a service
+# definition (systemd unit, launchd job) still pinned to the older install (#143144). ``hermes gateway
+# stop`` cannot fix that: the next ensure's plain service start relaunches the same pin. ``restart``
+# rewrites a stale definition to this install before it restarts the service.
+_REPLACE_FAILED_DETAIL = ("an older Hermes gateway came back after a stop; its service may pin the old "
+                          "install; run: hermes gateway restart")
 # ``draining`` reasons after which the owner is going away by itself: its own idle exit, or the
 # older-Hermes owner this call just stopped. Ensure waits it out and starts the current owner.
 _RETIRING = frozenset({"idle_exit", "replaced"})
@@ -409,6 +414,22 @@ def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -
         return GatewayDiscovery("incompatible", reason_code="runtime_protocol",
                                 detail=replace.REFUSAL_DETAIL.get(refusal, _REPLACE_FAILED_DETAIL))
     return GatewayDiscovery("draining", reason_code="replaced")
+
+
+def _existing_service(home: Path, *, deadline: float, replaced: set[Path]):
+    """``discover_existing_gateway_service``, except right after this call stopped an older owner: that
+    owner was a service's, so its unit stays ``deactivating`` until its stop hooks finish and
+    ``Restart=`` relaunches it. That window is this call's own stop, not a refusal: it is waited out
+    (bounded by the deadline) instead of failing the client with ``service_draining`` (#143144)."""
+    import time
+    from hermes_cli.gateway_runtime_service import RuntimeStartError, discover_existing_gateway_service, remaining
+    while True:
+        try:
+            return discover_existing_gateway_service(home, deadline=deadline)
+        except RuntimeStartError as exc:
+            if exc.reason != "service_draining" or not replaced:
+                raise
+        time.sleep(min(0.1, remaining(deadline)))
 
 
 def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = None,
@@ -510,7 +531,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = 
                 # that blocks the multiplexer's next all-or-nothing reserve.
                 from hermes_cli.gateway_runtime_multiplex import implied_host_root, multiplexer_serves_home
                 target = multiplexer_serves_home(home) or home
-                service = discover_existing_gateway_service(target, deadline=deadline)
+                service = _existing_service(target, deadline=deadline, replaced=replaced)
                 if service is None and target == home and (host := implied_host_root(home)) is not None:
                     # Main's guard refuses a named profile a gateway of its own unless it is standalone
                     # or already installed; with no multiplexer evidence yet, the host is still its owner.

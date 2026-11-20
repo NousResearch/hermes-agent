@@ -232,7 +232,7 @@ _fd_listener_lock = threading.Lock()
 _fd_listener_active = False
 _fd_owner: Optional[dict] = None
 _fd_gen = 0
-_fd_closed = False  # one-way, set at process shutdown: the mic is never claimed or opened after it
+_fd_closed = False  # one-way shutdown fence for later claims and workers entering the listener
 _fd_speak_pipelines: set[tuple[threading.Event, threading.Event]] = set()
 
 
@@ -286,9 +286,10 @@ def _fd_listener_exit(gen: int) -> None:
 
 
 def _release_fd_listener_owner() -> None:
-    """Process shutdown: close the mic for good. The live listener releases it at exit instead of
-    handing it off, no later arm claims it, and a listener already spawned for an owner chosen before
-    this returns without opening it. A take already tripped still finishes under its own owner."""
+    """Reject later claims and workers entering after shutdown; cancel the pending hand-off.
+    A worker already past its entry check may still open the stream, then stops at its next block.
+    This is cooperative cancellation, not an atomic hardware-open fence. A take already tripped
+    still finishes under its own owner."""
     global _fd_owner, _fd_closed
     with _fd_listener_lock:
         _fd_owner, _fd_closed = None, True

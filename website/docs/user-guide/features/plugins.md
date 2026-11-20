@@ -440,6 +440,7 @@ hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
                                              # either spelling works, e.g. photon-platform or platforms/photon)
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
+hermes plugins config my-plugin              # view and edit the plugin's settings (interactive editor)
 hermes plugins idle-tasks [my-plugin]        # background idle jobs plugins registered: last run, next run
 hermes plugins idle-tasks my-plugin --pause suggest   # stop one until --resume
 hermes plugins check-updates                 # read-only: is any installed plugin outdated?

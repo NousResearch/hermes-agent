@@ -1102,6 +1102,11 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _settings_cli():
+    from hermes_cli.plugins_settings import cli
+    return cli
+
+
 def _action_update(args):
     if args.name:
         if getattr(args, "yes", False):
@@ -1175,6 +1180,7 @@ _PLUGIN_ACTIONS = {
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
+    **dict.fromkeys(("config", "configure", "settings"), lambda args: _settings_cli().cmd_config(args.name)),
     None: lambda args: cmd_toggle(),
 }
 

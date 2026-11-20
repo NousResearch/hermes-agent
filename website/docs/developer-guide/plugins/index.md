@@ -1077,6 +1077,12 @@ Config and state have different owners: settings are user-visible behavior in
 
 ### Settings form in the Desktop
 
+The same declaration also gives your plugin a terminal editor: `hermes plugins config <name>`
+lists every `config_schema` key and every `requires_env` variable with its current value and
+edits them one at a time (choices and `bool` as pickers, `secret` and `secret: true` env
+entries masked). It saves through the same writers as the form below, so no CLI code is
+needed either. Give each key a `label` and `description`: they are all the user sees.
+
 Every key you declare in the manifest's `config_schema` renders as a row on the
 plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the
 plugin's Capabilities → Plugins row opens it). No

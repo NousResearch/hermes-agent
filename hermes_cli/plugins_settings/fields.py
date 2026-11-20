@@ -1,4 +1,5 @@
-"""Plugin-declared settings fields for the Desktop/TUI Plugins hub (#46600, #87934).
+"""Plugin-declared settings fields for the Desktop/TUI Plugins hub and ``hermes plugins config``
+(#46600, #87934).
 
 A ``plugin.yaml`` ``config_schema`` describes the keys under ``plugins.entries.<id>.settings``.
 This module turns that schema into renderable form fields (type, current value, choices) and

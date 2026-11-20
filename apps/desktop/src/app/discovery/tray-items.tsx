@@ -1,4 +1,3 @@
-import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import type { ComponentType } from 'react'
 

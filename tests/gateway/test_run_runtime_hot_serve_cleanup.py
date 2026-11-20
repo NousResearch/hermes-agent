@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -159,6 +160,24 @@ async def test_settle_gateway_runtime_waits_for_bot_receipt_tasks():
 
     assert task.done()
     assert finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_settle_gateway_runtime_survives_an_acp_sweep_that_cannot_import(monkeypatch):
+    """Ending idle ACP sessions is best-effort: its module failing to import (a tree replaced under the
+    running gateway) must not abort the stop before the teardown that follows it (#158360)."""
+    revoked = []
+    authority = SimpleNamespace(sessions={}, _bot_receipt_tasks=set())
+    runner = SimpleNamespace(
+        session_authority=authority,
+        session_ticket_store=SimpleNamespace(revoke=lambda: revoked.append(True)),
+    )
+    authority.runner = runner
+    monkeypatch.setitem(sys.modules, "gateway.session_acp_lifecycle", None)  # importing it raises
+
+    await asyncio.wait_for(run_runtime.settle_gateway_runtime(runner), 5)
+
+    assert revoked == [True]
 
 
 @pytest.mark.asyncio

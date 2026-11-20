@@ -267,12 +267,22 @@ def _query_ro_sqlite(path: Path, fn):
         _close_quietly(conn)
 
 
+def _probe_verdict(exc: BaseException) -> Optional[bool]:
+    """Only SQLite reporting bad bytes (NOTADB/CORRUPT) accuses the file; failing to open or read it
+    (CANTOPEN, IOERR, BUSY, a Windows sharing violation) proves nothing, so the verdict is ``None``."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return False if code is not None and code & 0xFF in (sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_CORRUPT) else None
+
+
 def verify_sqlite_integrity(
     path: Path, *, check_header: bool = True, run_pragma: bool = True,
     max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES) -> dict:
     """Verify a SQLite database: existence + minimum size, header magic, then a read-only
-    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``)."""
-    def _done(message: str, valid: bool = False, size: Optional[int] = None) -> dict:
+    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``).
+
+    ``valid`` is tri-state: ``True``, ``False`` (the bytes are bad), or ``None`` when the file could
+    not be read right now (locked or held). Callers must not restore over a ``None`` (#147938)."""
+    def _done(message: str, valid: Optional[bool] = False, size: Optional[int] = None) -> dict:
         return {"valid": valid, "message": message, "size": size}
     try:
         st = path.stat()
@@ -283,13 +293,15 @@ def verify_sqlite_integrity(
     size = st.st_size
     if size < 100:  # SQLite minimum viable size (header + 1 page)
         return _done(f"too small ({size} bytes) to be a valid SQLite database", size=size)
+    note = ""
     if check_header:
         # Refused when a live connection exists: close() would cancel this process's POSIX locks
-        # (see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
+        # (see sqlite_safe_read). An OSError (a Windows sharing violation) or a short read is
+        # refused too. Neither is evidence of corruption, so SQLite's own probe decides below.
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
-        if head is None:
-            return _done("cannot read header", size=size)
-        if head != _SQLITE_HEADER:
+        if head is None or len(head) < len(_SQLITE_HEADER):
+            note = "cannot read header; "
+        elif head != _SQLITE_HEADER:
             return _done(f"missing SQLite header magic (got {head[:16].hex()!r})", size=size)
     if max_bytes > 0 and size > max_bytes:
         # O(1) probe: the header check caught the zeroed signature; reading sqlite_master + page
@@ -299,9 +311,9 @@ def verify_sqlite_integrity(
             c.execute("SELECT count(*) FROM sqlite_master").fetchone()))
         if exc is not None:
             kind = "failed" if isinstance(exc, sqlite3.DatabaseError) else "error"
-            return _done(f"schema probe {kind}: {exc}", size=size)
+            return _done(f"{note}schema probe {kind}: {exc}", _probe_verdict(exc), size=size)
         return _done(
-            f"size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
+            f"{note}size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
             "skipped PRAGMA integrity_check (header + schema probe passed)",
             valid=True, size=size)
     if run_pragma:
@@ -309,10 +321,12 @@ def verify_sqlite_integrity(
             path, lambda c: [str(r[0]) for r in c.execute("PRAGMA integrity_check")])
         if exc is not None:
             kind = "cannot open database" if isinstance(exc, sqlite3.DatabaseError) else "integrity check error"
-            return _done(f"{kind}: {exc}", size=size)
+            return _done(f"{note}{kind}: {exc}", _probe_verdict(exc), size=size)
         if rows == ["ok"]:
-            return _done("integrity check passed", valid=True, size=size)
+            return _done(f"{note}integrity check passed", valid=True, size=size)
         return _done(f"integrity check failed: {'; '.join(rows[:5])}", size=size)
+    if note:
+        return _done(note.rstrip("; "), None, size=size)
     return _done("header check passed", valid=True, size=size)
 
 

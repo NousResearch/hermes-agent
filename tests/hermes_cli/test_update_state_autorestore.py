@@ -1,5 +1,6 @@
 """Updater restore must publish snapshot rows without replaying the old WAL."""
 
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -204,6 +205,7 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
         "hermes_cli.backup._sibling_profile_homes",
         lambda invoking_home: [("work", sibling_home)],
     )
+    monkeypatch.setattr("hermes_cli.update_cmd_config._LAST_SIBLING_SNAPSHOTS", {"work": "20260901-pre-update"})
 
     update_cmd._verify_and_restore_state_dbs_post_update()
 
@@ -270,3 +272,100 @@ def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypat
     assert "corrupted" in out
     # Still corrupt (no snapshot) — but the guard completed cleanly.
     assert (sibling_home / "state.db").read_bytes() == b"\x00" * 4096
+
+
+# ── A held or locked state.db is not a corrupt one (#147938) ────────────
+
+
+def _hold(monkeypatch, held: Path):
+    """The raw header read of *held* fails the way a Windows sharing violation (or a live
+    connection in this process) makes it fail, while SQLite itself can still read the file."""
+    from persistence.sqlite.admin import _backup
+
+    real = _backup.read_header_bytes_preopen
+    monkeypatch.setattr(_backup, "read_header_bytes_preopen",
+                        lambda path, **kw: None if Path(path) == held else real(path, **kw))
+
+
+@pytest.mark.parametrize("snapshot_id", [None, "20260715-pre-update"])
+def test_locked_live_db_is_never_rolled_back(tmp_path, monkeypatch, capsys, snapshot_id):
+    from hermes_cli import update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    _make_valid_db(home / "state.db", 10)
+    _make_valid_snapshot(home, "20260715-pre-update", 25)  # months old
+    before = (home / "state.db").read_bytes()
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda invoking_home: [])
+    _hold(monkeypatch, home / "state.db")
+
+    update_cmd._verify_and_restore_state_dbs_post_update(snapshot_id)
+
+    assert (home / "state.db").read_bytes() == before
+    out = capsys.readouterr().out
+    assert "corrupted" not in out and "Auto-restore" not in out
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="root and Windows read mode-0 files")
+def test_unreadable_and_unopenable_db_is_indeterminate(tmp_path, monkeypatch, capsys):
+    """chmod 000 stands in for a hard Windows lock: neither the raw read nor SQLite can open it."""
+    from hermes_cli import update_cmd
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 10)
+    _make_valid_snapshot(home, "20260715-pre-update", 25)
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda invoking_home: [])
+    state.chmod(0)
+    try:
+        assert verify_sqlite_integrity(state)["valid"] is None
+        update_cmd._verify_and_restore_state_dbs_post_update("20260715-pre-update")
+    finally:
+        state.chmod(0o600)
+
+    assert _row_count(state) == 10
+    out = capsys.readouterr().out
+    assert "verification deferred" in out and "Auto-restore" not in out
+
+
+def test_corrupt_db_is_not_restored_from_an_older_update_snapshot(tmp_path, monkeypatch, capsys):
+    """With no snapshot from THIS update, an old one on disk must never replace the live DB."""
+    from hermes_cli import update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "state.db").write_bytes(b"\x00" * 4096)
+    _make_valid_snapshot(home, "20260715-pre-update", 25)
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda invoking_home: [])
+
+    update_cmd._verify_and_restore_state_dbs_post_update(None)
+
+    assert (home / "state.db").read_bytes() == b"\x00" * 4096
+    out = capsys.readouterr().out
+    assert "corrupted" in out and "left unchanged" in out and "Auto-restored" not in out
+
+
+def test_restore_is_reported_by_sqlite_not_by_a_refused_header_read(tmp_path, monkeypatch):
+    """The restore succeeded; a header read refused right after it must not report a failure."""
+    from hermes_cli import backup_restore
+
+    state = tmp_path / "state.db"
+    _make_valid_db(state, 3)
+    _make_valid_snapshot(tmp_path, "20261120-pre-update", 25)
+    real_restore = backup_restore._safe_restore_db
+
+    def restore_then_hold(src, dst):  # the runtime reopens state.db as soon as it is back
+        ok = real_restore(src, dst)
+        _hold(monkeypatch, dst)
+        return ok
+
+    monkeypatch.setattr(backup_restore, "_safe_restore_db", restore_then_hold)
+    snap = tmp_path / "state-snapshots" / "20261120-pre-update" / "state.db"
+    assert _restore_state_db_from_snapshot(state, snap) is True
+    assert _row_count(state) == 25

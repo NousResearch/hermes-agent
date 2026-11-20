@@ -400,6 +400,43 @@ def test_a_stopped_system_unit_is_judged_by_the_planner_too(tmp_path, monkeypatc
         assert (old_backend_notice(root) is not None) is named
 
 
+def _stopped_unit_and_running_backend(tmp_path, monkeypatch, probes):
+    """A stopped user unit of this home whose ownership probe raises, beside a running hand-started backend."""
+    import hermes_cli.gateway_migrate_backends as backends
+    import hermes_cli.gateway_migrate_backends_host as backends_host
+    from hermes_cli.gateway_migrate_backends import BackendItem
+
+    root = _standard_root(tmp_path, monkeypatch)
+    unit = BackendItem("systemd", False, unit="hermes-dashboard.service", scope="user", state="enabled",
+                       hermes_home=str(root), this_home=True)
+    manual = BackendItem("manual", True, pid=434, argv=["hermes", "serve", "--port", "9119"],
+                         hermes_home=str(root), this_home=True)
+    monkeypatch.setattr(backends, "collect_backends", lambda: [unit, manual])
+
+    def unit_environment(self, unit, scope):
+        probes.append(unit)
+        raise OSError("systemctl show failed")
+
+    monkeypatch.setattr(backends_host.SystemHost, "unit_environment", unit_environment)
+    return root
+
+
+def test_a_stopped_unit_the_migration_retired_is_not_probed_and_a_running_backend_is_still_named(
+        tmp_path, monkeypatch):
+    """Retirement is checked before ownership: a stopped unit a migration retired is not asked about, so a
+    failing `systemctl show` for it cannot hide the running backend the notice must name."""
+    from hermes_cli.backend_migration_marker import MANIFEST_NAME
+    from hermes_cli.update_backend_notice import old_backend_notice
+
+    probes: list[str] = []
+    root = _stopped_unit_and_running_backend(tmp_path, monkeypatch, probes)
+    root.mkdir(parents=True)
+    (root / MANIFEST_NAME).write_text(json.dumps({"state": "done"}), encoding="utf-8")
+    notice = old_backend_notice(root)
+    assert notice is not None and "PID 434" in notice and "hermes-dashboard.service" not in notice
+    assert probes == []
+
+
 def test_stopped_system_launchd_daemon_without_hermes_home_is_not_named(tmp_path, monkeypatch):
     """Only stopped systemd units use the planner's `_for_this_home`; a stopped system-scope
     launchd daemon with no HERMES_HOME must not be attributed to this user's default home."""

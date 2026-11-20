@@ -601,6 +601,7 @@ def test_the_store_release_joins_the_pass_after_the_aliases_move(monkeypatch):
         channel_releases, "advance_stable",
         lambda env, record, root: (head.append(record["version"]),
                                    events.append(("feed", record["version"]))))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: head[-1])
     monkeypatch.setattr(
         docker, "promote_stable",
         lambda claim_tag, digest, release_tag: events.append(("aliases", claim_tag, release_tag)))
@@ -650,6 +651,7 @@ def test_store_release_recovers_after_alias_movement_without_rewinding_channels(
         return release_from_env(environment, candidate, run=api)
 
     monkeypatch.setattr(channel_releases, "advance_stable", advance)
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: head[0])
     monkeypatch.setattr(docker, "promote_stable", interrupt_after_aliases)
     monkeypatch.setattr(store, "release_from_env", release_store)
     with pytest.raises(KeyboardInterrupt, match="after aliases moved"):
@@ -702,6 +704,7 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     monkeypatch.setattr(store, "release_from_env", release_store)
     monkeypatch.setattr(channel_releases, "advance_stable",
                         lambda *_args: pytest.fail("Store reconciliation moved the desktop head"))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.6")
     monkeypatch.setattr(docker, "promote_stable",
                         lambda *_args: pytest.fail("Store reconciliation moved the Docker aliases"))
     env = {"GITHUB_REPOSITORY": "example/project", "MS_STORE_PRODUCT_ID": "9NTEST",
@@ -715,13 +718,11 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     assert api.mode == "Immediate" and api.commits == 1
 
 
-@pytest.mark.parametrize("pointer", [b'{"tag":"v0.21.4"}\n', None])
-def test_a_head_whose_pointer_write_failed_finishes_its_advance(monkeypatch, pointer):
-    """publish_release writes the stable pointer after the head moves. When that write fails the
-    head already names the release, so plan() skips it; the pass still repeats the advance until
-    the pointer (the source channel's update target) names the head's candidate."""
+def _unfinished_head_fixture(monkeypatch, pointer):
+    """0.21.5 is public and the protected desktop head, but its candidate pointer write failed
+    (publish_release writes it after the head moves, before the Docker aliases)."""
     from hermes_cli.release_channels import ChannelError
-    from scripts.releases import channel_releases, docker, sequencer, store
+    from scripts.releases import channel_releases, docker, store
 
     archived = json.dumps({"tag": "v0.21.5", "packages": []}).encode()
     _tags, releases, run = _sequencer_fixture("0.21.5", manifest_digest=hashlib.sha256(archived).hexdigest())
@@ -736,21 +737,45 @@ def test_a_head_whose_pointer_write_failed_finishes_its_advance(monkeypatch, poi
             raise ChannelError(f"Release archive object is unavailable: {key}")
         return objects[key]
 
-    advanced = []
+    events = []
 
     def advance(_env, record, _root):
-        advanced.append(record["version"])
+        events.append(("feed", record["version"]))
         objects["releases/stable/release-candidates.json"] = archived
 
     monkeypatch.setattr(channel_releases, "advance_stable", advance)
-    monkeypatch.setattr(docker, "promote_stable", lambda *_a: pytest.fail("pointer recovery moved the Docker aliases"))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.5")
+    monkeypatch.setattr(docker, "promote_stable",
+                        lambda claim_tag, _digest, release_tag: events.append(("aliases", claim_tag, release_tag)))
     monkeypatch.setattr(store, "release_from_env", lambda *_a: None)
+    return run, read_archive, events
+
+
+@pytest.mark.parametrize("pointer", [b'{"tag":"v0.21.4"}\n', None])
+def test_a_head_whose_pointer_write_failed_finishes_its_whole_advance(monkeypatch, pointer):
+    """The head already names 0.21.5, so plan() alone would call it done; its pointer (the source
+    channel's update target) and its Docker aliases never moved. The pass advances it again."""
+    from scripts.releases import sequencer
+
+    run, read_archive, events = _unfinished_head_fixture(monkeypatch, pointer)
     env = {"GITHUB_REPOSITORY": "example/project"}
 
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == [
+        {"advance": "0.21.5"}]
+    assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5", "v0.21.5")]
     assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == []
-    assert advanced == ["0.21.5"]
-    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == []
-    assert advanced == ["0.21.5"]
+    assert len(events) == 2
+
+
+def test_an_unfinished_head_under_a_newer_release_is_refused_not_rolled_back(monkeypatch):
+    """A newer release already moved the aliases; repeating 0.21.5's advance would move them back."""
+    from scripts.releases import sequencer
+
+    run, read_archive, events = _unfinished_head_fixture(monkeypatch, b'{"tag":"v0.21.4"}\n')
+    with pytest.raises(ValueError, match="refusing to finish 0.21.5 under the newer head 0.21.6"):
+        sequencer.reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run, read_head=lambda: "0.21.6",
+                            read_archive=read_archive)
+    assert events == []
 
 
 def test_a_publish_that_died_before_the_retarget_is_repaired():

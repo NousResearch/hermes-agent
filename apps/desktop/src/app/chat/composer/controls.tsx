@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -44,6 +45,16 @@ interface ConversationProps {
   onStart: () => void
   onStopTurn: () => void
   onToggleMute: () => void
+}
+
+/** The HUD and a narrow tile fold the voice toggles into one menu for width. A
+ * touch screen folds them too: the fan opens on hover, and a tap on its hub is
+ * also the dictation toggle, so reaching spoken replies or the wake word
+ * started recording (#154819). The menu's trigger only opens the menu. */
+function useFoldedVoice(hudMode: boolean, foldVoice: boolean): boolean {
+  const touchPointer = useStore($touchPointer)
+
+  return hudMode || foldVoice || touchPointer
 }
 
 export function ComposerControls({
@@ -89,6 +100,7 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const hudMode = useStore($hudMode)
+  const foldedVoice = useFoldedVoice(hudMode, foldVoice)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -110,7 +122,6 @@ export function ComposerControls({
   // same reason — same controls, same state, different budget. Below that
   // even the menu goes: at `minimal` the row is the send button and nothing
   // else, which is the one thing that must survive every width.
-  const foldedVoice = hudMode || foldVoice
 
   const voiceControls = foldedVoice ? (
     <VoiceMenu

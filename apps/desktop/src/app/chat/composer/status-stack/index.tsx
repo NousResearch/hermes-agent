@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router'
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
+import { canOpenSubagent, openSubagentSession } from '@/app/open-subagent'
 import { AGENTS_ROUTE } from '@/app/routes'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
@@ -38,7 +39,6 @@ import { $sessionControlBySession, refreshSessionControl } from '@/store/session
 import { $sharedMetricsConsent, sharedMetricsOfferPending } from '@/store/shared-metrics'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $retainedTodosBySession } from '@/store/todos'
-import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
 import { SessionControlSections } from './session-control'
@@ -204,10 +204,15 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 
-  const openSubagent = (item: ComposerStatusItem) =>
-    item.sessionId
-      ? void openSessionInNewWindow(item.sessionId, { watch: true, parentSessionId: storedSessionId ?? sessionId })
-      : openAgents()
+  const openSubagent = (item: ComposerStatusItem) => {
+    const target = {
+      childSessionId: item.sessionId,
+      parentSessionId: storedSessionId ?? sessionId,
+      subagentId: /^sa-/.test(item.id) ? item.id : undefined
+    }
+
+    return canOpenSubagent(target) ? void openSubagentSession(target) : openAgents()
+  }
 
   const previewRows =
     visiblePreviews.length > 0 && sessionId

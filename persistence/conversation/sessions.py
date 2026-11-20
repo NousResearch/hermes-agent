@@ -512,7 +512,7 @@ class SessionQuery:
     include_pinned: bool = False
     session_key: Optional[str] = None
     include_hidden: bool = False
-    include_subagents: bool = False
+    include_subagents: bool | str = False
     local_created_sources: Optional[tuple[str, ...]] = None
     #: Only rows in this workspace (``hermes -c``'s rule): the git repo root equals it, or a row without one has its cwd at or under it.
     workspace_key: Optional[str] = None
@@ -529,7 +529,7 @@ class SessionCountQuery:
     include_archived: bool = False
     archived_only: bool = False
     exclude_children: bool = False
-    include_subagents: bool = False
+    include_subagents: bool | str = False
     local_created_sources: Optional[tuple[str, ...]] = None
 
 

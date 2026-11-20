@@ -344,6 +344,17 @@ function asyncResultBody(content: string): string | undefined {
   )
 }
 
+// The delegation a completion row reports, from its producer-owned header.
+function asyncDelegationIdField(message: SessionMessage): { asyncDelegationId?: string } {
+  if (message.display_kind !== 'async_delegation_complete' || typeof message.content !== 'string') {
+    return {}
+  }
+
+  const id = message.content.match(/^\[ASYNC DELEGATION[^\]\n]*?(deleg_[A-Za-z0-9_-]+)\]/)?.[1]
+
+  return id ? { asyncDelegationId: id } : {}
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
@@ -704,6 +715,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...asyncDelegationIdField(message),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

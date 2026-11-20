@@ -338,7 +338,7 @@ class _SessionDB:
         project_compression_tips: "bool" = True, order_by_last_active: "bool" = False,
         include_archived: "bool" = False, archived_only: "bool" = False, id_query: "Optional[str]" = None,
         search_query: "Optional[str]" = None, compact_rows: "bool" = False, include_pinned: "bool" = False,
-        session_key: "Optional[str]" = None, include_hidden: "bool" = False, include_subagents: "bool" = False,
+        session_key: "Optional[str]" = None, include_hidden: "bool" = False, include_subagents: "bool | str" = False,
         local_created_sources: "Optional[list[str]]" = None, workspace_key: "Optional[str]" = None,
     ) -> "list[dict[str, Any]]":
         from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
@@ -364,7 +364,7 @@ class _SessionDB:
         self, source: "Optional[str]" = None, sources: "Optional[list[str]]" = None,
         cwd_prefix: "Optional[str]" = None, min_message_count: "int" = 0, include_archived: "bool" = False,
         archived_only: "bool" = False, exclude_children: "bool" = False,
-        exclude_sources: "Optional[list[str]]" = None, include_subagents: "bool" = False,
+        exclude_sources: "Optional[list[str]]" = None, include_subagents: "bool | str" = False,
         local_created_sources: "Optional[list[str]]" = None,
     ) -> "int":
         from persistence.conversation.sessions import SessionCountQuery

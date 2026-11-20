@@ -11,42 +11,71 @@ from utils import is_truthy_value
 _LIST_WORDS = {"list", "ls", "browse"}
 _SEARCH_WORDS = {"search", "find"}
 SUBAGENT_SOURCE = "subagent"
+# Mirrors persistence.sqlite.conversation._store.sessions.RUNNING_SUBAGENTS.
+RUNNING_SUBAGENTS = "running"
+#: ``sessions.show_subagents`` resolved to a listing mode: hide delegate runs, list only the running
+#: ones, list all. The key takes ``false`` | ``"active"`` | ``true`` (booleans as before).
+SUBAGENT_SIDEBAR_MODES = ("none", "active", "all")
+_SIDEBAR_INCLUDE: dict[str, bool | str] = {"none": False, "active": RUNNING_SUBAGENTS, "all": True}
+
+
+def resolve_subagent_sidebar_mode(value: Any) -> str:
+    """``none`` | ``active`` | ``all`` for one ``sessions.show_subagents`` value.
+
+    ``"active"`` lists only delegate runs still in flight; any other truthy value (``true``,
+    ``"yes"``, ``1``) keeps meaning every run, and everything else (``false``, unset, unknown
+    strings) hides them, so boolean configs read exactly as before.
+    """
+    if isinstance(value, str) and value.strip().lower() == "active":
+        return "active"
+    return "all" if is_truthy_value(value) else "none"
+
+
+def subagent_sidebar_mode(hermes_home: str | Path) -> str:
+    """``sessions.show_subagents`` mode from *hermes_home*'s own config.yaml. One ``serve`` lists
+    many profiles' stores, so the store's home decides, never the process ``HERMES_HOME``.
+    ``none`` when the config cannot be read (the listing keeps its default shape)."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_scope import push_state
+
+    try:
+        with push_state(home=str(hermes_home)):
+            sessions_cfg = load_config_readonly().get("sessions")
+    except (OSError, ValueError):
+        return "none"
+    return resolve_subagent_sidebar_mode(sessions_cfg.get("show_subagents") if isinstance(sessions_cfg, dict) else None)
 
 
 def show_subagent_sessions(hermes_home: str | Path) -> bool:
-    """``sessions.show_subagents`` from *hermes_home*'s own config.yaml. One ``serve`` lists many
-    profiles' stores, so the store's home decides, never the process ``HERMES_HOME``. False when
-    the config cannot be read (the listing keeps its default shape)."""
-    from hermes_cli.config import load_config_readonly
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    """True when *hermes_home* lists every delegate run (``sessions.show_subagents: true``)."""
+    return subagent_sidebar_mode(hermes_home) == "all"
 
-    token = set_hermes_home_override(str(hermes_home))
-    try:
-        sessions_cfg = load_config_readonly().get("sessions") or {}
-    except Exception:
-        return False
-    finally:
-        reset_hermes_home_override(token)
-    return isinstance(sessions_cfg, dict) and is_truthy_value(sessions_cfg.get("show_subagents"))
+
+def subagent_include_marker(hermes_home: str | Path) -> bool | str:
+    """The store's ``include_subagents`` value for *hermes_home*: ``False`` (none), ``"running"``
+    (active: only delegate runs still in flight) or ``True`` (all)."""
+    return _SIDEBAR_INCLUDE[subagent_sidebar_mode(hermes_home)]
 
 
 def subagent_listing_scope(
     hermes_home: str | Path, *, source: str | None = None, sources: list[str] | None = None,
     exclude_sources: list[str] | None = None,
-) -> tuple[bool, list[str] | None]:
+) -> tuple[bool | str, list[str] | None]:
     """``(include_subagents, exclude_sources)`` for one human-facing session list (#97202).
 
-    With ``sessions.show_subagents`` on, delegate runs join a list that is not scoped to named
-    sources and either has no exclusions or excludes the ``subagent`` source itself (the desktop
-    recents shape); that exclusion is dropped so the runs actually land. A slice that excludes
+    With ``sessions.show_subagents`` at ``"active"`` or ``true``, delegate runs join a list that
+    is not scoped to named sources and either has no exclusions or excludes the ``subagent`` source
+    itself (the desktop recents shape); that exclusion is dropped so the runs actually land
+    (``"active"`` keeps only the running ones, see ``RUNNING_SUBAGENTS``). A slice that excludes
     other sources without ``subagent`` (the per-platform messaging lists) keeps its shape.
     """
     excluded = list(exclude_sources or [])
     if source or sources or (excluded and SUBAGENT_SOURCE not in excluded):
         return False, exclude_sources
-    if not show_subagent_sessions(hermes_home):
+    include = subagent_include_marker(hermes_home)
+    if not include:
         return False, exclude_sources
-    return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
+    return include, [s for s in excluded if s != SUBAGENT_SOURCE] or None
 
 
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:

@@ -2231,8 +2231,8 @@ DEFAULT_CONFIG = {
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
-        # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
-        # nested under their parent. Off by default: they are machinery, not conversations.
+        # delegate_task subagent runs in session lists (sidebar, dashboard, session.list), under their
+        # parent: false = none (default), "active" = only runs in flight (unended, <24 h old), true = all.
         "show_subagents": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE, #54189). It blocks
         # writes (~seconds per 100MB): only at startup, only when ≥1 session went AND freelist/page_count > 25%.
@@ -2561,13 +2561,13 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
-        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
-        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
-        # theme's face. The terminal pane is terminal.font_family.
+        # CSS font-family for chat and UI text (e.g. "OpenDyslexic"), in front of the theme's sans stack
+        # so missing glyphs fall through. Empty = the theme's face; the terminal pane is terminal.font_family.
         "font_family": "",
-        # Git repo discovery for the Projects sidebar. Empty roots are a safe
-        # no-op; users must explicitly configure roots for filesystem scanning.
-        # Session-derived projects remain available.
+        # Where a clicked subagent opens: "window" = own watch window (browser tab in the Webapp), "tab" = in-app tab.
+        "subagent_open": "window",
+        # Git repo discovery for the Projects sidebar. Empty roots are a safe no-op; users must
+        # explicitly configure roots for filesystem scanning. Session-derived projects remain available.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],

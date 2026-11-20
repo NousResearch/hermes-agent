@@ -94,6 +94,11 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Legacy Vercel Sandbox runtime (deprecated by Vercel; a pinned runtime overrides the image; clear to use the image)",
         "node24", "node22", "python3.13", clearable=True),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    "desktop.subagent_open": _select(
+        "Where clicking a subagent opens its session in Desktop / Webapp: window = its own window "
+        "(a new browser tab in the Webapp), tab = an in-app tab beside the parent chat",
+        "window", "tab",
+    ),
     "proxy.enabled": {
         "type": "boolean",
         "description": (

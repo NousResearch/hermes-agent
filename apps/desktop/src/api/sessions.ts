@@ -477,6 +477,22 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
   })
 }
 
+/** The stored session of delegated child `subagentId` of `parentId` (the dispatch result's
+ *  `subagent_ids`): how a finished async delegation's row still finds its child. */
+export function getSubagentChildSession(
+  parentId: string,
+  subagentId: string,
+  profile?: ProfileScope
+): Promise<{ child_session_id: string; running: boolean }> {
+  const scope = { ...sessionScoped(profile), ...sessionReadOwnerPin(parentId, profile) }
+  const suffix = scope.profile ? `?profile=${encodeURIComponent(scope.profile)}` : ''
+
+  return hermesApi<{ child_session_id: string; running: boolean }>({
+    ...scope,
+    path: `/api/sessions/${encodeURIComponent(parentId)}/subagents/${encodeURIComponent(subagentId)}${suffix}`
+  })
+}
+
 // Reads another profile's transcript. For a remote profile Electron reroutes
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for

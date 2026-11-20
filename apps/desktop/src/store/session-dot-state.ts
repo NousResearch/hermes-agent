@@ -240,12 +240,22 @@ export function unreadSessionCount(
   return n
 }
 
+/** A delegate_task child run (`source: 'subagent'`), listed nested under its
+ *  parent chat when `sessions.show_subagents` is "active" or true. */
+const isSubagentRow = (row: { source?: null | string }): boolean => row.source === 'subagent'
+
+const withoutSubagentRows = <T extends { source?: null | string }>(rows: readonly T[]): readonly T[] =>
+  rows.some(isSubagentRow) ? rows.filter(row => !isSubagentRow(row)) : rows
+
 /** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
  *  finish unwatched by design, so counting them turns the badge into a cron
  *  run counter that is permanently lit (#93552). Their unread state stays
  *  visible where it belongs — the sidebar's cron section rows — and
- *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows). */
+ *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows).
+ *  Subagent rows are excluded for the same reason: every delegation finishes
+ *  unwatched, and its parent chat already reports the result. Their own row
+ *  keeps its unread dot, and "mark all as read" still acks them. */
 export const $unreadSessionCount = computed(
   [$sessionDotStateById, $sessions, $messagingSessions],
-  (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
+  (byId, sessions, messaging) => unreadSessionCount(byId, withoutSubagentRows(sessions), withoutSubagentRows(messaging))
 )

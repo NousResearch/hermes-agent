@@ -21,6 +21,10 @@ export interface DelegateRow {
   model?: string
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
+  /** The child's subagent id from the call's result (`subagent_ids` of a background
+   *  dispatch, `subagent_id` of a settled row): resolves the stored child session once
+   *  the live roster has forgotten it. */
+  subagentId?: string
   status: DelegateRowStatus
 }
 
@@ -91,10 +95,13 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
   // the delegation; native children carry the same id, so it is the one join
   // key that survives a repeated goal string (#136532).
   const delegationId = field(parseMaybeObject(result), 'delegation_id') || undefined
+  const dispatchedIds = parseMaybeObject(result).subagent_ids
+  const subagentIds = Array.isArray(dispatchedIds) ? dispatchedIds : []
 
   return titles.map((goal, index) => {
     const entry = finished[index]
     const summary = entry ? field(entry, 'summary') : ''
+    const subagentId = (entry ? field(entry, 'subagent_id') : '') || subagentIds[index]
 
     return {
       activity: summary ? [summary] : [],
@@ -103,7 +110,8 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
-      status: entry ? settledRowStatus(field(entry, 'status')) : idle
+      status: entry ? settledRowStatus(field(entry, 'status')) : idle,
+      ...(typeof subagentId === 'string' && subagentId ? { subagentId } : {})
     }
   })
 }
@@ -195,7 +203,14 @@ export function mergeDelegateRows(
     const matched =
       byGoal[index] ?? (sameShape ? claim(c => ours(row, c) && c.taskIndex === index) : undefined)
 
-    return matched ? fromSubagent(matched, row.id, row.goal) : row
+    if (!matched) {
+      return row
+    }
+
+    const merged = fromSubagent(matched, row.id, row.goal)
+    const subagentId = row.subagentId ?? (/^sa-/.test(matched.id) ? matched.id : undefined)
+
+    return subagentId ? { ...merged, subagentId } : merged
   })
 }
 

@@ -242,6 +242,16 @@ export const SETTINGS_MANIFEST = {
       subpage: 'archived',
       keywords: ['archive', 'stale', 'cleanup', 'old chats', 'days', 'after'],
       copy: t => ({ label: t.settings.sessions.autoArchiveTitle, description: t.settings.sessions.autoArchiveDesc })
+    },
+    showSubagents: {
+      subpage: 'subagents',
+      keywords: ['subagent', 'delegate', 'sidebar', 'running', 'active', 'show', 'hide', 'children'],
+      copy: t => ({ label: t.settings.sessions.showSubagentsTitle, description: t.settings.sessions.showSubagentsDesc })
+    },
+    subagentOpen: {
+      subpage: 'subagents',
+      keywords: ['subagent', 'delegate', 'open', 'tab', 'window', 'pop out', 'click'],
+      copy: t => ({ label: t.settings.sessions.subagentOpenTitle, description: t.settings.sessions.subagentOpenDesc })
     }
   },
   gateway: {

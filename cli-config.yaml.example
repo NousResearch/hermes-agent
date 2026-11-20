@@ -1128,6 +1128,9 @@ hosted_rooms:
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24
 #   orphan_end_grace_s: 300
+#   # Subagent runs in session lists (Desktop/Webapp sidebar, dashboard), nested under
+#   # their parent: false = none | "active" = only runs still in flight | true = all.
+#   show_subagents: false
 
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and

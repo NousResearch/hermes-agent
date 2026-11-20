@@ -1192,6 +1192,29 @@ Key tables in `state.db`:
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
 
+### Subagent Runs in Session Lists
+
+`delegate_task` children are stored as their own sessions. Human-facing session
+lists (the Desktop and Webapp sidebar, the dashboard, `session.list`) hide them
+by default; `sessions.show_subagents` brings them back, nested under the chat
+that delegated them:
+
+```yaml
+sessions:
+  show_subagents: false   # false = none (default) | "active" = only running ones | true = all
+```
+
+`"active"` lists only runs still in flight: never ended and started within the
+last 24 hours, so a run whose process died without closing its row cannot
+linger. A finished run drops out on the next sidebar refresh. `true` and `false`
+keep their earlier meaning, so existing configs need no change. The setting is
+read per profile from that profile's own `config.yaml` and takes effect on the
+next listing; no restart is needed. In the app it is **Settings → Sessions →
+Subagents → Subagents in the sidebar** (None / Active / All), or
+`hermes config set sessions.show_subagents active`. Where a click on a subagent
+opens it is `desktop.subagent_open` (see
+[Configuration](./configuration.md)).
+
 ## Session Expiry and Cleanup
 
 ### Automatic Cleanup

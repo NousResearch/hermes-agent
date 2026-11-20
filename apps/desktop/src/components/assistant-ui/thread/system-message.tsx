@@ -1,10 +1,14 @@
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
+import { openSubagentSession } from '@/app/open-subagent'
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
+import { parseMaybeObject } from '@/components/assistant-ui/tool/fallback-model'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
@@ -24,9 +28,73 @@ interface BackgroundResultProps {
   text: string
   report: string
   process?: boolean
+  /** Children of the async delegation this row reports: each opens its session. */
+  subagentIds?: readonly string[]
 }
 
-export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, process }) => {
+/**
+ * The subagent ids a background `delegate_task` dispatch named for `delegationId`
+ * (its tool result's `subagent_ids`), read from this transcript. A split unit
+ * (`<id>-2`) reports under its call's id. Joined so the selector stays stable.
+ */
+function useDelegationSubagentIds(delegationId: unknown): string {
+  return useAuiState(s => {
+    if (typeof delegationId !== 'string' || !delegationId) {
+      return ''
+    }
+
+    for (const message of s.thread.messages) {
+      for (const part of message.content) {
+        if (part.type !== 'tool-call' || part.toolName !== 'delegate_task') {
+          continue
+        }
+
+        const result = parseMaybeObject(part.result)
+        const id = typeof result.delegation_id === 'string' ? result.delegation_id : ''
+
+        if (id && (delegationId === id || delegationId.startsWith(`${id}-`))) {
+          const ids = Array.isArray(result.subagent_ids) ? result.subagent_ids : []
+
+          return ids.filter((sid): sid is string => typeof sid === 'string' && Boolean(sid)).join(',')
+        }
+      }
+    }
+
+    return ''
+  })
+}
+
+const OpenSubagentButtons: FC<{ subagentIds: readonly string[] }> = ({ subagentIds }) => {
+  const parentSessionId = useStore(useSessionView().$storedId)
+  const { t } = useI18n()
+  const copy = t.assistant.tool
+
+  if (!parentSessionId || subagentIds.length === 0) {
+    return null
+  }
+
+  return (
+    <>
+      {subagentIds.map((subagentId, index) => (
+        <button
+          className={cn(SCAFFOLD_LABEL_CLASS, 'ml-1.5 shrink-0 underline-offset-2 hover:text-foreground hover:underline')}
+          data-open-subagent=""
+          key={subagentId}
+          onClick={event => {
+            event.stopPropagation()
+            void openSubagentSession({ parentSessionId, subagentId })
+          }}
+          type="button"
+        >
+          <Codicon className="mr-1 align-[-1px]" name="agent" size="0.625rem" />
+          {subagentIds.length > 1 ? copy.openSubagentNumbered(index + 1) : copy.openSubagent}
+        </button>
+      ))}
+    </>
+  )
+}
+
+export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, process, subagentIds }) => {
   const [open, setOpen] = useState(false)
 
   return (
@@ -42,6 +110,7 @@ export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, proc
             <>
               {' '}
               <MessageTimelineTimestamp />
+              {subagentIds && subagentIds.length > 0 && <OpenSubagentButtons subagentIds={subagentIds} />}
             </>
           }
         >
@@ -91,6 +160,7 @@ export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const delegationSubagents = useDelegationSubagentIds(useAuiState(s => s.message.metadata.custom?.asyncDelegationId))
 
   const contentRefused = useAuiState(
     s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
@@ -116,6 +186,7 @@ export const SystemMessage: FC = () => {
         <BackgroundResult
           process={processResult}
           report={typeof asyncResult === 'string' ? asyncResult : ''}
+          subagentIds={delegationSubagents ? delegationSubagents.split(',') : undefined}
           text={text}
         />
       </MessagePrimitive.Root>

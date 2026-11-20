@@ -31,6 +31,11 @@ from persistence.sqlite.conversation._store.write_guards import _guarded_ids
 logger = logging.getLogger("hermes_state")
 
 
+# ``include_subagents`` value for "running delegate runs only" (``sessions.show_subagents: active``).
+RUNNING_SUBAGENTS = "running"
+_RUNNING_SUBAGENT_SQL_FLOOR = "(CAST(strftime('%s', 'now') AS REAL) - 86400)"
+
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return _sql_json_extract(col, "$._delegate_from")
 
@@ -108,16 +113,24 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
-    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+    include_subagents: bool | str = False, local_created_sources: Sequence[str] | None = None,
     workspace_key: str | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
     (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
+    (``sessions.show_subagents``): ``True`` every run, ``RUNNING_SUBAGENTS`` only the ones still in
+    flight. Clause order is part of the SQL text contract."""
     where: list[str] = []
     params: list[Any] = []
-    if exclude_children and include_subagents:
+    if exclude_children and include_subagents == RUNNING_SUBAGENTS:
+        # sessions.show_subagents "active": only delegate runs still in flight (never ended, started
+        # in the last day so a crash-orphaned row cannot linger) join the human-facing list.
+        df = _delegate_from_json('s.model_config')
+        running = f"(s.ended_at IS NULL AND s.end_reason IS NULL AND s.started_at > {_RUNNING_SUBAGENT_SQL_FLOOR})"
+        where.append(f"(({_LISTABLE_CHILD_SQL} AND {df} IS NULL AND COALESCE(s.source, '') <> 'subagent')"
+                     f" OR ({df} IS NOT NULL AND {running}))")
+    elif exclude_children and include_subagents:
         where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
     elif exclude_children:
         where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
@@ -1270,7 +1283,7 @@ def list_sessions_rich(
     order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
     id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
     include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
-    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+    include_subagents: bool | str = False, local_created_sources: Sequence[str] | None = None,
     workspace_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
@@ -1539,7 +1552,7 @@ def search_sessions(
 def session_count(
     holder: StoreHolder, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
-    exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
+    exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool | str = False,
     local_created_sources: Sequence[str] | None = None,
 ) -> int:
     """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""

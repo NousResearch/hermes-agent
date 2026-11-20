@@ -315,6 +315,9 @@ export const arAssistant = {
     themePicker: arThemePicker,
     tool: {
       copyCode: 'نسخ الكود',
+      openSubagent: 'فتح الوكيل الفرعي',
+      openSubagentNumbered: (n: number) => `فتح الوكيل الفرعي ${n}`,
+      openSubagentFailed: 'تعذّر العثور على جلسة الوكيل الفرعي',
       renderingImage: 'جار عرض الصورة...',
       copyOutput: 'نسخ الإخراج',
       copyCommand: 'نسخ الأمر',

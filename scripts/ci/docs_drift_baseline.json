@@ -108,7 +108,6 @@
   "security.protected_instruction_files",
   "sessions.auto_archive_days",
   "sessions.fts_optimize_notice",
-  "sessions.show_subagents",
   "stt.elevenlabs.diarize",
   "stt.elevenlabs.language_code",
   "stt.elevenlabs.model_id",

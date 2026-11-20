@@ -421,7 +421,7 @@ def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
 
 def _listing_filters(*, source=None, sources=None, exclude_sources=None, cwd_prefix=None, min_message_count: int = 0,
                      include_archived: bool = False, archived_only: bool = False,
-                     include_subagents: bool = False) -> dict:
+                     include_subagents: bool | str = False) -> dict:
     """The filter fields ``SessionQuery`` and ``SessionCountQuery`` share for the dashboard's listing filters;
     ``source`` wins over ``sources``."""
     return dict(

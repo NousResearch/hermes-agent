@@ -325,6 +325,9 @@ export const zhHantAssistant = {
     themePicker: zhHantThemePicker,
     tool: {
       copyCode: '複製程式碼',
+      openSubagent: '開啟子代理',
+      openSubagentNumbered: (n: number) => `開啟子代理 ${n}`,
+      openSubagentFailed: '找不到子代理工作階段',
       renderingImage: '正在渲染圖片',
       copyOutput: '複製輸出',
       copyCommand: '複製指令',

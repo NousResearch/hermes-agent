@@ -335,18 +335,18 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
             "prompt", "image_size", "expansion_model", "rendering_speed", "num_images", "seed", "sync_mode",
         },
     ),
-    # Ideogram 4.5 (Sep 30 2026) prices by `quality` tier, not by pixels: low $0.03, medium
-    # $0.06, high $0.22. Medium is the vendor default and the sensible picker tier. The edit
-    # endpoint takes a SINGULAR `image_url` (Kling Image v3 shape) plus optional
-    # `reference_image_urls`/`mask_url`; image_size is omitted on edits so "auto" preserves
-    # the source geometry.
-    "ideogram/v4.5": _model(
-        "Ideogram V4.5", "~8s", "Ideogram flagship: posters, logos, accurate text rendering, mask + precise edits", "$0.06/image (medium)",
+    # Ideogram 4.6 (Nov 18 2026, supersedes 4.5) prices by `quality` tier, not by pixels (2K):
+    # very_low $0.008, low $0.03, medium $0.06, high $0.10 (edits $0.22). Medium is the vendor
+    # default and the sensible picker tier. The edit endpoint takes a SINGULAR `image_url`
+    # (Kling Image v3 shape) plus optional `reference_image_urls`/`mask_url`; image_size is
+    # omitted on edits so "auto" preserves the source geometry.
+    "ideogram/v4.6": _model(
+        "Ideogram V4.6", "~8s", "Ideogram flagship: posters, logos, accurate text rendering, mask + precise edits", "$0.06/image (medium)",
         defaults={"quality": "medium", "num_images": 1, "enable_prompt_expansion": True},
         supports={
             "prompt", "image_size", "quality", "num_images", "seed", "enable_prompt_expansion", "sync_mode",
         },
-        edit_endpoint="ideogram/v4.5/edit",
+        edit_endpoint="ideogram/v4.6/edit",
         edit_supports={
             "prompt", "image_url", "quality", "num_images", "seed", "sync_mode", "edit_precision",
             "reference_image_urls", "mask_url",

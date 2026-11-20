@@ -21,7 +21,7 @@ Hermes Agent generates images from text prompts via FAL.ai. Eleven models are su
 | `fal-ai/gpt-image-1.5` | ~15s | Prompt adherence | $0.034/image |
 | `fal-ai/gpt-image-2` | ~20s | SOTA text rendering + CJK, world-aware photorealism | $0.04–0.06/image |
 | `fal-ai/ideogram/v3` | ~5s | Best typography | $0.03–0.09/image |
-| `ideogram/v4.5` | ~8s | Ideogram flagship: posters, logos, accurate text, mask + precise edits | $0.03–0.22/image by quality (medium $0.06) |
+| `ideogram/v4.6` | ~8s | Ideogram flagship: posters, logos, accurate text, mask + precise edits | $0.008–0.22/image by quality (medium $0.06) |
 | `fal-ai/recraft/v4/pro/text-to-image` | ~8s | Design, brand systems, production-ready | $0.25/image |
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
 | `fal-ai/krea/v2/medium/text-to-image` | ~15-25s | Illustration, anime, painting, expressive/artistic styles | $0.030–0.035/image |

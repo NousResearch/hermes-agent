@@ -374,19 +374,10 @@ class _Detached:
 
 
 def _manual_gateway_blockers(host, plan) -> None:
-    """The engine's foreign-home and legacy-unit gateway refusals for manual-only plans: withhold steps
-    whenever either conflict stands."""
-    from hermes_cli.gateway_migrate_backends_plan import hermes_command
-    if (other := host.foreign_gateway_home()) is not None:
-        unit = (plan.gateway or {}).get("unit") or "the gateway service"
-        plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "
-                             f"would restart, stop or remove that home's gateway. Run the migration from that "
-                             f"home, or remove its service there first, then run this again. Nothing changed.")
-    if host.legacy_gateway_units():
-        plan.blockers.append("A legacy Hermes gateway unit (hermes.service) is installed: installing the gateway "
-                             "would stop, disable and delete it, and a rollback or --restore could not bring it "
-                             f"back. Run `{hermes_command(host.home, powershell=os.name == 'nt')} gateway "
-                             "migrate-legacy` first, then run this again. Nothing changed.")
+    """The engine's gateway service refusals for a manual-only plan: its steps are withheld while one
+    stands, as the automatic path refuses."""
+    from hermes_cli.gateway_migrate_backends_apply import _gateway_service_blockers
+    _gateway_service_blockers(host, plan)
     if plan.blockers:
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
 

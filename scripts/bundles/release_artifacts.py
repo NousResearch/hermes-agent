@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
+from urllib.parse import unquote
 
 from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
@@ -132,9 +133,10 @@ def _packaged_windows_executable_version(
     if not executable_relpath:
         raise ValueError("MSIX application manifest has no Executable attribute")
     target = PureWindowsPath(executable_relpath).as_posix().lstrip("/")
+    # MakeAppx percent-encodes part names: "Hermes Agent.exe" is stored as Hermes%20Agent.exe.
     entry = single(
         name for name in archive.namelist()
-        if name.replace("\\", "/").lstrip("/").casefold() == target.casefold()
+        if unquote(name.replace("\\", "/")).lstrip("/").casefold() == target.casefold()
     )
     probe = probe or _probe_windows_product_version
     with tempfile.TemporaryDirectory() as temp:

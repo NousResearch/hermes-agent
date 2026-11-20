@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { BackendMigrationCard } from "./BackendMigrationCard";
 import { containerPlans, systemSystemdPlans } from "./BackendMigrationCard.plans.fixture";
 import {
+  changedBackendStatus,
   killedWhileWritingStatus,
   lateTurnStatus,
   refusalBlockers,
@@ -308,7 +309,7 @@ describe("BackendMigrationCard", () => {
     expect(button("Move anyway")).toBeUndefined();
   });
 
-  describe("a chat that starts after the preflight (exit 4, the old backend never stopped)", () => {
+  describe("a move stopped before the old backend's stop (exit 4, the old backend never stopped)", () => {
     // The status route's records after the engine stopped the move right before the old backend's stop.
     it.each([
       ["a running turn", lateTurnStatus.running,
@@ -317,6 +318,9 @@ describe("BackendMigrationCard", () => {
       ["unreadable activity", lateTurnStatus.unknown,
         "Cannot tell whether turns are running on the old backend: its turn activity could not be read. To move it, "
           + "confirm it is idle, then try again. The old backend has not been stopped."],
+      ["an old backend that changed since the check", changedBackendStatus,
+        "the old backend changed since the check (it was pid 4242 at the check and is pid 5242 now), so the stop "
+          + "would reach a process the checks never saw. The old backend has not been stopped; try again."],
     ])("with %s reads as rolled back with the engine's reason and offers to try again", async (_what, record, reason) => {
       const late = record as unknown as BackendMigrationStatus;
       const calls: string[] = [];

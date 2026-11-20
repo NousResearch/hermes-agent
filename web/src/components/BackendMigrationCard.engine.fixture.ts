@@ -563,3 +563,59 @@ export const unknownStateStatus = {
     "restore": "hermes -p default gateway migrate --backends --restore"
   }
 };
+
+// The status route's record after the old backend changed between the check and the stop (exit 4).
+export const changedBackendStatus = {
+  "state": "rolled_back",
+  "step": "gateway_service",
+  "steps": [
+    {
+      "name": "preflight",
+      "state": "done"
+    },
+    {
+      "name": "manifest",
+      "state": "done"
+    },
+    {
+      "name": "webapp_bundle",
+      "state": "undone"
+    },
+    {
+      "name": "write_config",
+      "state": "undone"
+    },
+    {
+      "name": "gateway_service",
+      "state": "undone"
+    },
+    {
+      "name": "stop_old_backend",
+      "state": "pending"
+    },
+    {
+      "name": "start_gateway",
+      "state": "pending"
+    },
+    {
+      "name": "verify",
+      "state": "pending"
+    }
+  ],
+  "message": "gateway_service failed: the old backend changed since the check (it was pid 4242 at the check and is pid 5242 now), so the stop would reach a process the checks never saw. The old backend has not been stopped; run this command again.; rolled back, old backend verified on 0.0.0.0:9119",
+  "old_address": "0.0.0.0:9119",
+  "new_address": "0.0.0.0:9119",
+  "started_at": 1795212431.7260187,
+  "finished_at": 1795212431.921434,
+  "manual_steps": [],
+  "reason": "gateway_service failed: the old backend changed since the check (it was pid 4242 at the check and is pid 5242 now), so the stop would reach a process the checks never saw. The old backend has not been stopped; run this command again.",
+  "log_tail": [],
+  "launcher": null,
+  "served_by": "dashboard",
+  "now": 1795212431.943505,
+  "profile": "default",
+  "commands": {
+    "status": "hermes -p default gateway migrate --backends --status",
+    "restore": "hermes -p default gateway migrate --backends --restore"
+  }
+};

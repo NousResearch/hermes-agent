@@ -221,12 +221,14 @@ export function reasonOf(status: BackendMigrationStatus): string {
 }
 
 /** A rolled-back run's reason as the card shows it. A move the engine stopped before the old backend was
- *  stopped (a chat started after the preflight) gives the preflight's turn blocker: without the step
- *  prefix, and with "try again" (the card offers it) in place of the CLI flag. Other reasons are as given. */
+ *  stopped (a chat started after the preflight, or the old backend changed since the check) is shown without
+ *  the step prefix, and with "try again" (the card offers it) in place of the CLI's flag or "run this command
+ *  again". Other reasons are as given. */
 export function rolledBackReason(reason: string): string {
-  if (!reason.endsWith("The old backend has not been stopped.")) return reason;
+  if (!/The old backend has not been stopped(\.|; run this command again\.)$/.test(reason)) return reason;
   return reason
     .replace(/^[a-z_]+ failed: /, "")
+    .replace(/; run this command again\.$/, "; try again.")
     .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\./, ", then try again.")
     .replace(/,? then re-run with --force-interrupt( \(any running turn is interrupted\))?\./, ", then try again.");
 }

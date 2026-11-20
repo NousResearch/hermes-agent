@@ -54,6 +54,34 @@ def _make_runner():
 # _handle_background_command
 # ---------------------------------------------------------------------------
 
+class TestHandleBackgroundCommand:
+    """The prompt the /bg handler hands to _run_background_task."""
+
+    @staticmethod
+    async def _dispatched_prompt(event):
+        runner = _make_runner()
+        runner._run_background_task = MagicMock(return_value="coro")
+        runner._track_background_task = MagicMock()
+        ack = await runner._handle_background_command(event)
+        runner._track_background_task.assert_called_once_with("coro")
+        return runner._run_background_task.call_args.args[0], ack
+
+    @pytest.mark.asyncio
+    async def test_reply_to_text_reaches_background_prompt(self):
+        """/bg sent as a reply: the fresh, history-less session must see the quoted message (#157834)."""
+        event = _make_event(text="/bg answer that to the client")
+        event.reply_to_message_id = "42"
+        event.reply_to_text = "Q3: 120 leads, 18 enrolled"
+        prompt, ack = await self._dispatched_prompt(event)
+        assert prompt == '[Replying to: "Q3: 120 leads, 18 enrolled"]\n\nanswer that to the client'
+        # The acknowledgement previews what the user typed, not the injected pointer.
+        assert "answer that to the client" in ack and "Replying to" not in ack
+
+    @pytest.mark.asyncio
+    async def test_plain_bg_prompt_is_unchanged(self):
+        prompt, _ = await self._dispatched_prompt(_make_event(text="/bg summarize HN"))
+        assert prompt == "summarize HN"
+
 # ---------------------------------------------------------------------------
 # _run_background_task
 # ---------------------------------------------------------------------------

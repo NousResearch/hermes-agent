@@ -1,6 +1,7 @@
 """Discord hides a ``||![alt](url)||`` image: the attachment is named ``SPOILER_…`` (the only
 signal Discord blurs on) and its caption goes inside spoiler bars. A failed download posts the
-link hidden and without a preview, in a reply's batch as in a single send."""
+link hidden and without a preview, in a reply's batch as in a single send, and a new forum post
+never takes a spoiler as its title."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,7 +11,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.base_image_tags import SpoilerAlt
-from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter, _derive_forum_thread_name
 
 URL = "https://cdn.example.com/boss.png"
 
@@ -162,3 +163,22 @@ async def test_failed_unmarked_and_local_images_are_dropped_as_before(monkeypatc
     assert result.success
     kwargs = channel.send.await_args.kwargs
     assert kwargs["content"] == "Plain" and [f.filename for f in kwargs["files"]] == ["image_0.png"]
+
+
+@pytest.mark.asyncio
+async def test_spoiler_image_in_a_forum_channel_does_not_title_the_post_with_its_caption(monkeypatch):
+    thread = SimpleNamespace(id=7, message=SimpleNamespace(id=8, attachments=[SimpleNamespace(filename="x")]),
+                             thread=SimpleNamespace(id=7, send=AsyncMock()))
+    forum = SimpleNamespace(id=5, guild=None, create_thread=AsyncMock(return_value=thread))
+
+    result = await _adapter(monkeypatch, forum, forum=True).send_image("5", URL, caption="Final boss", spoiler=True)
+
+    assert result.success
+    kwargs = forum.create_thread.await_args.kwargs
+    assert kwargs["file"].filename == "SPOILER_image.png" and kwargs["content"] == "||Final boss||"
+    assert "Final boss" not in kwargs["name"]
+
+
+def test_forum_title_is_never_a_spoiler():
+    assert _derive_forum_thread_name("||Snape kills Dumbledore||\nmore") == _derive_forum_thread_name("")
+    assert _derive_forum_thread_name("Spoilers below\n||x||") == "Spoilers below"

@@ -891,7 +891,7 @@ Notes:
 
 Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, TTS, images, voice messages, and file attachments all work without special handling from the agent.
 
-- **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name.
+- **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name. A first line that starts with a spoiler (`||…||`) is never used, because thread names can't hide text: the post gets the default name instead.
 - **Attachments** ride along on the starter message of the new thread — no separate upload step, no partial sends.
 - **One call, one thread**: each forum send creates a new thread. Successive sends to the same forum will therefore produce separate threads.
 - **Detection is three-layered**: the channel directory cache first, a process-local probe cache second, and a live `GET /channels/{id}` probe as a last resort (whose result is then memoized for the life of the process).

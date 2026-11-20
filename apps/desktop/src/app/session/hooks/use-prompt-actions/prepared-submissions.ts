@@ -44,6 +44,12 @@ const SPENT_PREFIX = 'hermes.desktop.preparedSubmissions.spent.v2:'
 const LEGACY_SPENT_KEY = 'hermes.desktop.preparedSubmissions.spent.v1'
 const retired = new Map<string, string>()
 
+// Entries a full origin quota refused to journal: module memory holds them for the writing
+// window only — reload recovery was exactly what the refused storage could not provide. `readJournal`
+// merges them back so slot, adopt and list readers keep seeing this window's own uncertain sends
+// (the duplicate-send guard stays intact for the window that wrote them), and retirement drops them.
+const unstored = new Map<string, PreparedSubmission>()
+
 function readLegacySpent(): Record<string, string> {
   const raw = window.localStorage.getItem(LEGACY_SPENT_KEY)
   const parsed: unknown = raw ? JSON.parse(raw) : {}
@@ -138,6 +144,10 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
       clearSpent(key)
     }
   }
+
+  // Merged after the tombstone pass: an unstored entry is this window's own fresh write, visible
+  // to no other window, and its retirement already deletes it from this map directly.
+  for (const [key, entry] of unstored) { journal[key] = entry }
 
   return journal
 }
@@ -313,8 +323,22 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
 
   // Browser-only clients retain reload recovery, not a process-crash guarantee.
   // Native write failures never fall back here: sending requires their ACK.
-  window.localStorage.setItem(ENTRY_PREFIX + key, JSON.stringify(entry))
-  clearSpent(key)
+  // A browser origin at its storage quota refuses the write; the message the user typed is not
+  // the cache's to refuse (#156129). Keep the refused entry in this window instead: reload
+  // recovery is lost — a full quota could never have kept it — but a lost acknowledgement still
+  // retries under the same submission id, and `removePreparedSubmission` drops the copy with the
+  // stored one so an acknowledged send is never re-offered.
+  try {
+    window.localStorage.setItem(ENTRY_PREFIX + key, JSON.stringify(entry))
+    clearSpent(key)
+  } catch (error) {
+    unstored.set(key, entry)
+
+    // A storage the origin refuses wholesale can refuse the marker cleanup too; the entry is
+    // still held in-window either way, and the send must not abort on a cache bookkeeping error.
+    try { clearSpent(key) } catch { /* degraded recovery, live send */ }
+    console.warn('[prepared-submission-unstored]', error)
+  }
 }
 
 /** Retire an admitted entry. Its identity is spent — durably, in a separate store — before the
@@ -322,6 +346,8 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
  *  later read (this window, a reload, another window) hides and retries, never a reusable one. */
 export async function removePreparedSubmission(key: string, id: string): Promise<void> {
   retired.set(key, id)
+  // The in-window copy retires with the stored one: an acknowledged send is never re-adopted.
+  unstored.delete(key)
 
   // The tombstone store failing too (quota) leaves the in-memory mark; the removal still runs.
   try { writeSpent(key, id) } catch (error) { console.warn('[prepared-submission-tombstone]', error) }

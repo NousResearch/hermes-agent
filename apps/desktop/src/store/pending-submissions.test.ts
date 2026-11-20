@@ -8,7 +8,7 @@ import { isSteerableEntry } from '@/store/composer-queue'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts, migrateQueuedPrompts } from './composer-queue'
-import { readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
+import { journaledPendingSessions, readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
 import { $sessions } from './session'
 
 beforeEach(() => {
@@ -294,4 +294,60 @@ it('tracking a submission reads its own record without enumerating other session
     old: { text: 'legacy', displayText: '/old', status: 'unknown' }
   })
   expect(readPendingSubmissions('late-root').next).toMatchObject({ status: 'queued' })
+})
+
+it('a refused journal write cannot abort a send: the entry stays visible to this window (#156129)', () => {
+  const real = window.localStorage.setItem.bind(window.localStorage)
+
+  const spy = vi.spyOn(window.localStorage, 'setItem').mockImplementation((key: string, value: string) => {
+    if (String(key).startsWith('hermes.desktop.pendingSubmissions.v2:')) {
+      throw new DOMException('exceeded the quota', 'QuotaExceededError')
+    }
+
+    real(key, value)
+  })
+
+  try {
+    expect(() => trackPendingSubmission('chat', { id: 'a1', text: 'typed at the wall', status: 'queued' })).not.toThrow()
+    expect(readPendingSubmissions('chat').a1).toMatchObject({ text: 'typed at the wall', status: 'queued' })
+    expect(journaledPendingSessions()).toContain('chat')
+
+    // A stronger receipt still folds onto the in-memory record although nothing persisted.
+    expect(() => trackPendingSubmission('chat', { id: 'a1', text: 'typed at the wall', status: 'started' })).not.toThrow()
+    expect(readPendingSubmissions('chat').a1).toMatchObject({ status: 'started' })
+
+    // A snapshot reconcile projects, retires and never throws on a full origin.
+    expect(() => reconcilePendingSubmissions('chat', [])).not.toThrow()
+    expect(journaledPendingSessions()).not.toContain('chat')
+  } finally {
+    spy.mockRestore()
+  }
+})
+
+it('a later succeeding write replaces the in-memory copy of a previously refused entry', () => {
+  trackPendingSubmission('half', { id: 'h1', text: 'first try', status: 'queued' })
+  const first = window.localStorage.getItem('hermes.desktop.pendingSubmissions.v2:' + JSON.stringify(['half', 'h1']))
+  expect(JSON.parse(String(first)).text).toBe('first try')
+
+  const real = window.localStorage.setItem.bind(window.localStorage)
+  let blocked = true
+
+  const spy = vi.spyOn(window.localStorage, 'setItem').mockImplementation((key: string, value: string) => {
+    if (blocked && String(key).startsWith('hermes.desktop.pendingSubmissions.v2:')) {
+      throw new DOMException('exceeded the quota', 'QuotaExceededError')
+    }
+
+    real(key, value)
+  })
+
+  try {
+    expect(() => trackPendingSubmission('half', { id: 'h1', text: 'first try', status: 'started' })).not.toThrow()
+    expect(readPendingSubmissions('half').h1).toMatchObject({ status: 'started' })
+    blocked = false
+    expect(() => trackPendingSubmission('half', { id: 'h1', text: 'first try', status: 'unknown' })).not.toThrow()
+  } finally {
+    spy.mockRestore()
+  }
+
+  expect(JSON.parse(String(window.localStorage.getItem('hermes.desktop.pendingSubmissions.v2:' + JSON.stringify(['half', 'h1'])))).status).toBe('unknown')
 })

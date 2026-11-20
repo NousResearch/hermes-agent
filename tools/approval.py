@@ -1010,11 +1010,19 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
+def _kind_field(kind: str) -> dict:
+    """The approval-card field: absent for a command, so a command approval's payload is unchanged."""
+    return {} if kind == "command" else {"kind": kind}
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None, kind: str = "command") -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
+
+    ``kind`` picks which card every surface draws (``ApprovalKind``: command, schedule, ...). It is
+    sent only when it is not ``command``, so a command approval's payload is unchanged.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
@@ -1103,6 +1111,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
+            data.update(_kind_field(kind))
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway", identity=command)
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
@@ -1151,7 +1160,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
                                        allow_session=not one_shot, smart_denied=smart_denied,
-                                       approval_callback=approval_callback)
+                                       approval_callback=approval_callback, kind=kind)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -1210,7 +1219,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
-    pattern_keys: list[str] | None = None,
+    pattern_keys: list[str] | None = None, kind: str = "command",
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1222,7 +1231,8 @@ def _run_approval_gate(
     never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own). ``pattern_keys``
-    (default ``[pattern_key]``) are what a session/always answer persists.
+    (default ``[pattern_key]``) are what a session/always answer persists. ``kind`` names the card
+    the surfaces draw (``schedule`` for a scheduled job; default the command card).
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
@@ -1275,7 +1285,7 @@ def _run_approval_gate(
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
-        approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, kind=kind,
     )
 
 

@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
+  schedule_header: "⏰  Diesen Auftrag planen? {description}"
   choose_long: "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"
   choose_short: "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
   prompt_long: "      Auswahl [o/s/a/D]: "

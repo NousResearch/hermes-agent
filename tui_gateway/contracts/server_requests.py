@@ -174,6 +174,7 @@ class ApprovalKind(WireEnum):
     command = "command"
     access = "access"
     network = "network"
+    schedule = "schedule"
 
 
 class ApprovalAccessLevel(WireEnum):
@@ -188,7 +189,9 @@ class ApprovalRequestParams(ServerRequestParams):
     ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``
     (``host``, and an optional display ``label``). ``risk`` is one short line shown under the
     folder or site. On those two kinds ``once`` allows until the sandbox is switched off and
-    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``."""
+    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. ``schedule`` is
+    the agent creating a scheduled job: ``description`` is the job as the user will see it,
+    ``once`` creates this job, ``session`` / ``always`` stop asking for later jobs."""
 
     request_id: str
     command: str = ""

@@ -3072,6 +3072,7 @@ export interface PendingApproval {
   smart_denied?: boolean | null
   choices?: string[] | null
   tool_name?: string | null
+  kind?: string | null
   [key: string]: unknown
 }
 export interface ApprovalReceivedParams {
@@ -5278,6 +5279,7 @@ export interface CanonicalPendingPrompt {
   choices: string[]
   command?: string | null
   description?: string | null
+  approval_kind?: 'command' | 'access' | 'network' | 'schedule' | null
   edit?: Record<string, unknown> | null
   question?: string | null
   multi_select?: boolean | null
@@ -5739,7 +5741,7 @@ export interface SetupBuildAnswer {
   build: string
   label?: string | null
 }
-/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network`` (``host``, and an optional display ``label``). ``risk`` is one short line shown under the folder or site. On those two kinds ``once`` allows until the sandbox is switched off and ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. */
+/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network`` (``host``, and an optional display ``label``). ``risk`` is one short line shown under the folder or site. On those two kinds ``once`` allows until the sandbox is switched off and ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. ``schedule`` is the agent creating a scheduled job: ``description`` is the job as the user will see it, ``once`` creates this job, ``session`` / ``always`` stop asking for later jobs. */
 export interface ApprovalRequestParams {
   session_id: string
   request_id: string
@@ -5759,7 +5761,7 @@ export interface ApprovalRequestParams {
   risk?: string | null
   [key: string]: unknown
 }
-export type ApprovalKind = 'command' | 'access' | 'network'
+export type ApprovalKind = 'command' | 'access' | 'network' | 'schedule'
 export type ApprovalAccessLevel = 'read' | 'read_write'
 /** ``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it. */
 export interface ApprovalResult {

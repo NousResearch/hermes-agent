@@ -10,6 +10,7 @@ the blank-line join Hermes' own Responses adapter does.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from session_rules.turns import flatten_message_text
@@ -93,15 +94,18 @@ def _redact_unsigned_detail(detail: Any) -> Any:
 
 # Chat-completions relays of Responses models (Venice, #157091) inline the signed reasoning item in
 # plain ``reasoning_content`` as ``__ENCRYPTED_REASONING__id=rs_…`` + ciphertext; the provider
-# verifies it on replay, and its ``gAAAA…`` body matches the Fernet token pattern.
-_ENCRYPTED_REASONING_MARKER = "__ENCRYPTED_REASONING__"
+# verifies it on replay, and its ``gAAAA…`` body matches the Fernet token pattern. Only a whole
+# recognized block is exempt: a bare marker mentioned in readable text is ordinary text.
+_ENCRYPTED_REASONING_BLOCK = re.compile(
+    r"(__ENCRYPTED_REASONING__id=rs_[A-Za-z0-9_-]+\s*gAAAA[A-Za-z0-9_=-]+)")
 
 
 def _redact_reasoning_text(text: str) -> str:
-    """Redact readable reasoning; an inline encrypted-reasoning block is replay material, kept byte-exact."""
+    """Redact readable reasoning; inline encrypted-reasoning blocks are replay material, kept byte-exact."""
     from agent.redact import redact_sensitive_text
-    head, marker, sealed = text.partition(_ENCRYPTED_REASONING_MARKER)
-    return redact_sensitive_text(head) + marker + sealed
+    parts = _ENCRYPTED_REASONING_BLOCK.split(text)
+    # split() with one capture group alternates readable text (even) and sealed blocks (odd).
+    return "".join(p if i % 2 else redact_sensitive_text(p) for i, p in enumerate(parts))
 
 
 def redact_reasoning_fields(msg: dict) -> None:

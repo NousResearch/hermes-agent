@@ -112,6 +112,15 @@ def test_inline_encrypted_reasoning_replays_byte_exact(tmp_path, monkeypatch):
         assert _SECRET not in text
 
 
+def test_bare_encrypted_marker_does_not_exempt_readable_text(tmp_path, monkeypatch):
+    """The exemption covers a recognized sealed block only: a model mentioning the marker in
+    readable reasoning, then quoting a credential, must still have the credential masked."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
+    source = _Msg(reasoning_content=f"The relay writes __ENCRYPTED_REASONING__ blocks. {_THOUGHT}")
+    stored, _rows = _persist(tmp_path, build_assistant_message(_Agent(), source, "stop"))
+    assert _SECRET not in stored["reasoning_content"]
+
+
 def test_redaction_off_keeps_reasoning_verbatim(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
     msg = build_assistant_message(_Agent(), _assistant_message(), "stop")

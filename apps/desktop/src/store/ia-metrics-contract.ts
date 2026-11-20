@@ -69,6 +69,12 @@ export const IA_ACTIONS = {
     'color_yellow',
     'color_cyan'
   ],
+  // The check-in on a newcomer's landing ("How's Hermes going so far?"): the answer, Dismiss, its
+  // return from the tray, and which suggestion was taken.
+  check_in: ['going_well', 'could_be_better', 'dismissed', 'reopened', 'try_video', 'try_weekly', 'open_tour'],
+  // The developer-view offer in a chat about code: offered, previewed (hover or focus), turned on, or
+  // put away.
+  developer_view: ['offered', 'previewed', 'accepted', 'declined'],
   // A ⌘K query that is one of the classic words, by word (never the query itself).
   alias_search: ['sessions', 'profiles', 'artifacts', 'cron', 'gateways']
 } as const

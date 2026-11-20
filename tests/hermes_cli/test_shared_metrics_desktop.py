@@ -300,6 +300,9 @@ def test_first_time_counters_keep_their_codes_and_collapse_anything_else(marks):
             {"action": "ia.theme_pick.color_cyan", "via": "click", "count": 1},
             {"action": "ia.sign_up.sidebar", "via": "click", "count": 1},
             {"action": "ia.sign_up.recovery", "via": "click", "count": 1},
+            {"action": "ia.check_in.could_be_better", "via": "click", "count": 1},
+            {"action": "ia.developer_view.accepted", "via": "click", "count": 1},
+            {"action": "ia.check_in.I hate it because", "via": "click", "count": 1},
             {"action": "ia.starter_chip.Plan my trip to Lisbon", "via": "click", "count": 1},
             {"action": "ia.theme_pick.color_teal", "via": "click", "count": 1},
         ],
@@ -309,6 +312,7 @@ def test_first_time_counters_keep_their_codes_and_collapse_anything_else(marks):
     assert {d["action"] for _, d, _ in rows} == {
         "ia.splash.first_time_shown", "ia.splash.first_time_closed_signup", "ia.splash_row.first_time_theme",
         "ia.starter_chip.clean_inbox", "ia.starter_chips.hidden_auto", "ia.sign_up.chat",
-        "ia.theme_pick.color_green", "ia.theme_pick.color_cyan", "ia.sign_up.sidebar", "ia.sign_up.recovery", "other",
+        "ia.theme_pick.color_green", "ia.theme_pick.color_cyan", "ia.sign_up.sidebar", "ia.sign_up.recovery", "ia.check_in.could_be_better",
+        "ia.developer_view.accepted", "other",
     }
-    assert "Lisbon" not in json.dumps(rows) and "teal" not in json.dumps(rows)
+    assert "Lisbon" not in json.dumps(rows) and "teal" not in json.dumps(rows) and "hate" not in json.dumps(rows)

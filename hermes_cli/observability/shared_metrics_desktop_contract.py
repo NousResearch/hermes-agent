@@ -48,6 +48,9 @@ DESKTOP_IA_ACTIONS = {
     "sign_up": ('splash', 'tray', 'chat', 'sidebar', 'recovery'),
     "theme_pick": ('mode_light', 'mode_dark', 'color_blue', 'color_violet', 'color_green', 'color_orange',
                    'color_pink', 'color_red', 'color_yellow', 'color_cyan'),
+    "check_in": ('going_well', 'could_be_better', 'dismissed', 'reopened', 'try_video', 'try_weekly',
+                 'open_tour'),
+    "developer_view": ('offered', 'previewed', 'accepted', 'declined'),
     "alias_search": ('sessions', 'profiles', 'artifacts', 'cron', 'gateways'),
 }
 DESKTOP_IA_AREAS = (

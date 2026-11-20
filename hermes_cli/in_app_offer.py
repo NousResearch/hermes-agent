@@ -112,11 +112,15 @@ def refresh_from_portal() -> Optional[Dict[str, str]]:
         # body is a ValueError. Anything else is a bug and should surface.
         logger.info("in-app offer refresh failed, keeping the last answer: %s", exc)
         return pending_offer()
-    if info is None:
+    if info is None and not _signed_in():
         clear()
         return None
-    # A successful fetch already recorded into the memo on the way through
-    # the normalizer; an error info did not, and leaves the last answer.
+    # A successful fetch recorded into the memo on its way through the
+    # normalizer. None while still signed in means the stored token is about
+    # to expire and was not refreshed (by design: this read must never write
+    # the auth store), so there is no new answer: keep the last one. An idle
+    # user's short-lived token is exactly this case, and clearing here would
+    # withdraw the offer from the users it is meant for.
     return pending_offer()
 
 

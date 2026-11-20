@@ -125,14 +125,28 @@ def test_refresh_returns_the_offer_the_fetch_recorded(monkeypatch):
     assert in_app_offer.refresh_from_portal() == OFFER
 
 
-def test_refresh_clears_the_offer_when_signed_out(monkeypatch):
+def test_refresh_clears_the_offer_when_signed_out(_signed_in, monkeypatch):
+    from hermes_cli import nous_account
+
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+    del _signed_in["nous"]
+    monkeypatch.setattr(nous_account, "stored_token_account_info", lambda: None)
+
+    assert in_app_offer.refresh_from_portal() is None
+    assert in_app_offer.pending_offer() is None
+
+
+def test_refresh_keeps_the_offer_when_the_token_is_too_close_to_expiry(monkeypatch):
+    """Signed in, but the stored token expires inside the read's skew, so no
+    fetch happened (this read never refreshes the token). That is no new
+    answer, not a withdrawal: an idle user's token sits exactly here."""
     from hermes_cli import nous_account
 
     in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
     monkeypatch.setattr(nous_account, "stored_token_account_info", lambda: None)
 
-    assert in_app_offer.refresh_from_portal() is None
-    assert in_app_offer.pending_offer() is None
+    assert in_app_offer.refresh_from_portal() == OFFER
+    assert in_app_offer.pending_offer() == OFFER
 
 
 def test_refresh_keeps_the_last_answer_when_the_fetch_fails(monkeypatch):

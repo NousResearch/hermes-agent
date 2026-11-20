@@ -111,6 +111,23 @@ def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
     assert calls[-1] == ("mark", "quoted-marker", True)
 
 
+@pytest.mark.parametrize("failure_types", [("agent", "auth"), ("auth", "agent")], ids=["agent-first", "runtime-first"])
+def test_incident_type_follows_the_source_of_the_failure(monkeypatch, failure_types):
+    from cron.incidents import list_incidents
+
+    # Identical evidence on the same job refreshes the same incident.
+    evidence = "HTTP 401 Unauthorized"
+    for expected_type in failure_types:
+        if expected_type == "agent":
+            _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+        else:
+            _patch_pipeline(monkeypatch, success=False, final="", error=evidence)
+
+        s.run_one_job({"id": "incident-source", "name": "daily report", "deliver": "local"})
+        (incident,) = list_incidents()
+        assert (incident["failure_type"], incident["error"]) == (expected_type, evidence)
+
+
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     """An exception escaping the run body must not become a silent error row."""
     delivered = []

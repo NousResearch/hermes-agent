@@ -186,6 +186,28 @@ in PM's store; `runtimes/llamacpp/` holds mutable presets and server state.
 Selecting a local model as your main model uses the standard
 `model.provider: llamacpp` + `model.default` settings.
 
+### Per-model runtime overrides
+
+Advanced local-runtime tuning is stored beside the generated llama.cpp preset,
+under `runtimes/llamacpp/`. These optional JSON files are additive: a missing
+model keeps the catalog and hardware-policy defaults.
+
+- `window_overrides.json` maps a model ID to its effective context window.
+- `cpu_block_overrides.json` maps a MoE model ID to the number of expert blocks
+  whose tensors remain on CPU.
+- `sampling_overrides.json` maps a model ID to sampling preset keys, such as
+  `temp`, `top-p`, `top-k`, and `chat-template-kwargs`.
+
+The managed runtime reads these files when regenerating `presets.ini`; edit the
+override files rather than the generated preset. They are machine-local and
+per-model, so an override for one model does not alter another model's launch.
+
+A malformed or unreadable override file is ignored: the model falls back to the
+defaults for that key instead of failing the launch. The cap in
+`window_overrides.json` is what makes `cpu_block_overrides.json` useful in the
+first place — moving expert blocks back to the GPU costs VRAM, so a model that
+fits only at a reduced window is the case it exists for.
+
 ## Requirements and limits
 
 - **Windows:** CUDA on supported NVIDIA targets, Vulkan on x64, or CPU.

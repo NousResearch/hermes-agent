@@ -453,3 +453,116 @@ def test_kv_scale_prices_mtp_draft_context():
     # The safety direction: the estimate must never be BELOW measured.
     # (Calibration receipts: predicted-measured was +233..+1400 MiB.)
     assert scaled > base
+
+
+def test_cpu_block_overrides_read_and_clamp(tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import binaries, growth
+
+    (tmp_path / "cpu_block_overrides.json").write_text('{"moe-a": 6, "moe-b": -3}')
+    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
+
+    assert growth.load_cpu_block_overrides() == {"moe-a": 6, "moe-b": 0}
+
+
+def test_sampling_overrides_keep_only_preset_keys(tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import binaries, growth
+
+    (tmp_path / "sampling_overrides.json").write_text(
+        '{"moe-a": {"temp": 0.3, "top-p": 0.9, "unknown": "x"}, "moe-b": "not-a-dict"}')
+    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
+
+    assert growth.load_sampling_overrides() == {"moe-a": {"temp": "0.3", "top-p": "0.9"}}
+
+
+@pytest.mark.parametrize("name", ["cpu_block_overrides.json", "sampling_overrides.json",
+                                  "window_overrides.json"])
+@pytest.mark.parametrize("root", ["{not json", "[]", '"a string"', "5"])
+def test_overrides_degrade_to_empty_on_malformed_json(tmp_path, monkeypatch, name, root):
+    from hermes_cli.local_runtime import binaries, growth
+
+    (tmp_path / name).write_text(root)
+    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
+
+    loader = {
+        "cpu_block_overrides.json": growth.load_cpu_block_overrides,
+        "sampling_overrides.json": growth.load_sampling_overrides,
+        "window_overrides.json": growth.load_window_overrides,
+    }[name]
+    assert loader() == {}
+
+
+def _moe_preset(tmp_path, monkeypatch, blocks):
+    """A MoE launch whose CPU-block count comes from the override file."""
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import binaries, growth, presets
+
+    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
+    (tmp_path / "cpu_block_overrides.json").write_text(blocks)
+    mdir = tmp_path / "models"
+    mdir.mkdir(exist_ok=True)
+    gguf = mdir / "moe-x.gguf"
+    gguf.touch()
+    profile = ModelProfile("moe-x", 17 << 30, 0, 65536,
+                           [(LayerKind.FULL, 4096)] * 48, moe=True)
+    monkeypatch.setattr(presets, "read_gguf_header",
+                        lambda p: SimpleNamespace(path=p, sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
+    budget = HardwareBudget(10 << 30, 12 << 30, 64 << 30)
+    return presets.preset_for_model(gguf, budget, set())
+
+
+def test_zero_cpu_blocks_keeps_every_expert_on_the_gpu(tmp_path, monkeypatch):
+    assert "override-tensor" not in _moe_preset(tmp_path, monkeypatch, '{"moe-x": 0}').keys
+
+
+def test_partial_cpu_blocks_list_exactly_that_many(tmp_path, monkeypatch):
+    pattern = _moe_preset(tmp_path, monkeypatch, '{"moe-x": 6}').keys["override-tensor"]
+    assert pattern == r"blk\.(0|1|2|3|4|5)\.ffn_.*_exps\.weight=CPU"
+
+
+def test_all_cpu_blocks_use_the_wildcard_form(tmp_path, monkeypatch):
+    pattern = _moe_preset(tmp_path, monkeypatch, '{"moe-x": 48}').keys["override-tensor"]
+    assert pattern == r"blk\.\d+\.ffn_.*_exps\.weight=CPU"
+
+
+def test_sampling_overrides_reach_the_launch_keys(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import binaries, growth, presets
+
+    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
+    (tmp_path / "sampling_overrides.json").write_text('{"moe-x": {"temp": "0.3", "top-p": "0.9"}}')
+    mdir = tmp_path / "models"
+    mdir.mkdir(exist_ok=True)
+    gguf = mdir / "moe-x.gguf"
+    gguf.touch()
+    monkeypatch.setattr(presets, "read_gguf_header",
+                        lambda p: SimpleNamespace(path=p, sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf",
+                        lambda h: ModelProfile("moe-x", 17 << 30, 0, 65536, [], moe=True))
+
+    keys = presets.preset_for_model(gguf, HardwareBudget(10 << 30, 12 << 30, 64 << 30), set()).keys
+    assert keys["temp"] == "0.3" and keys["top-p"] == "0.9"
+
+
+@pytest.mark.parametrize("window", [0, -1])
+def test_nonpositive_window_override_does_not_force_single_slot(tmp_path, monkeypatch, window):
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import binaries, presets
+
+    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
+    (tmp_path / "window_overrides.json").write_text(f'{{"moe-x": {window}}}')
+    mdir = tmp_path / "models"
+    mdir.mkdir()
+    gguf = mdir / "moe-x.gguf"
+    gguf.touch()
+    monkeypatch.setattr(presets, "read_gguf_header",
+                        lambda p: SimpleNamespace(path=p, sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf",
+                        lambda h: ModelProfile("moe-x", 17 << 30, 0, 65536, [], moe=True))
+
+    keys = presets.preset_for_model(
+        gguf, HardwareBudget(10 << 30, 12 << 30, 64 << 30), set()).keys
+    assert "parallel" not in keys

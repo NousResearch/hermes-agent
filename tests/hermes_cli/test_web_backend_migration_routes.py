@@ -119,25 +119,23 @@ def home(tmp_path, monkeypatch):
 @pytest.fixture
 def spawned(home, tmp_path, monkeypatch):
     """Records each launcher instead of starting it; the launcher answers as the real one does when its
-    background run holds the lock: exit 0 and its ``--json`` line (``confirmed: true``) in its launch log."""
+    background run holds the lock: exit 0 and its ``--json`` line (``confirmed: true``) in its own output."""
     calls: list[dict] = []
     monkeypatch.setattr("hermes_cli.web_server_gateway._ACTION_LOG_DIR", tmp_path / "action-logs")
 
-    def record(subcommand, name, *, env_overrides=None, log_path=None):
-        calls.append({"argv": list(subcommand), "name": name, "env": dict(env_overrides or {}), "log_path": log_path})
-        launcher_says(Path((env_overrides or {})["HERMES_HOME"]), log_path, confirmed=True)
+    def record(subcommand, name, *, env_overrides=None, output=None):
+        calls.append({"argv": list(subcommand), "name": name, "env": dict(env_overrides or {})})
+        launcher_says(Path((env_overrides or {})["HERMES_HOME"]), output, confirmed=True)
         return SimpleNamespace(pid=777, poll=lambda: 0, wait=lambda timeout=None: 0)
 
     monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", record)
     return calls
 
 
-def launcher_says(home: Path, log: Path, *, confirmed: bool) -> None:
-    log.parent.mkdir(parents=True, exist_ok=True)
+def launcher_says(home: Path, output, *, confirmed: bool) -> None:
     line = {"detached": True, "mode": "apply", "unit": "x.service", "confirmed": confirmed,
             "log": str(home / "logs" / "backend-migration.log")}
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(f"=== gateway-migrate-backends started ===\n{json.dumps(line)}\n")
+    output.write(f"=== gateway-migrate-backends started ===\n{json.dumps(line)}\n".encode())
 
 
 def _client(home, monkeypatch, **host_kw):
@@ -509,10 +507,10 @@ def test_a_launch_for_one_profile_never_blocks_another_but_blocks_its_own(home, 
     import threading
     held = HeldLauncher()
 
-    def spawn(subcommand, name, *, env_overrides=None, log_path=None):
+    def spawn(subcommand, name, *, env_overrides=None, output=None):
         target_home = Path((env_overrides or {})["HERMES_HOME"])
         spawned.append({"argv": list(subcommand), "env": dict(env_overrides or {})})
-        launcher_says(target_home, log_path, confirmed=True)
+        launcher_says(target_home, output, confirmed=True)
         if target_home == work:
             return held
         return SimpleNamespace(pid=778, poll=lambda: 0, wait=lambda timeout=None: 0)
@@ -541,10 +539,10 @@ def test_a_launch_for_one_profile_never_blocks_another_but_blocks_its_own(home, 
 def test_a_launch_nobody_confirmed_is_reported_as_unconfirmed_never_as_started(home, spawned, monkeypatch, launcher):
     import subprocess
 
-    def spawn(subcommand, name, *, env_overrides=None, log_path=None):
+    def spawn(subcommand, name, *, env_overrides=None, output=None):
         spawned.append(list(subcommand))
         if launcher == "unconfirmed":
-            launcher_says(Path((env_overrides or {})["HERMES_HOME"]), log_path, confirmed=False)
+            launcher_says(Path((env_overrides or {})["HERMES_HOME"]), output, confirmed=False)
 
         def wait(timeout=None):
             if launcher == "timeout":
@@ -655,13 +653,11 @@ def test_an_old_backend_without_health_is_found_and_blocked(home, spawned, monke
     (3, {"applied": False, "mode": "apply", "error": "already_running", "message": "busy"}, 409, "already_running"),
 ])
 def test_the_launchers_exit_codes_map_to_answers(home, spawned, monkeypatch, code, line, status, error):
-    def spawn(subcommand, name, *, env_overrides=None, log_path=None):
+    def spawn(subcommand, name, *, env_overrides=None, output=None):
         spawned.append(list(subcommand))
         target_home = Path((env_overrides or {})["HERMES_HOME"])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({**line, **({"log": str(target_home / "logs" / "backend-migration.log")}
-                                            if line.get("detached") else {})}) + "\n")
+        output.write((json.dumps({**line, **({"log": str(target_home / "logs" / "backend-migration.log")}
+                                             if line.get("detached") else {})}) + "\n").encode())
         return SimpleNamespace(pid=780, poll=lambda: code, wait=lambda timeout=None: code)
 
     monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
@@ -708,11 +704,12 @@ def test_the_gateway_answering_the_button_does_not_block_the_detached_run(home, 
 def test_a_start_line_is_this_launchs_even_when_a_busy_launcher_wrote_after_it(home, spawned):
     """A start line naming this home's run log still counts as this launch's answer even if a busy line
     appears in the same output."""
-    log = routes._new_launch_log(home)
-    launcher_says(home, log, confirmed=True)
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"applied": False, "mode": "apply", "error": "already_running", "message": "busy"}) + "\n")
-    assert routes._launcher_report(home, log)["confirmed"] is True
+    import tempfile
+    with tempfile.TemporaryFile() as output:
+        launcher_says(home, output, confirmed=True)
+        output.write((json.dumps({"applied": False, "mode": "apply", "error": "already_running",
+                                  "message": "busy"}) + "\n").encode())
+        assert routes._launcher_report(home, output)["confirmed"] is True
 
 
 # --------------------------------------------------------------------------- final check
@@ -748,11 +745,11 @@ def test_a_blocker_without_any_old_backend_is_not_a_finding(home, spawned, monke
 
 def test_an_unreadable_manifest_refusal_from_the_launcher_is_a_refusal(home, spawned):
     """The engine's ``manifest_unreadable`` JSON carries no ``mode``; it is still the launcher's answer."""
-    log = routes._new_launch_log(home)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"applied": False, "error": "manifest_unreadable", "message": "cannot trust it"}) + "\n")
-    assert routes._launcher_report(home, log)["error"] == "manifest_unreadable"
+    import tempfile
+    with tempfile.TemporaryFile() as output:
+        output.write((json.dumps({"applied": False, "error": "manifest_unreadable",
+                                  "message": "cannot trust it"}) + "\n").encode())
+        assert routes._launcher_report(home, output)["error"] == "manifest_unreadable"
 
 
 # --------------------------------------------------------------------------- launcher exit 6 (manual-only host)
@@ -776,12 +773,11 @@ def test_a_launcher_exit_6_is_the_unsupported_refusal_with_the_steps(home, spawn
     BecomesSystemUnitHost.switched = False
     monkeypatch.setattr(routes, "_host", lambda target_home: BecomesSystemUnitHost(target_home))
 
-    def spawn(subcommand, name, *, env_overrides=None, log_path=None):
+    def spawn(subcommand, name, *, env_overrides=None, output=None):
         spawned.append(list(subcommand))
         BecomesSystemUnitHost.switched = True
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"applied": False, "dry_run": False, "plan": {"unsupported": [{"unit": "x"}]}}) + "\n")
+        output.write((json.dumps({"applied": False, "dry_run": False,
+                                  "plan": {"unsupported": [{"unit": "x"}]}}) + "\n").encode())
         return SimpleNamespace(pid=781, poll=lambda: 6, wait=lambda timeout=None: 6)
 
     monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
@@ -885,3 +881,66 @@ def test_another_profiles_launcher_line_never_answers_this_launch(home, spawned,
     assert (r.status_code, r.json()["error"]) == (409, "already_running"), r.text
     assert "work profile refusal" not in r.text
     assert len(spawned) == 1 and list((home / "logs").glob("backend-migration-launch-*")) == []
+
+
+def _home_files(home: Path) -> set[Path]:
+    return {f for f in home.rglob("*") if f.is_file()}
+
+
+@pytest.mark.parametrize(("outcome", "status"), [("started", 200), ("refused", 409), ("timeout", 202)])
+def test_a_launchs_output_never_has_a_file_in_the_home(home, spawned, monkeypatch, outcome, status):
+    """The launcher writes into an anonymous file the route holds open: nothing appears in the home (where
+    the Files browser could list and read it) while the launch runs, nor after it, and its answer is read."""
+    import subprocess
+    before = _home_files(home)
+    during: list[set[Path]] = []
+
+    def spawn(subcommand, name, **kw):
+        during.append(_home_files(home) - before)
+        assert during[-1] == set(), during  # the launcher's output has no file in the home
+        if outcome == "started":
+            line = {"detached": True, "mode": "apply", "confirmed": True, "log": str(home / "logs" / "backend-migration.log")}
+        else:
+            line = {"detached": False, "mode": "apply", "outcome": "refused", "message": "could not start"}
+        kw["output"].write((json.dumps(line) + "\n").encode())
+        code = 0 if outcome == "started" else 3
+
+        def wait(timeout=None):
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired("hermes", timeout)
+            return code
+        return SimpleNamespace(pid=793, poll=lambda: None if outcome == "timeout" else code, wait=wait)
+
+    monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
+    r = _client(home, monkeypatch).post("/api/gateway/migrate/backends/apply", json={})
+    assert during == [set()], during
+    assert _home_files(home) - before == set()
+    assert r.status_code == status, r.text
+    if outcome == "refused":
+        assert (r.json()["error"], r.json()["message"]) == ("not_started", "could not start")
+
+
+def test_two_profiles_launching_at_once_each_read_only_their_own_answer(home, work, spawned, monkeypatch):
+    """Both launchers are in flight together and both refuse: each launch answers with its own reason."""
+    import threading
+    both = threading.Barrier(2, timeout=10)
+
+    def spawn(subcommand, name, **kw):
+        who = "work" if Path(kw["env_overrides"]["HERMES_HOME"]) == work else "default"
+        both.wait()
+        kw["output"].write((json.dumps({"detached": False, "mode": "apply", "outcome": "refused",
+                                        "message": f"{who} reason"}) + "\n").encode())
+        both.wait()
+        return SimpleNamespace(pid=794, poll=lambda: 3, wait=lambda timeout=None: 3)
+
+    monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
+    client = _client(home, monkeypatch)
+    answers: dict = {}
+    threads = [threading.Thread(target=lambda p=p: answers.__setitem__(p, client.post(
+        "/api/gateway/migrate/backends/apply", params={"profile": p}, json={}))) for p in ("default", "work")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    for p in ("default", "work"):
+        assert (answers[p].status_code, answers[p].json()["message"]) == (409, f"{p} reason"), answers[p].text

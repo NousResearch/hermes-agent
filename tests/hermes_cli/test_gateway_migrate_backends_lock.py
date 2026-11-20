@@ -124,14 +124,12 @@ race.main()
 def _route_spawns_the_real_launcher(monkeypatch, env, race_dir, on_spawn=lambda: None, **extra_env):
     monkeypatch.setattr("hermes_cli.web_server_gateway._ACTION_LOG_DIR", race_dir / "action-logs")
 
-    def spawn_launcher(subcommand, name, *, env_overrides=None, log_path=None):  # the real launcher, in a real process
+    def spawn_launcher(subcommand, name, *, env_overrides=None, output=None):  # the real launcher, in a real process
         on_spawn()
-        assert log_path is not None
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("ab") as log:  # where the route reads the launcher's answer
-            return subprocess.Popen([sys.executable, "-c", _LAUNCHER, *subcommand], cwd=_REPO,
-                                    env={**env, **(env_overrides or {}), "RACE_HOLD": "0", **extra_env},
-                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.DEVNULL)
+        assert output is not None  # where the route reads the launcher's answer
+        return subprocess.Popen([sys.executable, "-c", _LAUNCHER, *subcommand], cwd=_REPO,
+                                env={**env, **(env_overrides or {}), "RACE_HOLD": "0", **extra_env},
+                                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL)
 
     monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn_launcher)
 

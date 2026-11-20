@@ -2,7 +2,7 @@ name: lfg-alarm
 title: LFG Alarm
 repo: https://github.com/lfg-gm/lfg-alarm-mcp
 subdir: plugins/hermes
-sha: 2dc3bb62d793995f5516d01456dea5a4465de8a5
+sha: 4d3ecd742ca5f7de1b56a351df699fb01d68f069
 description: >-
   Put a real alarm on your phone from Hermes, and on your friends', family's or community's phones,
   ringing together: for a time, an event, a post, a stream going live, a token price, or anything
@@ -22,8 +22,8 @@ maintainer: lfg-gm
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/lfg-gm/lfg-alarm-mcp/blob/2dc3bb62d793995f5516d01456dea5a4465de8a5/plugins/hermes/README.md
-version: "1.1.0"
+docs_url: https://github.com/lfg-gm/lfg-alarm-mcp/blob/4d3ecd742ca5f7de1b56a351df699fb01d68f069/plugins/hermes/README.md
+version: "1.2.0"
 platforms: []
 capabilities:
   provides_tools: []

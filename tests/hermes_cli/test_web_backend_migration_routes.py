@@ -805,3 +805,38 @@ def test_a_launcher_exit_6_is_the_unsupported_refusal_with_the_steps(home, spawn
     again = client.post("/api/gateway/migrate/backends/apply?profile=default", json={})
     assert (again.status_code, again.json()["error"]) == (409, "unsupported")
     assert again.json()["unsupported"] == body["unsupported"] and len(spawned) == 1
+
+
+class ManualUnitHost(FakeHost):
+    """A system-scope unit (manual steps only), with optional foreign-home or legacy-unit gateway conflicts."""
+
+    def __init__(self, home, *, foreign_home=None, legacy=False):
+        super().__init__(home)
+        self._foreign_home = foreign_home
+        self._legacy = legacy
+
+    def backends(self):
+        [item] = super().backends()
+        item.scope, item.unit_path = "system", "/etc/systemd/system/hermes-dashboard.service"
+        return [item]
+
+    def foreign_gateway_home(self):
+        return self._foreign_home
+
+    def legacy_gateway_units(self):
+        return self._legacy
+
+
+@pytest.mark.parametrize(("kw", "expected_reason"), [
+    ({"foreign_home": "/srv/other-hermes"}, "HERMES_HOME=/srv/other-hermes"),
+    ({"legacy": True}, "hermes.service"),
+])
+def test_manual_plan_runs_gateway_safety_refusals_and_withholds_steps(home, spawned, monkeypatch, kw, expected_reason):
+    monkeypatch.setattr(routes, "_host", lambda target_home: ManualUnitHost(target_home, **kw))
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    data = client.get("/api/gateway/migrate/backends/plan").json()
+    assert data["exit_code"] == engine.EXIT_BLOCKED
+    plan = data["plan"]
+    assert any(expected_reason in b for b in plan["blockers"]), plan["blockers"]
+    assert plan["unsupported"] and all(u["steps"] == [] for u in plan["unsupported"]), plan["unsupported"]

@@ -173,6 +173,46 @@ def register(ctx):
         manager.unload()
 
 
+def test_pending_claim_before_bind_resumes_same_token_reservation(tmp_path, monkeypatch):
+    import uuid
+    from hermes_cli.skill_catalog.service import Service
+    from tests.hermes_cli.test_skill_catalog_mutations import operation
+    manager, entry, plan = fixture(tmp_path)
+    op = uuid.uuid4().hex
+    pending = operation(entry, op, state='pending', outcome=None,
+                        managed_state='not_installed', installation_revision=None)
+    attempts = []
+
+    def interrupted(request):
+        attempts.append(request['admission'])
+        monkeypatch.setattr(entry.provider, 'reviewed', lambda req: dict(
+            ok=True, data=dict(kind='pending', review=plan, operation=pending)))
+        if len(attempts) == 1:
+            raise RuntimeError('lost response after durable claim and before bind')
+        entry.mutations.bind({key: value for key, value in request['admission'].items()
+                              if key != 'generation'} | {'operation_id': op})
+        return dict(ok=True, data=pending)
+
+    monkeypatch.setattr(entry.provider, 'confirm', interrupted)
+    try:
+        service = Service(tmp_path)
+        with pytest.raises(CatalogError) as caught:
+            service.confirm(plan['identifier'], 'install', plan['review_token'], [])
+        assert caught.value.code == 'provider_error'
+        before = entry.mutations.projection.read()
+        row, = before['reservations'].values()
+        assert row['operation_id'] is None
+        assert service.confirm(plan['identifier'], 'install', plan['review_token'], []) == pending
+        assert attempts[0] == attempts[1]
+        row, = entry.mutations.projection.read()['reservations'].values()
+        assert row['operation_id'] == op and row['state'] == 'bound'
+        assert not (tmp_path / 'skills/new').exists()
+        assert service.confirm(plan['identifier'], 'install', plan['review_token'], []) == pending
+        assert attempts[2] == attempts[0]
+    finally:
+        manager.unload()
+
+
 def test_confirm_wrong_ack_or_identity_has_zero_effect(tmp_path):
     from hermes_cli.skill_catalog.service import Service
     manager, entry, plan = fixture(tmp_path)

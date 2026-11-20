@@ -164,6 +164,35 @@ def test_reserve_exact_replay_bind_cas_and_no_secret(tmp_path):
             p.reserve(owner, review(owner, "new/child"))
 
 
+def test_pending_prebind_concurrent_retries_share_admission_and_bind_cas(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    with started(tmp_path) as (p, owner):
+        plan = review(owner)
+        original = p.reserve(owner, plan)
+        op = uuid.uuid4().hex
+        barrier = threading.Barrier(2)
+
+        def retry():
+            barrier.wait(timeout=5)
+            admission = p.reserve(owner, plan, operation_id=op, recovery=True)
+            p.bind(owner, {k: v for k, v in admission.items() if k != 'generation'}
+                   | {'operation_id': op})
+            return admission
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(retry) for _ in range(2)]
+            assert [future.result(timeout=10) for future in futures] == [original, original]
+        rows = p.read()['reservations']
+        assert len(rows) == 1
+        assert rows[original['reservation_id']]['operation_id'] == op
+        before = (p.directory / 'claims.json').read_bytes()
+        with pytest.raises(CatalogError) as caught:
+            p.reserve(owner, plan, operation_id=uuid.uuid4().hex, recovery=True)
+        assert caught.value.code == 'ownership_conflict'
+        assert (p.directory / 'claims.json').read_bytes() == before
+
+
 def test_reserve_install_absent_and_update_exact_revision(tmp_path):
     target = tmp_path / "skills/a/b"
     target.mkdir(parents=True)

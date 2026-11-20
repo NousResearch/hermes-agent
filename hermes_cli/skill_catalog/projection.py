@@ -432,7 +432,9 @@ class Projection:
                 "expected_installation_revision": review["installation_revision"]}
             if any(row[key] != value for key, value in pairs.items()):
                 raise _conflict()
-            if operation_id is not None and row["operation_id"] != operation_id:
+            # A durable provider claim can precede its first bind RPC. Reuse
+            # that exact review's admission; bind still owns the operation CAS.
+            if operation_id is not None and row["operation_id"] not in (None, operation_id):
                 raise _conflict()
             return _admission(reservation_id, row)
         return None

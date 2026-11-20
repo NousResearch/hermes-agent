@@ -17,7 +17,9 @@ from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli import gateway_migrate_backends_windows as gw
 from hermes_cli import gateway_migrate_backends_plan as plan_mod
 from hermes_cli.gateway_migrate_backends import BackendItem
-from tests.hermes_cli.test_gateway_migrate_backends_apply import _PASSWORD, FakeHost, _args, _files
+from tests.hermes_cli.test_gateway_migrate_backends_apply import (
+    _PASSWORD, FakeHost, _args, _files, no_health_host, no_health_server,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -334,3 +336,25 @@ def test_a_startup_shortcut_is_moved_out_of_the_startup_folder_with_its_undo():
     assert steps[i + 1] == f'# to undo later: move "{backup}" "{entry}"'
     assert not any(".disabled" in s for s in steps)
     assert not any(s.startswith("move ") and startup in s.split('" "')[-1] for s in steps), steps
+
+
+@pytest.fixture
+def no_health_backend():
+    with no_health_server() as stub:
+        yield stub
+
+
+def test_a_windows_backend_without_api_health_is_unknown_activity(home, capsys, no_health_backend):
+    """A Scheduled Task backend older than v2026.7.30: no GET /api/health, no turn markers."""
+    host = no_health_host(WindowsHost, home, no_health_backend)
+    argv = [a if a != "9119" else str(no_health_backend.port) for a in _BACKEND]
+    host.backends = lambda: [BackendItem(supervisor="scheduled-task", running=True, pid=4242, argv=argv,
+                                         unit="Hermes Dashboard", hermes_home=str(home), this_home=True)]
+
+    assert engine.cmd_apply(host, _args(dry_run=True, json=True)) == engine.EXIT_BLOCKED
+    blocked = json.loads(capsys.readouterr().out)["plan"]
+    assert "/api/health" in no_health_backend.seen
+    assert blocked["running_turns"] is None and blocked["unsupported"][0]["steps"] == []
+
+    assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    assert 'schtasks /End /TN "Hermes Dashboard"' in capsys.readouterr().out

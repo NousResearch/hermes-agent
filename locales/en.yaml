@@ -660,6 +660,19 @@ gateway:
     truncated_full_above: "Preview shortened: the full command ({total} characters) is in the message above."
     truncated_deny_only: "Preview shortened ({total} characters) and the full command could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
     text_prompt_deny_only: "The full approval prompt is too long for this platform, so only Deny is offered. Review it in the CLI or Desktop app."
+    schedule_header: "Hermes wants to schedule a job"
+    schedule_action_once: "Allow"
+    schedule_action_session: "Allow for this chat"
+    schedule_action_always: "Always allow new jobs"
+    schedule_deadline: "If you don't answer within {window} the job will NOT be created."
+    schedule_timed_out_notice: "⌛ Approval timed out after {window} — the job was not created. Ask me to try again if you still want it, or raise approvals.timeout in config.yaml."
+    schedule_text_choice_once: "Reply `{prefix}approve` to create it"
+    schedule_text_choice_session: "`{prefix}approve session` to allow new jobs for the rest of this chat"
+    schedule_text_choice_always: "`{prefix}approve always` to always allow new jobs"
+    schedule_truncated_full_above: "Preview shortened: the full job ({total} characters) is in the message above."
+    schedule_truncated_deny_only: "Preview shortened ({total} characters) and the full job could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "audio"
@@ -1095,6 +1108,8 @@ platform:
       resolved_session: "Approved for session"
       resolved_always: "Approved permanently"
       resolved_deny: "Denied"
+      schedule_question: "Do you want Hermes to create this scheduled job?"
+      schedule_requested_command_label: "Job:"
     slash_confirm:
       already_resolved: "This prompt has already been resolved~"
       approve_once: "Approve Once"
@@ -1294,6 +1309,9 @@ platform:
       resolved_by_user: "{label} by {user}"
       expired: "⌛ Approval expired"
       expired_detail: "{label} — no command was waiting. It already timed out (and was denied) or was resolved elsewhere."
+      schedule_action_once: "✅ Allow"
+      schedule_action_session: "✅ Allow for this chat"
+      schedule_action_always: "✅ Always allow new jobs"
     slash_confirm:
       approve_once: "✅ Approve Once"
       always_approve: "🔒 Always Approve"
@@ -1391,6 +1409,7 @@ platform:
       resolved_session: "✅ Approved for session by {user}"
       resolved_always: "✅ Approved permanently by {user}"
       resolved_deny: "❌ Denied by {user}"
+      schedule_fallback_text: "⚠️ Hermes wants to schedule a job: {command}"
     confirm:
       default_title: "Confirm"
       approve_once: "Approve Once"
@@ -1453,6 +1472,9 @@ platform:
       legend_deny: "❎ = deny"
       invalid_reaction: "That reaction is not valid for this approval prompt."
       expired: "This approval prompt has expired. Run the command again if you still want to approve it."
+      schedule_typed_hint_once: "Reply `!approve` to create it, or `!deny` to cancel."
+      schedule_typed_hint_session: "Reply `!approve session` to allow new jobs for the rest of this chat, `!approve` to create it, or `!deny` to cancel."
+      schedule_typed_hint_always: "Reply `!approve session` to allow new jobs for the rest of this chat, `!approve always` to always allow new jobs, `!approve` to create it, or `!deny` to cancel."
     picker:
       no_models: "No authenticated models are available for this session."
       title: "⚙ **Model Configuration**"
@@ -1487,6 +1509,8 @@ platform:
       resolved_deny: "Denied"
       resolved_fallback: "Resolved"
       resolved_by_user: "{icon} **{label}** by {user}"
+      schedule_action_session: "Allow for this chat"
+      schedule_action_always: "Always allow new jobs"
     update_prompt:
       title: "☤ Update Needs Your Input"
       default_hint: "\n\nDefault: `{default}`"

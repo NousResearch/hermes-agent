@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Anteprima abbreviata: il comando completo ({total} caratteri) è nel messaggio qui sopra."
     truncated_deny_only: "Anteprima abbreviata ({total} caratteri) e il comando completo non è stato mostrato qui, quindi è disponibile solo Nega. Controllalo nella CLI o nell'app Desktop."
     text_prompt_deny_only: "La richiesta di approvazione completa è troppo lunga per questa piattaforma, quindi è disponibile solo Nega. Controllala nella CLI o nell'app Desktop."
+    schedule_header: "Hermes vuole pianificare un'attività"
+    schedule_action_once: "Consenti"
+    schedule_action_session: "Consenti per questa chat"
+    schedule_action_always: "Consenti sempre nuove attività"
+    schedule_deadline: "Se non rispondi entro {window}, l'attività NON verrà creata."
+    schedule_timed_out_notice: "⌛ Approvazione scaduta dopo {window}: l'attività non è stata creata. Chiedimelo di nuovo se la vuoi ancora, oppure aumenta approvals.timeout in config.yaml."
+    schedule_text_choice_once: "Rispondi `{prefix}approve` per crearla"
+    schedule_text_choice_session: "`{prefix}approve session` per consentire nuove attività per il resto di questa chat"
+    schedule_text_choice_always: "`{prefix}approve always` per consentire sempre nuove attività"
+    schedule_truncated_full_above: "Anteprima abbreviata: l'attività completa ({total} caratteri) è nel messaggio sopra."
+    schedule_truncated_deny_only: "Anteprima abbreviata ({total} caratteri) e l'attività completa non è stata mostrata qui, quindi è disponibile solo Nega. Controllala nella CLI o nell'app desktop."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "audio"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Approvato per la sessione"
       resolved_always: "Approvato in modo permanente"
       resolved_deny: "Negato"
+      schedule_question: "Vuoi che Hermes crei questa attività pianificata?"
+      schedule_requested_command_label: "Attività:"
     slash_confirm:
       already_resolved: "Questa richiesta è già stata risolta~"
       approve_once: "Approva una volta"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} da {user}"
       expired: "⌛ Approvazione scaduta"
       expired_detail: "{label} — nessun comando era in attesa. È già andato in timeout (ed è stato negato) oppure è stato risolto altrove."
+      schedule_action_once: "✅ Consenti"
+      schedule_action_session: "✅ Consenti per questa chat"
+      schedule_action_always: "✅ Consenti sempre nuove attività"
     slash_confirm:
       approve_once: "✅ Approva una volta"
       always_approve: "🔒 Approva sempre"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Approvato per la sessione da {user}"
       resolved_always: "✅ Approvato in modo permanente da {user}"
       resolved_deny: "❌ Negato da {user}"
+      schedule_fallback_text: "⚠️ Hermes vuole pianificare un'attività: {command}"
     confirm:
       default_title: "Conferma"
       approve_once: "Approva una volta"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = nega"
       invalid_reaction: "Questa reazione non è valida per questa richiesta di approvazione."
       expired: "Questa richiesta di approvazione è scaduta. Esegui di nuovo il comando se vuoi ancora approvarlo."
+      schedule_typed_hint_once: "Rispondi `!approve` per crearla o `!deny` per annullare."
+      schedule_typed_hint_session: "Rispondi `!approve session` per consentire nuove attività per il resto di questa chat, `!approve` per crearla o `!deny` per annullare."
+      schedule_typed_hint_always: "Rispondi `!approve session` per consentire nuove attività per il resto di questa chat, `!approve always` per consentire sempre nuove attività, `!approve` per crearla o `!deny` per annullare."
     picker:
       no_models: "Nessun modello autenticato disponibile per questa sessione."
       title: "⚙ **Configurazione modello**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Negato"
       resolved_fallback: "Risolto"
       resolved_by_user: "{icon} **{label}** da {user}"
+      schedule_action_session: "Consenti per questa chat"
+      schedule_action_always: "Consenti sempre nuove attività"
     update_prompt:
       title: "☤ L'aggiornamento richiede il tuo input"
       default_hint: "\n\nPredefinito: `{default}`"

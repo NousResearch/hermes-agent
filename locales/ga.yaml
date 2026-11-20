@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Réamhamharc giorraithe: tá an t-ordú iomlán ({total} carachtar) sa teachtaireacht thuas."
     truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an t-ordú iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
     text_prompt_deny_only: "Tá an leid cheadaithe iomlán rófhada don ardán seo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
+    schedule_header: "Ba mhaith le Hermes jab a sceidealú"
+    schedule_action_once: "Ceadaigh"
+    schedule_action_session: "Ceadaigh don chomhrá seo"
+    schedule_action_always: "Ceadaigh jabanna nua i gcónaí"
+    schedule_deadline: "Mura bhfreagraíonn tú laistigh de {window} NÍ chruthófar an jab."
+    schedule_timed_out_notice: "⌛ Chuaigh an ceadú in éag tar éis {window} — níor cruthaíodh an jab. Iarr orm triail arís más mian leat é fós, nó ardaigh approvals.timeout in config.yaml."
+    schedule_text_choice_once: "Freagair `{prefix}approve` chun é a chruthú"
+    schedule_text_choice_session: "`{prefix}approve session` chun jabanna nua a cheadú don chuid eile den chomhrá seo"
+    schedule_text_choice_always: "`{prefix}approve always` chun jabanna nua a cheadú i gcónaí"
+    schedule_truncated_full_above: "Réamhamharc giorraithe: tá an jab iomlán ({total} carachtar) sa teachtaireacht thuas."
+    schedule_truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an jab iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip deisce."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "fuaime"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Ceadaithe don seisiún"
       resolved_always: "Ceadaithe go buan"
       resolved_deny: "Diúltaithe"
+      schedule_question: "Ar mhaith leat go gcruthódh Hermes an jab sceidealaithe seo?"
+      schedule_requested_command_label: "Jab:"
     slash_confirm:
       already_resolved: "Tá an leid seo réitithe cheana féin~"
       approve_once: "Ceadaigh uair amháin"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} ag {user}"
       expired: "⌛ Tá an cead imithe in éag"
       expired_detail: "{label} — ní raibh aon ordú ag fanacht. Chuaigh sé thar am cheana (agus diúltaíodh é) nó réitíodh é in áit eile."
+      schedule_action_once: "✅ Ceadaigh"
+      schedule_action_session: "✅ Ceadaigh don chomhrá seo"
+      schedule_action_always: "✅ Ceadaigh jabanna nua i gcónaí"
     slash_confirm:
       approve_once: "✅ Uair amháin"
       always_approve: "🔒 I gcónaí"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Ceadaithe don seisiún ag {user}"
       resolved_always: "✅ Ceadaithe go buan ag {user}"
       resolved_deny: "❌ Diúltaithe ag {user}"
+      schedule_fallback_text: "⚠️ Ba mhaith le Hermes jab a sceidealú: {command}"
     confirm:
       default_title: "Dearbhaigh"
       approve_once: "Ceadaigh uair amháin"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = diúltaigh"
       invalid_reaction: "Níl an frithghníomh sin bailí don leid cheada seo."
       expired: "Tá an leid cheada seo imithe in éag. Rith an t-ordú arís má tá tú fós ag iarraidh é a cheadú."
+      schedule_typed_hint_once: "Freagair `!approve` chun é a chruthú, nó `!deny` chun cealú."
+      schedule_typed_hint_session: "Freagair `!approve session` chun jabanna nua a cheadú don chuid eile den chomhrá seo, `!approve` chun é a chruthú, nó `!deny` chun cealú."
+      schedule_typed_hint_always: "Freagair `!approve session` chun jabanna nua a cheadú don chuid eile den chomhrá seo, `!approve always` chun jabanna nua a cheadú i gcónaí, `!approve` chun é a chruthú, nó `!deny` chun cealú."
     picker:
       no_models: "Níl aon samhail fhíordheimhnithe ar fáil don seisiún seo."
       title: "⚙ **Cumraíocht Samhla**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Diúltaithe"
       resolved_fallback: "Réitithe"
       resolved_by_user: "{icon} **{label}** ag {user}"
+      schedule_action_session: "Ceadaigh don chomhrá seo"
+      schedule_action_always: "Ceadaigh jabanna nua i gcónaí"
     update_prompt:
       title: "☤ Tá d'Ionchur de Dhíth ar an Nuashonrú"
       default_hint: "\n\nRéamhshocrú: `{default}`"

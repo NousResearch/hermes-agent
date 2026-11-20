@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Voorskou verkort: die volledige opdrag ({total} karakters) is in die boodskap hierbo."
     truncated_deny_only: "Voorskou verkort ({total} karakters) en die volledige opdrag kon nie hier gewys word nie, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
     text_prompt_deny_only: "Die volledige goedkeuringsboodskap is te lank vir hierdie platform, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
+    schedule_header: "Hermes wil 'n taak skeduleer"
+    schedule_action_once: "Laat toe"
+    schedule_action_session: "Laat toe vir hierdie klets"
+    schedule_action_always: "Laat nuwe take altyd toe"
+    schedule_deadline: "As jy nie binne {window} antwoord nie, sal die taak NIE geskep word nie."
+    schedule_timed_out_notice: "⌛ Goedkeuring het ná {window} verval — die taak is nie geskep nie. Vra my weer as jy dit nog wil hê, of verhoog approvals.timeout in config.yaml."
+    schedule_text_choice_once: "Antwoord `{prefix}approve` om dit te skep"
+    schedule_text_choice_session: "`{prefix}approve session` om nuwe take vir die res van hierdie klets toe te laat"
+    schedule_text_choice_always: "`{prefix}approve always` om nuwe take altyd toe te laat"
+    schedule_truncated_full_above: "Voorskou verkort: die volledige taak ({total} karakters) is in die boodskap hierbo."
+    schedule_truncated_deny_only: "Voorskou verkort ({total} karakters) en die volledige taak kon nie hier gewys word nie, dus word slegs Weier aangebied. Hersien dit in die CLI of die rekenaartoep."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "klank"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Vir sessie goedgekeur"
       resolved_always: "Permanent goedgekeur"
       resolved_deny: "Geweier"
+      schedule_question: "Wil jy hê Hermes moet hierdie geskeduleerde taak skep?"
+      schedule_requested_command_label: "Taak:"
     slash_confirm:
       already_resolved: "Hierdie prompt is reeds afgehandel~"
       approve_once: "Eenmalig goedkeur"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} deur {user}"
       expired: "⌛ Goedkeuring het verval"
       expired_detail: "{label} — geen opdrag het gewag nie. Dit het reeds uitgetel (en is geweier) of is elders afgehandel."
+      schedule_action_once: "✅ Laat toe"
+      schedule_action_session: "✅ Laat toe vir hierdie klets"
+      schedule_action_always: "✅ Laat nuwe take altyd toe"
     slash_confirm:
       approve_once: "✅ Eenmalig goedkeur"
       always_approve: "🔒 Altyd goedkeur"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Vir sessie goedgekeur deur {user}"
       resolved_always: "✅ Permanent goedgekeur deur {user}"
       resolved_deny: "❌ Geweier deur {user}"
+      schedule_fallback_text: "⚠️ Hermes wil 'n taak skeduleer: {command}"
     confirm:
       default_title: "Bevestig"
       approve_once: "Eenmalig goedkeur"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = weier"
       invalid_reaction: "Daardie reaksie is nie geldig vir hierdie goedkeuringsprompt nie."
       expired: "Hierdie goedkeuringsprompt het verval. Voer die opdrag weer uit as jy dit steeds wil goedkeur."
+      schedule_typed_hint_once: "Antwoord `!approve` om dit te skep, of `!deny` om te kanselleer."
+      schedule_typed_hint_session: "Antwoord `!approve session` om nuwe take vir die res van hierdie klets toe te laat, `!approve` om dit te skep, of `!deny` om te kanselleer."
+      schedule_typed_hint_always: "Antwoord `!approve session` om nuwe take vir die res van hierdie klets toe te laat, `!approve always` om nuwe take altyd toe te laat, `!approve` om dit te skep, of `!deny` om te kanselleer."
     picker:
       no_models: "Geen geverifieerde modelle is vir hierdie sessie beskikbaar nie."
       title: "⚙ **Modelkonfigurasie**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Geweier"
       resolved_fallback: "Afgehandel"
       resolved_by_user: "{icon} **{label}** deur {user}"
+      schedule_action_session: "Laat toe vir hierdie klets"
+      schedule_action_always: "Laat nuwe take altyd toe"
     update_prompt:
       title: "☤ Opdatering het jou insette nodig"
       default_hint: "\n\nVerstek: `{default}`"

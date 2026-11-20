@@ -582,18 +582,18 @@ def _format_exec_approval_fallback(
     steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
     answer a command the user could read in full (#62359)."""
     from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
+        approval_timeout_seconds, ea_header_text, ea_reason_label_text, ea_t, format_approval_deadline_line)
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
-    choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
+    choices = [ea_t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
     if not smart_denied and allow_session:
-        choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
+        choices.append(ea_t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
         if allow_permanent:
-            choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
+            choices.append(ea_t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
-    return (
-        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
+    return (  # the bound approval kind picks the wording (a schedule body is the job, unfenced)
+        ea_t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])

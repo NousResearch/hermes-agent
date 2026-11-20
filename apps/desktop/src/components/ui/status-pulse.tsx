@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, useEffect, useRef } from 'react'
 
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
+import { $reducedEffects } from '@/store/reduced-effects'
 
 const PULSE_DURATION_MS = 400
 const PULSE_PERIOD_MS = 5_000
@@ -94,6 +96,7 @@ export interface StatusPulseProps extends Omit<ComponentProps<'span'>, 'children
  */
 export function StatusPulse({ kind, opacity = 1, ...props }: StatusPulseProps) {
   const ref = useRef<HTMLSpanElement>(null)
+  const reducedEffects = useStore($reducedEffects)
 
   useEffect(() => {
     const element = ref.current
@@ -101,6 +104,7 @@ export function StatusPulse({ kind, opacity = 1, ...props }: StatusPulseProps) {
     if (
       !element ||
       typeof element.animate !== 'function' ||
+      reducedEffects ||
       window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     ) {
       return
@@ -136,7 +140,7 @@ export function StatusPulse({ kind, opacity = 1, ...props }: StatusPulseProps) {
       unsubscribe()
       cancel()
     }
-  }, [kind, opacity])
+  }, [kind, opacity, reducedEffects])
 
   return <span {...props} ref={ref} />
 }

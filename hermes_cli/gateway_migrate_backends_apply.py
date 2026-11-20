@@ -484,7 +484,14 @@ def _backup_digest(m: dict, key: str) -> Optional[str]:
 def _put_back(home: Path, m: dict, key: str, name: str) -> None:
     """Write ``home/name`` back from its backup, checked immediately before the write: only while it is
     exactly as this migration wrote it and the backup can be read. Otherwise nothing is written (the
-    caller keeps the old backend down and prints the manual steps)."""
+    caller keeps the old backend down and prints the manual steps). ``.env`` is checked and written under
+    the ``.env`` write lock Hermes' own writers take, as the apply's write is."""
+    from hermes_cli.config import _env_write_lock
+    with _env_write_lock(Path(home) / name) if name == ".env" else contextlib.nullcontext():
+        _put_back_checked(home, m, key, name)
+
+
+def _put_back_checked(home: Path, m: dict, key: str, name: str) -> None:
     target, backups = Path(home) / name, m["backups"]
     now, backup = _file_digest(target), backups.get(key)
     if backup is not None and _backup_digest(m, key) in (None, "unreadable"):

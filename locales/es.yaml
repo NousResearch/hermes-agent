@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  COMANDO PELIGROSO: {description}"
+  schedule_header: "⏰  ¿Programar esta tarea? {description}"
   choose_long: "      [o]una vez  |  [s]sesión  |  [a]siempre  |  [d]denegar"
   choose_short: "      [o]una vez  |  [s]sesión  |  [d]denegar"
   prompt_long: "      Opción [o/s/a/D]: "

@@ -1130,7 +1130,11 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Schedule recurring or one-off agent tasks (cron jobs): create, list, edit, run. action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
+    "description": """Proactively schedule reminders and checks: once, a few times, or recurring.
+
+Be proactive: when the conversation mentions something time-bound — an appointment, a trip, a deadline, a habit, something to re-check later (a flaky site, a deploy, a price) — create a job that would help without waiting to be asked, then tell the user what you scheduled. Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs (`repeat`) over an open-ended schedule. The user approves every new job before it is saved, so a declined job is a normal answer: never retry it.
+
+Cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -1165,7 +1169,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "repeat": {
                 "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "description": "Optional number of runs, after which the job completes (e.g. 'every day at 8am' + repeat=3 = the next three mornings). Omit for defaults (once for one-shot, forever for recurring)."
             },
             "deliver": {
                 "type": "string",
@@ -1259,9 +1263,45 @@ _HANDLER_FORWARDED_ARGS = (
     "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
+def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
+    """None when the model may create this job, else the JSON refusal. Asks the user through the shared
+    approval gate (CLI panel, TUI prompt, Desktop card, messaging /approve) only when someone is there to
+    answer: cron runs (``cron.allow_agent_scheduling``), ``-q`` and unattended platforms keep creating
+    jobs as before rather than turning a consent card nobody can see into a silent deny."""
+    from tools.approval import _presence, _run_approval_gate
+
+    _cb, is_cli, is_gateway, is_ask = _presence()
+    if not (is_cli or is_gateway or is_ask):
+        return None
+    schedule = str(args.get("schedule") or "")
+    try:
+        when = parse_schedule(schedule).get("display", schedule)
+    except ValueError:
+        return None  # create reports the bad schedule itself; nothing is saved
+    repeat = args.get("repeat")
+    runs = f", {repeat} runs" if isinstance(repeat, int) and repeat > 1 else ""
+    task = " ".join(str(args.get("prompt") or ", ".join(_clean_str_list(args.get("skills")) or [])).split())
+    task = task if len(task) <= 300 else task[:299] + "…"
+    name = args.get("name") or "new job"
+    result = _run_approval_gate(
+        pattern_key="cron_create", description=f"Schedule \"{name}\" ({when}{runs}): {task}",
+        display_target="<cronjob_manage> (schedule a new job)",
+        subject="Creating a scheduled job requires the user's approval", noun="scheduled jobs",
+        advice="Tell the user what you wanted to schedule; do not retry.",
+        autoapprove_log_prefix="cronjob create")
+    if result.get("approved"):
+        return None
+    return tool_error(result.get("message") or "The user declined this scheduled job. Do not retry it.",
+                      success=False, declined=True)
+
+
 def _cronjob_handler(args, **kw):
     """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
-    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted)."""
+    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted). A model-initiated
+    create waits for the user's approval first."""
+    if str(args.get("action") or "").strip().lower() == "create":
+        if (refusal := _creation_approval_error(args)) is not None:
+            return refusal
     _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
     return cronjob(
         action=args.get("action", ""),

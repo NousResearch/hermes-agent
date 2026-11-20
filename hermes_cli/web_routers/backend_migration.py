@@ -462,38 +462,34 @@ def _launcher_busy(home: Path) -> bool:
     return proc is not None and proc.poll() is None
 
 
-def _spawn(argv: list[str], target: Target):
+def _new_launch_log(home: Path) -> Path:
+    """An empty file, readable by its owner only, for one launcher's output: per launch and per home, read by
+    these routes alone (never the shared action log, which every profile's launches would share)."""
+    import tempfile
+    (Path(home) / "logs").mkdir(parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix="backend-migration-launch-", suffix=".log", dir=Path(home) / "logs")
+    os.close(fd)
+    return Path(path)
+
+
+def _spawn(argv: list[str], target: Target, launch_log: Path):
     """``hermes [-p <profile>] <argv>`` for the target's home: ``-p`` pins the child's home even where a sticky
     ``hermes profile use`` choice would re-home a bare ``HERMES_HOME`` (the default home), and gives a named
     profile the scrubbed environment every other profile action gets."""
     from hermes_cli.web_server_gateway import _spawn_hermes_action
     selector = ["-p", target.profile] if target.profile else []
-    proc = _spawn_hermes_action(selector + argv, ACTION_NAME, env_overrides={"HERMES_HOME": str(target.home)})
+    proc = _spawn_hermes_action(selector + argv, ACTION_NAME, env_overrides={"HERMES_HOME": str(target.home)},
+                                log_path=launch_log)
     with _LAUNCHERS_LOCK:
         _LAUNCHERS[str(target.home)] = proc
     return proc
 
 
-def action_log_path() -> Path:
-    """The action log the launchers write into (the live value: tests point the directory elsewhere)."""
-    import hermes_cli.web_server_gateway as gw
-    return Path(gw._ACTION_LOG_DIR) / gw._ACTION_LOG_FILES[ACTION_NAME]
-
-
-def _action_log_size() -> int:
+def _launcher_report(home: Path, launch_log: Path) -> Optional[dict]:
+    """The launcher's own ``--json`` answer for *home*, from this launch's own output file (a start names
+    its run log; a refusal names none)."""
     try:
-        return action_log_path().stat().st_size
-    except OSError:
-        return 0
-
-
-def _launcher_report(home: Path, offset: int) -> Optional[dict]:
-    """The launcher's own ``--json`` answer for *home* (it writes into this process's action log, shared by
-    every home: a start names its run log; a refusal names none), from the bytes written since *offset*."""
-    try:
-        with action_log_path().open("rb") as fh:
-            fh.seek(offset)
-            tail = fh.read().decode("utf-8", "replace")
+        tail = launch_log.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return None
     mine = str(_log_path(home))
@@ -510,8 +506,7 @@ def _launcher_report(home: Path, offset: int) -> Optional[dict]:
                     started = data
                 elif "log" not in data:
                     refused = data
-    # A start names its run log, so it is this launch's even when another launcher for the same home
-    # (refused: busy) wrote after it; a refusal line names none and counts only without a start.
+    # A start line wins over a busy line in the same output; a refusal counts only without a start.
     return started or refused
 
 
@@ -537,14 +532,20 @@ def _launch(argv: list[str], target: Target) -> Launch:
     requests (to this process or to another server of this home) can never both start a migration."""
     import subprocess
     from hermes_cli.gateway_migrate_backends_lock import ACK_WAIT_SECONDS
-    offset = _action_log_size()
-    proc = _spawn(argv, target)
-    _forget_scan(target.home)
+    launch_log = _new_launch_log(target.home)
     try:
-        code = proc.wait(timeout=ACK_WAIT_SECONDS + 30)
-    except subprocess.TimeoutExpired:
-        return Launch(proc.pid, "unconfirmed", None)
-    report = _launcher_report(target.home, offset) or {}
+        proc = _spawn(argv, target, launch_log)
+        _forget_scan(target.home)
+        try:
+            code = proc.wait(timeout=ACK_WAIT_SECONDS + 30)
+        except subprocess.TimeoutExpired:
+            return Launch(proc.pid, "unconfirmed", None)
+        report = _launcher_report(target.home, launch_log) or {}
+    finally:
+        try:
+            launch_log.unlink(missing_ok=True)
+        except OSError:  # Windows: the timed-out launcher still holds it open
+            pass
     if code == 6:  # the launcher's own plan is unsupported (manual steps only): it started nothing
         return Launch(proc.pid, "unsupported", code)
     if code == 3:  # nothing changed: another run holds the lock, or the run could not be started

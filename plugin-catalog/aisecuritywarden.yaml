@@ -1,0 +1,16 @@
+name: aisecuritywarden
+repo: https://github.com/SoftDevEng/aiSecurityWarden-hermes
+sha: eb47333f889c28559d6e77923425da42973a6ac6
+description: Secret source that loads the API keys a revocable aiSecurityWarden machine token may read
+  (end-to-end encrypted, optional phone approval) at Hermes startup. Bulk source "aisecuritywarden";
+  runs the aiSecurityWarden client's swctl, so the token never enters Hermes.
+maintainer: SoftDevEng
+tier: community
+category: general
+version: "0.7.14"
+docs_url: https://github.com/SoftDevEng/aiSecurityWarden-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

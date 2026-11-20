@@ -1,12 +1,13 @@
-"""Tests for the MOA progress indicator added in issue #59546.
+"""Tests for the MoA progress indicator added in issue #59546.
 
 The MoA facade (``MoAChatCompletions.create``) emits a sequence of display
 events so a TUI / CLI / desktop surface can render progress as references
 complete and the phase transitions from ``reference`` to ``aggregator``:
 
-  - ``moa.progress`` — fired once per reference completion with
-                       ``refs_done`` and ``refs_total`` (e.g. drives a
-                       status-bar ``MOA: 2/3 refs done`` indicator)
+  - ``moa.progress`` — fired once per settled reference slot with
+                       ``state="completed"`` and monotonic ``refs_done`` /
+                       ``refs_total`` counters; separate ``state="waiting"``
+                       heartbeats report dispatch and pending work
   - ``moa.phase``    — fired once per phase transition (currently only the
                        ``phase="aggregator"`` transition right before the
                        aggregator acts)
@@ -19,6 +20,7 @@ real provider.
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -70,6 +72,97 @@ def _collect_emits(facade):
     return captured
 
 
+
+
+def test_moa_progress_emits_dispatch_and_waiting_heartbeats(moa_config, monkeypatch):
+    """A slow advisor is visible immediately and remains visibly alive."""
+    from agent import moa_loop
+
+    release = threading.Event()
+    second_heartbeat = threading.Event()
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.02)
+    monkeypatch.setattr(moa_loop, "_reference_context_length", lambda *_args: None)
+
+    def slow_call_llm(**kwargs):
+        if kwargs.get("task") == "moa_reference":
+            release.wait(timeout=2)
+            return _response("advice")
+        return _response("acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
+    facade = moa_loop.MoAChatCompletions("closed")
+    captured = []
+
+    def capture(event, **kwargs):
+        captured.append((event, kwargs))
+        if event == "moa.progress" and kwargs.get("state") == "waiting":
+            waiting = [
+                item for item in captured
+                if item[0] == "moa.progress" and item[1].get("state") == "waiting"
+            ]
+            if len(waiting) >= 2:
+                second_heartbeat.set()
+
+    facade.reference_callback = capture
+    worker = threading.Thread(
+        target=lambda: facade.create(
+            model="closed",
+            messages=[{"role": "user", "content": "pressure-test this"}],
+        )
+    )
+    worker.start()
+
+    try:
+        assert second_heartbeat.wait(timeout=1), "a pending fan-out must emit a periodic heartbeat"
+        waiting = [
+            kwargs
+            for event, kwargs in captured
+            if event == "moa.progress" and kwargs.get("state") == "waiting"
+        ]
+        assert waiting[0]["refs_done"] == 0
+        assert waiting[0]["refs_total"] == 3
+        assert waiting[0]["elapsed_seconds"] == 0
+        assert waiting[0]["label"].startswith("waiting on 3 advisors")
+        assert not any(event == "moa.reference" for event, _ in captured)
+    finally:
+        release.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    completed = [
+        kwargs
+        for event, kwargs in captured
+        if event == "moa.progress" and kwargs.get("state") == "completed"
+    ]
+    assert [item["refs_done"] for item in completed] == [1, 2, 3]
+
+
+def test_failed_references_emit_terminal_progress(moa_config, monkeypatch):
+    """A failed provider call settles its slot and advances terminal progress."""
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "_reference_context_length", lambda *_args: None)
+
+    def fail_references(**kwargs):
+        if kwargs.get("task") == "moa_reference":
+            raise RuntimeError("advisor unavailable")
+        return _response("acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fail_references)
+    facade = moa_loop.MoAChatCompletions("closed")
+    captured = _collect_emits(facade)
+    facade.create(
+        model="closed",
+        messages=[{"role": "user", "content": "handle unavailable advisors"}],
+    )
+
+    completed = [
+        kwargs
+        for event, kwargs in captured
+        if event == "moa.progress" and kwargs.get("state") == "completed"
+    ]
+    assert [item["refs_done"] for item in completed] == [1, 2, 3]
+    assert all(text.startswith("[failed:") for _, text, _ in facade._ref_cache_outputs)
 
 
 def test_moa_phase_transitions_to_aggregator(moa_config, monkeypatch):

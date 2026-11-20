@@ -26,7 +26,8 @@ _TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_
 _DESKTOP_UI_TOKEN = "__desktop_ui_token__"
 # MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload tui_gateway/tool_progress emits.
 _MOA_KEYS = {"moa.reference": {"moa_index": "index", "moa_count": "count"},
-             "moa.progress": {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
+             "moa.progress": {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total",
+                              "moa_progress_state": "state", "moa_elapsed_seconds": "elapsed_seconds"},
              "moa.phase": {"moa_phase": "phase", "moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
              "moa.aggregating": {}}
 

@@ -16,6 +16,51 @@ const row = (id: string, role: 'user' | 'assistant', text: string, extra: Partia
   ...extra
 })
 
+/** A stored page whose last turn failed with a rate limit that names its reset. */
+const failedTurnPage = (): Parameters<typeof toChatMessages>[0] => [
+  { id: 42, role: 'user', content: 'read it', timestamp: 1 },
+  {
+    id: 43,
+    role: 'assistant',
+    content: 'Your request was not processed.',
+    timestamp: 2,
+    display_kind: 'failed_turn',
+    display_metadata: {
+      error: 'rate limited',
+      error_surface: {
+        code: 'rate_limit',
+        layer: 'provider',
+        provider: 'openai-codex',
+        retryable: true,
+        resets_at: 1_900_000_000
+      }
+    }
+  }
+]
+
+it('keeps the live recovery card mounted when the same admitted turn is refreshed', () => {
+  const stored = toChatMessages(failedTurnPage())
+  const failure = { ...stored[1], id: 'assistant-stream', rowId: undefined }
+
+  const refresh = (rowId: number) =>
+    preserveLocalAssistantErrors(stored, [row('user-live', 'user', 'read it', { rowId }), failure])
+
+  expect(refresh(42).at(-1)).toMatchObject({ id: failure.id, rowId: 43, errorSurface: failure.errorSurface })
+  expect(refresh(41).find(message => message.rowId === 43)?.id).toBe(stored[1].id)
+})
+
+it('keeps that identity through the refreshes that follow the first one', () => {
+  const stored = toChatMessages(failedTurnPage())
+  const failure = { ...stored[1], id: 'assistant-stream', rowId: undefined }
+  const armed = preserveLocalAssistantErrors(stored, [row('user-live', 'user', 'read it', { rowId: 42 }), failure])
+
+  const second = preserveLocalAssistantErrors(toChatMessages(failedTurnPage()), armed)
+  const third = preserveLocalAssistantErrors(toChatMessages(failedTurnPage()), second)
+
+  expect(second.at(-1)).toMatchObject({ id: failure.id, rowId: 43 })
+  expect(third.at(-1)).toMatchObject({ id: failure.id, rowId: 43 })
+})
+
 it('reconciles only the represented failed tail, retaining its structured error and omitted segments', () => {
   const hydrated = toChatMessages([
     { role: 'user', content: 'read it', timestamp: 1 },

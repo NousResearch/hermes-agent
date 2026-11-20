@@ -676,16 +676,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const failure = message.display_kind === 'failed_turn' ? failedTurnError(message.display_metadata) : null
 
     if (failure) {
-      // Stands for no backend row of its own; the boundary row below counts itself.
+      // The card already explains the failure. A second, generic notice after it would
+      // become the head of the thread and disable recovery actions on the actual error.
       result.push({
-        id: `${message.timestamp || Date.now()}-${index}-failed-turn-error`,
+        id: rowId === undefined ? `${message.timestamp || Date.now()}-${index}-failed-turn-error` : `failed-turn-${rowId}`,
         role: 'assistant',
         parts: [],
         pending: false,
-        serverRowSpan: 0,
         ...failure,
+        ...(rowId !== undefined ? { rowId } : {}),
         ...(message.timestamp ? { timestamp: message.timestamp } : {})
       })
+      activeAssistantIndex = null
+
+      return
     }
 
     const reactions = messageReactions(message.display_metadata)

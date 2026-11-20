@@ -366,6 +366,45 @@ function toolCallTwinIndex(
   return twin === -1 ? -1 : turnStart + twin
 }
 
+// A failed turn arrives live before its boundary row is hydrated. When both
+// snapshots agree on the admitted user row, reuse the live card's identity so
+// React keeps a scheduled retry armed. Never transfer it by prompt text alone.
+// Repeats on every later refresh: the card it adopts then carries the rowId, and
+// the twin below matches it by address, so the same identity must survive there.
+const lastVisibleIndex = (messages: ChatMessage[]): number =>
+  messages.findLastIndex(message => !message.hidden)
+
+function retainScheduledRetryIdentity(
+  stored: ChatMessage[],
+  current: ChatMessage[],
+  localIndex: number,
+  storedIndex: number
+): void {
+  const local = current[localIndex]
+
+  if (current.findLast(message => !message.hidden) !== local || lastVisibleIndex(stored) !== storedIndex) {
+    return
+  }
+
+  const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+  const localUser = current.slice(0, localIndex).findLast(visibleUser)
+
+  if (localUser?.rowId === undefined || stored.findLast(visibleUser)?.rowId !== localUser.rowId) {
+    return
+  }
+
+  const card = stored[storedIndex]
+  const reset = local.errorSurface?.resetsAt
+
+  if (
+    card?.role === 'assistant' && card.rowId !== undefined && !card.parts.length && card.error &&
+    !local.parts.length && reset !== undefined && card.errorSurface?.resetsAt === reset &&
+    card.errorSurface?.code === local.errorSurface?.code && card.errorSurface?.provider === local.errorSurface?.provider
+  ) {
+    stored[storedIndex] = { ...card, id: local.id }
+  }
+}
+
 // The refresh already carries this tail turn's error card, rebuilt from its
 // failed-turn boundary row (see hydration `failedTurnError`).
 function persistedTailErrorMatches(
@@ -488,6 +527,8 @@ function localAssistantErrorIdsToPreserve(
     const twinIndex = storedFailedTurnIndex(mergedNextMessages, currentMessages, index, hydratedId)
 
     if (twinIndex === 'represented') {
+      retainScheduledRetryIdentity(mergedNextMessages, currentMessages, index, lastVisibleIndex(mergedNextMessages))
+
       continue
     }
 
@@ -498,6 +539,8 @@ function localAssistantErrorIdsToPreserve(
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         pending: false
       }
+
+      retainScheduledRetryIdentity(mergedNextMessages, currentMessages, index, twinIndex)
 
       continue
     }

@@ -90,16 +90,32 @@ function offerFromStatus(status: unknown): InAppOfferPayload | null {
   }
 
   const offer = candidate as Partial<InAppOfferPayload>
+  const filled = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
 
-  return typeof offer.id === 'string' &&
-    offer.id.length > 0 &&
-    typeof offer.title === 'string' &&
-    typeof offer.body === 'string' &&
-    typeof offer.cta_label === 'string' &&
-    typeof offer.cta_url === 'string'
+  return filled(offer.id) &&
+    filled(offer.title) &&
+    filled(offer.body) &&
+    filled(offer.cta_label) &&
+    filled(offer.cta_url) &&
+    isHttpsUrl(offer.cta_url)
     ? (offer as InAppOfferPayload)
     : null
 }
+
+/** The CTA opens through the external opener, which also opens local paths
+ * and `file:` URLs, so only an https link with a host is ever shown. */
+function isHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+
+    return url.protocol === 'https:' && url.hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
+/** Dismissed ids kept: far more than campaigns ever run at once. */
+const MAX_DISMISSED_IDS = 50
 
 /** Record that this offer was presented, starting the frequency cap. */
 export function markInAppOfferShown(): void {
@@ -111,7 +127,7 @@ export function markInAppOfferShown(): void {
  * window (same localStorage) is kept rather than overwritten. */
 export function dismissInAppOffer(id: string): void {
   const stored = storedStringArray(DISMISSED_KEY)
-  const next = stored.includes(id) ? stored : [...stored, id]
+  const next = stored.includes(id) ? stored : [...stored, id].slice(-MAX_DISMISSED_IDS)
 
   persistStringArray(DISMISSED_KEY, next)
   $dismissedIds.set(next)
@@ -261,6 +277,11 @@ export function startInAppOfferRefresh(requestGateway: FreeTierRequester): () =>
   let timer: null | ReturnType<typeof setTimeout> = null
 
   const run = async () => {
+    // The status this refresh answers for. If it changed while the read was
+    // in flight (a profile switch, or a newer status poll that carries its own
+    // offer), the answer is stale for what is on screen now: drop it.
+    const before = $freeTierStatus.get()
+
     try {
       const result = await requestGateway<{ in_app_offer?: InAppOfferPayload | null }>('in_app_offer.refresh')
 
@@ -269,10 +290,14 @@ export function startInAppOfferRefresh(requestGateway: FreeTierRequester): () =>
       }
 
       const status = $freeTierStatus.get()
+      const offer = result?.in_app_offer ?? null
 
-      if (status) {
+      // Only write when the offer actually changed: a new status object would
+      // re-arm every other status listener (the sign-in nudge reschedules on
+      // each one, and a write every half hour would keep postponing it).
+      if (status && status === before && offerFromStatus(status)?.id !== offerFromStatus({ in_app_offer: offer })?.id) {
         // Same atom the status poll writes, so one decision path reads both.
-        $freeTierStatus.set({ ...status, in_app_offer: result?.in_app_offer ?? null })
+        $freeTierStatus.set({ ...status, in_app_offer: offer })
       }
     } catch {
       // Older backend without the method, or a transient failure: stay quiet.
@@ -299,13 +324,16 @@ const REPORTED_KEY = 'hermes.in-app-offer.reported-v1'
 
 export type InAppOfferEvent = 'clicked' | 'shown'
 
+/** Reports in flight in this window, so a re-render never sends one twice. */
+const inFlight = new Set<string>()
+
 /**
- * Tell the Portal the offer was shown or clicked, once per offer per event
- * on this install (the Portal's campaign counts). The record is written
- * before the call, so a second window or a retry never double-counts; a
- * report that fails is not retried, since a count is not worth a second
- * request. Silent on any failure, including an older backend without the
- * method.
+ * Tell the Portal the offer was shown or clicked (the Portal's campaign
+ * counts). The Portal counts each person once per offer and event, so a
+ * repeat is harmless; this record only saves requests. It is written once the
+ * Portal took the report, so a report lost to an expired token or a network
+ * blip is sent again the next time. Silent on any failure, including an older
+ * backend without the method.
  */
 export function reportInAppOfferEvent(
   requestGateway: FreeTierRequester,
@@ -315,13 +343,24 @@ export function reportInAppOfferEvent(
   const key = `${offerId}:${event}`
   const reported = storedStringArray(REPORTED_KEY)
 
-  if (reported.includes(key)) {
+  if (reported.includes(key) || inFlight.has(key)) {
     return
   }
 
-  // Bounded like the dismissed list's growth: keep the newest entries.
-  persistStringArray(REPORTED_KEY, [...reported, key].slice(-100))
-  void requestGateway('in_app_offer.report', { event, offer_id: offerId }).catch(() => undefined)
+  inFlight.add(key)
+  void requestGateway<{ reported?: boolean }>('in_app_offer.report', { event, offer_id: offerId })
+    .then(result => {
+      if (result?.reported) {
+        // Re-read: another window may have recorded meanwhile. Newest kept.
+        const latest = storedStringArray(REPORTED_KEY)
+
+        if (!latest.includes(key)) {
+          persistStringArray(REPORTED_KEY, [...latest, key].slice(-100))
+        }
+      }
+    })
+    .catch(() => undefined)
+    .finally(() => inFlight.delete(key))
 }
 
 /** Test seam: reset module state between cases. */
@@ -331,4 +370,5 @@ export function resetInAppOfferStateForTest(): void {
   $dismissedIds.set(storedStringArray(DISMISSED_KEY))
   persistString(LAST_SHOWN_KEY, null)
   persistStringArray(REPORTED_KEY, [])
+  inFlight.clear()
 }

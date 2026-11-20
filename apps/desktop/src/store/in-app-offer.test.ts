@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerDraft } from '@/store/composer'
-import { $freeTierStatus } from '@/store/free-tier'
+import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
 import { $freeTierSignIn } from '@/store/free-tier-sign-in'
 import {
   $inAppOfferDialog,
   appIsIdle,
   claimInAppOffer,
   dismissInAppOffer,
+  eligibleOffer,
   FIRST_REFRESH_DELAY_MS,
   IDLE_SETTLE_MS,
   inAppOfferClaim,
@@ -196,6 +197,21 @@ describe('listenInAppOfferStatus', () => {
   })
 })
 
+describe('offer validation', () => {
+  it.each([
+    ['http', 'http://portal.nousresearch.com/x'],
+    ['a local path', '/Users/me/secret'],
+    ['file', 'file:///etc/passwd'],
+    ['javascript', 'javascript:alert(1)']
+  ])('never shows a %s CTA (the external opener opens local paths)', (_label, url) => {
+    expect(eligibleOffer(statusWith({ ...OFFER, cta_url: url }))).toBeNull()
+  })
+
+  it('never shows an offer with a blank title', () => {
+    expect(eligibleOffer(statusWith({ ...OFFER, title: '  ' }))).toBeNull()
+  })
+})
+
 describe('dismissInAppOffer', () => {
   it('closes the dialog and never re-opens that offer', () => {
     syncInAppOffer(statusWith(), IDLE)
@@ -303,6 +319,39 @@ describe('startInAppOfferRefresh', () => {
     stop()
   })
 
+  it('drops an answer that arrives after the status changed (a profile switch)', async () => {
+    vi.useFakeTimers()
+    $freeTierStatus.set(statusWith(null))
+    let answer: (value: unknown) => void = () => undefined
+    const request = vi.fn(() => new Promise(resolve => (answer = resolve)))
+    const stop = startInAppOfferRefresh(request as unknown as FreeTierRequester)
+
+    await vi.advanceTimersByTimeAsync(FIRST_REFRESH_DELAY_MS)
+    // Profile B's status lands while profile A's refresh is in flight.
+    const profileB = statusWith(null)
+    $freeTierStatus.set(profileB)
+    answer({ in_app_offer: OFFER })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($freeTierStatus.get()).toBe(profileB)
+
+    stop()
+  })
+
+  it('leaves the status object alone when the offer did not change', async () => {
+    vi.useFakeTimers()
+    const status = statusWith()
+    $freeTierStatus.set(status)
+    const stop = startInAppOfferRefresh(vi.fn().mockResolvedValue({ in_app_offer: OFFER }))
+
+    await vi.advanceTimersByTimeAsync(FIRST_REFRESH_DELAY_MS)
+
+    // A fresh object would re-arm every status listener (the sign-in nudge).
+    expect($freeTierStatus.get()).toBe(status)
+
+    stop()
+  })
+
   it('stays quiet when the backend lacks the method', async () => {
     vi.useFakeTimers()
     $freeTierStatus.set(statusWith())
@@ -318,10 +367,14 @@ describe('startInAppOfferRefresh', () => {
 })
 
 describe('reportInAppOfferEvent', () => {
-  it('reports each event once per offer on this install', () => {
+  it('reports each event once per offer on this install', async () => {
     const requestGateway = vi.fn().mockResolvedValue({ reported: true })
 
     reportInAppOfferEvent(requestGateway, 'offer_1', 'shown')
+    // In flight: a re-render sends nothing more.
+    reportInAppOfferEvent(requestGateway, 'offer_1', 'shown')
+    await vi.waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+    await Promise.resolve()
     reportInAppOfferEvent(requestGateway, 'offer_1', 'shown')
     reportInAppOfferEvent(requestGateway, 'offer_1', 'clicked')
     reportInAppOfferEvent(requestGateway, 'offer_2', 'shown')
@@ -333,14 +386,27 @@ describe('reportInAppOfferEvent', () => {
     ])
   })
 
-  it('does not re-report after a renderer restart (the record is in storage)', () => {
+  it('does not re-report after a renderer restart (the record is in storage)', async () => {
     const first = vi.fn().mockResolvedValue({ reported: true })
     reportInAppOfferEvent(first, 'offer_1', 'shown')
+    await vi.waitFor(() => expect(first).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     const afterRestart = vi.fn().mockResolvedValue({ reported: true })
     reportInAppOfferEvent(afterRestart, 'offer_1', 'shown')
 
     expect(afterRestart).not.toHaveBeenCalled()
+  })
+
+  it('sends a report again when the Portal did not take it (an expired token)', async () => {
+    const lost = vi.fn().mockResolvedValue({ reported: false })
+    reportInAppOfferEvent(lost, 'offer_1', 'shown')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const retry = vi.fn().mockResolvedValue({ reported: true })
+    reportInAppOfferEvent(retry, 'offer_1', 'shown')
+
+    expect(retry).toHaveBeenCalledWith('in_app_offer.report', { event: 'shown', offer_id: 'offer_1' })
   })
 
   it('stays silent when the backend lacks the method', async () => {

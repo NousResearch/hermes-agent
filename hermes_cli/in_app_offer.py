@@ -17,13 +17,22 @@ seed runs only for a Nous session.
 Dismissal is deliberately not stored here. It is a presentation fact and lives
 on the client (keyed by offer id), so the backend never has to be told what the
 user has already seen. The memo only mirrors what the Portal currently serves.
+
+Each memo entry remembers the account it was evaluated for and when. A
+different account on the profile (a logout and another login, a guest that
+claimed an account, a switched portal) never sees it, and an entry older than
+``MEMO_TTL_SECONDS`` is dropped: an offer that could not be re-checked for a day
+(an idle user's expired token) may have ended.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
+import time
+import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
@@ -31,9 +40,12 @@ from hermes_cli.anon_auth import _mint_memo_key
 
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
-# Profile memo key -> the offer dict as served by the Portal (already
-# shape-checked by record_from_account_payload).
-_offers: dict[str, dict[str, str]] = {}
+# Profile memo key -> (account identity, recorded at, the offer as served by the
+# Portal, already shape-checked by record_from_account_payload).
+_offers: dict[str, tuple[str, float, dict[str, str]]] = {}
+
+#: An offer the Portal has not re-confirmed for this long is dropped.
+MEMO_TTL_SECONDS = 24 * 60 * 60
 
 _REQUIRED_STRINGS = ("id", "title", "body", "cta_label", "cta_url")
 
@@ -48,11 +60,12 @@ def record_from_account_payload(payload: dict[str, Any]) -> None:
     offer = payload.get("in_app_offer") if isinstance(payload, dict) else None
     checked = _validated(offer)
     key = _mint_memo_key()
+    identity = _account_identity()
     with _lock:
-        if checked is None:
+        if checked is None or identity is None:
             _offers.pop(key, None)
         else:
-            _offers[key] = checked
+            _offers[key] = (identity, time.time(), checked)
 
 
 def clear() -> None:
@@ -72,13 +85,43 @@ def pending_offer() -> Optional[dict[str, str]]:
     """
     key = _mint_memo_key()
     with _lock:
-        offer = _offers.get(key)
-    if offer is None:
+        entry = _offers.get(key)
+    if entry is None:
         return None
-    if not _signed_in():
+    identity, recorded_at, offer = entry
+    if (
+        not _signed_in()
+        or _account_identity() != identity
+        or time.time() - recorded_at > MEMO_TTL_SECONDS
+    ):
         clear()
         return None
     return dict(offer)
+
+
+def _account_identity() -> Optional[str]:
+    """Which account the stored login is, stable across token refreshes: the portal plus the
+    JWT's user and org, or for a guest its anon credential (its access token is minted on
+    demand, so may be absent). None when there is no identity to key on."""
+    from hermes_cli.anon_auth import is_guest_state
+    from hermes_cli.auth import get_provider_auth_state
+    from hermes_cli.auth_constants import _decode_jwt_claims
+    from hermes_cli.nous_account import _portal_base_url
+
+    state = get_provider_auth_state("nous") or {}
+    portal = _portal_base_url(state) or ""
+    if is_guest_state(state):
+        anon = state.get("anon_token")
+        if isinstance(anon, str) and anon:
+            return f"{portal}:guest:{hashlib.sha256(anon.encode()).hexdigest()}"
+    token = state.get("access_token")
+    if not isinstance(token, str) or not token:
+        return None
+    claims = _decode_jwt_claims(token)
+    sub, org = claims.get("sub"), claims.get("org_id")
+    if isinstance(sub, str) and sub and isinstance(org, str) and org:
+        return f"{portal}:jwt:{sub}:{org}"
+    return f"{portal}:token:{hashlib.sha256(token.encode()).hexdigest()}"
 
 
 def _signed_in() -> bool:
@@ -127,10 +170,12 @@ def refresh_from_portal() -> Optional[dict[str, str]]:
 
 
 def _validated(value: Any) -> Optional[dict[str, str]]:
-    """The five wire fields as non-empty strings, or None.
+    """The five wire fields as non-empty strings, with an https CTA, or None.
 
     Shape-checks rather than trusting the JSON: the payload crosses a network
-    boundary, and a half-formed offer must never reach a dialog.
+    boundary, and a half-formed offer must never reach a dialog. The CTA must be
+    an https URL with a host: the desktop's external opener also opens local
+    paths and ``file:`` URLs, and the Portal only guarantees https at create.
     """
     if not isinstance(value, dict):
         return None
@@ -140,6 +185,10 @@ def _validated(value: Any) -> Optional[dict[str, str]]:
         if not isinstance(text, str) or not text.strip():
             return None
         checked[field_name] = text
+    url = urllib.parse.urlsplit(checked["cta_url"].strip())
+    if url.scheme != "https" or not url.hostname:
+        return None
+    checked["cta_url"] = checked["cta_url"].strip()
     return checked
 
 
@@ -150,12 +199,13 @@ REPORTABLE_EVENTS = ("shown", "clicked")
 def report_event(offer_id: str, event: str) -> bool:
     """Tell the Portal this offer was shown or clicked (``POST /api/oauth/account/in-app-offer-event``).
 
-    Best-effort and fire-once from the caller's side: the desktop records what it already
-    reported per offer, so the counts stay close to people. Uses the stored token as it is,
-    never refreshing it (the same rule as ``refresh_from_portal``), and reports nothing when
-    signed out or for an offer this profile was not served. Returns whether the Portal took it.
+    Best-effort. The Portal counts each person once per offer and event, so a repeat from
+    another surface or a retry is harmless. Uses the stored token as it is, never refreshing it
+    (the same rule as ``refresh_from_portal``); a guest whose short-lived access token has lapsed
+    sends its anon credential, which the route also accepts. Reports nothing when signed out or
+    for an offer this profile was not served. Returns whether the Portal took it.
     """
-    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token
+    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token, is_guest_state
     from hermes_cli.auth import get_provider_auth_state
     from hermes_cli.nous_account import _portal_base_url
 
@@ -170,6 +220,9 @@ def report_event(offer_id: str, event: str) -> bool:
     if guest_without_free_tier(state):
         return False
     token = held_connectors_token(state, skew_seconds=60)
+    if not token and is_guest_state(state):
+        anon = state.get("anon_token")
+        token = anon if isinstance(anon, str) and anon else None
     if not token:
         return False
     base = (_portal_base_url(state) or "https://portal.nousresearch.com").rstrip("/")

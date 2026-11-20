@@ -258,3 +258,55 @@ def test_report_never_raises_on_a_network_failure(_signed_in, monkeypatch):
     monkeypatch.setattr(in_app_offer.urllib.request, "urlopen", boom)
 
     assert in_app_offer.report_event("offer_1", "shown") is False
+
+
+def test_another_account_on_the_profile_never_sees_the_offer(_signed_in):
+    """A free account's offer must not reach a paid account that logs in on the same profile."""
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    _signed_in["nous"] = {"access_token": "another-accounts-token", "auth_method": "oauth"}
+
+    assert in_app_offer.pending_offer() is None
+
+
+def test_a_token_refresh_for_the_same_account_keeps_the_offer(_signed_in, monkeypatch):
+    """The identity is the JWT's user and org, so a refreshed token is the same account."""
+    from hermes_cli import auth_constants
+
+    monkeypatch.setattr(auth_constants, "_decode_jwt_claims", lambda token: {"sub": "u1", "org_id": "o1"})
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    _signed_in["nous"] = {"access_token": "refreshed-token", "auth_method": "oauth"}
+
+    assert in_app_offer.pending_offer() == OFFER
+
+
+def test_an_offer_not_reconfirmed_for_a_day_is_dropped(monkeypatch):
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+    later = in_app_offer.time.time() + in_app_offer.MEMO_TTL_SECONDS + 1
+    monkeypatch.setattr(in_app_offer.time, "time", lambda: later)
+
+    assert in_app_offer.pending_offer() is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://portal.nousresearch.com/x", "file:///etc/passwd", "/Users/me/secret", "javascript:alert(1)", "https://"],
+)
+def test_a_non_https_cta_never_lands(url):
+    """The desktop's external opener also opens local paths and file: URLs."""
+    in_app_offer.record_from_account_payload({"in_app_offer": {**OFFER, "cta_url": url}})
+
+    assert in_app_offer.pending_offer() is None
+
+
+def test_a_guest_with_a_lapsed_access_token_reports_with_its_anon_credential(_signed_in, _posts, monkeypatch):
+    """A guest's access token lives 15 minutes; the dialog opens long after the last fetch."""
+    from hermes_cli import anon_auth
+
+    _signed_in["nous"] = {"auth_method": anon_auth.ANON_AUTH_METHOD, "anon_token": "anon_abc"}
+    monkeypatch.setattr(anon_auth, "guest_without_free_tier", lambda state: False)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.report_event("offer_1", "shown") is True
+    assert _posts[0]["auth"] == "Bearer anon_abc"

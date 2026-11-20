@@ -36,5 +36,15 @@ export const enApproval: ApprovalCopy = {
     title: 'Website access',
     alwaysTitle: 'Always allow this site?',
     alwaysDescription: 'The site is added to this profile’s allowed sites. Hermes won’t ask again for it in any chat.'
+  },
+  schedule: {
+    title: 'Schedule this job?',
+    allowSession: 'Allow for this chat',
+    alwaysAllowMenu: 'Always allow new jobs…',
+    alwaysTitle: 'Always allow new scheduled jobs?',
+    alwaysDescription:
+      'Hermes will create scheduled jobs without asking first. You can turn this back on by removing cron_create from command_allowlist in config.yaml.',
+    timedOutSystemLine:
+      'Approval timed out — the job was not created. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.'
   }
 }

@@ -282,6 +282,8 @@ export const zhOverrides = {
       accessTitleNamed: session => `需要文件夹访问权限 — ${session}`,
       networkTitle: '需要网站访问权限',
       networkTitleNamed: session => `需要网站访问权限 — ${session}`,
+      scheduleTitle: 'Hermes 想要安排一个任务',
+      scheduleTitleNamed: session => `Hermes 想要安排一个任务 — ${session}`,
       allowAction: '允许',
       denyAction: '拒绝',
       inputTitle: '需要输入',

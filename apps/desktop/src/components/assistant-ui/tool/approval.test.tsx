@@ -405,6 +405,35 @@ describe('PendingApprovalStack', () => {
   })
 })
 
+describe('schedule approval card', () => {
+  it('draws a new job as "Schedule this job?" with its description, Deny / Allow; the same target without a kind stays a command card', () => {
+    const description =
+      'Schedule "Water reminder" (every 2h, first run Fri 10:00 PST, forever): Remind me to drink a glass of water'
+    const job = { command: '<cronjob_manage> (schedule a new job)', description, requestId: 'apr-job', sessionId: 'sess-1' }
+
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({ ...job, kind: 'schedule' })
+    const { container, unmount } = render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Schedule this job?')).toBeTruthy()
+    expect(screen.getByText(description)).toBeTruthy()
+    expect(container.querySelector('[data-approval-kind="schedule"] .codicon-watch')).not.toBeNull()
+    expect(container.querySelector('[data-approval-run]')?.textContent).toContain('Allow')
+    expect(container.querySelector('[data-approval-deny]')?.textContent).toBe('Deny')
+    expect(screen.queryByText(/cronjob_manage|Command|Run/)).toBeNull()
+    unmount()
+    clearAllPrompts()
+
+    setApprovalRequest(job)
+    const command = render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Command details')).toBeTruthy()
+    expect(command.container.querySelector('.codicon-terminal')).not.toBeNull()
+    expect(command.container.querySelector('[data-approval-run]')?.textContent).toContain('Run')
+    expect(command.container.querySelector('[data-approval-deny]')?.textContent).toBe('Reject')
+  })
+})
+
 describe('folder and site approval cards', () => {
   function setAccess(extra: Partial<ApprovalRequest> = {}) {
     $activeSessionId.set('sess-1')

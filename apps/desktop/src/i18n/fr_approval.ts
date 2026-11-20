@@ -34,5 +34,15 @@ export const frApproval: Partial<ApprovalCopy> = {
     title: 'Accès au site',
     alwaysTitle: 'Toujours autoriser ce site ?',
     alwaysDescription: 'Le site est ajouté aux sites autorisés de ce profil. Hermes ne le redemandera dans aucun chat.'
+  },
+  schedule: {
+    title: 'Planifier cette tâche ?',
+    allowSession: 'Autoriser pour cette discussion',
+    alwaysAllowMenu: 'Toujours autoriser les nouvelles tâches…',
+    alwaysTitle: 'Toujours autoriser les nouvelles tâches planifiées ?',
+    alwaysDescription:
+      'Hermes créera des tâches planifiées sans demander. Vous pouvez réactiver la demande en retirant cron_create de command_allowlist dans config.yaml.',
+    timedOutSystemLine:
+      'Délai d’approbation dépassé — la tâche n’a pas été créée. Demandez à Hermes de réessayer, ou augmentez la limite dans Réglages → Sécurité → Délai d’approbation.'
   }
 }

@@ -66,14 +66,14 @@ export const approval: Handler = ctx => {
   }
 }
 
-/** Native notification copy per approval kind: a folder or site card names
- *  what it asks for, never "Approve" a command that does not exist. */
+/** Native notification copy per approval kind: a folder, site or new-job card
+ *  names what it asks for, never "Approve" a command that does not exist. */
 function approvalNotice(request: ApprovalRequest) {
   const access = accessTarget(request)
   const network = networkTarget(request)
 
-  if (request.kind === 'access' || request.kind === 'network') {
-    const prefix = request.kind === 'access' ? 'accessTitle' : 'networkTitle'
+  if (request.kind === 'access' || request.kind === 'network' || request.kind === 'schedule') {
+    const prefix = `${request.kind}Title`
 
     return {
       approveKey: 'notifications.native.allowAction',

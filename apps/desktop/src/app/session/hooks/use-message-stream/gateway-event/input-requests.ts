@@ -39,6 +39,14 @@ import type { GatewayEventContext } from './types'
 /** Settings → Safety, where `approvals.timeout` lives (settings/constants.ts). */
 const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
 
+// A timed-out new-job card says the job was not created, not that a command did not run.
+const TIMED_OUT_LINE_KEYS: Partial<Record<string, string>> = {
+  schedule: 'assistant.approval.schedule.timedOutSystemLine'
+}
+
+const timedOutLine = (kind?: string): string =>
+  translateNow((kind && TIMED_OUT_LINE_KEYS[kind]) || 'assistant.approval.timedOutSystemLine')
+
 type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
 type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
 
@@ -212,7 +220,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // see; the tool row then shows a model-facing "BLOCKED" result. Say what
     // happened in human terms and point at the setting that controls the wait.
     if (payload?.reason === 'timeout' && sessionId) {
-      const line = translateNow('assistant.approval.timedOutSystemLine')
+      const line = timedOutLine(approval.kind)
 
       deps.flushQueuedDeltas(sessionId)
       deps.updateSessionState(sessionId, state => ({

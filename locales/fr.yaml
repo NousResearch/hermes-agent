@@ -3875,6 +3875,7 @@ display:
     skill_action: "Skill {action}"
     label_updated: "{label} à jour"
     skill_result: "Skill '{name}' {verb}{path}"
+    skill_size: "Le skill '{name}' fait {chars} caractères ; déplacez les détails vers references/"
     skill_verb:
       created: "créée"
       rewritten: "réécrite"

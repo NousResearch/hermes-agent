@@ -3561,6 +3561,7 @@ display:
     skill_action: "Vaardigheid {action}"
     label_updated: "{label} bygewerk"
     skill_result: "Vaardigheid '{name}' {verb}{path}"
+    skill_size: "Vaardigheid '{name}' is by {chars} karakters; skuif besonderhede na references/"
     skill_verb:
       created: "geskep"
       rewritten: "herskryf"

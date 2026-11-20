@@ -3578,6 +3578,7 @@ display:
     skill_action: "Skill {action}"
     label_updated: "{label} frissítve"
     skill_result: "A(z) '{name}' skill {verb}{path}"
+    skill_size: "A(z) '{name}' skill {chars} karakteres; helyezd át a részleteket a references/ mappába"
     skill_verb:
       created: "létrehozva"
       rewritten: "újraírva"

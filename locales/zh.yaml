@@ -3561,6 +3561,7 @@ display:
     skill_action: "技能{action}"
     label_updated: "{label}已更新"
     skill_result: "技能 '{name}' {verb}{path}"
+    skill_size: "技能 '{name}' 已达 {chars} 字符；请将细节移至 references/"
     skill_verb:
       created: "已创建"
       rewritten: "已重写"

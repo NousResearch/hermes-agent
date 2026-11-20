@@ -3561,6 +3561,7 @@ display:
     skill_action: "スキル {action}"
     label_updated: "{label} を更新しました"
     skill_result: "スキル '{name}' を{verb}{path}"
+    skill_size: "スキル '{name}' は {chars} 文字です。詳細は references/ に移してください"
     skill_verb:
       created: "作成しました"
       rewritten: "書き直しました"

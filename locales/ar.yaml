@@ -3561,6 +3561,7 @@ display:
     skill_action: "المهارة {action}"
     label_updated: "تم تحديث {label}"
     skill_result: "المهارة '{name}' {verb}{path}"
+    skill_size: "المهارة '{name}' بلغت {chars} حرفًا؛ انقل التفاصيل إلى references/"
     skill_verb:
       created: "أُنشئت"
       rewritten: "أُعيدت كتابتها"

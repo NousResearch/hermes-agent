@@ -3561,6 +3561,7 @@ display:
     skill_action: "스킬 {action}"
     label_updated: "{label} 업데이트됨"
     skill_result: "스킬 '{name}' {verb}{path}"
+    skill_size: "스킬 '{name}'이(가) {chars}자입니다. 세부 내용은 references/로 옮기세요"
     skill_verb:
       created: "생성됨"
       rewritten: "다시 작성됨"

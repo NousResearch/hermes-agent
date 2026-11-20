@@ -3561,6 +3561,7 @@ display:
     skill_action: "Scil {action}"
     label_updated: "{label} nuashonraithe"
     skill_result: "Scil '{name}' {verb}{path}"
+    skill_size: "Tá {chars} carachtar i scil '{name}'; bog sonraí go references/"
     skill_verb:
       created: "cruthaithe"
       rewritten: "athscríofa"

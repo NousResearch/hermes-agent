@@ -3561,6 +3561,7 @@ display:
     skill_action: "Skill {action}"
     label_updated: "{label} güncellendi"
     skill_result: "'{name}' skill'i {verb}{path}"
+    skill_size: "'{name}' skill'i {chars} karakter; ayrıntıları references/ klasörüne taşıyın"
     skill_verb:
       created: "oluşturuldu"
       rewritten: "yeniden yazıldı"

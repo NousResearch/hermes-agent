@@ -3561,6 +3561,7 @@ display:
     skill_action: "Навичка: {action}"
     label_updated: "Оновлено: {label}"
     skill_result: "Навичку '{name}' {verb}{path}"
+    skill_size: "Навичка '{name}' має {chars} символів; перенесіть деталі в references/"
     skill_verb:
       created: "створено"
       rewritten: "переписано"

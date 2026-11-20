@@ -3561,6 +3561,7 @@ display:
     skill_action: "Навык {action}"
     label_updated: "{label} обновлено"
     skill_result: "Навык '{name}' {verb}{path}"
+    skill_size: "Навык '{name}' занимает {chars} символов; перенесите детали в references/"
     skill_verb:
       created: "создан"
       rewritten: "переписан"

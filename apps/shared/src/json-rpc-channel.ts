@@ -1,4 +1,4 @@
-import type { ClientCapabilitiesResult } from './gateway-contract.generated.js'
+import type { CanonicalClientIdentity, ClientCapabilitiesResult } from './gateway-contract.generated.js'
 import type { GatewayEvent } from './gateway-events.js'
 
 export type GatewayRequestId = number | string
@@ -158,6 +158,11 @@ export interface JsonRpcRequestChannelOptions {
    * The backend offers the welcome trial and first-run onboarding only to that client.
    */
   desktopLocal?: () => boolean
+  /**
+   * Read once per connection generation, after `server_requests`: which client this is (`{name, version?, kind?}`).
+   * A self-declared label for attribution only. A host that names none (the default) sends nothing.
+   */
+  clientIdentity?: () => CanonicalClientIdentity | null | Promise<CanonicalClientIdentity | null>
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -224,6 +229,8 @@ export class JsonRpcRequestChannel {
   private backendCountsDeclines = false
   /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   private backendClarifyBatch = false
+  /** The generation the client label was announced on: once per connection, not per `gateway.ready`. */
+  private announcedTo: JsonRpcTransport | null = null
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
     Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
@@ -232,6 +239,7 @@ export class JsonRpcRequestChannel {
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
+      clientIdentity: options.clientIdentity ?? (() => null),
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
@@ -572,6 +580,17 @@ export class JsonRpcRequestChannel {
           this.backendClarifyBatch = result?.canonical_clarify_batch === true
         }
       })
+      .catch(() => undefined)
+
+    if (this.announcedTo === transport) {
+      return
+    }
+
+    this.announcedTo = transport
+    // Which client this is, after server_requests and in a call of its own: an older backend refuses just
+    // this one, which is ignored. The host may still be reading its version, so it can follow other requests.
+    void Promise.resolve(this.options.clientIdentity())
+      .then(client => (client && this.transport === transport ? this.request('client.capabilities', { client }) : undefined))
       .catch(() => undefined)
   }
 

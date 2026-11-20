@@ -29,11 +29,15 @@ lost-ACK retry protection must retain it. A failed transaction publishes no live
 ### Naming the client
 
 A client may say who it is with an optional `client` object on `session.create`, for example
-`"client": {"name": "my-client", "version": "1.2.0"}`. `name` is 1-64 characters of `a-z`, `0-9`,
-`.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64 printable ASCII
-characters without spaces. Anything else is refused with `invalid_params` (field `client`). Send it
-only to an owner whose `runtime.describe` lists `client` in `session_create.parameters` (capability
-`session-client-v1`); an older owner refuses the unknown key.
+`"client": {"name": "my-client", "version": "1.2.0", "kind": "desktop"}`. `name` is 1-64 characters
+of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64
+printable ASCII characters without spaces; `kind` is optional, a string of 1-32 characters. The
+known kinds are `desktop`, `webapp`, `tui` and `mobile`; an unknown kind is not an error, the label
+is kept and read without it. Anything else is refused with `invalid_params` (field `client`). Send
+`name` and `version` only to an owner whose `runtime.describe` lists `client` in
+`session_create.parameters` (capability `session-client-v1`); an older owner refuses the unknown key.
+Add `kind` only when the owner also lists `client-identity-v1` in its capabilities: an owner with
+`session-client-v1` alone refuses a label that carries one.
 
 The name is stored with the frozen creation request, so it is part of the exact-retry identity
 and survives a restart. `session.info` returns it as `client` (absent when none was sent), and
@@ -42,6 +46,31 @@ plugins read it through `hermes_cli.plugin_session.session_client()` and the `cl
 picks the session policy (send `source: "tui"` for terminal-client behaviour), and no toolset,
 approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,
 so any client can claim any name: never grant anything based on it.
+
+The same label also names the connection, not just one session: after its
+`client.capabilities {server_requests: true}` call, a client sends
+`client.capabilities {"client": {...}}` as a call of its own, once per connection and again after
+every reconnect, and ignores an error reply (an older owner refuses the unknown param for that
+call only). An owner listing `client-identity-v1` in `runtime.describe` capabilities keeps it for
+the connection's life; a malformed label answers `4001` and leaves the earlier one in place. The
+Desktop app sends `hermes-desktop` / `desktop` and the Webapp `hermes-webapp` / `webapp`.
+
+An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`,
+and only then does a client send `client.activity {sessions, idle_seconds, basis, can_alert?,
+away?}`: the sessions it has in view (at most 16), how long ago the user's last input was,
+whether that comes from the OS idle clock (`basis: "system"`) or from input inside the Hermes
+window (`"page"`), whether it can get the user's attention for those sessions itself, and
+`away: true` when the screen locks. The owner keeps, per connection and session, the newest of
+that report and the input it sees itself (prompts, answers to its requests, interrupts, steers), in
+memory only, and counts a connection only while it is attached to the session. Each report is the
+connection's whole statement: the owner drops that connection's records of every session the report
+does not list, input it saw itself included, so a client that moved to another session (or to a page
+with none) withdraws by reporting what it shows now, and `sessions: []` withdraws everything. Input
+the owner sees after a report counts again. A report names sessions by id only; on a socket that
+serves several profiles it counts for the one profile whose session of that id the connection is
+attached to, and for none while it is attached to same-id sessions in more than one. Notification plugins read it to
+stay quiet while the user is at a computer. Like the name, it is attribution only and grants
+nothing.
 
 Attach another authenticated viewer with `session.resume({session_id})`, and submit
 through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable

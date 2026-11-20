@@ -205,6 +205,9 @@ def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLogin
     if control.type in ("password", "email"):
         return None
     searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    if _RE_EMAIL.search(searchable):
+        # An "Email address" box of type text is not a street address box.
+        return None
     for pattern, token in _CHECKOUT_HEURISTICS:
         if pattern.search(searchable):
             return ClassifiedLoginControl(control, 70, token)

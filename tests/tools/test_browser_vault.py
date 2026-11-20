@@ -309,6 +309,14 @@ class TestClassifier:
         for name, label in (("promo_code", "Promo code"), ("zip", "Zip code"), ("coupon", "Enter coupon code")):
             assert classify_otp_controls([_ctrl(name=name, label=label)]) == [], (name, label)
 
+    def test_an_email_address_text_box_is_not_a_street_address(self):
+        """A ``type=text`` box labelled "Email address" must not take the saved street address."""
+        from agent.vault_login_classifier import classify_checkout_control
+
+        assert classify_checkout_control(_ctrl(name="email", label="Email address")) is None
+        assert classify_checkout_control(_ctrl(name="street", label="Street address")).token == "address-line1"
+
+
 class TestBrowserVaultTools:
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose

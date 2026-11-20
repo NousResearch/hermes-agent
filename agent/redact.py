@@ -340,6 +340,16 @@ _YAML_ASSIGN_RE = re.compile(
 
 _YAML_CFG_WORD_RE = re.compile(_YAML_CFG_NAMES, re.IGNORECASE)
 
+# Only the explicit dump label is allowed; never relax the YAML prose anchor.
+_LABELLED_FIELD_RE = re.compile(
+    rf"(^[ \t]{{0,64}}{_LINE_NUMBER_GUTTER}(?:db[ \t]{{1,8}})?field[ \t]{{1,8}}"
+    rf"[A-Za-z0-9_.\-]{{0,64}}{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]{{0,64}})"
+    r"(:[ \t]{0,16}(?:[A-Za-z][A-Za-z0-9_\[\],.]{0,63}[ \t]{0,16}=[ \t]{0,16}|(?=['\"])))"
+    r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*+\"|'(?:''|[^'\r\n])*+'|['\"][^\r\n]*+"
+    r"|<[^<>\r\n]{1,128}>|\$\{[^}\r\n]{1,128}\}|[^\s&]++)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 # Word-boundary validation for the key patterns above: their classes allow
 # arbitrary affixes (``client_secret``, ``s3.secret-key``), which also matched
 # prose CONTAINING a keyword (``Secretary:``, ``tokenizer:``). A keyword counts
@@ -1400,18 +1410,24 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     # YAML after JSON; unwrap scalars before the shared assignment gate so
     # quoted programmatic env lookups retain the same exemption as bare ones.
     if ":" in text and "://" not in text:
-        def _redact_yaml(m):
+        def _redact_yaml(m, *, labelled=False):
             key, sep, value = m.groups()
             quote = value[0] if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0] else ""
             inner = value[1:-1] if quote else value
             # An empty or docs-placeholder scalar (``""``, ``"<your key>"``, ``"${API_KEY}"``) is not
             # a credential; masking it hides what the config expects, as _redact_db already rules.
-            if quote and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)
+            if (quote or labelled) and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)
                           or (inner.startswith("{{") and inner.endswith("}}"))):  # Helm/Jinja template
                 return m.group(0)
-            if not _should_redact_assignment(key, inner, check_keyword=True):
+            if labelled and not _key_has_secret_keyword(key):
+                return m.group(0)
+            policy_key = key
+            if labelled and "=" in sep and not _has_password_keyword(key):
+                policy_key = "api_token"
+            if not _should_redact_assignment(policy_key, inner, check_keyword=True):
                 return m.group(0)
             return f"{key}{sep}{quote}{mask(inner)}{quote}"
+        text = _LABELLED_FIELD_RE.sub(lambda m: _redact_yaml(m, labelled=True), text)
         text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
     return text
 

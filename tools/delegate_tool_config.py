@@ -487,6 +487,32 @@ def _resolver_kept_endpoint(named: dict, configured_url: str) -> bool:
         return (url or "").rstrip("/").removesuffix("/v1")
     return sans_version(named["base_url"]) == sans_version(expected)
 
+def _recovered_custom_route_matches_parent(
+    runtime: dict, identity: str, parent_agent, *, target_model: str,
+) -> bool:
+    """Allow live overrides only when recovery preserves the active route."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    parent_base_url = normalize_route_base_url(parent_agent.base_url)
+    if not parent_base_url or parent_base_url != normalize_route_base_url(runtime.get("base_url")):
+        return False
+    # Bare custom identities can share one gateway. The active credential and
+    # transport also have to match before we reuse live request settings.
+    if (runtime.get("api_key") != getattr(parent_agent, "api_key", None)
+            or runtime.get("api_mode") != getattr(parent_agent, "api_mode", None)
+            or runtime.get("command") != getattr(parent_agent, "acp_command", None)
+            or tuple(runtime.get("args") or ()) != tuple(getattr(parent_agent, "acp_args", None) or ())):
+        return False
+    parent_provider = parent_agent.provider.strip().lower()
+    if parent_provider != _RUNTIME_PROVIDER_CUSTOM:
+        return identity == parent_provider
+    if target_model == parent_agent.model:
+        return True
+    from hermes_cli.runtime_provider import canonical_custom_identity
+    return identity == canonical_custom_identity(
+        base_url=parent_base_url, config_provider=parent_provider, model=parent_agent.model,
+    )
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work; a
@@ -540,19 +566,24 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
                     model=values["model"] or parent_model,
                 )
                 if custom_identity:
+                    target_model = values["model"] or parent_model
                     runtime = resolve_runtime_provider(
                         requested=custom_identity,
-                        target_model=values["model"] or parent_model or None,
+                        target_model=target_model or None,
                     )
+                    request_overrides = runtime.get("request_overrides")
+                    live_overrides = getattr(parent_agent, "request_overrides", None)
+                    if isinstance(live_overrides, dict) and live_overrides and _recovered_custom_route_matches_parent(
+                        runtime, custom_identity, parent_agent, target_model=target_model,
+                    ):
+                        request_overrides = _merge_request_overrides(request_overrides, live_overrides)
                     return _credential_bundle(
-                        values["model"] or parent_model or runtime.get("model") or None,
+                        target_model or runtime.get("model") or None,
                         custom_identity,
                         runtime.get("base_url"),
                         runtime.get("api_key") or None,
                         runtime.get("api_mode"),
-                        _merge_request_overrides(
-                            runtime.get("request_overrides"), explicit_request_overrides
-                        ) or {},
+                        _merge_request_overrides(request_overrides, explicit_request_overrides) or {},
                         command=runtime.get("command"),
                         args=list(runtime.get("args") or []),
                     )

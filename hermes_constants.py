@@ -812,8 +812,12 @@ def _bound_terminal_home_mode() -> str | None:
     it ran with, not ``auto``. A served profile's turn must not read the LAUNCH profile's bridged value
     from ``os.environ`` (#146103). Read through ``sys.modules`` for the same boot-path reason as
     ``get_hermes_home_override``: no scope can be bound before ``tools.terminal_scope`` is imported."""
-    get_terminal_scope = getattr(sys.modules.get("tools.terminal_scope"), "get_terminal_scope", None)
+    terminal_module = sys.modules.get("tools.terminal_scope")
+    get_terminal_scope = getattr(terminal_module, "get_terminal_scope", None)
     policy = get_terminal_scope() if get_terminal_scope is not None else None
+    refusal_type = getattr(terminal_module, "TerminalPolicyRefusal", None)
+    if terminal_module is not None and refusal_type is not None and isinstance(policy, refusal_type):
+        raise terminal_module.TerminalPolicyUnavailable(policy.reason)
     mode = None if policy is None else policy.get("TERMINAL_HOME_MODE")
     return None if mode is None else str(mode).strip() or "auto"
 

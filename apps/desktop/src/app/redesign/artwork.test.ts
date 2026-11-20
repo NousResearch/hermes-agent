@@ -1,13 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $shellChoice } from '@/store/shell-variant'
 
 import {
+  $artworkChoice,
+  $paintedArtwork,
   type Artwork,
+  ARTWORK_CHOICE_KEY,
   ARTWORK_KEY,
   artworkForLaunch,
   artworkForMode,
   type ArtworkMode,
+  artworksFor,
+  chooseArtwork,
   installArtworkAttributes,
   nextArtwork
 } from './artwork'
@@ -85,6 +90,7 @@ describe('installArtworkAttributes', () => {
   afterEach(() => {
     dispose()
     $shellChoice.set(null)
+    $artworkChoice.set(null)
     localStorage.clear()
   })
 
@@ -126,5 +132,42 @@ describe('installArtworkAttributes', () => {
     expect(root.dataset.artworkDark).toBe('wing')
     $shellChoice.set(false)
     expect(root.dataset.artworkDark).toBeUndefined()
+  })
+
+  it('paints a chosen artwork at once, in both themes, and keeps the choice', () => {
+    dispose = installArtworkAttributes(root)
+    chooseArtwork('karborn')
+
+    // Light does not draw Karborn: it paints the next artwork it does, as a theme switch would.
+    expect(root.dataset.artworkDark).toBe('karborn')
+    expect(root.dataset.artworkLight).toBe('vanilla')
+    expect($paintedArtwork.get()).toEqual({ dark: 'karborn', light: 'vanilla' })
+    expect(localStorage.getItem(ARTWORK_CHOICE_KEY)).toBe('karborn')
+  })
+
+  it('beats the rotation on every later launch, which it leaves where it was', async () => {
+    localStorage.setItem(ARTWORK_KEY, JSON.stringify({ launch: 'previous-launch', artwork: 'wing' }))
+    localStorage.setItem(ARTWORK_CHOICE_KEY, 'ascend')
+    vi.resetModules()
+    const fresh = await import('./artwork')
+    const { $shellChoice: freshShell } = await import('@/store/shell-variant')
+    freshShell.set(true)
+    const disposeFresh = fresh.installArtworkAttributes(root)
+
+    expect(root.dataset.artworkDark).toBe('ascend')
+    expect(root.dataset.artworkLight).toBe('ascend')
+    expect(JSON.parse(localStorage.getItem(ARTWORK_KEY) ?? 'null')).toEqual({
+      launch: 'previous-launch',
+      artwork: 'wing'
+    })
+    disposeFresh()
+    freshShell.set(null)
+  })
+})
+
+describe('artworksFor', () => {
+  it('offers only what the mode draws, in the cycle order', () => {
+    expect(artworksFor('dark')).toEqual(['wing', 'angel', 'ascend', 'karborn', 'vanilla'])
+    expect(artworksFor('light')).toEqual(['ascend', 'vanilla'])
   })
 })

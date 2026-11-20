@@ -373,10 +373,18 @@ def test_flag_url_query_credential_is_redacted_without_clobbering_next_flag(home
     assert argv[port_idx + 1] == "9119"
 
 
-def test_combined_python_short_c_flag_redacts_inline_source(home):
+def test_ordinary_arguments_are_printed_as_they_are():
+    from hermes_cli.gateway_migrate_backends_plan import redacted_argv
+    argv = ["/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--host", "0.0.0.0", "--port", "9119",
+            "--config=/srv/a=b/c?d.yaml", "/opt/x=y/run?z", "--root", "C:\\a=b\\q?", "--insecure"]
+    assert redacted_argv(argv) == argv
+
+
+@pytest.mark.parametrize("exe", ["/venv/bin/python", "C:\\venv\\Scripts\\pythonw.exe"])
+def test_combined_python_short_c_flag_redacts_inline_source(home, exe):
     from hermes_cli.gateway_migrate_backends_plan import build_plan, format_plan
     host = FakeHost(home)
-    host.argv = ["/venv/bin/python", "-Ic", "import os; SECRET='inline-ic-66'", "hermes_cli.main",
+    host.argv = [exe, "-Ic", "import os; SECRET='inline-ic-66'", "hermes_cli.main",
                  "dashboard", "--no-open", "--port", "9119"]
 
     plan = build_plan(host)

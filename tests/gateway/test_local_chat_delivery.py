@@ -30,39 +30,61 @@ async def test_kanban_wake_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kanban_wake_names_the_receipt_an_idle_classic_cli_opens_its_turn_with(tmp_path, monkeypatch):
-    """An idle classic CLI only opens a gateway-admitted turn whose ``message.start`` carries a card:
-    a wake without one ran and was saved, and the open chat never showed the reply."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
-    from gateway.session_automation import admission_display
-    from gateway.wake import deliver_wake
-    from hermes_cli.gateway_tools_notify import _card
-    runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
+async def test_kanban_wake_into_a_local_chat_opens_an_idle_classic_cli_turn(tmp_path, monkeypatch):
+    import queue
+    from types import SimpleNamespace
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.gateway_connection import SessionState
+    from hermes_cli.gateway_tools_notify import queue_admitted_turn
+    from tests.gateway.test_kanban_wake_scope import _completed_subscription, _one_notifier_tick
+    from tests.gateway.test_session_end_delegations import _record_turns
+    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
     live = authority.sessions[ref.session_id]
-    adapter = runner._delivery_adapter_for(live.source)
-    wake = '[kanban] Task t1 completed.\nTitle: card t1'
-    await deliver_wake(adapter, text=wake, session_id=ref.session_id, source=live.source,
-                       display_text='[kanban] Task t1 completed.')
-    [row] = _admissions(authority, ref, 'Task t1 completed')
-    card = _card({'payload': admission_display(row.payload)})
-    assert card == {'display_kind': INTERNAL_NOTIFICATION_DISPLAY_KIND,
-                    'display_text': '[kanban] Task t1 completed.', 'text': wake}
-    # The receipt is for the terminal only: the stored row stays the machinery kind every viewer hides.
-    event = MessageEvent(text=wake, source=live.source, internal=True,
-                         metadata={key: card[key] for key in ('display_kind', 'display_text')})
-    assert display_kind_for_event(event) == INTERNAL_NOTIFICATION_DISPLAY_KIND
+    live.subscribers['cli'] = actor
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    runner._kanban_dispatcher_lock_handle = object()
+    runner._kanban_sub_fail_counts = {}
+    runner._running = True
+    monkeypatch.setenv('HERMES_KANBAN_DB', str(tmp_path / 'local-wake.db'))
+    kb.init_db()
+    task_id = _completed_subscription(platform='local', chat_id=live.source.chat_id, chat_type=live.source.chat_type,
+                                      user_id=live.source.user_id, delivery_mode='wake')
+    with pytest.MonkeyPatch.context() as tick:  # its fake sleep must not outlive the tick
+        await _one_notifier_tick(tick, runner)
+    _record_turns(runner)
+    await authority._drain(ref)
+    [start] = [frame for frame in frames if frame['params']['type'] == 'message.start']
+    state = SessionState(ref.session_id)
+    connection = SimpleNamespace(events=queue.Queue(), state=lambda _sid: state)
+    connection.events.put(start)
+    cli = SimpleNamespace(session_id=ref.session_id, _pending_input=queue.Queue())
+    queue_admitted_turn(cli, SimpleNamespace(connection=connection))
+    notification = cli._pending_input.get_nowait()
+    assert notification.display_text == f'[kanban] Task {task_id} completed.'
+    assert str(notification).startswith(notification.display_text + '\n')
 
 
-def test_kanban_notifier_hands_the_wake_its_first_line_as_the_receipt(tmp_path, monkeypatch):
+def test_each_kanban_wake_of_a_split_batch_names_its_own_receipt(tmp_path, monkeypatch):
     from gateway import wake as wake_module
+    from gateway import warning_notifications
     from gateway.config import Platform
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from tests.gateway.test_kanban_wake_scope import (
         UnscopedAdapter, _completed_subscription, _one_notifier_tick, _runner)
     monkeypatch.setenv('HERMES_KANBAN_DB', str(tmp_path / 'wake-receipt.db'))
     kb.init_db()
-    task_id = _completed_subscription(platform='telegram', chat_id='chat-dm', chat_type='dm')
+    # Warnings off: the crash (diagnostic) and the completion (result) wake separately.
+    monkeypatch.setattr(warning_notifications, 'warning_notifications_enabled', lambda *_a, **_k: False)
+    real_complete = kb.complete_task
+
+    def crash_then_complete(conn, task_id, **kwargs):
+        kb._append_event(conn, task_id, kind='crashed')
+        return real_complete(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(kb, 'complete_task', crash_then_complete)
+    _completed_subscription(platform='telegram', chat_id='chat-dm', chat_type='dm')
     delivered, deliver = [], wake_module.deliver_wake
 
     async def recording(adapter, **kwargs):
@@ -71,9 +93,9 @@ def test_kanban_notifier_hands_the_wake_its_first_line_as_the_receipt(tmp_path, 
 
     monkeypatch.setattr(wake_module, 'deliver_wake', recording)
     asyncio.run(_one_notifier_tick(monkeypatch, _runner(UnscopedAdapter(), Platform.TELEGRAM)))
-    [wake] = delivered
-    assert wake['display_text'] == wake['text'].splitlines()[0]
-    assert task_id in wake['display_text']
+    assert [w['notification_category'] for w in delivered] == ['diagnostic', 'result']
+    assert [w['display_text'] for w in delivered] == [w['text'].splitlines()[0] for w in delivered]
+    assert 'crashed' in delivered[0]['display_text'] and 'completed' in delivered[1]['display_text']
 
 
 def _overdue_heartbeat(session_id):

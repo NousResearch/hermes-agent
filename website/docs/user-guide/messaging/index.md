@@ -949,6 +949,26 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+A second per-platform key, `home_channel_startup_notification`, decides when the home channel gets the "♻️ Gateway online" notice on startup:
+
+| Value | When the home channel hears "Gateway online" |
+|---|---|
+| `restart_only` (default) | After a planned restart only: `/restart`, `hermes gateway restart`, `hermes update`, SIGUSR1, or a service-manager restart that sent the "shutting down" notice. |
+| `always` | On every start, including unplanned ones: a crash, an OOM kill, systemd `Restart=on-failure`, a host reboot, or a cold start. |
+| `off` | Never. The "shutting down" notice and the reply to the chat that sent `/restart` still go out. |
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      home_channel:
+        platform: telegram
+        chat_id: "123456789"
+      home_channel_startup_notification: always   # also tell me when it comes back after a crash
+```
+
+`gateway_restart_notification: false` still wins and silences every lifecycle notice on that platform, whatever this key says. An unknown value is logged and treated as `restart_only`. With `always`, each start sends one notice per home chat: a platform that is down at startup gets its notice when it reconnects, a chat shared by several profiles gets one, and when `/restart` is sent from the home chat itself, that chat gets only the "restarted" reply.
+
 A notice that cannot go out yet is kept, not dropped. This covers the home-channel notice and the "restarted successfully" reply to the chat that sent `/restart`. A platform can still be reconnecting, or Telegram can be waiting for its first successful poll. The gateway sends the notice once that platform reconnects or its send path is ready. A `/restart` reply still undelivered 30 minutes later is discarded.
 
 ### Typing indicators

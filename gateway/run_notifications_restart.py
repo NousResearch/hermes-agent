@@ -142,10 +142,12 @@ class GatewayRestartNoticeMixin:
     async def _replay_restart_notices(self) -> None:
         await self._send_restart_notification(replay=True)
         await self._replay_pending_planned_restart_notification()
+        await self._send_unplanned_startup_notifications()
 
     def _schedule_restart_notice_replay(self) -> None:
-        """Replay the owed restart notices (requester + planned-restart home channels) in the
-        background: after a reconnect, and when an adapter's send path heals in place.
+        """Replay the owed restart notices (requester + planned-restart home channels, and the
+        ``home_channel_startup_notification: always`` homes of an unplanned boot) in the background:
+        after a reconnect, and when an adapter's send path heals in place.
 
         Delivery must not hold up adapter recovery or other platforms' reconnects. The task runs in
         the boot pass's context (``_restart_notice_context``, captured when the boot pass reaches a notice):
@@ -158,7 +160,8 @@ class GatewayRestartNoticeMixin:
         # for a restart, a marker on disk is the NEXT boot's.
         if context is None or getattr(self, "_restart_requested", False) or getattr(self, "_draining", False):
             return
-        if not (_restart_notification_pending() or _planned_restart_notification_pending()):
+        if not (_restart_notification_pending() or _planned_restart_notification_pending()
+                or self._unplanned_startup_notice_owed):
             return
         task = self._retain_background_task(asyncio.get_running_loop().create_task(
             self._replay_restart_notices(), context=context.copy()))

@@ -115,6 +115,30 @@ class TestPlatformConfigRoundtrip:
         assert restored.gateway_restart_notification is False
 
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, "restart_only"),
+            ("always", "always"),
+            (" Always ", "always"),
+            ("off", "off"),
+            (False, "off"),  # YAML 1.1 reads a bare ``off`` as False
+            ("sometimes", "restart_only"),
+            (True, "restart_only"),
+        ],
+    )
+    def test_home_channel_startup_notification_parsing(self, raw, expected, caplog):
+        data = {"enabled": True}
+        if raw is not None:
+            data["home_channel_startup_notification"] = raw
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            pc = PlatformConfig.from_dict(data)
+        assert pc.home_channel_startup_notification == expected
+        assert "home_channel_startup_notification" not in pc.extra
+        assert PlatformConfig.from_dict(pc.to_dict()) == pc
+        invalid = raw in ("sometimes", True)
+        assert ("Ignoring invalid home_channel_startup_notification" in caplog.text) is invalid
+
     def test_typing_status_text_resolved_from_extra(self):
         # Same bridge route as typing_indicator: the shared-key loop copies a
         # nested platforms.<plat> value into extra.
@@ -378,6 +402,27 @@ class TestLoadGatewayConfig:
         assert (
             config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
         )
+
+    def test_home_channel_startup_notification_from_nested_platforms_block(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      home_channel_startup_notification: always\n"
+            "    discord:\n"
+            "      enabled: true\n"
+            "      home_channel_startup_notification: off\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].home_channel_startup_notification == "always"
+        assert config.platforms[Platform.DISCORD].home_channel_startup_notification == "off"
 
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by

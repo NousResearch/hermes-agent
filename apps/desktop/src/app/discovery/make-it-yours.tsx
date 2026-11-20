@@ -11,7 +11,7 @@ import { useFirstTimeCopy } from './first-time-copy'
 const MODES = ['light', 'dark'] as const
 
 /**
- * "Make it yours" (1A 477:4004): light or dark, and one of five colours, each changing the app as it
+ * "Make it yours" (1A 477:4004): light or dark, and one of eight colours, each changing the app as it
  * is picked. Both are native radio groups (arrow keys move and pick, Tab leaves the group). Light /
  * dark is the theme system's own mode: it starts on what the computer shows and a pick sets it for
  * good; the colour is the redesign's accent (store/portal-accent.ts).

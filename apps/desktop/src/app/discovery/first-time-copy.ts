@@ -90,7 +90,16 @@ const en: FirstTimeCopy = {
       light: 'Light',
       dark: 'Dark',
       color: 'Color',
-      colors: { blue: 'Blue', violet: 'Violet', green: 'Green', orange: 'Orange', pink: 'Pink' }
+      colors: {
+        blue: 'Blue',
+        violet: 'Violet',
+        pink: 'Pink',
+        red: 'Red',
+        orange: 'Orange',
+        yellow: 'Yellow',
+        green: 'Green',
+        cyan: 'Cyan'
+      }
     },
     ready: 'Ready to get started?',
     footnote: 'Click anywhere in the nav to close. Find this again in notifications.',
@@ -163,7 +172,16 @@ const fr: FirstTimeCopy = {
       light: 'Clair',
       dark: 'Sombre',
       color: 'Couleur',
-      colors: { blue: 'Bleu', violet: 'Violet', green: 'Vert', orange: 'Orange', pink: 'Rose' }
+      colors: {
+        blue: 'Bleu',
+        violet: 'Violet',
+        pink: 'Rose',
+        red: 'Rouge',
+        orange: 'Orange',
+        yellow: 'Jaune',
+        green: 'Vert',
+        cyan: 'Cyan'
+      }
     },
     ready: 'Prêt à commencer ?',
     footnote:
@@ -237,7 +255,16 @@ const de: FirstTimeCopy = {
       light: 'Hell',
       dark: 'Dunkel',
       color: 'Farbe',
-      colors: { blue: 'Blau', violet: 'Violett', green: 'Grün', orange: 'Orange', pink: 'Pink' }
+      colors: {
+        blue: 'Blau',
+        violet: 'Violett',
+        pink: 'Pink',
+        red: 'Rot',
+        orange: 'Orange',
+        yellow: 'Gelb',
+        green: 'Grün',
+        cyan: 'Cyan'
+      }
     },
     ready: 'Bereit loszulegen?',
     footnote: 'Klicke irgendwo in die Navigation, um zu schließen. Du findest das wieder unter Benachrichtigungen.',
@@ -310,7 +337,16 @@ const es: FirstTimeCopy = {
       light: 'Claro',
       dark: 'Oscuro',
       color: 'Color',
-      colors: { blue: 'Azul', violet: 'Violeta', green: 'Verde', orange: 'Naranja', pink: 'Rosa' }
+      colors: {
+        blue: 'Azul',
+        violet: 'Violeta',
+        pink: 'Rosa',
+        red: 'Rojo',
+        orange: 'Naranja',
+        yellow: 'Amarillo',
+        green: 'Verde',
+        cyan: 'Cian'
+      }
     },
     ready: '¿Listo para empezar?',
     footnote: 'Haz clic en cualquier parte de la navegación para cerrar. Encuéntralo de nuevo en las notificaciones.',
@@ -383,7 +419,16 @@ const ja: FirstTimeCopy = {
       light: 'ライト',
       dark: 'ダーク',
       color: 'カラー',
-      colors: { blue: 'ブルー', violet: 'バイオレット', green: 'グリーン', orange: 'オレンジ', pink: 'ピンク' }
+      colors: {
+        blue: 'ブルー',
+        violet: 'バイオレット',
+        pink: 'ピンク',
+        red: 'レッド',
+        orange: 'オレンジ',
+        yellow: 'イエロー',
+        green: 'グリーン',
+        cyan: 'シアン'
+      }
     },
     ready: 'さっそく始めますか？',
     footnote: 'ナビゲーションのどこかをクリックすると閉じます。通知からもう一度開けます。',
@@ -456,7 +501,16 @@ const zh: FirstTimeCopy = {
       light: '浅色',
       dark: '深色',
       color: '颜色',
-      colors: { blue: '蓝色', violet: '紫色', green: '绿色', orange: '橙色', pink: '粉色' }
+      colors: {
+        blue: '蓝色',
+        violet: '紫色',
+        pink: '粉色',
+        red: '红色',
+        orange: '橙色',
+        yellow: '黄色',
+        green: '绿色',
+        cyan: '青色'
+      }
     },
     ready: '准备好开始了吗？',
     footnote: '点击导航中的任意位置即可关闭。可在通知中再次找到此页。',
@@ -529,7 +583,16 @@ const zhHant: FirstTimeCopy = {
       light: '淺色',
       dark: '深色',
       color: '顏色',
-      colors: { blue: '藍色', violet: '紫色', green: '綠色', orange: '橘色', pink: '粉紅色' }
+      colors: {
+        blue: '藍色',
+        violet: '紫色',
+        pink: '粉紅色',
+        red: '紅色',
+        orange: '橘色',
+        yellow: '黃色',
+        green: '綠色',
+        cyan: '青色'
+      }
     },
     ready: '準備好開始了嗎？',
     footnote: '點按導覽中的任何位置即可關閉。可在通知中再次找到此頁。',
@@ -602,7 +665,16 @@ const ru: FirstTimeCopy = {
       light: 'Светлая',
       dark: 'Тёмная',
       color: 'Цвет',
-      colors: { blue: 'Синий', violet: 'Фиолетовый', green: 'Зелёный', orange: 'Оранжевый', pink: 'Розовый' }
+      colors: {
+        blue: 'Синий',
+        violet: 'Фиолетовый',
+        pink: 'Розовый',
+        red: 'Красный',
+        orange: 'Оранжевый',
+        yellow: 'Жёлтый',
+        green: 'Зелёный',
+        cyan: 'Голубой'
+      }
     },
     ready: 'Готовы начать?',
     footnote: 'Нажмите в любом месте навигации, чтобы закрыть. Эту страницу можно снова найти в уведомлениях.',
@@ -675,7 +747,16 @@ const ar: FirstTimeCopy = {
       light: 'فاتح',
       dark: 'داكن',
       color: 'اللون',
-      colors: { blue: 'أزرق', violet: 'بنفسجي', green: 'أخضر', orange: 'برتقالي', pink: 'وردي' }
+      colors: {
+        blue: 'أزرق',
+        violet: 'بنفسجي',
+        pink: 'وردي',
+        red: 'أحمر',
+        orange: 'برتقالي',
+        yellow: 'أصفر',
+        green: 'أخضر',
+        cyan: 'سماوي'
+      }
     },
     ready: 'هل أنت مستعد للبدء؟',
     footnote: 'انقر في أي مكان في شريط التنقل للإغلاق. ستجد هذه الصفحة مجددًا في الإشعارات.',

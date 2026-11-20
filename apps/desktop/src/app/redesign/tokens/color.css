@@ -4,10 +4,11 @@
    in DESIGN.md says so, and the change is a one-line edit here. */
 :root[data-shell='portal'] {
   /* Brand, in the accent (blue unless the person picked another). The fill is the same in every theme
-     and mode; thin rings, underlines and small brand text use the brand ink, which lightens on dark
-     canvases for contrast. */
+     and mode, and so is the ink on it (white, or the navy on a bright accent); thin rings, underlines
+     and small brand text use the brand ink, which lightens on dark canvases and darkens on light ones
+     for contrast. */
   --portal-surface-brand: var(--portal-raw-accent);
-  --portal-text-on-brand: var(--portal-raw-white);
+  --portal-text-on-brand: var(--portal-raw-accent-on);
   --portal-text-brand: var(--portal-raw-accent-ink-dark);
   /* The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the
      stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts
@@ -278,7 +279,7 @@
 
 /* Light: Brand rev 491 + AA. The same alphas over #f2f2f2; strokes take one step more to stay visible. */
 :root[data-shell='portal']:not(.dark) {
-  --portal-text-brand: var(--portal-raw-accent);
+  --portal-text-brand: var(--portal-raw-accent-ink-light);
   --portal-surface-brand-selected: var(--portal-raw-brand-12);
   --portal-text-secondary: color-mix(in srgb, var(--ui-base) 80%, transparent);
   --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 72%, transparent);

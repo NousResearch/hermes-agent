@@ -313,5 +313,5 @@
 }
 
 :root:not(.dark) .agent-management-default {
-  color: var(--portal-brand-fill);
+  color: var(--portal-brand-ink);
 }

@@ -665,15 +665,25 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 |---|---|---|---|
 | `--portal-raw-blue` | `#0000f2` | ″ | Figma primary/blue: fills of primary actions, toggles, checked states, the active tab underline. |
 | `--portal-raw-blue-ink-dark` | `#8585ff` | ″ | The blue lightened to AA for thin marks (rings, links, counts) on navy. |
-| `--portal-raw-violet` | `#6d28d9` | ″ | "Make it yours" (first-time splash 1A 477:4004): the four other colours the brand gesture can wear, each a fill (white ink on it, and the brand ink on light) and its ink lightened for navy. Every pair keeps the blue's contrast duties: 4.5:1 for the on-brand ink, the brand ink on every light and dark panel, and the text on a brand selection (portal-accent-contrast.test.ts). |
+| `--portal-raw-violet` | `#6d28d9` | ″ | "Make it yours" (Onboarding 18695:18059): the seven other colours the brand gesture can wear, in the swatches' order. Each is a fill, the ink on it, the brand ink on light and the brand ink on navy. Deep fills (violet, pink, red, orange) take white ink and are their own light ink; bright ones (yellow, green, cyan: Figma's secondary colours as drawn) take the navy ink and a darkened light ink. Every set keeps the blue's contrast duties: 4.5:1 for the on-brand ink, the brand ink on every light and dark panel, and the text on a brand selection (portal-accent-contrast.test.ts). |
 | `--portal-raw-violet-ink-dark` | `#b79cff` | ″ |  |
-| `--portal-raw-green-deep` | `#086b36` | ″ |  |
-| `--portal-raw-green-ink-dark` | `#3fd68a` | ″ |  |
-| `--portal-raw-orange-deep` | `#a33f00` | ″ |  |
-| `--portal-raw-orange-ink-dark` | `#ff9a52` | ″ |  |
 | `--portal-raw-pink` | `#b0124f` | ″ |  |
 | `--portal-raw-pink-ink-dark` | `#ff80b0` | ″ |  |
+| `--portal-raw-red` | `#c40d0d` | ″ |  |
+| `--portal-raw-red-ink-light` | `#b00c0c` | ″ |  |
+| `--portal-raw-red-ink-dark` | `#ff8080` | ″ |  |
+| `--portal-raw-orange-deep` | `#a33f00` | ″ |  |
+| `--portal-raw-orange-ink-dark` | `#ff9a52` | ″ |  |
+| `--portal-raw-yellow` | `#f2f200` | ″ |  |
+| `--portal-raw-yellow-ink-light` | `#666000` | ″ |  |
+| `--portal-raw-green-deep` | `#086b36` | ″ |  |
+| `--portal-raw-green-ink-dark` | `#3fd68a` | ″ |  |
+| `--portal-raw-cyan` | `#00f2f2` | ″ |  |
+| `--portal-raw-cyan-ink-light` | `#00696b` | ″ |  |
+| `--portal-raw-navy` | `#0b0b24` | ″ | The ink on a bright fill: the dark canvas navy (--portal-raw-navy-channels). |
 | `--portal-raw-accent` | `var(--portal-raw-blue)` | ″ | The accent the brand gesture wears: the blue, or the person's pick (data-portal-accent, below). The navy family (veils, panels, the composer card) stays on the blue whatever the accent. |
+| `--portal-raw-accent-on` | `var(--portal-raw-white)` | ″ |  |
+| `--portal-raw-accent-ink-light` | `var(--portal-raw-blue)` | ″ |  |
 | `--portal-raw-accent-ink-dark` | `var(--portal-raw-blue-ink-dark)` | ″ |  |
 | `--portal-raw-white` | `#f2f2f2` | ″ | Figma primary/white: ink on the brand fill. |
 | `--portal-raw-pure-white` | `#fff` | ″ |  |
@@ -721,9 +731,9 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 
 | Token | Dark | Light | Note |
 |---|---|---|---|
-| `--portal-surface-brand` | `var(--portal-raw-accent)` | ″ | Brand, in the accent (blue unless the person picked another). The fill is the same in every theme and mode; thin rings, underlines and small brand text use the brand ink, which lightens on dark canvases for contrast. |
-| `--portal-text-on-brand` | `var(--portal-raw-white)` | ″ |  |
-| `--portal-text-brand` | `var(--portal-raw-accent-ink-dark)` | `var(--portal-raw-accent)` |  |
+| `--portal-surface-brand` | `var(--portal-raw-accent)` | ″ | Brand, in the accent (blue unless the person picked another). The fill is the same in every theme and mode, and so is the ink on it (white, or the navy on a bright accent); thin rings, underlines and small brand text use the brand ink, which lightens on dark canvases and darkens on light ones for contrast. |
+| `--portal-text-on-brand` | `var(--portal-raw-accent-on)` | ″ |  |
+| `--portal-text-brand` | `var(--portal-raw-accent-ink-dark)` | `var(--portal-raw-accent-ink-light)` |  |
 | `--portal-composer-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background))` | The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white (16292:27185). Its resting prompt is the card's heading line at full ink (16292:15681). |
 | `--portal-composer-prompt-ink` | `var(--portal-text-primary)` | ″ |  |
 | `--portal-surface-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-12)` | Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT / RUNNING chips (856:3444, 1036:7318). |

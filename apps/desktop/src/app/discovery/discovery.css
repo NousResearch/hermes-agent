@@ -358,7 +358,7 @@
   outline-offset: var(--portal-focus-ring-offset);
 }
 
-/* The five colours: each its own fill under a hairline, the picked one ringed in full ink. */
+/* The eight colours: each its own fill under a hairline, the picked one ringed in full ink. */
 :root[data-shell='portal'] .discovery-theme-colors {
   gap: 0.5rem;
 }
@@ -375,16 +375,28 @@
   --discovery-swatch: var(--portal-raw-violet);
 }
 
-:root[data-shell='portal'] .discovery-theme-color[data-accent='green'] {
-  --discovery-swatch: var(--portal-raw-green-deep);
+:root[data-shell='portal'] .discovery-theme-color[data-accent='pink'] {
+  --discovery-swatch: var(--portal-raw-pink);
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='red'] {
+  --discovery-swatch: var(--portal-raw-red);
 }
 
 :root[data-shell='portal'] .discovery-theme-color[data-accent='orange'] {
   --discovery-swatch: var(--portal-raw-orange-deep);
 }
 
-:root[data-shell='portal'] .discovery-theme-color[data-accent='pink'] {
-  --discovery-swatch: var(--portal-raw-pink);
+:root[data-shell='portal'] .discovery-theme-color[data-accent='yellow'] {
+  --discovery-swatch: var(--portal-raw-yellow);
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='green'] {
+  --discovery-swatch: var(--portal-raw-green);
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='cyan'] {
+  --discovery-swatch: var(--portal-raw-cyan);
 }
 
 :root[data-shell='portal'] .discovery-theme-swatch {

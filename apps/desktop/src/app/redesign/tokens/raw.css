@@ -6,21 +6,34 @@
   --portal-raw-blue: #0000f2;
   /* The blue lightened to AA for thin marks (rings, links, counts) on navy. */
   --portal-raw-blue-ink-dark: #8585ff;
-  /* "Make it yours" (first-time splash 1A 477:4004): the four other colours the brand gesture can wear,
-     each a fill (white ink on it, and the brand ink on light) and its ink lightened for navy. Every
-     pair keeps the blue's contrast duties: 4.5:1 for the on-brand ink, the brand ink on every light
-     and dark panel, and the text on a brand selection (portal-accent-contrast.test.ts). */
+  /* "Make it yours" (Onboarding 18695:18059): the seven other colours the brand gesture can wear, in
+     the swatches' order. Each is a fill, the ink on it, the brand ink on light and the brand ink on
+     navy. Deep fills (violet, pink, red, orange) take white ink and are their own light ink; bright
+     ones (yellow, green, cyan: Figma's secondary colours as drawn) take the navy ink and a darkened
+     light ink. Every set keeps the blue's contrast duties: 4.5:1 for the on-brand ink, the brand ink
+     on every light and dark panel, and the text on a brand selection (portal-accent-contrast.test.ts). */
   --portal-raw-violet: #6d28d9;
   --portal-raw-violet-ink-dark: #b79cff;
-  --portal-raw-green-deep: #086b36;
-  --portal-raw-green-ink-dark: #3fd68a;
-  --portal-raw-orange-deep: #a33f00;
-  --portal-raw-orange-ink-dark: #ff9a52;
   --portal-raw-pink: #b0124f;
   --portal-raw-pink-ink-dark: #ff80b0;
+  --portal-raw-red: #c40d0d;
+  --portal-raw-red-ink-light: #b00c0c;
+  --portal-raw-red-ink-dark: #ff8080;
+  --portal-raw-orange-deep: #a33f00;
+  --portal-raw-orange-ink-dark: #ff9a52;
+  --portal-raw-yellow: #f2f200;
+  --portal-raw-yellow-ink-light: #666000;
+  --portal-raw-green-deep: #086b36;
+  --portal-raw-green-ink-dark: #3fd68a;
+  --portal-raw-cyan: #00f2f2;
+  --portal-raw-cyan-ink-light: #00696b;
+  /* The ink on a bright fill: the dark canvas navy (--portal-raw-navy-channels). */
+  --portal-raw-navy: #0b0b24;
   /* The accent the brand gesture wears: the blue, or the person's pick (data-portal-accent, below). The
      navy family (veils, panels, the composer card) stays on the blue whatever the accent. */
   --portal-raw-accent: var(--portal-raw-blue);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-blue);
   --portal-raw-accent-ink-dark: var(--portal-raw-blue-ink-dark);
   /* Figma primary/white: ink on the brand fill. */
   --portal-raw-white: #f2f2f2;
@@ -87,23 +100,53 @@
   --portal-raw-danger-50: color-mix(in srgb, var(--portal-raw-danger) 50%, transparent);
 }
 
-/* The accent picked in "Make it yours" (store/portal-accent.ts). Blue sets no attribute. */
+/* The accent picked in "Make it yours" (store/portal-accent.ts). Blue sets no attribute. A block names
+   all four: fill, the ink on it, and the brand ink on light and on dark. */
 :root[data-shell='portal'][data-portal-accent='violet'] {
   --portal-raw-accent: var(--portal-raw-violet);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-violet);
   --portal-raw-accent-ink-dark: var(--portal-raw-violet-ink-dark);
-}
-
-:root[data-shell='portal'][data-portal-accent='green'] {
-  --portal-raw-accent: var(--portal-raw-green-deep);
-  --portal-raw-accent-ink-dark: var(--portal-raw-green-ink-dark);
-}
-
-:root[data-shell='portal'][data-portal-accent='orange'] {
-  --portal-raw-accent: var(--portal-raw-orange-deep);
-  --portal-raw-accent-ink-dark: var(--portal-raw-orange-ink-dark);
 }
 
 :root[data-shell='portal'][data-portal-accent='pink'] {
   --portal-raw-accent: var(--portal-raw-pink);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-pink);
   --portal-raw-accent-ink-dark: var(--portal-raw-pink-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='red'] {
+  --portal-raw-accent: var(--portal-raw-red);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-red-ink-light);
+  --portal-raw-accent-ink-dark: var(--portal-raw-red-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='orange'] {
+  --portal-raw-accent: var(--portal-raw-orange-deep);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-orange-deep);
+  --portal-raw-accent-ink-dark: var(--portal-raw-orange-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='yellow'] {
+  --portal-raw-accent: var(--portal-raw-yellow);
+  --portal-raw-accent-on: var(--portal-raw-navy);
+  --portal-raw-accent-ink-light: var(--portal-raw-yellow-ink-light);
+  --portal-raw-accent-ink-dark: var(--portal-raw-yellow);
+}
+
+:root[data-shell='portal'][data-portal-accent='green'] {
+  --portal-raw-accent: var(--portal-raw-green);
+  --portal-raw-accent-on: var(--portal-raw-navy);
+  --portal-raw-accent-ink-light: var(--portal-raw-green-deep);
+  --portal-raw-accent-ink-dark: var(--portal-raw-green-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='cyan'] {
+  --portal-raw-accent: var(--portal-raw-cyan);
+  --portal-raw-accent-on: var(--portal-raw-navy);
+  --portal-raw-accent-ink-light: var(--portal-raw-cyan-ink-light);
+  --portal-raw-accent-ink-dark: var(--portal-raw-cyan);
 }

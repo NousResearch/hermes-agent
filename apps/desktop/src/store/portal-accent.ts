@@ -1,7 +1,8 @@
 /**
- * The redesign's accent colour ("Make it yours", first-time splash): which colour its brand gesture
- * wears. The redesign's brand belongs to the shell, not the skin (DESIGN.md, Portal design language),
- * so this is a shell choice beside the theme system's light / dark mode, not a skin retint.
+ * The redesign's accent colour ("Make it yours", the first-time splash's second step): which colour
+ * its brand gesture wears. The redesign's brand belongs to the shell, not the skin (DESIGN.md,
+ * Portal design language), so this is a shell choice beside the theme system's light / dark mode,
+ * not a skin retint.
  *
  * Saved where the mode is saved: a machine-level UI preference (`lib/ui-preferences/keys.ts`), which
  * is this browser until a visitor has a machine, then shared by every window of it; it moves to the
@@ -13,9 +14,10 @@
 import { persistentAtom } from '@/lib/persisted'
 
 import { recordIaAction } from './ia-metrics'
+import { IA_ACTIONS } from './ia-metrics-contract'
 
 /** In the order the swatches show. Blue is the redesign's own brand. */
-export const PORTAL_ACCENTS = ['blue', 'violet', 'green', 'orange', 'pink'] as const
+export const PORTAL_ACCENTS = ['blue', 'violet', 'pink', 'red', 'orange', 'yellow', 'green', 'cyan'] as const
 
 export type PortalAccent = (typeof PORTAL_ACCENTS)[number]
 
@@ -28,13 +30,24 @@ export const $portalAccent = persistentAtom<PortalAccent>(PORTAL_ACCENT_KEY, 'bl
   encode: value => (value === 'blue' ? null : value)
 })
 
+type CountedPick = (typeof IA_ACTIONS.theme_pick)[number]
+
+const isCountedPick = (pick: string): pick is CountedPick => (IA_ACTIONS.theme_pick as readonly string[]).includes(pick)
+
 export function pickPortalAccent(accent: PortalAccent): void {
   if ($portalAccent.get() === accent) {
     return
   }
 
   $portalAccent.set(accent)
-  recordIaAction(`ia.theme_pick.color_${accent}`)
+
+  // The metrics contract is closed and mirrored by the backend's export validator, which names the
+  // first five colours; red, yellow and cyan are counted once both sides name them.
+  const pick = `color_${accent}` as const
+
+  if (isCountedPick(pick)) {
+    recordIaAction(`ia.theme_pick.${pick}`)
+  }
 }
 
 /** main.tsx, before first render: mirror the accent onto `<html>` and follow every change. */

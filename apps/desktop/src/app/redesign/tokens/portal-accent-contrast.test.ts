@@ -10,10 +10,10 @@ import { portalTheme } from '@/themes/portal'
 // The shipped stylesheet's text (vitest does not load CSS modules).
 const raw = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'raw.css'), 'utf8')
 
-// "Make it yours" lets the redesign's brand gesture wear five colours (store/portal-accent.ts). Each
+// "Make it yours" lets the redesign's brand gesture wear eight colours (store/portal-accent.ts). Each
 // must keep every contrast duty the blue has, in light and in dark (WCAG AA, 4.5:1 for text): the
 // on-brand ink on the fill, the brand ink on every panel and on a brand selection, and the text on a
-// brand selection. Computed from the values the stylesheets ship: the primitives in raw.css (and the
+// brand selection. A bright fill meets the first with a dark on-brand ink, not by being dimmed. Computed from the values the stylesheets ship: the primitives in raw.css (and the
 // accent each `data-portal-accent` block selects) and the Hermes Portal skin's seeds.
 
 const AA = 4.5
@@ -36,19 +36,25 @@ function readPrimitives() {
     return value
   }
 
-  const pair = (block: string) => {
-    const fill = /--portal-raw-accent:\s*var\((--portal-raw-[\w-]+)\)/.exec(block)?.[1]
-    const ink = /--portal-raw-accent-ink-dark:\s*var\((--portal-raw-[\w-]+)\)/.exec(block)?.[1]
+  const named = (block: string, token: string) => {
+    const name = new RegExp(`${token}:\\s*var\\((--portal-raw-[\\w-]+)\\)`).exec(block)?.[1]
 
-    if (!fill || !ink) {
-      throw new Error('an accent block names no fill or ink')
+    if (!name) {
+      throw new Error(`an accent block names no ${token}`)
     }
 
-    return { fill: resolve(fill), inkDark: resolve(ink) }
+    return resolve(name)
   }
 
+  const set = (block: string) => ({
+    fill: named(block, '--portal-raw-accent'),
+    on: named(block, '--portal-raw-accent-on'),
+    inkLight: named(block, '--portal-raw-accent-ink-light'),
+    inkDark: named(block, '--portal-raw-accent-ink-dark')
+  })
+
   const rootBlock = /:root\[data-shell='portal'\] \{([^}]*)\}/.exec(raw)?.[1] ?? ''
-  const accents = {} as Record<PortalAccent, { fill: string; inkDark: string }>
+  const accents = {} as Record<PortalAccent, ReturnType<typeof set>>
 
   for (const accent of PORTAL_ACCENTS) {
     const block =
@@ -56,7 +62,7 @@ function readPrimitives() {
         ? rootBlock
         : (new RegExp(`\\[data-portal-accent='${accent}'\\] \\{([^}]*)\\}`).exec(raw)?.[1] ?? '')
 
-    accents[accent] = pair(block)
+    accents[accent] = set(block)
   }
 
   return { accents, resolve }
@@ -90,7 +96,6 @@ const contrast = (a: Rgb, b: Rgb) => {
 }
 
 const { accents, resolve } = readPrimitives()
-const white = rgb(resolve('--portal-raw-white'))
 const pureWhite = rgb(resolve('--portal-raw-pure-white'))
 const black = rgb(resolve('--portal-raw-black'))
 const blue = rgb(resolve('--portal-raw-blue'))
@@ -115,10 +120,12 @@ const lightPanels: Rgb[] = [rgb(light.background), rgb(light.card), rgb('#ededed
 
 describe.each(PORTAL_ACCENTS)('the %s accent', accent => {
   const fill = rgb(accents[accent].fill)
+  const on = rgb(accents[accent].on)
+  const inkLight = rgb(accents[accent].inkLight)
   const inkDark = rgb(accents[accent].inkDark)
 
   it('keeps the on-brand ink readable on its fill', () => {
-    expect(contrast(white, fill)).toBeGreaterThanOrEqual(AA)
+    expect(contrast(on, fill)).toBeGreaterThanOrEqual(AA)
   })
 
   it('in light: the brand ink, and the text on a brand selection, read on every panel', () => {
@@ -128,8 +135,8 @@ describe.each(PORTAL_ACCENTS)('the %s accent', accent => {
     for (const panel of lightPanels) {
       const selected = mix(fill, panel, 0.12)
 
-      expect(contrast(fill, panel)).toBeGreaterThanOrEqual(AA)
-      expect(contrast(fill, selected)).toBeGreaterThanOrEqual(AA)
+      expect(contrast(inkLight, panel)).toBeGreaterThanOrEqual(AA)
+      expect(contrast(inkLight, selected)).toBeGreaterThanOrEqual(AA)
       expect(contrast(ink, selected)).toBeGreaterThanOrEqual(AA)
       expect(contrast(secondary(selected), selected)).toBeGreaterThanOrEqual(AA)
     }

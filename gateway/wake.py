@@ -26,7 +26,6 @@ WAKE_TURN_TIMEOUT_SECONDS = 600.0
 # is worth waiting out.
 _RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
 
-# A wake's receipt is one line in the terminal, not the notification itself.
 _RECEIPT_CHARS = 200
 
 
@@ -124,10 +123,8 @@ def _runner_draining(adapter: Any) -> bool:
 
 
 def _local_receipt(source: Any, display_text: str) -> dict:
-    """The one-line receipt a local chat's wake names on its claim's ``message.start``. An idle classic
-    CLI only opens a gateway-admitted turn that has one (``hermes_cli/gateway_tools_notify.py``), so a
-    wake without it runs and is saved but never painted there. The row stays ``internal_notification``,
-    as a liveness tick's does; messaging routes carry none."""
+    """The card a local chat's wake names on its claim's ``message.start``: an idle classic CLI opens a
+    notification turn only when it has one (``hermes_cli/gateway_tools_notify.py::_card``)."""
     from gateway.config import Platform
     receipt = " ".join(str(display_text or "").split())[:_RECEIPT_CHARS]
     if not receipt or getattr(source, "platform", None) != Platform.LOCAL:

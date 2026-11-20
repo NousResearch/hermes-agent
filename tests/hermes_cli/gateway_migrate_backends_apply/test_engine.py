@@ -1634,3 +1634,57 @@ def test_an_unreadable_turn_marker_blocks_the_real_apply_unless_forced(home, cap
         _nothing_applied(host, home, before)
         assert "--force-interrupt" in out
 
+
+# --------------------------------------------------------------------------- the migration trusts only bytes it wrote
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env"])
+def test_an_edit_between_the_backup_and_the_write_stops_the_apply_and_is_kept(home, capsys, monkeypatch, name):
+    """An edit made after the backup was taken (the Webapp build can run in between) is never folded into
+    the migration's own write: the apply stops before writing that file and the edit survives."""
+    host = FakeHost(home)
+    edit = "\n# edited while the migration ran\n"
+    real_step = engine.Run.step
+    edited = []
+
+    def edit_when_writing_starts(run, step, state="running", message=None):
+        if step == "write_config" and state == "running":
+            path = home / name
+            edited.append(path.read_text(encoding="utf-8") + edit)
+            path.write_text(edited[0], encoding="utf-8")
+        real_step(run, step, state, message)
+
+    monkeypatch.setattr(engine.Run, "step", edit_when_writing_starts)
+    code = engine.cmd_apply(host, _args())
+
+    out = capsys.readouterr().out
+    assert (home / name).read_text(encoding="utf-8") == edited[0]  # exactly the edit: nothing written over it
+    assert host.old["active"] is True and host.gw["active"] is False
+    assert f"{home / name} changed while the migration was running" in out and "edit was kept" in out
+    assert code == (engine.EXIT_BLOCKED if name == ".env" else engine.EXIT_ROLLED_BACK)
+
+
+def test_the_fingerprint_is_the_written_bytes_not_a_later_read(home, capsys, monkeypatch):
+    """A save that lands right after the migration's write is not taken for the migration's own bytes:
+    --restore then refuses (exit 3) and keeps it."""
+    import hashlib
+    host = FakeHost(home)
+    real = host.set_config
+    edit = "\n# saved right after the migration's write\n"
+    published = []
+
+    def write_then_edit(values, **kw):
+        data = real(values, **kw)
+        path = home / "config.yaml"
+        published.append(data if data is not None else path.read_bytes())  # (a writer that returns nothing)
+        path.write_text(path.read_text(encoding="utf-8") + edit, encoding="utf-8")
+        return data
+
+    monkeypatch.setattr(host, "set_config", write_then_edit)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    recorded = engine.read_manifest(home)["files_after_apply"]["config.yaml"]
+    assert published and recorded == hashlib.sha256(published[0]).hexdigest()
+
+    _restore_refused_and_nothing_changed(host, home, capsys, f"{home / 'config.yaml'} changed since the migration")
+    assert (home / "config.yaml").read_text(encoding="utf-8").endswith(edit)
+

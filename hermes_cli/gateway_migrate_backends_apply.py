@@ -302,6 +302,24 @@ def _ensure_gateway_service(host, gw_before: dict) -> None:
         host.gateway_verb("enable")
 
 
+class ChangedDuringRun(StepFailed):
+    """A file changed between the backup and the migration's write: the apply stops, the edit is kept."""
+
+    def __init__(self, message: str, *, nothing_written: bool):
+        super().__init__(message)
+        self.nothing_written = nothing_written
+
+
+def _written(host, write, values, m: dict, key: str, name: str, *, nothing_yet: bool) -> Optional[str]:
+    """sha256 of the exact bytes *write* published, which it writes only over the bytes backed up."""
+    from hermes_cli.gateway_migrate_backends_host import FileChangedSinceBackup
+    try:
+        data = write(values, expect=_backup_digest(m, key))
+    except FileChangedSinceBackup as exc:
+        raise ChangedDuringRun(str(exc), nothing_written=nothing_yet) from exc
+    return hashlib.sha256(data).hexdigest() if data is not None else _file_digest(Path(host.home) / name)
+
+
 def _apply_steps(run: Run, plan: BackendPlan) -> float:
     """Every change, in contract order. Returns the time the old backend stopped answering."""
     host, m = run.host, run.data
@@ -318,12 +336,11 @@ def _apply_steps(run: Run, plan: BackendPlan) -> float:
     # rollback or --restore writes a file back only while it still matches, so later edits are kept.
     written = m["files_after_apply"] = {name: _backup_digest(m, key) for key, name in _RESTORED_FILES}
     if writes := env_writes(plan):
-        host.set_env(writes)
-        written[".env"] = _file_digest(host.home / ".env")
+        written[".env"] = _written(host, host.set_env, writes, m, "env", ".env", nothing_yet=True)
         run.save()
         print(f"  ✓ .env: {', '.join(sorted(writes))} (mode 600; values not shown)")
-    host.set_config(plan.config_writes())
-    written["config.yaml"] = _file_digest(host.home / "config.yaml")
+    written["config.yaml"] = _written(host, host.set_config, plan.config_writes(), m, "config", "config.yaml",
+                                      nothing_yet=not writes)
     print(f"  ✓ config.yaml: {', '.join(plan.config_writes())}")
     run.step("write_config", "done")
     run.step("gateway_service")
@@ -386,7 +403,11 @@ def apply(host, plan: BackendPlan, *, detached: bool = False) -> int:
         run.step(failed, "failed", f"{failed} failed: {exc}")
         print(f"  ✗ {failed} failed: {exc}")
         print("  ↩ Rolling back...")
-        return rollback(host, run, reason=f"{failed} failed: {exc}")
+        code = rollback(host, run, reason=f"{failed} failed: {exc}")
+        if isinstance(exc, ChangedDuringRun) and exc.nothing_written and code == EXIT_ROLLED_BACK:
+            print(f"✗ Nothing changed: {exc}. Run the migration again once the file is as you want it.")
+            return EXIT_BLOCKED  # refused before its first file write; only the record was written
+        return code
     outage = host.now() - stopped_at
     linger = host.linger()
     run.data["linger_after"] = linger
@@ -464,6 +485,8 @@ def _put_back(home: Path, m: dict, key: str, name: str) -> None:
     if now != "unreadable" and now == _backup_digest(m, key):
         return  # already as before the migration (an earlier, interrupted rollback put it back)
     recorded = m.get("files_after_apply")
+    if isinstance(recorded, dict) and recorded.get(name, False) == _backup_digest(m, key):
+        return  # the migration never wrote it (its record still holds the backup's digest): nothing to undo
     if now == "unreadable" or not isinstance(recorded, dict) or name not in recorded or now != recorded[name]:
         raise StepFailed(f"{target} changed since the migration wrote it, so it was not written back and your "
                          f"edits were kept; merge them with {backup or 'nothing (it did not exist before)'} by hand")

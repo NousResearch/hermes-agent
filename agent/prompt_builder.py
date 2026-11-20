@@ -1219,6 +1219,14 @@ def _plugin_skill_prompt_rows(
                                       available_toolsets, session_platform):
                 continue
             desc = clip_skill_description(str(meta.get("description") or "").strip()) or extract_skill_description(frontmatter)
+            # Offer-time verdicts for registry rows (addendum T4): the scan keys on
+            # content, so a payload that mutates after install re-surfaces at the
+            # next listing without any reinstall.
+            scan_path = meta.get("path")
+            if scan_path:
+                from agent.skill_utils import is_quarantined_plugin_skill
+                if is_quarantined_plugin_skill(Path(scan_path)):
+                    continue
             rows.append((name, desc))
     except Exception:
         logger.debug("Plugin skill prompt rows unavailable", exc_info=True)
@@ -1425,14 +1433,20 @@ def _build_skills_system_prompt_inner(
     # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
     # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
     # incompatible copies still take part — skill_view sees them too.
-    from agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
+    from agent.skill_utils import (TIER_PROJECT, is_disabled_entry, is_quarantined_skill,
+                                   iter_gated_skill_files, iter_project_skill_files, resolve_skill_catalog)
     project_roots = [d for t, d in extra_roots if t == TIER_PROJECT and d.exists()]
     rows: list[tuple[dict, bool]] = []
     for root in project_roots:
         rows += _scan_extra_root(root, iter_project_skill_files(root), TIER_PROJECT, "Error reading project skill %s: %s")
-    rows += [({**entry, "tier": TIER_LOCAL, "root": skills_dir}, ok) for entry, ok in candidates]
+    for entry, ok in candidates:
+        # Same quarantine engine as the project tier; audit-only by default, so
+        # the exclusion only fires when HERMES_SKILL_GATE_ENFORCE is set.
+        if is_quarantined_skill(skills_dir / entry["rel"], TIER_LOCAL):
+            continue
+        rows.append(({**entry, "tier": TIER_LOCAL, "root": skills_dir}, ok))
     for tier, root in ((t, d) for t, d in extra_roots if t != TIER_PROJECT and d.exists()):
-        rows += _scan_extra_root(root, iter_skill_index_files(root, "SKILL.md"), tier, "Error reading external skill %s: %s")
+        rows += _scan_extra_root(root, iter_gated_skill_files(root, tier), tier, "Error reading external skill %s: %s")
     resolved = resolve_skill_catalog([
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
          "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}

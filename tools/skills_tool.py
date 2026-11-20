@@ -599,6 +599,15 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
                 "dangerous. It will not load until the repo's skill content changes and passes a re-scan.",
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
                 "`hermes skills untrust`."), None, None
+    if skill_md is not None:
+        tier = tier_of.get(_owning_search_dir(skill_md, all_dirs))
+        if tier is not None and tier != TIER_PROJECT:
+            from agent.skill_utils import is_quarantined_skill
+            if is_quarantined_skill(skill_md, tier):
+                return _fail(
+                    f"Skill '{name}' is quarantined: the security scan flagged its content as "
+                    "dangerous. It will not load until its content changes and passes a re-scan.",
+                    hint="Review the flagged skill content before re-enabling it."), None, None
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in sort_skills(find_all_skills())[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,

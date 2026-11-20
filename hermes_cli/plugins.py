@@ -679,6 +679,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             {
                 "name": qualified, "description": str(entry.get("description", "")),
                 "category": "plugin", "frontmatter": dict(entry.get("frontmatter", {})),
+                "path": entry.get("path"),
             } for qualified, entry in sorted(self._plugin_skills.items())
         ]
 

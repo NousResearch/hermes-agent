@@ -665,6 +665,94 @@ def iter_project_skill_files(project_dir: Path):
     yield from (p for p in iter_skill_index_files(project_dir, "SKILL.md") if not is_quarantined_project_skill(p))
 
 
+# ── Load-time gates for the remaining skill tiers (skill-load-scanning P1) ──
+# The project quarantine above only covers the project tier. Profile-tree
+# (TIER_LOCAL), create-dir and external-dir skills load through the same
+# catalog/resolution chokepoints with NO scan at all, and plugin-skill
+# registry rows surface in <available_skills> ungated. This gate reuses the
+# same skills_guard engine (scan_skill_cached, content-hash cached — cost is
+# one scan per skill per content change). Rollout is AUDIT-ONLY first:
+# verdicts are logged and (with HERMES_SKILL_QUARANTINE_CARDS=1) turned into
+# escalation triggers, but nothing is excluded until enforcement is switched
+# on with HERMES_SKILL_GATE_ENFORCE=1. The project tier above stays
+# unconditionally enforcing. The project gate fails closed; the escalation
+# side fails open.
+_TIER_SCAN_SOURCES = {TIER_PROJECT: "project-local", TIER_LOCAL: "profile-local",
+                      TIER_CREATE_DIR: "create-dir", TIER_EXTERNAL: "external-dir"}
+_TIER_QUARANTINE_CACHE: dict[tuple, bool] = {}  # (tier-or-source, skill_dir) -> quarantined
+
+
+def _scan_and_gate(skill_md, source: str) -> bool:
+    """One gate body shared by every tier (addendum T1/T2/T4): scan via
+    ``scan_skill_cached`` (content-hash cached), escalate findings, decide
+    quarantine strictly by enforcement flag."""
+    skill_dir = Path(skill_md).parent
+    try:
+        key = (source, str(skill_dir.resolve()))
+    except OSError:
+        key = (source, str(skill_dir))
+    try:
+        from tools.skills_guard import scan_skill_cached
+        from hermes_constants import get_hermes_home
+        cache_dir = get_hermes_home() / "cache" / "skill_scans" / source
+        result, provenance = scan_skill_cached(skill_dir, source=source, cache_dir=cache_dir)
+        verdict = result.verdict
+        if verdict == "dangerous":
+            enforce = os.environ.get("HERMES_SKILL_GATE_ENFORCE", "").strip().lower() in ("1", "true", "yes")
+            quarantined = enforce
+            logger.warning("%s skill scanned dangerous: %s — %s%s",
+                           source, skill_dir, result.summary,
+                           " — QUARANTINED" if enforce else " — audit-only (not enforced)")
+            from tools.skill_quarantine_alert import notify_skill_finding
+            notify_skill_finding(source, skill_md, provenance, enforce)
+        elif verdict == "caution":
+            quarantined = False
+            from tools.skill_quarantine_alert import notify_skill_finding
+            notify_skill_finding(source, skill_md, provenance, False)
+        else:
+            quarantined = False
+    except Exception:
+        # Fail closed ONLY when enforcement is on; audit-only keeps the tier loading.
+        enforce = os.environ.get("HERMES_SKILL_GATE_ENFORCE", "").strip().lower() in ("1", "true", "yes")
+        quarantined = enforce
+        logger.warning("%s skill scan failed — %s: %s", source,
+                       "quarantining (fail closed)" if enforce else "audit-only, not enforcing",
+                       skill_dir, exc_info=True)
+    _TIER_QUARANTINE_CACHE[key] = quarantined
+    return quarantined
+
+
+def is_quarantined_skill(skill_md, tier: int) -> bool:
+    """True when skill *skill_md* of a non-project tier must not appear/list/load.
+
+    Audit-only (default): the scan runs and the verdict is logged plus
+    escalated to the trigger-file card pipeline, but the skill stays
+    visible/listable — nothing is excluded and the return value is False.
+    With HERMES_SKILL_GATE_ENFORCE=1 a ``dangerous`` verdict quarantines the
+    skill exactly like the project tier (fail closed on scanner errors); a
+    ``caution`` verdict always loads (hub behavior)."""
+    return _scan_and_gate(skill_md, _TIER_SCAN_SOURCES.get(tier, f"tier-{tier}"))
+
+
+def is_quarantined_plugin_skill(skill_md) -> bool:
+    """Offer-time gate for plugin-registry skill rows (addendum T4). The scan is
+    content-hash keyed, so a registry payload that mutates after install
+    re-surfaces at the next offer-time load without any reinstall."""
+    return _scan_and_gate(skill_md, "plugin-registry")
+
+
+def clear_skill_scan_caches() -> None:
+    """Test helper: drop the module-level verdict caches."""
+    _TIER_QUARANTINE_CACHE.clear()
+
+
+def iter_gated_skill_files(root: Path, tier: int):
+    """Yield the SKILL.md files under *root* for a non-project tier through the
+    load-time gate — the iteration chokepoint for profile/create/external dirs,
+    so the catalog cannot bypass the scan by forgetting the check."""
+    yield from (p for p in iter_skill_index_files(root, "SKILL.md") if not is_quarantined_skill(p, tier))
+
+
 def normalize_skill_lookup_name(identifier: str) -> str:
     """Translate a trusted absolute skill path (slash commands / cron may store
     them) to the relative form ``skill_view()`` accepts."""

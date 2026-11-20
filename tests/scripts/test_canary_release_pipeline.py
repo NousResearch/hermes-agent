@@ -9,6 +9,7 @@ publication to the canary channels only.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from datetime import UTC, datetime
 
@@ -367,6 +368,15 @@ def test_the_canary_controller_custody_is_the_stable_pipeline_after_its_accepted
                                            run=_custody_run())
 
 
+def canary_head_objects(tag: str) -> dict[str, str]:
+    """The protected canary channel record and the build manifest of a head that serves ``tag``."""
+    manifest = json.dumps({"request": {"releaseTag": tag}})
+    key = f"releases/channel-builds/{'a' * 32}/build.json"
+    record = {"policy": "canary-release",
+              "head": {"manifestKey": key, "sha256": hashlib.sha256(manifest.encode()).hexdigest()}}
+    return {"releases/channels/canary.json": json.dumps(record), key: manifest}
+
+
 def test_the_pruner_keeps_the_live_canary_however_old(monkeypatch, capsys):
     from scripts.releases import r2
 
@@ -376,7 +386,8 @@ def test_the_pruner_keeps_the_live_canary_however_old(monkeypatch, capsys):
     monkeypatch.setattr(r2, "credentials", lambda: (None, "https://r2.example", "bucket"))
     monkeypatch.setattr(r2, "list_objects", lambda **_kw: {"keys": keys, "lastModified": {}})
     pointer = json.dumps({"archive": live})
-    monkeypatch.setattr(r2, "get_object", lambda *_args, **_kw: pointer)
+    head = canary_head_objects(live)
+    monkeypatch.setattr(r2, "get_object", lambda _creds, _base, _bucket, key, _now, **_kw: head.get(key, pointer))
     r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())
     doomed = capsys.readouterr().out
     assert stale in doomed and live not in doomed
@@ -392,3 +403,22 @@ def test_the_pruner_keeps_the_live_canary_however_old(monkeypatch, capsys):
         monkeypatch.setattr(r2, "get_object", lambda *_args, value=bad, **_kw: value)
         with pytest.raises(RuntimeError, match=pattern):
             r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())
+
+
+@pytest.mark.parametrize("serves", ["canary.20260102T000000Z-v1.2.3", None])
+def test_the_pruner_refuses_a_pointer_that_lags_the_protected_canary_head(monkeypatch, serves):
+    """publish_release writes the pointer after the head moves. If that write failed, the pointer still
+    names the previous canary and the live one's archive is unprotected: refuse to prune, nothing
+    deleted, until a rerun of its publish-canary job (or the next canary) rewrites the pointer."""
+    from scripts.releases import r2
+
+    previous = "canary.20260101T000000Z-v1.2.3"
+    keys = [f"releases/tag/{previous}/x64.msixbundle", "releases/tag/canary.20260102T000000Z-v1.2.3/x64.msixbundle",
+            "releases/canary/release-candidates.json"]
+    monkeypatch.setattr(r2, "credentials", lambda: (None, "https://r2.example", "bucket"))
+    monkeypatch.setattr(r2, "list_objects", lambda **_kw: {"keys": keys, "lastModified": {}})
+    head = canary_head_objects(serves) if serves else {}
+    pointer = json.dumps({"archive": previous})
+    monkeypatch.setattr(r2, "get_object", lambda _creds, _base, _bucket, key, _now, **_kw: head.get(key, pointer))
+    with pytest.raises(RuntimeError, match="protected canary head serves.*refusing to prune"):
+        r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())

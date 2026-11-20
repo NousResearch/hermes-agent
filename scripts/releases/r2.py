@@ -930,6 +930,25 @@ def stale_feed_bundle_keys(
 # prune-canaries
 # ---------------------------------------------------------------------------
 
+def _canary_head_tag(read: Callable[[str], str | None]) -> str | None:
+    """The release tag the protected canary head serves.
+
+    publish_release writes releases/canary/release-candidates.json only after this head moves, so a
+    failed pointer write leaves the pointer naming the previous canary while the head serves the
+    new one, whose archive the pointer then no longer protects.
+    """
+    text = read("releases/channels/canary.json")
+    record = json.loads(text) if text is not None else None
+    head = record.get("head") if isinstance(record, dict) and record.get("policy") == "canary-release" else None
+    if not isinstance(head, dict) or not isinstance(head.get("manifestKey"), str):
+        return None
+    manifest = read(head["manifestKey"])
+    if manifest is None or hashlib.sha256(manifest.encode()).hexdigest() != head.get("sha256"):
+        return None
+    request = json.loads(manifest).get("request")
+    return request.get("releaseTag") if isinstance(request, dict) else None
+
+
 def prune(
     keep_days: int,
     dry_run: bool = False,
@@ -990,6 +1009,10 @@ def prune(
         archive_prefix = f"releases/tag/{live}/"
         if not any(key.startswith(archive_prefix) for key in keys):
             raise RuntimeError(f"Live canary pointer {pointer_key} names missing archive {live}; refusing to prune")
+        head = _canary_head_tag(lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher))
+        if head != live:
+            raise RuntimeError(f"Live canary pointer {pointer_key} names {live} but the protected canary head "
+                               f"serves {head}; rerun that canary's publish-canary job; refusing to prune")
         protected.update(key for key in keys if live in key)
 
     # A desktop-only canary can advance that pointer without replacing the live APT index.

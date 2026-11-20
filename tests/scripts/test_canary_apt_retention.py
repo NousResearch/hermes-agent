@@ -6,6 +6,7 @@ import pytest
 
 from scripts.releases import lanes, r2
 from scripts.termux import stage_apt_repo
+from tests.scripts.test_canary_release_pipeline import canary_head_objects
 from tests.scripts.test_release_r2 import r2_server
 from tests.termux_fixtures import build_deb
 
@@ -31,6 +32,8 @@ def test_prune_keeps_actual_apt_pool_after_desktop_only_canaries(request, tmp_pa
     assert live_pool == {f"{ROOT}pool/{OLD}/h/{filename}"}
     assert lanes.jobs_to_run(lanes.CANARY - {"termux"}, "canary")["publish-canary"]
     server.store["releases/canary/release-candidates.json"] = (json.dumps({"archive": NEW}).encode(), '"head"')
+    for key, text in canary_head_objects(NEW).items():
+        server.store[key] = (text.encode(), '"channel"')
     current = f"releases/tag/{NEW}/desktop.zip"
     stale = {f"releases/tag/{OLD}/desktop.zip", f"{ROOT}pool/{OLD}/h/unreferenced.deb"}
     stable = "releases/termux/stable/pool/rc.1-v1.2.3/h/hermes-agent.deb"

@@ -205,9 +205,17 @@ def test_reserve_install_absent_and_update_exact_revision(tmp_path):
         result = p.reserve(owner, plan)
         assert result["expected_installation_revision"] == "receipt-1"
         assert result["expected_path_revision"] == p.read()["targets"]["a/b"]["path_revision"]
+        before = (p.directory / 'claims.json').read_bytes()
         owner.generation = uuid.uuid4().hex
-        with pytest.raises(CatalogError):
+        # Empty publication has valid targets/reservations and no later
+        # admission-generation check that could mask the owner identity fence.
+        with pytest.raises(CatalogError) as caught:
+            p.publish(owner, [])
+        assert caught.value.code == 'ownership_conflict'
+        assert (p.directory / 'claims.json').read_bytes() == before
+        with pytest.raises(CatalogError) as caught:
             p.reserve(owner, review(owner, "other"))
+        assert caught.value.code == 'ownership_conflict'
 
 
 def test_path_revisions_survive_removed_claim_within_epoch(tmp_path):

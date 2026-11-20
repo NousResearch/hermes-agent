@@ -111,10 +111,33 @@ def test_exception_leaves_unknown_and_late_stale_generation_cannot_settle(tmp_pa
             with facade.commit(admission, op):
                 raise RuntimeError('before effect')
         assert p.read()['reservations'][admission['reservation_id']]['state'] == 'unknown'
+        (tmp_path / 'skills/new').mkdir(parents=True)
+        payload = dict(reservation_id=admission['reservation_id'], operation_id=op,
+                       expected_path_revision=0, result=operation(owner, op))
+        revision = facade.settle(payload)
+        assert facade.settle(payload) == revision
+        before = (p.directory / 'claims.json').read_bytes()
+        # Cached exact replay has no other row-generation or target-prestate fence.
         owner.generation = uuid.uuid4().hex
-        with pytest.raises(CatalogError):
-            facade.settle(dict(reservation_id=admission['reservation_id'], operation_id=op,
-                              expected_path_revision=0, result=operation(owner, op)))
+        with pytest.raises(CatalogError) as caught:
+            facade.settle(payload)
+        assert caught.value.code == 'ownership_conflict'
+        assert (p.directory / 'claims.json').read_bytes() == before
+
+
+def test_terminal_settlement_rejects_only_payload_expected_revision(tmp_path):
+    with admitted(tmp_path) as (p, owner, facade, admission, op):
+        (tmp_path / 'skills/new').mkdir(parents=True)
+        payload = dict(reservation_id=admission['reservation_id'], operation_id=op,
+                       expected_path_revision=0, result=operation(owner, op))
+        before = (p.directory / 'claims.json').read_bytes()
+        with pytest.raises(CatalogError) as caught:
+            facade.settle(dict(payload, expected_path_revision=1))
+        assert caught.value.code == 'ownership_conflict'
+        assert (p.directory / 'claims.json').read_bytes() == before
+        # Same pre-state, correct CAS: reaches publication without a permit fence.
+        assert facade.settle(payload) == 1
+        assert p.read()['targets']['new']['installation_revision'] == 'revision-1'
 
 
 def test_prestate_recheck_and_revocation_prevent_writes(tmp_path):

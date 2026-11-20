@@ -1075,6 +1075,35 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
     return {"status": state if state in {"ok", "unavailable", "retrying"} else "unknown"}
 
 
+def _prune_stale_platform_writers(platforms: dict[str, Any], current_pid: int) -> None:
+    """Reconcile ``gateway_state.json`` platform entries against their writers.
+
+    Each platform entry is stamped ``writer_pid`` + ``writer_start_time`` by the gateway that last
+    wrote it. After an ungraceful gateway exit — or a boot on a different build — a record can linger
+    claiming ``state: connected`` while its writer no longer exists, so a readiness check that trusts
+    the file is lied to (a dead writer cannot be "connected"). Dead-only: an entry whose writer PID is
+    gone is pruned (and logged); one written by a DIFFERENT live process is flagged ``needs_attention``,
+    never silently removed — a live foreign writer may still be the legitimate owner in a
+    multi-process setup.
+    """
+    for key in list(platforms):
+        entry = platforms.get(key)
+        if not isinstance(entry, dict):
+            continue
+        writer_pid = entry.get("writer_pid")
+        if not isinstance(writer_pid, int) or writer_pid < 1:
+            continue  # legacy / unstamped entry: leave it (fail safe)
+        start = _get_process_start_time(writer_pid)
+        if start is None:
+            platforms.pop(key, None)
+            logger.warning(
+                "Pruned stale platform status %r (writer PID %s is dead; was %r).",
+                key, writer_pid, entry.get("state"),
+            )
+        elif writer_pid != current_pid:
+            entry["needs_attention"] = True
+
+
 def _prepare_runtime_status_update(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
@@ -1143,6 +1172,7 @@ def _prepare_runtime_status_update(
                 updated_at=_utc_now_iso(), writer_pid=current_record["pid"],
                 writer_start_time=current_record["start_time"])
             payload["platforms"][platform] = platform_payload
+        _prune_stale_platform_writers(payload["platforms"], current_record["pid"])
         _runtime_status_state = payload
         return path, payload, previous_payload
 

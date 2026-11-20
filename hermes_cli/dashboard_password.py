@@ -11,8 +11,8 @@ sign-ins survive a restart. It reads the password from a TTY prompt, or with ``-
 standard input for scripts and UIs, never from argv, and never prints or logs it.
 
 ``HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,PASSWORD_HASH}`` win over ``config.yaml`` when set, so
-the ones in this home's ``.env`` are removed (named, never shown) and ones set by the environment the
-command runs in are named as still overriding.
+the ones in this home's ``.env`` are removed (named, never shown; on Windows spelled in any case, as
+names are there) and ones set by the environment the command runs in are named as still overriding.
 """
 
 from __future__ import annotations
@@ -32,6 +32,17 @@ SHADOWING_ENV = ("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "HERMES_DASHBOARD_BASIC
 MAX_PASSWORD_BYTES = 1024
 
 EXIT_INVALID = 2
+
+
+def _overrides_among(names, *, is_windows: Optional[bool] = None) -> dict[str, str]:
+    """``{name: the SHADOWING_ENV name it sets}`` for each of *names* that sets one: on Windows an
+    environment name matches in any case (a ``hermes_dashboard_basic_auth_password`` line in a ``.env``
+    is HERMES_DASHBOARD_BASIC_AUTH_PASSWORD there), elsewhere only exactly, as the ``.env`` writer
+    compares names (``_env_var_policy_name``; *is_windows* defaults to this host)."""
+    from hermes_cli.config import _env_var_policy_name as policy
+    wanted = {policy(name, is_windows=is_windows): name for name in SHADOWING_ENV}
+    return {name: wanted[policy(name, is_windows=is_windows)] for name in names
+            if policy(name, is_windows=is_windows) in wanted}
 
 
 class DashboardPasswordError(Exception):
@@ -118,7 +129,9 @@ def _current_username() -> str:
     from hermes_cli.config import load_config_readonly
     from hermes_cli.env_loader import resolve_home_dotenv
     from hermes_constants import get_hermes_home
-    local_username = resolve_home_dotenv(get_hermes_home()).get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "").strip()
+    dotenv = resolve_home_dotenv(get_hermes_home())
+    local_username = next((dotenv[name].strip() for name, sets in reversed(_overrides_among(dotenv).items())
+                           if sets == "HERMES_DASHBOARD_BASIC_AUTH_USERNAME" and dotenv[name].strip()), "")
     if local_username:
         return local_username
     section = ((load_config_readonly().get("dashboard") or {}).get("basic_auth") or {})
@@ -135,12 +148,12 @@ def _shadow_refusal() -> Optional[str]:
         except ValueError as exc:
             return f"{exc} It overrides config.yaml"
     from hermes_cli import managed_scope
-    removing = set(load_env()).intersection(SHADOWING_ENV)
+    removing = set(_overrides_among(load_env()).values())
     for config in (read_raw_config(), managed_scope.load_managed_config()):
         raw = ((config.get("dashboard") or {}).get("basic_auth") or {})
         raw_user = raw.get("username") if isinstance(raw, dict) else None
-        if isinstance(raw_user, str) and any(
-                _env_ref_var_name(ref.strip()) in removing for ref in _ENV_REF_RE.findall(raw_user)):
+        if isinstance(raw_user, str) and removing.intersection(_overrides_among(
+                _env_ref_var_name(ref.strip()) for ref in _ENV_REF_RE.findall(raw_user)).values()):
             return "Set dashboard.basic_auth.username to a literal first: it references an override this command removes"
     return None
 
@@ -151,11 +164,15 @@ def _checkout_refusal(project_env: Path, home: Optional[Path] = None) -> Optiona
     (``${VAR}`` expansion, fill-gaps-only when the home has a ``.env``) against the environment as it
     is once this command removed the overrides from *home*'s ``.env``. Never edits that file: it is
     shared by every Hermes home run from the checkout."""
+    from agent.secret_scope import load_env_file
     from hermes_cli.env_loader import resolve_project_dotenv
     from hermes_constants import get_hermes_home
-    supplied = resolve_project_dotenv(project_env, Path(home) if home is not None else get_hermes_home(),
-                                      removed=frozenset(SHADOWING_ENV))
-    found = [name for name in SHADOWING_ENV if supplied.get(name, "").strip()]
+    home = Path(home) if home is not None else get_hermes_home()
+    # Every spelling of an override the home's .env has, as this command removes it (any case on Windows).
+    removed = frozenset(_overrides_among(load_env_file(home / ".env")))
+    supplied = resolve_project_dotenv(project_env, home, removed=removed)
+    setting = {sets for name, sets in _overrides_among(supplied).items() if supplied[name].strip()}
+    found = [name for name in SHADOWING_ENV if name in setting]
     if not found:
         return None
     return (f"{', '.join(found)} is set in {project_env} (this checkout's .env, loaded on every start "
@@ -197,7 +214,7 @@ def _inherited_shadows() -> list[str]:
 def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
     """Remove the names in :data:`SHADOWING_ENV` from this home's ``.env``; return (removed, still there)."""
     from hermes_cli.config import load_env, remove_env_value
-    in_dotenv = [name for name in SHADOWING_ENV if name in load_env()]
+    in_dotenv = [name for name in SHADOWING_ENV if name in _overrides_among(load_env()).values()]
     removed, left = [], []
     for name in in_dotenv:
         try:

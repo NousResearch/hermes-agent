@@ -1004,14 +1004,14 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 if run_id is None or kb.goal_run_status(conn, tid, run_id) != "running":
                     print("Goal block requires this worker's current run ID.", file=sys.stderr)
                     return False
-                from hermes_cli.goals import kanban_goal_block_error
+                from hermes_cli.goals import kanban_goal_block_reason
                 parents = kb.unsatisfied_parents(conn, tid) if kind == "dependency" else None
-                error = kanban_goal_block_error(task, reason or "", kind, parents=parents or ())
+                effective_reason, error = kanban_goal_block_reason(task, reason or "", kind, parents=parents or ())
                 if error:
                     print(error, file=sys.stderr)
                     return False
                 # Successful blocks already record the reason in the transaction's run/event.
-                return kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=run_id,
+                return kb.block_task(conn, tid, reason=effective_reason, kind=kind, expected_run_id=run_id,
                                      expected_open_parents=parents)
             return _commented(conn, reason, author, "BLOCKED", lambda _: kb.block_task(
                 conn, tid, reason=reason, kind=kind, expected_run_id=run_id))(tid)

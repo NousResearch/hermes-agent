@@ -1618,14 +1618,14 @@ _KANBAN_TERMINAL_STATUSES = {
 KANBAN_EXTERNAL_BLOCK_KINDS = frozenset({"needs_input", "dependency"})
 
 
-def kanban_goal_block_error(task, reason: str, kind: str | None, *, parents, judge=None) -> str | None:
-    """Validate a worker's external-block claim before closing its Goal run."""
+def kanban_goal_block_reason(task, reason: str, kind: str | None, *, parents, judge=None) -> tuple[str, str | None]:
+    """Return the reason to record, or an error refusing the worker's block."""
     if kind not in KANBAN_EXTERNAL_BLOCK_KINDS:
-        return "goal_mode tasks can only block on a genuine dependency or missing human input"
+        return reason, "goal_mode tasks can only block on a genuine dependency or missing human input"
     if not reason.strip():
-        return "Explain what only an external party can provide and why work cannot continue."
+        return reason, "Explain what only an external party can provide and why work cannot continue."
     if kind == "dependency" and not parents:
-        return "No unfinished Kanban parent exists; use needs_input for a genuine human decision."
+        return reason, "No unfinished Kanban parent exists; use needs_input for a genuine human decision."
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
 
     evidence = f"Requested external blocker ({kind}): {reason}"
@@ -1640,15 +1640,18 @@ def kanban_goal_block_error(task, reason: str, kind: str | None, *, parents, jud
         verdict, detail, _, _, unreachable = (judge or judge_goal)(goal=goal, last_response=evidence)
     except Exception:
         logger.warning("goal block judge failed", exc_info=True)
-        return "Goal block not recorded: judge unavailable."
+        verdict, detail, unreachable = "continue", "judge unavailable", True
     finally:
         if affinity_token is not None:
             reset_affinity_scope(affinity_token)
     if unreachable:
-        return "Goal block not recorded: judge unavailable."
+        if kind == "needs_input":
+            # This is a request for human judgment, not a substitute judge verdict.
+            return f"Goal judge unavailable; operator must verify the reported blocker: {reason}", None
+        return reason, "Goal block not recorded: judge unavailable."
     if verdict != "blocked":
-        return f"Goal block rejected by judge: {detail}. Continue the work on this card."
-    return None
+        return reason, f"Goal block rejected by judge: {detail}. Continue the work on this card."
+    return reason, None
 
 
 def run_kanban_goal_loop(

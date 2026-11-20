@@ -729,6 +729,8 @@ Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip i
 
 The judge gate on `kanban complete` / `kanban request-review` (and the matching `kanban_complete` / `kanban_request_review` tools) only rejects on a **real verdict**. If the judge call itself fails — relay error, auth, timeout — the handoff is allowed and a `goal judge unreachable … allowing lifecycle handoff` warning lands in the log, so an unreachable judge never blocks a human approval. The headless CLI gate sends the same per-task relay-affinity key (`kanban:<task-id>`) as `specify`/`decompose`, so relays that require a session key accept the judge request.
 
+In goal mode the worker's own `kanban_block` / `hermes kanban block` is judged as well: it is accepted only for `needs_input`, or for `dependency` while an unfinished parent exists, and only when the judge agrees that the card cannot progress without that external input. If no judge route responds, a `needs_input` request is still recorded and marked unverified for the operator, while a `dependency` block is refused. A human operator's `hermes kanban block` is not judged.
+
 A goal-mode worker's **Worker log** (dashboard drawer, `hermes kanban log <id>`) carries the same live tool feed as any other worker's, plus one `kanban goal loop: turn N/M verdict=…` line per judged turn, so you can follow what the loop is doing while the card is running.
 
 :::note Goal-mode cards borrow the `/goal` engine — they don't connect to it

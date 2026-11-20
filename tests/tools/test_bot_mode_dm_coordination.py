@@ -98,7 +98,7 @@ def test_cancel_is_the_senders_own_and_reaches_the_owner(tmp_path, monkeypatch):
                         {"delivery_id": params["id"], "status": "cancelled", "receipt_status": "cancelled"})
 
     stranger = _FakeAgent(home)
-    stranger._session_db.db_path = str(target / "state.db")  # @researcher itself asks
+    stranger.persistence.scope.profile_dir = target  # @researcher itself asks
     refused = json.loads(bot_mode_dm.message_agent_tool("researcher", cancel=ack["delivery_id"], agent=stranger))
     done = json.loads(bot_mode_dm.message_agent_tool("researcher", cancel=ack["delivery_id"], agent=_FakeAgent(home)))
 

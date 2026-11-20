@@ -72,6 +72,7 @@ import {
   $yoloActive,
   idsShareLineage,
   type NewChatWorkspaceTarget,
+  ownerLookupSessionRows,
   resolveComposerSessionKey,
   restoreComposerModelSelection,
   rotateFreshDraftKey,
@@ -138,6 +139,7 @@ import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } 
 import { isWatchWindow } from '@/store/windows'
 import type {
   SessionCreateResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionResumeResult,
   UsageStats
@@ -1306,7 +1308,7 @@ export function useSessionActions({
         () => isCurrentResume() && !resumedSameSelectedSession && !takeWarmCache()
       )
 
-      const listedStored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const listedStored = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       if (ownerRoute || listedStored?.profile) {
         provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
@@ -1377,8 +1379,7 @@ export function useSessionActions({
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
-        const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+        const stored = findListedSession(storedSessionId)?.session ?? storedForProfile
 
         let cachedViewState =
           !cachedState.model && stored?.model != null
@@ -1947,8 +1948,7 @@ export function useSessionActions({
       const runtimeStartedAt = Date.now()
       setSessionStartedAt(runtimeStartedAt)
 
-      const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+      const stored = findListedSession(storedSessionId)?.session ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId, { sameSession: resumedSameSelectedSession })
 
@@ -3295,17 +3295,16 @@ export function useSessionActions({
     ]
   )
 
-  // The Archived view reuses the sidebar row menu; its already-archived rows
-  // dispatch here through the same archive verb (#98813). Mirrors the Settings
-  // → Archived Chats restore (sessions-settings.tsx): flip the persisted flag
-  // back off, drop the archived-view row, and resurface the session in the
-  // sidebar without waiting for a full refresh.
+  // Archived rows (Archived view, search hits) dispatch here through the row
+  // menu's archive verb (#98813); `row` stands in for a cold archive cache.
+  // Like Settings → Archived Chats: flip the flag off, drop the archived-view
+  // row, and resurface the session in the sidebar without a full refresh.
   const unarchiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, row?: SessionInfo) => {
       clearNotifications()
 
-      const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const profile = archived?.profile?.trim() || undefined
+      const archived = $archivedSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId)) ?? row
+      const profile = archived?.profile?.trim() || (await resolveSessionProfile(storedSessionId))
 
       try {
         await setSessionArchived(storedSessionId, false, profile)
@@ -3322,7 +3321,7 @@ export function useSessionActions({
           // and re-list through the slice router so a messaging/cron row lands
           // back in its own list, not the sessions one.
           untombstoneSessions([storedSessionId, archived._lineage_root_id])
-          restoreListedSession({ ...archived, archived: false })
+          restoreListedSession({ ...archived, archived: false, ...(profile ? { profile } : {}) })
         }
 
         notify({ durationMs: 2_000, kind: 'success', message: copy.restored })

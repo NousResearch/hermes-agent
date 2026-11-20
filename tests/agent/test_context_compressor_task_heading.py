@@ -42,9 +42,9 @@ def test_long_user_request_is_not_quoted_by_summary_model():
     """Long quotes stall Codex output; the postprocessor preserves source wording."""
     with patch("agent.context_compressor.get_model_context_length", return_value=100000):
         compressor = ContextCompressor(model="test", quiet_mode=True)
-    section = compressor._build_summary_prompt(
+    section = "\n".join(m["content"] for m in compressor._build_summary_prompt(
         "A long user request", 500, None, "", True
-    )
+    ))
     assert "summarize it in your own words rather than copying long" in section
     for removed_directive in (
         "input verbatim — the exact words",

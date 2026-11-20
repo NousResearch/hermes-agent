@@ -8,7 +8,7 @@ import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, s
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -354,9 +354,13 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
     from gateway.platforms.base import read_httpx_body_with_limit
+    from gateway.platforms.helpers import ssrf_checked_aiohttp_get
 
     async def _do() -> bytes:
-        async with session.get(url) as response:
+        # Callers vet ``url`` (is_safe_url for reply URLs, the CDN allowlist or configured CDN base for
+        # inbound media), so a fake-ip resolver answering the CDN with 198.18.x.x still works; every
+        # redirect hop is re-checked, since either can 302 anywhere.
+        async with ssrf_checked_aiohttp_get(session, url, first_hop_vetted=True) as response:
             response.raise_for_status()
             return await read_httpx_body_with_limit(
                 response, media_type="media", body=response.content.iter_chunked(65536))
@@ -714,7 +718,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._hermes_home = hermes_home = str(get_hermes_home())
         self._token_store = ContextTokenStore(hermes_home)
         self._typing_cache = TypingTicketCache()
-        self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
+        self._poll_session: Optional[aiohttp.ClientSession] = None
+        self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._account_id = _extra_or_secret(extra, "account_id")
@@ -729,7 +734,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "1")))
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
-        self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        self._rate_limit_circuit_until: float = 0.0
+        self._rate_limit_events: list[float] = []
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -902,7 +908,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             await self._token_store.set(self._account_id, sender_id, context_token)
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
-        media_paths, media_types = [], []  # type: List[str], List[str]
+        media_paths: list[str] = []
+        media_types: list[str] = []
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
@@ -1259,7 +1266,7 @@ async def send_weixin_direct(
 
 
 # ---------------------------------------------------------------------------
-# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, tools/send_message_senders.py
+# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, gateway/outbound/senders.py
 # ``_send_weixin``, hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
 # ---------------------------------------------------------------------------
 

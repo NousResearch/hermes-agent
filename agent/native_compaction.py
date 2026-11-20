@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from agent.codex_headers import is_official_codex_base_url
-from agent.context_compressor import is_compaction_summary_message
-from agent.message_content import flatten_message_text
+from session_rules.turns import is_compaction_summary_message, flatten_message_text
 from agent.reasoning_effort import is_astra_model
 
 logger = logging.getLogger(__name__)

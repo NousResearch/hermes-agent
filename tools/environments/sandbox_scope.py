@@ -71,14 +71,6 @@ class ProcessStream:
     poll: Callable[[], Optional[int]] = field(compare=False)
 
 
-@dataclass(frozen=True)
-class CredentialRef:
-    """A credential the sandbox resolves through a broker, by name. Hosted backends receive these,
-    never secret values from the secret store; no broker exists yet, so core passes none."""
-
-    name: str
-
-
 def hosted_scope() -> Optional[Scope]:
     """The bound scope when it is hosted, else ``None`` (no scope, or a local install)."""
     scope = current_scope()

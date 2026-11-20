@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -27,6 +27,7 @@ import {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  setSensitiveHermesHome,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -918,6 +919,178 @@ test('resolveReadableFileForIpc blocks common sensitive files', async () => {
     fs.writeFileSync(allowed, 'EXAMPLE_TOKEN=value', 'utf8')
     assert.equal((await resolveReadableFileForIpc(allowed, { purpose: 'File preview' })).resolvedPath, allowed)
   } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('resolveReadableFileForIpc blocks Hermes credential stores in the home and every profile', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+
+  try {
+    setSensitiveHermesHome(hermesHome)
+
+    const stores = [
+      'auth.json',
+      'auth.lock',
+      '.anthropic_oauth.json',
+      'webhook_subscriptions.json',
+      'auth/google_oauth.json',
+      'mcp-tokens/github.json',
+      'browser-profile/Default/Cookies',
+      'vault/vault.key',
+      'webapp/session-token',
+      'bws_cache.json',
+      'cache/op_cache.json',
+      'runtime/photon-sidecar.json'
+    ]
+
+    for (const base of [hermesHome, path.join(hermesHome, 'profiles', 'work')]) {
+      for (const rel of stores) {
+        const filePath = path.join(base, rel)
+        fs.mkdirSync(path.dirname(filePath), { recursive: true })
+        fs.writeFileSync(filePath, 'TOKEN_MARKER', 'utf8')
+        await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+      }
+    }
+
+    // Ordinary Hermes files and same-named project files stay previewable.
+    const allowed = [path.join(hermesHome, 'config.yaml'), path.join(tempDir, 'project', 'auth.json')]
+
+    for (const filePath of allowed) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, '{}', 'utf8')
+      assert.equal((await resolveReadableFileForIpc(filePath, { purpose: 'File preview' })).resolvedPath, filePath)
+    }
+  } finally {
+    setSensitiveHermesHome(null)
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+// Symlink creation needs Developer Mode on Windows; false means skip.
+function trySymlink(target: string, link: string, type?: 'dir' | 'file' | 'junction'): boolean {
+  try {
+    fs.symlinkSync(target, link, type)
+
+    return true
+  } catch (error) {
+    if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+      return false
+    }
+
+    throw error
+  }
+}
+
+test('resolveReadableFileForIpc blocks a link outside the home that resolves to a Hermes store', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-link-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+
+  try {
+    fs.mkdirSync(hermesHome)
+    fs.writeFileSync(path.join(hermesHome, 'auth.json'), 'TOKEN_MARKER', 'utf8')
+    setSensitiveHermesHome(hermesHome)
+
+    const link = path.join(tempDir, 'innocent.json')
+
+    if (!trySymlink(path.join(hermesHome, 'auth.json'), link, 'file')) {
+      return
+    }
+
+    await rejectsWithCode(resolveReadableFileForIpc(link, { purpose: 'File preview' }), 'sensitive-file')
+  } finally {
+    setSensitiveHermesHome(null)
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('resolveReadableFileForIpc blocks relocated Hermes stores read through their real path', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-moved-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+  const workHome = path.join(tempDir, 'data', 'work-home')
+  const vaultDir = path.join(tempDir, 'data', 'vault')
+  const authFile = path.join(tempDir, 'data', 'auth-store.json')
+  const envFile = path.join(tempDir, 'data', 'hermes-secrets')
+  const workEnvFile = path.join(tempDir, 'data', 'work-secrets')
+
+  try {
+    fs.mkdirSync(path.join(hermesHome, 'profiles'), { recursive: true })
+    fs.mkdirSync(workHome, { recursive: true })
+    fs.mkdirSync(vaultDir, { recursive: true })
+    fs.writeFileSync(path.join(workHome, 'auth.json'), 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(path.join(workHome, 'notes.md'), 'ok', 'utf8')
+    fs.writeFileSync(path.join(vaultDir, 'vault.key'), 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(authFile, 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(envFile, 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(workEnvFile, 'TOKEN_MARKER', 'utf8')
+
+    const linked =
+      trySymlink(workHome, path.join(hermesHome, 'profiles', 'work'), 'junction') &&
+      trySymlink(vaultDir, path.join(hermesHome, 'vault'), 'junction') &&
+      trySymlink(authFile, path.join(hermesHome, 'auth.json'), 'file') &&
+      trySymlink(envFile, path.join(hermesHome, '.env'), 'file') &&
+      trySymlink(workEnvFile, path.join(workHome, '.env'), 'file')
+
+    if (!linked) {
+      return
+    }
+
+    setSensitiveHermesHome(hermesHome)
+
+    for (const filePath of [
+      path.join(workHome, 'auth.json'),
+      path.join(vaultDir, 'vault.key'),
+      authFile,
+      envFile,
+      workEnvFile
+    ]) {
+      await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+    }
+
+    const notes = path.join(workHome, 'notes.md')
+    assert.equal((await resolveReadableFileForIpc(notes, { purpose: 'File preview' })).resolvedPath, notes)
+  } finally {
+    setSensitiveHermesHome(null)
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('sensitiveFileBlockReason re-resolves relocated Hermes stores at most once per window', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-ttl-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+  const vaultDir = path.join(tempDir, 'data', 'vault')
+  const notes = path.join(tempDir, 'project', 'notes.md')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const realpath = vi.spyOn(fs.realpathSync, 'native')
+
+  try {
+    fs.mkdirSync(path.join(hermesHome, 'profiles', 'work'), { recursive: true })
+    fs.mkdirSync(vaultDir, { recursive: true })
+    fs.mkdirSync(path.dirname(notes), { recursive: true })
+    fs.writeFileSync(path.join(vaultDir, 'vault.key'), 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(notes, 'ok', 'utf8')
+    setSensitiveHermesHome(hermesHome)
+    assert.equal(sensitiveFileBlockReason(notes), null)
+
+    const sweep = realpath.mock.calls.length
+
+    for (let i = 0; i < 20; i++) {
+      assert.equal(sensitiveFileBlockReason(notes), null)
+    }
+
+    assert.equal(realpath.mock.calls.length, sweep)
+
+    if (!trySymlink(vaultDir, path.join(hermesHome, 'vault'), 'junction')) {
+      return
+    }
+
+    vi.setSystemTime(Date.now() + 1_001)
+    assert.ok(sensitiveFileBlockReason(path.join(vaultDir, 'vault.key')))
+  } finally {
+    realpath.mockRestore()
+    vi.useRealTimers()
+    setSensitiveHermesHome(null)
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })

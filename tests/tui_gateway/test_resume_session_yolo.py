@@ -9,10 +9,11 @@ from tui_gateway import server
 def test_session_yolo_toggle_survives_a_backend_restart(monkeypatch, tmp_path):
     """A session /yolo (Shift+Tab / the Desktop zap) is persisted on the row and re-armed when a fresh
     backend resumes it, including a toggle made before the row existed; switching it off persists too."""
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import session_yolo_enabled
+    from persistence_assembly import open_persistence, profile_scope
     from tools.approval import clear_session, is_session_yolo_enabled
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
@@ -21,7 +22,7 @@ def test_session_yolo_toggle_survives_a_backend_restart(monkeypatch, tmp_path):
         server._sessions["sid"] = {"agent": types.SimpleNamespace(), "session_key": "row-a"}
         server.handle_request({"id": "1", "method": "config.set", "params": {"session_id": "sid", "key": "yolo"}})
         assert server._ensure_session_db_row(server._sessions["sid"]) is not False
-        assert SessionDB.session_yolo_enabled(db.get_session("row-a"))
+        assert session_yolo_enabled(db.sessions.get("row-a").model_config)
 
         server._sessions.clear()
         clear_session("row-a")  # a new backend process starts with an empty in-memory set
@@ -32,7 +33,7 @@ def test_session_yolo_toggle_survives_a_backend_restart(monkeypatch, tmp_path):
         server.handle_request(
             {"id": "3", "method": "config.set", "params": {"session_id": resp["result"]["session_id"], "key": "yolo"}})
         assert is_session_yolo_enabled("row-a") is False
-        assert not SessionDB.session_yolo_enabled(db.get_session("row-a"))
+        assert not session_yolo_enabled(db.sessions.get("row-a").model_config)
     finally:
         server._sessions.clear()
         clear_session("row-a")

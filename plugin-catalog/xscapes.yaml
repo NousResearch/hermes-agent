@@ -1,15 +1,25 @@
 name: xscapes
 repo: https://github.com/donlucasx/hermes-xscapes
-sha: 3a12d11bdc4e7fd917b256014e7efcf4e79c9e3d
+sha: 4c71d9c13593eb4fbc37525d3ab1d83b35afe8e8
 subdir: ""
 title: xscapes
-description: "Living ASCII scenes under Hermes in the terminal that show what the agent is doing while you wait: the wind, the sea or the rain rises with the work, a thought cloud means it is thinking, owlets, crablets or kittens arrive for subagents, the moon sinks as the context fills, and the companion knocks with a sound when Hermes finishes or needs you (a question, a password prompt, an approval). Forwards fifteen lifecycle hooks to the xscapes CLI (`xscapes hook <event> hermes`, stdin JSON, never waited on, never blocks); needs the xscapes binary. No tools, middleware or env vars; no network. Disclosure — forwards every tool call's name and full arguments, approval commands, and the first line (up to 120 characters) of each prompt and reply to the separately installed xscapes binary, which is not covered by this pin and keeps events under ~/.config/xscapes/."
+description: |
+  xscapes are cozy ASCII scenes that show what your agent is doing, at a glance. They run under Hermes in your terminal.
+
+  - See how hard your agent is working and what it just did
+  - Keep an eye on your session's context
+  - Never miss a failed command
+  - Leave the room: your companion knocks with a sound when Hermes needs you
+  - Multiple scenes and companions, all on your own clock
+
+  Needs the xscapes program, installed separately. Disclosure: sends each tool call with its arguments, approval commands, the folder Hermes runs in, and the first line of each prompt and reply to the xscapes program (not covered by this pin), which keeps them under ~/.config/xscapes/.
 maintainer: donlucasx
 tier: community
 category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://donlucasx.github.io/xscapes/
-version: "0.2.1"
+version: "0.2.2"
+image: https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/banner-nous.gif
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

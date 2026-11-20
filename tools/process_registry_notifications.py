@@ -7,8 +7,10 @@ import time
 from dataclasses import dataclass
 from contextlib import suppress
 
+from tools import delegate_tool_config
+
 _DONE = ("completed", "success")
-_REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
+_REASON_STATUS = {"lost": "marked lost because the process backend disappeared"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +102,9 @@ def _model_not_found_patterns() -> list[str]:
 
 
 def _delegation_config() -> dict:
-    """Active delegation config; ``{}`` on any error. Lazy: delegate_tool is heavy."""
+    """Active delegation config; ``{}`` on any error."""
     try:
-        from tools.delegate_tool import _load_config as _cfg
-        return _cfg() or {}
+        return delegate_tool_config._load_config() or {}
     except Exception:
         return {}
 
@@ -209,6 +210,20 @@ def _failure_recovery_lines(r: dict) -> list[str]:
                 "re-dispatch it unchanged: re-dispatch it with delegate_task on a different model or provider "
                 "only if that avoids the cause, otherwise tell the user what failed."]
     return []
+
+
+def _auto_resume_lines(r: dict) -> list[str]:
+    """A mixed unit's line for a child ``delegation.auto_resume`` will continue (``auto_resume``); a give-up's
+    terminal failure carries its own reason in ``error``."""
+    if not r.get("subagent_id"):
+        return []
+    if r.get("auto_gave_up"):
+        lines = [f"Last transcript tail:\n{r['transcript_tail']}"] if r.get("transcript_tail") else []
+        return lines or ["Not resumed automatically any more; continue it by hand or re-dispatch it."]
+    if not isinstance(r.get("auto_resume"), dict):
+        return []
+    from tools.delegate_tool_auto_resume import notice_line
+    return [notice_line(str(r["subagent_id"]), r["auto_resume"])]
 
 
 def _notice_lines(results) -> list[str]:
@@ -317,7 +332,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r_status not in _DONE:
-            lines += _failure_recovery_lines(r)
+            lines += _auto_resume_lines(r) or _failure_recovery_lines(r)
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
         lines += _process_accounting_lines(r)
@@ -430,7 +445,7 @@ def process_completion_display_text(events: list) -> str:
     if reason == "killed":
         outcome = "Terminated"
     elif reason in _REASON_STATUS:
-        outcome = "Lost" if reason == "lost" else "Failed to Start"
+        outcome = "Lost"
     else:
         outcome = "Finished" if exit_code == 0 else "Failed"
     cmd = _short_command(evt.get("command"))

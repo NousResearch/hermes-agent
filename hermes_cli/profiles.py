@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
@@ -31,7 +31,8 @@ from hermes_constants import (
 )
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
-from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        ignored = _non_exportable_entries(directory, names)
+        ignored = _non_exportable_entries(directory, names) | provider_plugin_snapshot_dir(directory, names, source_dir)
         if at_root:
             ignored.update(root_exclude & set(names))
             ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))
@@ -161,8 +162,8 @@ _OS_CREDENTIAL_STORES = (*HOME_CREDENTIAL_DIRS, ".envrc")
 # keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
 # overwritten) on a distribution install. Add a store here when a writer or loader starts using one.
 PROFILE_CREDENTIAL_PATHS = frozenset({
-    "auth.json", ".env", "auth/google_oauth.json",
-    ".op.env",                      # 1Password service-account token (env_loader)
+    "auth.json", "auth/google_oauth.json",
+    *HOME_ENV_FILES,                # .env + the 1Password service-account token (env_loader)
     "npmrc",                        # npm registry auth (source_build)
     ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
     "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
@@ -173,12 +174,10 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "mem0.json",                    # Mem0 api_key (self-hosted server key) next to its settings
     "webhook_subscriptions.json",   # per-route HMAC secrets
     "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
-    "mcp-tokens",                   # MCP OAuth tokens
-    "vault",                        # vault.key + vault.json.enc
+    *CREDENTIAL_STORE_DIRS,         # MCP OAuth tokens, vault, pairing, messaging sessions (both layouts)
     "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
-    "pairing", "platforms/pairing", "feishu_comment_pairing.json",
-    "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
+    "feishu_comment_pairing.json",
     *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
@@ -680,6 +679,8 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Only ``{"hermes-bots": {...}}``: other plugins' ui_meta (group-chat logs, images) stays off rosters.
+    ui_meta: dict = field(default_factory=dict)
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -872,29 +873,27 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
-    previous_names}`` (empty defaults when missing/unreadable). Never raises — a
+    """Read ``profile.yaml`` -> ``{description, description_auto, display_name, bot_title,
+    ui_meta, previous_names}`` (empty defaults when missing/unreadable). Never raises — a
     corrupt file on one profile must not break ``hermes profile list``."""
     def _read() -> dict:
         data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
-        ui_meta = data.get("ui_meta")
-        bot_title = ""
-        if isinstance(ui_meta, dict):
-            hermes_bots = ui_meta.get("hermes-bots")
-            if isinstance(hermes_bots, dict):
-                bot_title = str(hermes_bots.get("title") or "").strip()
+        ui_meta = data.get("ui_meta") if isinstance(data.get("ui_meta"), dict) else {}
+        bots = ui_meta.get("hermes-bots") if isinstance(ui_meta.get("hermes-bots"), dict) else {}
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
-            "bot_title": bot_title,
+            "bot_title": str(bots.get("title") or "").strip(),
+            "ui_meta": json_safe_dumps({"hermes-bots": bots} if bots else {}),
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 
-    # A copy per caller (list included): the cached value is shared, and a caller that mutates
-    # its result must not poison the next reader.
+    # A copy per caller (list and ui_meta included): the cached value is shared, and a caller that
+    # mutates its result must not poison the next reader.
     meta = dict(_cached_profile_read(profile_dir / "profile.yaml", "profile-meta", _read))
     meta["previous_names"] = list(meta["previous_names"])
+    meta["ui_meta"] = json.loads(meta["ui_meta"])
     return meta
 
 
@@ -1466,14 +1465,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Option
         if not quiet:
             print(*lines, sep="\n")
 
-    project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
-            cwd=str(project_root),
+            cwd=project_root_str(),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
             check=False,
         )
@@ -1758,8 +1756,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
     with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
+        from persistence_assembly import close_stores_under
+        _closed = close_stores_under(profile_dir)
         if _closed:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
 
@@ -2187,14 +2185,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        # Remove foreign runtime state before publishing, including file-shaped roots.
-        # A failed removal must abort import rather than install a stale PM selection.
-        for child in final_source.iterdir():
-            if child.name in PM_RUNTIME_ROOT_DIRS:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        from hermes_cli.profiles_initialization import prepare_imported_tree
+        prepare_imported_tree(final_source)
         shutil.move(str(final_source), str(profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir
@@ -2235,52 +2227,51 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
-    # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
-    # the next login or container boot. Then stop the gateway and the screen whose launcher
-    # holds paths under the old name.
-    gw_running = _check_gateway_running(old_dir)
-    service_removed = _cleanup_gateway_service(old_canon, old_dir)
-    _maybe_unregister_gateway_service(old_canon)
-    if gw_running:
-        _stop_gateway_process(old_dir)
-    _stop_bot_desktop(old_dir)
-
-    # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
-    # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
-    # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
-    # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
-    # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
-    # resurrected dir as a ghost served profile (#109267).
-    live_mux = _live_default_multiplexer()
-    if live_mux:
-        mark_named_profile_deleted(old_dir)
-        _notify_multiplexer(old_canon)
-
-    # 1c. Release this process's cached MCP stderr handle into the old home (same as
-    # delete_profile): Windows refuses to rename a directory holding an open file, and the
-    # handle would otherwise stay cached under the old key after the move.
+    # 1. Remove the old name's service even when its gateway is stopped (the unit runs ``--profile <old>``
+    # and would crash-loop on the next login or boot), then stop the gateway and the screen holding old paths.
+    # 1b. Unroute the old name from a live multiplexer BEFORE the move (same protocol as delete_profile):
+    # it serves a multiplexed secondary that has no gateway.pid; a writer outside ``mkdir_under_hermes_home``
+    # can re-create the moved-away home, which the reconcile could re-adopt as a ghost (#109267). 1c. Release
+    # this process's MCP stderr handle into the old home: Windows refuses to rename a dir holding an open file.
+    # 2. Everything before the move is undone on any exit (Ctrl-C in the service stop or owner wait, EXDEV, a
+    # racing writer); after it, the old name is never re-served.
     from hermes_constants import hermes_home_key
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-
-    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
-    # undo the unroute so the profile is never stranded tombstoned-but-present.
+    gw_running = _check_gateway_running(old_dir)
+    service_removed = live_mux = renamed = False
+    old_identity = None
     try:
+        service_removed = _cleanup_gateway_service(old_canon, old_dir)
+        _maybe_unregister_gateway_service(old_canon)
+        if gw_running:
+            _stop_gateway_process(old_dir)
+        _stop_bot_desktop(old_dir)
+        live_mux = _live_default_multiplexer()
+        old_identity = old_dir.lstat()
+        if live_mux:
+            mark_named_profile_deleted(old_dir)
+            _notify_multiplexer(old_canon)
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         old_dir.rename(new_dir)
-    except Exception:
-        if live_mux:
+        renamed = True
+    finally:
+        moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
+        if not moved and old_identity is not None:
+            with contextlib.suppress(OSError):  # no new_dir: the move never landed
+                moved = os.path.samestat(new_dir.lstat(), old_identity)
+        if moved:
             clear_named_profile_deleted(old_dir)
-            _notify_multiplexer(old_canon)
-        _maybe_register_gateway_service(old_canon)
-        if service_removed:
-            print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
-        raise
+            clear_named_profile_deleted(new_dir)
+        else:
+            if live_mux:
+                clear_named_profile_deleted(old_dir)
+                _notify_multiplexer(old_canon)
+            _maybe_register_gateway_service(old_canon)
+            if service_removed:
+                print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    clear_named_profile_deleted(old_dir)
-    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

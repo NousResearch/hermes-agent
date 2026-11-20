@@ -58,6 +58,26 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 机密（API 密钥、bot token、密码）放入 `.env`。其他所有内容（模型、终端后端、压缩设置、内存限制、工具集）放入 `config.yaml`。当两者都设置时，`config.yaml` 对非机密设置优先。
 :::
 
+### Hermes 写入的凭据
+
+当 Hermes 自身为某个配置字段写入凭据时，值保存到当前 profile 的 `.env`，`config.yaml` 中只写入对它的引用。适用于对下列字段执行的 `hermes config set`、dashboard / 桌面端的模型与辅助模型选择器，以及 `hermes model` 的自定义端点和辅助模型流程：
+
+| 字段 | `.env` 中的变量名 | `config.yaml` 中保存 |
+|---|---|---|
+| `model.api_key`（`hermes config set`） | `HERMES_MODEL_API_KEY` | `${HERMES_MODEL_API_KEY}` |
+| dashboard 中选择的自定义端点的 `model.api_key` | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `${...}` |
+| `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
+| `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
+| 新增的 `custom_providers` 条目 | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `key_env: <该变量名>` |
+| `custom_providers.<N>.api_key`（`hermes config set`） | 该条目的 `HERMES_CUSTOM_..._API_KEY`（没有 `base_url` 的条目按名称：`HERMES_PROVIDER_<NAME>_<HASH>_API_KEY`） | `${...}` |
+| `providers.<name>.api_key`（`hermes config set`）、dashboard 自定义端点条目 | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
+
+路径部分只在不是 `/v1` 时才加入变量名。不全是小写的插件任务键（如 `My_Task`）也会追加 `_<HASH>`，因此不会与 `my_task` 共用变量。`<HASH>` 是由完整端点 URL（或提供商名称）计算出的 8 位十六进制字符，因此名称相近的端点（如 `my-host.com` 与 `my.host.com`）不会共用同一个变量。若 `config.yaml` 中另一个端点已读取某个变量且其值不同，Hermes 会拒绝覆盖它。以引用形式输入的值（`hermes config set model.api_key '${MY_KEY}'`）按原样保存。这些变量总会从终端和子进程环境中移除，即使 `env_passthrough` 列出了它们或启用了 `inherit_credentials`。使用远程配置后端时（不同主机之间不共享 `.env`），值按原样保存。
+
+正在运行的网关会在每轮开始时重新读取 `.env`，因此下一条消息无需重启即可使用新保存的密钥。只在启动时读取 `.env`、且不由网关轮次驱动的进程，需要执行 `/reload` 或重启后才会读取新密钥；在此之前，刚保存密钥的辅助任务会把未展开的 `${VAR}` 文本当作密钥发送。
+
+`config.yaml` 中已有的内联凭据仍然有效，不会被迁移，但不推荐使用。可用 `hermes config set <字段> <值>` 手动迁移，它会把值改写为引用。
+
 ## 环境变量替换
 
 可以在 `config.yaml` 中使用 `${VAR_NAME}` 语法引用环境变量：
@@ -210,7 +230,7 @@ terminal:
   container_persistent: true       # 快照/恢复文件系统
 ```
 
-**必需：** `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` 环境变量，或 `~/.modal.toml` 配置文件。
+**必需：** `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` 环境变量，或 `~/.modal.toml` 配置文件。以上用于直连 Modal；托管的 Nous 工具 gateway 不需要它们。`~/.modal.toml` 登录仅用于单 profile 的 Hermes：在多路复用的 gateway 上，被路由的 profile 使用直连 Modal 时，需要在该 profile 自己的 `.env`（或密钥来源）中同时设置 `MODAL_TOKEN_ID` 和 `MODAL_TOKEN_SECRET`，否则会被拒绝。
 
 **持久化：** 启用后，沙箱文件系统在清理时快照，并在下次会话时恢复。快照在 `~/.hermes/modal_snapshots.json` 中跟踪。这保留文件系统状态，而非活跃进程、PID 空间或后台任务。
 
@@ -306,7 +326,7 @@ terminal:
 - **Local** —— 无特殊要求。入门时最安全的默认选项。
 - **Docker** —— 运行 `docker version` 验证 Docker 是否正常工作。如果失败，修复 Docker 或执行 `hermes config set terminal.backend local`。
 - **SSH** —— `TERMINAL_SSH_HOST` 和 `TERMINAL_SSH_USER` 都必须设置。如果缺少任一项，Hermes 会记录清晰的错误。
-- **Modal** —— 需要 `MODAL_TOKEN_ID` 环境变量或 `~/.modal.toml`。运行 `hermes doctor` 检查。
+- **Modal** —— 直连 Modal 需要 `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`，或单 profile Hermes 的 `~/.modal.toml`；多路复用 gateway 上被路由的 profile 需要在自己的 `.env`（或密钥来源）中设置这两个 token。托管 Modal 改用 Nous 工具 gateway。运行 `hermes doctor` 检查。
 - **Daytona** —— 需要 `DAYTONA_API_KEY`。Daytona SDK 处理服务器 URL 配置。
 - **Singularity** —— 需要 `$PATH` 中有 `apptainer` 或 `singularity`。HPC 集群上常见。
 
@@ -605,7 +625,7 @@ compression:
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
   hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
   context_timeout_seconds: 120                      # Agent 侧 compress_context 无进展超时（秒）—— 见下文
-  context_total_ceiling_seconds: 600                # Agent 侧 compress_context 预提交等待上限（秒；已开始的 SessionDB 提交不会被放弃，超限会记录日志并告警）
+  context_total_ceiling_seconds: 600                # Agent 侧 compress_context 预提交等待上限（秒；已开始的会话存储提交不会被放弃，超限会记录日志并告警）
 
 # 摘要模型/provider 在 auxiliary: 下配置：
 auxiliary:
@@ -623,7 +643,7 @@ auxiliary:
 
 `context_timeout_seconds`（默认 `120`）是 agent 侧 `compress_context`（对话循环、预检压缩、手动 `/compress`）的**无进展超时**，语义与 gateway 会话预压缩（session hygiene）的 inactivity 预算相同：摘要模型仍在流式出 token 时会延长等待；仅当完全无输出时才跳过压缩并保留原消息。设为 `0` 可关闭。Gateway 会话预压缩仍使用自己的 `hygiene_timeout_seconds`，不会被双重包装。
 
-`context_total_ceiling_seconds`（默认 `600`）限制即使仍有 token 推进时的 agent 侧**预提交**等待时间（摘要 / 流式阶段），并会被钳制为至少等于 `context_timeout_seconds`。确切保证：**摘要阶段受该上限约束；提交阶段若超出上限则记录日志并向用户告警。**一旦 worker 已进入 compression commit fence 且 SessionDB 变更正在进行，提交绝不会被中途放弃（那会导致 transcript 分叉），但等待不再是静默的：若提交超过上限，Hermes 会记录超时（WARNING，重复时升级为 ERROR），通过用户可见的警告通道发送一次性提醒，并以有界增量继续等待直到提交完成。
+`context_total_ceiling_seconds`（默认 `600`）限制即使仍有 token 推进时的 agent 侧**预提交**等待时间（摘要 / 流式阶段），并会被钳制为至少等于 `context_timeout_seconds`。确切保证：**摘要阶段受该上限约束；提交阶段若超出上限则记录日志并向用户告警。**一旦 worker 已进入 compression commit fence 且会话存储变更正在进行，提交绝不会被中途放弃（那会导致 transcript 分叉），但等待不再是静默的：若提交超过上限，Hermes 会记录超时（WARNING，重复时升级为 ERROR），通过用户可见的警告通道发送一次性提醒，并以有界增量继续等待直到提交完成。
 
 :::tip Gateway 热重载压缩和上下文长度
 从最近的版本开始，在运行中的 gateway 上编辑 `config.yaml` 中的 `model.context_length` 或任何 `compression.*` 键将在下一条消息时生效 —— 无需 gateway 重启、`/reset` 或会话轮换。缓存的 agent 签名包含这些键，因此 gateway 在检测到更改时会透明地重建 agent。API 密钥和工具/技能配置仍需要通常的重载路径。

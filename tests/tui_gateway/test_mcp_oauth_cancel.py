@@ -87,7 +87,7 @@ def test_session_operations_require_resolved_owner(tmp_path, monkeypatch, operat
 
     home = str(tmp_path / "owner")
     flow = DashboardOAuthFlow(
-        "owned", "reports", None, home, "http://127.0.0.1:49152/callback"
+        "owned", "reports", home, "http://127.0.0.1:49152/callback"
     )
     asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=test"))
     monkeypatch.setattr(sessions, "_sessions", {
@@ -123,7 +123,7 @@ def test_cancel_does_not_revoke_an_approved_flow(tmp_path, monkeypatch):
 
     home = str(tmp_path)
     flow = DashboardOAuthFlow(
-        "approved", "reports", None, home, "http://127.0.0.1:49152/callback"
+        "approved", "reports", home, "http://127.0.0.1:49152/callback"
     )
     flow.discovery_error = "tools/list unavailable"
     flow.mark_approved()

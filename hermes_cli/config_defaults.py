@@ -5,6 +5,7 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.config_defaults_voice import VOICE_DEFAULTS
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -103,11 +104,11 @@ DEFAULT_CONFIG = {
         # inherit restart_drain_timeout's 0 (#82161, #132989). Clamped to the shutdown-watchdog
         # leash minus teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
         "cron_drain_timeout": 30,
-        # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
-        # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
-        # min is a safety valve for wedged agents, not a target; raise for long unattended turns.
-        # Default 30 min is a safety valve for wedged agents, not a target latency — an interactive `hermes
-        # gateway restart` must never block for hours on a turn that wedged (#79133).
+        # In-band restart (/restart, SIGUSR1, `hermes update`) is "restart when idle": the gateway
+        # keeps serving (new turns, notices, delegation completions) and restarts at the first moment
+        # no work is in flight. Live work is never interrupted on a timer: each time this many seconds
+        # pass with work still running, a WARNING names every unit and the wait continues. Only a
+        # forced restart (`pause-for-update` with force) or SIGTERM stops live work.
         "restart_after_turn_timeout": 1800,
         # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
         # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the
@@ -115,10 +116,10 @@ DEFAULT_CONFIG = {
         # many slow/unreachable MCP servers.
         # See #63078.
         "build_wait_timeout": 600,
-        # Hermes-level retry attempts for API errors (connection drops, timeouts, 5xx) wrapping the
-        # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
-        # failover to fallback providers; raise to tolerate longer provider hiccups.
+        # Hermes-level retries for API errors (connection drops, timeouts, 5xx) around the whole call; the
+        # SDK also retries (max_retries=2). Set 1 for fast failover to fallbacks; raise for longer hiccups.
         "api_max_retries": 3,
+        "codex_request_compression": True,  # zstd to official Codex; a bare-400 frame resends as JSON
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
         # more cycles (jittered 15/30/60/60/60s; a provider Retry-After wins up to 120s) with a
@@ -681,11 +682,11 @@ DEFAULT_CONFIG = {
         # Opt-in: write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
         "prepare_ahead": False,
     },
-    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
+    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "auto" (default) | "5m" | "1h"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
-    # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
-    # "disabled", "no", "none") disables caching.
-    "prompt_caching": {"cache_ttl": "5m"},
+    # oneshot, webhook, kanban, api_server, tool, batch, curator); falsy ("off", null, ...) disables caching.
+    # route_ttl_ceilings {<provider>: "5m"|"1h"} overrides a profile's prompt_cache_max_ttl.
+    "prompt_caching": {"cache_ttl": "auto", "route_ttl_ceilings": {}},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
     # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):
@@ -1194,41 +1195,7 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "voice": {
-        # How the Desktop voice conversation is wired:
-        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
-        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
-        #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
-        "voice_chat_mode": "chained",
-        "gpt_live": {
-            "model": "gpt-live-1",
-            "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
-            # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
-            "instructions": "",
-            # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
-        },
-        "record_key": "ctrl+b",
-        "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
-        "max_recording_seconds": 120,
-        "auto_tts": False,
-        # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
-        # authenticated REST at session start) instead of relaying via the gateway.
-        "client_direct": True,
-        "beep_enabled": True,  # record start/stop beeps in CLI voice mode
-        "beep_volume": 0.3,  # beep amplitude multiplier, 0.0-1.0
-        "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)
-        "silence_threshold": 200,  # RMS below this = silence (0-32767)
-        "silence_duration": 3.0,  # seconds of silence before auto-stop
-        "barge_in": True,  # interrupt the agent / stop TTS when the user starts talking
-        # Trip suppression after TTS onset (mic stays live the whole turn).
-        "barge_in_grace_seconds": 0.5,
-        # Speech trigger = quiet-room floor x this (floor calibrated BEFORE playback).
-        "barge_in_threshold_multiplier": 3.0,
-        # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
-        # instead of going to the agent. [] disables.
-        "stop_phrases": ["stop"],
-    },
+    "voice": VOICE_DEFAULTS,
     # Native images (vision_analyze, browser screenshots, replayed user images) are re-sent on every later call.
     "vision": {
         # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
@@ -1370,11 +1337,11 @@ DEFAULT_CONFIG = {
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
         # log a warning audit line. true only for trusted batch work.
         "subagent_auto_approve": False,
-        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
-        # notifications to the PARENT; false suppresses them (the child's result is the
-        # deliverable). Async-delegation results are NEVER suppressed.
+        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern notifications to
+        # the PARENT; false suppresses them (the child's result is the deliverable). Async-delegation results are NEVER
+        # suppressed. auto_resume: opt-in (spends tokens unattended), gives up with one failure after the deadline.
         "surface_child_process_notifications": False,
-        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False,  # stopped-child records; auto: opt-in
+        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False, "auto_resume_deadline_minutes": 360,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
@@ -1751,8 +1718,8 @@ DEFAULT_CONFIG = {
         # dials them instead of rejecting them as private. Empty = normal private-address verdict.
         "fake_ip_ranges": [],
         "redact_secrets": True,
-        # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
-        # on prompts. The startup guard still warns every run; cost guards are unaffected.
+        "redact_phone_numbers": True,  # false: E.164 numbers shown in replies/chat only, never other secrets
+        # Ack for unattended model overrides on a vendor-trains-on-prompts tier (startup still warns).
         "allow_data_training_tiers_noninteractive": False,
         # Human-approval presentation transport. "builtin" = CLI/TUI/gateway/ACP surfaces; a plugin
         # transport is used only when named explicitly. Transport timeout/error/invalid response
@@ -2094,14 +2061,12 @@ DEFAULT_CONFIG = {
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
-        # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
-        # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
-        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
         # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
         # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
         # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
-        # negative disables the timeout entirely (wait indefinitely).
+        # negative disables the timeout entirely (wait indefinitely). Bridged to
+        # HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         "platform_connect_timeout": 30,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
@@ -2115,6 +2080,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Debug: flag SessionDB calls made on the event loop ("warn" logs each site once, "raise" fails it).
+        "sessiondb_loop_guard": "off",
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: max_events per window before a cooldown; max_hops bot messages per exchange.
@@ -2541,7 +2508,7 @@ DEFAULT_CONFIG = {
         # spills the rest to a cache file, so an unbounded walk pays for nodes the model never sees:
         # measured on macOS (cua-driver 0.28.2, M-series) a 1,444-node Chrome window went 540 ms -> 83 ms
         # and a 456-node Finder window 6.9 s -> 0.6 s at 200, with the returned elements a prefix of the
-        # unbounded walk. 0 = driver default (2,000 elements / depth 25) — the pre-fix behaviour.
+        # unbounded walk. 0 omits max_elements: driver default (250 nodes on Cua >= 0.35), not unlimited.
         # ~400 keeps the full first 100 visible elements on a pathological tree, at ~1.4 s on Finder;
         # the walk's cost grows with the bound, so keep it in the low hundreds. This caps the nodes
         # COLLECTED, not the walk's wall clock: a target whose AX surface exceeds the driver's own 20 s
@@ -2696,7 +2663,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 53,  # Config schema version - bump this when adding new required fields
+    "_config_version": 54,  # Config schema version - bump this when adding new required fields
 }
 
 

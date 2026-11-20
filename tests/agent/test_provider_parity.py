@@ -430,6 +430,7 @@ class TestBuildApiKwargsCustomEndpoint:
                         "id": "call_fw_123",
                         "call_id": "call_fw_123",
                         "response_item_id": "fc_fw_123",
+                        "_codex_output_index": 0,
                         "type": "function",
                         "function": {
                             "name": "terminal",
@@ -452,6 +453,7 @@ class TestBuildApiKwargsCustomEndpoint:
 
         assert "codex_reasoning_items" not in assistant_msg
         assert tool_call["id"] == "call_fw_123"
+        assert "_codex_output_index" not in tool_call
         assert tool_call["type"] == "function"
         assert tool_call["function"]["name"] == "terminal"
         assert "call_id" not in tool_call

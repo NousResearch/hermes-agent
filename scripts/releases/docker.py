@@ -233,6 +233,21 @@ def stable_alias_digest(run=output) -> str | None:
     return digest
 
 
+def stable_desktop_alias_behind(tag: str, run=output) -> bool:
+    """Whether a readable ``stable-desktop`` alias misses the attempt's desktop image.
+
+    promote_stable moves the slim aliases before the desktop ones, so a slim ``stable`` that
+    carries the release while this alias does not is a promotion that stopped halfway. An alias
+    that cannot be read proves nothing either way.
+    """
+    require_stable_tag(tag)
+    try:
+        alias = _inspect(f"{IMAGE}:stable-desktop", run)
+    except subprocess.CalledProcessError:
+        return False
+    return alias != _version_digest(tag, "-desktop", run)
+
+
 def published_digest(tag: str, run=output) -> str:
     """Read both attempt images; return the slim digest bound to the release receipt.
 

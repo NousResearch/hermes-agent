@@ -1,23 +1,23 @@
 name: agents-hub
 repo: https://github.com/mynamezxc/hermes-agent-hub
-sha: c7eae5dcacc23e689962ca53e198ce43a60e8859
+sha: 80117d5c784ac1db11d38422fa60730bdd4a8688
 subdir: ""
 title: Agents Hub
-description: "A Hermes Desktop page for coordinating profiles, chats, approvals, project goals, Kanban tasks, and Codex / Claude usage. Disclosure: reads profile state and project/Kanban databases, runs Git status/diff, and writes Hub state; explicit owner actions can manage profiles, cron, file rollback, blocked Kanban drafts, and logins. Kanban heartbeat (60 s) and account switching (5 min, with an earlier usage-triggered check) are independently opt-in and disabled by default. Heartbeat can promote/create Kanban cards. Account switching uses Hermes pool APIs to change priority and never removes credentials automatically. Confirmed manual removal uses hermes auth remove; Claude login uses hermes auth add anthropic. Provider usage requests use Hermes APIs. See the README for all triggers and commands. No telemetry."
+description: "A Hermes Desktop page for coordinating profiles, chats, approvals, project goals, Kanban tasks, and Codex / Claude usage. Disclosure: reads profile state and project/Kanban databases, runs Git status/diff, and writes Hub state; explicit owner actions can manage profiles, cron, file rollback, blocked Kanban drafts, and logins. Kanban heartbeat (60 s) and account switching (5 min, with an earlier usage-triggered check) are independently opt-in and disabled by default. Heartbeat can promote/create Kanban cards. Account switching and post-login promotion invoke hermes auth priority; the plugin does not write the credential store directly. Confirmed manual removal uses hermes auth remove; Claude login uses hermes auth add anthropic. Provider usage requests use Hermes APIs. See the README for all triggers and commands. No telemetry."
 maintainer: mynamezxc
 tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/mynamezxc/hermes-agent-hub#readme
-version: "1.6.23"
-image: https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/banner.png
+version: "1.6.24"
+image: https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/screenshots/chat.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/screenshots/steer.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/screenshots/usage.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/screenshots/settings.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c7eae5dcacc23e689962ca53e198ce43a60e8859/docs/screenshots/chat-dark.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/screenshots/chat.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/screenshots/steer.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/screenshots/usage.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/screenshots/settings.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/80117d5c784ac1db11d38422fa60730bdd4a8688/docs/screenshots/chat-dark.png
 readme: true
 platforms: []
 capabilities:

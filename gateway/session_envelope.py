@@ -239,13 +239,18 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
                 'timestamp': event.timestamp.isoformat()}
     if event.source.platform.value == 'webhook':
-        from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
+        from gateway.platforms.webhook_delivery import receipt_delivery, route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
         if provenance is None:
             raise AuthorityRefusal('permission_denied')
-        delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
+        temporary = receipt_delivery.get()
+        info = (temporary[2] if temporary and temporary[:2] == (adapter, event.source.chat_id)
+                else adapter._delivery_info.get(event.source.chat_id))
+        delivery = snapshot_destination(adapter, info)
         envelope['webhook_delivery'] = delivery
         envelope['webhook_route'] = route_digest(adapter, event.source.chat_id)
+        from gateway.platforms.webhook_coalesce.binding import validate_snapshot
+        validate_snapshot(adapter, envelope)
     if event.source.role_authorized:
         envelope['reauthorize'] = 'roles'
     if provenance is not None:

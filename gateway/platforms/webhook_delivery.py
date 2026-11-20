@@ -1,10 +1,12 @@
 """Validated webhook destinations live in the owner's admitted input, not a TTL cache."""
 from copy import deepcopy
+from contextvars import ContextVar
 import hashlib
 import json
 
 from persistence.core.errors import AuthorityRefusal
 
+receipt_delivery: ContextVar[tuple[object, str, dict] | None] = ContextVar('webhook_receipt_delivery', default=None)
 
 def route_digest(adapter, chat_id):
     from gateway.platforms.webhook import _WebhookDeliveryIdentity
@@ -16,7 +18,34 @@ def route_digest(adapter, chat_id):
     route = adapter._routes.get(route_name)
     if route is None:
         raise AuthorityRefusal('not_found')
+    return route_config_digest(route)
+
+
+def route_config_digest(route):
     return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def delivery_info(adapter, route, profile, payload, route_name):
+    return {'deliver': route.get('deliver', 'log'), 'profile': profile,
+            'deliver_extra': adapter._render_delivery_extra(route.get('deliver_extra', {}), payload),
+            'route': route_name, 'mirror': route.get('mirror_to_session') is True}
+
+
+def producer_event(adapter, payload, prompt, delivery_id, now, *, route_config, route_name, profile, register=True):
+    from datetime import datetime, UTC
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
+
+    chat_id = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id).session_chat_id
+    if register:
+        adapter._delivery_info[chat_id] = delivery_info(adapter, route_config, profile, payload, route_name)
+        adapter._delivery_info_created[chat_id] = now
+        adapter._delivery_info_order.append((now, chat_id))
+        adapter._prune_delivery_info(now)
+    event = MessageEvent(text=prompt, message_type=MessageType.TEXT,
+        source=adapter._admission_source(route_name, profile, delivery_id), raw_message=payload,
+        message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
+    return event
 
 
 def validate_destination(delivery):

@@ -210,7 +210,10 @@ def _webhook(runner, routes):
 
 
 def _cancel(adapter):
-    for task in list(adapter._background_tasks):
+    tasks = list(adapter._background_tasks) + list(adapter._coalescer._inflight.values())
+    if adapter._coalescer._worker is not None:
+        tasks.append(adapter._coalescer._worker)
+    for task in tasks:
         task.cancel()
 
 
@@ -222,7 +225,8 @@ async def test_a_coalesced_webhook_for_a_parked_profile_is_retried_not_lost(tmp_
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     adapter = _webhook(runner, {'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'profile': 'beta',
                                            'coalesce': {'key': 'id', 'window_seconds': 0.1}}})
-    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    async def settled():
+        return not await asyncio.to_thread(adapter._coalescer.store.schedule) and not adapter._background_tasks
     try:
         first = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}))
         assert first.status == 503 and first.headers.get('Retry-After'), (first.status, first.text)
@@ -278,7 +282,8 @@ async def test_an_explicit_profile_prefix_wins_over_a_profile_route(tmp_path, mo
     if coalesced:
         route['coalesce'] = {'key': 'id', 'window_seconds': 0.1}
     adapter = _webhook(runner, {'events': route})
-    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    async def settled():
+        return not await asyncio.to_thread(adapter._coalescer.store.schedule) and not adapter._background_tasks
     try:
         response = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, profile='default'))
         assert response.status == 202, (response.status, response.text)
@@ -339,7 +344,8 @@ async def test_a_coalesced_bare_route_to_an_unserved_profile_is_refused_like_the
     adapter = _webhook(runner, {
         'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'coalesce': {'key': 'id', 'window_seconds': 0.05}},
         'events_now': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}'}})
-    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    async def settled():
+        return not await asyncio.to_thread(adapter._coalescer.store.schedule) and not adapter._background_tasks
     try:
         immediate = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, 'events_now', None))
         coalesced = await adapter._handle_webhook(_webhook_request('delivery-2', {'id': 18}, 'events', None))
@@ -371,7 +377,8 @@ async def test_a_route_rule_admission_never_matches_does_not_refuse_the_coalesce
     adapter = _webhook(runner, {
         'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'coalesce': {'key': 'id', 'window_seconds': 0.05}},
         'events_now': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}'}})
-    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    async def settled():
+        return not await asyncio.to_thread(adapter._coalescer.store.schedule) and not adapter._background_tasks
     try:
         immediate = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, 'events_now', None))
         coalesced = await adapter._handle_webhook(_webhook_request('delivery-2', {'id': 18}, 'events', None))
@@ -409,11 +416,9 @@ async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_
 
 
 @pytest.mark.asyncio
-async def test_a_coalesced_batch_whose_admission_fails_releases_its_delivery_ids(tmp_path, monkeypatch):
-    """The provider got 202 ``coalesced`` for every delivery of the batch. If the flush cannot admit
-    it, a resend of any of them must be processed, not answered as a duplicate."""
+async def test_a_coalesced_batch_whose_admission_fails_retains_its_work(tmp_path, monkeypatch):
     from gateway.platforms import webhook_ingress
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH, _WebhookDeliveryIdentity
+    from gateway.platforms.webhook import _INSECURE_NO_AUTH
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     await _serve_beta_again(runner, homes[1][1].resolve())
@@ -424,16 +429,17 @@ async def test_a_coalesced_batch_whose_admission_fails_releases_its_delivery_ids
         raise sqlite3.OperationalError('database is locked')
 
     monkeypatch.setattr(webhook_ingress, 'admit_producer', store_busy)
-    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    async def settled():
+        rows = await asyncio.to_thread(adapter._coalescer.store.pending)
+        return rows and rows[0]['held'] == 'admission_unavailable'
     try:
         for delivery in ('delivery-1', 'delivery-2'):  # one entity: delivery-2 supersedes delivery-1
             accepted = await adapter._handle_webhook(_webhook_request(delivery, {'id': 17}))
             assert json.loads(accepted.text)['status'] == 'coalesced', accepted.text
         await async_wait_until(settled, what='the batch flushed')
-        held = [identity for identity in adapter._seen_deliveries
-                if identity in {_WebhookDeliveryIdentity.from_parts('beta', 'events', d)
-                                for d in ('delivery-1', 'delivery-2')}]
-        assert held == [], f'a failed batch still holds its delivery ids: {held}'
+        rows = await asyncio.to_thread(adapter._coalescer.store.pending)
+        assert len(rows) == 1 and rows[0]['count'] == 2
+        assert json.loads(rows[0]['work'])['delivery_id'] == 'delivery-2'
     finally:
         _cancel(adapter)
         _close(runner, homes)

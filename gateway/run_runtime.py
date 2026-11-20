@@ -470,7 +470,6 @@ async def serve_profile_runtime(runner, name, home):
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
     from gateway.session_local_recovery import recover_local_sessions
-    from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
     existing = registry.for_home(home)
@@ -489,7 +488,6 @@ async def serve_profile_runtime(runner, name, home):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
             recover_local_sessions(authority, schedule=True)
-            await recover_webhook_finalizations(authority)
             _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
             await _ensure_hosted_service(runner, authority)
@@ -533,9 +531,12 @@ async def recover_served_native_rows(runner):
     start and never stops the other ledgers or the reconcile."""
     if getattr(runner, 'session_authorities', None) is None:
         return
-    from gateway.session_authorities import serving_authorities
+    from gateway.session_authorities import owner_scope, serving_authorities
+    from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     for authority in serving_authorities(runner):
         try:
+            with owner_scope(authority):
+                await recover_webhook_finalizations(authority)
             await recover_profile_native_sessions(runner, authority)
         except Exception:  # health: allow BLE001 -- logged; the rows stay queued for the next start
             logger.error('Native session recovery failed for %s', authority.profile_id, exc_info=True)

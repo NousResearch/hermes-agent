@@ -80,6 +80,50 @@ async def settled_before_finalizer(*, compress=False):
 
 
 @pytest.mark.asyncio
+async def test_restart_owns_queued_webhook_until_late_settlement(monkeypatch):
+    from gateway import run_runtime
+    from gateway.session_authority import initialize_session_authority
+
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={
+        'secret': 'owned-secret', 'routes': {'fixture': {'prompt': '{text}', 'deliver': 'log'}}}))
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post('/webhooks/{route_name}', adapter._handle_webhook)
+    async with TestClient(TestServer(app)) as client:
+        body = b'{"text":"queued"}'
+        signature = 'sha256=' + hmac.new(b'owned-secret', body, hashlib.sha256).hexdigest()
+        response = await client.post('/webhooks/fixture', data=body, headers={
+            'X-GitHub-Delivery': 'queued-before-crash', 'X-Hub-Signature-256': signature})
+        assert response.status == 202
+        runner = adapter._message_handler.__self__
+        old = runner.session_authority
+        row = dict(raw_holder(old.persistence)._read_one('SELECT * FROM session_admissions'))
+        for task in list(adapter._background_tasks):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        restarted = await initialize_session_authority(runner, profile_id=old.profile_id,
+            instance_id='replacement-owner', persistence=old.persistence)
+        restarted._schedule = lambda ref: None
+
+        async def skip_hosted(_runner):
+            return None
+
+        monkeypatch.setattr('gateway.session_hosted_service.ensure_hosted_service', skip_hosted)
+        await run_runtime.recover_gateway_native_sessions(runner)
+        await asyncio.sleep(0)
+        claimed = restarted.persistence.admissions.claim(epoch=restarted.epoch, session_id=row['target_session_id'])
+        restarted.persistence.admissions.settle(epoch=restarted.epoch, admission_id=row['admission_id'],
+                                                generation=claimed.generation, outcome='completed')
+        await restarted._resolve_settled_waiter(row['admission_id'], None)
+        tasks = list(adapter._background_tasks)
+        if tasks:
+            await asyncio.gather(*tasks)
+        assert session_row(old.persistence, row['target_session_id'])['end_reason'] == 'webhook_complete'
+        assert len(raw_holder(old.persistence)._read_all('SELECT * FROM session_admissions')) == 1
+
+
+@pytest.mark.asyncio
 async def test_restart_finalizes_settled_webhook_without_provider_retry(monkeypatch):
     async with settled_before_finalizer() as (_client, _body, _headers, runner, authority, row):
         from gateway import run_runtime

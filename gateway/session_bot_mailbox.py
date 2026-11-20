@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from tools.bot_live_delivery import _locked, _read, _write
+from agent.async_utils import drain_thread
 
 
 @asynccontextmanager
@@ -24,25 +25,6 @@ async def mailbox_lock(authority):
             persist_work_count(authority)
 
 
-async def _mailbox_io(operation, *args):
-    """Keep the caller's mailbox ownership until its physical I/O ends, even after cancellation."""
-    pending = asyncio.create_task(asyncio.to_thread(operation, *args))
-    cancelled = None
-    while True:
-        try:
-            result = await asyncio.shield(pending)
-        except asyncio.CancelledError as exc:
-            if pending.cancelled():
-                raise
-            cancelled = exc
-        except Exception:
-            if cancelled is not None:
-                raise cancelled
-            raise
-        else:
-            if cancelled is not None:
-                raise cancelled
-            return result
 
 
 def _read_receipt(home, key):
@@ -51,7 +33,7 @@ def _read_receipt(home, key):
 
 
 async def read_receipt(home, key):
-    return await _mailbox_io(_read_receipt, home, key)
+    return await drain_thread(_read_receipt, home, key)
 
 
 _UNCHECKED = object()
@@ -77,7 +59,7 @@ def _write_receipt(home, record, expect=_UNCHECKED):
 
 
 async def write_receipt(home, record, *, expect=_UNCHECKED):
-    return await _mailbox_io(_write_receipt, home, record, expect)
+    return await drain_thread(_write_receipt, home, record, expect)
 
 
 def _scan_receipts(home, pins=None):
@@ -99,7 +81,7 @@ def _withdraw_pin(home, key):
 async def withdraw_pin(home, key):
     """Drop a pre-admission pin the FIFO definitely refused (nothing committed), only while it is
     still that pin, so the same-id retry admits instead of answering ``unknown_execution``."""
-    return await _mailbox_io(_withdraw_pin, home, key)
+    return await drain_thread(_withdraw_pin, home, key)
 
 
 # What ``_admit`` lays over a legacy ticket when it pins it (``legacy=``); the ticket never had them.
@@ -123,7 +105,7 @@ async def requeue_pin(home, key):
     """Restore the queued legacy ticket a pre-admission pin was laid over (nothing committed), only
     while it is still that pin: its id, message, sequence and created_at are kept, so ``_migrate``
     admits it once in its FIFO place. Returns the ticket, or None when the pin is gone or changed."""
-    return await _mailbox_io(_requeue_pin, home, key)
+    return await drain_thread(_requeue_pin, home, key)
 
 
 def _refuse_pin(home, key):
@@ -140,12 +122,12 @@ def _refuse_pin(home, key):
 async def refuse_pin(home, key):
     """Settle a pre-admission pin the FIFO definitely refused for good (nothing committed) as a
     terminal ``failed`` receipt, only while it is still that pin: never re-sent, nothing unknown."""
-    return await _mailbox_io(_refuse_pin, home, key)
+    return await drain_thread(_refuse_pin, home, key)
 
 
 async def scan_receipts(home, pins=None):
     """Bulk scan; an owner scan passes ``pins`` to collect pre-admission pins instead of warning."""
-    return await _mailbox_io(_scan_receipts, home, pins)
+    return await drain_thread(_scan_receipts, home, pins)
 
 
 def remember_receipt(authority, home, record):

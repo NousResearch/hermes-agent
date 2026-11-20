@@ -5,6 +5,7 @@ prefix can name a profile on disk that this gateway does not serve for another r
 doors and the shared listener answer a parked profile's prefix with a final 409 or 404. Each is a
 retryable 503 here, so the client's retry is processed once the profile is served again.
 """
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -44,7 +45,8 @@ async def test_a_coalesced_webhook_profile_routes_send_to_a_parked_profile_is_re
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=routes)
     adapter = _webhook(runner, {'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}',
                                            'coalesce': {'key': 'id', 'window_seconds': 0.1}}})
-    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    async def settled():
+        return not await asyncio.to_thread(adapter._coalescer.store.schedule) and not adapter._background_tasks
     try:
         first = await adapter._handle_webhook(_request('delivery-1', {'id': 17}, ''))
         assert first.status == 503 and first.headers.get('Retry-After'), (first.status, first.text)

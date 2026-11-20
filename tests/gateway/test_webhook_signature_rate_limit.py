@@ -59,6 +59,39 @@ def _github_signature(body: bytes, secret: str) -> str:
 SIMPLE_PAYLOAD = {"event": "test", "data": "hello"}
 
 
+@pytest.mark.asyncio
+async def test_malformed_body_spends_quota_and_overquota_does_not_parse(monkeypatch):
+    adapter = _make_adapter({'fixture': {'secret': 'secret', 'prompt': '{text}'}}, rate_limit=1)
+    body = b'\xff\xfe{\x00'
+    headers = {'X-Hub-Signature-256': _github_signature(body, 'secret')}
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        response = await client.post('/webhooks/fixture', data=body, headers=headers)
+        assert response.status == 400
+        assert len(adapter._rate_counts.get('fixture', ())) == 1
+
+        def forbidden(_body):
+            pytest.fail('over-quota request was parsed')
+
+        monkeypatch.setattr(adapter, '_parse_body', forbidden)
+        response = await client.post('/webhooks/fixture', data=body, headers=headers)
+        assert response.status == 429
+
+
+@pytest.mark.asyncio
+async def test_parked_refusal_refunds_reserved_quota(monkeypatch):
+    from aiohttp import web
+    adapter = _make_adapter({'fixture': {'secret': 'secret', 'prompt': '{text}'}}, rate_limit=1)
+    body = b'{"text":"hello"}'
+    headers = {'X-Hub-Signature-256': _github_signature(body, 'secret')}
+    monkeypatch.setattr('gateway.platforms.webhook_ingress.parked_profile_refusal',
+                        lambda *args: web.json_response({'error': 'parked'}, status=503))
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        for _ in range(2):
+            response = await client.post('/webhooks/fixture', data=body, headers=headers)
+            assert response.status == 503
+        assert not adapter._rate_counts.get('fixture', ())
+
+
 class TestSignatureBeforeRateLimit:
     """Verify that invalid signatures do NOT consume rate limit quota."""
 

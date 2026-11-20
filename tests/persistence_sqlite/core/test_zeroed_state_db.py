@@ -11,6 +11,20 @@ from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session
 
 
+def test_legacy_store_gains_stable_instance_identity(tmp_path):
+    import uuid
+
+    path = tmp_path / "legacy.db"
+    with StoreHolder(path) as store:
+        store._conn.execute("DELETE FROM state_meta WHERE key='store_instance_id'")
+        store._conn.commit()
+    with StoreHolder(path) as store:
+        identity = store._conn.execute("SELECT value FROM state_meta WHERE key='store_instance_id'").fetchone()[0]
+        assert str(uuid.UUID(identity)) == identity
+    with StoreHolder(path) as store:
+        assert store._conn.execute("SELECT value FROM state_meta WHERE key='store_instance_id'").fetchone()[0] == identity
+
+
 def test_is_zeroed_state_db_and_quarantine(tmp_path):
     db = tmp_path / "state.db"
     db.write_bytes(bytes(1024))

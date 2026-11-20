@@ -788,10 +788,8 @@ _ROOT_CREDENTIAL_PATHS = (
     *HOME_ENV_FILES, "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_client_secret.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
     "webhook_subscriptions.json", *SECRET_CACHE_STORES, *CREDENTIAL_STORE_DIRS, "webapp",
-    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
-    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
-    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
-    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
+    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"),
+    *_sqlite_files("webhook_coalescing.db"))
 
 
 def _profile_cache_roots() -> list[Path]:

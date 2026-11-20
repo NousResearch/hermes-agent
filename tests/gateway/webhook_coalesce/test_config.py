@@ -35,6 +35,20 @@ def _capture_admissions(adapter, monkeypatch):
     monkeypatch.setattr(adapter, "_finalize_delivery", _finalize)
     adapter._message_handler = SimpleNamespace(__self__=SimpleNamespace())
     monkeypatch.setattr("gateway.session_authorities.authority_for_profile_id", lambda runner, pid: object())
+    if hasattr(adapter._coalescer, 'binding'):
+        from gateway.platforms.webhook_coalesce.binding import Binding
+
+        async def binding(route_name, profile, delivery_id, payload):
+            from gateway.platforms.webhook_coalesce.recovery import ingress_revision
+            revision = ingress_revision(adapter, route_name, adapter._routes[route_name], profile, delivery_id)
+            return Binding(profile or 'default', 'fixture-store', revision[0], revision[1], {})
+
+        monkeypatch.setattr(adapter._coalescer, 'binding', binding)
+
+        async def producer_seen(*args):
+            return False
+
+        monkeypatch.setattr(adapter._coalescer, 'producer_seen', producer_seen)
     return admitted
 
 
@@ -110,7 +124,7 @@ async def test_rapid_same_entity_events_dispatch_once_with_latest(monkeypatch):
     assert set(events) == {"d2", "other"}
     assert "PR 7: synchronize" in events["d2"].text and "3 webhook events" in events["d2"].text
     assert "coalesced" not in events["other"].text
-    assert adapter._coalescer.pending == {}
+    assert await asyncio.to_thread(adapter._coalescer.store.schedule) == []
 
 
 @pytest.mark.asyncio
@@ -144,4 +158,4 @@ async def test_disconnect_flushes_pending_groups(monkeypatch):
 
     assert len(admitted) == 1
     assert admitted[0].message_id == "pend"
-    assert adapter._coalescer.pending == {}
+    assert await asyncio.to_thread(adapter._coalescer.store.schedule) == []

@@ -5,6 +5,7 @@ as the provider stream ends — concurrently with Hermes' consumer thread, which
 read the last chunk yet. The finalizer therefore builds Relay's recorded response from
 collector-observed state only, never from the consumer loop's closures. Sibling of
 ``relay_llm.AnthropicStreamAccumulator``; Bedrock and Codex follow the same contract.
+``_managed_summary_call`` routes the iteration-limit summary request through the same relay.
 """
 
 from __future__ import annotations
@@ -80,3 +81,14 @@ class RelayChatAccumulator:
         # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.
         return {"model": self._model, "usage": self._usage,
             "choices": [{"message": message, "finish_reason": self._finish_reason or "stop"}]}
+
+
+def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
+    from agent import relay_llm
+    return relay_llm.execute_current(
+        request, callback,
+        name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
+        metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
+            "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
+        defer_logical_completion=True,
+    )

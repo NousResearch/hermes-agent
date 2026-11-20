@@ -50,7 +50,7 @@ class TestImapResponseGuard(unittest.TestCase):
             if command == "search":
                 return ("OK", [uids])
             if command == "fetch":
-                if "BODY.PEEK" in args[1]:
+                if "BODY.PEEK[HEADER.FIELDS" in args[1]:
                     return ("OK", [(args[0], _raw_email())])
                 return next(fetch_iter)
             return ("NO", [])

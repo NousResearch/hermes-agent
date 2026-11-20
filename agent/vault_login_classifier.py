@@ -59,8 +59,12 @@ _RE_USERNAME = re.compile(
 
 
 def _normalize_text(value: str) -> str:
-    value = unicodedata.normalize("NFKD", value).lower()
-    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+    value = unicodedata.normalize("NFKD", value)
+    plain = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    # Also give the camelCase words (``emailAddress``, ``otpCode``): the lower case alone removes the
+    # word boundary. The plain form stays, for patterns that name a joined word (``ccnumber``).
+    split = re.sub(r"[^a-z0-9]+", " ", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value).lower()).strip()
+    return plain if split == plain else f"{plain} {split}"
 
 
 @dataclass(frozen=True)

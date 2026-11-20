@@ -289,6 +289,16 @@ class TestClassifier:
 # Browser tool: origin binding + gating
 # ---------------------------------------------------------------------------
 
+    def test_camel_case_names_keep_their_words(self):
+        """``emailAddress`` and ``otpCode`` are the same words as ``email_address`` and ``otp_code``."""
+        from agent.vault_login_classifier import classify_checkout_control, classify_otp_controls
+
+        res = classify_login_control(_ctrl(name="emailAddress"))
+        assert res is not None and res.token == "email"
+        assert classify_otp_controls([_ctrl(name="otpCode")])
+        # A joined word that a pattern names as one word still matches.
+        assert classify_checkout_control(_ctrl(name="ccNumber")).token == "cc-number"
+
 class TestBrowserVaultTools:
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose

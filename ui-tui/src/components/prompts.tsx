@@ -15,11 +15,38 @@ const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 
-const approvalLabels = (): Record<ApprovalChoice, string> => {
-  const p = messages().prompt.approval
-
-  return { always: p.always, deny: p.deny, once: p.once, session: p.session, tell: p.tell }
+interface ApprovalCard {
+  body: string
+  labels: Record<ApprovalChoice, string>
+  title: string
 }
+
+// The card per approval kind; an unknown kind draws the command card.
+const APPROVAL_CARDS: Record<string, (req: ApprovalReq) => ApprovalCard> = {
+  command: req => {
+    const p = messages().prompt.approval
+
+    return {
+      body: req.command,
+      labels: { always: p.always, deny: p.deny, once: p.once, session: p.session, tell: p.tell },
+      title: `${p.title} · ${req.description}`
+    }
+  },
+  // A new scheduled job: the description says what runs and when; its command is a synthetic placeholder.
+  schedule: req => {
+    const p = messages().prompt.approval
+    const s = p.schedule
+
+    return {
+      body: req.description,
+      labels: { always: s.always, deny: p.deny, once: s.once, session: s.session, tell: p.tell },
+      title: s.title
+    }
+  }
+}
+
+export const approvalCard = (req: ApprovalReq): ApprovalCard =>
+  (req.kind && Object.hasOwn(APPROVAL_CARDS, req.kind) ? APPROVAL_CARDS[req.kind]! : APPROVAL_CARDS.command!)(req)
 
 const CMD_PREVIEW_LINES = 10
 
@@ -155,7 +182,9 @@ export function ApprovalPrompt({ cols = 80, onChoice, onTell, req, t }: Approval
   // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
   const innerWidth = Math.max(20, cols - 8)
 
-  const rawLines = req.command
+  const card = approvalCard(req)
+
+  const rawLines = card.body
     .split('\n')
     .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
 
@@ -166,7 +195,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, onTell, req, t }: Approval
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        {T.prompt.approval.title} · {req.description}
+        {card.title}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -185,7 +214,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, onTell, req, t }: Approval
         <Text key={o}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
-            {i + 1}. {approvalLabels()[o]}
+            {i + 1}. {card.labels[o]}
           </Text>
         </Text>
       ))}

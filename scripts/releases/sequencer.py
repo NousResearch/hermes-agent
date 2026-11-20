@@ -384,20 +384,22 @@ STABLE_POINTER = "releases/stable/release-candidates.json"
 
 
 def _alias_state(record: dict, records: list[dict]) -> str:
-    """Who holds the Docker aliases relative to ``record``: "newer", "behind" or "current".
+    """Who holds the Docker aliases relative to ``record``: "newer", "unknown", "behind" or "current".
 
     A digest a newer published release carries means that release owns the aliases (the
     channel head read can have missed it on a registry error). An alias that cannot be read
-    proves nothing and counts as current, so neither case can roll the aliases back.
+    leaves the owner unknown. Recovery moves the aliases in neither case, so a registry error
+    can never roll them back.
     """
     from scripts.releases import docker
 
     alias = docker.stable_alias_digest()
+    if alias is None:
+        return "unknown"
     if alias in {row["docker_manifest_digest"] for row in records if row["state"] == "published"
                  and _key(row["version"]) > _key(record["version"])}:
         return "newer"
-    if alias is not None and (alias != record["docker_manifest_digest"]
-                              or docker.stable_desktop_alias_behind(record["claim_tag"])):
+    if alias != record["docker_manifest_digest"] or docker.stable_desktop_alias_behind(record["claim_tag"]):
         return "behind"
     return "current"
 
@@ -409,8 +411,8 @@ def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head:
     aliases move after that, slim before desktop, so a failure there leaves the head on a
     release that plan() would otherwise count as done. The pointer is the source channel's
     update target and the next release's upgrade baseline. A full ``advance`` repeats the
-    Docker promotion too; while a newer release owns the aliases only the desktop advance
-    repeats (``finish``).
+    Docker promotion too; while a newer release owns the aliases, or their owner cannot be
+    read, only the desktop advance repeats (``finish``).
     """
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases
@@ -431,7 +433,7 @@ def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head:
         aliases = _alias_state(record, records)
     else:
         aliases = "current"
-    if aliases == "newer":
+    if aliases in {"newer", "unknown"}:
         return {"finish": desktop} if pointer != candidate else None
     return {"advance": desktop} if pointer != candidate or aliases == "behind" else None
 

@@ -148,7 +148,7 @@ def test_idle_tick_without_an_admitted_turn_queues_nothing():
         conn.close()
 
 
-def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
+def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_its_typed_input():
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_events import SessionEvents
@@ -161,11 +161,13 @@ def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
     automation = {"text": MODEL_TEXT, "local_automation_v1": {
         "identity": "i", "owner": SID, "route": "r", "target": SID,
         "display_kind": "process_complete", "display_text": DISPLAY}}
-    SessionAuthority._stamp_claim(authority, ref, live, {"generation": 9, "admission_id": "adm-9", "payload": automation})
+    SessionAuthority._stamp_claim(authority, ref, live, {"generation": 9, "admission_id": "adm-9",
+                                                         "request_id": "req-9", "payload": automation})
     SessionAuthority._stamp_claim(authority, ref, live, {"generation": 10, "admission_id": "adm-10",
-                                                         "payload": {"text": "typed"}})
+                                                         "request_id": "req-10", "payload": {"text": "typed"}})
     assert published == [("message.start", {"display_kind": "process_complete", "display_text": DISPLAY,
-                                            "text": MODEL_TEXT}), ("message.start", {})]
+                                            "text": MODEL_TEXT}),
+                         ("message.start", {"input": {"text": "typed", "submission_id": "req-10"}})]
 
 
 def test_claim_stamp_carries_the_automation_card_on_message_start():

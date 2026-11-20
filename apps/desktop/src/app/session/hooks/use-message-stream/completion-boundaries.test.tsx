@@ -255,6 +255,70 @@ it('binds a viewer that never sent the turn only when it shows exactly the recei
   h.dispose()
 })
 
+// A turn another surface sent (an editor's ACP client, the CLI) names its typed
+// input on message.start; this window shows it above the reply it streams.
+const EDITOR_PROMPT = { text: 'Asked from the editor.', submission_id: 'acp-turn-1' }
+
+it('shows the prompt of a turn another surface sent, once, bound to its stored row', async () => {
+  const h = mount()
+  h.update(state => ({
+    ...state,
+    messages: toChatMessages([
+      { id: 60, role: 'user', content: 'Earlier.' },
+      { id: 61, role: 'assistant', content: 'Before.' }
+    ])
+  }))
+  await h.send('message.start', { input: EDITOR_PROMPT })
+  // A re-sent start of the same turn adds nothing.
+  await h.send('message.start', { input: EDITOR_PROMPT })
+  expect(timeline(h.state().messages)).toEqual([
+    ['user', 'Earlier.'],
+    ['assistant', 'Before.'],
+    ['user', 'Asked from the editor.']
+  ])
+
+  await h.send('message.delta', { text: ANSWER })
+  await h.send('message.complete', {
+    text: ANSWER,
+    persisted_turn: {
+      row_ids: [71, 72],
+      user_row_id: 71,
+      user_row_ids: [71],
+      final_assistant_row_id: 72,
+      complete: true,
+      submission_id: EDITOR_PROMPT.submission_id
+    }
+  })
+
+  expect(h.state().messages.find(m => m.id === `user-${EDITOR_PROMPT.submission_id}`)?.rowId).toBe(71)
+
+  const latestPage = toChatMessages([
+    { id: 71, role: 'user', content: 'Asked from the editor.' },
+    { id: 72, role: 'assistant', content: ANSWER }
+  ])
+
+  expect(timeline(graftRefreshedTailOntoBackfill(latestPage, h.state().messages)).slice(-2)).toEqual([
+    ['user', 'Asked from the editor.'],
+    ['assistant', ANSWER]
+  ])
+  h.dispose()
+})
+
+it('adds nothing to the prompt this window sent, or to a projected queued prompt the turn starts', async () => {
+  const sent = mount()
+  await sent.submit()
+  await sent.send('message.start', { input: { text: 'Give the answer.', submission_id: submissionIdOf(sent) } })
+  expect(timeline(sent.state().messages)).toEqual([['user', 'Give the answer.']])
+  sent.dispose()
+
+  const projected = mount()
+  const queued: ChatMessage = { id: `user-queued-${SID}`, role: 'user', parts: [{ type: 'text', text: 'Next' }] }
+  projected.update(state => ({ ...state, messages: [queued] }))
+  await projected.send('message.start', { input: { text: 'Next', submission_id: 'queued-elsewhere' } })
+  expect(projected.state().messages).toEqual([{ ...queued, queuedTurnStarted: true }])
+  projected.dispose()
+})
+
 const timeline = (messages: ChatMessage[]) => messages.map(message => [message.role, chatMessageText(message)])
 
 const flush = () =>

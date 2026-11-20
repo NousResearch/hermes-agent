@@ -32,11 +32,12 @@ it.each(['bot-chat', 'bot-chat:recipient'])('creates and reads back %s without c
   </ProfileContext.Provider></MemoryRouter></I18nProvider>);
   fireEvent.click(await screen.findByRole('button', { name: /new subscription/i }));
   fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'fixture' } });
-  fireEvent.click(screen.getByRole('combobox'));
-  fireEvent.click(await screen.findByRole('option', { name: 'Bot Chat' }));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Deliver to' }), { target: { value: 'bot-chat' } });
+  const profileSelect = screen.getByRole('combobox', { name: 'Target profile' });
+  expect((profileSelect as HTMLSelectElement).value).toBe('__executing__');
   if (target.includes(':')) {
-    fireEvent.click(screen.getAllByRole('combobox')[1]);
-    fireEvent.click(await screen.findByRole('option', { name: 'recipient' }));
+    fireEvent.change(profileSelect, { target: { value: 'recipient' } });
+    expect((profileSelect as HTMLSelectElement).value).toBe('recipient');
   }
   fireEvent.click(screen.getByLabelText('Deliver only'));
   expect(screen.getByText(/receiving Bot Chat may run its model/i)).toBeTruthy();

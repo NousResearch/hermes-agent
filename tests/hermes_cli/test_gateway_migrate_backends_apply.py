@@ -373,6 +373,22 @@ def test_flag_url_query_credential_is_redacted_without_clobbering_next_flag(home
     assert argv[port_idx + 1] == "9119"
 
 
+def test_combined_python_short_c_flag_redacts_inline_source(home):
+    from hermes_cli.gateway_migrate_backends_plan import build_plan, format_plan
+    host = FakeHost(home)
+    host.argv = ["/venv/bin/python", "-Ic", "import os; SECRET='inline-ic-66'", "hermes_cli.main",
+                 "dashboard", "--no-open", "--port", "9119"]
+
+    plan = build_plan(host)
+    data = plan.to_dict()
+    text = "\n".join(format_plan(plan, dry_run=True))
+
+    assert "inline-ic-66" not in json.dumps(data) and "inline-ic-66" not in text
+    argv = data["old_backend"]["argv"]
+    ic_idx = argv.index("-Ic")
+    assert argv[ic_idx + 1] == "<inline launcher source>"
+
+
 def test_without_a_service_manager_the_steps_run_the_gateway_under_the_operators_supervisor(home, capsys,
                                                                                            monkeypatch):
     host = FakeHost(home, host="127.0.0.1")

@@ -83,7 +83,7 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
 
 @pytest.mark.parametrize("lanes", [
     lane_set.select(without=lane_set.BUNDLES),
-    lane_set.select(without=lane_set.NAMES[5:]),
+    lane_set.select(without=lane_set.NAMES[6:]),
     lane_set.select(only=["windows", "docker"]),
     lane_set.select(only=[]),
 ])
@@ -519,7 +519,7 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     assert parsed == {**old, "lanes": lane_set.DEFAULT}
     assert old == json.loads(raw)  # the caller's record is not mutated
     both = {**old, "includeMacosIntel": False, "includeTermux": True}
-    assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
+    assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == lane_set.DEFAULT | {"termux"}
     # macOS Intel is no longer built: a claim that opted into it cannot be honoured.
     with pytest.raises(ValueError, match="metadata is invalid: it opts into macOS Intel"):
         validate_claim({**old, "includeMacosIntel": True}, version="0.21.7", attempt=11, commit=commit)
@@ -538,7 +538,7 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     assert validate_claim({**new, "lanes": ["docker", "windows"], "lanesRevision": lane_set.LANES_REVISION},
                           version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset({"docker", "windows"})
     for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True},
-                  {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["linux"]},
+                  {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["freebsd"]},
                   {**new, "lanes": "windows"}, {**old, "lanes": ["docker"]}):
         with pytest.raises(ValueError, match="metadata is invalid"):
             validate_claim(wrong, version="0.21.7", attempt=11, commit=commit)
@@ -549,7 +549,7 @@ def test_a_default_claim_builds_no_termux_and_lanes_restore_it(
     from scripts.releases import stable
 
     # A stable release never runs the canary's publication job.
-    off = {"candidates-termux", "termux-checks", "publish-canary"}
+    off = {"candidates-termux", "termux-checks", "candidates-linux-x64", "candidates-linux-arm64", "publish-canary"}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off

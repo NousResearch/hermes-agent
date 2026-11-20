@@ -74,7 +74,18 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
         assert call["with"]["jobs"] == group
         assert {"tag", "claim-tag", "claim-object"} <= set(call["with"])
     assert {"candidates-win32-arm64", "candidates-win32-x64"} <= set(jobs["candidates-win32-bundle"]["needs"])
-    assert not any("linux" in name for name in jobs)
+    # Diagnostic Linux AppImage builds run on canaries (off on default stable) and
+    # never gate candidate-manifest, publish-canary, acceptance, publication, or complete.
+    diagnostic_calls = ("candidates-linux-x64", "candidates-linux-arm64")
+    for name, group in zip(diagnostic_calls, ("linux-x64", "linux-arm64"), strict=True):
+        call = jobs[name]
+        assert direct_needs(jobs, name) == ["admit"]
+        assert call["uses"] == "./.github/workflows/desktop-bundled-release.yml"
+        assert call["with"]["release-phase"] == "candidate"
+        assert call["with"]["jobs"] == group
+        assert {"tag", "claim-tag", "claim-object"} <= set(call["with"])
+    for gated in ("candidate-manifest", "publish-canary", "acceptance", "publish-bundles", "publication", "complete"):
+        assert set(diagnostic_calls).isdisjoint(ancestors(jobs, gated)), gated
     # B4: each install arm starts from its own receipt, and the manifest is
     # written after every candidate call (so after every smoke).
     for name in ("transitions", "macos-packaged"):
@@ -109,7 +120,7 @@ LANE_SETS = {
     "windows and docker, untested": lane_set.select(only=["windows", "docker"]),
     "docker only": lane_set.select(only=["docker"]),
     "no mac": lane_set.select(without=["macos-arm64"]),
-    "no tests": lane_set.select(without=lane_set.NAMES[5:]),
+    "no tests": lane_set.select(without=lane_set.NAMES[6:]),
     "nothing": frozenset(),
     # Each lane alone and each lane missing, so no job's condition can borrow another lane's flag.
     **{f"only {name}": frozenset({name}) for name in lane_set.NAMES},
@@ -157,10 +168,10 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
                        "macos-packaged-arm64", "windows-packaged"}
     stable_all = lane_set.jobs_to_run(lane_set.NAMES, "stable")
     assert {job for job in canary if canary[job] != stable_all[job]} == set(lane_set.POLICY_JOBS) | upgrade
-    # Every other build and test job runs: Termux included, which a default claim
+    # Every other build and test job runs: Termux and diagnostic Linux included, which a default claim
     # leaves out, and install-e2e, which updates released stable tags to the canary commit.
     assert {job for job, runs in canary.items() if not runs} == {"publish-bundles"} | upgrade
-    for opted_out in ("candidates-termux", "termux-checks"):
+    for opted_out in ("candidates-termux", "termux-checks", "candidates-linux-x64", "candidates-linux-arm64"):
         assert canary[opted_out] and not lane_set.jobs_to_run(lane_set.DEFAULT)[opted_out], opted_out
     with pytest.raises(ValueError, match="policy"):
         lane_set.jobs_to_run(lane_set.CANARY, "preview")

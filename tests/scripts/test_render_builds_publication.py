@@ -134,9 +134,11 @@ def test_incomplete_tag_keeps_channel_and_links_diagnostics(monkeypatch, r2_serv
 
 
 def test_failed_linux_builds_still_advance_the_channel_page(monkeypatch, r2_server, release_body):  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
-    tag = 'v1.2.3+canary.20260818T101010Z'
+    from hermes_cli.update_channel import release_version
+
+    tag = 'canary.20260818T101010Z-v1.2.3'
     base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
-    key = f'releases/tag/{tag}/HermesBundled-{tag[1:]}-win-x64.msix'
+    key = f'releases/tag/{tag}/HermesBundled-{release_version(tag)}-win-x64.msix'
     r2_server.store[key] = (b'transport fixture', '"e"')
     r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
     monkeypatch.setenv('RELEASE_NEEDS', json.dumps({

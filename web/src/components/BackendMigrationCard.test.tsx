@@ -11,6 +11,7 @@ import {
   changedBackendStatus,
   engineStepStrings,
   exit5BundleStatus,
+  flagInPathBlockers,
   killedWhileWritingStatus,
   lateTurnStatus,
   nonFileBackendApply,
@@ -28,6 +29,7 @@ import {
   isProseStep,
   readPoll,
   replacesConfigFile,
+  rolledBackReason,
   type BackendMigrationPlanResponse,
   type BackendMigrationStatus,
   type PollRef,
@@ -616,6 +618,40 @@ describe("readPoll", () => {
   it("keeps the engine's blocker sentences but drops flags the card does not offer", () => {
     expect(blockerAdvice("This command runs inside x itself; stopping it would end this run. Re-run with --detach.").text)
       .not.toContain("--detach");
+  });
+});
+
+describe("blockerAdvice and rolledBackReason on a home whose path holds the engine's remedy text", () => {
+  // The plan route's blockers for a home under `--force-interrupt/, then re-run with --force-interrupt (any
+  // running turn is interrupted)./h`: a symbolic-link config.yaml, and an unreadable turn-marker file.
+  const oddDir = "/--force-interrupt/, then re-run with --force-interrupt (any running turn is interrupted)./h/";
+
+  it("offers no forced action for a blocker that only names the flag inside a path", () => {
+    const advice = blockerAdvice(flagInPathBlockers.symlink);
+    expect(advice.canForce).toBe(false);
+    expect(advice.text).toBe(flagInPathBlockers.symlink);
+  });
+
+  it("rewords only the unknown-activity blocker's own remedy, never the path", () => {
+    const advice = blockerAdvice(flagInPathBlockers.unknown);
+    expect(advice.canForce).toBe(true);
+    expect(advice.text).toContain(`${oddDir}desktop/interrupted_turns.json. To move it, confirm it is idle, then move `
+      + "anyway (any reply being written is cut off).");
+    expect(advice.text.endsWith("then move anyway (any reply being written is cut off).")).toBe(true);
+  });
+
+  it("rewords only a rolled-back run's own remedy, never the path", () => {
+    // The engine's exit-4 reason: the step, then the preflight's blocker, then its own sentence.
+    const reason = `gateway_service failed: ${flagInPathBlockers.unknown} The old backend has not been stopped.`;
+    expect(rolledBackReason(reason)).toBe(flagInPathBlockers.unknown.replace(
+      /, then re-run with --force-interrupt \(any running turn is interrupted\)\.$/, ", then try again.")
+      + " The old backend has not been stopped.");
+    expect(rolledBackReason(reason)).toContain(oddDir);
+  });
+
+  it("keeps the move held for a symbolic-link blocker in such a path", async () => {
+    await render(planWith({ blockers: [flagInPathBlockers.symlink] }));
+    expect(button("Move anyway")).toBeUndefined();
   });
 });
 

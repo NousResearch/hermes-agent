@@ -193,23 +193,31 @@ export function impactLines(plan: BackendMigrationPlan): string[] {
   return lines;
 }
 
-/** Blocker text from the engine, with what to do. The engine's sentences already end in the remedy
- *  (`Wait…`, `Re-run with…`); flags are translated into what this card offers. */
+// The engine's chat blockers, whole (a path or another blocker that merely names the flag never matches):
+// running turns, unknown turn activity (its cause can name files), and the apply's own unreadable-turns one.
+const RUNNING_TURNS = /^\d+ turn\(s\) are running on the old backend\. Wait for them to finish, or re-run with --force-interrupt \(they are interrupted\)\.$/;
+const UNKNOWN_TURNS = /^Cannot tell whether turns are running on the old backend: [\s\S]+\. To move it, confirm it is idle, then re-run with --force-interrupt \(any running turn is interrupted\)\.$/;
+const UNREADABLE_TURNS = /^The old backend's running turns cannot be read, so this command cannot prove no reply is being written in it\. Confirm it is idle, then re-run with --force-interrupt\. Nothing changed\.$/;
+
+/** Blocker text from the engine, with what to do. Only the engine's chat blockers can be forced; their
+ *  closing remedy (the CLI flag) is replaced by what this card offers, and nothing else in the text is. */
 export function blockerAdvice(blocker: string, byHand = false): { text: string; canForce: boolean } {
-  const canForce = blocker.includes("--force-interrupt");
   // A by-hand plan cannot be moved from the card: forcing it only shows its steps.
   const running = byHand ? ". Or show the steps anyway (following them cuts those replies off)."
     : ". Or move anyway (those replies are cut off).";
-  const unknown = byHand ? ". Or show the steps anyway (following them cuts off any reply being written)."
-    : ". Or move anyway (any reply being written is cut off).";
-  // "To move it, confirm it is idle, then re-run with --force-interrupt": the card's own action instead.
   const unknownThen = byHand ? ", then show the steps anyway (following them cuts off any reply being written)."
     : ", then move anyway (any reply being written is cut off).";
-  const text = blocker
-    .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\.?/, running)
-    .replace(/,? ?or re-run with --force-interrupt \(any running turn is interrupted\)\.?/, unknown)
-    .replace(/,? then re-run with --force-interrupt( \(any running turn is interrupted\))?\.?/, unknownThen)
-    .replace(/Re-run with --detach\.?/, "");
+  let text = blocker;
+  if (RUNNING_TURNS.test(blocker)) {
+    text = blocker.replace(/, or re-run with --force-interrupt \(they are interrupted\)\.$/, running);
+  } else if (UNKNOWN_TURNS.test(blocker)) {
+    text = blocker.replace(/, then re-run with --force-interrupt \(any running turn is interrupted\)\.$/, unknownThen);
+  } else if (UNREADABLE_TURNS.test(blocker)) {
+    text = blocker.replace(/, then re-run with --force-interrupt\. Nothing changed\.$/, `${unknownThen} Nothing changed.`);
+  } else {
+    text = blocker.replace(/ ?Re-run with --detach\.$/, "");
+  }
+  const canForce = RUNNING_TURNS.test(blocker) || UNKNOWN_TURNS.test(blocker) || UNREADABLE_TURNS.test(blocker);
   return { text: text.trim(), canForce };
 }
 
@@ -225,12 +233,20 @@ export function reasonOf(status: BackendMigrationStatus): string {
  *  the step prefix, and with "try again" (the card offers it) in place of the CLI's flag or "run this command
  *  again". Other reasons are as given. */
 export function rolledBackReason(reason: string): string {
-  if (!/The old backend has not been stopped(\.|; run this command again\.)$/.test(reason)) return reason;
-  return reason
-    .replace(/^[a-z_]+ failed: /, "")
-    .replace(/; run this command again\.$/, "; try again.")
-    .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\./, ", then try again.")
-    .replace(/,? then re-run with --force-interrupt( \(any running turn is interrupted\))?\./, ", then try again.");
+  const late = /^[a-z_]+ failed: ([\s\S]+ The old backend has not been stopped(\.|; run this command again\.))$/.exec(reason);
+  if (!late) return reason;
+  const body = late[1];
+  const stopped = " The old backend has not been stopped.";
+  const blocker = body.endsWith(stopped) ? body.slice(0, -stopped.length) : "";
+  if (RUNNING_TURNS.test(blocker)) {
+    return blocker.replace(/, or re-run with --force-interrupt \(they are interrupted\)\.$/, ", then try again.") + stopped;
+  }
+  if (UNKNOWN_TURNS.test(blocker)) {
+    return blocker.replace(/, then re-run with --force-interrupt \(any running turn is interrupted\)\.$/, ", then try again.")
+      + stopped;
+  }
+  if (/^the old backend changed since the check \(/.test(body)) return body.replace(/; run this command again\.$/, "; try again.");
+  return reason;
 }
 
 /** The engine's per-file manual-step notes (a file put back, kept for its edits, whose backup is missing or

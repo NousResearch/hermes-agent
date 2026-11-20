@@ -21,7 +21,7 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, delete_failed_error, delete_incomplete_message, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
@@ -329,8 +329,9 @@ def _is_our_wrapper(path: Path) -> bool:
         return False
 
 
-def _missing_profile_error(canon: str) -> FileNotFoundError:
-    return FileNotFoundError(f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}")
+def _missing_profile_error(canon: str, profile_dir: Path | None = None) -> FileNotFoundError:
+    missing = f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}"
+    return FileNotFoundError(delete_incomplete_message(canon, profile_dir) or missing)
 
 
 def _unknown_profile_error(canon: str) -> FileNotFoundError:
@@ -338,11 +339,10 @@ def _unknown_profile_error(canon: str) -> FileNotFoundError:
     return FileNotFoundError(f"No profile named '{canon}'. See your profiles with: hermes profile list")
 
 
-def _profile_exists_error(canon: str) -> FileExistsError:
-    return FileExistsError(
+def _profile_exists_error(canon: str, profile_dir: Path | None = None) -> FileExistsError:
+    return FileExistsError(delete_incomplete_message(canon, profile_dir) or (
         f"A profile named '{canon}' already exists. Switch to it with `hermes profile use {canon}`, "
-        "see all profiles with `hermes profile list`, or choose a different name."
-    )
+        "see all profiles with `hermes profile list`, or choose a different name."))
 
 
 _PROFILE_NAME_RULE = (
@@ -1387,7 +1387,7 @@ def create_profile(
                 "file, so it is not listed as a profile. Move or remove that directory first."
             )
     if profile_dir.exists():
-        raise _profile_exists_error(canon)
+        raise _profile_exists_error(canon, profile_dir)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
@@ -1790,7 +1790,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 5. Clear active_profile if it pointed to this profile
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+        raise delete_failed_error(canon, profile_dir, remove_error) from remove_error
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the
@@ -1955,7 +1955,7 @@ def set_active_profile(name: str) -> None:
     """Set the sticky active profile (``default`` = remove the file)."""
     canon = _canon_valid(name)
     if canon != "default" and not profile_exists(canon):
-        raise _missing_profile_error(canon)
+        raise _missing_profile_error(canon, get_profile_dir(canon))
     path = _get_active_profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if canon == "default":
@@ -2173,7 +2173,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         )
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
-        raise _profile_exists_error(canon)
+        raise _profile_exists_error(canon, profile_dir)
     _get_profiles_root().mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
         staging_root = Path(tmpdir)
@@ -2225,7 +2225,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if not old_dir.is_dir():
         raise _unknown_profile_error(old_canon)
     if new_dir.exists():
-        raise _profile_exists_error(new_canon)
+        raise _profile_exists_error(new_canon, new_dir)
 
     # 1. Remove the old name's service even when its gateway is stopped (the unit runs ``--profile <old>``
     # and would crash-loop on the next login or boot), then stop the gateway and the screen holding old paths.
@@ -2339,5 +2339,5 @@ def resolve_profile_env(profile_name: str) -> str:
         return str(root)
     profile_dir = root / "profiles" / canon
     if not named_profile_is_live(profile_dir):
-        raise _missing_profile_error(canon)
+        raise _missing_profile_error(canon, profile_dir)
     return str(profile_dir)

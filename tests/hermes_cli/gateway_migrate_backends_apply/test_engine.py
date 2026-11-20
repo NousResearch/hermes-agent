@@ -721,6 +721,7 @@ def test_a_rollback_puts_env_back_with_its_own_mode(home):
 # --------------------------------------------------------------------------- where the run itself lives
 
 
+@pytest.mark.platforms("linux")  # reads this process's real cgroup from /proc/self/cgroup
 def test_a_background_run_that_landed_inside_the_old_unit_refuses(home):
     from hermes_cli.update_cmd_posix_pause import _pid_cgroup
     host = FakeHost(home)

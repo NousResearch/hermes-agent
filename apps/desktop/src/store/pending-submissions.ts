@@ -132,10 +132,14 @@ function writeEntries(session: string, before: Record<string, PendingSubmission>
   const legacy = parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, unknown>)
 
   if (session in legacy) {
+    // Migration guarantee: EVERY surviving entry must be readable from its v2 key before the
+    // slice dies — the loop above skips entries that are unchanged this snapshot (they may live
+    // only in v1), so this copy, not the diff loop, is what v1-only records migrate through.
+    for (const [id, entry] of Object.entries(after)) { journalEntry(entryKey(session, id), entry) }
     delete legacy[session]
 
-    // The upgraded entries above are authoritative once written; a quota-refused legacy rewrite
-    // only delays draining the stale slice, and reads prefer the per-entry keys anyway.
+    // A quota-refused legacy rewrite only delays draining the stale slice, and reads prefer the
+    // per-entry keys anyway.
     try {
       if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
       else { window.localStorage.removeItem(LEGACY_KEY) }

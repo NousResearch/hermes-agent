@@ -351,3 +351,16 @@ it('a later succeeding write replaces the in-memory copy of a previously refused
 
   expect(JSON.parse(String(window.localStorage.getItem('hermes.desktop.pendingSubmissions.v2:' + JSON.stringify(['half', 'h1'])))).status).toBe('unknown')
 })
+
+it('a first reconcile of a v1 session migrates UNCHANGED receipts into v2 keys before draining the slice', () => {
+  const legacyKey = 'hermes.desktop.pendingSubmissions.v1'
+  window.localStorage.setItem(legacyKey, JSON.stringify({ migrated: { hold: { id: 'hold', text: 'still pending', status: 'queued' } } }))
+
+  // The snapshot leaves the receipt exactly as it stands: the change-diff write loop skips it,
+  // so only the migration copy can move it into the v2 key before the v1 slice dies.
+  reconcilePendingSubmissions('migrated', [{ admission_id: 'hold', status: 'queued', user: 'still pending' }])
+
+  const v2Key = 'hermes.desktop.pendingSubmissions.v2:' + JSON.stringify(['migrated', 'hold'])
+  expect(JSON.parse(String(window.localStorage.getItem(v2Key)))).toMatchObject({ id: 'hold', text: 'still pending', status: 'queued' })
+  expect(JSON.parse(String(window.localStorage.getItem(legacyKey) ?? '{}')).migrated).toBeUndefined()
+})

@@ -138,6 +138,9 @@ def _container_profile() -> str:
 
 
 from tools.approval import (
+    _floor_block,
+    _should_skip_container_guards,
+    _user_deny_block,
     check_all_command_guards as _check_all_guards_impl,
 )
 
@@ -1188,12 +1191,26 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run the command guards; ``force`` skips them entirely.
+    """Run the command guards; ``force`` skips them, except the unconditional floor which
+    no flag outranks (#157918).
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
-        return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+        # ``force`` means "the user confirmed this command" — it cannot also confirm what
+        # check_all_command_guards refuses unconditionally. Mirror its structure exactly:
+        # an isolated container skips the hardline floor (its isolation is the mitigation)
+        # but the operator's approvals.deny rules hold there too; everywhere else the full
+        # floor (hardline, runtime self-delete, sudo -S piping, deny rules) runs.
+        if _should_skip_container_guards(env_type, has_host_access=_docker_has_host_access(config)):
+            blocked = _user_deny_block(command)
+        else:
+            blocked = _floor_block(command, sudo_guard=True)
+        if blocked is not None:
+            approval = blocked
+        else:
+            return _ApprovalVerdict(approved_run=True)
+    else:
+        approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(

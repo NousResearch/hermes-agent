@@ -1262,6 +1262,11 @@ conn = plugin_db("my-plugin")
 conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
 ```
 
+`plugin_data_dir()` raises `FileNotFoundError` when the active named profile
+was deleted or renamed while a session was still bound to it, instead of
+recreating that profile's directory. Catch it if your plugin writes from a
+background hook and should skip the write.
+
 One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.

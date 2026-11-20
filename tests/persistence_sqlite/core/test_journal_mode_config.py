@@ -372,3 +372,13 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         "projects": "delete",
         "response_store": "delete",
     }
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_discord_recovery_ledger_skips_a_deleted_or_renamed_profile_home(tmp_path, move):
+    from plugins.platforms.discord.recovery import DiscordRecoveryStore
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    assert DiscordRecoveryStore(hermes_home=home).call(lambda conn: "wrote", default="skipped") == "skipped"
+    assert not home.exists()

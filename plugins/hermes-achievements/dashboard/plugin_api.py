@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 router = APIRouter()
 
@@ -155,9 +155,7 @@ def _data_dir() -> Path:
         return plugin_data_dir("hermes-achievements")
     except Exception:
         # Standalone dashboard import (no plugins package on sys.path): same layout, computed locally.
-        root = get_hermes_home() / "plugin-data" / "hermes-achievements"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+        return mkdir_under_hermes_home(get_hermes_home() / "plugin-data" / "hermes-achievements")
 
 
 def _data_file(name: str) -> Path:

@@ -710,3 +710,21 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_deleted_or_renamed_profile_home_is_not_recreated(tmp_path, monkeypatch, move):
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path / "dead", move)
+    pi = _load_plugin_init()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        pi.dg.save_tracked([])
+    for sub in ("forget /x", "quick", "deep"):
+        assert "Profile 'b' no longer exists" in pi._handle_slash(sub)
+    assert pi._handle_slash("track /x test").startswith("Not tracked")
+    pi._recent_test_tracks["s_dead"] = {"x"}
+    pi._on_session_end(session_id="s_dead")  # caught: the cleanup is skipped
+    assert not home.exists()

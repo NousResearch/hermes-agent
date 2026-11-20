@@ -357,9 +357,9 @@ def _owner(runner, event, authority):
 def automation_notification_metadata(metadata):
     """Validate trusted producer category; omit the default from old fingerprints."""
     category = metadata.get('notification_category', 'result')
-    if category not in ('result', 'diagnostic'):
+    if category not in ('result', 'diagnostic', 'delivered'):
         raise AuthorityRefusal('invalid_params')
-    return {'notification_category': category} if category == 'diagnostic' else {}
+    return {'notification_category': category} if category != 'result' else {}
 
 
 _DISPLAY_TEXT_LIMIT = 2000
@@ -401,8 +401,8 @@ def admission_display(payload):
     if not kind or not isinstance(text, str) or not text.strip():
         return {}
     card = {'display_kind': kind, 'display_text': text, 'text': str(payload.get('text') or '')}
-    if descriptor.get('notification_category') == 'diagnostic':
-        card['notification_category'] = 'diagnostic'
+    if descriptor.get('notification_category') in ('diagnostic', 'delivered'):
+        card['notification_category'] = descriptor['notification_category']
     return card
 
 

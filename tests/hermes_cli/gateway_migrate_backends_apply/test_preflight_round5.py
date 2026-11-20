@@ -46,3 +46,31 @@ def test_an_existing_restart_guard_drop_in_is_refused_and_left_alone(home, capsy
     assert code == engine.EXIT_BLOCKED
     assert host.calls == [] and not engine.manifest_path(home).exists()
     assert f"{guard} already exists" in capsys.readouterr().out
+
+
+def _turn_starts_at_gateway_install(host, turns):
+    real = host.install_gateway
+
+    def install_then_a_turn_starts():
+        real()
+        host.turns = turns  # a chat turn starts on the old backend after the preflight read 0
+
+    host.install_gateway = install_then_a_turn_starts
+
+
+def test_a_turn_started_after_preflight_stops_the_move_before_the_old_backend_stops(home, capsys):
+    host = FakeHost(home)
+    _turn_starts_at_gateway_install(host, 1)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLED_BACK
+    out = capsys.readouterr().out
+    assert "old_stop" not in host.calls and host.old == {"enabled": True, "active": True}
+    assert "a turn started on the old backend during migration" in out
+
+
+def test_a_turn_started_after_preflight_is_interrupted_with_force_interrupt(home):
+    host = FakeHost(home)
+    _turn_starts_at_gateway_install(host, 1)
+
+    assert engine.cmd_apply(host, _args(force_interrupt=True)) == engine.EXIT_OK
+    assert "old_stop" in host.calls

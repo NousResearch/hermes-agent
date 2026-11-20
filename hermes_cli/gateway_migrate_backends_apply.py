@@ -330,7 +330,7 @@ def _written(run: Run, write, values, key: str, name: str, *, nothing_yet: bool)
     return hashlib.sha256(data).hexdigest() if data is not None else _file_digest(Path(run.host.home) / name)
 
 
-def _apply_steps(run: Run, plan: BackendPlan) -> float:
+def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float:
     """Every change, in contract order. Returns the time the old backend stopped answering."""
     host, m = run.host, run.data
     run.step("manifest", "done")
@@ -357,8 +357,10 @@ def _apply_steps(run: Run, plan: BackendPlan) -> float:
     _ensure_gateway_service(host, m["gateway"])
     print("  ✓ the gateway is installed and enabled as a user service")
     run.step("gateway_service", "done")
-    run.step("stop_old_backend")
     rec = m["old_backend"]
+    if not force_interrupt and rec.get("pid") and host.running_turns(rec["pid"], rec.get("start_time")):
+        raise StepFailed("a turn started on the old backend during migration; it has not been stopped")
+    run.step("stop_old_backend")
     stopped_at = host.now()
     host.old_stop(rec)
     host.old_disable(rec)
@@ -388,7 +390,7 @@ def _apply_steps(run: Run, plan: BackendPlan) -> float:
     return stopped_at
 
 
-def apply(host, plan: BackendPlan, *, detached: bool = False) -> int:
+def apply(host, plan: BackendPlan, *, detached: bool = False, force_interrupt: bool = False) -> int:
     m = new_manifest(plan, host)
     if (missing := _snapshot_problem(m)) is not None:
         # Read back before anything changes: a hand-started backend is retired only when it can be
@@ -406,7 +408,7 @@ def apply(host, plan: BackendPlan, *, detached: bool = False) -> int:
     run.save()  # rule 4: the manifest exists before the first change
     print(f"  ✓ recorded the current state in {manifest_path(host.home)}")
     try:
-        stopped_at = _apply_steps(run, plan)
+        stopped_at = _apply_steps(run, plan, force_interrupt=force_interrupt)
     except (Exception, SystemExit) as exc:  # every failure after the manifest is undone
         failed = run.data["step"]
         logger.warning("backend migration step %s failed; rolling back", failed, exc_info=True)
@@ -1299,7 +1301,7 @@ def cmd_apply(host, args) -> int:
         print("Aborted; nothing changed.")
         return EXIT_OK
     print()
-    return apply(host, plan, detached=detached)
+    return apply(host, plan, detached=detached, force_interrupt=bool(getattr(args, "force_interrupt", False)))
 
 
 def cmd_restore(host, args) -> int:

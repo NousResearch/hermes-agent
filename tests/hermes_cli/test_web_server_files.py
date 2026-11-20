@@ -927,6 +927,38 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+_MIGRATION_BACKUPS = ("env.bak", "config.yaml.bak", "launcher-env.json", "launcher-argv.json")
+
+
+def test_the_migration_backups_and_record_are_refused_like_env(forced_files_client):
+    """A backend migration's backups (the copy of .env, a hand-started backend's environment and command line)
+    and its record are refused exactly as .env is: never listed, read, streamed or downloaded."""
+    client, root = forced_files_client
+    folder = root / "backend_migration"
+    folder.mkdir(parents=True)
+    (root / ".env").write_text("OPENAI_API_KEY=fixture-only\n", encoding="utf-8")
+    (root / "notes.txt").write_text("ordinary\n", encoding="utf-8")
+    (root / "backend_migration.json").write_text('{"state": "done"}\n', encoding="utf-8")
+    for name in _MIGRATION_BACKUPS:
+        (folder / name).write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=fixture-only\n", encoding="utf-8")
+
+    names = [e["name"] for e in client.get("/api/files", params={"path": str(root)}).json()["entries"]]
+    assert "notes.txt" in names
+    assert ".env" not in names and "backend_migration" not in names and "backend_migration.json" not in names
+    listing = client.get("/api/files", params={"path": str(folder)})
+    assert [e["name"] for e in listing.json().get("entries", [])] == []
+
+    def refused(path):
+        return [client.get(f"/api/files/{route}", params={"path": str(path)}).status_code
+                for route in ("read", "download", "stream")]
+
+    env = refused(root / ".env")
+    assert env == [403, 403, 403]
+    for path in (root / "backend_migration.json", *(folder / n for n in _MIGRATION_BACKUPS)):
+        assert refused(path) == env, path
+    assert client.get("/api/files/read", params={"path": str(root / "notes.txt")}).status_code == 200
+
+
 def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
     """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
     subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised

@@ -21,7 +21,8 @@ from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
-from gateway.platforms.base_image_tags import extract_images
+from gateway.platforms.base_image_tags import (  # plugins import these names from here
+    extract_images, hidden_image_link, is_spoiler, spoiler_kwargs)
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
@@ -2871,8 +2872,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     sender, url_kw = self.send_animation, {"animation_url": image_url}
                 else:
                     sender, url_kw = self.send_image, {"image_url": image_url}
-                img_result = await sender(
-                    chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
+                img_result = await sender(chat_id=chat_id, **url_kw, caption=alt_text or None,
+                                          metadata=metadata, **spoiler_kwargs(sender, alt_text))
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                 else:

@@ -390,6 +390,20 @@ The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the
 
 Anything on this list is delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
 
+## Spoiler images
+
+A markdown image in a reply (`![alt](https://…/map.png)`) is sent as a photo. Wrap the whole tag in spoiler bars to send it as a spoiler, which Telegram blurs until someone taps it:
+
+```markdown
+And the boss, hidden: ||![Final boss](https://example.com/boss.png)||
+```
+
+- The photo or GIF, including one in an album, is sent with Telegram's spoiler effect, and its caption as spoiler text.
+- If the photo can't be sent, Hermes posts the "couldn't deliver" notice instead of the link, whose preview would show the image.
+- The bars must wrap the image tag alone. Images without bars are sent as before.
+
+The agent isn't told about this syntax by default. To use it, describe it in a skill or in `SOUL.md`.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.

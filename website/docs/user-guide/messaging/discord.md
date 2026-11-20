@@ -742,6 +742,21 @@ The Discord adapter supports native file uploads for every common media type via
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
 
+### Spoiler images
+
+A markdown image in a reply (`![alt](https://…/map.png)`) is downloaded and posted as an attachment. Wrap the whole tag in Discord's spoiler bars to post it as a spoiler, which Discord blurs until someone taps it:
+
+```markdown
+Here is the route: ![Route to the lighthouse](https://example.com/route.png)
+And the boss, hidden: ||![Final boss](https://example.com/boss.png)||
+```
+
+- The image is posted as a `SPOILER_` attachment, which Discord blurs, and its alt text as a spoilered caption.
+- If the image can't be downloaded, Hermes posts its link as `||<url>||` instead: hidden, with no preview.
+- The bars must wrap the image tag alone. Images without bars are posted as before.
+
+The agent isn't told about this syntax by default. To use it, describe it in a skill or in `SOUL.md`.
+
 ## Long Replies
 
 A reply that would need more than 8 Discord messages (about 16,000 characters) is sent as one `reply-<id>.md` attachment holding the complete text, with a short caption, instead of a long run of 2,000-character messages. While a long reply streams, Hermes stops opening new messages at the limit, uploads the finished reply, then deletes the partial messages it had already posted for it. If the upload fails (no **Attach Files** permission, for example), nothing is deleted and the whole reply is delivered as messages, never cut short; they go out at the pace Discord's rate limits allow (about five per channel every five seconds), and a rate-limited message is retried after the wait Discord asks for. A reply over the attachment limit is split across numbered files of at most 7 MB each.

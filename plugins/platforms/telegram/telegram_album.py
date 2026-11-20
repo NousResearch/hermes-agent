@@ -18,7 +18,7 @@ import os
 from typing import Any, Optional
 from urllib.parse import unquote
 
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import SendResult, is_spoiler, spoiler_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,8 @@ async def _send_one(adapter: Any, chat_id: str, url: str, alt: Optional[str], me
     try:
         if path is not None:
             return await adapter.send_image_file(chat_id=chat_id, image_path=path, caption=alt or None, metadata=metadata)
-        return await adapter.send_image(chat_id=chat_id, image_url=url, caption=alt or None, metadata=metadata)
+        return await adapter.send_image(chat_id=chat_id, image_url=url, caption=alt or None, metadata=metadata,
+                                        **spoiler_kwargs(adapter.send_image, alt))
     except Exception as exc:  # a per-photo failure is reported, never fatal to the batch
         from plugins.platforms.telegram.adapter import _redact_telegram_error_text
         logger.warning("[%s] Photo send failed: %s", adapter.name, _redact_telegram_error_text(exc), exc_info=True)
@@ -76,7 +77,8 @@ async def send_animations(adapter: Any, chat_id: str, animations: list[tuple], m
             await asyncio.sleep(human_delay)
         try:
             result = await adapter.send_animation(
-                chat_id=chat_id, animation_url=image_url, caption=alt_text or None, metadata=metadata)
+                chat_id=chat_id, animation_url=image_url, caption=alt_text or None, metadata=metadata,
+                **spoiler_kwargs(adapter.send_animation, alt_text))
         except Exception as exc:  # a per-GIF failure is reported, never fatal to the batch
             from plugins.platforms.telegram.adapter import _redact_telegram_error_text
             logger.error("[%s] Error sending image: %s", adapter.name, _redact_telegram_error_text(exc), exc_info=True)
@@ -132,7 +134,8 @@ def _open_chunk(adapter: Any, stack: contextlib.ExitStack, chunk: list[tuple], i
                 failed.append((_local_path(image_url), redact(exc)))
                 continue
             opened.append(source)
-        media.append(input_media(media=source, caption=adapter._caption_1024(alt_text)))
+        caption = adapter._caption_1024(alt_text)
+        media.append(input_media(media=source, caption=caption, **adapter._spoiler_media_kwargs(caption, is_spoiler(alt_text))))
         sent.append((image_url, alt_text))
     return media, opened, sent
 

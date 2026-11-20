@@ -24,9 +24,10 @@ _STREAM_FLAGS = ("[[audio_as_voice]]", "[[as_document]]")
 # after a word, closing bracket/quote or another "!"/"?"/"." streams on, because that is how prose
 # ends a sentence ("world!"), and holding it would keep every exclamation off the live draft.
 # Anything that leaves the tag's grammar (whitespace in the URL, ``<img alt``) ends the hold: that
-# text is never extracted, so it stays visible either way.
+# text is never extracted, so it stays visible either way. Trailing ``|`` bars wait for a
+# ``||![alt](url)||`` spoiler to close: it goes as one unit.
 _PENDING_IMAGE_RE = re.compile(
-    r"""!\[[^\]]*(?:\](?:\([^)\s]*)?)?\Z|(?<![\w)\]"'”’!?.*_~`])!\Z"""
+    r"""!\[[^\]]*(?:\](?:\([^)\s]*)?)?\Z|(?<![\w)\]"'”’!?.*_~`])!\Z|\|{1,3}[ \t]*\Z"""
     r"""|<(?:i(?:m(?:g(?:\s+(?:s(?:r(?:c(?:=["']?[^\s"'<>]*["']?\s*/?)?)?)?)?)?)?)?)?\Z"""
     r"""|</(?:i(?:m(?:g)?)?)?\Z""")
 

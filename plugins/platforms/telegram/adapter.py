@@ -4759,6 +4759,18 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
         return caption[:1024] if caption else None
 
+    @staticmethod
+    def _spoiler_media_kwargs(caption: Optional[str], spoiler: bool) -> dict[str, Any]:
+        """``has_spoiler`` plus one spoiler entity over the whole (already cut) caption of a photo or
+        GIF; media captions go without a parse mode, so the entity is exact. ``{}`` when not a spoiler."""
+        if not spoiler:
+            return {}
+        if not caption:
+            return {"has_spoiler": True}
+        from telegram import MessageEntity
+        return {"has_spoiler": True,
+                "caption_entities": [MessageEntity(type="spoiler", offset=0, length=utf16_len(caption))]}
+
     async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs,
                                  send_fn=None, media_key="voice", **media_kwargs):
         """sendVoice (or sendAudio via ``send_fn``/``media_key``) with caption variants: MarkdownV2 when it
@@ -4969,31 +4981,32 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Send a URL image as a Telegram photo (``telegram_url_photo``)."""
-        return await send_url_photo(self, chat_id, image_url, caption, reply_to, metadata, text_fallback=lambda: super(
+        metadata: Optional[dict[str, Any]] = None, spoiler: bool = False) -> SendResult:
+        """Send a URL image as a Telegram photo (``telegram_url_photo``; ``spoiler``: blurred until tapped)."""
+        return await send_url_photo(self, chat_id, image_url, caption, reply_to, metadata, spoiler=spoiler, text_fallback=lambda: super(
             TelegramAdapter, self).send_image(chat_id, image_url, caption, reply_to, metadata=metadata))
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
+        metadata: Optional[dict[str, Any]] = None, spoiler: bool = False) -> SendResult:
+        """Send an animated GIF natively as a Telegram animation (auto-plays inline; ``spoiler``: blurred)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        media_caption = self._caption_1024(caption)
         try:
             msg = await self._send_media(
                 self._bot.send_animation, chat_id, reply_to, metadata, "animation", animation=animation_url,
-                caption=self._caption_1024(caption))
+                caption=media_caption, **self._spoiler_media_kwargs(media_caption, spoiler))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             if (recovered := await self._media_flood_recover(
-                    e, chat_id, lambda _p: self.send_animation(chat_id, animation_url, caption, reply_to, metadata), "animation", metadata=metadata)
+                    e, chat_id, lambda _p: self.send_animation(chat_id, animation_url, caption, reply_to, metadata, spoiler), "animation", metadata=metadata)
                     or _unconfirmed(e, "animation", as_failure=True)):
                 return recovered
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
-            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata, spoiler=spoiler)
 
     @staticmethod
     def _is_transient_typing_error(exc: Exception) -> bool:

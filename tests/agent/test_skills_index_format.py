@@ -65,12 +65,15 @@ def test_index_desc_limit_widens_the_index_and_rebuilds_a_stale_snapshot(monkeyp
     _skill(tmp_path / "skills", "github/hermes-release", LONG)
     config = tmp_path / "config.yaml"
 
-    def release_row():
-        clear_skills_system_prompt_cache()  # drop only the in-process LRU; the disk snapshot stays
+    def release_row(fresh_process: bool):
+        if fresh_process:  # drop only the in-process LRU; the disk snapshot stays
+            clear_skills_system_prompt_cache()
         return index_entries(build_skills_system_prompt())["hermes-release"]
 
-    assert release_row().endswith("...")
+    assert release_row(fresh_process=False).endswith("...")
     config.write_text("skills:\n  index_desc_limit: 200\n", encoding="utf-8")
-    assert release_row() == f"  - hermes-release: {LONG}"
+    assert release_row(fresh_process=False) == f"  - hermes-release: {LONG}"  # LRU must not serve the old width
     config.write_text("skills:\n  index_desc_limit: 5\n", encoding="utf-8")  # below the floor: 60
-    assert release_row().endswith("...")
+    assert release_row(fresh_process=True).endswith("...")  # nor the disk snapshot
+    config.write_text("skills:\n  index_desc_limit: \"\u00b2\"\n", encoding="utf-8")  # isdigit() but not int()
+    assert release_row(fresh_process=True).endswith("...")

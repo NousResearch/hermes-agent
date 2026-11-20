@@ -854,8 +854,11 @@ def get_skill_desc_limit() -> int:
     """skills.index_desc_limit from the active profile's config.yaml, clamped to 60..1024; 60 when unset
     or not an integer. Read per call so each served profile gets its own width."""
     val = _skills_cfg_get("index_desc_limit")
-    if isinstance(val, str) and val.strip().isdigit():
-        val = int(val.strip())
+    if isinstance(val, str):
+        try:  # str.isdigit() accepts "²" and int() refuses >4300 digits: parse, never pre-check
+            val = int(val.strip())
+        except ValueError:
+            return SKILL_PROMPT_DESC_LIMIT
     if not isinstance(val, int) or isinstance(val, bool):
         return SKILL_PROMPT_DESC_LIMIT
     return max(SKILL_PROMPT_DESC_LIMIT, min(val, _SKILL_PROMPT_DESC_LIMIT_MAX))

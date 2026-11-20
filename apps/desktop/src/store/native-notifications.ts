@@ -1,7 +1,9 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { browserNotificationsAllowed } from '@/lib/browser-notifications'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { persistString, storedString } from '@/lib/storage'
 
 import { recordFeatureToggle } from './desktop-metrics'
@@ -222,21 +224,28 @@ export interface NativeNotificationInput {
   notifyId?: string
 }
 
+/** Every guard dispatch applies before its throttle: the preference and kind, the post-connect quiet
+ *  interval and the focus/active-session condition. Reads only, so it can be asked ahead of time. */
+function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotificationInput, 'global' | 'kind' | 'sessionId'>) {
+  const prefs = $nativeNotifyPrefs.get()
+
+  return prefs.enabled && prefs.kinds[kind] && !withinNativeNotifyBaseline() && shouldFire(kind, sessionId, global)
+}
+
+/** Whether this client's turn-done notification for `sessionId` would reach the user if the turn
+ *  ended now: dispatch's own guards, and in a browser the live permission the browser bridge checks.
+ *  The throttle is not predicted (asking must not spend it). */
+export function turnDoneNotificationWouldFire(sessionId: string): boolean {
+  return (
+    nativeNotificationPasses({ kind: 'turnDone', sessionId }) && (!isBrowserHostedDesktop() || browserNotificationsAllowed())
+  )
+}
+
 /** Returns true when the notification passed every guard and was handed to the
  *  OS bridge — callers registering per-notification state (plugin handlers)
  *  must only do so on true, or suppressed/throttled notifications leak it. */
 export function dispatchNativeNotification(input: NativeNotificationInput): boolean {
-  const prefs = $nativeNotifyPrefs.get()
-
-  if (!prefs.enabled || !prefs.kinds[input.kind]) {
-    return false
-  }
-
-  if (withinNativeNotifyBaseline()) {
-    return false
-  }
-
-  if (!shouldFire(input.kind, input.sessionId, input.global)) {
+  if (!nativeNotificationPasses(input)) {
     return false
   }
 

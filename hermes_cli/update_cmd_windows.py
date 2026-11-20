@@ -242,6 +242,25 @@ def _holder_value_flags() -> frozenset:
     return _holder_value_flags_cache
 
 
+def _identity_tokenizations(cmdline: str, raw_tokens: list[str]) -> list[list[str]]:
+    """Candidate tokenizations of *cmdline* for inline-bootstrap matching, most-preserving first.
+
+    ``ps``/``/proc`` hand over a space-joined line whose ``\\012`` escapes must survive, so
+    ``posix=False`` is tried first. A launchd ``ProgramArguments`` array flattened with
+    ``shlex.join`` spells an embedded quote as ``'"'"'``, which only POSIX mode decodes — that
+    spelling is the second candidate. Neither is authoritative for both shapes, and trying both
+    cannot mis-map a line: the bootstrap matcher still has to fullmatch a known source.
+    """
+    candidates = [raw_tokens]
+    try:
+        posix = shlex.split(cmdline)
+    except Exception:
+        return candidates
+    if posix != raw_tokens:
+        candidates.append(posix)
+    return candidates
+
+
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
@@ -257,13 +276,28 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
         tokens = cmdline.split()
     # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
     # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
-    # Hermes bootstrap running the entry point in this process (#124318).
+    # Hermes bootstrap running the entry point in this process (#124318). The tokens are matched
+    # BEFORE the backslash-to-slash normalization: that rewrite turns ``\012`` (macOS ``ps``' spelling
+    # of a newline inside an argv element) into ``/012``, which the bootstrap matcher can no longer
+    # unescape.
+    #
+    # One command line reaches this function in two incompatible spellings, so both are tried and the
+    # first that resolves wins:
+    #   * ``ps``/proc space-joined, ``\012`` escapes intact -> ``posix=False`` (POSIX mode would eat
+    #     the backslashes);
+    #   * ``shlex.join``ed (a launchd ``ProgramArguments`` array flattened for display), where an
+    #     embedded quote is spelled ``'"'"'`` and only POSIX mode decodes it back to ``'``.
     from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
+    for candidate in _identity_tokenizations(cmdline, tokens):
+        if not command_line_runs_inline_source(candidate):
+            continue
+        mapped = inline_bootstrap_argv(candidate)
+        if mapped is not None:
+            tokens = mapped
+            break
+    else:
+        pass
     normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
-    if command_line_runs_inline_source(normalized):
-        tokens = inline_bootstrap_argv(normalized)
-        if tokens is None:
-            return None
 
     def _is_entry(i: int, token: str) -> bool:
         low = token.lower().strip("\"'").replace("\\", "/")

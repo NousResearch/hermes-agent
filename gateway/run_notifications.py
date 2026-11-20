@@ -17,6 +17,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
+# A planned-restart notification marker older than this is stale: the gateway
+# restarted and is running, but a home channel has been unreachable for longer
+# than a normal outage window, so the courtesy "online" notice should not pin
+# the marker indefinitely (#gateway-restart-notification-ttl).
+_PLANNED_RESTART_NOTICE_MAX_AGE_SECONDS = 24 * 3600
+
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
@@ -506,6 +512,23 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return
             try:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
+                # A marker whose request predates this gateway's lifetime by more than a
+                # normal outage window is stale: the gateway restarted and is running, but a
+                # home channel has been permanently unreachable (e.g. signal-cli daemon down),
+                # so the courtesy notice should not pin the marker forever
+                # (#gateway-restart-notification-ttl). The notification is best-effort,
+                # not a correctness gate.
+                requested_at = data.get("requested_at")
+                if isinstance(requested_at, (int, float)):
+                    age = time.time() - requested_at
+                    if age > _PLANNED_RESTART_NOTICE_MAX_AGE_SECONDS:
+                        logger.info(
+                            "Planned-restart notification marker expired after %.1f hours; "
+                            "clearing — the gateway is running, assume restart succeeded "
+                            "(#gateway-restart-notification-ttl).", age / 3600,
+                        )
+                        path.unlink(missing_ok=True)
+                        return
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.

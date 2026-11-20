@@ -7,6 +7,7 @@ every served profile was reached, or the missed channels are lost for good.
 """
 
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -239,3 +240,36 @@ async def test_a_served_profiles_reconnect_replays_the_owed_notice(multiplex_run
     coder.send.assert_awaited_once()
     assert coder.send.await_args.args[:2] == ("coder-home", ONLINE_NOTICE)
     assert not marker.exists(), "the owed target was reached on reconnect: the obligation is discharged"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age_hours", [25, 100])
+async def test_expired_marker_is_cleared_without_delivering(
+    tmp_path, monkeypatch, age_hours
+):
+    """A marker older than the 24h TTL is cleared even when a home channel is permanently down.
+
+    The restart notification is a courtesy, not a correctness gate: if the gateway
+    restarted and has been running for longer than a normal outage window, a
+    permanently-unreachable home channel (e.g. signal-cli daemon never started)
+    must not pin ``.restart_pending.json`` indefinitely (#gateway-restart-notification-ttl).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = _home_config(Platform.DISCORD, "launch-home")
+    runner.config.sessions_dir = tmp_path / "sessions"
+    runner.adapters = {}
+    runner._profile_configs = {}
+    runner._profile_adapters = {}
+    runner._planned_restart_notice_lock = None
+
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text(
+        json.dumps({"requested_at": time.time() - age_hours * 3600, "delivered_targets": []}),
+        encoding="utf-8",
+    )
+
+    await runner._replay_pending_planned_restart_notification()
+
+    assert not marker.exists(), "expired marker must be cleared regardless of delivery status"

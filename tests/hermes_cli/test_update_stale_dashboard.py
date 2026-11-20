@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -562,6 +563,99 @@ class TestManualBackendRespawn:
 
         assert failed == []
         assert spawned == [expected]
+
+    def test_inline_launcher_argv_is_rebuilt_not_replayed(self, tmp_path, monkeypatch):
+        """A backend started through the published launcher runs its bootstrap inline.
+
+        ``ps`` splits that ``-c`` source on every space, so the captured argv is hundreds of source
+        fragments followed by the real subcommand; replaying it asks the interpreter to execute
+        ``import`` alone and the child dies at parse time (``SyntaxError`` in
+        ``logs/dashboard-restart.log``). It must be rebuilt from this install's launcher (#124778's
+        sibling: the captured argv is only a proxy for the command the process really runs).
+        """
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        spawned: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned.append(list(cmd))
+
+            def poll(self):
+                return None
+
+        from hermes_cli import _launchers
+        from hermes_cli._launchers import _launcher_script, runtime_command
+
+        script = _launcher_script("hermes", Path(live.__file__).resolve().parents[1], None)
+        # Exactly how macOS ``ps`` reports it: newlines escaped, source as one argv element, and
+        # ``shlex.split(posix=False)`` (what ``_dashboard_cmdline_for_pid`` uses) splits it apart.
+        # No interpreter flag: the point is the source shape, not which Python ran it.
+        captured = shlex.split(
+            " ".join(["python3", "-I", "-c", script.replace("\n", "\\012"), "dashboard", "--port", "34553"]),
+            posix=False,
+        )
+
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"), \
+             patch.object(_launchers, "resolve_store_python", return_value=None):
+            failed = live._respawn_dashboard_processes([captured])
+            expected = runtime_command(
+                Path(live.__file__).resolve().parents[1],
+                ["dashboard", "--port", "34553", "--no-open"],
+            )
+
+        assert failed == []
+        assert spawned == [expected]
+
+    def test_ps_capture_keeps_newline_escapes_so_the_bootstrap_still_matches(self, tmp_path, monkeypatch):
+        """End-to-end on the real capture path: ``ps`` output must reach the matcher intact.
+
+        Regression for the 2026-11-20 update: ``_dashboard_cmdline_for_pid`` tokenized the ``ps``
+        line with ``shlex.split``'s POSIX mode, which silently eats the ``\\012`` escape macOS uses
+        for a newline inside an argv element. The captured argv then carried a bare ``012``, no
+        bootstrap matcher recognised it, and ``hermes update`` replayed ~500 source fragments —
+        the child died with ``SyntaxError: Expected one or more names after 'import'`` and the
+        dashboard never came back on its own.
+        """
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from hermes_cli import _launchers
+        from hermes_cli._launchers import _launcher_script
+
+        # The rebuild resolves this install's interpreter through the store; pin it away from the
+        # real ``~/.hermes`` so the test stays inside its isolated home.
+        monkeypatch.setattr(_launchers, "resolve_store_python", lambda *a, **k: None)
+        script = _launcher_script("hermes", Path(live.__file__).resolve().parents[1], None)
+        ps_line = " ".join(
+            ["python3", "-I", "-c", script.replace("\n", "\\012"), "dashboard", "--port", "34553"]
+        )
+
+        class _Result:
+            returncode = 0
+            stdout = ps_line
+
+        monkeypatch.setattr(live, "_run_probe", lambda *a, **k: _Result())
+        captured = live._dashboard_cmdline_for_pid(4242)
+        assert captured, "capture returned nothing"
+        # The escapes survive tokenization — that is the whole point of posix=False here.
+        assert any("\\012" in part for part in captured), captured[:6]
+        assert not any(part == "012" for part in captured)
+
+        rebuilt = live._respawnable_command_for_current_install(captured)
+        assert rebuilt != captured, "the fragmented argv was replayed verbatim"
+        source_index = rebuilt.index("-c")
+        import ast
+        ast.parse(str(rebuilt[source_index + 1]))  # raises if the rebuild produced broken Python
+        assert "dashboard" in [str(part) for part in rebuilt]
+        assert "34553" in [str(part) for part in rebuilt]
+
+    def test_foreign_inline_program_argv_is_not_rebuilt(self, tmp_path, monkeypatch):
+        """Only Hermes' own bootstraps are rewritten: a foreign ``python -c`` keeps its argv verbatim."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        assert live._respawnable_command_for_current_install(["python3", "-I", "-c", "print(1)", "x"]) == \
+            ["python3", "-I", "-c", "print(1)", "x"]
 
     def test_child_exiting_within_the_grace_window_is_a_reported_failure(
             self, tmp_path, monkeypatch, capsys):

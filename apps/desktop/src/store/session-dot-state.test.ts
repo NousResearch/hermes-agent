@@ -228,6 +228,32 @@ describe('$unreadSessionCount (titlebar badge)', () => {
     expect($unreadSessionCount.get()).toBe(2)
   })
 
+  it('does not count an unread subagent run, nested or not; its own row stays unread', () => {
+    setSessions([
+      storedRow('reg-1', { unread: true }),
+      storedRow('sub-1', { parent_session_id: 'reg-1', source: 'subagent', unread: true })
+    ])
+    $unreadFinishedSessionIds.set(['sub-1'])
+
+    expect($sessionDotStateById.get()['sub-1']).toBe('unread')
+    expect($unreadSessionCount.get()).toBe(1)
+  })
+
+  it('still counts an unread /branch fork, which also carries parent_session_id', () => {
+    setSessions([storedRow('fork-1', { _branched_from: 'reg-1', parent_session_id: 'reg-1', unread: true })])
+
+    expect($unreadSessionCount.get()).toBe(1)
+  })
+
+  it('mark-all-read acks unread subagent rows too', () => {
+    setSessions([storedRow('sub-1', { parent_session_id: 'reg-1', source: 'subagent' })])
+    $unreadFinishedSessionIds.set(['sub-1'])
+
+    markAllSessionsRead()
+
+    expect($sessionDotStateById.get()['sub-1']).not.toBe('unread')
+  })
+
   it('mark-all-read clears regular and cron unread alike', () => {
     setSessions([storedRow('reg-1')])
     setCronSessions([storedRow('cron-1', { source: 'cron' })])

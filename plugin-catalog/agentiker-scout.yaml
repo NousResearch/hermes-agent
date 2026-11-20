@@ -1,20 +1,21 @@
 name: agentiker-scout
 repo: https://github.com/IVRZ-da/agentiker-scout
-sha: e4bce1ddb5c86a8511199f91f64ce402e2fef0e3
+sha: eaec69744815810f073a3d285071c1f4a571c577
 description: >-
   Unified analysis, bug-hunt and web-research toolkit for the local codebase:
   71 bug/security patterns, dead-code and UI-gap inspection, framework and
   dependency-risk analysis, git-history triage plus cited web research, all
   bundled into three namespace dispatchers (analysis, bughunt, research) with
   an op parameter so the schema cost per turn stays small. Read-mostly: scans
-  files in the session workspace, writes reports into the workspace, and uses
-  configured search providers only when you ask it to.
+  files in the session workspace, keeps its own data under the Hermes
+  plugin-data directory (exports are confined there too), and uses configured
+  search providers only when you ask it to.
 maintainer: IVRZ-da
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/IVRZ-da/agentiker-scout#readme
-version: "0.6.6"
+version: "0.6.10"
 platforms: []
 capabilities:
   provides_tools:

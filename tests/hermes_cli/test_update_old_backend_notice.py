@@ -377,8 +377,31 @@ def test_stopped_sibling_user_unit_is_not_named_while_this_homes_unit_is(tmp_pat
     assert "hermes-dashboard-envfile.service" not in notice
 
 
+def test_a_stopped_system_unit_is_judged_by_the_planner_too(tmp_path, monkeypatch):
+    """A stopped systemd system unit is named exactly when the dry run would move it: by its User= and the
+    environment systemd gives it, so a later `EnvironmentFile=` that picks a sibling home excludes it."""
+    import getpass
+    import hermes_cli.gateway_migrate_backends as backends
+    import hermes_cli.gateway_migrate_backends_host as backends_host
+    from hermes_cli.gateway_migrate_backends import BackendItem
+    from hermes_cli.update_backend_notice import old_backend_notice
+
+    root = _standard_root(tmp_path, monkeypatch)
+    sibling_env = tmp_path / "work.env"
+    sibling_env.write_text(f"HERMES_HOME={root / 'profiles' / 'work'}\n", encoding="utf-8")
+    unit = BackendItem("systemd", False, unit="hermes-dashboard.service", scope="system", state="enabled",
+                       hermes_home=str(root), this_home=True)
+    monkeypatch.setattr(backends, "collect_backends", lambda: [unit])
+    for env_files, named in (("", True), (f"{sibling_env} (ignore_errors=no)", False)):
+        show = (f"User={getpass.getuser()}\nEnvironment=HERMES_HOME={root}\nEnvironmentFiles={env_files}\n"
+                "ExecStart={ path=/usr/bin/hermes ; argv[]=hermes dashboard --port 9119 ; }\n")
+        monkeypatch.setattr(backends_host, "_systemctl", lambda scope, args, show=show, **kwargs: (
+            subprocess.CompletedProcess(args, 0, stdout="" if args[:1] == ["show-environment"] else show, stderr="")))
+        assert (old_backend_notice(root) is not None) is named
+
+
 def test_stopped_system_launchd_daemon_without_hermes_home_is_not_named(tmp_path, monkeypatch):
-    """Only stopped systemd user units use the planner's `_for_this_home`; a stopped system-scope
+    """Only stopped systemd units use the planner's `_for_this_home`; a stopped system-scope
     launchd daemon with no HERMES_HOME must not be attributed to this user's default home."""
     import types
     import hermes_cli.gateway_migrate_backends as backends

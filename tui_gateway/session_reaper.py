@@ -650,28 +650,50 @@ def _cache_expiry_submit(job: Callable[..., Any], *args: Any) -> concurrent.futu
     return future
 
 
+def _reserve_cache_edge(sid: str) -> bool:
+    """Own *sid*'s cache edge before claiming it: True when nothing else holds it. The ticker and a
+    reaper's release both reserve first, so whichever claims, the other waits behind its job
+    (``_compact_then_close``) instead of closing the session between the claim and the job."""
+    with _cache_expiry_lock:
+        if sid in _cache_expiry_in_flight:
+            return False
+        _cache_expiry_in_flight.add(sid)
+        return True
+
+
+def _release_cache_edge(sid: str) -> None:
+    """Drop a reservation (no job ran, or the job finished) and run the closes that waited behind it."""
+    with _cache_expiry_lock:
+        _cache_expiry_in_flight.discard(sid)
+        waiting = _cache_expiry_after.pop(sid, [])
+    for then in waiting:
+        then()
+
+
 def _cache_expiry_candidates() -> list[tuple[str, dict, str]]:
     """Due sessions as ``(sid, session, action)``: the claim (``PromptCacheWarmer.claim_edge``) latched
-    each one's stretch and says whether it is compacted or offloaded. Each returned sid is in flight."""
+    each one's stretch and says whether it is compacted or offloaded. Each returned sid stays reserved
+    (in flight) for its job; a sid whose claim answers nothing is released at once."""
     with _sessions_lock:
         live = list(_sessions.items())
-    with _cache_expiry_lock:
-        busy = set(_cache_expiry_in_flight)
     picked = []
     for sid, session in live:
         agent = session.get("agent")
         warmer = getattr(agent, "_prompt_cache_warmer", None)
-        if warmer is None or sid in busy or session.get("running") or session.get("_closing"):
+        if warmer is None or session.get("running") or session.get("_closing"):
             continue
         if _session_uses_compute_host(session):
             continue  # the compute host owns that transcript; it is not compacted from here
-        with _session_profile_runtime_scope(session):
-            action = warmer.claim_edge()
+        if not _reserve_cache_edge(sid):
+            continue  # a job or a reaper's release already owns this edge
+        action = None
+        try:
+            with _session_profile_runtime_scope(session):
+                action = warmer.claim_edge()
+        finally:
+            if not action:
+                _release_cache_edge(sid)
         if action:
-            # In flight from the claim on: a reaper running before the tick queues the job must wait
-            # behind it (``_compact_then_close``), not close the session and strand the latched claim.
-            with _cache_expiry_lock:
-                _cache_expiry_in_flight.add(sid)
             picked.append((sid, session, action))
     return picked
 
@@ -733,11 +755,7 @@ def _cache_expiry_job(sid: str, session: dict, action: str = "compact") -> None:
     except Exception:
         logger.warning("cache-expiry compaction failed sid=%s", sid, exc_info=True)
     finally:
-        with _cache_expiry_lock:
-            _cache_expiry_in_flight.discard(sid)
-            waiting = _cache_expiry_after.pop(sid, [])
-        for then in waiting:
-            then()
+        _release_cache_edge(sid)
 
 
 def _cache_expiry_tick() -> list[concurrent.futures.Future]:
@@ -781,7 +799,7 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
             done: concurrent.futures.Future = concurrent.futures.Future()
             done.set_result(None)
             return done
-        if sid in _cache_expiry_in_flight:  # the ticker's job is queued or running: close after it
+        if sid in _cache_expiry_in_flight:  # the ticker owns the edge (claiming or queued): close after it
             closed: concurrent.futures.Future = concurrent.futures.Future()
 
             def _after_queued() -> None:
@@ -793,12 +811,17 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
             _cache_expiry_releasing.add(sid)
             _cache_expiry_after.setdefault(sid, []).append(_after_queued)
             return closed
-    with _session_profile_runtime_scope(session):
-        action = warmer.claim_edge(releasing=True)
+        _cache_expiry_in_flight.add(sid)  # reserved before claiming, like the ticker
+    action = None
+    try:
+        with _session_profile_runtime_scope(session):
+            action = warmer.claim_edge(releasing=True)
+    finally:
+        if action is None:
+            _release_cache_edge(sid)
     if action is None:
         return None
     with _cache_expiry_lock:
-        _cache_expiry_in_flight.add(sid)
         _cache_expiry_releasing.add(sid)
 
     def _job() -> None:

@@ -1224,15 +1224,16 @@ def require_mcp_2_sdk():
 
 
 def _checkout_souls() -> set[str]:
-    """``SOUL.md`` files git does not track in the checkout: the mark a Hermes home seeded there."""
+    """``SOUL.md`` files git does not track in the checkout, ignored ones included (``tmp/``, ``.hermes/``,
+    ``profiles/`` are ignored and are exactly where a stray home lands): the mark a Hermes home seeded."""
     import subprocess
     try:
-        out = subprocess.run(["git", "-C", str(PROJECT_ROOT), "ls-files", "--others", "--exclude-standard",
+        out = subprocess.run(["git", "-C", str(PROJECT_ROOT), "ls-files", "-z", "--others",
                               "--", "SOUL.md", "*/SOUL.md"], capture_output=True, text=True, timeout=30,
                              check=False)
     except (OSError, subprocess.SubprocessError):
         return set()
-    return set(out.stdout.split()) if out.returncode == 0 else set()
+    return {path for path in out.stdout.split("\0") if path} if out.returncode == 0 else set()
 
 
 def pytest_sessionstart(session):

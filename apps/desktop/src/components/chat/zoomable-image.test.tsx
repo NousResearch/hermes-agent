@@ -125,6 +125,55 @@ describe('ZoomableImage lightbox', () => {
 
     expect(preventDefault).toHaveBeenCalled()
     expect(scaleOf(img)).toBeGreaterThan(1)
+    expect(translateX(img)).toBeCloseTo((1 - scaleOf(img)) * 10)
+  })
+
+  it('makes small trackpad deltas add up to the same zoom as one larger delta', async () => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+    const wheel = (deltaY: number) => fireEvent.wheel(img, { deltaY })
+
+    await act(async () => wheel(-5))
+    expect(scaleOf(img)).toBeGreaterThan(1)
+    expect(scaleOf(img)).toBeLessThan(1.05)
+
+    await act(async () => {
+      for (let i = 0; i < 7; i++) {
+        wheel(-5)
+      }
+    })
+    const trackpadScale = scaleOf(img)
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /reset/i })))
+    await act(async () => wheel(-40))
+    expect(scaleOf(img)).toBeCloseTo(trackpadScale, 8)
+  })
+
+  it('releases the zoom layer after the last gesture update without resetting the view', async () => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+    vi.useFakeTimers()
+
+    try {
+      await act(async () => fireEvent.wheel(img, { deltaY: -20 }))
+      expect(img.style.willChange).toBe('transform')
+
+      await act(async () => vi.advanceTimersByTime(100))
+      await act(async () => fireEvent.wheel(img, { deltaY: -20 }))
+      const scale = scaleOf(img)
+
+      await act(async () => vi.advanceTimersByTime(100))
+      expect(img.style.willChange).toBe('transform')
+
+      await act(async () => vi.advanceTimersByTime(100))
+      expect(img.style.willChange).toBe('')
+      expect(scaleOf(img)).toBe(scale)
+      expect(scale).toBeGreaterThan(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('zoom buttons update the zoom percentage', async () => {

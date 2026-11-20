@@ -118,6 +118,7 @@ export function ImageLightbox({
   // single source of truth for this gesture math. `moved` lets us close the
   // lightbox on a clean click while leaving pans/pinches alone.
   const { moved, panning, ref, reset, scale, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLImageElement>({
+    compositeZoom: true,
     enabled: open
   })
 

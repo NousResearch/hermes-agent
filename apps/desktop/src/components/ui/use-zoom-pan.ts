@@ -18,7 +18,8 @@ interface Transform {
 
 const MIN_SCALE = 0.25
 const MAX_SCALE = 8
-const WHEEL_STEP = 1.1
+const WHEEL_ZOOM_SPEED = 0.002
+const ZOOM_SETTLE_MS = 150
 const BUTTON_STEP = 1.25
 // Breathing room around fitted content. Vertical clears the floating toolbar
 // at the stage's bottom edge; symmetric so the grid centering stays exact.
@@ -33,6 +34,8 @@ export const FIT_MIN_SCALE = 0.05
 const DRAG_THRESHOLD = 4
 
 interface UseZoomPanOptions {
+  // Reuse a raster image's composited layer while wheel or pinch changes scale.
+  compositeZoom?: boolean
   enabled?: boolean
   maxScale?: number
   minScale?: number
@@ -53,7 +56,7 @@ interface UseZoomPanOptions {
  * click, so callers can gate click-to-dismiss on it.
  */
 export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoomPanOptions = {}) {
-  const { enabled = true, minScale = MIN_SCALE, maxScale = MAX_SCALE } = options
+  const { compositeZoom = false, enabled = true, minScale = MIN_SCALE, maxScale = MAX_SCALE } = options
   const clamp = useCallback((scale: number) => Math.min(maxScale, Math.max(minScale, scale)), [minScale, maxScale])
 
   const ref = useRef<T>(null)
@@ -73,6 +76,27 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   const [transform, setTransform] = useState<Transform>({ scale: 1, x: 0, y: 0 })
   const [panning, setPanning] = useState(false)
   const [moved, setMoved] = useState(false)
+  const zoomSettleTimer = useRef<number | undefined>(undefined)
+
+  const promoteForZoom = useCallback(
+    (node: T) => {
+      if (!compositeZoom || !enabled) {
+        return
+      }
+
+      if (zoomSettleTimer.current === undefined) {
+        node.style.willChange = 'transform'
+      }
+
+      window.clearTimeout(zoomSettleTimer.current)
+      zoomSettleTimer.current = window.setTimeout(() => {
+        // Let Chromium rasterize at the final scale instead of magnifying the cached layer.
+        node.style.removeProperty('will-change')
+        zoomSettleTimer.current = undefined
+      }, ZOOM_SETTLE_MS)
+    },
+    [compositeZoom, enabled]
+  )
 
   // Track active pointers for drag (1) and pinch (2), plus the in-flight drag
   // anchor and the pinch baseline.
@@ -90,6 +114,11 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     (factor: number, cx = 0, cy = 0) => {
       setTransform(prev => {
         const scale = clamp(prev.scale * factor)
+
+        if (scale === prev.scale) {
+          return prev
+        }
+
         const k = scale / prev.scale
 
         return { scale, x: cx - k * (cx - prev.x), y: cy - k * (cy - prev.y) }
@@ -190,6 +219,9 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
 
+      // Read the units first: Chromium may choose delta units on first access.
+      const { deltaMode } = event
+
       // macOS smart zoom (two-finger double-tap) → fitted view, not zoom-in.
       if (isSmartZoomWheel(event)) {
         reset()
@@ -197,19 +229,40 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
         return
       }
 
+      if (event.deltaY === 0) {
+        return
+      }
+
       fittedRef.current = false
+
+      let delta = event.deltaY
+
+      if (deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        delta *= 16
+      } else if (deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        delta *= node.clientHeight
+      }
 
       const rect = node.getBoundingClientRect()
       const cx = event.clientX - rect.left - rect.width / 2
       const cy = event.clientY - rect.top - rect.height / 2
 
-      zoomAt(event.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP, cx, cy)
+      promoteForZoom(node)
+      zoomAt(Math.exp(-delta * WHEEL_ZOOM_SPEED), cx, cy)
     }
 
     node.addEventListener('wheel', onWheel, { passive: false })
 
-    return () => node.removeEventListener('wheel', onWheel)
-  }, [enabled, node, reset, zoomAt])
+    return () => {
+      node.removeEventListener('wheel', onWheel)
+
+      if (zoomSettleTimer.current !== undefined) {
+        window.clearTimeout(zoomSettleTimer.current)
+        zoomSettleTimer.current = undefined
+        node.style.removeProperty('will-change')
+      }
+    }
+  }, [enabled, node, promoteForZoom, reset, zoomAt])
 
   const endPan = useCallback(() => {
     drag.current = null
@@ -261,6 +314,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
         const midY = (a.y + b.y) / 2
         const factor = dist / (pinch.current.dist || dist)
 
+        promoteForZoom(node)
         setTransform(prev => {
           const scale = clamp(prev.scale * factor)
           const k = scale / prev.scale
@@ -294,7 +348,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
         drag.current = { ...drag.current, x: event.clientX, y: event.clientY }
       }
     },
-    [clamp]
+    [clamp, promoteForZoom]
   )
 
   const onPointerUp = useCallback((event: ReactPointerEvent<T>) => {

@@ -122,6 +122,8 @@ export const en: Translations = {
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
+    inAppOfferBanner: "From Nous",
+    inAppOfferDismiss: "Maybe later",
   },
 
   // ── System page: Memory section ──

@@ -75,6 +75,7 @@ import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
 import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
 import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
+import { InAppOfferDialog } from "@/components/InAppOfferDialog";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -579,7 +580,7 @@ export default function App() {
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
       <MultiplexStandaloneBanner status={sidebarStatus} />
-      <SharedMetricsConsentBanner />
+      <SharedMetricsConsentBanner /><InAppOfferDialog />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1">

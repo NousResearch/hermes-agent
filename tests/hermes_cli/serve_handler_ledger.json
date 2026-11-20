@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 349
+   "undecided": 350
   },
   "rpc": {
    "authority": 113,
@@ -112,6 +112,7 @@
   {"current_path": "hermes_cli.web_routers.actions:check_hermes_update", "decision": "undecided", "handler": "GET /api/hermes/update/check", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:get_update_receipt", "decision": "undecided", "handler": "GET /api/hermes/update/receipt", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_host_identity", "decision": "undecided", "handler": "GET /api/host/identity", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.in_app_offer:get_in_app_offer", "decision": "undecided", "handler": "GET /api/in-app-offer", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_learning_graph", "decision": "undecided", "handler": "GET /api/learning/graph", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_learning_node", "decision": "undecided", "handler": "GET /api/learning/node", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_catalog", "decision": "undecided", "handler": "GET /api/local-models/catalog", "kind": "http", "ref": ""},

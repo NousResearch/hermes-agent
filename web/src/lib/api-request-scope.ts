@@ -20,6 +20,8 @@ export const PROFILE_SCOPED_PREFIXES = [
   // cancellation, and disconnect must all follow the selected management
   // profile rather than silently targeting the dashboard process's profile.
   "/api/providers/oauth",
+  // The Portal's in-app offer is evaluated for a profile's Nous account.
+  "/api/in-app-offer",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",

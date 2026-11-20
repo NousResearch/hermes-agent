@@ -1489,51 +1489,6 @@ The same pattern works for any data source you can query from a script — Postg
 Hermes's own `~/.hermes/state.db` is an internal schema that changes between releases. Don't query it from a pre-run gate — point at your own database or feed instead.
 :::
 
-#### Scripts that read your apps
-
-A gate script can read the apps you connected through [hosted connectors](./tool-gateway.md#multiple-connector-accounts) (Slack, Gmail, Google Calendar, …) with `hermes connectors call`, the same managed accounts the agent uses. It prints the tool's response as one JSON document on stdout and costs no model tokens:
-
-```bash
-hermes connectors call slack.search_messages --args '{"query": "to:me", "count": 5}'
-```
-
-The tool is `<app>.<tool>` or the agent-facing `connectors__<app>__<tool>`. `--account <name>` picks one account when the app has several. Calls are **read-only by default**: a tool the Nous Portal does not classify as read-only (sending, editing, deleting, or unclassified) is refused with exit code 5 unless you pass `--allow-write`, so an unattended gate cannot send or change anything by accident. Exit codes: `0` ok, `2` bad arguments or unknown tool, `3` connectors unavailable or signed out, `4` the tool returned an error (error JSON on stderr), `5` refused without `--allow-write`.
-
-This gate wakes the agent only when a Slack message mentioning you arrived since the last tick. It keeps the newest timestamp it has seen in the job's state directory (`HERMES_CRON_STATE_DIR`):
-
-```python
-#!/usr/bin/env python
-# ~/.hermes/scripts/slack-mentions.py
-import json, os, pathlib, subprocess
-
-state = pathlib.Path(os.environ["HERMES_CRON_STATE_DIR"]) / "last_ts"
-last = float(state.read_text()) if state.exists() else 0.0
-run = subprocess.run(
-    ["hermes", "connectors", "call", "slack.search_messages",
-     "--args", json.dumps({"query": "to:me", "sort": "timestamp", "count": 20})],
-    capture_output=True, text=True,
-)
-if run.returncode != 0:  # signed out, Slack not connected, gateway error: stay quiet this tick
-    print(json.dumps({"wakeAgent": False}))
-    raise SystemExit(0)
-data = json.loads(run.stdout)  # the tool's response itself, already unwrapped
-matches = (data.get("messages") or {}).get("matches") or []
-new = [m for m in matches if float(m.get("ts", 0)) > last]
-if not new:
-    print(json.dumps({"wakeAgent": False}))
-    raise SystemExit(0)
-state.write_text(str(max(float(m["ts"]) for m in new)))
-print(json.dumps({"wakeAgent": True, "context": {"new_mentions": [
-    {"channel": (m.get("channel") or {}).get("name"), "ts": m["ts"], "text": m.get("text")} for m in new]}}))
-```
-
-```text
-cronjob(action="create", name="slack-mentions",
-        schedule="every 10m",
-        script="slack-mentions.py",
-        prompt="For each new Slack mention, say who needs what and draft a reply.")
-```
-
 Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https://github.com/NousResearch/hermes-agent/pull/2654), which proposed adding sql/file/command triggers as a parallel mechanism. The `script` + `wakeAgent` gate already covers all three cases at $0, so the work landed as documentation instead.
 
 ### Chaining jobs: `context_from`

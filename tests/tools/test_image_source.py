@@ -310,6 +310,49 @@ class TestNonLocalBackendConfinement:
                 await isrc.resolve_image_source(str(link), isrc.ResolveContext(task_id="t1"))
 
 
+class TestHostLocalPluginBackend:
+    """#158000: a host-local plugin terminal backend declares ``uses_host_filesystem``
+    (its commands run on the host, e.g. a tmux TTY). Vision must honor that declaration
+    and host-read non-cache paths, exactly as the file tools do via
+    ``env_uses_host_filesystem`` — not confine them to the media caches and exec-read
+    them through a PTY whose escape sequences corrupt the base64."""
+
+    @pytest.mark.asyncio
+    async def test_host_local_plugin_backend_reads_non_cache_host_path(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        # Not "local"/"" — the TERMINAL_ENV heuristic alone would call this non-local.
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")
+        img = tmp_path / "outside" / "pic.png"
+        img.parent.mkdir(parents=True)
+        img.write_bytes(PNG)
+        # A host-local plugin env declares uses_host_filesystem. The execute stub only
+        # matters on the unfixed code, which wrongly exec-reads through the sandbox.
+        host_env = SimpleNamespace(
+            uses_host_filesystem=True,
+            execute=lambda cmd, **kw: {"returncode": 0, "output": base64.b64encode(PNG).decode()},
+        )
+        with patch("tools.image_source._get_active_env", return_value=host_env):
+            res = await isrc.resolve_image_source(str(img), isrc.ResolveContext(task_id="t1"))
+        assert res.origin == "file"
+        assert res.data == PNG
+
+    @pytest.mark.asyncio
+    async def test_env_without_host_filesystem_declaration_stays_confined(self, tmp_path, monkeypatch):
+        """Security guard: an env that does NOT declare uses_host_filesystem (a remote
+        sandbox) must still route non-cache host paths to the in-sandbox read."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")
+        secret = tmp_path / "id_rsa"
+        secret.write_bytes(b"HOST-PRIVATE-KEY")
+        remote_env = SimpleNamespace(
+            execute=lambda cmd, **kw: {"returncode": 0, "output": base64.b64encode(PNG).decode()},
+        )
+        with patch("tools.image_source._get_active_env", return_value=remote_env):
+            res = await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))
+        assert res.origin == "container"
+        assert b"HOST-PRIVATE-KEY" not in res.data
+
+
 class TestExecReadSafety:
     @pytest.mark.asyncio
     async def test_exec_read_is_bounded_and_redirect_safe(self, tmp_path, monkeypatch):

@@ -83,7 +83,7 @@ async def resolve_image_source(
     host_target = _permitted_host_read_target(p, ctx)
     # Local backend only: under a sandbox a miss must still reach the in-container read, so the
     # confinement boundary in this module's docstring holds.
-    if host_target is not None and not host_target.is_file() and _is_local_terminal_backend():
+    if host_target is not None and not host_target.is_file() and _reads_host_filesystem(ctx):
         alt = _on_disk_spelling(p)
         if alt is not None:
             host_target = _permitted_host_read_target(alt, ctx)
@@ -94,7 +94,7 @@ async def resolve_image_source(
         cap = _MAX_HOST_READ_BYTES if "image" in permitted else _MAX_INGEST_BYTES
         data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s, cap)
         return _finalize(data, "", "file", s, permitted)
-    if _is_local_terminal_backend():
+    if _reads_host_filesystem(ctx):
         # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
@@ -224,6 +224,22 @@ def _is_local_terminal_backend() -> bool:
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
+def _reads_host_filesystem(ctx: ResolveContext) -> bool:
+    """Whether vision may read host paths directly: the built-in local backend, or any
+    backend whose active environment declares ``uses_host_filesystem`` (a host-local
+    plugin backend, e.g. a tmux TTY). Mirrors the file tools' ``env_uses_host_filesystem``
+    gate so vision and file access agree on what is host-local (#158000) instead of vision
+    alone keying off the ``TERMINAL_ENV`` string. Hosted scope never host-reads: the
+    profile's media live in its sandbox whatever the backend declares."""
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return False
+    if _is_local_terminal_backend():
+        return True
+    from tools.environments.base import env_uses_host_filesystem
+    return env_uses_host_filesystem(_get_active_env(ctx.task_id))
+
+
 # Host-side media caches: the only host paths vision may read under a non-local backend
 # (gateway inbound media + the tools' own download temp dirs).
 _MEDIA_CACHE_SUBDIRS = (
@@ -248,7 +264,7 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     from tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return None
-    if _is_local_terminal_backend():
+    if _reads_host_filesystem(ctx):
         try:
             return p.resolve()
         except Exception:

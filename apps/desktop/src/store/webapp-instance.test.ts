@@ -56,11 +56,20 @@ describe('Webapp instance session', () => {
     expect(refreshSession).toHaveBeenCalledOnce()
     expect(calls).toEqual(['/api/instance', '/hermes/auth/logout', '/api/auth-init'])
     expect(navigate).toHaveBeenCalledWith(`https://${otherHost}/`)
-    for (const [input, init] of fetcher.mock.calls.filter(([input]) => new URL(String(input)).hostname === 'unitalk.ai')) {
+
+    const unitalkCalls = fetcher.mock.calls.filter(([input]) =>
+      ['/api/instance', '/api/auth-init'].includes(new URL(String(input)).pathname)
+    )
+
+    expect(unitalkCalls).toHaveLength(2)
+
+    for (const [input, init] of unitalkCalls) {
+      expect(new URL(String(input)).origin).toBe('https://unitalk.ai')
       expect(init?.credentials).toBe('include')
       expect(init?.cache).toBe('no-store')
       expect(new Headers(init?.headers).get('Accept')).toBe('application/json')
       expect(new Headers(init?.headers).has('Authorization')).toBe(false)
+
       if (new URL(String(input)).pathname === '/api/auth-init') {
         expect(new URL(String(input)).searchParams.get('session')).toBe('sess_1')
         expect(new URL(String(input)).searchParams.get('instanceId')).toBe('instance_1')

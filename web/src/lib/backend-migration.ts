@@ -243,7 +243,13 @@ export function viewOf(st: BackendMigrationStatus): PollView {
       return { kind: "rolledBack", reason: reasonOf(st) };
     case "failed":
       // A refused background run changed nothing: say why it did not start, not "could not be undone".
-      if (st.refused) return { kind: "notStarted", lines: [st.message, ...(st.manual_steps ?? [])] };
+      if (st.refused) {
+        const steps = st.manual_steps ?? [];
+        const warning = steps.length
+          ? ["Save a copy of your current config and merge or re-apply any edits made since the move before running these steps:"]
+          : [];
+        return { kind: "notStarted", lines: [st.message, ...warning, ...steps] };
+      }
       return { kind: "manual", reason: reasonOf(st), steps: st.manual_steps ?? [] };
     case "restored":
       return { kind: "restored" };

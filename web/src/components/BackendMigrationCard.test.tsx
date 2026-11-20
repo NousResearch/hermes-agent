@@ -259,6 +259,23 @@ describe("readPoll", () => {
     });
   });
 
+  it("warns to preserve post-move config edits before showing manual steps on a refused restore", () => {
+    const step = "cp /h/backend_migration/config.yaml.bak /h/config.yaml";
+    const refused = {
+      ...run("failed"),
+      refused: true,
+      message: "config.yaml was edited after the move; a restore would overwrite it, so the gateway keeps serving",
+      manual_steps: [step],
+    };
+    const view = readPoll({ kind: "status", status: refused }, asked, at(2));
+    expect(view.kind).toBe("notStarted");
+    if (view.kind !== "notStarted") return;
+    expect(view.lines).toHaveLength(3);
+    expect(view.lines[0]).toBe(refused.message);
+    expect(view.lines[1]).toMatch(/edits.*since the move/i);
+    expect(view.lines[2]).toBe(step);
+  });
+
   it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {
     expect(readPoll({ kind: "unreachable" }, asked, at(5)).kind).toBe("switching");
     expect(readPoll({ kind: "auth" }, asked, at(5)).kind).toBe("signInAgain");

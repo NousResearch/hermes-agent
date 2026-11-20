@@ -1313,7 +1313,7 @@ def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
         display_target="<cronjob_manage> (schedule a new job)",
         subject="Creating a scheduled job requires the user's approval", noun="scheduled jobs",
         advice="Tell the user what you wanted to schedule; do not retry.",
-        autoapprove_log_prefix="cronjob create")
+        autoapprove_log_prefix="cronjob create", kind="schedule")
     if result.get("approved"):
         return None
     return tool_error(result.get("message") or "The user declined this scheduled job. Do not retry it.",

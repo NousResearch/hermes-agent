@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  위험한 명령: {description}"
+  schedule_header: "⏰  이 작업을 예약할까요? {description}"
   choose_long: "      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부"
   choose_short: "      [o]한 번  |  [s]세션  |  [d]거부"
   prompt_long: "      선택 [o/s/a/D]: "

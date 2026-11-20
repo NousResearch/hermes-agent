@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  НЕБЕЗПЕЧНА КОМАНДА: {description}"
+  schedule_header: "⏰  Запланувати це завдання? {description}"
   choose_long: "      [o]один раз  |  [s]сеанс  |  [a]завжди  |  [d]відхилити"
   choose_short: "      [o]один раз  |  [s]сеанс  |  [d]відхилити"
   prompt_long: "      Вибір [o/s/a/D]: "

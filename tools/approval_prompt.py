@@ -20,7 +20,7 @@ logger = logging.getLogger("tools.approval")
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
                               allow_permanent: bool = True, approval_callback=None,
                               *, allow_session: bool = True, smart_denied: bool = False,
-                              title: str | None = None) -> str:
+                              title: str | None = None, kind: str = "command") -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     allow_permanent=False hides [a]lways. allow_session=False hides
@@ -30,6 +30,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     smart_denied: owner override of a Smart DENY, offer only once/deny.
     title: header for the plain-input prompt when the question is not a dangerous command
     ("Save to memory?", "<server> is asking"); the default header stays the dangerous-command one.
+    kind: which card this is (``schedule`` = a new scheduled job); reaches callbacks that accept it.
     approval_callback: CLI prompt_toolkit callback ``(command, description, *,
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
@@ -50,7 +51,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     # See #79719.
     with human_input_request("approval", prompt=command) as human, human_wait_window():
         human.outcome = choice = _ask_human(command, description, timeout_seconds, allow_permanent,
-                                            approval_callback, allow_session, smart_denied, title=title)
+                                            approval_callback, allow_session, smart_denied, title=title,
+                                            kind=kind)
         return choice
 
 
@@ -71,6 +73,9 @@ _CLI_CHOICE_ALIASES = {
     "s": "session", "session": "session",
     "a": "always", "always": "always",
 }
+
+# Plain-input header per approval kind (``approval.<value>_header``); anything else is a command.
+_HEADER_KEYS = {"schedule": "schedule"}
 
 _CLI_CHOICE_I18N = {
     "once": "approval.allowed_once",
@@ -108,7 +113,8 @@ def callback_accepts(callback, keyword: str) -> bool:
 
 
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
-               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
+               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None,
+               kind: str = "command") -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_approval_display
@@ -123,7 +129,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             callback_kwargs = {"allow_permanent": allow_permanent,
                                **({"allow_session": False} if not allow_session else {}),
                                **({"smart_denied": True} if smart_denied else {}),
-                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {})}
+                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {}),
+                               **({"kind": kind} if kind != "command" and callback_accepts(approval_callback, "kind")
+                                  else {})}
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -155,7 +163,8 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         # (prompt key, menu key) by menu shape: once/deny, full, or no [a]lways.
         shape = "smart_deny" if once_only else "long" if allow_permanent else "short"
         prompt_key, menu_key = f"approval.prompt_{shape}", f"approval.choose_{shape}"
-        header = title or t('approval.dangerous_header', description=display_description)
+        header = title or t(f'approval.{_HEADER_KEYS.get(kind, "dangerous")}_header',
+                            description=display_description)
         print(f"\n  {header}"
               f"\n      {display_command}\n\n{t(menu_key)}\n")
         sys.stdout.flush()

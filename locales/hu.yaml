@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
+  schedule_header: "⏰  Ütemezed ezt a feladatot? {description}"
   choose_long: "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"
   choose_short: "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
   prompt_long: "      Választás [o/s/a/D]: "

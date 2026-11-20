@@ -5417,7 +5417,8 @@
         "enum": [
           "command",
           "access",
-          "network"
+          "network",
+          "schedule"
         ],
         "title": "ApprovalKind",
         "type": "string"
@@ -5512,7 +5513,7 @@
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.\n\n``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with\n``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``\n(``host``, and an optional display ``label``). ``risk`` is one short line shown under the\nfolder or site. On those two kinds ``once`` allows until the sandbox is switched off and\n``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.",
+        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.\n\n``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with\n``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``\n(``host``, and an optional display ``label``). ``risk`` is one short line shown under the\nfolder or site. On those two kinds ``once`` allows until the sandbox is switched off and\n``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. ``schedule`` is\nthe agent creating a scheduled job: ``description`` is the job as the user will see it,\n``once`` creates this job, ``session`` / ``always`` stop asking for later jobs.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -9780,6 +9781,24 @@
             ],
             "default": null,
             "title": "Description"
+          },
+          "approval_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "command",
+                  "access",
+                  "network",
+                  "schedule"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Approval Kind"
           },
           "edit": {
             "anyOf": [
@@ -26940,6 +26959,18 @@
             ],
             "default": null,
             "title": "Tool Name"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "title": "PendingApproval",

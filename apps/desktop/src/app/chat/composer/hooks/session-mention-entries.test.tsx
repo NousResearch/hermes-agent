@@ -8,7 +8,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryClient } from '@/lib/query-client'
-import { $activeProfile } from '@/store/profile'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -22,8 +22,15 @@ function session(id: string, title: string, lastActive: number, extra: Partial<S
   return { id, title, last_active: lastActive, started_at: lastActive, preview: null, profile: 'default', ...extra } as SessionInfo
 }
 
-async function rowsFor(query: string, gateway = { request: vi.fn(async () => ({ items: [] })) }) {
-  const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's-live', cwd: '/repo' }))
+async function rowsFor(
+  query: string,
+  { gatewayItems = [] as { text: string }[], profile = null as null | string } = {}
+) {
+  const gateway = { request: vi.fn(async () => ({ items: gatewayItems })) }
+
+  const { result } = renderHook(() =>
+    useAtCompletions({ gateway: gateway as never, sessionId: 's-live', cwd: '/repo', profile })
+  )
 
   act(() => {
     result.current.adapter.search?.(query)
@@ -46,7 +53,7 @@ async function rowsFor(query: string, gateway = { request: vi.fn(async () => ({ 
 
 afterEach(() => {
   $sessions.set([])
-  $activeProfile.set('default')
+  $activeGatewayProfile.set('default')
   search.mockReset()
   queryClient.clear()
   vi.useRealTimers()
@@ -81,11 +88,27 @@ describe('@session: mentions', () => {
     expect(gateway.request).not.toHaveBeenCalled()
   })
 
-  it('offers the @session: starter beside the other reference kinds', async () => {
+  it('keeps the @session: starter beside a non-empty gateway answer', async () => {
     vi.useFakeTimers()
 
-    const { rows } = await rowsFor('ses')
+    // An existing chat's gateway answers `@` with its own starters, which never include sessions.
+    const { rows } = await rowsFor('', { gatewayItems: [{ text: '@file:' }, { text: '@diff' }] })
 
-    expect(rows.map(r => r.raw)).toContain('@session:')
+    expect(rows.map(r => r.raw)).toEqual(['@file:', '@diff', '@session:'])
+  })
+
+  it("lists the composer's own profile, not the window's primary one", async () => {
+    vi.useFakeTimers()
+    $activeGatewayProfile.set('default')
+    $sessions.set([
+      session('home-chat', 'Deploy at home', 100),
+      session('work-chat', 'Deploy at work', 200, { profile: 'work' })
+    ])
+    search.mockResolvedValue({ results: [] })
+
+    const { rows } = await rowsFor('session:deploy', { profile: 'work' })
+
+    expect(rows).toEqual([{ label: 'Deploy at work', raw: '@session:work/work-chat' }])
+    expect(search).toHaveBeenCalledWith('deploy', 'work')
   })
 })

@@ -1,6 +1,6 @@
 import { searchSessions } from '@/hermes'
 import { normalize } from '@/lib/text'
-import { $activeProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -33,9 +33,9 @@ function matchesLocal(session: SessionInfo, q: string): boolean {
  *  matched on title, last message or id prefix), then the server's full-text search so chats
  *  outside the loaded page are findable. Picking one inserts the same `@session:<profile>/<id>`
  *  chip a sidebar drag makes; the agent resolves it with session_search. */
-export async function sessionMentionEntries(text: string): Promise<CompletionEntry[]> {
+export async function sessionMentionEntries(text: string, owner?: null | string): Promise<CompletionEntry[]> {
   const q = normalize(text)
-  const profile = normalizeProfileKey($activeProfile.get())
+  const profile = normalizeProfileKey(owner || $activeGatewayProfile.get())
   const seen = new Set<string>()
   const rows: CompletionEntry[] = []
 

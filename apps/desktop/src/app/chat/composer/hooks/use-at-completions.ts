@@ -136,8 +136,10 @@ export function useAtCompletions(options: {
   gateway: HermesGateway | null
   sessionId: string | null
   cwd: string | null
+  /** The composer's owning profile (ChatBar's `profile`): whose chats `@session:` lists. */
+  profile?: string | null
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
-  const { gateway, sessionId, cwd } = options
+  const { gateway, sessionId, cwd, profile } = options
   const enabled = Boolean(gateway)
 
   const contributed = useContributions(COMPOSER_AREAS.atCompletions)
@@ -215,8 +217,8 @@ export function useAtCompletions(options: {
     async (query: string): Promise<CompletionPayload> => {
       const sessionQuery = SESSION_QUERY_RE.exec(query)
 
-      if (sessionQuery || query === 'session') {
-        return { items: await sessionMentionEntries(sessionQuery?.[1] ?? ''), query }
+      if (sessionQuery) {
+        return { items: await sessionMentionEntries(sessionQuery?.[1] ?? '', profile), query }
       }
 
       const starters = starterEntries(query)
@@ -248,14 +250,16 @@ export function useAtCompletions(options: {
         )
 
         const items = result.items ?? []
-        const base = items.length > 0 ? items : starters
+        // `@session:` is answered client-side, so the gateway's starter list never carries it:
+        // keep it beside a non-empty gateway answer instead of dropping it with the fallback.
+        const base = items.length > 0 ? [...items, ...starters.filter(s => s.text === '@session:')] : starters
 
         return { items: mergeCompletionEntries(extras, base, claimedHandles), query }
       } catch {
         return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
     },
-    [cacheKey, contributedEntries, gateway, sessionId, cwd]
+    [cacheKey, contributedEntries, gateway, sessionId, cwd, profile]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

@@ -23,6 +23,7 @@ from pm.filesystem import (
     file_digest as _digest,
     lock_fd as _lock,
     lock_path,
+    long_root,
     read_bytes_or_none as _bytes,
 )
 
@@ -201,7 +202,7 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
             if not leases_held(generation):
-                shutil.rmtree(generation)
+                shutil.rmtree(long_root(generation))
                 removed.append(generation)
     return removed
 

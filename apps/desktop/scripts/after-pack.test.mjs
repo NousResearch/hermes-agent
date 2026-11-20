@@ -32,6 +32,7 @@ async function seedPackagedMain(context) {
     path.join(`${asarPath}.unpacked`, 'dist', 'electron-main.mjs'),
     'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
   )
+  await writeFile(path.join(`${asarPath}.unpacked`, 'dist', 'index.html'), '<main />')
 }
 
 function context(appOutDir, productFilename = 'Hermes Preview') {

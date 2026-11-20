@@ -18,6 +18,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
 const PACKAGED_MAIN_MODULE = 'dist/electron-main.mjs'
+const PACKAGED_RENDERER_ENTRY = 'dist/index.html'
 const READY_TOKENS = ['HERMES_BACKEND_READY', 'HERMES_DASHBOARD_READY']
 // The esbuild-bundled regex source for the dual-token readiness matcher. The
 // bundle keeps the source literal verbatim, so the packaged text contains the
@@ -54,6 +55,21 @@ function loadAsarModule() {
 
 function unpackedPathForAsar(asarPath) {
   return path.join(`${asarPath}.unpacked`, PACKAGED_MAIN_MODULE)
+}
+
+/**
+ * The renderer is loaded from the filesystem at runtime, so successfully
+ * extracting it from app.asar is not enough. Keep the exact unpacked layout
+ * as a packaging invariant alongside the backend readiness check.
+ */
+function assertUnpackedDesktopDist(asarPath) {
+  const unpackedRoot = path.join(`${asarPath}.unpacked`, 'dist')
+  const required = [PACKAGED_MAIN_MODULE, PACKAGED_RENDERER_ENTRY]
+  const missing = required.filter(file => !fs.existsSync(path.join(`${asarPath}.unpacked`, file)))
+  if (missing.length > 0) {
+    throw new Error(`Missing unpacked desktop bundle file(s): ${missing.join(', ')} under ${unpackedRoot}`)
+  }
+  return { asarPath, unpackedRoot, files: required.slice() }
 }
 
 function extractPackagedMainSource(asarPath, options = {}) {
@@ -107,10 +123,12 @@ function assertPackagedBackendReadyArtifact(asarPath, options = {}) {
 
 export {
   PACKAGED_MAIN_MODULE,
+  PACKAGED_RENDERER_ENTRY,
   READY_TOKENS,
   assertBackendReadyArtifactSourceAcceptsBothTokens,
   assertPackagedBackendReadyArtifact,
   extractPackagedMainSource,
+  assertUnpackedDesktopDist,
   resolvePackagedAsarPath,
   unpackedPathForAsar
 }

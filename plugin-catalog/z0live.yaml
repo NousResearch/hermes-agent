@@ -1,23 +1,27 @@
 name: z0live
-repo: https://github.com/kvnloo/hermes-z0live
-sha: f1f294bc330464117625968da9aef1e04653b508
-version: "0.1.0"
+repo: https://github.com/kvnloo/z0live
+sha: 8cdb912aa853fc0081e5b34ce78bcbb3e79feb3d
+version: "0.2.0"
 description: >-
-  See and steer z0live from any Hermes chat. z0live is a self-hosted realtime voice stack that runs beside Hermes:
-  GPT-Live or Grok Voice as the voice, with fast/medium/slow model lanes that answer while Hermes works.
-  z0live_status reports the voice engine for the next call, the lane models per tier, lane server health and a
-  summary of the latest call's event trace (read only). z0live_configure sets the engine (gpt-live or grok) and
-  the tier models. Disclosure: the tools read z0live's local files (lanes config, tier override, call traces),
-  make one loopback GET to z0live's lane server and may run `bin/z0live engine` from the user's own checkout.
-  Nothing is sent off the machine, no credentials are read, and no telemetry is emitted.
+  z0live is a self-hosted realtime voice stack that runs beside Hermes: GPT-Live or Grok Voice as the voice,
+  a second voice (Grok) that answers when called by name, and fast/medium/slow model lanes that answer while
+  Hermes works. The repo is the plugin. z0live_status reports the engine for the next call, the second voice,
+  the lane models, lane server health and a summary of the latest call's event trace (read only).
+  z0live_configure sets the engine (gpt-live or grok), the second voice (grok or off) and the tier models.
+  z0live_lanes and /z0live-lanes show or change the helper-lane board in plain words. Disclosure: the tools
+  read z0live's local files (lanes config, tier and voice overrides, call traces), write only those override
+  files and the lanes board, make one loopback GET to z0live's lane server, and may run the plugin's own
+  `bin/z0live engine`. The voice services themselves are installed separately (deploy/macos/install.sh) and
+  hold their own logins. Nothing is sent off the machine by the plugin, no credentials are read, and no
+  telemetry is emitted.
 maintainer: kvnloo
 tier: community
 category: voice
-docs_url: https://github.com/kvnloo/hermes-z0live/blob/f1f294bc330464117625968da9aef1e04653b508/README.md
+docs_url: https://github.com/kvnloo/z0live/blob/8cdb912aa853fc0081e5b34ce78bcbb3e79feb3d/README.md
 requires_hermes: ">=0.21.5"
 platforms: []
 capabilities:
-  provides_tools: [z0live_status, z0live_configure]
+  provides_tools: [z0live_status, z0live_configure, z0live_lanes]
   provides_hooks: []
   provides_middleware: []
   requires_env: []

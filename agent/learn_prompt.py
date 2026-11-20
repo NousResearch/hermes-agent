@@ -81,6 +81,43 @@ Quality bar:
   templates in `templates/`."""
 
 
+# Where a skill came from. Nothing records this for learned skills today: the
+# hub lock file covers hub installs only (``check_for_skill_updates``), so a
+# skill authored here cannot be re-checked against the material it was distilled
+# from. The schema is shared with the reader that reports staleness, so it is
+# written exactly as documented — keep the two in step.
+_SOURCE_RECORDING = """\
+Record the sources you actually read in the skill's frontmatter, under
+`metadata.hermes` next to `tags`:
+
+  sources:
+    - url: https://example.com/docs/guide      # a web page or document
+      retrieved: YYYY-MM-DD                    # today's date
+    - repo: https://github.com/owner/project   # a git repository
+      revision: 0123456789abcdef0123456789abcdef01234567
+      retrieved: YYYY-MM-DD
+    - path: ~/projects/app/docs/setup.md       # a local file
+      retrieved: YYYY-MM-DD
+
+- Each entry has exactly one of `url`, `repo` or `path`; `revision` only goes
+  with `repo`. `retrieved` is the date you read the source — today's date, not
+  the date in this example.
+- Record the commit you actually read (`git rev-parse HEAD` through the
+  `terminal` tool, or the revision the host showed you). A branch name is not a
+  revision, and an invented SHA is worse than a missing one: if you did not
+  check the repository out yourself — you read it through web pages, or the host
+  only showed you a file — leave `revision` out and record the `repo` on its own.
+- Write a local path under the home directory as `~/...`, never the expanded
+  path: skills get shared, so a learned skill must not carry your home layout.
+- "This conversation" and pasted text record NO source entry — there is nothing
+  to cite. Never invent a source you did not read.
+- Updating an existing skill: merge the new entries into its existing `sources`
+  list rather than replacing it. When you re-read a source that is already
+  listed, update that entry's `retrieved` date (and its `revision` for a
+  `repo`) instead of keeping the old values: the date marks the skill as
+  refreshed from that source."""
+
+
 # book-to-skill layout (MIT): lean always-loaded index + per-chapter files on
 # demand, so query cost tracks the answer, not the source.
 _KNOWLEDGE_SKILL_STANDARDS = """\
@@ -190,6 +227,7 @@ def build_learn_prompt(user_request: str) -> str:
         "reference file you wrote.\n\n"
         f"{_SOURCE_HYGIENE}\n\n"
         f"{_AUTHORING_STANDARDS}\n\n"
+        f"{_SOURCE_RECORDING}\n\n"
         f"{_KNOWLEDGE_SKILL_STANDARDS}\n\n"
         "When done, tell the user the skill name, its category, a one-line "
         "summary of what it captured, and — for a knowledge-base skill — the "

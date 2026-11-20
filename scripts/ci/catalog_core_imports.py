@@ -14,7 +14,10 @@ plugin makes (``hermes_cli.plugin_validate_private_imports.hermes_import_sites``
                       workflow and a maintainer run it, never a PR check.
 ``check``             resolves every indexed import against the base and the head tree of the change,
                       from git objects only (no network, no plugin code runs, nothing is imported), and
-                      fails when an import that resolves on the base no longer resolves on the head.
+                      warns, naming each import that resolves on the base but not on the head: the core
+                      name (private or on the published plugin API), and each plugin's catalog entry,
+                      repository, pin and source line. A warning, never a failure: it tells the author
+                      which public interface the plugins need before the break ships.
 
 An import resolves when its module exists in the tree (directly or through ``hermes_agent/compat/moves.py``)
 and, for ``from module import name``, the module defines ``name`` at top level, has a submodule of that
@@ -40,7 +43,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 INDEX = ROOT / "scripts" / "ci" / "catalog_core_imports"
 CATALOG = ROOT / "plugin-catalog"
-OVERRIDE_LABEL = "breaks-catalog-plugin"
+ARTIFACT = "catalog-core-imports"
+MARKETPLACE = "https://hermes-agent.nousresearch.com/marketplace"
+CATALOG_BLOB = "https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog"
+# The live CI comment is one GitHub comment (65,536 characters for every section together).
+COMMENT_DETAIL_CHARS = 30_000
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -53,6 +60,7 @@ from hermes_cli.plugin_validate_private_imports import (
     ImportChoice,
     ImportSite,
     hermes_import_sites,
+    is_public_import,
 )
 
 
@@ -304,6 +312,8 @@ def _top_level_names(source: str) -> tuple[set[str], bool]:
                 dynamic |= alias.name == "*"
                 names.add(alias.asname or alias.name.split(".")[0])
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            if isinstance(node, ast.AnnAssign) and node.value is None:
+                continue  # ``__version__: str`` alone binds nothing
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names |= {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
         elif isinstance(node, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
@@ -372,11 +382,16 @@ def _sites(branch: ImportBranch) -> list[ImportSite]:
 def _lost_sites(choice: ImportChoice, before: Resolver, after: Resolver) -> list[ImportSite]:
     """The sites to report when no branch of ``choice`` that reaches Hermes runs on ``after`` while one did on
     ``before``: what those branches no longer resolve. A ``try`` that still runs without Hermes (a handler
-    with no Hermes import) has lost the feature, so it is reported too."""
-    if any(_runs_on_hermes(after, branch) for branch in choice.branches):
-        return []
+    with no Hermes import) has lost the feature, so it is reported too. When a branch still runs on both
+    trees, a ``try`` nested in it can still lose its own feature: only that branch is looked into, since an
+    unused handler can resolve too."""
+    surviving = [branch for branch in choice.branches if _runs_on_hermes(after, branch)]
+    if surviving:
+        return [site for branch in surviving if _runs_on_hermes(before, branch)
+                for nested in branch.choices for site in _lost_sites(nested, before, after)]
     worked = [branch for branch in choice.branches if _runs_on_hermes(before, branch)]
-    return [site for branch in worked for site in _sites(branch) if not after.resolves(site.module, site.name)]
+    return [site for branch in worked for site in _sites(branch)
+            if before.resolves(site.module, site.name) and not after.resolves(site.module, site.name)]
 
 
 def _degrades(choice: ImportChoice, after: Resolver) -> bool:
@@ -417,55 +432,113 @@ def breaks(index: dict[str, Row], base: Tree, head: Tree) -> list[Break]:
     return found
 
 
-def report(found: list[Break]) -> str:
-    plugins = sorted({b.plugin for b in found})
-    lines = [f"This change breaks {len(plugins)} pinned catalog plugin{'s' if len(plugins) != 1 else ''} "
-             f"({', '.join(plugins)}): {'they import' if len(plugins) != 1 else 'it imports'} core names "
-             "this change removes or renames.", ""]
+def _source_url(entry, site: ImportSite) -> str:
+    """The import's line in the plugin's repository at its pin (GitHub and GitLab URL shapes)."""
+    repo = entry.repo.removesuffix(".git").rstrip("/")
+    path = f"{entry.subdir.strip('/')}/{site.rel}" if entry.subdir else site.rel
+    blob = "/-/blob/" if repo.startswith("https://gitlab.com/") else "/blob/"
+    return f"{repo}{blob}{entry.sha}/{path}#L{site.line}"
+
+
+def _plugin_lines(plugin: str, entry, found: list[Break]) -> list[str]:
+    """One plugin's catalog record, then each import the change takes from it."""
+    if entry is None:
+        lines = [f"- **{plugin}** (indexed, but no longer in plugin-catalog/)"]
+    else:
+        version = f" {entry.version}" if entry.version else ""
+        lines = [f"- **{entry.title or plugin}**{version} · catalog `{plugin}` · {entry.tier} · "
+                 f"{entry.category} · maintainer `{entry.maintainer}`",
+                 f"  - repo: {entry.repo}" + (f" (subdir `{entry.subdir}`)" if entry.subdir else "")
+                 + f" @ `{entry.sha[:12]}`",
+                 f"  - catalog: [{plugin}.yaml]({CATALOG_BLOB}/{plugin}.yaml) · "
+                 f"[marketplace]({MARKETPLACE}/{plugin})"]
     for b in found:
-        how = " (inside a try: the plugin loses that feature instead of failing to load)" if b.guarded else ""
-        lines.append(f"  {b.plugin} {b.site.rel}:{b.site.line} imports {b.target}{how}")
+        where = f"[{b.site.rel}:{b.site.line}]({_source_url(entry, b.site)})" if entry else f"{b.site.rel}:{b.site.line}"
+        how = "feature lost (inside a try)" if b.guarded else "fails to load"
+        lines.append(f"  - {where} imports `{b.target}`: {how}")
+    return lines
+
+
+def report(found: list[Break], catalog: dict, public_api: frozenset) -> str:
+    """Markdown: the core names to give a public interface (judged against the base's ``plugin_api.json``),
+    then every affected plugin's catalog record."""
+    plugins = sorted({b.plugin for b in found})
+    by_target: dict[str, set[str]] = {}
+    sites: dict[str, ImportSite] = {}
+    for b in found:
+        by_target.setdefault(b.target, set()).add(b.plugin)
+        sites.setdefault(b.target, b.site)
+    lines = [f"This change removes or renames {len(by_target)} core name{'s' if len(by_target) != 1 else ''} "
+             f"that {len(plugins)} pinned catalog plugin{'s' if len(plugins) != 1 else ''} import. Merging it "
+             "breaks them for every user on the next release.", "",
+             "**Core names the plugins need** (private: needs a public interface; public API: already published in "
+             "hermes_cli/data/plugin_api.json, so removing it breaks the plugin compat contract):", ""]
+    for target in sorted(by_target, key=lambda t: (-len(by_target[t]), t)):
+        public = "public API" if is_public_import(sites[target].module, sites[target].name, public_api) else "private"
+        users = sorted(by_target[target])
+        lines.append(f"- `{target}` ({public}): {len(users)} plugin{'s' if len(users) != 1 else ''}: {', '.join(users)}")
+    lines += ["", "**Affected plugins:**", ""]
+    for plugin in plugins:
+        lines += _plugin_lines(plugin, catalog.get(plugin), [b for b in found if b.plugin == plugin])
     lines += [
         "",
-        "Plugins are only promised the published plugin API (hermes_cli/data/plugin_api.json, ctx), so",
-        "these imports were never supported; but merging this breaks them for every user on the next release.",
-        "Pick one:",
-        "  1. Open a PR for an official seam first: a ctx method, a hook, or a plugin_api.json entry that",
-        "     gives the plugin what it imported (plugins/AGENTS.md § Boundary lint), then tell the plugin's",
-        "     maintainer to move to it.",
-        "  2. Keep the old name importable: a moved module gets a key in hermes_agent/compat/moves.py,",
-        "     a moved name stays where it was.",
-        f"  3. If breaking the plugin is intended, add the `{OVERRIDE_LABEL}` label, say why in the PR body,",
-        "     and re-run this check.",
+        "To keep these plugins working, before or with this change:",
+        "1. Give each private name above a public interface: a ctx method, a hook, or a plugin_api.json entry "
+        "(plugins/AGENTS.md § Boundary lint), then tell each plugin's maintainer to move to it.",
+        "2. Or keep the old name importable: a moved module gets a key in hermes_agent/compat/moves.py, "
+        "a moved name stays where it was.",
+        "",
+        "This is a warning: it does not block the merge.",
     ]
     return "\n".join(lines)
 
 
-def check(base_rev: str, head_rev: str, labels: list[str]) -> int:
+def _publish_warning(text: str, found: list[Break]) -> None:
+    """In CI: a warning annotation per plugin, the full report in the job summary, and a ``warning`` item in
+    the live CI review comment (``review-status-catalog-core-imports``). Outside CI nothing but stdout."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for plugin in sorted({b.plugin for b in found}):
+        targets = ", ".join(sorted({b.target for b in found if b.plugin == plugin}))
+        print(f"::warning title=Breaks catalog plugin {plugin}::{plugin} imports {targets}, which this change removes")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write(f"## Catalog plugins this change breaks\n\n{text}\n")
+    from scripts.ci.review_status import publish
+
+    detail = text if len(text) <= COMMENT_DETAIL_CHARS else (
+        text[:COMMENT_DETAIL_CHARS].rpartition("\n")[0] + "\n\n…cut here; the job summary has the full list.")
+    plugins = len({b.plugin for b in found})
+    publish([{"source": ARTIFACT, "results": [{
+        "kind": "warning", "title": "Catalog plugins this change breaks",
+        "summary": f"{plugins} pinned catalog plugin{'s' if plugins != 1 else ''} import core names this change "
+                   "removes or renames.",
+        "detail": detail}]}], ARTIFACT, output=False)
+
+
+def _public_api(tree: Tree) -> frozenset:
+    """``plugin_api.json``'s entries as ``tree`` has them (empty when it has none)."""
+    path = "hermes_cli/data/plugin_api.json"
+    if path not in tree.files:
+        return frozenset()
+    return frozenset(entry for group in json.loads(tree.read(path))["groups"] for entry in group["entries"])
+
+
+def check(base_rev: str, head_rev: str) -> int:
+    """Always 0: a break is reported as a warning, never a failure."""
+    from hermes_cli.plugin_catalog import load_catalog
+
     index = read_index()
-    found = breaks(index, Tree(ROOT, base_rev), Tree(ROOT, head_rev))
+    base = Tree(ROOT, base_rev)
+    found = breaks(index, base, Tree(ROOT, head_rev))
     if not found:
         print(f"no pinned catalog plugin loses a core import ({len(index)} entries indexed)")
         return 0
-    print(report(found))
-    if OVERRIDE_LABEL in labels:
-        print(f"\nThe `{OVERRIDE_LABEL}` label accepts these breaks.")
-        return 0
-    return 1
-
-
-def _pull_request_labels() -> list[str]:
-    """The PR's labels as they are now (a re-run replays the event that started it)."""
-    repo, event = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_EVENT_PATH", "")
-    try:
-        number = json.loads(Path(event).read_text(encoding="utf-8-sig"))["pull_request"]["number"] if event else None
-    except (OSError, KeyError, TypeError, json.JSONDecodeError):
-        number = None
-    if not repo or not number:
-        return []
-    out = subprocess.run(["gh", "api", f"repos/{repo}/pulls/{number}", "--jq", ".labels[].name"], capture_output=True,
-                         text=True, encoding="utf-8", stdin=subprocess.DEVNULL, check=False, timeout=60)
-    return out.stdout.split() if out.returncode == 0 else []
+    text = report(found, {e.name: e for e in load_catalog(CATALOG)}, _public_api(base))
+    print(text)
+    _publish_warning(text, found)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -475,13 +548,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("names", nargs="*", help="entries to re-index (default: those whose pin changed)")
     b.add_argument("--all", action="store_true", help="re-index every entry")
     b.add_argument("--jobs", type=int, default=16)
-    c = sub.add_parser("check", help="fail when the change breaks an indexed import")
+    c = sub.add_parser("check", help="warn about the indexed imports the change breaks")
     c.add_argument("--base", default="HEAD^1", help="base commit (default: the merge commit's first parent)")
     c.add_argument("--head", default="HEAD", help="head commit (default: HEAD, the merge commit)")
     args = parser.parse_args(argv)
     if args.command == "build":
         return build(args.names, args.all, args.jobs)
-    return check(args.base, args.head, _pull_request_labels())
+    return check(args.base, args.head)
 
 
 if __name__ == "__main__":

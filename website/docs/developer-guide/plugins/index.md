@@ -392,17 +392,22 @@ They follow the `hermes_state` window: supported through v0.26 and removed no ea
 
 #### Core PRs that break a pinned catalog plugin
 
-A core pull request that removes or renames a module or name some pinned catalog plugin imports fails the **Name the pinned catalog plugins this change breaks** step of Repository guards. That check covers private imports too. It reads `scripts/ci/catalog_core_imports/`, which records every Hermes import each catalog entry makes at its pinned sha and is refreshed daily for new entries and repins. It resolves those imports against the PR's base and merge commit, so it needs no network, runs no plugin code and takes a few seconds. The failure names the plugin, its `file:line` and the import, for example:
+A core pull request that removes or renames a module or name some pinned catalog plugin imports gets a warning from the **Name the pinned catalog plugins this change breaks** step of Repository guards. It never blocks the merge: it tells the author which public interface the plugins need before the break ships. The check covers private imports too. It reads `scripts/ci/catalog_core_imports/`, which records every Hermes import each catalog entry makes at its pinned sha and is refreshed daily for new entries and repins. It resolves those imports against the PR's base and merge commit, so it needs no network, runs no plugin code and takes a few seconds.
+
+The warning appears as a check annotation per plugin, in the job summary, and in the CI review comment on the PR. It lists each core name the change takes away, whether it is private (not in `hermes_cli/data/plugin_api.json`) and how many plugins import it, then each affected plugin's catalog record: title, version, tier, category, maintainer, repository (and subdir) at its pinned sha, a link to its `plugin-catalog/<name>.yaml` and marketplace page, and a link to each import line. For example:
 
 ```
-holographic store.py:227 imports hermes_state_wal.apply_wal_with_fallback
+- `hermes_state_wal.apply_wal_with_fallback` (private): 1 plugin: holographic
+...
+- **holographic** 0.29.2 · catalog `holographic` · community · memory · maintainer `...`
+  - repo: https://github.com/... @ `<pin>`
+  - store.py:227 imports `hermes_state_wal.apply_wal_with_fallback`: fails to load
 ```
 
-An import inside a `try` whose fallback still resolves is not a break. Pick one fix:
+An import inside a `try` whose fallback still resolves is not a break. To keep the plugins working:
 
-1. **Open a PR for an official seam** (a `ctx` method, a hook, or a `hermes_cli/data/plugin_api.json` entry listed in [the public plugin API](public-api.md)), then ask the plugin's maintainer to move to it.
-2. **Keep the old name importable**: a moved module gets a key in `hermes_agent/compat/moves.py`, and a moved name stays where it was.
-3. **If breaking it is intended**, add the `breaks-catalog-plugin` label, say why in the PR body, and re-run the check.
+1. **Give the name a public interface** (a `ctx` method, a hook, or a `hermes_cli/data/plugin_api.json` entry listed in [the public plugin API](public-api.md)), then ask each plugin's maintainer to move to it.
+2. **Or keep the old name importable**: a moved module gets a key in `hermes_agent/compat/moves.py`, and a moved name stays where it was.
 
 Run it locally with `python3 scripts/ci/catalog_core_imports.py check --base "$(git merge-base origin/main HEAD)"` (the merge base, so a branch is not blamed for what `main` added since it was cut), and re-index one entry with `python3 scripts/ci/catalog_core_imports.py build <name>`. The check only asks whether an imported name still exists. A name that stays but changes behaviour or signature passes, and so does a name read as an attribute after `import module` (`hermes_constants.get_hermes_home()`), where only the module is imported.
 

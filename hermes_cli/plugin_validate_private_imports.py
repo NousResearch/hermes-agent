@@ -102,15 +102,21 @@ def _is_hermes_import(module: str, name: str, core: frozenset, local: set[str]) 
     return module.split(".")[0] in core and module not in local and not own
 
 
+def is_public_import(module: str, name: str, public_api: frozenset | None = None) -> bool:
+    """True when ``from module import name`` (``import module`` for ``name`` "") is on the published plugin API
+    (``public_api`` entries, default this checkout's ``plugin_api.json``)."""
+    target = f"{module}.{name}" if name else module
+    # A name is public under its old or its current spelling: a MOVES key may fold a module into a published one.
+    public_api = _public_api() if public_api is None else public_api
+    return bool({original_module(target), current_module(target)} & public_api) or any(
+        f"{mod}:{name}" in public_api or (mod in public_api and not name.startswith("_"))  # ``from gateway.platforms import base``
+        for mod in {original_module(module), current_module(module)})
+
+
 def _private_target(module: str, name: str, core: frozenset, local: set[str]) -> str:
     """The dotted target to report, or "" when the import is public, local or not Hermes's."""
     target = f"{module}.{name}" if name else module
-    # A name is public under its old or its current spelling: a MOVES key may fold a module into a published one.
-    public_api = _public_api()
-    public = bool({original_module(target), current_module(target)} & public_api) or any(
-        f"{mod}:{name}" in public_api or (mod in public_api and not name.startswith("_"))  # ``from gateway.platforms import base``
-        for mod in {original_module(module), current_module(module)})
-    return target if _is_hermes_import(module, name, core, local) and not public else ""
+    return target if _is_hermes_import(module, name, core, local) and not is_public_import(module, name) else ""
 
 
 def _parsed_files(plugin_dir: Path) -> list[tuple[Path, ast.AST]]:

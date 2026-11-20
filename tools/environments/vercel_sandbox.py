@@ -175,9 +175,10 @@ def _routed_credentials() -> dict[str, str]:
     A single-profile process passes none and keeps the SDK's own resolution (an OIDC token, else the
     process env). Without them the SDK reads ``os.environ``, which holds the launch profile's
     credentials, so a routed profile that lacks any of the three is refused before a request is sent.
-    Read for every create (restore, fallback, retry, recreate), so a rotated token takes effect on the
-    next sandbox; every later call on a sandbox (commands, files, refresh, snapshot, stop) reuses the
-    client ``Sandbox.create`` built from them.
+    Read once per ``_create_sandbox`` call: its snapshot restore, the restore's retries, the fresh
+    fallback and that create's retries all send the values captured then. A recreated sandbox reads
+    them again, so a rotated token takes effect on the next sandbox. Every later call on a sandbox
+    (commands, files, refresh, snapshot, stop) reuses the client ``Sandbox.create`` built from them.
     """
     from agent.secret_scope import get_secret, serves_routed_profile
 

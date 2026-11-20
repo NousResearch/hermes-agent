@@ -64,9 +64,10 @@ async def worker_request(connection, ref, params, *, operation):
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise AuthorityRefusal('invalid_params')
-    claim = _claim(connection, ref, params)
+    claim = await asyncio.to_thread(_claim, connection, ref, params)
     authority = connection.authority
     if operation == 'register':
+        require_serving(authority)
         authority._require_admission_open()
     scope = {key: params[key] for key in ('execution_id', 'session_id', 'generation')}
     if operation == 'register':
@@ -79,7 +80,8 @@ async def worker_request(connection, ref, params, *, operation):
             epoch=authority.epoch, **scope, kind='compute', adoption_secret=claim, require_idle=True))
     if 'worker:adopt' not in connection.actor.capabilities:
         raise AuthorityRefusal('permission_denied')
-    _verify(connection, ref, params, claim)
+    await asyncio.to_thread(_verify, connection, ref, params, claim)
+    require_serving(authority)
     if operation == 'adopt':
         return asdict(await authority_persistence(authority).aio.worker_executions.adopt(
             epoch=authority.epoch, **scope, adoption_secret=claim))

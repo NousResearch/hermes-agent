@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
-import { useNavigate } from "react-router";
 import {
   Package,
   Search,
@@ -28,6 +27,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -43,6 +43,8 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
+import { useSkillDelete } from "@/components/SkillDeleteDialog";
+import { useLearnSkillForm } from "@/pages/skills-learn-form";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -66,6 +68,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 import { installedHubEntry } from "@/lib/skill-hub-installed";
+import { isArchivableSkill } from "@/lib/skill-archivable";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -222,37 +225,11 @@ export default function SkillsPage() {
     setEditorSkill(null);
     setEditorOpen(true);
   }, []);
-  // ── "Learn a skill" panel ──────────────────────────────────────────────
-  // Open-ended: dir + URL + free-text inputs are composed into a single-line
-  // /learn command and handed to the chat. /learn resolves to a normal agent
-  // turn (command.dispatch → send), so the live agent gathers the sources
-  // with its own tools and authors the skill via skill_manage. No backend
-  // distill endpoint — one code path with the CLI/TUI/gateway /learn.
-  const navigate = useNavigate();
-  const [learnOpen, setLearnOpen] = useState(false);
-  const [learnDir, setLearnDir] = useState("");
-  const [learnUrl, setLearnUrl] = useState("");
-  const [learnText, setLearnText] = useState("");
-  const openLearn = useCallback(() => {
-    setLearnDir("");
-    setLearnUrl("");
-    setLearnText("");
-    setLearnOpen(true);
-  }, []);
-  const submitLearn = useCallback(() => {
-    const segs: string[] = [];
-    const dir = learnDir.trim();
-    const url = learnUrl.trim();
-    const text = learnText.trim();
-    if (dir) segs.push(`local source: ${dir}`);
-    if (url) segs.push(`URL: ${url}`);
-    if (text) segs.push(text);
-    // Flatten to a single line — the chat composer submits on the first Enter.
-    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
-    if (!composed) return;
-    setLearnOpen(false);
-    navigate(`/chat?learn=${encodeURIComponent(composed)}`);
-  }, [learnDir, learnUrl, learnText, navigate]);
+  // "Learn a skill" panel: composes a one-line /learn command for the chat.
+  const {
+    learnOpen, setLearnOpen, learnDir, setLearnDir, learnUrl, setLearnUrl, learnText, setLearnText,
+    openLearn, submitLearn,
+  } = useLearnSkillForm();
   const openEditEditor = useCallback((skillName: string) => {
     setEditorSkill(skillName);
     setEditorOpen(true);
@@ -269,6 +246,12 @@ export default function SkillsPage() {
     },
     [selectedProfile, showToast],
   );
+
+  const skillDelete = useSkillDelete({
+    profile: selectedProfile,
+    showToast,
+    onDeleted: (name) => setSkills((prev) => prev.filter((s) => s.name !== name)),
+  });
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -517,6 +500,8 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => skillDelete.request(skill.name)}
+                        deleteLabel={skillDelete.label}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -591,6 +576,8 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => skillDelete.request(skill.name)}
+                        deleteLabel={skillDelete.label}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -702,6 +689,7 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
+      {skillDelete.dialog}
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -770,6 +758,8 @@ function SkillRow({
   toggling,
   onToggle,
   onEdit,
+  onDelete,
+  deleteLabel,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -805,6 +795,18 @@ function SkillRow({
       >
         <Pencil />
       </Button>
+      {isArchivableSkill(skill) && onDelete && (
+        <Button
+          ghost
+          size="icon"
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+          title={deleteLabel}
+          aria-label={`${deleteLabel}: ${skill.name}`}
+          onClick={onDelete}
+        >
+          <Trash2 />
+        </Button>
+      )}
     </div>
   );
 }
@@ -834,7 +836,9 @@ interface PanelItemProps {
 }
 
 interface SkillRowProps {
+  deleteLabel: string;
   noDescriptionLabel: string;
+  onDelete?: () => void;
   onToggle: () => void;
   onEdit: () => void;
   skill: SkillInfo;

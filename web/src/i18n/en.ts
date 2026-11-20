@@ -514,6 +514,11 @@ export const en: Translations = {
     currentProfile: "current ({name})",
     managingProfile:
       "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
+    deleteSkill: "Delete skill",
+    deleteSkillConfirmTitle: "Delete skill \u201c{name}\u201d?",
+    deleteSkillConfirmMessage:
+      "The skill moves to the profile's skills archive and stops loading in new sessions. Restore it with `hermes curator restore {name}`.",
+    skillDeleted: "{name} archived",
   },
 
   config: {

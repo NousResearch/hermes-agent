@@ -254,3 +254,59 @@ def test_mutation_targets_the_clicked_card_when_the_list_shifted_before_submit(h
     # The clicked card is gone now; its id must not fall back to whatever sits at that index.
     result = mutate()
     assert result["ok"] is False and "stale" in result["message"]
+
+
+@pytest.mark.platforms("posix")  # unprivileged symlink creation is POSIX-only
+def test_archive_stays_inside_the_profile_skills_dir(home, tmp_path):
+    """A frontmatter name with path parts, or a skill reached through a symlinked category dir,
+    must not move anything outside ``skills/`` (or out of the link target's tree)."""
+    evil = home / "skills" / "evil"
+    evil.mkdir()
+    (evil / "SKILL.md").write_text("---\nname: ../../escaped\ndescription: x\n---\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    (outside / "victim").mkdir(parents=True)
+    (outside / "victim" / "SKILL.md").write_text("---\nname: victim\ndescription: x\n---\n", encoding="utf-8")
+    (home / "skills" / "linked").symlink_to(outside, target_is_directory=True)
+
+    assert not lm.archive_user_skill("../../escaped")["ok"]
+    assert (evil / "SKILL.md").is_file() and not (home / "escaped").exists()
+    assert not lm.archive_user_skill("victim")["ok"]
+    assert (outside / "victim" / "SKILL.md").is_file()
+    # A symlinked skill dir whose link entry itself lives in that foreign tree: the link must stay there.
+    (tmp_path / "real2").mkdir()
+    (tmp_path / "real2" / "SKILL.md").write_text("---\nname: foreign-link\ndescription: x\n---\n", encoding="utf-8")
+    (outside / "lnk").symlink_to(tmp_path / "real2", target_is_directory=True)
+    assert not lm.archive_user_skill("foreign-link")["ok"]
+    assert (outside / "lnk").is_symlink()
+
+
+def _linked_skill_target(tmp_path, name):
+    target = tmp_path / "dotfiles" / name
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\ndescription: x\n---\n", encoding="utf-8")
+    return target
+
+
+@pytest.mark.platforms("posix")  # unprivileged symlink creation is POSIX-only
+def test_archive_moves_only_the_link_of_a_symlinked_skill_dir(home, tmp_path):
+    """A skill dir linked in from elsewhere archives: the link moves into .archive/, its target stays put."""
+    target = _linked_skill_target(tmp_path, "linked-skill")
+    (home / "skills" / "linked-skill").symlink_to(target, target_is_directory=True)
+
+    assert lm.archive_user_skill("linked-skill")["ok"]
+    assert (home / "skills" / ".archive" / "linked-skill").is_symlink()
+    assert (target / "SKILL.md").is_file()
+
+
+@pytest.mark.platforms("windows")
+def test_archive_moves_only_the_junction_of_a_junctioned_skill_dir(home, tmp_path):
+    """Windows' unprivileged directory link is a junction, which is_symlink() does not report."""
+    import _winapi
+    from pm.filesystem import is_junction
+
+    target = _linked_skill_target(tmp_path, "junction-skill")
+    _winapi.CreateJunction(str(target), str(home / "skills" / "junction-skill"))
+
+    assert lm.archive_user_skill("junction-skill")["ok"]
+    assert is_junction(home / "skills" / ".archive" / "junction-skill")
+    assert (target / "SKILL.md").is_file()

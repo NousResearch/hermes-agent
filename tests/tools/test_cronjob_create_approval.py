@@ -46,16 +46,25 @@ _GATE = 'import json\nprint(json.dumps({"wakeAgent": False}))\n'
     # A script the call saves is consent text: the card shows its whole body, and a denied
     # create leaves no file behind.
     ("once", 1, {"script_content": _GATE}), ("deny", 0, {"script_content": _GATE}),
+    # The card describes what create stores: a numeric-string repeat and the skills beside a prompt.
+    ("once", 1, {"repeat": "3", "skill": "maps"}),
+    # A create that would fail validation never asks: the user is not shown a job that cannot save.
+    ("once", 0, {"timezone": "Not/AZone"}), ("once", 0, {"no_agent": True}),
 ])
 def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch, answer, saved, extra):
     asked = _asking(monkeypatch, answer)
     result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, **extra}))
+    assert result.get("success") is (saved == 1)
+    assert len(cron_store.load_jobs()) == saved
+    if extra.keys() & {"timezone", "no_agent"}:
+        assert asked == []
+        return
     # The schedule card, not the command card, on every surface that draws one.
     assert len(asked) == 1 and asked[0][0] == "schedule"
     assert "Water" in asked[0][1] and "3 runs" in asked[0][1]
-    assert result.get("success") is (saved == 1)
-    assert len(cron_store.load_jobs()) == saved
-    if extra:
+    if "skill" in extra:
+        assert "skills: maps" in asked[0][1]
+    elif extra:
         from hermes_constants import get_hermes_home
         assert "--- script cron_water_" in asked[0][1] and asked[0][1].endswith(_GATE)
         scripts = list((get_hermes_home() / "scripts").glob("cron_water_*.py"))

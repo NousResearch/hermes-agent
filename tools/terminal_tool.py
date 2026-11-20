@@ -1023,7 +1023,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
+    detached_tmux_script_guidance, gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import _cwd_fallback_note, finalize_foreground_result
@@ -1315,6 +1315,8 @@ def _plan_execution(
     # value is truthy and would fire an immediate "-Ns" timeout.
     if timeout is not None and timeout <= 0:
         raise _Rejected(tool_error(f"timeout must be a positive number of seconds (got {timeout})."))
+    if guidance := detached_tmux_script_guidance(command):
+        raise _Rejected(_error_json(guidance, status="error"))
     promoted = None
     if not background:
         # An over-cap foreground timeout is a bounded job the caller wants to wait for (test suites,

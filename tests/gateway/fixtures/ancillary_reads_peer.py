@@ -122,12 +122,23 @@ async def probe(mode):
                     rows = process_result.get('result', {}).get('processes')
                     assert rows and [p['session_id'] for p in rows] == [processes[0].id], process_result
                     assert rows[0]['status'] == 'running' and 'PROCESS_OWNED' in rows[0]['output_tail']
+                    # A short-lived watcher is not the job. Once it exits a fresh chat client
+                    # must still see the worker and its output, never a different session's work.
+                    watcher = process_registry.spawn_local('echo watcher', cwd=str(home), task_id=sid,
+                                                           owner_task_id=sid, session_key=live.route)
+                    processes.append(watcher)
+                    assert await asyncio.to_thread(watcher._completion_event.wait, 10)
+                    async with socket() as reopened:
+                        snapshot = await rpc(reopened, 'process.list', session_id=sid)
+                        running = [r for r in snapshot['result']['processes'] if r['status'] == 'running']
+                        assert [r['session_id'] for r in running] == [processes[0].id], running
+                        assert 'PROCESS_OWNED' in running[0]['output_tail']
                     # Real process handoff stores the parent physical ID as its routing key.
                     transferred = process_registry.transfer_ownership(
                         processes[1].id, from_owner='foreign', to_owner=sid, to_task_id=sid, to_session_key=sid)
                     assert transferred is processes[1]
                     handed = await rpc(ws, 'process.list', session_id=sid)
-                    assert {p['session_id'] for p in handed['result']['processes']} == {p.id for p in processes[:2]}, handed
+                    assert {p['session_id'] for p in handed['result']['processes'] if p['status'] == 'running'} == {p.id for p in processes[:2]}, handed
                     roster = await rpc(ws, 'subagent.list', session_id=sid)
                     assert [r['subagent_id'] for r in roster.get('result', {}).get('subagents', [])] == ['owned'], roster
                     assert 'agent' not in roster['result']['subagents'][0]

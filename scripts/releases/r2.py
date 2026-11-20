@@ -973,23 +973,36 @@ def live_pool_keys(keys: list[str], read: Callable[[str], str | None]) -> set[st
     return protected
 
 
-def _canary_head_tag(read: Callable[[str], str | None]) -> str | None:
-    """The release tag the protected canary head serves.
+def _canary_head_tag(keys: list[str], read: Callable[[str], str | None]) -> str | None:
+    """The release tag the protected canary head serves, or None with no canary head.
 
     publish_release writes releases/canary/release-candidates.json only after this head moves, so a
-    failed pointer write leaves the pointer naming the previous canary while the head serves the
-    new one, whose archive the pointer then no longer protects.
+    failed pointer write leaves the pointer naming the previous canary (or, for the first canary
+    after a legacy head, no pointer at all) while the head serves the new one, whose archive the
+    pointer then no longer protects. The channel is the one record whose policy is canary-release,
+    whatever its name, as channel_releases.select_channel picks it for publication.
     """
-    text = read("releases/channels/canary.json")
-    record = json.loads(text) if text is not None else None
-    head = record.get("head") if isinstance(record, dict) and record.get("policy") == "canary-release" else None
-    if not isinstance(head, dict) or not isinstance(head.get("manifestKey"), str):
+    records = []
+    for key in sorted(key for key in keys if key.startswith("releases/channels/") and key.endswith(".json")):
+        text = read(key)
+        record = json.loads(text) if text is not None else None
+        if not isinstance(record, dict):
+            raise RuntimeError(f"Cannot read the protected channel record {key}; refusing to prune")
+        if record.get("policy") == "canary-release":
+            records.append(record)
+    if len(records) > 1:
+        raise RuntimeError("More than one protected canary-release channel; refusing to prune")
+    head = records[0].get("head") if records else None
+    if head is None:
         return None
-    manifest = read(head["manifestKey"])
+    manifest = read(head["manifestKey"]) if isinstance(head, dict) and isinstance(head.get("manifestKey"), str) else None
     if manifest is None or hashlib.sha256(manifest.encode()).hexdigest() != head.get("sha256"):
-        return None
+        raise RuntimeError("Cannot read the protected canary head's build manifest; refusing to prune")
     request = json.loads(manifest).get("request")
-    return request.get("releaseTag") if isinstance(request, dict) else None
+    tag = request.get("releaseTag") if isinstance(request, dict) else None
+    if not isinstance(tag, str):
+        raise RuntimeError("The protected canary head names no release tag; refusing to prune")
+    return tag
 
 
 def prune(
@@ -1037,10 +1050,14 @@ def prune(
     # The live canary's own objects (its archive, which its upgrade baseline points into, and its
     # Termux pool) stay while it is live however old it is: releases/canary/release-candidates.json
     # names its archive ref, which is in every one of those keys.
-    pointer_key = "releases/canary/release-candidates.json"
-    if pointer_key in keys:
-        from hermes_cli.update_channel import is_canary_tag
+    from hermes_cli.update_channel import is_canary_tag
 
+    pointer_key = "releases/canary/release-candidates.json"
+
+    def read(key: str) -> str | None:
+        return get_object(creds, base, bucket, key, now, fetcher=fetcher)
+
+    if pointer_key in keys:
         text = get_object(creds, base, bucket, pointer_key, now, fetcher=fetcher)
         try:
             payload = json.loads(text) if text is not None else None
@@ -1052,11 +1069,14 @@ def prune(
         archive_prefix = f"releases/tag/{live}/"
         if not any(key.startswith(archive_prefix) for key in keys):
             raise RuntimeError(f"Live canary pointer {pointer_key} names missing archive {live}; refusing to prune")
-        head = _canary_head_tag(lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher))
+        head = _canary_head_tag(keys, read)
         if head != live:
             raise RuntimeError(f"Live canary pointer {pointer_key} names {live} but the protected canary head "
                                f"serves {head}; rerun that canary's publish-canary job; refusing to prune")
         protected.update(key for key in keys if live in key)
+    elif is_canary_tag(head := _canary_head_tag(keys, read)):
+        raise RuntimeError(f"The protected canary head serves {head} but {pointer_key} is missing; "
+                           "rerun that canary's publish-canary job; refusing to prune")
 
     # A desktop-only canary can advance that pointer without replacing the live APT index.
     protected.update(live_pool_keys(

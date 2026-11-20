@@ -1,3 +1,5 @@
+import path from 'node:path'
+
 import { autoUpdater as nativeUpdater } from 'electron'
 import electronUpdater from 'electron-updater'
 import { SemVer } from 'semver'
@@ -73,5 +75,11 @@ export function createMacStrategy(deps: MacClientDeps): MacStrategy {
     updater.setFeedURL({ provider: 'generic', url: `${base}/${legacy.directory}/`, channel })
   }
 
-  return new MacStrategy({ ...deps, updater, prepareInstall: () => prepareMacInstall(nativeUpdater) })
+  return new MacStrategy({
+    ...deps,
+    updater,
+    // .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
+    bundlePath: path.resolve(process.execPath, '..', '..', '..'),
+    prepareInstall: () => prepareMacInstall(nativeUpdater)
+  })
 }

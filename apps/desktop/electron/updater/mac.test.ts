@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { MacStrategy, type MacStrategyDeps, prepareMacInstall } from './mac'
+import { macReadOnlyBundleReason, MacStrategy, type MacStrategyDeps, prepareMacInstall } from './mac'
 
 function fixture() {
   const events: string[] = []
@@ -54,6 +54,34 @@ describe('macOS strategy', () => {
     expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
     expect(events).toEqual(['check', 'download', 'verify', 'stop', 'install'])
     expect(emitter.listenerCount('download-progress')).toBe(0)
+  })
+
+  it.each([
+    ['App Translocation', '/private/var/folders/x/T/AppTranslocation/1F2E/d/Hermes.app', undefined],
+    ['a mounted disk image', '/Volumes/Hermes/Hermes.app', 'EROFS']
+  ])('refuses before any download or teardown when run from %s', async (_label, bundlePath, code) => {
+    const { deps, events } = fixture()
+
+    const access = vi.fn(() => {
+      if (code) {
+        throw Object.assign(new Error('read-only file system'), { code })
+      }
+    })
+
+    const strategy = new MacStrategy({ ...deps, bundlePath, access })
+    await expect(strategy.apply()).rejects.toThrow('drag Hermes into the Applications folder')
+    expect(events).toEqual([])
+    expect(deps.emitProgress).toHaveBeenCalledWith(expect.objectContaining({ stage: 'error' }))
+  })
+
+  it('leaves a writable or admin-owned Applications folder to Squirrel', () => {
+    expect(macReadOnlyBundleReason('/Applications/Hermes.app', () => undefined)).toBeNull()
+
+    const eacces = () => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    }
+
+    expect(macReadOnlyBundleReason('/Applications/Hermes.app', eacces)).toBeNull()
   })
 
   it.each(['downloadUpdate', 'prepareInstall'] as const)('keeps backends alive on %s failure', async failure => {

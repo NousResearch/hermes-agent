@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+
 import type { AppUpdater } from 'electron-updater'
 
 import { applyPackagedHandoff } from './packaged-handoff'
@@ -15,6 +18,41 @@ export interface MacStrategyDeps {
   beforeInstall: () => Promise<void>
   onInstallFailure: () => Promise<void>
   emitProgress: (payload: { stage: string; message: string; percent: number | null }) => void
+  /** The running Hermes.app; Squirrel must be able to replace it in place. */
+  bundlePath?: string
+  /** fs.accessSync stand-in for tests. */
+  access?: (file: string, mode: number) => void
+}
+
+const READ_ONLY_LOCATION =
+  'Hermes can not install updates while it runs from this location (its disk image, or a temporary copy macOS made). ' +
+  'Quit Hermes, drag Hermes into the Applications folder in Finder (if it is already there, drag it out and back in), ' +
+  'then open it and install the update again.'
+
+/**
+ * Squirrel.Mac can not replace a bundle on a read-only volume, and finds out only
+ * after quitAndInstall: Hermes quit, nothing installed, and the next start offered
+ * the same update. App Translocation (a quarantined app run from Downloads) and a
+ * mounted disk image are both read-only. Returns the user-facing reason, or null.
+ */
+export function macReadOnlyBundleReason(
+  bundlePath: string,
+  access: (file: string, mode: number) => void = fs.accessSync
+): null | string {
+  if (bundlePath.includes('/AppTranslocation/')) {
+    return READ_ONLY_LOCATION
+  }
+
+  try {
+    access(path.dirname(bundlePath), fs.constants.W_OK)
+  } catch (error) {
+    // EACCES (a root-owned folder) is Squirrel's to handle: it asks for an admin password.
+    if ((error as NodeJS.ErrnoException).code === 'EROFS') {
+      return READ_ONLY_LOCATION
+    }
+  }
+
+  return null
 }
 
 export class MacStrategy implements UpdaterStrategy {
@@ -74,6 +112,12 @@ export class MacStrategy implements UpdaterStrategy {
           emitProgress: this.deps.emitProgress
         },
         async (stop: () => Promise<void>): Promise<UpdaterApplyResultWire> => {
+          const readOnly = this.deps.bundlePath ? macReadOnlyBundleReason(this.deps.bundlePath, this.deps.access) : null
+
+          if (readOnly) {
+            throw new Error(readOnly)
+          }
+
           const status = await this.checkRelease()
 
           if (!status.updateAvailable) {

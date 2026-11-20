@@ -252,14 +252,14 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
     serves the documented address (9120 unless set): both keep it, and Start writes no port. A standalone
     profile's gateway with no ``webapp.port`` would find the default port taken by the default gateway's
     Webapp, so it gets the first port above it that no other Hermes home on this machine claims and
-    nothing listens on now, and Start writes it to that profile's ``webapp.port``: the profile keeps that
+    nothing listens on now (for a specific address, on loopback too), and Start writes it to that profile's ``webapp.port``: the profile keeps that
     address across restarts, and the gateway, the launcher and the sign-in callback all use it.
 
     Each standalone profile's gateway has its own change lock, so the port is chosen and saved under a
     lock every gateway on this machine shares, before the slow steps of Start: a Start that fails after
     this keeps the port, which is that profile's from then on, as one a finished Start writes. *home* is
     the home in scope, whose config :func:`save_config` writes (Start runs in its gateway's scope)."""
-    from gateway.webapp_listener import DEFAULT_PORT, webapp_settings
+    from gateway.webapp_listener import DEFAULT_PORT, loopback_companion, webapp_settings
     from hermes_cli.auth import _file_lock
     from hermes_constants import named_profile_home
 
@@ -272,8 +272,10 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
         with _file_lock(lock, _PORT_CLAIM_HOLDER, _PORT_CLAIM_TIMEOUT_SECONDS,
                         "Timed out waiting for another Hermes profile to choose its Webapp port"):
             claimed = _claimed_ports(home)
+            # A specific address also takes the port on loopback (its loopback socket).
+            hosts = [host, *filter(None, [loopback_companion(host)])]
             for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 1 + _PORT_SEARCH):
-                if port not in claimed and _port_free(host, port):
+                if port not in claimed and all(_port_free(each, port) for each in hosts):
                     _save_port(port)
                     return port, port
     except TimeoutError as exc:

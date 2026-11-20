@@ -358,13 +358,8 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
     print("  ✓ the gateway is installed and enabled as a user service")
     run.step("gateway_service", "done")
     rec = m["old_backend"]
-    if not force_interrupt and rec.get("pid"):
-        turns = host.running_turns(rec["pid"], rec.get("start_time"))
-        if turns is None:  # unknown is never idle, here as in the preflight
-            raise StepFailed("the old backend's turn activity cannot be read now, so a reply may be being written "
-                             "in it; it has not been stopped (confirm it is idle, or re-run with --force-interrupt)")
-        if turns:
-            raise StepFailed("a turn started on the old backend during migration; it has not been stopped")
+    if not force_interrupt and rec.get("pid") and (late := _turns_now(host, rec)) is not None:
+        raise StepFailed(f"{late} The old backend has not been stopped.")
     run.step("stop_old_backend")
     stopped_at = host.now()
     host.old_stop(rec)
@@ -393,6 +388,19 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
         raise StepFailed(f"verification failed after {VERIFY_SECONDS:.0f}s: {why[0]}")
     run.step("verify", "done")
     return stopped_at
+
+
+def _turns_now(host, rec: dict) -> Optional[str]:
+    """The preflight's turn decision taken again right before the stop, with its reader and its words (a turn
+    can start, or the markers become unreadable, during the prompt or the Webapp build), else None."""
+    from types import SimpleNamespace
+    from hermes_cli.gateway_migrate_backends_plan import _turns_blocker, _turns_unknown
+    pid, start = rec["pid"], rec.get("start_time")
+    turns = host.running_turns(pid, start)
+    now = SimpleNamespace(running_turns=turns, turns_unknown=_turns_unknown(host, pid, start) if turns is None else "",
+                          blockers=[])
+    _turns_blocker(now, False)
+    return now.blockers[0] if now.blockers else None
 
 
 def apply(host, plan: BackendPlan, *, detached: bool = False, force_interrupt: bool = False) -> int:

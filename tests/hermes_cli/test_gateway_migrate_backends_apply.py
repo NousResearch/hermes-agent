@@ -820,6 +820,17 @@ def test_a_by_hand_move_blocks_on_active_or_unknown_turns_unless_force_interrupt
     assert out["plan"]["unsupported"][0]["steps"]
 
 
+def test_a_forced_by_hand_move_with_unreadable_turns_warns_above_its_stop_steps(home, capsys):
+    host = ManualHost(home, host="127.0.0.1")
+    host.turns = None
+
+    assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    out = capsys.readouterr().out
+    warning = "Its turn activity could not be read, so turns may be running on it now: stopping it interrupts them."
+    assert warning in out
+    assert out.index(warning) < out.index("Steps, in this order")
+
+
 def test_an_already_blocked_by_hand_plan_skips_activity_read_and_adds_no_turn_blocker(home, capsys, monkeypatch):
     (home / "config.yaml").write_text(
         "model:\n  default: fake-model\nsecrets:\n  vault:\n    enabled: true\n", encoding="utf-8",

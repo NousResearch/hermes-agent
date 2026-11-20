@@ -232,6 +232,17 @@ def test_windows_steps_block_when_a_turn_is_running_unless_force_interrupt(home,
     assert 'schtasks /End /TN "Hermes Dashboard"' in out
 
 
+def test_forced_windows_steps_with_unreadable_turns_carry_a_warning(home, capsys):
+    host = WindowsHost(home)
+    host.turns = None
+
+    assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    out = capsys.readouterr().out
+    assert "Its turn activity could not be read, so turns may be running on it now: stopping it interrupts them." \
+        in out
+    assert 'schtasks /End /TN "Hermes Dashboard"' in out
+
+
 def test_an_already_blocked_windows_plan_reads_no_turns_and_adds_no_turn_blocker(home, capsys):
     (home / "config.yaml").write_text("model:\n  default: fake-model\nsecrets:\n  vault:\n    enabled: true\n",
                                       encoding="utf-8")

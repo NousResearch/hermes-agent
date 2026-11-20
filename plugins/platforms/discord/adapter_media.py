@@ -30,6 +30,15 @@ _DISCORD_REPLY_FILE_MAX_BYTES = 7 * 1024 * 1024
 _OPUS_GRANULE_RATE = 48000  # Ogg/Opus granule positions always count 48 kHz samples (RFC 7845 §4)
 
 
+def _download_session() -> Any:
+    """An aiohttp session for a batch's downloads, through the Discord proxy if one is set."""
+    import aiohttp
+    from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+    session_kwargs, _ = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="DISCORD_PROXY"))
+    return aiohttp.ClientSession(**session_kwargs)
+
+
 def _ogg_opus_duration(data: bytes) -> Optional[float]:
     """Playback seconds of an Ogg/Opus stream (last page's granule position minus the OpusHead
     pre-skip), or None when ``data`` is not Ogg/Opus. Dependency-free: Discord needs the real
@@ -205,15 +214,14 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if not images:
             return SendResult(success=False, error="no images to send")
         try:
-            import discord as _discord_mod
-            import io as _io
+            import discord  # without discord.py, the per-image loop below sends them
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
@@ -240,62 +248,12 @@ class DiscordMediaMixin:
                     if alt_text:
                         captions.append(alt_text)
                     if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
-                        if not os.path.exists(local_path):
-                            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
-                            continue
-                        # Same preflight as _send_file_attachment (#50846): an oversized
-                        # local image would 413 the whole chunk and drop its siblings
-                        # into the fallback path.
-                        try:
-                            _img_size = os.path.getsize(local_path)
-                        except OSError as stat_err:
-                            logger.warning(
-                                "[%s] Skipping unreadable image %s: %s",
-                                self.name, local_path, stat_err,
-                            )
-                            continue
-                        _img_limit = self._discord_upload_limit_bytes(channel)
-                        if _img_size > _img_limit:
-                            logger.warning(
-                                "[%s] Skipping oversized image in batch: %s is %.1f MB (limit %.0f MB)",
-                                self.name, os.path.basename(local_path),
-                                _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
-                            )
-                            skip_notices.append(t(
-                                "platform.discord.media.image_skipped_too_large",
-                                filename=os.path.basename(local_path),
-                                size_mb=f"{_img_size / (1024 * 1024):.1f}",
-                                limit_mb=f"{_img_limit / (1024 * 1024):.0f}"))
-                            continue
-                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
+                        file = self._batch_local_image(channel, _unquote(image_url[7:]), skip_notices)
                     else:
-                        if not is_safe_url(image_url):
-                            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
-                            continue
-                        # Download to BytesIO so it renders inline
-                        try:
-                            import aiohttp as _aiohttp
-                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-                            if aiohttp_session is None:
-                                aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
-                            status, data, headers = await _read_url_image_with_redirect_guard(
-                                aiohttp_session, image_url,
-                                timeout=_aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
-                            )
-                            if status != 200:
-                                logger.warning(
-                                    "[%s] Failed to download image (HTTP %d) in batch: %s",
-                                    self.name, status, image_url[:80],
-                                )
-                                continue
-                            ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
-                            files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
-                        except Exception as dl_err:
-                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
-                            continue
+                        aiohttp_session = aiohttp_session or _download_session()
+                        file = await self._batch_remote_image(aiohttp_session, image_url, len(files))
+                    if file is not None:
+                        files.append(file)
                 if not files:
                     # Everything in this chunk was skipped. Still surface any
                     # oversized-file notices so the drop is not silent.
@@ -343,6 +301,70 @@ class DiscordMediaMixin:
                     except Exception:
                         pass
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+
+    def _batch_local_image(self, channel: Any, local_path: str, skip_notices: list[str]) -> Optional[Any]:
+        """A ``file://`` image of a batch as a ``discord.File``; None (logged) when it is missing,
+        unreadable or over the channel's cap, the last also adding a notice to ``skip_notices``."""
+        import discord as _discord_mod
+
+        if not os.path.exists(local_path):
+            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
+            return None
+        # Same preflight as _send_file_attachment (#50846): an oversized
+        # local image would 413 the whole chunk and drop its siblings
+        # into the fallback path.
+        try:
+            _img_size = os.path.getsize(local_path)
+        except OSError as stat_err:
+            logger.warning(
+                "[%s] Skipping unreadable image %s: %s",
+                self.name, local_path, stat_err,
+            )
+            return None
+        _img_limit = self._discord_upload_limit_bytes(channel)
+        if _img_size > _img_limit:
+            logger.warning(
+                "[%s] Skipping oversized image in batch: %s is %.1f MB (limit %.0f MB)",
+                self.name, os.path.basename(local_path),
+                _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
+            )
+            skip_notices.append(t(
+                "platform.discord.media.image_skipped_too_large",
+                filename=os.path.basename(local_path),
+                size_mb=f"{_img_size / (1024 * 1024):.1f}",
+                limit_mb=f"{_img_limit / (1024 * 1024):.0f}"))
+            return None
+        return _discord_mod.File(local_path, filename=os.path.basename(local_path))
+
+    async def _batch_remote_image(self, aiohttp_session: Any, image_url: str, index: int) -> Optional[Any]:
+        """A remote image of a batch downloaded into a ``discord.File`` (so it renders inline);
+        None (logged) when the URL is blocked or the download fails."""
+        import discord as _discord_mod
+        import io as _io
+        from plugins.platforms.discord.adapter import _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
+
+        if not is_safe_url(image_url):
+            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
+            return None
+        try:
+            import aiohttp as _aiohttp
+            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            _, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="DISCORD_PROXY"))
+            status, data, headers = await _read_url_image_with_redirect_guard(
+                aiohttp_session, image_url,
+                timeout=_aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
+            )
+            if status != 200:
+                logger.warning(
+                    "[%s] Failed to download image (HTTP %d) in batch: %s",
+                    self.name, status, image_url[:80],
+                )
+                return None
+            ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
+            return _discord_mod.File(_io.BytesIO(data), filename=f"image_{index}.{ext}")
+        except Exception as dl_err:
+            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err, exc_info=True)
+            return None
 
 
     async def send_voice(

@@ -195,6 +195,7 @@ from plugins.platforms.telegram.telegram_text_photo_pairing import (
     wait_text_flush)
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_media_retry import unconfirmed_media_result as _unconfirmed
+from plugins.platforms.telegram.telegram_url_photo import send_url_photo
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
 from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
@@ -4969,40 +4970,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Send a URL image as a Telegram photo: URL send (<5MB) → download+upload (≤10MB) → base text."""
-        if not self._bot:
-            return SendResult(success=False, error="Not connected")
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(image_url):
-            logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
-            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
-        photo_caption = self._caption_1024(caption)
-        try:
-            msg = await self._send_media(
-                self._bot.send_photo, chat_id, reply_to, metadata, "URL photo", photo=image_url, caption=photo_caption)
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            def redo(_path=None):
-                return self.send_image(chat_id, image_url, caption, reply_to, metadata)
-            if (recovered := await self._media_flood_recover(e, chat_id, redo, "URL photo", metadata=metadata) or _unconfirmed(e, "URL photo", as_failure=True)):
-                return recovered
-            logger.warning(
-                "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
-            try:
-                from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
-                from tools.url_safety import create_ssrf_safe_async_client
-                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client, \
-                        client.stream("GET", image_url) as resp:
-                    resp.raise_for_status()
-                    image_data = await read_httpx_body_with_limit(resp, media_type="image")
-                msg = await self._send_media(
-                    self._bot.send_photo, chat_id, reply_to, metadata, "uploaded photo", photo=image_data, caption=photo_caption)
-                return SendResult(success=True, message_id=str(msg.message_id))
-            except Exception as e2:
-                if (recovered := await self._media_flood_recover(e2, chat_id, redo, "uploaded photo", metadata=metadata) or _unconfirmed(e2, "uploaded photo", as_failure=True)):
-                    return recovered  # the byte upload follows the same flood contract as the URL send
-                logger.error("[%s] File upload send_photo also failed: %s", self.name, e2, exc_info=True)
-                return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+        """Send a URL image as a Telegram photo (``telegram_url_photo``)."""
+        return await send_url_photo(self, chat_id, image_url, caption, reply_to, metadata, text_fallback=lambda: super(
+            TelegramAdapter, self).send_image(chat_id, image_url, caption, reply_to, metadata=metadata))
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

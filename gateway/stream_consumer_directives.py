@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from gateway.platforms.base import HTML_IMAGE_TAG_PATTERN, MD_IMAGE_TAG_PATTERN, BasePlatformAdapter
+from gateway.platforms.base_image_tags import find_images, remove_image_tags
 
 # A delivery directive still being typed on the open (last) line: "MEDIA:" the cleaner has not
 # stripped yet whose remainder can still become a path (MEDIA_TAG_CLEANUP_RE's openers: a quote,
@@ -40,14 +40,7 @@ def strip_image_tags_for_display(text: str) -> str:
     """
     if "![" not in text and "<img" not in text:
         return text
-    images, _ = BasePlatformAdapter.extract_images(text)
-    if not images:
-        return text
-    urls = {url for url, _ in images}
-    for pattern, url_group in ((MD_IMAGE_TAG_PATTERN, 2), (HTML_IMAGE_TAG_PATTERN, 1)):
-        text = re.sub(f"(?:{pattern})(?:\\r?\\n){{0,2}}",
-                      lambda m, g=url_group: "" if m.group(g) in urls else m.group(0), text)
-    return text
+    return remove_image_tags(text, {url for url, _ in find_images(text)}, trailing=r"(?:\r?\n){0,2}")
 
 
 def has_pending_media_directive(cleaned: str) -> bool:

@@ -22,6 +22,26 @@ export interface DeepLinkProtocolOptions {
   log: (line: string) => void
 }
 
+/**
+ * `hermes://launch` opens and focuses the app and does nothing else: Electron main handles it
+ * and nothing it carries (path, query) ever reaches the renderer. It is the link to publish
+ * when a page only wants to bring Hermes up.
+ */
+export const LAUNCH_DEEP_LINK_HOST = 'launch'
+
+export function isLaunchDeepLink(url: URL): boolean {
+  return url.hostname === LAUNCH_DEEP_LINK_HOST
+}
+
+/** The first `<scheme>://` URL in a launch's argv, if any. */
+export function extractDeepLink(argv: unknown, schemes: readonly string[]): string | null {
+  if (!Array.isArray(argv)) {
+    return null
+  }
+
+  return argv.find(a => typeof a === 'string' && schemes.some(s => a.startsWith(`${s}://`))) || null
+}
+
 export function registerDeepLinkProtocol(options: DeepLinkProtocolOptions): void {
   const { app, protocol, env, defaultApp, argv, execPath, resolve, log } = options
 

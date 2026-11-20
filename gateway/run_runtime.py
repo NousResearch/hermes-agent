@@ -839,7 +839,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     TURN_SETTLE_SECONDS (clamped to ``budget``, what the stop's watchdog leash has left, minus
     STOP_TAIL_RESERVE_SECONDS) is logged and left running for recovery. The stop sequence continues:
     the executor quiesce skips the DB close while a writer is live, and process exit releases
-    the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
+    the ownership lock, so raising here would only skip teardown until the watchdog forces the exit."""
     authorities = _authorities(runner)
     stop_managed_turns(runner, reason)
     from gateway.session_llm_oneshot import stop as stop_oneshots

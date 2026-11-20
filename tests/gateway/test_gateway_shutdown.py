@@ -1,5 +1,8 @@
 import asyncio
+import os
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -405,3 +408,108 @@ async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
         done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
     assert done is True
     assert calls == [1]
+
+
+# A real stop in a disposable process, so the watchdog's real os._exit ends only that process. The
+# watchdog stop() arms is started only once the stop has unwound, on a short leash: its expiry then
+# follows whatever the stop did, on any runner. The child is outside pytest's fences, so it gets a
+# seeded home, an empty managed dir (without PYTEST_CURRENT_TEST nothing else skips /etc/hermes) and
+# loads no .env (a checkout .env overrides the shell when the home has none), and it bounds itself: on
+# a Windows venv the parent's timeout reaches only the launcher shim.
+_STOP_WATCHDOG_CHILD = '''
+import asyncio, logging, os, sys, threading
+deadline = threading.Timer(60.0, os._exit, args=(97,))
+deadline.daemon = True
+deadline.start()
+repo_root, ending = sys.argv[1:3]
+sys.path.insert(0, repo_root)
+
+import hermes_cli.env_loader as env_loader
+env_loader.load_hermes_dotenv = lambda **_kwargs: []
+
+from unittest.mock import AsyncMock
+
+from gateway import run_runtime, run_shutdown
+from tests.gateway.restart_test_helpers import make_restart_runner
+
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr, force=True)
+armed, real_arm = [], run_shutdown.arm_shutdown_watchdog
+run_shutdown.arm_shutdown_watchdog = lambda _delay_s, *, done_event=None, **kw: armed.append((done_event, kw))
+
+
+async def main():
+    settling = asyncio.Event()
+
+    async def settle(*_args, **_kwargs):
+        settling.set()
+        if ending == "phase_raises":
+            raise RuntimeError("settle failed")
+        await asyncio.Event().wait()
+
+    if ending != "completes":
+        run_runtime.settle_gateway_runtime = settle
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    stopping = asyncio.create_task(runner.stop())
+    if ending == "stop_cancelled":
+        await asyncio.wait_for(settling.wait(), 30)
+        stopping.cancel()
+    try:
+        await stopping
+    except (Exception, asyncio.CancelledError) as exc:
+        print("stop ended:", type(exc).__name__, flush=True)
+    print("shutdown_event set:", runner._shutdown_event.is_set(), "armed:", len(armed), flush=True)
+    for done_event, kwargs in armed:
+        real_arm(0.2, done_event=done_event, **kwargs)
+    for thread in [t for t in threading.enumerate() if t.name == "gateway-shutdown-watchdog"]:
+        await asyncio.to_thread(thread.join)
+    print("watchdog stood down", flush=True)
+
+
+asyncio.run(main())
+'''
+
+
+def _run_stop_child(tmp_path, ending):
+    child = tmp_path / "stop_child.py"
+    repo_root = str(Path(__file__).resolve().parents[2])
+    child.write_text(_STOP_WATCHDOG_CHILD, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("terminal:\n  backend: local\n", encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if key != "PYTEST_CURRENT_TEST"}  # arms it
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    env.update(HERMES_HOME=str(home), HERMES_MANAGED_DIR=str(managed), HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"),
+               PYTHONIOENCODING="utf-8")
+    return subprocess.run([sys.executable, str(child), repo_root, ending], cwd=tmp_path, env=env,
+                          stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=120, check=False)
+
+
+@pytest.mark.parametrize("ending", ["phase_raises", "stop_cancelled"])
+def test_stop_that_does_not_complete_is_still_ended_by_the_watchdog(tmp_path, ending):
+    """A stop that raises or is cancelled midway leaves teardown as unfinished as one that hangs:
+    nothing releases ``wait_for_shutdown()``, so the thread watchdog must stay armed and force the
+    exit (#158360). Cancelling a task that awaits ``_stop_task`` tunnels into it (#12875)."""
+    proc = _run_stop_child(tmp_path, ending)
+
+    output = f"{proc.stdout}\n{proc.stderr[-3000:]}"
+    assert "shutdown_event set: False armed: 1" in proc.stdout, output
+    assert "watchdog stood down" not in proc.stdout, output
+    assert proc.returncode == 1, output
+    assert "Gateway shutdown watchdog fired" in proc.stderr, output  # the watchdog's exit, not a crash
+    if ending == "phase_raises":
+        assert "Gateway stop failed" in proc.stderr, output
+        assert "RuntimeError: settle failed" in proc.stderr, output
+
+
+def test_stop_that_completes_disarms_the_watchdog(tmp_path):
+    """The exit after a completed stop keeps its own exit code: the watchdog stands down."""
+    proc = _run_stop_child(tmp_path, "completes")
+
+    output = f"{proc.stdout}\n{proc.stderr[-3000:]}"
+    assert "shutdown_event set: True armed: 1" in proc.stdout, output
+    assert "watchdog stood down" in proc.stdout, output
+    assert proc.returncode == 0, output
+    assert "Gateway shutdown watchdog fired" not in proc.stderr, output

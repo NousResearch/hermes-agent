@@ -27,8 +27,7 @@ from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_option
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
 from tools.skill_usage import read_skill_name
 from tools.skills_sync_optional import (
-    _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _optional_skill_index,
-    _read_hub_install_paths,
+    _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
 from utils import atomic_write_text
 
@@ -396,15 +395,12 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]
             logger.debug("Could not copy %s: %s", desc_md, e)
 
 
-def _retired_skill_notices(active_removed: list[tuple[str, str]]) -> dict[str, list[str]]:
-    """Report active leftovers that are not managed by the Hub, including after optional backfill."""
+def _retired_kept(active_removed: list[tuple[str, str]]) -> list[str]:
+    """Active leftovers of skills that left the bundle and are not Hub-managed, read after the optional
+    backfill. Splitting them by catalog is left to the update report: indexing optional-skills/
+    would add measurable cost to every launch's sync."""
     hub_paths = _read_hub_install_paths() if active_removed else set()
-    unmanaged = sorted({name for name, path in active_removed if path not in hub_paths})
-    optional = _optional_skill_index() if unmanaged else {}
-    return {
-        "retired_optional": [name for name in unmanaged if name in optional],
-        "retired_removed": [name for name in unmanaged if name not in optional],
-    }
+    return sorted({name for name, path in active_removed if path not in hub_paths})
 
 
 def sync_skills(quiet: bool = False) -> dict:
@@ -418,7 +414,7 @@ def sync_skills(quiet: bool = False) -> dict:
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
                 "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": [],
-                "retired_optional": [], "retired_removed": []}
+                "retired_kept": []}
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     if essential_only:
@@ -474,7 +470,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "cleaned": cleaned, "suppressed": st.suppressed, "relocated": st.relocated,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": backfilled,
-        **_retired_skill_notices(active_removed),
+        "retired_kept": _retired_kept(active_removed),
         "shadowed_by_external": st.shadowed_by_external,
         "skipped_opt_out": essential_only}  # lets callers report "opted out", not a normal sync
 

@@ -2637,19 +2637,6 @@ def _claim_is_live(trow) -> bool:
     )
 
 
-def _worker_handoff_guard(expected_run_id: Optional[int]) -> tuple[str, tuple]:
-    """A Goal handoff may return from its judge before the expired lease is reaped."""
-    if expected_run_id is None:
-        return "", ()
-    now = int(time.time())
-    return (
-        " AND current_run_id = ? AND (NOT goal_mode OR (status = 'running' AND claim_expires >= ?"
-        " AND EXISTS (SELECT 1 FROM task_runs WHERE id = tasks.current_run_id"
-        " AND ended_at IS NULL AND claim_expires >= ?)))",
-        (int(expected_run_id), now, now),
-    )
-
-
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2684,11 +2671,6 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
-    run_guard, run_params = _worker_handoff_guard(expected_run_id)
-    if run_guard and not conn.execute(
-        "SELECT 1 FROM tasks WHERE id = ?" + run_guard, (task_id, *run_params),
-    ).fetchone():
-        return False
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -2697,14 +2679,8 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        run_guard, run_params = _worker_handoff_guard(expected_run_id)
-        if acceptance is not None:
-            if run_guard and not conn.execute(
-                "SELECT 1 FROM tasks WHERE id = ?" + run_guard, (task_id, *run_params),
-            ).fetchone():
-                return False
-            if not record_acceptance(conn, task_id, acceptance):
-                return False
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance, expected_run_id):
+            return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
@@ -2728,6 +2704,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
+        run_guard, run_params = _worker_handoff_guard(expected_run_id)
         if conn.execute(sql + run_guard, (result, now, task_id, *run_params)).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -4221,6 +4198,7 @@ from hermes_cli.kanban_db_boards import (
 from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
+    worker_handoff_guard as _worker_handoff_guard,
     write_txn,
 )
 from hermes_cli.kanban_db_workspace import (

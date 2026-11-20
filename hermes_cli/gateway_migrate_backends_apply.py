@@ -831,6 +831,18 @@ def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -
     return EXIT_ROLLED_BACK if final_state == "rolled_back" else EXIT_OK
 
 
+def _detached_respawn_refused(host, m: Optional[dict]) -> Optional[str]:
+    """Why ``--restore --detach`` refuses before starting the background run, else None: under systemd the
+    run is a transient unit, and a hand-started backend it started again would be stopped with it."""
+    from hermes_cli.gateway_migrate_backends_plan import hermes_command
+    rec = (m or {}).get("old_backend") or {}
+    if rec.get("supervisor") != "manual" or not rec.get("was_active") or host.gateway_kind() != "systemd":
+        return None
+    return (f"the old backend was started by hand, and a background run is a transient systemd unit that stops "
+            f"what it starts when the run ends; run it from a terminal, without --detach: "
+            f"{hermes_command(host.home, powershell=os.name == 'nt')} gateway migrate --backends --restore")
+
+
 def _restore_refused(host, m: dict, detached: bool) -> Optional[int]:
     """The exit code of a --restore that must change nothing (prints why and the manual steps), else None."""
     rec = m.get("old_backend") or {}
@@ -1264,6 +1276,13 @@ def cmd_restore(host, args) -> int:
                            exit_code=EXIT_BLOCKED)
         return EXIT_BLOCKED
     if getattr(args, "detach", False):
+        if (why := _detached_respawn_refused(host, m)) is not None:  # the background run would refuse too
+            if getattr(args, "json", False):
+                print(json.dumps({"detached": False, "mode": "restore", "outcome": "refused",
+                                  "message": f"Nothing changed: {why}."}))
+            else:
+                print(f"✗ Nothing changed: {why}.")
+            return EXIT_BLOCKED
         return detach(host, args, mode="restore")
     if (inside := _in_gateway_unit(host, m)) is not None:
         reason = f"this run is inside {inside}, which the restore stops; run it from a terminal or with --detach"

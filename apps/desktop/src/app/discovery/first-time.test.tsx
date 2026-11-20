@@ -473,6 +473,7 @@ describe('the developer-view offer in a chat about code (C6)', () => {
 
     fireEvent.pointerEnter(preview)
     expect($interfaceMode.get()).toBe('advanced')
+    expect(window.localStorage.getItem('hermes.desktop.interfaceMode.v1')).toBe('simple')
     fireEvent.pointerLeave(preview)
     expect($interfaceMode.get()).toBe('simple')
 

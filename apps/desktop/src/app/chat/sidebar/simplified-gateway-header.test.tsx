@@ -8,7 +8,7 @@ import { en } from '@/i18n/en'
 import { $confirmRequest } from '@/store/confirm'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $gatewayState } from '@/store/session'
 import { stubMenuDomApis } from '@/test/jsdom'
 
@@ -57,7 +57,7 @@ beforeEach(() => {
   onToggle.mockReset()
   mocks.restart.mockReset()
   $gatewayState.set('open')
-  $interfaceMode.set('simple')
+  setInterfaceMode('simple')
 })
 
 afterEach(() => {
@@ -67,7 +67,7 @@ afterEach(() => {
   $fleetRoster.set(null)
   $connectionsRegistry.set(null)
   $gatewayState.set('idle')
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
 })
 
 describe('a machine row status', () => {
@@ -121,7 +121,7 @@ describe('a machine row status', () => {
   })
 
   it('adds the system panel and a confirmed Restart with developer chrome', async () => {
-    $interfaceMode.set('advanced')
+    setInterfaceMode('advanced')
     mount()
     fireEvent.click(statusButton())
     expect(screen.getByRole('button', { name: copy.openSystem })).toBeTruthy()

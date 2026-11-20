@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { getLogs } from '@/hermes'
 import { en } from '@/i18n/en'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 
 const mocks = vi.hoisted(() => ({
   notifyError: vi.fn(),
@@ -50,13 +50,13 @@ describe('GatewayMenuPanel reconnect action', () => {
   beforeEach(() => {
     mocks.reconnectGateway.mockReset().mockResolvedValue(undefined)
     mocks.notifyError.mockReset()
-    $interfaceMode.set('advanced')
+    setInterfaceMode('advanced')
     vi.mocked(getLogs).mockClear()
   })
 
   afterEach(() => {
     cleanup()
-    $interfaceMode.set('advanced')
+    setInterfaceMode('advanced')
   })
 
   it('shows reconnect while disconnected and disables it in flight', async () => {
@@ -90,7 +90,7 @@ describe('GatewayMenuPanel reconnect action', () => {
   })
 
   it('does not read logs in Simple mode until activity is expanded', async () => {
-    $interfaceMode.set('simple')
+    setInterfaceMode('simple')
     renderPanel('open')
     expect(getLogs).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: en.commandCenter.restartGateway })).toBeNull()

@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
-import { $interfaceMode, type InterfaceMode } from '@/store/interface-mode'
+import { $interfaceMode, type InterfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { setSidebarOpen } from '@/store/layout'
 import { $shellChoice } from '@/store/shell-variant'
 import { titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -17,14 +17,14 @@ let previousMode: InterfaceMode
 beforeEach(() => {
   previousMode = $interfaceMode.get()
   $shellChoice.set(null)
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
   $widthClass.set('wide')
   $narrowViewport.set(false)
   setSidebarOpen(true)
 })
 
 afterEach(() => {
-  $interfaceMode.set(previousMode)
+  setInterfaceMode(previousMode)
   $widthClass.set('wide')
   $narrowViewport.set(false)
   $shellChoice.set(null)

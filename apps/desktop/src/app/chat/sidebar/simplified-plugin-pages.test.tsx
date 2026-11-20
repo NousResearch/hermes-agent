@@ -7,7 +7,7 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { registry } from '@/contrib/registry'
 import { en } from '@/i18n/en'
-import { $interfaceMode } from '@/store/interface-mode'
+import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
 import { ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
@@ -42,7 +42,7 @@ it.each([
 
 it('keeps plugin pages reachable and respects visibility, preferences, and unloading', () => {
   const previousMode = $interfaceMode.get()
-  $interfaceMode.set('simple')
+  setInterfaceMode('simple')
 
   const dispose = registry.registerMany([
     { area: ROUTES_AREA, id: 'test-board-route', data: { path: '/board' }, render: () => null },
@@ -98,7 +98,7 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
   } finally {
     cleanup()
     dispose()
-    $interfaceMode.set(previousMode)
+    setInterfaceMode(previousMode)
   }
 })
 

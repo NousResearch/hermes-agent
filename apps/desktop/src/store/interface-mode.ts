@@ -51,11 +51,29 @@ const modeCodec: Codec<InterfaceMode> = {
   encode: mode => (mode === DEFAULT_INTERFACE_MODE ? null : mode)
 }
 
-export const $interfaceMode = persistentAtom<InterfaceMode>(
+/** The stored choice. Only {@link setInterfaceMode} writes it. */
+const $interfaceModePreference = persistentAtom<InterfaceMode>(
   INTERFACE_MODE_STORAGE_KEY,
   DEFAULT_INTERFACE_MODE,
   modeCodec
 )
+
+/** A transient override, in this window's memory only: the developer-view offer previews Advanced
+ *  through it (store/developer-view-offer.ts). Never stored, so closing the window mid-preview, or
+ *  another window of the machine, never sees it. */
+const $interfaceModePreview = atom<InterfaceMode | null>(null)
+
+/** The mode this window shows: the preview while there is one, else the stored choice. The one source
+ *  every reader resolves through, so nothing reads the raw preference by mistake. */
+export const $interfaceMode: ReadableAtom<InterfaceMode> = computed(
+  [$interfaceModePreference, $interfaceModePreview],
+  (preference, preview) => preview ?? preference
+)
+
+/** Show `mode` without storing it, or end the preview (null). */
+export function previewInterfaceMode(mode: InterfaceMode | null) {
+  $interfaceModePreview.set(mode)
+}
 
 const layoutScope = (): LayoutScope => ({
   mode: $interfaceMode.get(),
@@ -69,13 +87,27 @@ export const modeLayout = createLayoutPersistence(
   !isSecondaryWindow() && !isBrowserWindow() && !isHudWindow()
 )
 
+/** Store the choice; a preview in progress gives way to it. */
 export function setInterfaceMode(mode: InterfaceMode) {
-  modeLayout.change({ ...modeLayout.scope, mode }, () => $interfaceMode.set(mode))
+  const publish = () => {
+    $interfaceModePreview.set(null)
+    $interfaceModePreference.set(mode)
+  }
+
+  // Previewing `mode` already moved the layout to its scope, where a change is a no-op that would
+  // never publish: store the choice directly.
+  if (modeLayout.scope.mode === mode) {
+    publish()
+
+    return
+  }
+
+  modeLayout.change({ ...modeLayout.scope, mode }, publish)
 }
 
 // Both inputs are machine-wide preferences that also change from another window (a storage
-// event sets the atom directly). Follow every change here so the scope never lags its inputs;
-// a change already made through `setInterfaceMode` is a no-op by then.
+// event sets the atom directly), and the mode also follows a preview. Follow every change here so
+// the scope never lags its inputs; a change already made through `setInterfaceMode` is a no-op by then.
 $interfaceMode.listen(() => modeLayout.change(layoutScope()))
 $shellChoice.listen(() => modeLayout.change(layoutScope()))
 

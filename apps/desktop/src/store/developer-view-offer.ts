@@ -6,14 +6,15 @@
  * - Offered once: until it is `accepted` (Advanced, for good) or `declined` (Not now).
  * - Previewed: while its preview row is hovered or focused the window shows Advanced, and goes back
  *   to Simple when the pointer or focus leaves, unless the person turned it on meanwhile; a tap (touch
- *   has no hover) starts the preview too.
+ *   has no hover) starts the preview too. The preview is the interface mode's in-memory override:
+ *   only Turn on stores Advanced.
  */
 
 import { atom, computed } from 'nanostores'
 
 import { $guidanceLedger, markGuidance } from './guidance-ledger'
 import { recordIaAction } from './ia-metrics'
-import { $interfaceMode, setInterfaceMode } from './interface-mode'
+import { $interfaceMode, previewInterfaceMode, setInterfaceMode } from './interface-mode'
 import { $portalShell } from './shell-variant'
 
 /** The window shows Advanced only because the offer is being previewed. */
@@ -32,11 +33,11 @@ export function noteDeveloperViewOffered(): void {
 export function previewDeveloperView(on: boolean): void {
   if (on && !$developerViewPreviewing.get() && $interfaceMode.get() === 'simple') {
     $developerViewPreviewing.set(true)
-    setInterfaceMode('advanced')
+    previewInterfaceMode('advanced')
     recordIaAction('ia.developer_view.previewed')
   } else if (!on && $developerViewPreviewing.get()) {
     $developerViewPreviewing.set(false)
-    setInterfaceMode('simple')
+    previewInterfaceMode(null)
   }
 }
 

@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest'
 
 import { I18nProvider, resolveTranslations, useI18n } from '@/i18n'
 import type { I18nContextValue } from '@/i18n'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import {
   $sidebarListGroupIds,
   $sidebarOrdering,
@@ -29,7 +29,7 @@ afterEach(() => {
 })
 
 it('translates the live filter menu while preserving selected values and the current grouping order', async () => {
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
   setSidebarGrouping('date')
   setSidebarOrdering('manual')
   $sidebarListGroupIds.set(['today'])

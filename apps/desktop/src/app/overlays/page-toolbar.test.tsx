@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $widthClass } from '@/app/redesign/breakpoints'
 import { $historyPosition } from '@/app/shell/history-position'
 import { $shellSheet } from '@/app/shell/shell-sheet'
-import { $interfaceMode } from '@/store/interface-mode'
+import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $sidebarOpen, setSidebarOpen } from '@/store/layout'
 
 import { usePageSidebarOpen } from './page-sidebar'
@@ -44,7 +44,7 @@ it('offers "show sidebar" beside Back only while a page panel is folded away', (
 
 it('brings a folded page panel back from a floating button at the stage in Simple mode, not the band', () => {
   const previousMode = $interfaceMode.get()
-  $interfaceMode.set('simple')
+  setInterfaceMode('simple')
   render(
     <>
       <PageToolbar onBack={vi.fn()} />
@@ -59,7 +59,7 @@ it('brings a folded page panel back from a floating button at the stage in Simpl
   fireEvent.click(reveal)
   expect($sidebarOpen.get()).toBe(true)
   expect(screen.queryByRole('button', { name: 'Show panel' })).toBeNull()
-  $interfaceMode.set(previousMode)
+  setInterfaceMode(previousMode)
 })
 
 it('goes back through the window history when there is an entry behind the page, else closes it', () => {

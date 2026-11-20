@@ -20,7 +20,7 @@ import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { translatePlugin } from '@/i18n/plugin-i18n'
 import { host } from '@/sdk'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $shellChoice } from '@/store/shell-variant'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -51,7 +51,7 @@ afterAll(() => {
 afterEach(() => {
   cleanup()
   $shellChoice.set(null)
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
   $widthClass.set('wide')
 })
 
@@ -133,7 +133,7 @@ describe.each([
   describe.each(['simple', 'advanced'] as const)('%s mode', mode => {
     const setShell = () => {
       $shellChoice.set(portal)
-      $interfaceMode.set(mode)
+      setInterfaceMode(mode)
     }
 
     it('words its own strings in the shell’s wording layer', () => {

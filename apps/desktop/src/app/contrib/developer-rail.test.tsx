@@ -16,7 +16,7 @@ import {
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
 import { $reviewScopeCwd, $reviewScopeTarget, closeReview } from '@/store/review'
@@ -34,7 +34,7 @@ vi.mock('../right-sidebar/terminal/reveal-focus', () => ({ toggleTerminalPane: v
 const disposers: (() => void)[] = []
 
 beforeEach(() => {
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
   $previewTabs.set([])
   $rightRailActiveTabId.set(null)
   $shellChoice.set(true)
@@ -173,15 +173,15 @@ it('updates Preview visibility when the selected browser changes without a layou
 })
 
 it('shows developer tools only in Advanced mode with the redesign enabled', () => {
-  $interfaceMode.set('simple')
+  setInterfaceMode('simple')
   mount()
   expect(screen.queryByRole('button', { name: 'Terminal' })).toBeNull()
-  act(() => $interfaceMode.set('advanced'))
+  act(() => setInterfaceMode('advanced'))
   expect(screen.getByRole('button', { name: 'Terminal' })).toBeTruthy()
-  act(() => $interfaceMode.set('simple'))
+  act(() => setInterfaceMode('simple'))
   expect(screen.queryByRole('button', { name: 'Terminal' })).toBeNull()
   act(() => {
-    $interfaceMode.set('advanced')
+    setInterfaceMode('advanced')
     $shellChoice.set(false)
   })
   expect(screen.queryByRole('navigation')).toBeNull()

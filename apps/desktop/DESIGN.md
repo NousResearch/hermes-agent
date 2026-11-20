@@ -1309,7 +1309,8 @@ chat and Show ideas in place of the chips; the next finished task settles it). A
 "How's Hermes going so far?" (`check-in.tsx`, C7) takes the heading's place until it is answered or
 dismissed; Dismiss puts it in the tray. Someone in Simple whose chat produced a code artifact is
 offered the developer view (`developer-view-offer.tsx`, C6: Advanced, previewed while its row is
-hovered, focused or tapped) once. Section 03 has its own 36px buttons (`.discovery-landing-action`).
+hovered, focused or tapped through the interface mode's in-memory override, stored only by Turn on)
+once. Section 03 has its own 36px buttons (`.discovery-landing-action`).
 
 A sign up that comes back without signing the visitor in (`?hermes_sign_in=failed`, read once) opens
 **"Let's try signing in again"** (`sign-in-recovery.tsx`, 18732:33066 / 18695:19224) over the chat, the

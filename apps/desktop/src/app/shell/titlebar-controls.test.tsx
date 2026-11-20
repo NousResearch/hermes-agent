@@ -10,7 +10,7 @@ import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
-import { $interfaceMode } from '@/store/interface-mode'
+import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
   $leftSideOpen,
@@ -414,7 +414,7 @@ it('offers the Advanced band only the way back to a hidden sidebar: the open Cha
 it('brings a hidden sidebar back in Simple mode from one floating button at the stage, not the band', () => {
   const previousMode = $interfaceMode.get()
   $shellChoice.set(null)
-  $interfaceMode.set('simple')
+  setInterfaceMode('simple')
   setSidebarOpen(false)
   renderControls('/')
 
@@ -436,7 +436,7 @@ it('brings a hidden sidebar back in Simple mode from one floating button at the 
   act(() => $narrowViewport.set(false))
   cleanup()
   setSidebarOpen(true)
-  $interfaceMode.set(previousMode)
+  setInterfaceMode(previousMode)
 })
 
 describe('the redesigned band on a compact window', () => {

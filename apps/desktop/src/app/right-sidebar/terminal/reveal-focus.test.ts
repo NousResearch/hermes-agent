@@ -23,7 +23,7 @@ import {
   setPaneCollapsed
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { $activeTerminalId, $terminals } from './terminals'
@@ -343,7 +343,7 @@ describe('terminal reveal keyboard focus', () => {
 
 it.each([false, true])('hides the closed terminal rail only in the redesign (%s), preserving shells on reopen', redesigned => {
   installRaf()
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
   $shellChoice.set(redesigned)
   seedLayout()
   const terminal = { id: 'retained-shell', kind: 'user' as const, title: 'Shell', cwd: '/tmp', auto: true }

@@ -10,7 +10,7 @@ import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { $profiles } from '@/store/profile'
 import { $shellChoice } from '@/store/shell-variant'
@@ -181,7 +181,7 @@ afterEach(() => {
   $heldRoutine.set(null)
   setCronFocusJobId(null)
   setCronJobs([])
-  $interfaceMode.set('advanced')
+  setInterfaceMode('advanced')
   $shellChoice.set(null)
   vi.clearAllMocks()
 })

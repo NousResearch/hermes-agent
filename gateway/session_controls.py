@@ -276,6 +276,8 @@ class AuthorityConnection:
         handlers.update(tui_ops_handlers(self))
         from gateway.session_tui_side import handlers as side_handlers
         handlers.update(side_handlers(self))
+        from gateway.session_hello import handlers as hello_handlers
+        handlers.update(hello_handlers(self))
         from gateway.session_llm_oneshot import handlers as oneshot_handlers
         handlers.update(oneshot_handlers(self))
         from gateway.session_teammate_waits import handlers as teammate_wait_handlers

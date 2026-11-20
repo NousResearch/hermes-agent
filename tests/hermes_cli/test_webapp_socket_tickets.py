@@ -281,3 +281,78 @@ def test_a_signed_in_browser_opens_its_voice_streams_with_their_own_tickets(weba
     finally:
         clear_providers()
         _reset_for_tests()
+
+
+def test_a_wake_burst_mints_every_ticket_in_one_request(webapp):
+    """A reconnect burst dials one socket per session (N up to 9 measured). The batch mints them all
+    in ONE POST, and each ticket is still a real single-use ticket for its own socket."""
+    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+
+    client = webapp.client
+    response = client.post("/api/webapp/socket-ticket", headers=_SESSION,
+                           json={"sockets": ["gateway", "gateway", "host-terminal"]})
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert set(body) == {"tickets", "ttl_seconds"}
+    tickets = body["tickets"]
+    assert [entry["socket"] for entry in tickets] == ["gateway", "gateway", "host-terminal"]
+    assert all(set(entry) == {"socket", "ticket", "ttl_seconds"} and 0 < entry["ttl_seconds"] <= 60
+               for entry in tickets)
+    assert len({entry["ticket"] for entry in tickets}) == 3
+    # Batching the round trip did not batch the grant: each is one-use and bound to its own socket.
+    assert consume_ticket(tickets[0]["ticket"])["socket"] == "gateway"
+    with pytest.raises(TicketInvalid):
+        consume_ticket(tickets[0]["ticket"])
+
+
+def test_a_batch_mints_n_tickets_of_one_socket_with_count(webapp):
+    body = webapp.client.post("/api/webapp/socket-ticket", headers=_SESSION,
+                              json={"socket": "gateway", "count": 4}).json()
+    assert [entry["socket"] for entry in body["tickets"]] == ["gateway"] * 4
+    assert len({entry["ticket"] for entry in body["tickets"]}) == 4
+
+
+@pytest.mark.parametrize("body", [
+    {"sockets": []},
+    {"sockets": ["nope"]},
+    {"socket": "gateway", "count": 0},
+    {"socket": "gateway", "count": "3"},
+    {"sockets": ["gateway"] * 65},
+    {"sockets": "gateway"},
+    {},
+])
+def test_a_batch_a_client_cannot_read_is_refused(webapp, body):
+    response = webapp.client.post("/api/webapp/socket-ticket", headers=_SESSION, json=body)
+    assert response.status_code in (400, 404, 429), (body, response.status_code)
+
+
+def test_an_oversized_count_is_refused_before_a_list_of_that_size_exists(webapp):
+    """The cap is read off the NUMBER in the request, never off a list built from it.
+
+    ``_batch_socket_names`` multiplies ``[socket] * count`` for the ``count`` form, so a bound that
+    reads ``len(names)`` runs only *after* that allocation: a ~50-byte body then buys a count-sized
+    list on the serving process before it is refused.
+
+    * ``2 ** 100`` first: not an index CPython can hold, so an implementation that builds the list
+      before the check answers OverflowError, never 429.
+    * ``10 ** 9``: the row the earlier review measured at ~12 s / ~8 GB on the build-first code (the
+      same path measured 242 ms at 20,000,000). Ordered after the row above so an unfixed run stops
+      on the cheap one instead of spending that memory again.
+    * ``MAX_BATCH_TICKETS + 1``: the boundary, through the ``count`` form this time.
+    """
+    from hermes_cli.web_routers.webapp import MAX_BATCH_TICKETS
+
+    for count in (2 ** 100, 10 ** 9, MAX_BATCH_TICKETS + 1):
+        response = webapp.client.post("/api/webapp/socket-ticket", headers=_SESSION,
+                                      json={"socket": "gateway", "count": count})
+        assert response.status_code == 429, (count, response.status_code, response.text)
+
+
+def test_a_batch_is_still_authenticated_before_anything_is_minted(webapp):
+    assert webapp.client.post("/api/webapp/socket-ticket", json={"sockets": ["gateway"]}).status_code == 401
+
+
+def test_a_bodyless_post_keeps_the_single_ticket_answer(webapp):
+    body = webapp.client.post("/api/webapp/socket-ticket", params={"socket": "gateway"}, headers=_SESSION).json()
+    assert set(body) == {"ticket", "ttl_seconds"}

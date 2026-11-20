@@ -1,5 +1,6 @@
 import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
+import { createSessionListRevalidation } from '@/lib/session-list-revalidation'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -112,25 +113,63 @@ function pageWindow(sessions: SessionInfo[], limit: number): SessionInfo[] {
   return [...recent, ...sessions.slice(limit).filter(session => session.pinned)]
 }
 
+// Revalidation state for listSessions (#C3 desktop half): the validator +
+// derived page live beside each (descriptor, path+query). The descriptor is
+// the backend the read rides — (connection, profile) — so one validator is
+// never sent to another backend.
+const sessionListRevalidation = createSessionListRevalidation()
+
+/** Drop every stored list validator (tests; a connection re-point re-probes anyway). */
+export function resetSessionListRevalidation(): void {
+  sessionListRevalidation.reset()
+}
+
+function sessionListKey(scope: ReturnType<typeof profileScoped>, path: string): string {
+  return `${ambientOwnerConnectionId() ?? 'untagged'}\u0000${scope.profile || ''}\u0000${path}`
+}
+
 export async function listSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
-  const result = await hermesApi<PaginatedSessions>({
-    ...profileScoped(),
-    path:
-      `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}`,
-    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
-  })
+  const path =
+    `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+    `&archived=${archived}&order=${order}`
 
-  return {
+  const scope = profileScoped()
+  const key = sessionListKey(scope, path)
+
+  const read = await sessionListRevalidation.read<PaginatedSessions>(key, ifNoneMatch =>
+    hermesApi<unknown>({
+      ...scope,
+      path,
+      conditional: true,
+      ...(ifNoneMatch ? { ifNoneMatch } : {}),
+      timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+    })
+  )
+
+  // 304: the server confirmed the rows it last served — zero wire JSON, zero
+  // re-parse, the SAME derived object back (store no-op referential identity).
+  if (read.notModified && read.value) {
+    return read.value
+  }
+
+  const result = read.raw as PaginatedSessions
+
+  const value: PaginatedSessions = {
     ...result,
     sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
     offset: 0
   }
+
+  if (read.etag) {
+    sessionListRevalidation.remember(key, read.etag, value)
+  }
+
+  return value
 }
 
 // Unified, read-only session list aggregated across ALL profiles. Served by the

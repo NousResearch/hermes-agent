@@ -772,7 +772,7 @@ export interface SharedMetricsDesktopFeatureUseParams {
 export interface OkResult {
   ok?: boolean
 }
-/** ``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame duration bucket), never message text. */
+/** ``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|reconnect_episode|slow_frame; ``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop reason, reconnect-total bucket, frame duration bucket), never message text. */
 export interface SharedMetricsDesktopFrictionParams {
   profile?: string | null
   kind: string
@@ -2021,6 +2021,7 @@ export interface PingResult {
 }
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
+  resumed_handshake?: boolean
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
@@ -5494,6 +5495,34 @@ export interface CanonicalReplaceQueuedParams {
   display_kind?: 'hidden' | null
   title_preview?: string | null
 }
+/** What the reconnecting client holds, sent as its FIRST frame once ``gateway.ready`` (or ``gateway.capabilities``) advertised ``resumed_handshake``. */
+export interface ClientHelloParams {
+  capabilities?: ClientCapabilitiesParams | null
+  replay_epoch?: string | null
+  watermarks?: Record<string, number>
+  session_epochs?: Record<string, string>
+}
+/** The ``client.hello`` answer — capabilities, skin identity, every session's replay and the open server→client requests, in ONE response. */
+export interface SessionResumedResult {
+  capabilities_result: ClientCapabilitiesResult
+  skin_etag?: string
+  per_session_replay?: SessionReplaySnapshot[]
+  open_requests?: OpenRequestEntry[]
+}
+/** One session's replay window: the ``session.events.since`` answer batched, plus the session it belongs to. ``open_requests`` stays None here — the answer carries the deduped union at the top level, so a reconnecting client's questions are re-delivered once. */
+export interface SessionReplaySnapshot {
+  events: CanonicalReplayEvent[]
+  latest_seq: number
+  last_sequence: number
+  epoch: string
+  replay_epoch: string
+  truncated: boolean
+  snapshot_required: boolean
+  count: number
+  open_requests?: OpenRequestEntry[] | null
+  session_id: string
+  error?: string | null
+}
 export interface CanonicalConfigGetResult {
   value?: string | null
   display?: string | null
@@ -5930,6 +5959,8 @@ export interface GatewayReadyPayload {
   replay_epoch: string
   heartbeat?: boolean | null
   session_authority?: boolean | null
+  skin_etag?: string
+  resumed_handshake?: boolean | null
 }
 /** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
 export interface OnboardingEndedPayload {
@@ -7179,6 +7210,8 @@ export interface CanonicalRpcMethods {
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  /** The client's FIRST frame after a ``resumed_handshake`` ready: apply its capabilities and answer the whole post-upgrade handshake in ONE response — ``capabilities_result`` (as ``client.capabilities`` answers), ``skin_etag``, one replay window per watermark and the deduped ``open_requests``. */
+  'client.hello': { params: ClientHelloParams; result: SessionResumedResult }
   /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
   'command.observe': { params: CommandObserveParams; result: CommandObserveResult }
   'config.get': { params: ConfigGetParams; result: CanonicalConfigGetResult }
@@ -7268,6 +7301,7 @@ export const CANONICAL_RPC_METHODS = [
   'bot_relay.settle',
   'clarify.lock',
   'clarify.respond',
+  'client.hello',
   'command.observe',
   'config.get',
   'config.set',

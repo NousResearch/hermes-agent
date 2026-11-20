@@ -1,5 +1,6 @@
 import {
   type ConnectionState,
+  type GatewayClientOptions,
   type GatewayEvent,
   type GatewayEventName,
   JsonRpcGatewayClient,
@@ -102,7 +103,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private readonly deliveredPrompts = new Map<string, { sessionId: string; profile: string }>()
   private readonly sessionProfiles = new Map<string, Set<string>>()
   private readonly profileAliases = new Map<string, string>()
-  private readonly replayProfiles = new Map<string, { sessionId: string; profile: string }>()
+  private replayProfiles = new Map<string, { sessionId: string; profile: string }>()
   private readonly displayProfiles = new Map<string, string>()
   private readonly eventRoutes = new WeakMap<GatewayEvent, string>()
   private readonly reconciledEpochs = new Set<string>()
@@ -204,6 +205,15 @@ export class HermesGateway extends JsonRpcGatewayClient {
     for (const [epoch, owner] of this.replayProfiles) {
       if (!(owner.sessionId in cursors)) { this.replayProfiles.delete(epoch) }
     }
+  }
+
+  // A wake's replacement generation inherits the cursor's routing table with the cursor itself
+  // (#C2a): an epoch's owner lives exactly as long as the cursor it qualifies, and the successor
+  // replays frames whose replay_epoch only that table can route to the right profile.
+  override inheritReplayState(from: HermesGateway): void {
+    super.inheritReplayState(from)
+
+    this.replayProfiles = from.replayProfiles
   }
 
   override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
@@ -570,8 +580,15 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
-  constructor() {
+  /**
+   * Options are the shared client's; the desktop fills in its own contract for everything it owns
+   * (error copy, monotonic request ids, the native socket). `beforeOpenRequests` is the one option a
+   * caller passes: the #C6 gate that holds replayed `open_requests` until this reconnect's
+   * re-resumes are out (see `store/reconnect-resume.ts`).
+   */
+  constructor(options: GatewayClientOptions = {}) {
     super({
+      ...options,
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,

@@ -1707,6 +1707,15 @@ export interface HermesApiRequest {
   // Keep that intent separate from passive hydration so the pool can reserve a
   // slot for the user's visible request.
   priority?: 'foreground'
+  // Opt in to conditional-GET revalidation for list reads (GET /api/sessions,
+  // the route that stamps content ETags): main sends `ifNoneMatch` when
+  // present and resolves the branded HermesApiConditionalEnvelope
+  // ({ etag, status, data }) instead of the bare parsed body — see
+  // electron/api-conditional.ts. 304 arrives as status 304 with `data: null`.
+  // An older main process ignores both fields and resolves the plain body, so
+  // callers capability-gate on the envelope brand.
+  conditional?: boolean
+  ifNoneMatch?: string
 }
 
 export interface HermesPreviewTarget {

@@ -1,52 +1,31 @@
 import { translateNow } from '@/i18n'
+import {
+  dialPrimaryRoute,
+  type GatewayReconnectHandler,
+  type GatewayReconnectOptions,
+  registerGatewayPrimaryRoute
+} from '@/store/gateway-supervisor'
 
-export type GatewayReconnectSource = 'manual' | 'restart-followthrough'
+/**
+ * The window's reconnect *request* surface: who owns the primary route, and how
+ * a caller asks for it to be re-dialed (#C5).
+ *
+ * The state this module used to hold — the single in-flight dial — lives in
+ * `store/gateway-supervisor.ts` now, with the epoch, the backoff ladder and the
+ * wake action. Nothing here keeps a promise or a timer: it maps the public
+ * "reconnect the window's gateway" request onto the supervisor's primary route,
+ * which is also the route a wake dials.
+ */
 
-export interface GatewayReconnectOptions {
-  /**
-   * Why the reconnect is running. `'manual'` (default) is an explicit user
-   * recovery — the handler may unconditionally re-dial, including retrying a
-   * credential that requires sign-in. `'restart-followthrough'` is the
-   * automatic hand-off after a gateway restart: the socket often SURVIVED
-   * (the restart targets the messaging gateway, not this client's backend),
-   * so the handler probes first instead of force-closing a healthy socket.
-   */
-  source?: GatewayReconnectSource
-}
-
-type GatewayReconnectHandler = (options?: GatewayReconnectOptions) => Promise<void> | void
-
-let activeHandler: GatewayReconnectHandler | null = null
-let inFlight: Promise<void> | null = null
-
-export function registerGatewayReconnect(handler: GatewayReconnectHandler): () => void {
-  activeHandler = handler
-
-  return () => {
-    if (activeHandler === handler) {
-      activeHandler = null
-    }
-  }
+export function registerGatewayReconnect(
+  handler: GatewayReconnectHandler,
+  ports: { reportsOpen?: () => boolean } = {}
+): () => void {
+  return registerGatewayPrimaryRoute({ dial: handler, reportsOpen: ports.reportsOpen })
 }
 
 export function reconnectGateway(options?: GatewayReconnectOptions): Promise<void> {
-  if (inFlight) {
-    return inFlight
-  }
-
-  const handler = activeHandler
-
-  if (!handler) {
-    return Promise.reject(new Error('Gateway reconnect is unavailable'))
-  }
-
-  inFlight = Promise.resolve()
-    .then(() => handler(options))
-    .finally(() => {
-      inFlight = null
-    })
-
-  return inFlight
+  return dialPrimaryRoute(options)
 }
 
 /** Toast button that re-dials the active connection — attached wherever a

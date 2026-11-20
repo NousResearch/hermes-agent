@@ -44,7 +44,9 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
+import { conditionalResultForRenderer } from './api-conditional'
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
+import { apiJsonFetch } from './api-json-fetch'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -564,6 +566,7 @@ import {
 } from './secret-storage-policy'
 import { selectPathsDialogProperties } from './select-paths-dialog'
 import { selectRunnableBinary } from './select-runnable-binary'
+import { createConditionalReadCache, normalizeConditionalResult } from './session-conditional-reads'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -5190,123 +5193,16 @@ function multipartBody(upload) {
 }
 
 function fetchJson(url, token, options: any = {}) {
-  // Retry policy lives in api-transport.ts: idempotent verbs retry on any
-  // transient transport error; POST/PUT/DELETE only when the request provably
-  // never reached the server (see shouldRetryRequest) — never double-submit.
-  return withRetry(
-    async (requestState: any) => {
-      // Mint inside each retry: a grant authorizes exactly one HTTP request.
-      const nativeHeaders = options.gatewayDescriptor
-        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url, HERMES_HOME, options.method || 'GET', options.upload ? undefined : options.body)
-        : null
-
-      return new Promise((resolve, reject) => {
-        const { body, contentType } = options.upload
-          ? multipartBody(options.upload)
-          : {
-              body: options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body)),
-              contentType: 'application/json'
-            }
-
-        const parsed = new URL(url)
-        const client = parsed.protocol === 'https:' ? https : http
-        const agent = jsonAgentFor(parsed.protocol)
-        const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-          return
-        }
-
-        const req = client.request(
-          parsed,
-          {
-            agent,
-            method: options.method || 'GET',
-            headers: {
-              ...headersForRemoteRequest(url),
-              ...(options.headers || {}),
-              'Content-Type': contentType,
-              ...(nativeHeaders || { 'X-Hermes-Session-Token': token }),
-              // RFC 8252 native flow authenticates the gated gateway with a bearer
-              // token instead of the loopback session-token header. When
-              // ``options.bearer`` is set we send Authorization: Bearer <token>;
-              // the gateway's OAuth gate verifies it via the provider stack with
-              // no cookie involved.
-              ...(options.bearer ? { Authorization: `Bearer ${options.bearer}` } : {}),
-              ...(body ? { 'Content-Length': String(body.length) } : {})
-            }
-          },
-          res => {
-            const chunks = []
-            res.on('error', reject)
-            res.on('data', chunk => chunks.push(chunk))
-            res.on('end', () => {
-              const text = Buffer.concat(chunks).toString('utf8')
-
-              if ((res.statusCode || 500) >= 400) {
-                reject(httpStatusError(res.statusCode, text, res.statusMessage))
-
-                return
-              }
-
-              // http.request never follows redirects, so any 3xx -- with an HTML
-              // login page, an empty body, whatever -- is the request bouncing
-              // off a proxy or a scheme/slash mismatch, never JSON.
-              if (res.statusCode >= 300) {
-                reject(htmlResponseError(url, res.statusCode, res.headers.location))
-
-                return
-              }
-
-              if (!text) {
-                resolve(null)
-
-                return
-              }
-
-              // A 2xx response whose body is HTML means the request fell through
-              // to the SPA index.html (e.g. an unregistered /api path). JSON.parse
-              // would throw an opaque `Unexpected token '<'` here, so surface a
-              // clear diagnostic with the offending URL instead.
-              const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-              const contentType = String(res.headers['content-type'] || '')
-
-              if (looksHtml || contentType.includes('text/html')) {
-                reject(htmlResponseError(url, res.statusCode))
-
-                return
-              }
-
-              try {
-                resolve(JSON.parse(text))
-              } catch {
-                reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
-              }
-            })
-          }
-        )
-
-        req.on('error', reject)
-        req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-        })
-
-        // From here the request goes on the wire: a later transport error can no
-        // longer prove the server didn't process it, so non-idempotent verbs must
-        // not be retried past this point.
-        requestState.bodySent = true
-
-        if (body) {
-          req.write(body)
-        }
-
-        req.end()
-      })
-    },
-    { method: options.method || 'GET' }
-  )
+  // The transport core (deps-wired) lives in api-json-fetch.ts so the
+  // conditional-GET seam is unit-testable without Electron.
+  return apiJsonFetch(url, token, options, {
+    defaultTimeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+    resolveTimeout: resolveTimeoutMs,
+    remoteHeaders: headersForRemoteRequest,
+    multipart: multipartBody,
+    nativeGatewayHeaders: (descriptor, requestUrl, method, body) =>
+      nativeGatewayHttpHeaders(descriptor as any, requestUrl, HERMES_HOME, method, body)
+  })
 }
 
 function fetchPublicJson(url, options: any = {}) {
@@ -6216,13 +6112,13 @@ function registerPowerResumeListeners() {
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
     onBatteryPower = powerMonitor.isOnBatteryPower()
-    // Pooled remote/SSH backends are also suspect after a wake (#93910): the
-    // renderer nudge above only re-drives the PRIMARY socket, while pooled
-    // tunnels have no renderer loop of their own. Bounded + coalesced inside;
-    // never a hot loop.
+    // Pooled remote/SSH backends are suspect after a wake too (#93910): only the
+    // PRIMARY socket has a renderer loop. Cheap probe on every signal, the
+    // destructive sweep coalesced inside (#C2a); never a hot loop.
     attachPowerResumeRemoteRevalidation({
       log: rememberLog,
       powerMonitor,
+      probe: () => revalidatePool(),
       revalidate: () => revalidateSuspectPoolAfterResume()
     })
   } catch {
@@ -9816,10 +9712,10 @@ async function fetchJsonForProfile(profile, path) {
 }
 
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
-async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
+async function requestJsonForProfile(profile: string, path: string, method: string, body?: string, opts: { ifNoneMatch?: string; conditional?: boolean } = {}) {
   const conn = await ensureBackend(profile)
 
-  return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+  return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, ...opts })
 }
 
 const globalRemoteSessions = createGlobalRemoteSessionRoute({
@@ -14789,7 +14685,7 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
+  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean; ifNoneMatch?: string; conditional?: boolean } = {}
 ) {
   const url = joinBackendApiUrl(descriptor.baseUrl, path)
 
@@ -14822,7 +14718,11 @@ async function fetchJsonForBackend(
     // JSON headers only, so an upload there fails loudly rather than corrupting the file.
     return requestWithOauthFallback(descriptor.baseUrl, {
       ensureNativeAccessToken,
-      requestWithBearer: (bearer: string) => fetchJson(url, null, { ...options, upload: opts.upload, bearer }),
+      // The bearer leg rides fetchJson, so it carries the conditional seam;
+      // the cookie leg (electron.net) cannot capture status/ETag and stays
+      // unconditional — a read that falls back there simply re-validates
+      // nothing next time.
+      requestWithBearer: (bearer: string) => fetchJson(url, null, { ...options, upload: opts.upload, bearer, ifNoneMatch: opts.ifNoneMatch, conditional: opts.conditional }),
       requestWithCookie: async () => {
         if (opts.upload) {
           throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
@@ -14839,6 +14739,8 @@ async function fetchJsonForBackend(
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
     headers: descriptor.headers,
+    ifNoneMatch: opts.ifNoneMatch,
+    conditional: opts.conditional,
     gatewayDescriptor: descriptor.gatewayEndpoint ? descriptor : undefined
   })
 }
@@ -15372,18 +15274,33 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
 
 const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 
+// The splice path's revalidation (#C3 desktop half): ONE shared validator +
+// derived-join cache across every unified read. Self-healing — a stale entry
+// costs a single 200 — and bounded inside the cache.
+const sessionConditionalCache = createConditionalReadCache()
+
+// Per-profile remote list reads revalidate each page against its stored ETag
+// (the read hits /api/sessions, the route that stamps content ETags).
+const conditionalFetchJsonForProfile = (profileName: string | null, path: string, ifNoneMatch?: string) =>
+  requestJsonForProfile(profileName as string, path, 'GET', undefined, { conditional: true, ...(ifNoneMatch ? { ifNoneMatch } : {}) })
+
 // A remote profile's session list. The fetch itself is profile-scoped
 // (fetchRemoteProfileSessions, #64999); the remote's own stamps carry the
 // authoritative identity — never relabel rows with the Desktop scope name.
 async function remoteSessionList(profile, searchParams) {
   const sshOverride = profileSshOverride(readDesktopConnectionConfig(), profile)
 
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile, {
-    remoteProfileAlias: sshOverride?.remoteProfile
+  const data = await fetchRemoteProfileSessions(profile, searchParams, conditionalFetchJsonForProfile, {
+    remoteProfileAlias: sshOverride?.remoteProfile,
+    conditional: { cache: sessionConditionalCache }
   })
 
+  // An all-304 read hands back the derived cache's OWN value, so the rows
+  // must be tagged on copies: a non-idempotent tagger must never be able to
+  // mutate cached rows (the tag below writes `profile`/`is_default_profile`
+  // in place today, which only happens to be safe because it is idempotent).
   const rows = tagRemoteSessionRows(
-    rowsOf(data),
+    rowsOf(data).map((row: unknown) => (row && typeof row === 'object' ? { ...row } : row)),
     remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile
   )
 
@@ -15504,10 +15421,15 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
 
   if (registrySources.length) {
-    const getRegistryJson = (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    const getRegistryJson = (descriptor: unknown, path: string, ifNoneMatch?: string) =>
+      getJsonForBackend(descriptor, path, { timeoutMs: 10_000, conditional: true, ...(ifNoneMatch ? { ifNoneMatch } : {}) })
+
     // RT-42: count each backend (install_id) once; remote-override profiles are another backend.
     const identity = { primaryBackendId: await primaryBackendInstallId(), unknownPrimaryProfiles: remoteProfiles }
-    total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals, identity)
+    total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals, identity, {
+      cache: sessionConditionalCache,
+      keyOf: (descriptor: unknown) => String((descriptor as { baseUrl?: unknown })?.baseUrl ?? '')
+    })
   }
 
   const recency = s => s?.[order] ?? s?.started_at ?? 0
@@ -15590,18 +15512,30 @@ async function dispatchRegistryApiRequest(
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET')
 
-  const response = await fetchJsonForBackend(connection, requestPath, {
+  const conditional = isConditionalListRead(request)
+
+  const raw = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
-    timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS),
+    ...(conditional ? { conditional: true, ...(request?.ifNoneMatch ? { ifNoneMatch: request.ifNoneMatch } : {}) } : {})
   })
+
+  // The transport resolves the plain { data, status, etag }; post-processing
+  // (preference recording, row tagging) sees the payload's data, and the
+  // renderer gets the branded envelope (conditionalResultForRenderer).
+  const response = conditional ? normalizeConditionalResult(raw).data : raw
 
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
 
-  return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
-    : response
+  if ((request?.method || 'GET').toUpperCase() !== 'GET') {
+    return response
+  }
+
+  return conditional
+    ? conditionalResultForRenderer(raw, data => tagRegistrySessionResponse(requestPath, data, registryConnectionId))
+    : tagRegistrySessionResponse(requestPath, response, registryConnectionId)
 }
 
 function registryConnectionKind(connectionId) {
@@ -15680,6 +15614,8 @@ async function handleHermesApiRequest(request) {
     ? profileRename.routeProfile
     : resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)
 
+  const conditional = isConditionalListRead(request)
+
   let response
   let connection
 
@@ -15698,7 +15634,8 @@ async function handleHermesApiRequest(request) {
       method: request?.method,
       body: request?.body,
       upload: request?.upload,
-      timeoutMs
+      timeoutMs,
+      ...(conditional ? { conditional: true, ...(request?.ifNoneMatch ? { ifNoneMatch: request.ifNoneMatch } : {}) } : {})
     })
 
     response = connection.gatewayEndpoint
@@ -15722,13 +15659,36 @@ async function handleHermesApiRequest(request) {
     throw error
   }
 
+  // Preference recording sees the payload's data; the renderer gets the
+  // branded envelope (conditionalResultForRenderer).
+  const data = conditional ? normalizeConditionalResult(response).data : response
+
   try {
-    desktopProfilePreferences.afterProfileRequest(null, request, response, connection.mode)
+    desktopProfilePreferences.afterProfileRequest(null, request, data, connection.mode)
   } finally {
     await profileRename?.complete()
   }
 
-  return response
+  return conditional ? conditionalResultForRenderer(response) : response
+}
+
+// A renderer conditional list read — the ONE hermes:api shape that travels as
+// an ETag envelope (#C3 desktop half, t_5c4b52bf). Narrow on purpose: GET
+// /api/sessions is the sole route stamping content ETags today, so every other
+// call (single-session reads, mutations, the all-profiles routes) keeps the
+// byte-identical plain-body contract. An older main ignores `conditional` /
+// `ifNoneMatch` and answers plain; the renderer capability-gates on the
+// envelope brand (api-conditional.ts).
+function isConditionalListRead(request: any): boolean {
+  if (request?.conditional !== true || (request?.method || 'GET').toUpperCase() !== 'GET') {
+    return false
+  }
+
+  try {
+    return new URL(request.path, 'http://desktop.local').pathname === '/api/sessions'
+  } catch {
+    return false
+  }
 }
 
 // Format an api-request failure for desktop.log. The renderer only ever sees

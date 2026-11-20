@@ -27,8 +27,6 @@ export interface Secondary {
   offEvent: () => void
   offRequest: () => void
   offState: () => void
-  reconnectTimer: ReturnType<typeof setTimeout> | null
-  reconnectAttempt: number
   /**
    * Consecutive unanswered wake-probe pings on this entry's current socket;
    * drives the same streak tolerance the primary's probe applies

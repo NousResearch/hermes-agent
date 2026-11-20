@@ -771,6 +771,7 @@ test('archived merged pages reach every archived row from older and current back
       )
 
       const merged = [...base.sessions].sort((a: any, b: any) => b.last_active - a.last_active)
+
       const response = composeUnifiedSessionResponse(base, merged, offset, 200, base.total, base.profile_totals, [], {
         archivedOnly: true
       })

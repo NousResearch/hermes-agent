@@ -158,6 +158,48 @@ export interface JsonRpcRequestChannelOptions {
    * The backend offers the welcome trial and first-run onboarding only to that client.
    */
   desktopLocal?: () => boolean
+  /**
+   * Observation only (C1 reconnect telemetry): fired once per attach when the first response
+   * frame arrives — the first application round trip on a fresh socket. Never changes dispatch.
+   */
+  onFirstResponse?: () => void
+  /**
+   * The folded post-upgrade handshake (``client.hello``): when ``gateway.ready`` advertises
+   * ``resumed_handshake``, the channel sends `params()` as its first request and hands the answer to
+   * `onResult` instead of the separate ``client.capabilities`` call the legacy sequence opens with.
+   * `onUnsupported` runs when the fold could not be answered — a backend that does not know the
+   * method answers ``-32601`` — and the owner keeps the SAME socket: the legacy sequence follows
+   * there, never a redial. Absent, or not advertised, the channel behaves exactly as before.
+   */
+  helloHandshake?: {
+    params: () => Record<string, unknown>
+    onResult: (result: HelloHandshakeResult) => void
+    onUnsupported: () => void
+  }
+  /**
+   * Ordering gate for ``open_requests`` (#C6): the pending call still resolves exactly as before —
+   * the caller, the replay barriers and ``whenApplicationUsable`` never wait on this — but the
+   * requests an answer re-delivers (``session.resume`` / ``session.events.since`` /
+   * ``client.hello``) are presented only once it settles. A reconnecting client uses it to get its
+   * `session.resume` for the sessions behind those requests onto the wire first, so a card the
+   * user answers has a runtime to land on instead of a stale/reaped one.
+   *
+   * Delivery is never lost: a rejection, or a gate that never settles, still delivers (bounding it
+   * is the owner's job). Absent, delivery stays synchronous and byte-identical to before.
+   */
+  beforeOpenRequests?: () => Promise<unknown> | void
+}
+
+/**
+ * The ``client.hello`` answer, as far as the transport-agnostic channel cares: it reads the
+ * capabilities result (the same shape ``client.capabilities`` answers with) and hands the rest to
+ * the owner, which owns the replay contract and narrows these fields itself.
+ */
+export interface HelloHandshakeResult {
+  capabilities_result?: Partial<ClientCapabilitiesResult> | null
+  per_session_replay?: unknown
+  open_requests?: unknown
+  skin_etag?: unknown
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -220,24 +262,29 @@ export class JsonRpcRequestChannel {
   private heartbeatSequence = 0
   private readonly outstandingPings = new Set<string>()
   private lastLivenessAt = 0
+  /** C1 phase observation: has the CURRENT attach seen its first response frame yet. */
+  private firstResponseSeen = false
   /** The bound generation's backend counts `decline` as one client abstaining (see `ServerRequest.decline`). */
   private backendCountsDeclines = false
   /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   private backendClarifyBatch = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
+    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'helloHandshake' | 'beforeOpenRequests'>
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
+    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'helloHandshake' | 'beforeOpenRequests'>
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
+      beforeOpenRequests: options.beforeOpenRequests,
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       heartbeatLiveness: options.heartbeatLiveness ?? 'response',
+      helloHandshake: options.helloHandshake,
       onEvent: options.onEvent,
+      onFirstResponse: options.onFirstResponse ?? (() => undefined),
       onHeartbeatFailure: options.onHeartbeatFailure,
       onRequestHandlerError: options.onRequestHandlerError,
       onUncorrelatedError: options.onUncorrelatedError,
@@ -266,6 +313,7 @@ export class JsonRpcRequestChannel {
     this.stopHeartbeat()
     this.transport = transport
     this.lastLivenessAt = Date.now()
+    this.firstResponseSeen = false
     this.backendCountsDeclines = false
     this.backendClarifyBatch = false
 
@@ -454,6 +502,29 @@ export class JsonRpcRequestChannel {
     return false
   }
 
+  /**
+   * Present an answer's `open_requests` — behind the ordering gate when one is installed (#C6), and
+   * synchronously (byte-identical to before, no extra microtask hop) when it is not.
+   *
+   * `settleResponse` never waits on this: the pending call resolves on the frame, which is what
+   * `onFirstResponse` / the replay barriers / `whenApplicationUsable` are really gated on. Only the
+   * arrival of the re-delivered requests is ordered.
+   */
+  private releaseOpenRequests(result: unknown): void {
+    const gate = this.options.beforeOpenRequests
+
+    if (!gate) {
+      this.deliverOpenRequests(result)
+
+      return
+    }
+
+    void Promise.resolve()
+      .then(() => gate())
+      .catch(() => undefined)
+      .then(() => this.deliverOpenRequests(result))
+  }
+
   private deliverOpenRequests(result: unknown): void {
     const open = (result as { open_requests?: unknown } | null)?.open_requests
 
@@ -494,8 +565,9 @@ export class JsonRpcRequestChannel {
     // client requests still waiting on this session. They cannot ride
     // the event replay ring (they are not events), so they are re-
     // delivered here, before the caller sees the result, over the very
-    // socket that owns them.
-    this.deliverOpenRequests(frame.result)
+    // socket that owns them. `releaseOpenRequests` only orders that
+    // presentation (never the resolution) behind a configured gate.
+    this.releaseOpenRequests(frame.result)
     call.resolve(frame.result)
   }
 
@@ -532,6 +604,11 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.id !== undefined && frame.id !== null) {
+      if (!this.firstResponseSeen) {
+        this.firstResponseSeen = true
+        this.options.onFirstResponse()
+      }
+
       this.settleResponse(frame.id, frame)
 
       return frame
@@ -545,13 +622,53 @@ export class JsonRpcRequestChannel {
 
     if (frame.method === 'event' && frame.params && typeof (frame.params as GatewayEvent).type === 'string') {
       if ((frame.params as GatewayEvent).type === 'gateway.ready') {
-        this.advertiseCapabilities()
+        this.handshake(frame.params as GatewayEvent<'gateway.ready'>)
       }
 
       this.options.onEvent?.(frame.params as GatewayEvent)
     }
 
     return frame
+  }
+
+  /**
+   * Open the connection with ONE request: the folded handshake when the backend advertised it,
+   * otherwise the `client.capabilities` probe every client has sent since server→client requests
+   * existed. The ready frame is the only thing that can decide — it arrives before the client's first
+   * frame — and it is advisory, not a promise: a backend that answers the fold with `-32601` gets the
+   * legacy sequence on the SAME socket through `onUnsupported`.
+   */
+  private handshake(ready: GatewayEvent<'gateway.ready'>): void {
+    const transport = this.transport
+    const hello = this.options.helloHandshake
+    const advertised = ready.payload?.resumed_handshake === true
+
+    if (!hello || !advertised) {
+      this.advertiseCapabilities()
+
+      return
+    }
+
+    this.request<HelloHandshakeResult>('client.hello', hello.params())
+      .then(result => {
+        if (this.transport !== transport) {
+          return
+        }
+
+        this.adoptCapabilities(result?.capabilities_result)
+        hello.onResult(result)
+      })
+      .catch(() => {
+        if (this.transport !== transport) {
+          return
+        }
+
+        // -32601 (a backend that does not know the method) or any other failure: the client keeps the
+        // socket and finishes the legacy sequence on it. Never a redial — the reconnect owner would
+        // charge the whole dial again for a round trip the fallback can absorb.
+        hello.onUnsupported()
+        this.advertiseCapabilities()
+      })
   }
 
   /**
@@ -568,11 +685,16 @@ export class JsonRpcRequestChannel {
     this.request<Partial<ClientCapabilitiesResult> | null>('client.capabilities', { server_requests: true })
       .then(result => {
         if (this.transport === transport) {
-          this.backendCountsDeclines = result?.declines_not_shown === true
-          this.backendClarifyBatch = result?.canonical_clarify_batch === true
+          this.adoptCapabilities(result)
         }
       })
       .catch(() => undefined)
+  }
+
+  /** Record what the bound generation's backend may send / counts (either handshake path's answer). */
+  private adoptCapabilities(result?: Partial<ClientCapabilitiesResult> | null): void {
+    this.backendCountsDeclines = result?.declines_not_shown === true
+    this.backendClarifyBatch = result?.canonical_clarify_batch === true
   }
 
   /**

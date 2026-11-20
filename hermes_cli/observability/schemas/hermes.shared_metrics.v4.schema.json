@@ -4054,8 +4054,11 @@
             "detail": {
               "enum": [
                 "100ms_to_250ms",
+                "10s_to_30s",
+                "1s_to_3s",
                 "1s_to_5s",
                 "250ms_to_1s",
+                "3s_to_10s",
                 "api_key_missing",
                 "api_key_rejected",
                 "artifacts_partial_load",
@@ -4070,13 +4073,16 @@
                 "crash",
                 "credits",
                 "disk_full",
+                "failed",
                 "free_tier_notice",
                 "gateway_auth_failed",
                 "gateway_error",
+                "gte_30s",
                 "gte_5s",
                 "gui_skew",
                 "install_method",
                 "killed",
+                "lt_1s",
                 "mcp_health",
                 "method_not_allowed",
                 "microphone_permission",
@@ -4106,6 +4112,7 @@
                 "backend_disconnect",
                 "error_toast",
                 "notice_dismissed",
+                "reconnect_episode",
                 "renderer_crash",
                 "slow_frame"
               ]

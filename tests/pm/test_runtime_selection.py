@@ -190,6 +190,61 @@ def test_boot_never_activates_the_pre_pm_venv(tmp_path, monkeypatch, interpreter
     assert result.stdout.strip().startswith(expected), result.stdout
 
 
+def test_no_committed_environment_names_the_root_and_worktree(tmp_path, monkeypatch):
+    """The boot-failure message must name the install that refused.
+
+    A dispatched worktree worker died with a bare "no dependency environment is
+    committed" and the operator had no path to act on: which root refused, which
+    record was missing. A linked git worktree of a checkout is a separate install
+    (its own install key), so refusing it must name the worktree root, its missing
+    environment record, and the main checkout whose install holds the committed
+    environment everyone meant.
+    """
+    import sys
+    from pm import environments as runtime_paths
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    store = tmp_path / "store"
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))  # store_root honours the override
+    monkeypatch.setattr(sys, "prefix", str(store / "python"))
+    monkeypatch.setattr(sys, "base_prefix", str(store / "python"))
+
+    main = tmp_path / "checkout"
+    worktree = main / ".worktrees" / "t_x"
+    linked = main / ".git" / "worktrees" / "t_x"
+    linked.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {linked}\n", encoding="utf-8")
+    (linked / "commondir").write_text("../..\n", encoding="utf-8")
+    facts = runtime_paths.runtime_facts_path(main)
+    facts.parent.mkdir(parents=True)
+    facts.write_text(json.dumps({"schema": 1}), encoding="utf-8")
+
+    with pytest.raises(runtime_paths.NoCommittedEnvironment) as refused:
+        runtime_paths._require_own_dependencies(worktree)
+    message = str(refused.value)
+    assert message.startswith("no dependency environment is committed for this install")
+    assert str(worktree.resolve()) in message
+    assert str(runtime_paths.runtime_facts_path(worktree)) in message
+    assert str(main) in message
+    assert "worktree" in message
+
+    # A venv interpreter owns its packages: no refusal, worktree or not.
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    runtime_paths._require_own_dependencies(worktree)
+
+    # A plain (non-worktree) checkout refuses with its own root and record, no worktree clause.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(store / "python"))
+    with pytest.raises(runtime_paths.NoCommittedEnvironment) as refused:
+        runtime_paths._require_own_dependencies(plain)
+    plain_message = str(refused.value)
+    assert str(plain.resolve()) in plain_message
+    assert str(runtime_paths.runtime_facts_path(plain)) in plain_message
+    assert "worktree" not in plain_message
+
+
 @pytest.mark.parametrize("data", [[], {"packages": []}, {"packages": {"venv": []}}])
 def test_malformed_selection_has_actionable_error(tmp_path, monkeypatch, data):
     from pm import environments as runtime_paths

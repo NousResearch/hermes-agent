@@ -152,6 +152,13 @@ class WSTransport:
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self.desktop_local = False
+        #: This socket is bound to a session authority (``ws.handle_ws``): its session verbs speak the
+        #: canonical wire, ``client.hello`` is answered by the authority, and ``gateway.capabilities``
+        #: says so (``resumed_handshake``) instead of advertising a fold that would answer -32601.
+        self.has_session_authority = False
+        #: Etag of the skin this socket's ``gateway.ready`` frame carried, so the folded handshake
+        #: answers the SAME identity the client compared against (``gateway/session_hello.py``).
+        self.skin_etag = ""
         #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
         self.skin_home: str | None = None
         self._closed = False
@@ -234,6 +241,13 @@ class WSTransport:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def server_closed(self) -> bool:
+        """The SERVER asked this peer's socket to close (send deadline, fanout overflow): the
+        teardown line's ``initiated=server`` signal — latched here rather than inferred from a
+        library close code, which the ASGI disconnect does not preserve."""
+        return self._close_scheduled or self._abort_requested
 
     @property
     def ws(self) -> Any:
@@ -426,6 +440,125 @@ def _start_backend_liveness() -> None:
             _log.warning("%s failed", what, exc_info=True)
 
 
+#: Close codes a CLIENT's own Close frame carries as a plain goodbye; uvicorn passes the peer's
+#: code and reason through verbatim (``websockets_sansio_impl.py`` handle_parser_exception path).
+_WS_PEER_FAREWELL_CLOSE_CODES = frozenset({1000, 1001})
+#: 1005 after the handshake: the transport died with NO Close frame. uvicorn's sansio protocol
+#: reports exactly this for any TCP loss, so a client that vanished and a server keepalive ping
+#: that timed out are the SAME report (``connection_lost`` queues 1005). The line therefore names
+#: both outcomes and leaves the split to ``silent_s`` against the surface's configured
+#: ``ws_ping_interval + ws_ping_timeout`` budget — doubled to ``interval + 2*timeout`` where the
+#: two-strike policy fits the tunnel idle cap (``hermes_cli/web_server_keepalive.py``, C2a).
+#: The brief's "a keepalive failure is coded 1012"
+#: (desktop-reconnect-under-1s.md, flagged unverified there) is FALSE for this stack: 1012 is
+#: uvicorn's graceful-shutdown notice and the sansio keepalive kill lands here, as 1005 — which
+#: is arithmetically consistent with the measured 40 s churn grid, because production's dashboard
+#: binds 0.0.0.0 (non-loopback → pings ON at the 20/20 default), unlike the loopback test box.
+_WS_UNATTRIBUTED_LOSS_CLOSE_CODE = 1005
+#: 1012: uvicorn's graceful-shutdown notice (``websockets_sansio_impl.py`` shutdown) — a deploy.
+_WS_SHUTDOWN_CLOSE_CODE = 1012
+
+
+def _ws_attach_ready_watchers(transport: WSTransport, authority_connection: Any) -> None:
+    """After a delivered gateway.ready: live-apply skins Hermes activates mid-conversation,
+    watch cross-process lease moves (display.lease), and track this peer for session-less global
+    broadcasts write_json can't route. A served profile's TUI repaints from ITS home's skin,
+    never the launch home's."""
+    server._ensure_skin_watcher()
+    server._ensure_lease_watcher()
+    if authority_connection is not None:
+        transport.skin_home = server._skin_home_for(authority_connection.actor.profile_id)
+    server.register_live_transport(transport)
+
+
+def _ws_ready_frame(skin_payload: Any, *, has_session_authority: bool, skin_etag: str = "") -> dict:
+    """The first frame after accept: the skin plus the flags the reconnect contract gates on.
+
+    change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote
+    legacy polls to backstops. replay_epoch lets reconnecting clients detect a backend restart
+    and reset their per-session seq watermarks (event_replay). skin_etag is the content identity of
+    ``skin``, so a reconnect holding this palette already knows whether it must fetch a body at all.
+    resumed_handshake is TRUE only when this socket has a session authority to answer
+    ``client.hello``: the client then folds its first frame (capabilities + every session's replay +
+    the open requests) into ONE application round trip instead of a capabilities call plus one
+    ``session.events.since`` per session.
+    """
+    return {
+        "jsonrpc": "2.0", "method": "event",
+        "params": {"type": "gateway.ready", "payload": {
+            "skin": skin_payload, "skin_etag": skin_etag, "change_events": True, "heartbeat": True,
+            "replay_epoch": replay_epoch(), "resumed_handshake": has_session_authority,
+            **({"session_authority": True} if has_session_authority else {}),
+        }},
+    }
+
+
+def _ws_close_fields(accepted_at, last_inbound_at, detected_at, reason: str, code: Any,
+                     *, shutting_down: bool, server_closed: bool) -> tuple[float, float, str]:
+    """(life_s, silent_s, initiated) for the ``ws closed`` line — C1 (t_c1f387b2).
+
+    ``silent_s`` is the time the socket sat orphaned-silent: last inbound frame to the instant
+    the close was DETECTED (a half-open socket's silence is exactly the server-visible detection
+    lag). ``initiated`` names the closer, and claims only what the stack can actually show
+    (each label driven through real uvicorn + real ``handle_ws`` in
+    ``tests/tui_gateway/test_ws_close_initiated.py``):
+
+    ``shutdown`` 1012 — uvicorn's graceful-shutdown notice, so every deploy or restart — or a
+    cancelled handler task. ``server`` this server ended it: a failed reply/ready write, a
+    read-lane failure, or its own socket close (send deadline, fanout overflow; latched by the
+    transport, so no close code has to be trusted). ``peer`` a client Close frame saying goodbye
+    (1000/1001). ``peer_or_keepalive`` 1005 — the connection died with no Close frame, which on
+    the production transport is a vanished client and a failed keepalive ping alike; C2a splits
+    that bucket with ``silent_s`` against the surface's ping budget. ``unknown`` anything else:
+    no causal claim is manufactured from missing data.
+    """
+    life_s = (detected_at - accepted_at) if accepted_at is not None else 0.0
+    silent_s = (detected_at - last_inbound_at) if last_inbound_at is not None else 0.0
+    if shutting_down or code == _WS_SHUTDOWN_CLOSE_CODE:
+        return life_s, silent_s, "shutdown"
+    if reason.startswith("client_disconnect"):
+        if server_closed:
+            return life_s, silent_s, "server"
+        if code in _WS_PEER_FAREWELL_CLOSE_CODES:
+            return life_s, silent_s, "peer"
+        if code == _WS_UNATTRIBUTED_LOSS_CLOSE_CODE:
+            return life_s, silent_s, "peer_or_keepalive"
+        return life_s, silent_s, "unknown"
+    if "send" in reason or reason == "receive_failed":
+        return life_s, silent_s, "server"
+    return life_s, silent_s, "unknown"
+
+
+def _ws_log_closed(peer: str, reason: str, counts: tuple[int, int, int, int, int, int],
+                   accepted_at, last_inbound_at, detected_at, code: Any, *,
+                   shutting_down: bool, server_closed: bool) -> None:
+    """The teardown ``ws closed`` line: C1's close fields plus the per-connection counters."""
+    messages, parse_errors, dispatch_crashes, send_failures, reaped, detached = counts
+    life_s, silent_s, initiated = _ws_close_fields(
+        accepted_at, last_inbound_at,
+        detected_at if detected_at is not None else time.monotonic(),
+        reason, code, shutting_down=shutting_down, server_closed=server_closed)
+    _log.info(
+        "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
+        "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d "
+        "life_s=%.2f silent_s=%.2f initiated=%s",
+        peer, reason, messages, parse_errors, dispatch_crashes, send_failures, reaped, detached,
+        life_s, silent_s, initiated,
+    )
+
+
+
+async def _ws_end_reads(concurrent_reads: set, started_reads: set) -> None:
+    """Reads that never started are dropped (their client is gone); started ones finish before the
+    authority closes, unless the connection itself was cancelled (server shutdown)."""
+    task = asyncio.current_task()
+    shutting_down = task is not None and task.cancelling()
+    for read in concurrent_reads:
+        if shutting_down or read not in started_reads:
+            read.cancel()
+    await asyncio.gather(*concurrent_reads, return_exceptions=True)
+
+
 class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
@@ -439,6 +572,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     authority_connection = None
     messages = parse_errors = dispatch_crashes = send_failures = 0
     disconnect_reason = "not_connected"
+    # C1 reconnect telemetry (t_c1f387b2), logging only: accept / last-inbound / detection stamps.
+    accepted_at = last_inbound_at = disconnect_detected_at = None
+    close_code = None
 
     async def _reply(frame: dict, reason: str, msg: str, *args: Any) -> None:
         """write_async; on failure record *reason*, log *msg* and end the read loop."""
@@ -618,16 +754,6 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _unless_dispatch_failed(read_admission.acquire())
         await _unless_dispatch_failed(pending.put(req))
 
-    async def _end_reads() -> None:
-        """Reads that never started are dropped (their client is gone); started ones finish before the
-        authority closes, unless the connection itself was cancelled (server shutdown)."""
-        task = asyncio.current_task()
-        shutting_down = task is not None and task.cancelling()
-        for read in concurrent_reads:
-            if shutting_down or read not in started_reads:
-                read.cancel()
-        await asyncio.gather(*concurrent_reads, return_exceptions=True)
-
     async def _unless_dispatch_failed(aw: Any) -> Any:
         """Await *aw*, or raise _SendFailed once a reply could not be sent (the dispatcher ended on one,
         or the read lane failed one)."""
@@ -644,39 +770,29 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     try:
         await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
         disconnect_reason = "connected"
+        accepted_at = last_inbound_at = time.monotonic()
         # Mark the client attached before the (possibly slow) ready/skin setup so scale-to-zero sees it.
         _note_dashboard_client_activity(force=True)
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
         authority_connection = _authority_connection(ws, transport, auth_identity, operator)
+        transport.has_session_authority = authority_connection is not None
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
-        skin_payload = await asyncio.to_thread(server.resolve_skin)
-        # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
-        # polls to backstops. replay_epoch lets reconnecting clients detect a backend restart and reset
-        # their per-session seq watermarks (event_replay).
-        ready_ok = await transport.write_async({
-            "jsonrpc": "2.0", "method": "event",
-            "params": {"type": "gateway.ready", "payload": {
-                "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
-                **({"session_authority": True} if authority_connection is not None else {}),
-            }},
-        })
+        skin_payload, skin_etag = await asyncio.to_thread(server.resolve_skin_with_etag)
+        # Stamped before the write so the folded handshake answers the etag THIS ready frame carried.
+        transport.skin_etag = skin_etag
+        ready_ok = await transport.write_async(_ws_ready_frame(
+            skin_payload, skin_etag=skin_etag, has_session_authority=authority_connection is not None))
         if ready_ok:
-            # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
-            # global broadcasts write_json can't route.
-            server._ensure_skin_watcher()
-            server._ensure_lease_watcher()  # cross-process lease moves → display.lease
-            if authority_connection is not None:
-                # A served profile's TUI repaints from ITS home's skin, never the launch home's.
-                transport.skin_home = server._skin_home_for(authority_connection.actor.profile_id)
-            server.register_live_transport(transport)
+            _ws_attach_ready_watchers(transport, authority_connection)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
         # desktop app and web dashboard reach the agent via this sidecar, not entry.main()).
         _start_backend_liveness()
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
+            disconnect_detected_at = time.monotonic()
             send_failures += 1
             _log.error("ws ready frame send failed peer=%s", peer)
             return
@@ -685,13 +801,17 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         while True:
             try:
                 raw = await _unless_dispatch_failed(ws.receive_text())
+                last_inbound_at = time.monotonic()
                 _note_dashboard_client_activity()
             except _SendFailed:
                 raise
             except _WebSocketDisconnect as exc:
-                disconnect_reason = f"client_disconnect(code={getattr(exc, 'code', None)},reason={getattr(exc, 'reason', None)})"
+                disconnect_detected_at = time.monotonic()
+                close_code = getattr(exc, "code", None)
+                disconnect_reason = f"client_disconnect(code={close_code},reason={getattr(exc, 'reason', None)})"
                 break
             except Exception:
+                disconnect_detected_at = time.monotonic()
                 disconnect_reason = "receive_failed"
                 _log.exception("ws receive failed peer=%s", peer)
                 break
@@ -714,7 +834,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 continue
             await _queue_request(req)
     except _SendFailed:
-        pass
+        disconnect_detected_at = time.monotonic()
+        # A failed reply send ends the loop; never leave the healthy 'connected' reason standing
+        # (C1: teardown must name the server as the initiator).
+        disconnect_reason = "send_failed" if disconnect_reason == "connected" else disconnect_reason
     finally:
         _client_left()
         if dispatcher is not None:
@@ -731,7 +854,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
-        await _end_reads()
+        await _ws_end_reads(concurrent_reads, started_reads)
         await _end_held()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
@@ -758,8 +881,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
-        _log.info(
-            "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
-            peer, disconnect_reason, messages, parse_errors, dispatch_crashes, send_failures, reaped_sessions, detached_sessions,
+        # C1 teardown fields (t_c1f387b2): life and orphan-silent time measured to the DETECTION
+        # instant, not to the end of this (possibly slow) teardown.
+        task = asyncio.current_task()
+        _ws_log_closed(
+            peer, disconnect_reason,
+            (messages, parse_errors, dispatch_crashes, send_failures, reaped_sessions, detached_sessions),
+            accepted_at, last_inbound_at, disconnect_detected_at, close_code,
+            shutting_down=bool(task is not None and task.cancelling()),
+            server_closed=bool(transport is not None and transport.server_closed),
         )

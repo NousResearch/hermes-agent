@@ -12536,6 +12536,51 @@
         "title": "ClientCapabilitiesResult",
         "type": "object"
       },
+      "ClientHelloParams": {
+        "additionalProperties": false,
+        "description": "What the reconnecting client holds, sent as its FIRST frame once ``gateway.ready`` (or\n``gateway.capabilities``) advertised ``resumed_handshake``.",
+        "properties": {
+          "capabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientCapabilitiesParams"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
+          },
+          "watermarks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Watermarks",
+            "type": "object"
+          },
+          "session_epochs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Session Epochs",
+            "type": "object"
+          }
+        },
+        "title": "ClientHelloParams",
+        "type": "object"
+      },
       "ClipboardPasteParams": {
         "additionalProperties": false,
         "properties": {
@@ -19397,6 +19442,11 @@
           "per_session_exclusive_submit": {
             "title": "Per Session Exclusive Submit",
             "type": "boolean"
+          },
+          "resumed_handshake": {
+            "default": false,
+            "title": "Resumed Handshake",
+            "type": "boolean"
           }
         },
         "required": [
@@ -19443,6 +19493,23 @@
             ],
             "default": null,
             "title": "Session Authority"
+          },
+          "skin_etag": {
+            "default": "",
+            "title": "Skin Etag",
+            "type": "string"
+          },
+          "resumed_handshake": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resumed Handshake"
           }
         },
         "required": [
@@ -40301,6 +40368,91 @@
         "title": "SessionReclaimedPayload",
         "type": "object"
       },
+      "SessionReplaySnapshot": {
+        "additionalProperties": false,
+        "description": "One session's replay window: the ``session.events.since`` answer batched, plus the session it\nbelongs to. ``open_requests`` stays None here \u2014 the answer carries the deduped union at the top\nlevel, so a reconnecting client's questions are re-delivered once.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalReplayEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "latest_seq": {
+            "title": "Latest Seq",
+            "type": "integer"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "string"
+          },
+          "replay_epoch": {
+            "title": "Replay Epoch",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "snapshot_required": {
+            "title": "Snapshot Required",
+            "type": "boolean"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "open_requests": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenRequestEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Requests"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "events",
+          "latest_seq",
+          "last_sequence",
+          "epoch",
+          "replay_epoch",
+          "truncated",
+          "snapshot_required",
+          "count",
+          "session_id"
+        ],
+        "title": "SessionReplaySnapshot",
+        "type": "object"
+      },
       "SessionResumeParams": {
         "additionalProperties": false,
         "description": "``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id.",
@@ -40643,6 +40795,39 @@
           "info"
         ],
         "title": "SessionResumeResult",
+        "type": "object"
+      },
+      "SessionResumedResult": {
+        "additionalProperties": false,
+        "description": "The ``client.hello`` answer \u2014 capabilities, skin identity, every session's replay and the open\nserver\u2192client requests, in ONE response.",
+        "properties": {
+          "capabilities_result": {
+            "$ref": "#/components/schemas/ClientCapabilitiesResult"
+          },
+          "skin_etag": {
+            "default": "",
+            "title": "Skin Etag",
+            "type": "string"
+          },
+          "per_session_replay": {
+            "items": {
+              "$ref": "#/components/schemas/SessionReplaySnapshot"
+            },
+            "title": "Per Session Replay",
+            "type": "array"
+          },
+          "open_requests": {
+            "items": {
+              "$ref": "#/components/schemas/OpenRequestEntry"
+            },
+            "title": "Open Requests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "capabilities_result"
+        ],
+        "title": "SessionResumedResult",
         "type": "object"
       },
       "SessionSaveParams": {
@@ -42779,7 +42964,7 @@
       },
       "SharedMetricsDesktopFrictionParams": {
         "additionalProperties": false,
-        "description": "``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a\nclosed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame\nduration bucket), never message text.",
+        "description": "``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|reconnect_episode|slow_frame;\n``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop\nreason, reconnect-total bucket, frame duration bucket), never message text.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -50539,6 +50724,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "client.hello",
+      "summary": "The client's FIRST frame after a ``resumed_handshake`` ready: apply its capabilities and answer the whole post-upgrade handshake in ONE response \u2014 ``capabilities_result`` (as ``client.capabilities`` answers), ``skin_etag``, one replay window per watermark and the deduped ``open_requests``.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientHelloParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionResumedResult"
         }
       }
     },

@@ -26,7 +26,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
@@ -396,6 +396,7 @@ def _csv_list(value: Optional[str]) -> list[str]:
 
 @sessions_router.get("/api/profiles/sessions")
 def get_profiles_sessions(
+    request: Request,
     # ``le=500`` caps the page size — this endpoint fans out across EVERY profile's state.db.
     # 500 (not 100) because desktop callers use limit=200 and the electron remote-merge
     # over-fetches ``limit + offset``.
@@ -405,7 +406,11 @@ def get_profiles_sessions(
     """Unified, read-only session list aggregated across ALL profiles: opens each profile's
     ``state.db`` directly (no dashboard backend per profile) and tags rows with their owning
     ``profile``. Rows omit ``system_prompt`` / ``model_config`` unless ``full=1`` — same
-    projection as ``/api/sessions``."""
+    projection as ``/api/sessions``.
+
+    #C3 (t_2a76b2d8): the desktop sidebar revalidates this aggregate with
+    If-None-Match, so it gets the same conditional treatment as ``/api/sessions``
+    (t_406dbcb3): content ETag + no-cache, matching validator answered 304/zero bytes."""
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
     if order not in ("created", "recent"):
@@ -461,14 +466,19 @@ def get_profiles_sessions(
         window = _pinned_window(merged, offset, limit)
     if not full:
         _strip_session_list_rows(window)
-    return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
-            "limit": limit, "offset": offset, "errors": errors,
-            "storage": _corrupt_profile_stores(targets)}
+    # Function-level import: the same sibling-router pattern files.py uses for
+    # sessions.py (no module-level edge between the two routers).
+    from hermes_cli.web_routers.sessions import _conditional_list_response
+
+    return _conditional_list_response(
+        request,
+        {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
+         "limit": limit, "offset": offset, "errors": errors,
+         "storage": _corrupt_profile_stores(targets)})
 
 
-@sessions_router.get("/api/profiles/sessions/sidebar")
 @_sidebar_singleflight_cache
-def get_profiles_sessions_sidebar(
+def _sidebar_sessions_payload(
     recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str | None = None,
     cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str | None = None):
     """Batched sidebar session slices (recents / cron / messaging) — one profile-DB open per
@@ -601,6 +611,27 @@ def get_profiles_sessions_sidebar(
             body[key]["profiles_failed"] = failed
             body[key]["errors"] = [dict(err) for err in retryable]
     return body
+
+
+@sessions_router.get("/api/profiles/sessions/sidebar")
+def get_profiles_sessions_sidebar(
+    request: Request,
+    recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str | None = None,
+    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str | None = None):
+    """The batched sidebar read with the conditional treatment ``/api/sessions`` got in
+    #C3 (t_406dbcb3, mirrored here for t_2a76b2d8): the payload is produced by the
+    singleflight cache — keyed on the query parameters ONLY — and the ETag / If-None-Match
+    handling is stamped per request on top of it. A revalidation that changed nothing
+    therefore 304s off the cached payload: zero bytes, no profile re-scan."""
+    # Function-level import: the same sibling-router pattern files.py uses for
+    # sessions.py (no module-level edge between the two routers).
+    from hermes_cli.web_routers.sessions import _conditional_list_response
+
+    body = _sidebar_sessions_payload(
+        recents_profile=recents_profile, recents_limit=recents_limit,
+        recents_exclude=recents_exclude, cron_limit=cron_limit,
+        messaging_limit=messaging_limit, messaging_exclude=messaging_exclude)
+    return _conditional_list_response(request, body)
 
 
 def _merge_by_id(into: dict[str, dict[str, Any]], entries: list[dict[str, Any]], child_key: str) -> None:

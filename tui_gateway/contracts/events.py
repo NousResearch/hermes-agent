@@ -58,6 +58,17 @@ class GatewayReadyPayload(Payload):
     # WebSocket transport bound to a session authority: session verbs speak the canonical wire
     # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
     session_authority: bool | None = None
+    #: Content etag of ``skin`` (``change_watcher.skin_etag``): a client that already holds this
+    #: skin body re-applies nothing, and one that does not can fetch it once instead of on every
+    #: reconnect. Reconnects are the case this exists for; a first connect has no cache either way.
+    skin_etag: str = ""
+    #: This connection serves ``client.hello``: the client may fold its first frame into ONE
+    #: round trip (capabilities + every session's replay + ``open_requests``) instead of a
+    #: ``client.capabilities`` call plus one ``session.events.since`` per session. False/absent on a
+    #: backend (or transport) that does not, and the client keeps today's sequence on the same
+    #: socket. Advertised per CONNECTION — the authority answers ``client.hello``, so a socket with
+    #: no session authority does not advertise it.
+    resumed_handshake: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,

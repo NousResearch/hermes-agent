@@ -83,6 +83,23 @@ def test_friction_detail_is_checked_against_its_own_kind_and_capped_per_day(mark
     _assert_valid(marks.rows)
 
 
+def test_reconnect_episode_detail_is_a_total_bucket_not_a_raw_duration(marks):
+    # C1 (t_c1f387b2): one record per close→usable reconnect episode. Raw milliseconds are not
+    # a word of the closed vocabulary; they collapse to `other` exactly like any other free text.
+    _rpc("shared_metrics.desktop_friction", kind="reconnect_episode", detail="lt_1s")
+    _rpc("shared_metrics.desktop_friction", kind="reconnect_episode", detail="3s_to_10s")
+    _rpc("shared_metrics.desktop_friction", kind="reconnect_episode", detail="failed")
+    _rpc("shared_metrics.desktop_friction", kind="reconnect_episode", detail="9050")
+
+    assert [(d["kind"], d["detail"]) for _, d in marks.rows] == [
+        ("reconnect_episode", "lt_1s"),
+        ("reconnect_episode", "3s_to_10s"),
+        ("reconnect_episode", "failed"),
+        ("reconnect_episode", "other"),
+    ]
+    _assert_valid(marks.rows)
+
+
 def test_onboarding_is_once_per_step_event_across_processes(marks, monkeypatch):
     _rpc("shared_metrics.desktop_onboarding", step="provider_setup", event="reached")
     monkeypatch.setattr(desktop, "_daily", {})  # a fresh backend process: only the file latch remains

@@ -904,9 +904,15 @@ def _no_auth_provider_message(host: str) -> str:
         public_url = own_url or ""
         if own_url is None:
             try:
-                from hermes_cli.dashboard_auth.prefix import resolve_public_url
+                from hermes_cli.dashboard_auth.prefix import resolve_extra_public_urls, resolve_public_url
 
                 public_url = resolve_public_url()
+                if not public_hosts_engage_gate(public_url_hosts(public_url)):
+                    # Only an extra URL can be the trigger: name it, and its key.
+                    extra = [u for u in resolve_extra_public_urls()
+                             if public_hosts_engage_gate(public_url_hosts(u))]
+                    if extra:
+                        public_url, setting = ", ".join(extra), "dashboard.extra_public_urls"
             except Exception:
                 pass
         gate_reason = (
@@ -918,7 +924,7 @@ def _no_auth_provider_message(host: str) -> str:
         fix_hint = (
             "If this dashboard should be LOCAL-ONLY (no reverse "
             f"proxy), remove {setting} from config.yaml "
-            + ("(and unset HERMES_DASHBOARD_PUBLIC_URL) " if own_url is None else "")
+            + ("(and unset HERMES_DASHBOARD_PUBLIC_URL) " if setting == "dashboard.public_url" else "")
             + "to restore the unauthenticated loopback mode.\n"
         )
     else:

@@ -157,5 +157,10 @@ def resolve_extra_public_urls() -> tuple[str, ...]:
         if clean:
             urls.append(clean)
         else:
-            _warn_if_malformed("dashboard.extra_public_urls in config.yaml", str(item))
+            cleaned = str(item).strip()
+            _warn_once(
+                _warned_malformed_public_urls, ("extra_public_urls", cleaned), cleaned,
+                "dashboard.extra_public_urls entry %r was skipped because it is not a valid "
+                "absolute URL (it must include an http:// or https:// scheme and a host); "
+                "its hostname is not trusted.", cleaned)
     return tuple(urls)

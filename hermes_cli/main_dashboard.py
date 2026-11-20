@@ -657,8 +657,9 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     print(f"\n⚠ Dashboard authentication is required for this configuration ({host}).")
     print(
-        "  Non-loopback binds and configured external dashboard.public_url "
-        "values require authentication (--insecure does not bypass this)."
+        "  Non-loopback binds and configured external dashboard.public_url / "
+        "dashboard.extra_public_urls values require authentication "
+        "(--insecure does not bypass this)."
     )
     print()
     print("  How do you want to authenticate the dashboard?")

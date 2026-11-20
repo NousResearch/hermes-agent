@@ -611,3 +611,48 @@ def test_extra_public_urls_never_feed_the_oauth_redirect(monkeypatch, tmp_path):
         "extra_public_urls": ["https://hermes.example.com"],
     }}))
     assert resolve_public_url() == "https://hermes.tailnet.ts.net"
+
+
+def _write_dashboard_cfg(monkeypatch, tmp_path, dashboard):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(json.dumps({"dashboard": dashboard}))
+
+
+def test_a_public_extra_url_engages_the_auth_gate_on_a_loopback_bind(monkeypatch, tmp_path):
+    from hermes_cli.web_server import should_require_dashboard_auth
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {"extra_public_urls": ["https://hermes.example.com"]})
+    assert should_require_dashboard_auth("127.0.0.1") is True
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {"extra_public_urls": ["http://localhost:3000"]})
+    assert should_require_dashboard_auth("127.0.0.1") is False
+
+
+def test_no_provider_message_names_extra_public_urls_when_it_is_the_trigger(monkeypatch, tmp_path):
+    from hermes_cli.web_server import _no_auth_provider_message
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {
+        "public_url": "http://localhost:3000",
+        "extra_public_urls": ["https://hermes.example.com"],
+    })
+    msg = _no_auth_provider_message("127.0.0.1")
+    assert "dashboard.extra_public_urls is set to https://hermes.example.com" in msg
+    assert "remove dashboard.extra_public_urls" in msg
+
+
+def test_a_malformed_extra_url_warns_without_the_oauth_redirect_claim(monkeypatch, tmp_path, caplog):
+    from hermes_cli.dashboard_auth import prefix
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {
+        "public_url": "https://hermes.tailnet.ts.net",
+        "extra_public_urls": ["hermes.example.com"],
+    })
+    prefix._warned_malformed_public_urls.clear()
+    with caplog.at_level("WARNING"):
+        assert prefix.resolve_extra_public_urls() == ()
+    text = caplog.text
+    assert "hermes.example.com" in text and "extra_public_urls" in text
+    assert "redirect" not in text.lower()

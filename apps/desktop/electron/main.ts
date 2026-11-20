@@ -13245,6 +13245,7 @@ function createWindow() {
 
   const revealController = wireWindowReveal(createdMainWindow, {
     onRevealed: () => {
+      revealedMainWindows.add(createdMainWindow)
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
       schedulePersistWindowState()
@@ -17171,7 +17172,8 @@ let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
 
-const launchTarget = () => ({ ready: _rendererReadyForDeepLink && !!mainWindow && !mainWindow.isDestroyed(), activate: () => activateWindow(mainWindow) })
+const revealedMainWindows = new WeakSet()
+const launchTarget = () => ({ ready: revealedMainWindows.has(mainWindow), activate: () => activateWindow(mainWindow) })
 
 function handleDeepLink(url) {
   if (!url || typeof url !== 'string') {

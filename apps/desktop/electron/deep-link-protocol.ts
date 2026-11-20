@@ -25,8 +25,9 @@ export interface DeepLinkProtocolOptions {
 /**
  * `hermes://launch` opens and focuses the app and does nothing else: nothing it carries
  * (path, query) is read or reaches the renderer. Checked on the raw URL before any path
- * decoding, so a malformed tail cannot stop the launch. A window still booting is left to
- * its own reveal (focusing it early shows it before first paint); the launch itself opened it.
+ * decoding, so a malformed tail cannot stop the launch. A window not yet revealed is left to
+ * its own reveal (showing it early exposes a blank pre-paint frame); once revealed — the repair
+ * page included — it is restored and focused.
  * Returns true when the link was a launch link (handled), false for every other link.
  */
 export function handleLaunchDeepLink(

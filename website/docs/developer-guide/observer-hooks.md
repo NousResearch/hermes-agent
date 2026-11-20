@@ -60,9 +60,9 @@ behavior-affecting hooks:
 | Hook | Return behavior |
 | --- | --- |
 | `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message, or `{"action": "block", "message": "..."}` to end the turn before any inference request (the message becomes the reply and the prompt is stored as a withheld placeholder; see [Event Hooks](../user-guide/features/hooks.md)). A callback that raises or times out is skipped, so it never blocks. |
+| `transform_llm_output` | May return a replacement final assistant text string. A transform that replaces characters *within* the original text (e.g. PII token restoration, not just appending) may return a `str` subclass carrying `transform_is_inline = True`; the streaming renderer then suppresses its prefix-extension fast-path reprint so the restored text is printed exactly once. |
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
-| `transform_llm_output` | May return a replacement final assistant text string. |
 
 Telemetry plugins should treat these behavior-affecting returns as optional
 compatibility features, not as observability requirements.

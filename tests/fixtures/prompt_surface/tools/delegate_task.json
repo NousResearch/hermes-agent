@@ -30,19 +30,26 @@
               "description": "Background THIS child needs: file paths, error messages, constraints. Each child sees only its own context — repeat shared background in every task that needs it.",
               "type": "string"
             },
+            "files": {
+              "description": "'path' or 'path:start-end' entries whose current lines are inlined into the child's first turn.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "goal": {
               "description": "What this subagent should accomplish. Be specific and self-contained.",
               "type": "string"
             },
             "images": {
-              "description": "Images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a screenshot the user sent, a design mock, a chart. Vision-capable children receive the pixels on their first turn; non-vision children get path hints for vision_analyze. Text files do NOT belong here — put paths in 'context' instead.",
+              "description": "Images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a screenshot the user sent, a design mock, a chart. Vision-capable children receive the pixels on their first turn; non-vision children get path hints for vision_analyze. Text files go in 'files'.",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "output_schema": {
-              "description": "JSON Schema this child's final answer must validate against (told to the child up front; parent validates with one bounded correction retry; result gains schema_valid, plus schema_errors on failure — the child's raw text is still returned as summary, never discarded). Keep it forgiving — require only fields you will read.",
+              "description": "JSON Schema this child's final answer must validate against (told to the child up front; one bounded correction retry; result gains schema_valid, plus schema_errors on failure — the raw text still returns as summary). Keep it forgiving — require only fields you will read.",
               "properties": {},
               "required": [],
               "type": "object"

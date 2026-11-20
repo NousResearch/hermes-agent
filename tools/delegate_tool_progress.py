@@ -9,7 +9,7 @@ import posixpath
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+from tools.delegate_tool_registry import note_child_tool_started
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -432,11 +432,7 @@ class _ChildProgressRelay:
     def _on_tool_started(self, tool_name, preview, args, kwargs):
         self.tool_count += 1
         if self.subagent_id is not None:
-            with _active_subagents_lock:
-                rec = _active_subagents.get(self.subagent_id)
-                if rec is not None:
-                    rec["tool_count"] = self.tool_count
-                    rec["last_tool"] = tool_name or ""
+            note_child_tool_started(self.subagent_id, tool_name or "", self.tool_count)
         if self.spinner:
             from agent.display import get_tool_emoji
             line = f"{get_tool_emoji(tool_name or '')} {tool_name}"

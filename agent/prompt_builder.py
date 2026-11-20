@@ -1338,9 +1338,10 @@ def _render_skills_index(
             index_lines.append(f"  {category}:")
         index_lines.extend(f"{indent}- {name}: {desc}" if desc else f"{indent}- {name}" for name, desc in rows.items())
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
-    if is_single_query_session():
+    guidance = _skills_load_guidance_override(ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session)
+    if guidance is not None:
         return (
-            ONESHOT_SKILLS_LOAD_GUIDANCE
+            guidance
             + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
             + hidden_note
         )
@@ -1367,9 +1368,27 @@ def _render_skills_index(
     )
 
 
-def _oneshot_prompt_variant() -> bool:
+# A delegated child's brief is its rule set: the parent's "MUST load" wording would override a
+# brief that says the context is already supplied. The index stays so the child can still find one.
+CHILD_SKILLS_LOAD_GUIDANCE = (
+    "## Skills\n"
+    "Your task brief carries the context you need; load a skill only when the brief names it or the task "
+    "needs a procedure the brief does not cover.\n"
+)
+
+
+def _skills_load_guidance_override(oneshot_guidance: str, is_single_query_session) -> str | None:
+    """Guidance replacing the stock "MUST load" block: a delegated child's, else a one-shot session's, else None."""
+    from agent.delegation_context import is_delegated_child_context
+    if is_delegated_child_context():
+        return CHILD_SKILLS_LOAD_GUIDANCE
+    return oneshot_guidance if is_single_query_session() else None
+
+
+def _skills_guidance_variant() -> tuple[bool, bool]:
+    from agent.delegation_context import is_delegated_child_context
     from agent.oneshot_footprint import is_single_query_session
-    return is_single_query_session()
+    return is_single_query_session(), is_delegated_child_context()
 
 
 def _build_skills_system_prompt_inner(
@@ -1393,7 +1412,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        _skills_guidance_variant(), tuple(plugin_rows),
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(

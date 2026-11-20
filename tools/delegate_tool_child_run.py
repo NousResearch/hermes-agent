@@ -20,7 +20,7 @@ from tools.delegate_tool_config import _get_child_timeout, _get_subagent_approva
 from tools.delegate_tool_progress import _quiet, _resolve_workspace_hint, _safe_progress
 from tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _mark_subagent_resumable, _register_subagent,
-    _unregister_subagent,
+    _unregister_subagent, note_child_edit,
 )
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
@@ -804,6 +804,22 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
         return goal
 
 
+def _edit_tracking(inner: Any, subagent_id: Optional[str]) -> Any:
+    """``inner`` plus the first-edit stamp for action='list' (``note_child_edit``). Installed whether or not the
+    parent shows progress, since the display relay is absent for a parent with no spinner or callback."""
+    if not subagent_id:
+        return inner
+
+    def _cb(event_type, *args, **kwargs):
+        if callable(inner):
+            inner(event_type, *args, **kwargs)
+        if event_type == "tool.started" and args:
+            note_child_edit(subagent_id, str(args[0] or ""))
+    if hasattr(inner, "_flush"):
+        _cb._flush = inner._flush
+    return _cb
+
+
 def _checkpointing(inner: Any, checkpoint: Any) -> Any:
     """``inner`` plus a durable cwd checkpoint after each finished tool call, so a hard kill between heartbeats
     still knows where the child was (a write only when the cwd moved). Installed even without an ``inner`` (no
@@ -898,6 +914,10 @@ class _ChildRun:
             with child_profile_scope(self.child):
                 record_session_cwd(self.child_task_id, resumed["cwd"] if resumed else parent_cwd)
             register_container_alias(self.child_task_id, self.parent_task_id)
+        self.child.tool_progress_callback = _edit_tracking(getattr(self.child, "tool_progress_callback", None), self.subagent_id)
+        with _quiet("Marking inlined files as read failed: %s"):
+            from tools.delegate_files.inline import mark_files_read
+            mark_files_read(self.child_task_id, getattr(self.child, "_delegate_files", None))
 
         if resumed is not None:
             self.worktree_info = resumed.get("worktree")

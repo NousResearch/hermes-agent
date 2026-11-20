@@ -704,7 +704,8 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if item is None or not item.running:
         plan.running_turns = 0
         return
-    _manual_activity(plan, item, host)
+    if not _manual_activity(plan, item, host):
+        why += f" {_OUTSIDE_CONTAINER}"
     if plan.running_turns:
         why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
                 f"so let them finish first.")
@@ -715,17 +716,27 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     _turns_blocker(plan, force_interrupt)
 
 
-def _manual_activity(plan: BackendPlan, item: BackendItem, host) -> None:
+_OUTSIDE_CONTAINER = ("Its Hermes version could not be checked from outside its container, and a Hermes older "
+                      "than v2026.7.30 does not record running chats: check inside the container that no reply "
+                      "is being written before you stop it.")
+
+
+def _manual_activity(plan: BackendPlan, item: BackendItem, host) -> bool:
     """Turns running on a by-hand backend, read the way the automatic plan reads them: a backend with no
-    GET /api/health (older than v2026.7.30) writes no turn markers, so finding none there is unknown."""
+    GET /api/health (older than v2026.7.30) writes no turn markers, so finding none there is unknown.
+    The health answer counts only from a backend in the planner's own network namespace: for a container
+    seen from the host, the argv's address on this machine's loopback is another process (Docker
+    publishes the port elsewhere). Then only the markers are read, and False says its version is unchecked."""
     start = host.start_time(item.pid) if item.pid else None
-    address = _address_of(item, host) if item.pid else None
-    status = host.http_status(probe_host(address[0]), address[1]) if address else None
+    local = bool(item.pid) and host.same_network_namespace(item.pid, container=item.supervisor == "container")
+    address = _address_of(item, host) if local else None
+    status = host.health_status(probe_host(address[0]), address[1]) if address else None
     old = status is not None and status.get("health") == "missing"
     plan.running_turns = _turns_before_restart(host, item.pid, start) if old else \
         host.running_turns(item.pid, start) if item.pid else None
     if plan.running_turns is None:
         plan.turns_unknown = _turns_unknown(host, item.pid, start, old=old)
+    return local or not item.pid
 
 
 def _turns_unknown(host, pid: Optional[int], start_time, *, old: bool = False) -> str:

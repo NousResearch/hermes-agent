@@ -864,7 +864,13 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
             conn, t, summary="ready for review",
             metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
-        assert kb.complete_task(conn, t, summary="approved")
+        # Completing a review-status card now requires proof of the claim
+        # (claim_review_task — same CAS lock a build run uses) rather than a
+        # bare complete_task with no ownership at all (see ReviewNotClaimedError).
+        reviewer_run = kb.claim_review_task(conn, t)
+        assert reviewer_run is not None
+        assert kb.complete_task(
+            conn, t, summary="approved", expected_run_id=reviewer_run.current_run_id)
         attachments = kb.list_attachments(conn, t)
     persisted = Path(handoff.payload["artifacts"][0])
     assert not ws.exists(), "scratch workspace should still be cleaned up"

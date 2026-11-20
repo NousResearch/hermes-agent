@@ -927,6 +927,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
                 return False
+            except kb.ReviewNotClaimedError:
+                fail_msg[tid] = (f"cannot complete {tid}: it is in 'review' with no active claim on it "
+                                 f"(no run has proven it is the reviewer the dispatcher sent). Re-run "
+                                 f"with --force for an explicit manual approval, or let the claimed "
+                                 f"reviewer's own completion land.")
+                return False
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
                                  f"describing what was done (an empty completion is not evidence).")

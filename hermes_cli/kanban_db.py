@@ -2608,6 +2608,34 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class ReviewNotClaimedError(ValueError):
+    """``complete_task`` refused: the task is sitting in ``review`` with no
+    active claim on it. ``claim_review_task`` is the same CAS lock pattern
+    build runs use (``ready -> running``, ``claim_lock IS NULL`` guard) --
+    it already stops two dispatcher-spawned reviewers from racing each
+    other. The gap it does NOT close is an env-less caller (an orchestrator
+    session, a stray delegate_task child, a second human/CLI invocation)
+    that never goes through the dispatcher at all: such a caller supplies
+    no ``expected_run_id``, and a ``review``-status task is never ``running``,
+    so :func:`_claim_is_live` (the fence that protects a live claim) never
+    even fires for it -- nothing previously stopped that caller from
+    approving a review out from under the reviewer the dispatcher actually
+    claimed it for, or before any reviewer claimed it at all. Completing a
+    ``review``-status task now requires ``force=True`` (explicit human/
+    operator override -- the dashboard and `hermes kanban complete --force`
+    already pass it deliberately) unless the task has already transitioned
+    out of ``review`` via a real claim. A ``ValueError`` so tool error
+    handlers treat it as recoverable, matching :class:`LiveClaimError`."""
+
+    def __init__(self, task_id: str):
+        super().__init__(
+            f"{task_id} is in 'review' with no active claim; claim it first with "
+            "claim_review_task (the dispatcher's own path) so completion proves run "
+            "ownership, or pass force=True for an explicit human/operator override "
+            "instead of approving an unclaimed review"
+        )
+
+
 class LiveClaimError(ValueError):
     """``complete_task`` refused: the task is ``running`` under a live claim and
     the caller neither owns its run (``expected_run_id``) nor passed ``force``.
@@ -2659,6 +2687,17 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+
+    A ``review``-status task is never ``running``, so it never carries a live
+    claim for :func:`_claim_is_live` to fence — ``claim_review_task`` (the
+    dispatcher's CAS lock, same pattern as a build-run claim) is what proves
+    a reviewer actually holds the slot, and claiming it flips the status to
+    ``running`` before this function ever sees it. Completing directly out of
+    ``review`` therefore now requires ``force=True`` — an explicit human/
+    operator override (the dashboard and ``hermes kanban complete --force``
+    already pass it) — else :class:`ReviewNotClaimedError`; this is what
+    stops an env-less caller (orchestrator, stray session, unclaimed retry)
+    from approving a review no run has actually claimed.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2691,6 +2730,16 @@ def complete_task(
         # _claim_is_live for what "live" means.
         if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
+        # A ``review``-status task is, by construction, never under a live
+        # claim (claim_review_task's CAS target is 'running', so a successful
+        # claim already left this branch) -- any ``current_run_id`` still on
+        # the row is a stale/ended run, never proof that THIS caller is the
+        # reviewer the dispatcher sent. Require the same explicit override as
+        # a live claim: force=True (dashboard / `kanban complete --force`
+        # already pass it deliberately) or claim the review first so it is no
+        # longer 'review' when this function runs.
+        if prior_status == "review" and not force:
+            raise ReviewNotClaimedError(task_id)
         sql = """
                 UPDATE tasks
                    SET status       = 'done',

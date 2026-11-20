@@ -106,6 +106,28 @@ _EXACT_HANDLERS = {
 _BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "pause", "status", "show", "unwait"})
 # First words that make a command goal control (the gateway busy path dispatches these).
 _CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
+_SUBCOMMANDS = (frozenset(_EXACT_HANDLERS) - {""}) | {"wait", "gate", "draft"}
+
+
+def _one_edit_apart(left: str, right: str) -> bool:
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) != len(right):
+        shorter, longer = sorted((left, right), key=len)
+        return any(shorter == longer[:i] + longer[i + 1:] for i in range(len(longer)))
+    differences = [i for i, (a, b) in enumerate(zip(left, right)) if a != b]
+    if len(differences) != 2:
+        return len(differences) == 1
+    first, second = differences
+    return second == first + 1 and left[first:second + 1] == right[first:second + 1][::-1]
+
+
+def _suggest_subcommand(arg: str) -> str | None:
+    word = arg.lower()
+    if not word or len(word.split()) != 1 or word in _SUBCOMMANDS:
+        return None
+    return next((sub for sub in sorted(_SUBCOMMANDS, key=lambda sub: (abs(len(sub) - len(word)), sub))
+                 if sub.startswith(word) or _one_edit_apart(word, sub)), None)
 
 
 def _bare_control(mgr, verb, rest, render):
@@ -176,7 +198,8 @@ def is_goal_control(arg: str) -> bool:
     """Whether this command controls an existing goal rather than replacing it."""
     normalized = arg.strip().lower()
     first = normalized.split(None, 1)[0] if normalized else ""
-    return normalized in _EXACT_HANDLERS or first in _CONTROL_FIRST_WORDS
+    return (normalized in _EXACT_HANDLERS or first in _CONTROL_FIRST_WORDS
+            or _suggest_subcommand(normalized) is not None)
 
 
 def dispatch_goal_command(
@@ -201,6 +224,11 @@ def dispatch_goal_command(
                         render=render, progress=progress)
         if handler := _EXACT_HANDLERS.get(arg.lower()):
             return handler(mgr, "", render)
+        if suggestion := _suggest_subcommand(arg):
+            return GoalCommandResult(
+                f"Unknown /goal subcommand {arg!r}; did you mean /goal {suggestion}? "
+                "Use /goal -- <text> to set literal goal text.", error=True,
+            )
         if verb in _BARE_CONTROL_VERBS:
             return _bare_control(mgr, verb, rest, render)
         if verb == "wait":

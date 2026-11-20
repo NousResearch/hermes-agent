@@ -74,8 +74,8 @@ def old_backend_notice(home: Path | None = None) -> str | None:
     # A unit a migration stopped but could not make `disabled` (a `static` one) is not a backend left over.
     retired = backend_retired_by_migration(home)
     found = [item for item in collect_backends()
-             if item.supervisor not in _DESKTOP_OWNED and _serves_this_home(item, home, host)
-             and (item.running or not retired)]
+             if item.supervisor not in _DESKTOP_OWNED and (item.running or not retired)
+             and _serves_this_home(item, home, host)]
     if not found:
         return None
     what = "; ".join(_describe(item) for item in found)

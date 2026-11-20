@@ -380,10 +380,17 @@ def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
 
 
 def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
-    """Write one member while keeping a failed partial write out of the central directory."""
+    """Write one member while keeping a failed partial write out of the central directory.
+
+    Pre-1980 mtimes (e.g. gbrain's postgres files with truncated timestamps) cannot be
+    represented in ZIP; clamp them to the 1980 epoch instead of failing the archive."""
     filelist_len = len(zf.filelist)
     try:
-        zf.write(path, arcname=arcname)
+        zinfo = zipfile.ZipInfo.from_file(path, arcname, strict_timestamps=False)
+        zinfo.compress_type = zf.compression
+        zinfo.date_time = max(zinfo.date_time, (1980, 1, 1, 0, 0, 0))
+        with open(path, "rb") as src, zf.open(zinfo, "w") as dst:
+            shutil.copyfileobj(src, dst)
     except Exception:
         _discard_failed_zip_members(zf, filelist_len)
         raise

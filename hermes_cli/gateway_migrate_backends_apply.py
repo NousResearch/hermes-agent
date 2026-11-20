@@ -433,9 +433,14 @@ def apply(host, plan: BackendPlan, *, detached: bool = False, force_interrupt: b
         for path in (p for p in m["backups"].values() if isinstance(p, str)):
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
-        print(f"✗ Nothing changed: {missing} (pid {plan.rec.get('pid')}), so a rollback could not start it "
-              f"again as it ran. Check that this user can read the environment and working directory of pid "
-              f"{plan.rec.get('pid')} (or start it with an absolute `hermes` command), then re-run.")
+        if (cwd := m["old_backend"].get("cwd")) and not _can_enter(cwd):
+            print(f"✗ Nothing changed: {missing} (pid {plan.rec.get('pid')}), so the migration could not start it "
+                  f"again. Start the old backend from a directory that exists (or by an absolute path), then run "
+                  f"this again.")
+        else:
+            print(f"✗ Nothing changed: {missing} (pid {plan.rec.get('pid')}), so a rollback could not start it "
+                  f"again as it ran. Check that this user can read the environment and working directory of pid "
+                  f"{plan.rec.get('pid')} (or start it with an absolute `hermes` command), then re-run.")
         if detached:
             record_refusal(host, mode="apply", reason=missing, exit_code=EXIT_BLOCKED)
         return EXIT_BLOCKED
@@ -623,6 +628,12 @@ def _launch_needs_cwd(argv: list) -> Optional[str]:
     return None
 
 
+def _can_enter(path: str) -> bool:
+    """Whether *path* is a directory this user can enter now. The kernel still names a deleted working
+    directory (``/proc`` appends `` (deleted)``; macOS keeps the old name) and one made mode 000."""
+    return not path.endswith(" (deleted)") and os.path.isdir(path) and os.access(path, os.X_OK)
+
+
 def _snapshot_problem(m: dict) -> Optional[str]:
     """Why a hand-started old backend cannot be started again as it ran (its recorded raw command line
     and environment, read back from their private files), else None. Never replaced by a guess: the
@@ -631,9 +642,11 @@ def _snapshot_problem(m: dict) -> Optional[str]:
         return None
     if (argv := _launcher_argv(m)) is None:
         return "the old backend's recorded command line is missing or unreadable"
-    if not (m.get("old_backend") or {}).get("cwd") and (needs := _launch_needs_cwd(argv)) is not None:
+    if not (cwd := (m.get("old_backend") or {}).get("cwd")) and (needs := _launch_needs_cwd(argv)) is not None:
         # Started again elsewhere it would not be found (or not import): refused before it is stopped.
         return f"the old backend {needs} and its working directory could not be read"
+    if cwd and not _can_enter(cwd):  # the relaunch always starts in the recorded working directory
+        return f"the old backend's working directory {cwd} no longer exists or cannot be entered"
     if not isinstance(_launcher_env(m), dict):
         return "the old backend's recorded environment is missing or unreadable"
     return None

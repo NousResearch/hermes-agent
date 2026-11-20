@@ -1191,14 +1191,16 @@ def test_a_python_m_backend_whose_working_directory_cannot_be_read_is_never_reti
 
 def test_a_hand_started_backend_is_restarted_in_its_recorded_working_directory(home):
     host = FakeHost(home, supervisor="manual")
-    host.process_cwd = lambda pid: "/srv/hermes-agent"
+    checkout = home.parent / "hermes-agent"  # a directory that exists: one that does not is refused
+    checkout.mkdir()
+    host.process_cwd = lambda pid: str(checkout)
     started = []
     host.old_start = lambda rec, env, argv=None: started.append(rec.get("cwd")) or host.old.update(active=True)
 
     assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
     assert engine.restore(host, yes=True) == engine.EXIT_OK
 
-    assert started == ["/srv/hermes-agent"]
+    assert started == [str(checkout)]
 
 
 def test_an_old_backend_restarted_by_hand_is_no_proof_the_gateway_is_off(home):

@@ -568,9 +568,11 @@ declare global {
         /** A grant was added or revoked in any window; returns an unsubscribe. */
         onChanged?: (callback: (change: { pluginId: string }) => void) => () => void
       }
-      /** `ctx.confirmAction`: main shows the native confirmation and signs a
-       *  receipt only on Confirm. Older shells lack it. */
-      confirmPluginAction?: (pluginId: string, proposal: HermesActionProposal) => Promise<HermesActionConfirmation>
+      /** `ctx.confirmAction`'s door: main shows the native confirmation and
+       *  signs a receipt only on Confirm. The first call returns the door and
+       *  every later call null; the plugin host claims it before any plugin
+       *  runs. Older shells lack it. */
+      claimPluginConfirmation?: () => HermesConfirmPluginAction | null
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
@@ -666,7 +668,10 @@ declare global {
       }) => Promise<PreviewSigninsResult>
       // P2-7: the per-profile imported-sign-ins record + cookie jar live in Electron main (userData),
       // so the renderer's local profile rename/delete flow signals main to move/clear them.
-      migratePreviewSigninsForProfile?: (request: { oldProfile: string; newProfile: string }) => Promise<{ ok: boolean }>
+      migratePreviewSigninsForProfile?: (request: {
+        oldProfile: string
+        newProfile: string
+      }) => Promise<{ ok: boolean }>
       dropPreviewSigninsForProfile?: (request: { profile: string }) => Promise<{ ok: boolean }>
       setActiveConnectionRoute?: (
         route: {
@@ -841,6 +846,11 @@ export interface HermesSignedActionReceipt {
   signature: string
   keyId: string
 }
+
+export type HermesConfirmPluginAction = (
+  pluginId: string,
+  proposal: HermesActionProposal
+) => Promise<HermesActionConfirmation>
 
 export type HermesActionConfirmation =
   | { status: 'approved'; receipt: HermesSignedActionReceipt }

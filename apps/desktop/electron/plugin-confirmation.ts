@@ -88,13 +88,15 @@ export interface PluginConfirmationDeps {
   now?: () => number
 }
 
-// Control, line-separator and bidi-override characters would let the dialog
-// show something other than what is signed; they become spaces. Only the
-// detail keeps its line breaks.
+// Control, line-separator, bidi-mark and bidi-override characters would let
+// the dialog show something other than what is signed; they become spaces.
+// Only the detail keeps its line breaks.
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
-const UNSAFE_INLINE = /[\u0000-\u001F\u007F-\u009F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g
-// eslint-disable-next-line no-control-regex -- matching control characters is the point
-const UNSAFE_MULTILINE = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g
+const UNSAFE_INLINE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g
+
+const UNSAFE_MULTILINE =
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g
 
 const text = (value: unknown, max: number, unsafe: RegExp) =>
   typeof value === 'string' ? value.replace(unsafe, ' ').trim().slice(0, max) : ''
@@ -198,7 +200,19 @@ export function confirmationDialogOptions(pluginId: string, proposal: ActionProp
 /** One confirmation at a time: a dialog already open answers `busy`. */
 export function registerPluginConfirmationIpc(deps: PluginConfirmationDeps): void {
   const now = deps.now ?? Date.now
+  // Published now, not at the first approval: until this launch's key replaces
+  // the file, the previous launch's key would still verify its receipts. A key
+  // that cannot be published refuses every request, so no receipt is signed by
+  // a key no service can read.
   let signer: ConfirmationSigner | null = null
+  let signerError = ''
+
+  try {
+    signer = createConfirmationSigner(deps.hermesHome, now)
+  } catch (error) {
+    signerError = `Could not publish the confirmation key: ${error instanceof Error ? error.message : String(error)}`
+  }
+
   let open = false
 
   deps.ipcMain.handle(
@@ -214,6 +228,10 @@ export function registerPluginConfirmationIpc(deps: PluginConfirmationDeps): voi
         proposal = parseProposal(value)
       } catch (error) {
         return { status: 'refused', error: error instanceof Error ? error.message : String(error) }
+      }
+
+      if (!signer) {
+        return { status: 'refused', error: signerError }
       }
 
       const window = deps.windowFor(event)
@@ -241,15 +259,13 @@ export function registerPluginConfirmationIpc(deps: PluginConfirmationDeps): voi
 
         const confirmedAt = now()
 
-        if (abort.signal.aborted || confirmedAt > expiresAt) {
+        if (abort.signal.aborted || confirmedAt >= expiresAt) {
           return { status: 'expired' }
         }
 
         if (response !== 1) {
           return { status: 'cancelled' }
         }
-
-        signer ??= createConfirmationSigner(deps.hermesHome, now)
 
         const receipt: ConfirmationReceipt = {
           v: RECEIPT_VERSION,

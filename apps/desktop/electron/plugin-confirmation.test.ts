@@ -41,8 +41,29 @@ const proposal = {
 
 const call = (pluginId: unknown, value: unknown) => handlers.get(CONFIRMATION_CHANNEL)!({ sender: {} }, pluginId, value)
 
-function verifyWithPublishedKey(receipt: { payload: string; signature: string; keyId: string }) {
-  const key = JSON.parse(fs.readFileSync(path.join(hermesHome, PUBLIC_KEY_FILE), 'utf8'))
+const extraHomes: string[] = []
+
+/** Another app launch, in its own HERMES_HOME unless one is given. */
+function launch(home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-plugin-confirm-launch-')), now?: () => number) {
+  extraHomes.push(home)
+  const own = new Map<string, (...args: unknown[]) => Promise<ConfirmationResult>>()
+
+  registerPluginConfirmationIpc({
+    ipcMain: { handle: (channel: string, handler: never) => own.set(channel, handler) } as never,
+    dialog: { showMessageBox } as never,
+    windowFor: () => window as never,
+    hermesHome: home,
+    now
+  })
+
+  return {
+    home,
+    call: (pluginId: unknown, value: unknown) => own.get(CONFIRMATION_CHANNEL)!({ sender: {} }, pluginId, value)
+  }
+}
+
+function verifyWithPublishedKey(receipt: { payload: string; signature: string; keyId: string }, home = hermesHome) {
+  const key = JSON.parse(fs.readFileSync(path.join(home, PUBLIC_KEY_FILE), 'utf8'))
 
   return (
     key.keyId === receipt.keyId &&
@@ -55,7 +76,11 @@ function verifyWithPublishedKey(receipt: { payload: string; signature: string; k
   )
 }
 
-afterAll(() => fs.rmSync(hermesHome, { recursive: true, force: true }))
+afterAll(() => {
+  for (const home of [hermesHome, ...extraHomes]) {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
 
 beforeEach(() => {
   showMessageBox.mockReset()
@@ -149,6 +174,62 @@ describe('plugin action confirmation', () => {
 
     expect((await call('doc-sync', proposal)).status).toBe('refused')
     expect(showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('confirming at the expiry deadline is expired, not approved', async () => {
+    let clock = 1_000_000
+    const app = launch(undefined, () => clock)
+
+    showMessageBox.mockImplementationOnce(async () => {
+      clock += 5_000
+
+      return { response: 1 }
+    })
+
+    expect(await app.call('doc-sync', { ...proposal, expiresInMs: 5_000 })).toEqual({ status: 'expired' })
+  })
+
+  it('the key is published when the app starts, before any approval', () => {
+    const app = launch()
+
+    expect(fs.existsSync(path.join(app.home, PUBLIC_KEY_FILE))).toBe(true)
+    expect(showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('a new launch retires the previous launch key before its first approval', async () => {
+    const first = launch()
+    showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+    const { receipt } = (await first.call('doc-sync', proposal)) as Extract<ConfirmationResult, { status: 'approved' }>
+
+    expect(verifyWithPublishedKey(receipt, first.home)).toBe(true)
+
+    // The next launch only starts; the user approves nothing in it.
+    launch(first.home)
+
+    expect(verifyWithPublishedKey(receipt, first.home)).toBe(false)
+  })
+
+  it('a key that cannot be published refuses every request', async () => {
+    const blocked = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-plugin-confirm-blocked-'))
+    fs.writeFileSync(path.join(blocked, 'desktop'), 'not a directory')
+
+    expect((await launch(blocked).call('doc-sync', proposal)).status).toBe('refused')
+    expect(showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('bidi marks cannot reorder the dialog text', async () => {
+    showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+
+    const result = (await call('doc-sync', {
+      ...proposal,
+      title: 'Pay\u200F 10\u061C to\u200E bob',
+      detail: 'line\u200F one\nline two'
+    })) as Extract<ConfirmationResult, { status: 'approved' }>
+
+    const { message, detail } = showMessageBox.mock.calls[0][1]
+    expect(message).toBe('Pay  10  to  bob')
+    expect(detail.startsWith('line  one\nline two')).toBe(true)
+    expect(JSON.parse(result.receipt.payload)).toMatchObject({ title: message, detail: 'line  one\nline two' })
   })
 
   it('control and bidi characters cannot hide text from the dialog', async () => {

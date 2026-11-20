@@ -13,6 +13,12 @@
  *
  * Closed unless the plugin declares `capabilities: ['confirm.action']`.
  * Resolves a result and never throws.
+ *
+ * The gate holds because the raw door is not reachable from plugin code: the
+ * preload hands it out once, and this module claims it while it is evaluated,
+ * which the runtime loader's static import puts before any plugin is. A plugin
+ * sharing the realm can only call the closure its own ctx carries, with its
+ * own id and its own declared capabilities.
  */
 
 export type {
@@ -21,10 +27,20 @@ export type {
   HermesSignedActionReceipt as PluginSignedActionReceipt
 } from '@/global'
 
-import type { HermesActionConfirmation, HermesActionProposal } from '@/global'
+import type { HermesActionConfirmation, HermesActionProposal, HermesConfirmPluginAction } from '@/global'
 
 /** The capability a plugin declares to use `ctx.confirmAction`. */
 export const CONFIRM_ACTION_CAPABILITY = 'confirm.action'
+
+// A hot reload re-evaluates this module; it keeps the door it already holds,
+// since the preload hands it out only once.
+const claimed: HermesConfirmPluginAction | null =
+  (import.meta.hot?.data?.confirmBridge as HermesConfirmPluginAction | undefined) ??
+  (typeof window === 'undefined' ? null : (window.hermesDesktop?.claimPluginConfirmation?.() ?? null))
+
+if (import.meta.hot?.data) {
+  import.meta.hot.data.confirmBridge = claimed
+}
 
 export function createPluginConfirmAction(
   pluginId: string,
@@ -40,14 +56,12 @@ export function createPluginConfirmAction(
       }
     }
 
-    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop?.confirmPluginAction
-
-    if (!bridge) {
+    if (!claimed) {
       return { status: 'unavailable', error: 'This Hermes Desktop build cannot confirm plugin actions.' }
     }
 
     try {
-      return await bridge(pluginId, proposal)
+      return await claimed(pluginId, proposal)
     } catch (error) {
       return { status: 'unavailable', error: error instanceof Error ? error.message : String(error) }
     }

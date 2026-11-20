@@ -1899,29 +1899,32 @@ export default {
   tokens (`[A-Za-z0-9._:@/+=-]`, at most 200 chars); `profile` is a Hermes
   profile name; `nonce` is the service's single-use challenge (16 to 128 chars
   of `[A-Za-z0-9_-]`); `title` (200 chars) and `detail` (2,000 chars) are
-  plain text, with control and bidi characters replaced. `expiresInMs` is
-  clamped to between 5 s and 10 min (default 2 min). The dialog shows the
-  title, the detail, every bound id and the requesting plugin id. Cancel is
-  the default button.
+  plain text, with control characters, bidi marks and bidi overrides
+  replaced. `expiresInMs` is clamped to between 5 s and 10 min (default
+  2 min). The dialog shows the title, the detail, every bound id and the
+  requesting plugin id. Cancel is the default button.
 - **Results.** `approved` carries `receipt: { payload, signature, keyId }`.
   `cancelled`, `expired` (the dialog closes itself at expiry) and `busy`
   (another confirmation is open) carry nothing to verify. `refused` means a
-  bad proposal or an undeclared capability, and `unavailable` means an older
-  shell. None of these ever authorize anything.
+  bad proposal, an undeclared capability or a key the app could not publish,
+  and `unavailable` means an older shell. None of these ever authorize anything.
 - **Receipt.** `payload` is the exact signed UTF-8 JSON: `v: 1`,
   `type: 'hermes.desktop.action-confirmation'`, `keyId`, `decision:
   'approved'`, `plugin`, `actionId`, `revision`, `profile`, `serviceInstance`,
   `nonce`, `title`, `detail`, `confirmedAt`, `expiresAt`. `signature` is
   base64 Ed25519 over those bytes.
-- **Key.** On the first confirmation of a launch, the app writes the public
-  key to `$HERMES_HOME/desktop/action-confirmation-key.json` (`{ v, alg:
+- **Key.** When the app starts, before it accepts any confirmation, it writes
+  the public key to `$HERMES_HOME/desktop/action-confirmation-key.json` (`{ v, alg:
   'Ed25519', keyId, publicKey: <SPKI PEM>, createdAt, pid }`). The private key
   is generated per launch and never leaves memory. A receipt whose `keyId`
   does not match the file is from another launch: reject it.
 
-The `plugin` field is what the renderer claimed and is shown to the user for
-context. The binding the service relies on is the user's click on the
-displayed action, revision, profile, service instance and nonce.
+The `plugin` field is the id of the plugin whose `ctx` asked, and is shown to
+the user. The app holds the only door to main's dialog and hands each plugin a
+`ctx.confirmAction` bound to its own id and its declared capabilities, so a
+plugin cannot ask under another plugin's id or around the capability. The
+binding the service relies on is still the user's click on the displayed
+action, revision, profile, service instance and nonce.
 
 **The service owns everything after the signature.** Verify the signature
 over `payload` **before** parsing it. Then check every bound field against the

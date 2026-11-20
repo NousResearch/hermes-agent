@@ -381,14 +381,18 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
         <div className="flex flex-col gap-1 text-destructive" data-slot="backend-migration-manual">
           <span>The move failed and could not be fully undone ({view.reason}).</span>
           {view.detail && <span>{qualifyCommands(view.detail, profile)}</span>}
-          <span>On this computer, run:</span>
-          <ol className="list-decimal pl-6">
-            {view.steps.map((s) => (
-              <li key={s}>
-                {isFileNote(s) ? qualifyCommands(s, profile) : <code>{qualifyCommands(s, profile)}</code>}
-              </li>
-            ))}
-          </ol>
+          {view.steps.length > 0 && (
+            <>
+              <span>On this computer, run:</span>
+              <ol className="list-decimal pl-6">
+                {view.steps.map((s) => (
+                  <li key={s}>
+                    {isFileNote(s) ? qualifyCommands(s, profile) : <code>{qualifyCommands(s, profile)}</code>}
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
         </div>
       );
     case "restored":

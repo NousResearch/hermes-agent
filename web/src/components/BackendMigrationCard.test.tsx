@@ -12,6 +12,7 @@ import {
   lateTurnStatus,
   restoreRefusedStatus,
   unknownActivityBlocker,
+  unknownStateStatus,
 } from "./BackendMigrationCard.engine.fixture";
 import {
   applyOutcome,
@@ -263,6 +264,16 @@ describe("BackendMigrationCard", () => {
         .toEqual(steps.filter((s) => s.startsWith("hermes ") || s.startsWith("systemctl ")));
       expect(note).toBeDefined();
     });
+
+  it("shows an unrecognized record state in the engine's words, with no empty list of steps", async () => {
+    const record = unknownStateStatus as unknown as BackendMigrationStatus;
+    await render(planWith({ nothing_to_do: true }, record));
+    const manual = container.querySelector('[data-slot="backend-migration-manual"]')!;
+    expect(manual.textContent).toContain(record.message);
+    expect(manual.textContent).not.toContain("On this computer, run:");
+    expect(manual.querySelectorAll("ol")).toHaveLength(0);
+    expect(button("Move anyway")).toBeUndefined();
+  });
 
   describe("a chat that starts after the preflight (exit 4, the old backend never stopped)", () => {
     // The status route's records after the engine stopped the move right before the old backend's stop.

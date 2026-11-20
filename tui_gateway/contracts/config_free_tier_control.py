@@ -190,6 +190,18 @@ class FreeTierChallengePayload(OpenModel):
     attempt: int = 0
 
 
+class InAppOfferPayload(OpenModel):
+    """The Nous Portal's campaign offer (``hermes_cli/in_app_offer.py`` memo of the account
+    payload's ``in_app_offer``): copy the client shows in a dismissible dialog, plus the CTA hop.
+    Absent when no campaign matches the account."""
+
+    id: str
+    title: str
+    body: str
+    cta_label: str
+    cta_url: str
+
+
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
     ``setup.runtime_check.free_tier_route``'s question."""
@@ -211,6 +223,8 @@ class FreeTierStatusResult(Result):
     nudge_due_in: int | None = None
     # The same for the connector offer: a guest with no trial that has connected an app.
     connector_nudge_due_in: int | None = None
+    # The Portal's in-app campaign for this account, when one is live (``hermes_cli/in_app_offer.py``).
+    in_app_offer: InAppOfferPayload | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,

@@ -53,6 +53,11 @@ def _(rid, params: dict) -> dict:
         challenge = anon_challenge.pending_challenge()
         if challenge:
             payload["challenge"] = challenge
+        # The Portal's in-app campaign, memoised by the account fetch (``in_app_offer``): the
+        # same pure-read rule as the rest of this handler, no network here.
+        from hermes_cli import in_app_offer
+        if (offer := in_app_offer.pending_offer()):
+            payload["in_app_offer"] = offer
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5090, str(e))

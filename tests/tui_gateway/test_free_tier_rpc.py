@@ -160,3 +160,22 @@ def test_sign_in_offer_is_moot_once_signed_in(guest, monkeypatch):
         _save_auth_store(store)
     assert "nudge_due_in" not in _call("free_tier.status")
     assert _call("free_tier.claim_nudge") == {"claimed": False}
+
+
+def test_status_carries_the_portal_in_app_offer_and_drops_it_once_cleared(guest):
+    """The Portal's campaign (``in_app_offer`` on the account payload) rides the same
+    pure-read status: present while the memo holds it, absent once the Portal stops
+    serving it."""
+    from hermes_cli import in_app_offer
+
+    offer = {
+        "id": "offer_1", "title": "Welcome back", "body": "Here is an offer.",
+        "cta_label": "See the offer", "cta_url": "https://portal.nousresearch.com/billing",
+    }
+    in_app_offer.record_from_account_payload({"in_app_offer": offer})
+    try:
+        assert _call("free_tier.status")["in_app_offer"] == offer
+    finally:
+        in_app_offer.record_from_account_payload({})
+
+    assert "in_app_offer" not in _call("free_tier.status")

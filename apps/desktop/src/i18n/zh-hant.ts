@@ -218,7 +218,11 @@ export const zhHantOverrides = {
       signIn: '登入',
       notNow: '暫不'
     }
-  }
+  },
+  inAppOffer: {
+    dismiss: '稍後再說',
+    describedBy: '來自 Nous 團隊的訊息。'
+  },
 } satisfies TranslationOverrides
 
 export const zhHant = defineLocale(zhHantOverrides)

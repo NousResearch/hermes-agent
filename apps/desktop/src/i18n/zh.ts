@@ -3882,6 +3882,10 @@ export const zhOverrides = {
       notNow: '暂不'
     }
   },
+  inAppOffer: {
+    dismiss: '以后再说',
+    describedBy: '来自 Nous 团队的消息。'
+  },
 
   modelPicker: {
     title: '切换模型',

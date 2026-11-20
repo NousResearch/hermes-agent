@@ -19396,6 +19396,17 @@
             ],
             "default": null,
             "title": "Connector Nudge Due In"
+          },
+          "in_app_offer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InAppOfferPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -22072,6 +22083,41 @@
           "mode"
         ],
         "title": "ImageRenderResult",
+        "type": "object"
+      },
+      "InAppOfferPayload": {
+        "additionalProperties": true,
+        "description": "The Nous Portal's campaign offer (``hermes_cli/in_app_offer.py`` memo of the account\npayload's ``in_app_offer``): copy the client shows in a dismissible dialog, plus the CTA hop.\nAbsent when no campaign matches the account.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "cta_label": {
+            "title": "Cta Label",
+            "type": "string"
+          },
+          "cta_url": {
+            "title": "Cta Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "body",
+          "cta_label",
+          "cta_url"
+        ],
+        "title": "InAppOfferPayload",
         "type": "object"
       },
       "InflightTurn": {
@@ -30802,7 +30848,6 @@
         "type": "object"
       },
       "ProfileCreateReceipt": {
-        "additionalProperties": false,
         "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
         "properties": {
           "path": {

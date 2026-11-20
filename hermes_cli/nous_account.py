@@ -651,6 +651,13 @@ def _info_from_valid_jwt(
 def _info_from_account_payload(
     payload: dict[str, Any], *, state: dict[str, Any], portal_base_url: Optional[str]
 ) -> NousPortalAccountInfo:
+    # The Portal's in-app offer rides the same payload (``in_app_offer``);
+    # memoised per profile so ``free_tier.status`` can serve it without a
+    # network read. A missing or malformed key clears the memo (campaign
+    # ended, or the contract broke), so the client stops showing it.
+    from hermes_cli import in_app_offer
+
+    in_app_offer.record_from_account_payload(payload)
     user = _dict_or_empty(payload.get("user"))
     organisation = _dict_or_empty(payload.get("organisation"))
     access = _coerced_dataclass(NousPaidServiceAccessInfo, payload.get("paid_service_access"))

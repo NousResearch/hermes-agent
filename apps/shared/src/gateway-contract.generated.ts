@@ -681,6 +681,7 @@ export interface FreeTierStatusResult {
   challenge?: FreeTierChallengePayload | null
   nudge_due_in?: number | null
   connector_nudge_due_in?: number | null
+  in_app_offer?: InAppOfferPayload | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -690,6 +691,15 @@ export interface FreeTierChallengePayload {
   expires_in: number
   message: string
   attempt?: number
+  [key: string]: unknown
+}
+/** The Nous Portal's campaign offer (``hermes_cli/in_app_offer.py`` memo of the account payload's ``in_app_offer``): copy the client shows in a dismissible dialog, plus the CTA hop. Absent when no campaign matches the account. */
+export interface InAppOfferPayload {
+  id: string
+  title: string
+  body: string
+  cta_label: string
+  cta_url: string
   [key: string]: unknown
 }
 export interface FreeTierChallengeResultParams {

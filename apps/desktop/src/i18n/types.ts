@@ -3488,6 +3488,10 @@ export interface Translations extends NoticeTranslations {
       retrying: string
     }
   }
+  inAppOffer: {
+    dismiss: string
+    describedBy: string
+  },
 
   modelPicker: {
     title: string

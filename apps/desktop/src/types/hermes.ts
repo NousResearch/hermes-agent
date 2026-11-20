@@ -201,6 +201,19 @@ export interface FreeTierStatus {
   nudge_due_in?: number | null
   /** The same for the connector offer: no trial, and apps connected on the free tier. */
   connector_nudge_due_in?: number | null
+  /** The Nous Portal's in-app campaign for this account, when one is live.
+   * Copy comes from the server; the client only decides whether to show it. */
+  in_app_offer?: InAppOfferPayload | null
+}
+
+/** A campaign offer the Portal served on the account payload, shown by the
+ * in-app offer dialog (`store/in-app-offer.ts`). */
+export interface InAppOfferPayload {
+  id: string
+  title: string
+  body: string
+  cta_label: string
+  cta_url: string
 }
 
 export interface MemoryProviderOAuthStatus {

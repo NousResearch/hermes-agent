@@ -3843,7 +3843,11 @@ export const jaOverrides = {
       signIn: 'サインイン',
       notNow: '今はしない'
     }
-  }
+  },
+  inAppOffer: {
+    dismiss: '後で',
+    describedBy: 'Nous チームからのメッセージ。'
+  },
 } satisfies TranslationOverrides
 
 export const ja = defineLocale(jaOverrides)

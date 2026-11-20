@@ -400,6 +400,96 @@ def test_a_stopped_system_unit_is_judged_by_the_planner_too(tmp_path, monkeypatc
         assert (old_backend_notice(root) is not None) is named
 
 
+# A read-only `systemctl` for the system manager: it lists the `.service` files in $FAKE_SYSTEM_UNITS and
+# answers `show` from them the way systemd prints them; the user manager has no units.
+_FAKE_SYSTEMCTL = r'''
+import os, shlex, sys
+args = sys.argv[1:]
+units = os.environ["FAKE_SYSTEM_UNITS"]
+if "--user" in args:
+    sys.exit(0 if args[-1:] == ["show-environment"] or "list-unit-files" in args else 1)
+if args[:1] == ["list-unit-files"]:
+    for name in sorted(os.listdir(units)):
+        print(f"{name} enabled enabled")
+    sys.exit(0)
+if args[:1] == ["show-environment"]:
+    sys.exit(0)
+if args[:1] != ["show"] or not os.path.isfile(os.path.join(units, args[1])):
+    sys.exit(1)
+path = os.path.join(units, args[1])
+props = {"FragmentPath": path, "UnitFileState": "enabled", "ActiveState": "inactive", "User": "",
+         "Environment": [], "EnvironmentFiles": [], "ExecStart": ""}
+for line in open(path, encoding="utf-8").read().splitlines():
+    key, _, value = line.partition("=")
+    if key == "Environment":
+        props["Environment"].append(value)
+    elif key == "EnvironmentFile":
+        props["EnvironmentFiles"].append(f"{value} (ignore_errors=no)")
+    elif key == "ExecStart":
+        argv = shlex.split(value)
+        props["ExecStart"] = f"{{ path={argv[0]} ; argv[]={value} ; }}"
+    elif key == "User":
+        props["User"] = value
+for key in [a.split("=", 1)[1] for a in args if a.startswith("--property=")]:
+    value = props.get(key, "")
+    for one in (value or [""]) if key == "EnvironmentFiles" else [" ".join(value) if isinstance(value, list) else value]:
+        print(f"{key}={one}")
+'''
+
+
+def _system_units_notice(tmp_path, monkeypatch, unit_body: str):
+    """The notice for one stopped system unit, found by the real discovery from a real unit file."""
+    import types
+    import hermes_cli.gateway_migrate_backends as backends
+    from hermes_cli.update_backend_notice import old_backend_notice
+
+    root = _standard_root(tmp_path, monkeypatch)
+    units, bin_dir = tmp_path / "system-units", tmp_path / "bin"
+    units.mkdir()
+    bin_dir.mkdir()
+    (units / "hermes-dashboard.service").write_text(f"[Service]\n{unit_body}", encoding="utf-8")
+    fake = bin_dir / "systemctl"
+    fake.write_text(f"#!{sys.executable}\n{_FAKE_SYSTEMCTL}", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("FAKE_SYSTEM_UNITS", str(units))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(backends, "_running_backends", list)  # this host's own processes stay out
+    import pwd
+    monkeypatch.setattr(pwd, "getpwnam", lambda _name: types.SimpleNamespace(pw_dir=str(tmp_path)))
+    return root, old_backend_notice(root)
+
+
+@pytest.mark.platforms("linux")
+def test_a_stopped_system_unit_whose_env_launcher_picks_another_home_is_not_named(tmp_path, monkeypatch):
+    """A stopped system unit that runs as this account but starts `env HERMES_HOME=<another home> hermes`
+    serves that home: it sets no `Environment=HERMES_HOME`, so it is not named for this one."""
+    import getpass
+    _, notice = _system_units_notice(tmp_path, monkeypatch, (
+        f"User={getpass.getuser()}\n"
+        "ExecStart=/usr/bin/env HERMES_HOME=/srv/other /opt/hermes/bin/hermes dashboard\n"))
+    assert notice is None
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("sibling_file,named", [(False, True), (True, False)])
+def test_a_stopped_system_unit_is_named_only_for_its_own_inline_home_that_no_file_overrides(
+        sibling_file, named, tmp_path, monkeypatch):
+    """A stopped system unit running as this account with `Environment=HERMES_HOME=<this home>` is named;
+    the same unit with a later `EnvironmentFile=` that picks a sibling profile's home is not."""
+    import getpass
+    root = _standard_root(tmp_path, monkeypatch)
+    sibling_env = tmp_path / "work.env"
+    sibling_env.write_text(f"HERMES_HOME={root / 'profiles' / 'work'}\n", encoding="utf-8")
+    _, notice = _system_units_notice(tmp_path, monkeypatch, (
+        f"User={getpass.getuser()}\nEnvironment=HERMES_HOME={root}\n"
+        "ExecStart=/opt/hermes/bin/hermes dashboard --port 9119\n"
+        + (f"EnvironmentFile={sibling_env}\n" if sibling_file else "")))
+    if named:
+        assert notice is not None and "systemd system unit hermes-dashboard.service" in notice
+    else:
+        assert notice is None
+
+
 def _stopped_unit_and_running_backend(tmp_path, monkeypatch, probes):
     """A stopped user unit of this home whose ownership probe raises, beside a running hand-started backend."""
     import hermes_cli.gateway_migrate_backends as backends

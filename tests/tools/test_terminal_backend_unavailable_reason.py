@@ -48,3 +48,13 @@ def test_check_terminal_requirements_exception_captures_reason(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert terminal_tool.check_terminal_requirements() is False
     assert "boom" in terminal_tool.terminal_backend_unavailable_reason()
+
+
+def test_managed_modal_message_names_direct_credentials_that_exist():
+    """Managed mode blocked with direct Modal credentials present: the text must not say there are none."""
+    state = {"mode": None, "managed_mode_blocked": True, "has_direct": True}
+    log, err = backends._modal_unavailable_reason(state)
+    assert "no direct Modal credentials" not in log + err
+    assert "Direct Modal credentials were found" in err
+    state["has_direct"] = False
+    assert "no direct Modal credentials/config were found" in backends._modal_unavailable_reason(state)[1]

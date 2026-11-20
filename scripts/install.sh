@@ -42,6 +42,7 @@ INSTALL_RUN_ID=""
 FAILURE_CLASS=""
 INSTALL_SIGNAL=""
 INSTALL_IN_STAGE=false
+CLONE_STAGED_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in

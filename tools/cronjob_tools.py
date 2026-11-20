@@ -1092,14 +1092,15 @@ def cronjob(
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
-    grace_minutes: Optional[int | str] = None) -> str:
+    grace_minutes: Optional[int | str] = None,
+    script_content: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     try:
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
         if handler is not None:
-            return handler(a)
+            return _with_staged_script(a, None, lambda: handler(a))
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
         # Job resolution precedes the action check (an unknown action on a missing job
@@ -1110,9 +1111,35 @@ def cronjob(
         handler = _JOB_ACTIONS.get(normalized)
         if handler is None:
             return tool_error(f"Unknown cron action '{action}'", success=False)
+        if normalized == "update":
+            return _with_staged_script(a, job, lambda: handler(job, a))
         return handler(job, a)
     except Exception as e:
         return tool_error(str(e), success=False)
+
+
+def _with_staged_script(a: dict[str, Any], job: Optional[dict[str, Any]], run) -> str:
+    """Create/update with ``script_content``: save the body under scripts/ first (``script`` names
+    it; else the updated job's own script; else a derived name), then ``run()``; a failed run
+    takes the write back so a refused job leaves no stray script behind."""
+    content = a.get("script_content")
+    if content is None:
+        return run()
+    from cron.script_content import derived_script_name, stage_script_content
+    own = str(job.get("script") or "").strip() or None if job else None
+    name = str(a["script"] or "").strip() or own or derived_script_name(a["name"] or (job or {}).get("name"))
+    staged = stage_script_content(content, name, own_script=own)
+    if staged.error:
+        return tool_error(staged.error, success=False)
+    a["script"] = name
+    try:
+        result = run()
+    except Exception:
+        staged.discard()
+        raise
+    if not json.loads(result).get("success"):
+        staged.discard()
+    return result
 
 
 def _script_description(home: str) -> str:
@@ -1199,6 +1226,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": _script_description("the profile HERMES_HOME")
             },
+            "script_content": {
+                "type": "string",
+                "description": "Full source of the gate script for `script`; Hermes saves it under scripts/ for you (no separate file write needed). Last stdout line {\"wakeAgent\": false} skips the agent run; {\"wakeAgent\": true, \"context\": ...} wakes it with only that context. The script gets HERMES_CRON_STATE_DIR for its own state."
+            },
             "monitor": {
                 "type": "string",
                 "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
@@ -1262,7 +1293,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response", "script_content")
 
 
 def _approval_when(parsed: dict[str, Any], timezone: Any) -> str:
@@ -1282,13 +1313,16 @@ def _approval_when(parsed: dict[str, Any], timezone: Any) -> str:
 
 def _approval_task(args: dict[str, Any]) -> str:
     """What the job will actually run: the script alone for a no-agent job, else the prompt or skills
-    plus any attached script, so the card never describes work that will not happen."""
+    plus any attached script, so the card never describes work that will not happen. A script
+    the call itself saves (``script_content``) is shown in full: it is what the user consents to."""
     script = str(args.get("script") or "").strip()
+    body = args.get("script_content")
+    shown = f"\n--- script {script} ---\n{body}" if isinstance(body, str) and body.strip() else ""
     if args.get("no_agent"):
-        return f"runs script {script}"
+        return f"runs script {script}{shown}"
     task = " ".join(str(args.get("prompt") or ", ".join(_clean_str_list(args.get("skills")) or [])).split())
     task = task if len(task) <= 300 else task[:299] + "…"
-    return f"{task} (after running script {script})" if script else task
+    return (f"{task} (after running script {script})" if script else task) + shown
 
 
 def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
@@ -1325,6 +1359,10 @@ def _cronjob_handler(args, **kw):
     ``monitor_script``/``monitor_url`` pair (legacy field names still accepted). A model-initiated
     create waits for the user's approval first."""
     if str(args.get("action") or "").strip().lower() == "create":
+        if args.get("script_content") is not None and not args.get("script"):
+            # Name the script now so the approval card shows the file the job will run.
+            from cron.script_content import derived_script_name
+            args = {**args, "script": derived_script_name(args.get("name"))}
         if (refusal := _creation_approval_error(args)) is not None:
             return refusal
     _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))

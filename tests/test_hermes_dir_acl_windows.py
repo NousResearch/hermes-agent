@@ -316,6 +316,35 @@ def _dacls(paths):
             .replace(str(path), "<p>") for path in paths]
 
 
+def test_icacls_fallback_still_grants_the_home_root_itself(tmp_path, monkeypatch):
+    """No pywin32: the icacls fallback pins a target against a trusted root, and the home ROOT is the
+    operator's own choice (``HERMES_HOME``), so it must be pinnable too — an elevated gateway
+    restart reserves exactly that path and used to refuse it."""
+    import os
+
+    if not _elevated():
+        pytest.skip("needs an elevated token: only an elevated run grants")
+    import hermes_dir_acl
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    off_home = tmp_path / "off-home"
+    off_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def _no_pywin32(*args, **kwargs):
+        raise ImportError("no pywin32")
+
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", _no_pywin32)
+    assert hermes_dir_acl._expected_final(home) == os.path.realpath(home)
+    assert hermes_dir_acl.grant_user_access(home, elevated=True) is True
+    acl = subprocess.run(["icacls", str(home)], capture_output=True, text=True, check=True).stdout
+    user = subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+    assert user.lower() in acl.lower(), acl
+    # A path with no home provenance keeps its refusal.
+    assert hermes_dir_acl.grant_user_access(off_home, elevated=True) is False
+
+
 def test_elevated_grants_never_reach_a_junction_target_outside_the_home(home_with_junction_out):
     import hermes_dir_acl
     from hermes_cli import update_windows_acl

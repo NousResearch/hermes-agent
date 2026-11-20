@@ -596,11 +596,15 @@ def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 
     # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
     # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
     # listener itself. The installed POSIX launcher execs instead, so the address this --status names
-    # is probed here too. The only address this home's gateway is asked about is the peer that probe
-    # connected to, unless a listed backend holds a listener covering that peer
+    # is probed here too, when this machine can listen there (no lookup, no foreign connect). The only
+    # address this home's gateway is asked about is the peer that probe connected to, unless a listed
+    # backend holds a listener covering that peer
     # (a listed process with no covering listener there is listed, not credited).
     ancestors: set[int] | None = None
-    own = _dashboard_listening(status_host, status_port) if status_port > 0 else None
+    own = None
+    if status_port > 0 and _status_host_is_local(status_host):
+        with contextlib.suppress(OSError, UnicodeError, ValueError):
+            own = _dashboard_listening(status_host, status_port)
     unclaimed: list[tuple[str, int]] = [(own, status_port)] if own else []
     candidates: list[tuple[int, str, str, tuple[str, int]]] = []
     for pid, command in _scan_dashboard_processes():
@@ -644,6 +648,27 @@ def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 
     if gateway_note:
         print(gateway_note)
     return len(live)
+
+
+def _status_host_is_local(host: str) -> bool:
+    """Whether this machine can listen on *host* with no name lookup: ``localhost``, a loopback or
+    wildcard IP literal, or an address one of its interfaces holds. Any other host (a DNS name, another
+    machine's address) is never probed by --status itself, so no resolver or foreign connect can stall it."""
+    import ipaddress
+    name = (host or "").strip().strip("[]")
+    if name == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_unspecified:
+        return True
+    from hermes_platform.host.facts import has_interface_address
+    try:
+        return has_interface_address(name)
+    except (OSError, ValueError):
+        return False
 
 
 def _dashboard_listening(host: str, port: int) -> str | None:

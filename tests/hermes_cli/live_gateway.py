@@ -87,15 +87,16 @@ def write_config(home: Path, extra: dict | None = None) -> None:
 
 
 @contextlib.contextmanager
-def live_gateway(tmp_path: Path, *, webapp: bool = True, webapp_host: str | None = None):
+def live_gateway(tmp_path: Path, *, webapp: bool = True, webapp_host: str | None = None,
+                 config: dict | None = None):
     """Boot the gateway; yields once its control socket says ``ready``. Stops it by its own pid.
-    *webapp_host* sets ``webapp.host`` (the default is 127.0.0.1)."""
+    *webapp_host* sets ``webapp.host`` (the default is 127.0.0.1); *config* adds top-level keys."""
     home, user = tmp_path / "state", tmp_path / "user"
     home.mkdir(mode=0o700)
     user.mkdir()
     port = free_port()
     block = {"enabled": True, "port": port, **({"host": webapp_host} if webapp_host else {})}
-    write_config(home, {"webapp": block} if webapp else None)
+    write_config(home, {**({"webapp": block} if webapp else {}), **(config or {})})
     env = home_env(home, user)
     log_path = tmp_path / "gateway.log"
     with log_path.open("w+") as log:

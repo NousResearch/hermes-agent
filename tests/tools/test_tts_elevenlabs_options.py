@@ -9,10 +9,6 @@ def _setting(value, name):
     return value[name] if isinstance(value, dict) else getattr(value, name)
 
 
-def _setting_is_absent(value, name):
-    return name not in value if isinstance(value, dict) else getattr(value, name) is None
-
-
 def _client():
     client = MagicMock()
     client.text_to_speech.convert.return_value = iter([b"audio"])
@@ -78,67 +74,87 @@ def test_nested_voice_settings_override_top_level_and_preserve_other_legacy_valu
     assert _setting(kwargs["voice_settings"], "similarity_boost") == 0.7
 
 
-@pytest.mark.parametrize("path", ["sync", "stream"])
-def test_v4_allows_language_stability_and_similarity_without_default_speed(path, tmp_path):
-    from tools import tts_streaming, tts_tool, tts_tool_providers
+_EXPLICIT_TUNING = {
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.3,
+    "speed": 0.9,
+    "use_speaker_boost": True,
+}
 
+
+class _ProviderError(Exception):
+    """Stands in for an SDK error carrying an HTTP status, raised by the fake provider."""
+
+    def __init__(self, status_code, message="provider error"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _failing_client(error):
+    """``convert`` returns a generator that raises only once it is consumed, as the SDK does."""
+
+    def audio():
+        raise error
+        yield  # pragma: no cover - makes this a generator
+
+    client = MagicMock()
+    client.text_to_speech.convert.return_value = audio()
+    return client
+
+
+@pytest.mark.parametrize("path", ["sync", "stream"])
+@pytest.mark.parametrize("model_id", ["eleven_v4", "eleven_v4_turbo"])
+def test_explicit_tuning_reaches_sdk_unchanged_in_one_attempt(path, model_id, tmp_path):
     client = _client()
-    section = {
-        "model_id": "eleven_v4",
-        "language_code": "fr",
-        "voice_settings": {
-            "stability": 0.6,
-            "similarity_boost": 0.8,
-            "use_speaker_boost": False,
-        },
-    }
-    config = {"speed": 1.0, "elevenlabs": section}
-    with patch.object(tts_streaming, "_resolve_key", return_value="key"), patch.object(
-        tts_tool_providers, "_require_key", return_value="key"
-    ), patch.object(tts_tool, "_import_elevenlabs", return_value=MagicMock(return_value=client)):
-        if path == "sync":
-            tts_tool._generate_elevenlabs("bonjour", str(tmp_path / "out.mp3"), config)
-        else:
-            list(tts_streaming.ElevenLabsStreamer(config, section).stream("bonjour"))
+    section = {"model_id": model_id, "language_code": "fr", "voice_settings": dict(_EXPLICIT_TUNING)}
+    _run(path, {"elevenlabs": section}, tmp_path, client)
+
+    client.text_to_speech.convert.assert_called_once()
+    kwargs = client.text_to_speech.convert.call_args.kwargs
+    assert kwargs["model_id"] == model_id
+    assert kwargs["language_code"] == "fr"
+    for name, expected in _EXPLICIT_TUNING.items():
+        assert _setting(kwargs["voice_settings"], name) == expected
+
+
+@pytest.mark.parametrize("path", ["sync", "stream"])
+def test_global_speed_reaches_sdk_for_every_model(path, tmp_path):
+    client = _client()
+    _run(path, {"speed": 0.9, "elevenlabs": {"model_id": "eleven_v4"}}, tmp_path, client)
 
     kwargs = client.text_to_speech.convert.call_args.kwargs
-    assert kwargs["language_code"] == "fr"
-    assert _setting(kwargs["voice_settings"], "stability") == 0.6
-    assert _setting(kwargs["voice_settings"], "similarity_boost") == 0.8
-    assert _setting_is_absent(kwargs["voice_settings"], "speed")
-    assert _setting_is_absent(kwargs["voice_settings"], "use_speaker_boost")
+    assert kwargs["model_id"] == "eleven_v4"
+    assert _setting(kwargs["voice_settings"], "speed") == 0.9
 
 
 @pytest.mark.parametrize("path", ["sync", "stream"])
+@pytest.mark.parametrize("model_id", ["eleven_v4", "eleven_v4_turbo"])
 @pytest.mark.parametrize(
-    "section,global_speed,message",
+    "error,error_type",
     [
-        ({"voice_settings": {"style": 0.2}}, None, "style"),
-        ({"voice_settings": {"speed": 1.1}}, None, "speed"),
-        ({"voice_settings": {"use_speaker_boost": True}}, None, "use_speaker_boost"),
-        ({}, 1.1, "speed"),
+        (_ProviderError(422, "unsupported voice setting"), _ProviderError),
+        (_ProviderError(401, "invalid api key"), _ProviderError),
+        (_ProviderError(429, "rate limited"), _ProviderError),
+        (ConnectionError("network down"), ConnectionError),
     ],
+    ids=["capability-422", "auth-401", "rate-429", "network"],
 )
-def test_v4_rejects_unsupported_nondefault_settings_before_sdk_call(
-    path, section, global_speed, message, tmp_path,
+def test_provider_error_while_consuming_generator_surfaces_unchanged(
+    path, model_id, error, error_type, tmp_path,
 ):
-    from tools import tts_streaming, tts_tool, tts_tool_providers
+    client = _failing_client(error)
+    section = {"model_id": model_id, "voice_settings": dict(_EXPLICIT_TUNING)}
 
-    client = _client()
-    section = {"model_id": "eleven_v4_turbo", **section}
-    config = {"elevenlabs": section}
-    if global_speed is not None:
-        config["speed"] = global_speed
-    with patch.object(tts_streaming, "_resolve_key", return_value="key"), patch.object(
-        tts_tool_providers, "_require_key", return_value="key"
-    ), patch.object(
-        tts_tool, "_import_elevenlabs", return_value=MagicMock(return_value=client)
-    ), pytest.raises(ValueError, match=message):
-        if path == "sync":
-            tts_tool._generate_elevenlabs("hello", str(tmp_path / "out.mp3"), config)
-        else:
-            list(tts_streaming.ElevenLabsStreamer(config, section).stream("hello"))
-    client.text_to_speech.convert.assert_not_called()
+    with pytest.raises(error_type) as caught:
+        _run(path, {"elevenlabs": section}, tmp_path, client)
+
+    assert caught.value is error
+    client.text_to_speech.convert.assert_called_once()
+    kwargs = client.text_to_speech.convert.call_args.kwargs
+    assert kwargs["model_id"] == model_id
+    for name, expected in _EXPLICIT_TUNING.items():
+        assert _setting(kwargs["voice_settings"], name) == expected
 
 
 @pytest.mark.parametrize("path", ["sync", "stream"])
@@ -276,18 +292,17 @@ def test_speed_is_clamped_into_elevenlabs_band_before_request(path, config, expe
 @pytest.mark.parametrize(
     "config",
     [
-        {"speed": "1.0", "elevenlabs": {"model_id": "eleven_v4", "voice_settings": {"stability": 0.5}}},
-        {"elevenlabs": {"model_id": "eleven_v4", "voice_settings": {"stability": 0.5, "speed": "1.0"}}},
+        {"speed": "1.0", "elevenlabs": {"model_id": "eleven_v4"}},
+        {"elevenlabs": {"model_id": "eleven_v4", "voice_settings": {"speed": "1.0"}}},
     ],
     ids=["global", "nested"],
 )
-def test_v4_treats_quoted_neutral_speed_like_numeric(path, config, tmp_path):
+def test_quoted_speed_is_normalized_to_a_number_for_every_model(path, config, tmp_path):
     client = _client()
     _run(path, config, tmp_path, client)
 
-    kwargs = client.text_to_speech.convert.call_args.kwargs
-    assert _setting(kwargs["voice_settings"], "stability") == 0.5
-    assert _setting_is_absent(kwargs["voice_settings"], "speed")
+    speed = _setting(client.text_to_speech.convert.call_args.kwargs["voice_settings"], "speed")
+    assert speed == 1.0 and isinstance(speed, float)
 
 
 @pytest.mark.parametrize("path", ["sync", "stream"])

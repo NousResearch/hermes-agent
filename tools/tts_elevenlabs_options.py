@@ -19,7 +19,6 @@ _KNOWN_CONVERT_OPTION_KEYS = frozenset({
     "use_pvc_as_ivc", "apply_text_normalization", "apply_language_text_normalization",
     "request_options",
 })
-_V4_MODELS = frozenset({"eleven_v4", "eleven_v4_turbo"})
 # ElevenLabs documents ``speed`` as 0.7..1.2 (1.0 = neutral). Like the xAI path, out-of-band
 # values are clamped so a global ``tts.speed`` tuned for another provider never 400s the request.
 ELEVENLABS_SPEED_MIN = 0.7
@@ -71,9 +70,7 @@ def _normalized_speed(value: Any) -> Optional[float]:
     return max(ELEVENLABS_SPEED_MIN, min(ELEVENLABS_SPEED_MAX, speed))
 
 
-def _voice_settings(
-    el_config: Dict[str, Any], tts_config: Optional[Dict[str, Any]], model_id: str,
-) -> Any:
+def _voice_settings(el_config: Dict[str, Any], tts_config: Optional[Dict[str, Any]]) -> Any:
     nested = el_config.get("voice_settings")
     if nested is not None and not isinstance(nested, dict):
         raise ValueError("tts.elevenlabs.voice_settings must be a mapping")
@@ -89,23 +86,6 @@ def _voice_settings(
     if unknown:
         raise ValueError("Unknown ElevenLabs voice_settings option(s): " + ", ".join(unknown))
 
-    if model_id in _V4_MODELS:
-        incompatible = []
-        if raw.get("style") not in (None, 0, 0.0):
-            incompatible.append("style")
-        if raw.get("speed") not in (None, 1, 1.0):
-            incompatible.append("speed")
-        if raw.get("use_speaker_boost") not in (None, False):
-            incompatible.append("use_speaker_boost")
-        if incompatible:
-            raise ValueError(
-                f"ElevenLabs model {model_id} does not support voice setting(s): "
-                + ", ".join(incompatible)
-            )
-        raw.pop("style", None)
-        raw.pop("speed", None)
-        raw.pop("use_speaker_boost", None)
-
     if not raw:
         return None
     try:
@@ -120,7 +100,11 @@ def build_elevenlabs_convert_kwargs(
     el_config: Dict[str, Any], tts_config: Optional[Dict[str, Any]] = None,
     convert_method: Any = None,
 ) -> Dict[str, Any]:
-    """Build and validate kwargs before calling the ElevenLabs SDK."""
+    """Build and validate kwargs before calling the ElevenLabs SDK.
+
+    Option values are validated, never filtered by ``model_id``: whether a model honors, ignores or
+    rejects a setting is the provider's decision and surfaces as the provider's own error.
+    """
     kwargs = _convert_options(el_config, convert_method)
     kwargs.update(text=text, voice_id=voice_id, model_id=model_id, output_format=output_format)
     language_code = el_config.get("language_code")
@@ -129,7 +113,7 @@ def build_elevenlabs_convert_kwargs(
             raise ValueError("tts.elevenlabs.language_code must be a string")
         if language_code.strip():
             kwargs["language_code"] = language_code.strip()
-    settings = _voice_settings(el_config, tts_config, model_id)
+    settings = _voice_settings(el_config, tts_config)
     if settings is not None:
         kwargs["voice_settings"] = settings
     return kwargs

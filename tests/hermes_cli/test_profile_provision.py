@@ -290,6 +290,25 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
 
 
 
+def test_the_cli_names_the_launch_profile_for_keys_and_the_clone_source_for_logins(launch, monkeypatch, capsys):
+    """``--clone-from src`` copies src's logins, but the keys over src's empty .env and the model come
+    from the launch profile ('work' here), so each line names where its item came from."""
+    from hermes_cli import profile_cmd
+    src = _named_source(launch)
+    (src / ".env").write_text("# no keys\n")
+    (src / "config.yaml").write_text("{}\n")
+    work = launch / "profiles" / "work"
+    work.mkdir()
+    (work / "config.yaml").write_text("model:\n  default: wm\n  provider: openrouter\n")
+    (work / ".env").write_text("OPENROUTER_API_KEY=sk-or-work\n")
+    monkeypatch.setenv("HERMES_HOME", str(work))
+    profile_cmd._profile_create(_cli_args("c", "--no-alias", "--clone-from", "src"))
+    out = capsys.readouterr().out
+    assert "Copied API keys from 'work'" in out
+    assert "Model inherited from 'work'" in out
+    assert "Copied logins from 'src'" in out
+
+
 def test_validating_in_another_home_runs_under_multiplex_semantics(launch, monkeypatch):
     from agent.secret_scope import is_multiplex_active
     from hermes_cli.model_switch import ModelSwitchResult

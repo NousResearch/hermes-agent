@@ -1436,6 +1436,15 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
                 job, t.runtime_adapter, t.platform_name, t.chat_id, str(delivered_message_id),
                 t.mirror_text,
                 **seed_kwargs)
+    elif t.mirror_this_target and t.thread_id and not t.in_channel_surface and not thread_seeded:
+        # Explicit thread/topic target (``telegram:<chat>:<topic>``): the plain mirror only APPENDS,
+        # so a topic with no session yet (its first automatic message) would drop the brief and
+        # the reply would start blank (#157965). Create-or-reuse the row the reply keys to.
+        _seed_cron_thread_session(
+            job, t.runtime_adapter, t.platform_name, t.chat_id, str(t.thread_id), t.mirror_text,
+            **seed_kwargs,
+        )
+        thread_seeded = True
     elif t.in_channel_surface and not t.inchannel_continuable:
         logger.warning(
             "Job '%s': in_channel delivery to %s:%s is not a "

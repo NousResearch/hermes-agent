@@ -381,3 +381,28 @@ def test_seeds_do_not_collide_across_workspaces():
         "identical chat ids in different workspaces seeded the SAME session "
         "key — cross-workspace transcript bleed"
     )
+
+
+@pytest.mark.parametrize(
+    "deliver, reply_chat, chat_type, topic",
+    [
+        ("telegram:-1001234567:77", "-1001234567", "group", "77"),   # supergroup forum topic
+        ("telegram:1234567:88", "1234567", "dm", "88"),              # private-chat topic
+    ],
+)
+def test_explicit_topic_target_without_session_is_seeded(deliver, reply_chat, chat_type, topic):
+    """An explicit ``platform:chat:topic`` target with ``attach_to_session`` whose topic has no
+    session yet (first automatic message, #157965): the append-only mirror found nothing, so the
+    reply started blank. The delivery must create the row the topic reply keys to, and never
+    open a new thread over the named one."""
+    job = {"id": "j11", "name": "kitchen", "deliver": deliver, "attach_to_session": True}
+
+    delivery_err, adapter, store = _deliver_with_topic(job, "999")
+
+    assert delivery_err is None
+    adapter.create_handoff_thread.assert_not_awaited()
+    reply_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id=reply_chat, chat_type=chat_type, user_id=reply_chat,
+        thread_id=topic,
+    )
+    assert build_session_key(_seeded_source(store)) == build_session_key(reply_source)

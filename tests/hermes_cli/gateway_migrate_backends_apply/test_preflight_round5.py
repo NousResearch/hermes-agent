@@ -159,3 +159,42 @@ def test_a_hermes_model_flag_is_not_python_module_mode(home):
     host.process_cwd = lambda pid: None
 
     assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+
+class _RestartsDuringPrompt(FakeHost):
+    """The old unit is (re)started by its supervisor after the preflight: a new main process, which runs a chat."""
+
+    new_pid = None
+
+    def backends(self):
+        items = super().backends()
+        if self.new_pid is None:
+            return items
+        from hermes_cli.gateway_migrate_backends import BackendItem
+        return [BackendItem(**{**i.__dict__, "pid": self.new_pid, "running": True}) for i in items]
+
+    def running_turns(self, pid, start_time):
+        return 1 if self.new_pid is not None and pid == self.new_pid else 0
+
+    def unit_environment(self, unit, scope):
+        return {"HERMES_HOME": str(self.home)}, None  # a stopped unit is judged by its own environment
+
+    def install_gateway(self):
+        super().install_gateway()
+        self.old["active"] = True
+        self.new_pid = 4343
+
+
+@pytest.mark.parametrize("active_at_preflight", [True, False])
+def test_an_old_backend_that_changed_since_the_check_is_not_stopped(home, capsys, active_at_preflight):
+    """Restarted during the prompt (a chat on the new process), or started after a preflight that saw it
+    stopped: the stop would hit a process the checks never saw. The move stops there (exit 4), untouched."""
+    host = _RestartsDuringPrompt(home)
+    host.old["active"] = active_at_preflight
+
+    code = engine.cmd_apply(host, _args())
+
+    out = capsys.readouterr().out
+    assert "old_stop" not in host.calls, out
+    assert code == engine.EXIT_ROLLED_BACK, out
+    assert "the old backend changed since the check" in out and "run this command again" in out

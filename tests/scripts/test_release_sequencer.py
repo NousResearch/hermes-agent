@@ -781,7 +781,7 @@ def _unfinished_head_fixture(monkeypatch, pointer, *, slim=None, desktop=None):
 
 @pytest.mark.parametrize("pointer,slim,desktop", [
     (b'{"tag":"v0.21.4"}\n', OLD, OLD),  # the pointer write failed, so the aliases never moved
-    (None, None, None),                  # the first bundled release's pointer write failed
+    (None, OLD, OLD),                    # the first bundled release's pointer write failed
     ("current", OLD, OLD),               # the pointer landed but its read-back or the slim promotion failed
     ("current", SLIM, OLD),              # the slim aliases moved and the desktop ones failed
 ])
@@ -815,11 +815,14 @@ def test_an_unfinished_head_under_a_newer_release_repeats_only_its_desktop_advan
 
 
 @pytest.mark.parametrize("pointer_current", [True, False])
-def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monkeypatch, pointer_current):
+@pytest.mark.parametrize("failed_probes", [1, 2])
+def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monkeypatch, pointer_current,
+                                                                          failed_probes):
     """A newer Docker-only 0.21.6 owns the aliases. The first alias probe fails, so the channel head
-    falls back to the desktop head 0.21.5; the next probe sees 0.21.6's digest, which is that
-    release's, not a sign 0.21.5's promotion stopped. A stale 0.21.5 pointer still gets its
-    desktop advance, without the Docker promotion that would move the aliases back."""
+    falls back to the desktop head 0.21.5; the recovery probe then sees 0.21.6's digest (that
+    release's, not a sign 0.21.5's promotion stopped) or fails too (owner unknown). A stale 0.21.5
+    pointer still gets its desktop advance, without the Docker promotion that would move the
+    aliases back."""
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases, docker, sequencer, store
 
@@ -849,7 +852,7 @@ def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monke
     def inspect(reference, run_):
         if reference.endswith(":stable"):
             probes.append(reference)
-            if len(probes) == 1:
+            if len(probes) <= failed_probes:
                 raise subprocess.CalledProcessError(1, ["docker"])
             return newer
         return registry_inspect(reference, run_)
@@ -872,7 +875,7 @@ def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monke
 
     assert steps == ([] if pointer_current else [{"finish": "0.21.5"}]) + [{"advance": "0.21.6"}]
     assert events == ([] if pointer_current else [("feed", "0.21.5")]) + [("aliases", "rc.1-v0.21.6")]
-    assert len(probes) >= 2
+    assert len(probes) > failed_probes
 
 
 def test_a_publish_that_died_before_the_retarget_is_repaired():

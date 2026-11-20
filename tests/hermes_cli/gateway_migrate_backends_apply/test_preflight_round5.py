@@ -67,7 +67,17 @@ def test_a_turn_started_after_preflight_stops_the_move_before_the_old_backend_st
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLED_BACK
     out = capsys.readouterr().out
     assert "old_stop" not in host.calls and host.old == {"enabled": True, "active": True}
-    assert "a turn started on the old backend during migration" in out
+    assert "1 turn(s) are running on the old backend. Wait for them to finish" in out
+
+
+def test_the_check_before_the_stop_decides_as_the_preflight_did_outside_its_network_namespace(home):
+    """An automatic plan reads the old backend's markers whatever its network namespace, in the preflight and
+    again right before the stop: a backend this planner cannot see the namespace of still migrates when idle."""
+    host = FakeHost(home)
+    host.same_netns = False
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    assert "old_stop" in host.calls
 
 
 def test_a_turn_started_after_preflight_is_interrupted_with_force_interrupt(home):

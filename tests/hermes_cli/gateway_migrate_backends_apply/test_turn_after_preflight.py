@@ -73,7 +73,7 @@ def test_a_real_turn_started_after_preflight_rolls_back_with_the_old_backend_unt
 
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLED_BACK
     out = capsys.readouterr().out
-    assert "a turn started on the old backend during migration" in out
+    assert "1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt" in out
     assert "old_stop" not in host.calls and host.old["active"] is True
     assert proc.poll() is None  # the old backend process still runs
 
@@ -94,7 +94,9 @@ def test_unreadable_turn_activity_after_preflight_also_stops_the_move(home, back
 
     out = capsys.readouterr().out
     assert code == engine.EXIT_ROLLED_BACK, out
-    assert "turn activity cannot be read" in out
+    # The preflight's own unknown-activity text, naming the file at fault (path only).
+    assert "Cannot tell whether turns are running on the old backend: these turn-marker files cannot be read" in out
+    assert str(marker) in out and "confirm it is idle, then re-run with --force-interrupt" in out
     assert "old_stop" not in host.calls and host.old["active"] is True and proc.poll() is None
 
 

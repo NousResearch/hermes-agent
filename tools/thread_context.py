@@ -5,20 +5,20 @@ A bare ``threading.Thread`` / ``ThreadPoolExecutor`` worker starts with an empty
 silently loses the approval ContextVars (gateway sessions then auto-approve dangerous commands)
 and the CLI callbacks (``prompt_dangerous_approval`` cannot reach the user, GHSA-qg5c-hvr5-hjgr).
 Call :func:`propagate_context_to_thread` **on the parent thread** (it snapshots at call time) and
-use the result as the worker target; callbacks are installed for the worker's lifetime and
-always cleared on exit.
+use the result as the worker target; callbacks are installed for the target and the worker's
+previous callbacks are restored on exit.
 """
 
 from __future__ import annotations
 
 import contextvars
 import logging
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
 
-def _callback_api():
+def _callback_api() -> tuple[tuple[Callable[[], Any], Callable[[Any], None]], ...]:
     """(getter, setter) pairs for every thread-local prompt callback a tool may need mid-dispatch
     (lazy: terminal_tool imports tools.approval at load, so a top-level import risks a cycle).
     Add a new per-thread prompt here — a callback missing from this table is silently absent on
@@ -74,37 +74,25 @@ def propagate_context_to_thread(target: Callable) -> Callable:
     """Wrap *target* to run with the *current* thread's ContextVars and per-thread prompt callbacks
     (approval, sudo, password-manager unlock).
 
-    Fail-closed: if callback installation raises they stay ``None`` — dangerous commands are then
-    denied by ``prompt_dangerous_approval`` and the gateway approval queue blocks.
+    Fail closed if the callback state cannot be captured or installed: the target is not run.
     """
     ctx = contextvars.copy_context()
-    # (setter, parent callback) pairs; None when the callback API could not be captured.
-    installs = None
     try:
-        installs = tuple((setter, getter()) for getter, setter in _callback_api())
+        installs = tuple((getter, setter, getter()) for getter, setter in _callback_api())
     except Exception:
         logger.debug("Could not capture parent approval/sudo callbacks", exc_info=True)
+        raise
 
     def _runner(*args, **kwargs):
         def _inner():
-            if installs is None:
-                return target(*args, **kwargs)
+            previous = [(setter, getter()) for getter, setter, _ in installs]
             try:
-                for setter, cb in installs:
-                    if cb is not None:
-                        setter(cb)
-            except Exception:
-                logger.debug("Failed to install propagated approval/sudo callbacks; "
-                             "dangerous-command approval will fail closed", exc_info=True)
-            try:
+                for _getter, setter, cb in installs:
+                    setter(cb)
                 return target(*args, **kwargs)
             finally:
-                try:
-                    for setter, _cb in installs:
-                        setter(None)
-                except Exception:
-                    logger.debug("Failed to clear propagated approval/sudo callbacks",
-                                 exc_info=True)
+                for setter, cb in previous:
+                    setter(cb)
 
         return ctx.run(_inner)
 

@@ -175,12 +175,47 @@ def promote_stable(tag: str, digest: str, release_tag: str, *, run=output, sleep
         _publish_aliases(version_digest, aliases, run=run, sleep=sleep)
 
 
-def promote_canary(tag: str, *, run=output, sleep=time.sleep) -> None:
+def _live_canary_stamp(repository: str, public_base: str | None = None) -> str | None:
+    from hermes_cli.release_channels import ChannelError
+    from hermes_cli.update_channel import published_canary_timestamp
+    from scripts.releases.versioning import published_channel_identity
+
+    try:
+        published = published_channel_identity(repository, "canary", base_url=public_base)
+    except (ChannelError, OSError, ValueError) as exc:
+        raise DockerReleaseError(f"Could not read live canary head: {exc}") from exc
+    if published is None:
+        return None
+    stamp = published_canary_timestamp(f"v{published[0]}")
+    if stamp is None:
+        raise DockerReleaseError(f"Live canary head has an invalid version: {published[0]!r}")
+    return stamp
+
+
+def promote_canary(
+    tag: str,
+    *,
+    run=output,
+    sleep=time.sleep,
+    repository: str | None = None,
+    public_base: str | None = None,
+) -> None:
     """Point the moving ``canary`` and ``canary-desktop`` aliases at a canary's pushed images.
 
-    The canary's own versioned tag stays immutable; stable and latest are never touched here."""
+    The canary's own versioned tag stays immutable; stable and latest are never touched here.
+    When ``repository`` is provided, refuses to roll the aliases back behind the live
+    protected canary head in R2."""
+    from hermes_cli.update_channel import canary_timestamp
+
     if not is_canary_image_tag(tag):
         raise DockerReleaseError(f"Not a canary image tag: {tag!r}")
+    if repository is not None:
+        live_stamp = _live_canary_stamp(repository, public_base)
+        candidate_stamp = canary_timestamp(tag)
+        if live_stamp is not None and candidate_stamp is not None and candidate_stamp < live_stamp:
+            raise DockerReleaseError(
+                f"Refusing to roll Docker canary aliases back: live canary head ({live_stamp}) is newer than {tag}"
+            )
     # Inspect both before moving either alias; desktop has its own registry digest.
     variants = [(suffix, _version_digest(tag, suffix, run)) for suffix in ("", "-desktop")]
     for suffix, version_digest in variants:
@@ -229,11 +264,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p_canary = sub.add_parser("promote-canary", help="Move the canary aliases to a canary's pushed images")
     p_canary.add_argument("--tag", required=True)
+    p_canary.add_argument("--repository", required=True)
+    p_canary.add_argument("--public-base", default=None)
 
     args = parser.parse_args(argv)
     try:
         if args.command == "promote-canary":
-            promote_canary(args.tag)
+            promote_canary(args.tag, repository=args.repository, public_base=args.public_base or None)
         elif args.command == "manifest":
             archive_hashes = {}
             for arch, path in (("amd64", args.archive_amd64), ("arm64", args.archive_arm64)):

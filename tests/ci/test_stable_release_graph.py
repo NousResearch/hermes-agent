@@ -592,3 +592,9 @@ def test_docker_alias_steps_use_docker_driver_buildx_not_blacksmith_builder():
         assert uses.startswith("docker/setup-buildx-action@"), f"{wf}: {step.get('name')} uses {uses}"
         assert (step.get("with") or {}).get("driver") == "docker", f"{wf}: {step.get('name')} missing driver: docker"
         assert "buildx-version" not in (step.get("with") or {}), f"{wf}: {step.get('name')} sets buildx-version"
+    canary_promote = next(
+        step for step in workflow("stable-release.yml")["jobs"]["complete"]["steps"]
+        if step.get("name") == "Point the canary Docker aliases at this canary"
+    )
+    assert "--repository" in canary_promote["run"] and "--public-base" in canary_promote["run"]
+    assert "CLOUDFLARE_R2_PUBLIC_URL" in canary_promote["env"]

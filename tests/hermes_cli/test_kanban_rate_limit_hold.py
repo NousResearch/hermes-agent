@@ -328,3 +328,71 @@ def test_guard_recovers_the_hint_the_run_metadata_missed(kanban_home, monkeypatc
 
         monkeypatch.setattr(kb.time, "time", lambda: resets_at - 3600)
         assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+
+# ---------------------------------------------------------------------------
+# The sentence is read later than it was written
+# ---------------------------------------------------------------------------
+# Guard time is after the run died, and production showed what re-anchoring costs: a run that
+# ended at 09:26 with "Limit resets at 09:31 (in 6m)" resolved to 09:32, then, read again at
+# 10:04, to 10:10 — the boundary walked forward on every check, so the card could never come
+# back to the dispatcher. The parse is anchored at the run's own end.
+
+
+def test_a_stale_delta_is_not_re_added_to_the_current_clock(kanban_home, monkeypatch):
+    """The provider's "(in 6m)" counts from the failed run, not from each later guard check."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="stale delta", assignee="a")
+        run_id = _seed_rate_limited_run(
+            conn, tid, claimer=f"{host}:w", pid=71008,
+            last_output="Provider said: HTTP 429: The usage limit has been reached\n\n"
+                        "Limit resets at 09:31 (in 6m).",
+        )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET metadata=NULL WHERE id=?", (run_id,))
+            conn.execute(
+                "UPDATE task_runs SET ended_at=ended_at-2400, started_at=started_at-2400 "
+                "WHERE id=?", (run_id,),
+            )
+        conn.commit()
+
+        # Run end + 6 minutes is 34 minutes in the past: the window reopened, and the single
+        # wall's base cooldown lapsed with it, so the ordinary dispatcher gets the card back.
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_a_stale_clock_only_boundary_does_not_become_tomorrow(kanban_home, monkeypatch):
+    """A clock-only wall that already passed is not re-read as the next day's occurrence."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="stale clock", assignee="a")
+        ended_at = int(time.time()) - 7 * 3600
+        zone = ZoneInfo("Asia/Tokyo")
+        clock = datetime.fromtimestamp(ended_at, tz=zone) + timedelta(hours=6)
+        hour12 = clock.hour % 12 or 12
+        meridiem = "pm" if clock.hour >= 12 else "am"
+        run_id = _seed_rate_limited_run(
+            conn, tid, claimer=f"{host}:w", pid=71009,
+            last_output="You've hit your weekly limit \u00b7 "
+                        f"resets {hour12}{meridiem} (Asia/Tokyo)",
+        )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET metadata=NULL WHERE id=?", (run_id,))
+            conn.execute(
+                "UPDATE task_runs SET ended_at=?, started_at=? WHERE id=?",
+                (ended_at, ended_at - 60, run_id),
+            )
+        conn.commit()
+
+        # The named clock was six hours after that run's end, i.e. an hour ago. Read from the
+        # current clock instead it would resolve to tomorrow and park the card for a day.
+        assert kbd.check_respawn_guard(conn, tid) is None

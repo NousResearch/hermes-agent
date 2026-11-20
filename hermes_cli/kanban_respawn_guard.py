@@ -117,6 +117,11 @@ def _rate_limit_reset_hint(
     now = time.time()
     horizon = _resolve_rate_limit_reset_max_seconds()
     texts: list[str] = []
+    # This runs at guard time, but the sentence was written when the run died: a provider delta
+    # such as "(in 38m)" counts from that moment, not from this tick. Re-adding it on every check
+    # would push the boundary forward each time and hold the card forever, so parse against the
+    # instant the run ended (the live clock when the run is still open).
+    anchor = now
     if conn is not None:
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is None:
@@ -128,6 +133,12 @@ def _rate_limit_reset_hint(
             ).fetchone()
             run_id = int(closed["id"]) if closed is not None else None
         if run_id is not None:
+            ended = conn.execute(
+                "SELECT ended_at FROM task_runs WHERE id = ?", (run_id,),
+            ).fetchone()
+            ended_at = _kb._to_epoch(ended["ended_at"]) if ended is not None else None
+            if ended_at is not None:
+                anchor = ended_at
             row = conn.execute(
                 "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? "
                 "AND kind = 'worker_result' ORDER BY id DESC LIMIT 1",
@@ -143,8 +154,8 @@ def _rate_limit_reset_hint(
                 texts.append(payload["last_output"])
     texts.append(_worker_final_output(task_id, board=board))
     for text in texts:
-        instant = reset_instant_from_message(text, now=now)
-        if instant is not None and instant - now <= horizon:
+        instant = reset_instant_from_message(text, now=anchor)
+        if instant is not None and 0 < instant - anchor <= horizon:
             return instant
     return None
 

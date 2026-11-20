@@ -1707,7 +1707,6 @@ Manage hosted connector accounts (apps such as Gmail reached through the Nous to
 | `connect <app> [--alias NAME] [--reconnect [--force]]` | Print the link to connect an account, then wait until it is connected or the deadline passes. Ctrl-C stops waiting. `--alias` names the account; a new name adds another account. `--reconnect` repairs the named account and deletes nothing; on an account that is already connected it says so and does nothing unless `--force` is given. |
 | `rename <app> <name-or-label> --to <new>` | Rename an account. An unnamed account is matched by its app label. |
 | `disconnect <app> [--alias NAME] [--yes]` | Remove an account. Asks to confirm unless you pass `--yes`. |
-| `call <tool> [--args JSON] [--account NAME] [--allow-write]` | Run one connector tool (`<app>.<tool>` or `connectors__<app>__<tool>`) and print its response as one JSON document on stdout. Read-only by default: a tool the Nous Portal does not classify as read-only exits 5 unless `--allow-write` is given. Exit codes: 0 ok, 2 bad arguments or unknown tool, 3 connectors unavailable or signed out, 4 tool error (JSON on stderr), 5 refused. Made for cron gate scripts; see [Scripts that read your apps](../user-guide/features/cron.md#scripts-that-read-your-apps). |
 
 Rename needs a Nous Portal version that supports it. Until then it reports "This Nous Portal cannot rename connector accounts yet."
 

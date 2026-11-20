@@ -971,6 +971,29 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     _chown_to_hermes_uid(path)
 
 
+def ensure_private_store(path: str | Path, *, home: str | Path | None = None) -> int:
+    """Create *path* (parents too) as an owner-only ``0700`` credential store and return the
+    ``subprocess`` ``umask`` for a child that writes secrets into it: ``0o077``, so files the child
+    creates land ``0600`` (a child's own ``writeFile`` takes the process umask, which this caller
+    cannot otherwise reach). An existing store is tightened too: files written before this policy
+    keep their mode, so the directory is what closes them off.
+
+    Managed installs (group-share by design, #77579) and containers / ``HERMES_SKIP_CHMOD``
+    (mounts shared across UIDs) keep the inherited modes and get ``-1`` (inherit the umask): the
+    carve-outs ``hermes_cli.config._secure_file`` makes. ``HERMES_HOME_MODE`` is not applied: it
+    opens the home for traversal to a served subdirectory, never to a credential store.
+    """
+    from hermes_dir_acl import make_user_dir
+
+    private = get_managed_system(home) is None and not _container_or_chmod_skipped()
+    target = make_user_dir(path, mode=0o700 if private else 0o777, parents=True, exist_ok=True)
+    if not private:
+        return -1
+    with contextlib.suppress(OSError, NotImplementedError):
+        os.chmod(target, 0o700)
+    return 0o077
+
+
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:
     """``<home>/cache/scratch`` (created, owner-only); *home* defaults to the active Hermes home.
 

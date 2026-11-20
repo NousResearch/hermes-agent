@@ -954,3 +954,151 @@ def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, m
     response = _OFF_LOOP_ROUTES[route](client, seeded, spy)
     assert response.status_code == 200, response.text
     assert seen and not any(seen), seen
+
+
+
+def _refused_writes(client, target):
+    """Status codes of upload and upload-stream overwriting *target*."""
+    upload = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x", "overwrite": True,
+    })
+    stream = client.post(
+        "/api/files/upload-stream",
+        files={"file": ("x", b"EVIL=1", "text/plain")},
+        data={"path": str(target), "overwrite": "true"},
+    )
+    return upload.status_code, stream.status_code
+
+
+def test_managed_writes_refuse_sensitive_paths(forced_files_client):
+    """#85387: upload, upload-stream, mkdir and delete refuse the same credential
+    files the read side hides, so an operator who points the managed root at
+    HERMES_HOME cannot have .env / config.yaml overwritten or removed through it."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET=1")
+    config = root / "config.yaml"
+    config.write_text("model: safe\n")
+
+    for target in (env_file, config, root / "mcp-tokens" / "github.json"):
+        assert _refused_writes(client, target) == (403, 403), target
+    assert client.post("/api/files/mkdir", json={"path": str(root / "pairing")}).status_code == 403
+    deleted = client.request("DELETE", "/api/files", json={"path": str(env_file), "recursive": False})
+    assert deleted.status_code == 403
+
+    assert env_file.read_text() == "SECRET=1"
+    assert config.read_text() == "model: safe\n"
+    assert sorted(p.name for p in root.iterdir()) == [".env", "config.yaml"]
+
+    plain = _seed_file(client, root, "plain.txt")
+    assert client.request("DELETE", "/api/files", json={"path": str(plain)}).status_code == 200
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_sensitive_paths_through_symlinks(forced_files_client):
+    """A link in either direction is refused: an ordinary name pointing at a credential file,
+    and a credential name that is itself a link to an ordinary-looking backing file."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    secret = root / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = root / "notes.txt"
+    alias.symlink_to(secret)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    config = root / "config.yaml"
+    config.symlink_to(store)
+
+    for target in (alias, config, "config.yaml", "config.yaml ", f"{config} "):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+
+    dangling = root / "draft.txt"
+    dangling.symlink_to(root / ".env")  # .env is missing: the resolver keeps the link as target
+    assert _refused_writes(client, dangling) == (403, 403)
+    assert not (root / ".env").exists()
+
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink() and config.is_symlink()
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_name_mid_link_chain(forced_files_client):
+    """``alias.txt -> config.yaml -> settings-store``: neither the name sent nor the final target is a
+    credential name, but the write lands on what config.yaml points at, so the hop is checked too."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    (root / "config.yaml").symlink_to(store)
+    alias = root / "alias.txt"
+    alias.symlink_to("config.yaml")  # relative hop, resolved against the link's own directory
+
+    for target in (alias, "alias.txt"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink()
+
+    plain = root / "plain-alias.txt"  # an ordinary chain is still writable
+    plain.symlink_to(store)
+    assert _refused_writes(client, plain) == (200, 200)
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_dir_behind_a_symlinked_parent(forced_files_client):
+    """``alias2.txt -> d/srv.json`` with ``d -> mcp-tokens``: the hop's raw text names ``d``, not the
+    credential dir, so each hop is also checked with its parent directory canonicalized."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "token-store"
+    store.write_text("TOKEN=1\n")
+    (root / "mcp-tokens").mkdir()
+    (root / "mcp-tokens" / "srv.json").symlink_to("../token-store")
+    (root / "d").symlink_to("mcp-tokens", target_is_directory=True)
+    alias = root / "alias2.txt"
+    alias.symlink_to("d/srv.json")
+
+    for target in (alias, "alias2.txt", root / "d" / "srv.json", "d/srv.json"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+    assert store.read_text() == "TOKEN=1\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_link_chain_past_the_hop_bound(forced_files_client):
+    """A chain longer than the 40-hop bound cannot be fully checked, so it is refused."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(45):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (403, 403)
+    assert store.read_text() == "safe\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_files_client):
+    """A chain of exactly 40 links (the kernel's limit) is fully walked, so a plain target stays writable."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(40):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (200, 200)

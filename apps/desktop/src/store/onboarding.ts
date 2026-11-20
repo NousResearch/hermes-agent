@@ -1,7 +1,6 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { submitClerkToken } from '@/api/config'
 import { invalidateAllConnectors } from '@/app/capabilities/connectors/data/keys'
 import {
   cancelOAuthSession,
@@ -13,6 +12,7 @@ import {
   type ProfileScope,
   setEnvVar,
   startOAuthLogin,
+  submitClerkToken,
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
@@ -1026,11 +1026,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       }
 
       setFlow({ status: 'success', provider })
-      await completeWithModelConfirm(
-        ctx,
-        provider.name,
-        [provider.id],
-        reason => setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) })
+      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
+        setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) })
       )
     } catch (error) {
       if (generation !== flowGeneration) {

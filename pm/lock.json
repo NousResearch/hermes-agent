@@ -40,31 +40,31 @@
     "chromium": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "3dbf04e28a02079148e9c7417840a0c1d3903361eceeee7e7eb59ef77021bdb2",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/mac-arm64/chrome-mac-arm64.zip"
+          "sha256": "8bc590d1b1acac042a000234c768f31830f25a3983a83ed5e067114c87c4cad1",
+          "url": "https://cdn.playwright.dev/builds/cft/156.0.8078.80/mac-arm64/chrome-mac-arm64.zip"
         },
         "darwin-x64": {
-          "sha256": "0de8f876af53a93f8832e54490ff7de41a9b6648211590280cb50289ed45f240",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/mac-x64/chrome-mac-x64.zip"
+          "sha256": "672b79dc79fdf28bb2ec9787b7fa33810c2b3cfd946a0fb4d3b72775f4e6fd9a",
+          "url": "https://cdn.playwright.dev/builds/cft/156.0.8078.80/mac-x64/chrome-mac-x64.zip"
         },
         "linux-arm64": {
-          "sha256": "70b4620521b1ada360475e1059dfe9d549a6461a79b9342f85b7d47e44123077",
-          "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1208/chromium-linux-arm64.zip"
+          "sha256": "1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724",
+          "url": "https://cdn.playwright.dev/builds/cft/156.0.8078.80/linux-arm64/chrome-linux-arm64.zip"
         },
         "linux-x64": {
-          "sha256": "b5e3195041af345a668d110f5daf5581961fa3608626ea588c97dd0fe81c4e38",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/linux64/chrome-linux64.zip"
+          "sha256": "b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7",
+          "url": "https://cdn.playwright.dev/builds/cft/156.0.8078.80/linux64/chrome-linux64.zip"
         },
         "win32-arm64": {
-          "sha256": "08476e6fe550ccbc0d11d1ab030292fc4e32d4987400c77b2d1905a6bd13b4f6",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip"
+          "sha256": "16edb57d6107bf1c48a7c149b8d78b155fe614410093796dd72441fd6640540f",
+          "url": "https://cdn.playwright.dev/builds/cft/156.0.8078.80/win64/chrome-win64.zip"
         },
         "win32-x64": {
-          "sha256": "08476e6fe550ccbc0d11d1ab030292fc4e32d4987400c77b2d1905a6bd13b4f6",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip"
+          "sha256": "16edb57d6107bf1c48a7c149b8d78b155fe614410093796dd72441fd6640540f",
+          "url": "https://cdn.playwright.dev/builds/cft/156.0.8078.80/win64/chrome-win64.zip"
         }
       },
-      "version": "1208+145.0.7632.6"
+      "version": "1248+156.0.8078.80"
     },
     "cua-driver": {
       "artifacts": {
@@ -576,11 +576,11 @@
     "npm": {
       "artifacts": {
         "any": {
-          "sha256": "5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1",
-          "url": "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz"
+          "sha256": "07fecbf753e2c3bc10ebeb3e9ed8738f6a0cc1292998b79e2e9f1dd2a5525e0c",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.2.tgz"
         }
       },
-      "version": "12.0.2"
+      "version": "12.2.2"
     },
     "pnpm": {
       "artifacts": {

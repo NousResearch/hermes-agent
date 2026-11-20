@@ -396,6 +396,24 @@ class TestWebhookEndpoints:
         from hermes_cli.webhook import _load_subscriptions
         assert _load_subscriptions()["todoist"]["enabled"] is False
 
+    @pytest.mark.parametrize("pin", ["github", False, ""])  # the gateway refuses an invalid pin; dropping it unpins
+    def test_re_post_keeps_the_route_signature_pin(self, pin):
+        """A re-POST replaces the record; losing the pin would republish the route accepting body-only
+        GitHub/Linear MACs again (#84265)."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.webhook import _load_subscriptions, _mutate_subscriptions
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"host": "0.0.0.0", "port": 8644}}
+        save_config(cfg)
+        assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
+        assert "signature" not in _load_subscriptions()["gh"]  # dashboard routes stay unpinned by default
+        _mutate_subscriptions(lambda subs: subs["gh"].update(signature=pin))
+
+        assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
+
+        assert _load_subscriptions()["gh"]["signature"] == pin
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config
 
@@ -902,7 +920,7 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": False})
+        r = self.client.post("/api/ops/debug-share", json={"consent": True, "redact": False})
         assert r.status_code == 200
         assert r.json()["redacted"] is False
 
@@ -916,10 +934,26 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        # No JSON body at all — should default redact=True.
-        r = self.client.post("/api/ops/debug-share")
+        r = self.client.post("/api/ops/debug-share", json={"consent": True})
         assert r.status_code == 200
         assert r.json()["redacted"] is True
+
+    @pytest.mark.parametrize("body", [None, {}, {"redact": True}, {"consent": False}])
+    def test_missing_consent_is_refused_without_uploading(self, monkeypatch, body):
+        """An empty/unconfirmed POST must never publish logs (#94876)."""
+        import hermes_cli.debug as dbg
+
+        uploads = []
+        monkeypatch.setattr(dbg, "upload_to_pastebin",
+                            lambda c, expiry_days=7: uploads.append(c) or "https://paste.rs/x")
+        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
+        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
+        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+
+        r = (self.client.post("/api/ops/debug-share") if body is None
+             else self.client.post("/api/ops/debug-share", json=body))
+        assert r.status_code == 400
+        assert uploads == []
 
     def test_upload_failure_returns_502(self, monkeypatch):
         import hermes_cli.debug as dbg
@@ -933,7 +967,7 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        r = self.client.post("/api/ops/debug-share", json={"consent": True, "redact": True})
         assert r.status_code == 502
 
 

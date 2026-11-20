@@ -72,7 +72,7 @@ on:
         description: 'Runner label.'
         required: false
         type: string
-        default: ubuntu-latest
+        default: unitalk-azure
       timeout-minutes:
         description: 'Job timeout. A cold run installs real toolchains twice, and app-update legs add a full Electron build + launch.'
         required: false

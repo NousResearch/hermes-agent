@@ -35,6 +35,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModelSource,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -1617,4 +1618,23 @@ export function useBackgroundSync({
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
+
+  // A refused mid-turn pick hands new chats back to the default (deferred-pick.ts) while a draft may already
+  // be open: repaint that draft's pill with the default it now launches with.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeSessionId) {
+      return
+    }
+
+    let last = $currentModelSource.get()
+
+    return $currentModelSource.listen(next => {
+      const released = last === 'manual' && next === 'default'
+      last = next
+
+      if (released) {
+        void refreshCurrentModel()
+      }
+    })
+  }, [activeSessionId, gatewayState, refreshCurrentModel])
 }

@@ -407,7 +407,10 @@ ensure_uv() {
             rm -rf "$_tmp"
             fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)" download_digest_mismatch
         fi
-        if ! tar -xzf "$_tmp/uv.tar.gz" -C "$_tmp"; then
+        # Release tarballs record the builder's uid (1001); as root, tar would
+        # restore it and hand the uv that root runs to that local account. -o,
+        # not --no-same-owner: busybox tar without long options takes only -o.
+        if ! tar -o -xzf "$_tmp/uv.tar.gz" -C "$_tmp"; then
             rm -rf "$_tmp"
             fail "failed to extract pinned uv archive" uv_unusable
         fi

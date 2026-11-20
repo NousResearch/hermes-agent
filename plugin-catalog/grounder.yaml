@@ -1,21 +1,22 @@
 name: grounder
 repo: https://github.com/grounder-labs/grounder-hermes-plugin
-sha: 4c0e58799b2f2c2258f143d9e97ea7d3ff37ebeb
-description: 'Grounder as the web_search backend: one call reaches the search providers a query needs and live data for scores, prices, odds and flights, and returns one deduplicated list of licensed results. Connect with a Grounder search key or `hermes auth add grounder:grounder`. Search only. Disclosure: each query is sent to api.grounder.net, passed on to the search providers Grounder picks and to its reranking vendors (Voyage AI, Cohere), and kept under your Grounder account indefinitely.'
+sha: 94561cde755da89427b6ac32b130b648389265bf
+description: "Grounder as the web_search and web_extract backend: each search is one call to one search provider, plus the live-data APIs (scores, prices, odds, flights and more) as you set each one, and returns one list of licensed results, each uncut. Free searches need no account. Connect a Grounder search key or `hermes auth add grounder:grounder` for more. While Grounder is the web search backend, `/search` (the plugin's only command; on Slack, `/hermes search`) opens a menu that chooses how Grounder searches, in three modes: Grounder optimized (the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder direct (one provider you pick, and what it finds is what you get, even nothing), and sets each live-data API to Every call, Never or Grounder decides (the default), in every mode. A web_extract returns each page's text, read for the question of the search that found it, or the user's latest message when no search did. Adds grounder_search, for Grounder's own search options, and grounder_list_providers. Disclosure — each web_search query and web_extract page address is sent to api.grounder.net, passed on to the search provider and live-data APIs that answer it and to the service providers that help run a search, and kept under your Grounder account indefinitely (a free search has no account); when the model reads a page no Grounder search returned, your latest chat message (up to 2,000 characters) is sent as the ranking query; usage context is off by default, and only after `hermes config set web.grounder.share_usage_context true` and a restart does a search also carry two random session and prompt tokens and the name of the model that asked; the first load in a profile makes Grounder the web_search and/or web_extract backend only where none is chosen yet, and writes Grounder's public OAuth client id to the profile's .env when no search key is set; answers that used Grounder get a Sources list and a \"Searched with Grounder\" line appended."
 maintainer: grounder-labs
 tier: community
 category: web
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/grounder-labs/grounder-hermes-plugin#readme
-version: "0.2.0"
+version: "0.7.3"
 title: Grounder
 known_issues:
-  - "Installing does not switch web_search over: run hermes config set web.search_backend grounder. The backend is search-only, so web_extract stays with another backend"
-  - "Signing in needs the public client id first: hermes config set GROUNDER_OAUTH_CLIENT_ID https://api.grounder.net/oauth/clients/hermes-agent. A search key needs no client id"
-  - "After a sign-in with no search key, hermes tools still shows Grounder as not set up, because a plugin cannot see Hermes's grant. Searches work once web.search_backend is grounder"
+  - "/search is registered only while Grounder is the web search backend; a switch made in hermes tools takes effect at the next start"
+  - "Usage context (the model's name and two random session and prompt tokens on each search) is off by default. hermes config set web.grounder.share_usage_context true, then restart Hermes, turns it on and registers the post_api_request hook"
+  - "With no search key, the first load writes the public GROUNDER_OAUTH_CLIENT_ID to the profile's .env, which `hermes auth add` needs for the sign-in and which keeps Hermes's web tools on while Grounder is a selected backend"
+  - "Signing in before Hermes has started once needs the client id first: hermes config set GROUNDER_OAUTH_CLIENT_ID https://api.grounder.net/oauth/clients/hermes-agent. A search key needs no client id"
   - "An account gets 50 free searches a day. Past that, searches use credit bought on the account"
 capabilities:
-  provides_tools: []
-  provides_hooks: []
+  provides_tools: [grounder_search, grounder_list_providers]
+  provides_hooks: [transform_tool_result, transform_llm_output, pre_tool_call, post_api_request, pre_llm_call]
   provides_middleware: []
   requires_env: []

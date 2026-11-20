@@ -1399,11 +1399,11 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        consent: true, // sent only after the confirm dialog; the backend refuses its absence
         redact: opts?.redact ?? true,
         lines: opts?.lines ?? 200,
       }),
     }),
-
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
   pruneCheckpoints: () =>

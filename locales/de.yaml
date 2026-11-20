@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint: "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
     report_label: "Bericht"
-    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug`, um den Kurzbericht hochzuladen."
+    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen."
+    upload_hint: "Es wurde nichts hochgeladen. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen."
+    upload_hint_local: "Es wurde nichts hochgeladen. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen, oder `/debug local`, um ihn hier anzuzeigen."
+    nous_refused: "Es wurde nichts hochgeladen. Private Nous-Uploads sind hier nicht verfügbar: Führen Sie `hermes debug share --nous` in einem Terminal aus oder nutzen Sie Send diagnostics in der Desktop-App. `/debug upload` lädt den Kurzbericht stattdessen in einen öffentlichen Paste hoch."
   deny:
     stale: "❌ Befehl abgelehnt (Genehmigung war veraltet)."
     no_pending: "Kein ausstehender Befehl zum Ablehnen."
@@ -647,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Der {kind}-Anhang ({file_name}) konnte nicht zugestellt werden."
     delivery_failed_retry: "⚠️ Die Zustellung der Nachricht ist nach mehreren Versuchen fehlgeschlagen. Bitte versuchen Sie es erneut — Ihre Anfrage wurde verarbeitet, aber die Antwort konnte nicht gesendet werden."
     plain_fallback_prefix: "(Formatierung der Antwort fehlgeschlagen, Klartext:)\n\n{content}"
-    turn_error_no_details: "keine Details verfügbar"
-    turn_error_detailed: "Entschuldigung, es ist ein Fehler aufgetreten ({error_type}).\n{error_detail}\nVersuchen Sie es erneut oder verwenden Sie /reset für eine neue Sitzung."
     turn_error: "Entschuldigung, es ist ein Fehler aufgetreten."
     context_injection_refused: "Kontext-Injektion abgelehnt."
     no_home_channel: "📬 Für {platform} ist kein Home-Kanal festgelegt. Im Home-Kanal liefert Hermes Cron-Job-Ergebnisse und plattformübergreifende Nachrichten ab.\n\nGeben Sie {sethome_cmd} ein, um diesen Chat zu Ihrem Home-Kanal zu machen, oder ignorieren Sie dies, um zu überspringen."
@@ -982,6 +983,7 @@ platform:
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
   shared:
+    response_as_file: "📎 Lange Antwort: Der vollständige Text ist angehängt."
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
     approval_expired: "⌛ Genehmigung abgelaufen — der Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
@@ -1172,8 +1174,6 @@ platform:
         unknown: "Unbekannter Skill: `{name}`. Tippen Sie los, um Vorschläge zur Vervollständigung zu erhalten."
       auto_args_description: "Argumente: {args_hint}"
       auto_description_fallback: "/{name} ausführen"
-    limits:
-      response_truncated: "⚠️ **Antwort gekürzt** — diese Antwort hat das Zustellungslimit ({max_messages} Nachrichten) überschritten. {dropped_chars} Zeichen wurden nicht zugestellt; die vollständige Antwort steht in den Sitzungs-Logs."
     forum:
       default_title: "Neuer Beitrag"
     voice:
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes-Agent-Version anzeigen"
   debug:
-    description: "Debug-Bericht hochladen (Systeminfo + Logs) und teilbare Links erhalten"
+    description: "Debug-Bericht (Systeminfo + Logs): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links"
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:

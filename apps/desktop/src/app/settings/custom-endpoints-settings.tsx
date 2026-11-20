@@ -419,6 +419,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 {ce.fields.name}
                 <Input
+                  autoComplete="off"
                   onChange={event => setForm(current => ({ ...current, name: event.target.value }))}
                   placeholder={t.settings.customEndpoints.namePlaceholder}
                   value={form.name}
@@ -427,6 +428,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 {ce.fields.providerId}
                 <Input
+                  autoComplete="off"
                   onChange={event => setForm(current => ({ ...current, id: event.target.value }))}
                   placeholder="axet-proxy"
                   value={form.id}
@@ -436,6 +438,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
             <label className="grid gap-1.5 text-xs text-muted-foreground">
               {ce.fields.endpointUrl}
               <Input
+                autoComplete="off"
                 onChange={event => setForm(current => ({ ...current, baseUrl: event.target.value }))}
                 placeholder="http://127.0.0.1:8081/v1"
                 value={form.baseUrl}
@@ -463,6 +466,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 {ce.fields.context}
                 <Input
+                  autoComplete="off"
                   inputMode="numeric"
                   onChange={event => setForm(current => ({ ...current, contextLength: event.target.value }))}
                   placeholder={t.settings.customEndpoints.contextPlaceholder}
@@ -473,6 +477,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
             <label className="grid gap-1.5 text-xs text-muted-foreground">
               {ce.fields.apiKey}
               <Input
+                autoComplete="off"
                 onChange={event => setForm(current => ({ ...current, apiKey: event.target.value }))}
                 placeholder={form.id ? ce.fields.apiKeyNewPlaceholder : ce.fields.apiKeyPlaceholder}
                 type="password"

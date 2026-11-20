@@ -142,20 +142,19 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 
 ### Runners
 
-The Unitalk Docker-only release path (`stable-release.yml`, `docker.yml`, and
-`stable-release-publication.yml`) and `sandbox-image.yml` use GitHub-hosted
-Ubuntu runners. Image builds use `ubuntu-24.04` for amd64 and
-`ubuntu-24.04-arm` for native arm64, with the standard Actions checkout and
-Docker Buildx/build-push actions. Main image builds allow 180 minutes on the
-smaller hosted machines; sandbox builds allow 90 minutes.
-Other CI and native desktop lanes still use the runner labels described below.
+Linux x64 jobs use `unitalk-azure`; native Linux ARM64 image and Termux builds
+use `unitalk-azure-linux-arm`. Both self-hosted runners require Ubuntu
+24.04-compatible system packages, Git, Python, Docker, GitHub CLI and Azure CLI
+where needed. The Linux test suite uses 32 workers; smaller machines may need
+different timeouts or worker settings. Provision enough capacity for parallel
+matrices.
 
-`blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
-`32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
-`windows-latest-32-core` and `windows-latest-32-arm-core` are GitHub-hosted.
-No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
-`docker buildx imagetools` cannot reliably commit manifest lists from
-Blacksmith.
+The current runners are persistent, not ephemeral. PR jobs execute untrusted
+code, so they must be isolated from privileged jobs, networks and credentials;
+do not expose a privileged Azure managed identity to PR jobs. Windows and macOS
+jobs retain their existing hosted runners. Docker manifest publication stays on
+GitHub-hosted `ubuntu-latest` because of previous `imagetools` failures on
+other runners.
 
 ---
 

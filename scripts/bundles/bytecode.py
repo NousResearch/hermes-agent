@@ -8,10 +8,15 @@ stall on first launch. Baking turns that into a warm read:
 * compileall runs with the payload's OWN staged interpreter (a pyc
   minted by any other interpreter is silently ignored — the magic tag
   is part of the cache filename);
+* the roots are the agent tree, both site-packages and the staged
+  interpreter's own library: a payload Python spawned without a cache
+  prefix (Desktop's ticket bridge; ``-I`` drops an inherited one)
+  imports the stdlib too;
 * ``--invalidation-mode unchecked-hash``: the pyc is trusted without
   source validation and never rewritten, so staging-repack mtimes
   cannot invalidate it and a stale source cannot trigger a rewrite
-  into the sealed tree;
+  into the sealed tree (on macOS that rewrite breaks the app's code
+  signature, and Gatekeeper then holds the next update);
 * the baked pycs are chmodded owner-writable (0o644) BEFORE packaging:
   Squirrel.Mac's ShipIt clears the quarantine attribute off every file
   in the .app and aborts the whole update with EACCES on any read-only
@@ -38,8 +43,21 @@ from pathlib import Path
 MARKER = ".hermes-baked-pycache"
 
 
-def _import_roots(root: Path) -> list[Path]:
-    """The payload's import roots, in launcher order (repo, venv site, PM)."""
+def _interpreter_stdlib(root: Path, python: Path) -> Path:
+    """The staged interpreter's own library (``Lib`` beside ``python.exe``,
+    ``lib/python3.N`` above ``bin/``), found by CPython's landmark ``os.py``."""
+    home = python.parent
+    found = [lib for lib in [home / "Lib", *sorted((home.parent / "lib").glob("python3.*"))]
+             if (lib / "os.py").is_file()]
+    if len(found) != 1:
+        raise ValueError(f"expected exactly one standard library beside {python}, found {len(found)}")
+    if not found[0].resolve().is_relative_to(root):
+        raise ValueError(f"the staged interpreter's standard library is outside the payload: {found[0]}")
+    return found[0]
+
+
+def _import_roots(root: Path, python: Path) -> list[Path]:
+    """The payload's import roots, in launcher order (repo, venv site, PM), then the stdlib."""
     roots = [root / "hermes-agent"]
     for source_root in roots + [root / "venv", root / "pm-runtime"]:
         if not source_root.is_dir():
@@ -54,6 +72,7 @@ def _import_roots(root: Path) -> list[Path]:
     if len(pm_sites) != 1:
         raise ValueError(f"expected exactly one PM runtime site-packages, found {len(pm_sites)}")
     roots.append(pm_sites[0])
+    roots.append(_interpreter_stdlib(root, python))
     return roots
 
 
@@ -83,13 +102,17 @@ def bake_bytecode(root: Path, python: Path) -> dict:
     caches owner-writable. ``root`` is the payload root; ``python`` MUST be the
     payload's own staged interpreter binary."""
     root = Path(root).resolve()
-    python = Path(python).resolve()
+    staged = Path(python).absolute()
+    python = staged.resolve()
     if not python.is_file():
         raise FileNotFoundError(f"staged interpreter is missing: {python}")
+    roots = _import_roots(root, staged)
     total = 0
-    for source_root in _import_roots(root):
+    for source_root in roots:
+        # -f: compileall keeps a timestamp pyc whose mtime still matches (uv's, the build's
+        # own imports'), and those ship stale once packaging moves the sources' mtimes.
         subprocess.run(
-            [str(python), "-I", "-m", "compileall", "-q",
+            [str(python), "-I", "-m", "compileall", "-q", "-f",
              "--invalidation-mode", "unchecked-hash", str(source_root)],
             check=True, timeout=30 * 60, stdin=subprocess.DEVNULL)
         missing, _unparseable = _uncovered(source_root)
@@ -107,7 +130,7 @@ def bake_bytecode(root: Path, python: Path) -> dict:
     # revalidates against the source and asserted coverage leaves no cache
     # miss to write. `--check-hash-based-pycs always` or `-O` can still
     # write here, as they could when the pycs were read-only.
-    for source_root in _import_roots(root):
+    for source_root in roots:
         for cache in source_root.rglob("__pycache__"):
             for pyc in cache.iterdir():
                 if pyc.is_file():

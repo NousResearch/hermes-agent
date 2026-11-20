@@ -670,6 +670,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             if _denied is not None:
                 return True, _denied
             if _cmd_def_inner.name in ("stop", "new"):
+                self._hm_drop_held_input(event)  # before the fence: a burst flushing later would pass it
                 await self._hm_stop_owner_turn(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
@@ -684,7 +685,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return False, None
 
     def _hm_drop_held_input(self, event: MessageEvent) -> None:
-        """An idle /stop, /new or /reset past the slash-access gate and command hooks: the text or media
+        """A /stop, /new or /reset past the slash-access gate (and idle, command hooks): the text or media
         burst the receiving adapter still holds is the old chat's, so it never becomes a turn after
         the command (#81370). A refused or hook-denied command leaves the caller's input alone."""
         if (adapter := self._intake_adapter_for(event.source)) is not None:
@@ -1355,6 +1356,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return True, None  # a /stop or /new came after its command, as it clears the slot
         # A failed admit stays the authority's answer (refusal notice or turn error), never a
         # pending legacy turn: that would run unadmitted, outside the FIFO's order.
+        if busy and getattr(event, "_gateway_pending_stt_clips", None):
+            # The FIFO turn restores a fresh event: it reuses the transcript and echo paid above.
+            from gateway.run_inbound_transcription import hand_prepared_voice_to_turn
+            await asyncio.to_thread(hand_prepared_voice_to_turn, event)
         note_busy_admitting(event)
         notice = pending_setup_busy_notice(self, _quick_key, source) if busy else None
         if notice is not None:  # sent now: the admission below waits until this follow-up has run
@@ -1587,30 +1592,23 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
-    ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
+    ) -> int:
+        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)
+        → how many sends the platform accepted."""
         from gateway.bot_peer_notices import automatic_notices_allowed
+        accepted = 0
         for tx in transcripts if automatic_notices_allowed(source) else ():
             try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
+                result = await adapter.send(
+                    source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
-
-    async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
-    ) -> str:
-        message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
-        )
-        # Echo each successful transcript back immediately when configured so users can verify STT
-        # quality in real time. On transcription failure do NOT send a hardcoded notice: that
-        # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
-        if _successful_transcripts and self._should_echo_stt_transcripts():
-            _echo_adapter = self._delivery_adapter_for(source)
-            if _echo_adapter:
-                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
-        return message_text
+                continue
+            if getattr(result, "success", False):
+                accepted += 1
+            else:
+                logger.debug("%s echo refused: %s", log_context, getattr(result, "error", None))
+        return accepted
 
     @staticmethod
     def _inbound_attachment_display_name(path: str, original_name: str = "") -> tuple[str, str]:

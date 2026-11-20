@@ -26,13 +26,13 @@ concurrency:
 jobs:
   posix:
     name: install.sh protocol + small fresh-install E2E
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 15
     # NOTE: `runner.temp` is only available in step-level env, not job-level
     # env — a job-env `${{ runner.temp }}` makes GitHub reject the workflow
     # graph at dispatch (0 jobs). Each step that needs these exports them.
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           # The mirror step pushes HEAD to a fresh bare repo — a shallow

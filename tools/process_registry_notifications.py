@@ -211,6 +211,20 @@ def _failure_recovery_lines(r: dict) -> list[str]:
     return []
 
 
+def _auto_resume_lines(r: dict) -> list[str]:
+    """A mixed unit's line for a child ``delegation.auto_resume`` will continue (``auto_resume``); a give-up's
+    terminal failure carries its own reason in ``error``."""
+    if not r.get("subagent_id"):
+        return []
+    if r.get("auto_gave_up"):
+        lines = [f"Last transcript tail:\n{r['transcript_tail']}"] if r.get("transcript_tail") else []
+        return lines or ["Not resumed automatically any more; continue it by hand or re-dispatch it."]
+    if not isinstance(r.get("auto_resume"), dict):
+        return []
+    from tools.delegate_tool_auto_resume import notice_line
+    return [notice_line(str(r["subagent_id"]), r["auto_resume"])]
+
+
 def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
@@ -317,7 +331,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r_status not in _DONE:
-            lines += _failure_recovery_lines(r)
+            lines += _auto_resume_lines(r) or _failure_recovery_lines(r)
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
         lines += _process_accounting_lines(r)

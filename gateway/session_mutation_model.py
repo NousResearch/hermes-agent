@@ -1,11 +1,14 @@
 """Resolve explicit model changes using the existing source model switch pipeline."""
 import asyncio
 import json
+import logging
 from dataclasses import asdict, replace
 from typing import NamedTuple
 
 from gateway.session_route_identity import ROUTE_BOUND_KEYS
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 class _Route(NamedTuple):
@@ -23,8 +26,8 @@ def _current_route(authority, live, old):
     runtime's whole tuple (``tui_gateway.model_switch._current_model_runtime``). The provider is
     the configured name: a named ``providers:`` entry resolves to the bare ``custom`` class, and a
     pick on the same entry must not read as a route change. Only the session's own route counts:
-    a fallback is where a turn lands, not what the user switches from. A route that cannot
-    authenticate here must not block leaving it: like main's agent-less ``--provider`` path, the
+    a fallback is where a turn lands, not what the user switches from. A route that cannot be
+    resolved here must not block leaving it: like main's agent-less ``--provider`` path, the
     pick then switches from the configured provider alone and resolves its own target.
     """
     from gateway.session_policy import profile_read_scope
@@ -35,7 +38,11 @@ def _current_route(authority, live, old):
         try:
             model, runtime = authority.runner._resolve_session_agent_runtime(
                 source=live.source, session_key=live.route, fallback=False)
-        except AuthError:
+        except (AuthError, ValueError) as exc:
+            # A stopped local model server raises ValueError here. The session still has to be
+            # able to leave that route (#146253).
+            logger.debug("session model switch: current route unresolvable (%s); switching from "
+                         "the configured provider instead", exc)
             return config, _Route(block.get('provider') or '', old.current_model(authority) or '',
                                   block.get('base_url') or '', '')
     return config, _Route(block.get('provider') or runtime.get('provider') or '', model or '',

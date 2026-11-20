@@ -193,7 +193,10 @@ gateway:
     full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
-    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint_local: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse, ou `/debug local` pour l'afficher ici."
+    nous_refused: "Rien n'a été téléversé. Les envois privés vers Nous ne sont pas disponibles ici : lancez `hermes debug share --nous` dans un terminal, ou utilisez Send diagnostics dans l'application de bureau. `/debug upload` téléverse plutôt la synthèse vers un paste public."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -750,11 +753,6 @@ gateway:
       (Échec du formatage de la réponse, texte brut :)
 
       {content}
-    turn_error_no_details: "aucun détail disponible"
-    turn_error_detailed: |-
-      Désolé, j'ai rencontré une erreur ({error_type}).
-      {error_detail}
-      Réessayez ou utilisez /reset pour démarrer une nouvelle session.
     turn_error: "Désolé, j'ai rencontré une erreur."
     context_injection_refused: "Injection de contexte refusée."
     no_home_channel: |-
@@ -1173,6 +1171,7 @@ platform:
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
   shared:
+    response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
       ...(tronqué)
@@ -1374,8 +1373,6 @@ platform:
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
       auto_args_description: "Arguments : {args_hint}"
       auto_description_fallback: "Exécuter /{name}"
-    limits:
-      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     forum:
       default_title: "Nouvelle publication"
     voice:
@@ -1961,7 +1958,7 @@ slash:
   version:
     description: "Afficher la version de Hermes Agent"
   debug:
-    description: "Envoyer un rapport de débogage (infos système + journaux) et obtenir des liens partageables"
+    description: "Rapport de débogage (infos système + journaux) : affiche d'abord l'avis de confidentialité ; /debug upload partage les liens"
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:

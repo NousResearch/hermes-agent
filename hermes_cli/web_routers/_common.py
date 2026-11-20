@@ -26,6 +26,12 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 
 
+def client_error(text: Any) -> str:
+    """Error text bound for a dashboard client, with credentials force-redacted."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(str(text), force=True)
+
+
 @contextlib.contextmanager
 def config_write_scope(profile: Optional[str]):
     """Profile scope, then the config mutation lock — the write-path nesting
@@ -108,7 +114,8 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
     ``HTTPException`` passes through; an expected config-backend refusal becomes its own status
     and message (:func:`config_refusal_http`); anything else is logged with ``log_msg`` (traceback),
     then re-raised as ``HTTPException(status, f"{prefix}: {exc}")`` — or ``detail`` when given
-    (fixed message, exception text only in the log).
+    (fixed message, exception text only in the log). The exception text is force-redacted: provider
+    and library errors echo the submitted key/bearer, and this detail goes to the HTTP client.
     """
     try:
         yield
@@ -118,11 +125,11 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
         refusal = config_refusal_http(exc)
         if refusal is None:
             log.exception(log_msg)
-            raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")
+            raise HTTPException(status_code=status, detail=detail if detail is not None else client_error(f"{prefix}: {exc}"))
         raise refusal from exc
     except Exception as exc:
         log.exception(log_msg)
-        raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")
+        raise HTTPException(status_code=status, detail=detail if detail is not None else client_error(f"{prefix}: {exc}"))
 
 
 def spawn_profile_action(

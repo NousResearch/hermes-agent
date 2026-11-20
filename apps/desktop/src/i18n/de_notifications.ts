@@ -47,6 +47,14 @@ export const deNotifications = {
       unsupported: 'Dieser Browser kann keine Benachrichtigungen anzeigen. Der Tab-Titel blinkt trotzdem.'
     }
   },
+  phonePresence: {
+    title: 'Dieser Computer für Telefon-Benachrichtigungen',
+    description: 'Was dieses Fenster Hermes darüber mitteilt, ob du hier bist. Ein Plugin für Telefon-Benachrichtigungen entscheidet, was daraus folgt.',
+    unsupported: 'Telefon-Benachrichtigungen hängen auf diesem Backend nicht von deiner Aktivität ab.',
+    disconnected: 'Nicht verbunden.',
+    watchingComputer: (time: string) => `Solange in diesem Fenster eine Unterhaltung geöffnet ist, erfährt Hermes, wann du diesen Computer zuletzt benutzt hast. Letzte Eingabe vor ${time}.`,
+    watchingWindow: (time: string) => `Solange in diesem Fenster eine Unterhaltung geöffnet ist, erfährt Hermes, wann du dieses Fenster zuletzt benutzt hast. Letzte Eingabe vor ${time}.`
+  },
   test: 'Testbenachrichtigung senden',
   testTitle: 'Hermes',
   testBody: 'Benachrichtigungen funktionieren.',

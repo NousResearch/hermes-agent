@@ -567,7 +567,8 @@ old backend requires sign-in but its `/api/auth/providers` list cannot be read (
 it), when an administrator's managed config (`HERMES_MANAGED_DIR` or `/etc/hermes`) sets a `webapp.*` key
 that would keep the gateway's Webapp off or elsewhere after the move (the gateway applies it last), when a
 hand-started backend was launched by a relative path, a relative Python script or `python -m` and its working
-directory cannot be read (the installed launcher's `python -c` bootstrap is not a script), when the old unit's `hermes-migrated.conf` drop-in (or, on macOS, the plist's
+directory cannot be read (the installed launcher's `python -c` bootstrap is not a script), when a hand-started
+backend's working directory no longer exists or cannot be entered (it is started again there), when the old unit's `hermes-migrated.conf` drop-in (or, on macOS, the plist's
 `.disabled` name) already exists, when the command runs inside
 the gateway's own service (also for the rollback of an unfinished run), or when `backend_migration.json`
 exists but cannot be read or holds a state the engine does not know (move it aside after checking the home by
@@ -582,7 +583,9 @@ holds the exact bytes the migration wrote, checked right before the write: one e
 run ends with manual steps (exit 5). The manual steps (also in `--status`) are per file: a file that was put back is
 listed as done, a file kept for its edits is never copied over or removed (the step names its backup and says to
 merge the lines you need by hand before starting the old backend), and a missing backup is never copied. When the rollback cannot prove the gateway is off the old
-address, the old backend stays down and the run ends with manual steps (exit 5). A `--detach` run never
+address, the old backend stays down and the run ends with manual steps (exit 5). A run that ends
+incomplete before it reached the old backend's stop says the old backend was not stopped, and its steps do
+not enable, start or bootstrap the old backend. A `--detach` run never
 starts a backend you started by hand again (its transient unit would stop it when the run ends): `--restore
 --detach` refuses before it starts a background run (exit 3, under systemd), and a background rollback leaves it down (exit 5) and prints the
 `--restore` command to run from a terminal, which starts it again as it ran.

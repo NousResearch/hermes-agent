@@ -13,8 +13,10 @@ from gateway import run_runtime
 from gateway.platforms.api_server import _openai_error
 from gateway.platforms.api_server_authority_runs import store_error_response
 from gateway.session_api_turn import AdmissionQueued, observe_api_turn
+from gateway.session_authority import admission_row
 from gateway.session_contract import Submission
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from tests.waiting import async_wait_until
 
@@ -25,6 +27,7 @@ async def _observe_queued_then(tmp_path, monkeypatch, release):
     from gateway import session_finite
     agent = _Agent()
     db, authority, execute, _returned = _authority(tmp_path, agent)
+    store = authority.persistence
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 1.0, raising=False)
     monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
@@ -33,18 +36,18 @@ async def _observe_queued_then(tmp_path, monkeypatch, release):
             await authority.submit(ACTOR, Submission(request_id='running', ref=REF, payload={'text': 'a'}, intent='queue'))
             await asyncio.wait_for(asyncio.to_thread(agent.started.wait, 5), 6)
             authority.sessions['t'] = type(authority.sessions['s'])(authority.sessions['s'].source, 'route-t')
-            db.create_session('t', source='test')
+            seed_session(store, 't', 'test')
             monkeypatch.setattr(authority, '_schedule', lambda ref: None)
             ref = REF.__class__('owned', 't')
             receipt = await authority.submit(ACTOR, Submission(
                 request_id='queued-api', ref=ref, payload={'text': 'b'}, intent='queue'))
             observer = asyncio.ensure_future(observe_api_turn(
-                (authority, ref, get_session_admission(db, admission_id=receipt.admission_id))))
+                (authority, ref, admission_row(store.admissions.get(admission_id=receipt.admission_id)))))
             await async_wait_until(lambda: receipt.admission_id in authority.waiters,
                                    timeout=5, what='the API observer registered')
             await release(authority, receipt.admission_id)
             outcome = (await asyncio.gather(observer, return_exceptions=True))[0]
-            return outcome, get_session_admission(db, admission_id=receipt.admission_id)
+            return outcome, store.admissions.get(admission_id=receipt.admission_id)
     finally:
         agent.release.set()
         await async_wait_until(lambda: all(task.done() for task in run_runtime._authority_tasks(authority)),
@@ -60,16 +63,16 @@ async def test_retirement_tells_a_queued_api_observer_its_input_is_saved(tmp_pat
     outcome, row = await _observe_queued_then(tmp_path, monkeypatch, retire)
     assert isinstance(outcome, AdmissionQueued), outcome
     assert outcome.reason == 'admission_queued' and 'do not resend' in str(outcome)
-    assert row['status'] == 'queued'  # durable: the next owner runs it once
+    assert row.status == 'queued'  # durable: the next owner runs it once
 
 
 @pytest.mark.asyncio
 async def test_other_observer_failures_keep_their_reason(tmp_path, monkeypatch):
     async def busy(authority, admission_id):
-        authority.waiters[admission_id].set_exception(RuntimeStoreError('session_busy'))
+        authority.waiters[admission_id].set_exception(AuthorityRefusal('session_busy'))
 
     outcome, _row = await _observe_queued_then(tmp_path, monkeypatch, busy)
-    assert type(outcome) is RuntimeStoreError and outcome.reason == 'session_busy'
+    assert type(outcome) is AuthorityRefusal and outcome.reason == 'session_busy'
 
 
 def test_admission_queued_is_a_503_the_sdks_do_not_retry():
@@ -81,6 +84,14 @@ def test_admission_queued_is_a_503_the_sdks_do_not_retry():
 
 
 def test_a_refused_request_stays_a_retryable_503():
-    response = store_error_response(_openai_error, RuntimeStoreError('runtime_draining'))
+    response = store_error_response(_openai_error, AuthorityRefusal('runtime_draining'))
     assert response.status == 503 and response.headers['Retry-After'] == '1'
     assert 'x-should-retry' not in response.headers
+
+
+def test_a_storage_interface_refusal_keeps_its_reason_and_status():
+    from persistence import AuthorityRefusal, TransientStoreError
+    conflict = store_error_response(_openai_error, AuthorityRefusal('admission_conflict'))
+    assert conflict.status == 409 and json.loads(conflict.body)['error']['code'] == 'admission_conflict'
+    busy = store_error_response(_openai_error, TransientStoreError('database is locked'))
+    assert busy.status == 503 and json.loads(busy.body)['error']['code'] == 'storage_unavailable'

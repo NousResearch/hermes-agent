@@ -78,3 +78,20 @@ async def test_unwired_authorization_check_fetches_nothing(signal):
 
     assert rpc_calls == []
     assert event.media_urls == []
+
+
+@pytest.mark.asyncio
+async def test_bot_users_sender_in_loop_guard_cooldown_gets_no_attachment_fetch(signal):
+    """An allowlisted ``bot_users`` sender is judged as a bot: while its chat cools down, nothing is fetched."""
+    from gateway.bot_loop_guard import BotLoopGuard
+    adapter, runner, dm, rpc_calls = signal
+    adapter.config.extra["bot_users"] = [OWNER]
+    runner._bot_loop_guard = guard = BotLoopGuard()
+    guard.blocked = lambda conversation: True
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.SIGNAL))
+
+    event = await dm(OWNER)
+
+    assert event.source.is_bot
+    assert rpc_calls == []
+    assert event.media_urls == []

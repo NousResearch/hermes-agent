@@ -55,15 +55,20 @@ def test_oneshot_tool_build_drops_clarify_and_delegate_live_control(monkeypatch)
 def test_oneshot_resume_keeps_the_pinned_interactive_tool_bytes(monkeypatch, config_disables_clarify):
     # `hermes -z --resume <interactive session>`: the same-code pin's bytes head every request (prompt cache), so
     # neither the one-shot delegate_task variant nor the one-shot clarify gate may rewrite or drop a pinned tool;
-    # a clarify the user's config disables since the pin still drops, as it would for an interactive resume.
+    # a clarify the user's config disables since the pin still drops, as it would for an interactive resume. That
+    # drop already moved tools[], so delegate_task, whose text names clarify, takes this build's definition there.
     from tools.mcp_tool_agent import restore_agent_tool_prefix, tool_pin_version
 
     interactive = _built_agent(monkeypatch, oneshot=False)
     oneshot = _built_agent(monkeypatch, oneshot=True, disabled=["clarify"] if config_disables_clarify else None)
+    built_here = {t["function"]["name"]: t for t in oneshot.tools}
     restore_agent_tool_prefix(oneshot, {"version": tool_pin_version(), "tools": interactive.tools})
 
-    expected = [t for t in interactive.tools if not (config_disables_clarify and t["function"]["name"] == "clarify")]
+    expected = [built_here["delegate_task"] if config_disables_clarify and t["function"]["name"] == "delegate_task"
+                else t for t in interactive.tools
+                if not (config_disables_clarify and t["function"]["name"] == "clarify")]
     assert oneshot.tools == expected
+    assert not config_disables_clarify or "clarify" not in _by_name(oneshot)["delegate_task"]["description"]
 
 
 def test_gateway_oneshot_inventory_drops_clarify(tmp_path, monkeypatch):

@@ -87,30 +87,42 @@ def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
-                        roots: tuple[Path, ...] | None = None, heal: bool = True):
+                        roots: tuple[Path, ...] | None = None, heal: bool = True,
+                        root_facts: dict[Path, Facts] | None = None):
     """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
-    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
+    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch).
+    ``root_facts`` maps each root to its already-read facts, for a caller looking up many packages."""
     search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
+    primary = paths.store_root() if root_facts is None else None
     fallback = None
     for root in search_roots:
         store = Store(root)
-        facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
-        fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, store.root):
-            continue
-        binary = package.binary(store.entry(fact["entry"]), target)
-        if binary is not None and not binary.is_file():
-            continue
-        if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
-            continue
-        if verify and not _entry_verified(package, fact, store, target):
-            continue
-        if facts.installed(package.name, lockfile.version(package.name), store.root,
-                           _identity(lockfile, package.name, target)):
-            return facts, store
-        if (allow_outdated and fact.get("target") == target
-                and fact.get("artifacts") and fact.get("digest")):
-            fallback = facts, store
+        if root_facts is not None:
+            facts = root_facts[root]
+        else:
+            facts = _facts() if root == primary else Facts(root / "facts.json")
+        # Every row may hold the exact pin, but only the selected (first) row may be the outdated
+        # fallback, never an older pin another install keeps; a later root's fallback still
+        # replaces it, as before.
+        outdated = None
+        for index, fact in enumerate(facts.variants(package.name)):
+            chosen = facts.selected(package.name, fact)
+            if not chosen.installed(package.name, None, store.root):
+                continue
+            binary = package.binary(store.entry(fact["entry"]), target)
+            if binary is not None and not binary.is_file():
+                continue
+            if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
+                continue
+            if verify and not _entry_verified(package, fact, store, target):
+                continue
+            if chosen.installed(package.name, lockfile.version(package.name), store.root,
+                                _identity(lockfile, package.name, target)):
+                return chosen, store
+            if (allow_outdated and index == 0 and fact.get("target") == target
+                    and fact.get("artifacts") and fact.get("digest")):
+                outdated = chosen, store
+        fallback = outdated or fallback
     return fallback
 
 
@@ -127,6 +139,8 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     if package.internal:
         raise ValueError(f"{name} is internal PM tooling, not an application package")
     target = current_target()
+    if package.native_abi_reason(target):
+        return None
     location = _installed_location(package, _lockfile(), target, allow_outdated=allow_outdated)
     if location is None:
         return None
@@ -205,7 +219,8 @@ def enabled_extras() -> list[str]:
 
 
 def is_installed(name: str) -> bool:
-    return _installed_location(get_package(name), _lockfile(), current_target()) is not None
+    package, target = get_package(name), current_target()
+    return package.native_abi_reason(target) is None and _installed_location(package, _lockfile(), target) is not None
 
 
 def sealed() -> bool:
@@ -382,12 +397,20 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     return recorded == pin and not package.verify(entry, target)
 
 
-def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+def _refresh_recorded_env(package, facts, store, entry, previous, target, *, select=False) -> None:
     """An entry's env is derived from the package code, not its bytes: when the code changes it (a
     variable renamed or retired), re-record it so stores installed earlier match what admission
-    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched.
+    ``select`` re-records it regardless, making this pin the store's selection again. In the shared
+    writable store a pin this checkout does not own yet is re-recorded too: depending on a row makes
+    it an owner, or another checkout's upgrade drops the row and gc deletes the entry (#149497).
+    A build-owned store (``prepare_tools``) keeps its facts byte-identical on a hit."""
+    from pm.lock import install_owner
+
     env = package.env(entry, target)
-    if facts.env_for(package.name, store.root) != env:
+    unclaimed = (install_owner() not in (previous.get("owners") or ())
+                 and store.root == Store(paths.writable_store_root()).root)
+    if select or unclaimed or facts.env_for(package.name, store.root) != env:
         facts.record(package.name, previous["version"], previous["entry"], env, store.root,
                      target=previous.get("target"), artifacts=previous.get("artifacts"),
                      digest=previous.get("digest"))
@@ -397,16 +420,27 @@ def _refresh_found_env(package, location, target, operation) -> None:
     """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
     installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
     its install lock (a sealed store's facts ship with the artifact)."""
+    from pm.lock import install_owner
+
     facts, store = location
-    entry = store.entry(facts.get(package.name)["entry"])
-    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+    found = facts.get(package.name)
+    entry = store.entry(found["entry"])
+    # A checkout using an entry another one recorded claims it, so that one's deletion leaves
+    # it in place (#149497).
+    claimed = install_owner() in (found.get("owners") or ())
+    if ((claimed and facts.env_for(package.name, store.root) == package.env(entry, target))
             or store.root != Store(paths.writable_store_root()).root):
         return
     with nullcontext() if operation is not None else store.install_lock():
-        facts.reload()
-        previous = facts.get(package.name)
-        if previous and previous.get("entry") == entry.name:
-            _refresh_recorded_env(package, facts, store, entry, previous, target)
+        # A fresh read: ``facts`` is the caller's per-checkout view, and reloading it would hand
+        # the caller whatever another checkout selected last.
+        shared = Facts(facts.path)
+        previous = next((row for row in shared.variants(package.name)
+                         if row["entry"] == entry.name), None)
+        if previous is None:
+            return
+        _refresh_recorded_env(package, shared.selected(package.name, previous), store, entry,
+                              previous, target)
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
@@ -453,7 +487,7 @@ def _install(
             package.name, "not in the lockfile", "add it with `hermes pm lock --bump`"
         )
 
-    reason = package.missing_reason(target)
+    reason = package.missing_reason(target) or package.native_abi_reason(target)
     if reason is not None:
         raise InstallError(package.name, f"unavailable on {target}: {reason}", "none")
 
@@ -471,13 +505,20 @@ def _install(
         if facts is not None:
             facts.reload()
         previous = facts.get(package.name) if facts is not None else None
+        if facts is not None:
+            previous = next((row for row in facts.variants(package.name)
+                             if row["entry"] == entry_name), previous)
+        selected_facts = facts.selected(package.name, previous) if previous is not None else facts
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         _settle_previous_entry(package, store, entry, previous_entry, previous, target)
         _reclaim_set_aside(store)
-        if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
+        if (_entry_current(package, lockfile, selected_facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             if facts is not None:
-                _refresh_recorded_env(package, facts, store, entry, previous, target)
+                # A hit on another pin's history row re-selects it: build admission and the
+                # staged-store prune read the selected row, not this lock's pin.
+                _refresh_recorded_env(package, selected_facts, store, entry, previous, target,
+                                      select=(facts.get(package.name) or {}).get("entry") != entry_name)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
@@ -602,6 +643,8 @@ def ensure(
         _operation.lock()
     missing = []
     for package in chain:
+        if reason := package.native_abi_reason(target):
+            raise InstallError(package.name, reason, "select a compatible package")
         identity = (package.name, lockfile.version(package.name), target,
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
@@ -1096,11 +1139,18 @@ def _store_path_dirs() -> list[str]:
 
     lockfile = _lockfile()
     target = current_target()
+    # Resolved once per call, not once per package: each resolution walks the install stamp and
+    # payload manifest from disk and re-reads facts.json, and every terminal command composes this
+    # PATH (~11 ms -> <1 ms).
+    primary = paths.store_root()
+    roots = tuple(dict.fromkeys((primary, paths.writable_store_root())))
+    root_facts = {root: _facts() if root == primary else Facts(root / "facts.json") for root in roots}
     locations: dict[str, object] = {}
 
     def located(package):
         if package.name not in locations:
-            locations[package.name] = _installed_location(package, lockfile, target)
+            locations[package.name] = _installed_location(
+                package, lockfile, target, roots=roots, root_facts=root_facts)
         return locations[package.name]
 
     dirs: list[str] = []

@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from datetime import UTC
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,8 @@ class PluginCatalogEntry:
     docs_url: str = ""
     version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
     image: str = ""              # https image URL on a GitHub host; shown on catalog cards
-    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
-    readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
+    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /marketplace/<name>
+    readme: bool = False         # the Marketplace renders the README from the pinned commit on the entry's page
     platforms: list[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
@@ -142,7 +143,7 @@ class PluginCatalogEntry:
 
 def get_catalog_dir() -> Path:
     """The ``plugin-catalog/`` directory shipped with this checkout."""
-    return Path(__file__).resolve().parent.parent / "plugin-catalog"
+    return Path(project_root_str()) / "plugin-catalog"
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────

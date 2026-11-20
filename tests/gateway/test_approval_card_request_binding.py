@@ -102,7 +102,7 @@ async def _press_whatsapp_card(request_id):
             patch.object(adapter, "send", new=AsyncMock()):
         await adapter.send_exec_approval(chat_id="15551234567", command="rm -rf build", session_key=SESSION, request_id=request_id)
         await adapter._handle_approval_tap("15551234567", {}, ["appr", next(iter(adapter._exec_approval_state)), "approve"])
-    return "approve"  # Approve / Deny only: WhatsApp's 3-button cap leaves no room for the tiers
+    # Approve / Deny only (3-button cap): an Approve tap is stored as the canonical "once"
 
 
 async def _press_teams_card(request_id):

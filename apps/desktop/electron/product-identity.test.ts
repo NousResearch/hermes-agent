@@ -287,6 +287,8 @@ test('commit builds cannot claim the official Store package; a canary builds one
   assert.equal(canary.store, true)
   assert.equal(canary.channel, null)
   assert.match(canary.displayName, /Canary$/)
+  assert.equal(canary.storeMsix?.identityName, 'NousResearchInc.HermesAgentCanary')
+  assert.notEqual(canary.storeMsix?.identityName, 'NousResearchInc.HermesAgent')
   delete process.env.HERMES_PAYLOAD_TAG
   process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
   await assert.rejects(identityForVariant('store'), /Store.*release tags/)

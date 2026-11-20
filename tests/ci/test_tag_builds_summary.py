@@ -102,8 +102,7 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     assert r2_server.store[channel_key][0] == previous
     assert set(r2_server.store) == {channel_key, key}
 
-    # publish-canary depends on this job's success; rendering diagnostics must
-    # not turn a failed Termux prerequisite into permission to publish a draft.
+    # Rendering diagnostics must not turn a failed Termux prerequisite into a green job.
     needs = {name: {"result": "success"} for name in job["needs"]}
     for state in ("failure", "skipped", "success"):
         needs[termux]["result"] = state

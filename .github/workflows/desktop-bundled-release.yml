@@ -2353,7 +2353,7 @@ jobs:
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
 
-      # publish-canary consumes this job's result even when rendering succeeds for a failed build.
+      # Keep this job red when a gating prerequisite failed, even after diagnostics render.
       - name: Preserve release success gate
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}

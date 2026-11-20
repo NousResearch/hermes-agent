@@ -80,8 +80,10 @@ const identity = {
     ? {
         storeMsix: {
           // Partner Center publisher identity (the account's publisher ID) —
-          // validated + re-signed by the Store on submission.
-          identityName: 'NousResearchInc.HermesAgent',
+          // validated + re-signed by the Store on submission. Canary builds use
+          // a distinct non-production identity name so a staged canary bundle
+          // can never pass for a stable Partner Center submission.
+          identityName: canary ? 'NousResearchInc.HermesAgentCanary' : 'NousResearchInc.HermesAgent',
           publisher: 'CN=EE6D86E4-606F-4E38-B940-AD7248C9D519',
           publisherDisplayName: 'Nous Research Inc.'
         }

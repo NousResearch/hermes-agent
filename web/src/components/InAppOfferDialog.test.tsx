@@ -9,7 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/i18n";
 import * as api from "@/lib/api";
 import * as offers from "@/lib/in-app-offer";
-import { DISMISSED_STORAGE_KEY, FIRST_REFRESH_DELAY_MS, IDLE_SETTLE_MS } from "@/lib/in-app-offer";
+import {
+  DISMISSED_STORAGE_KEY,
+  FIRST_REFRESH_DELAY_MS,
+  IDLE_SETTLE_MS,
+  LAST_SHOWN_STORAGE_KEY,
+  RESHOW_QUIET_MS,
+} from "@/lib/in-app-offer";
 import { InAppOfferDialog } from "./InAppOfferDialog";
 
 vi.mock("@/contexts/useProfileScope", () => ({ useProfileScope: () => ({ profile: "default" }) }));
@@ -167,5 +173,22 @@ describe("InAppOfferDialog", () => {
       { offer_id: "offer_1", event: "shown" },
       { offer_id: "offer_1", event: "clicked" },
     ]);
+    // Closed for the profile, so Desktop and the Webapp never show it again either.
+    const dismissals = post.mock.calls.filter(([url]) => url === "/api/in-app-offer/dismiss");
+    expect(dismissals.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([{ offer_id: "offer_1" }]);
+  });
+
+  it("re-checks a tab left open past the daily cap and shows the offer then", async () => {
+    vi.spyOn(offers, "getInAppOffer").mockResolvedValue({ in_app_offer: OFFER });
+    // Another offer was shown an hour ago: inside the cap.
+    localStorage.setItem(LAST_SHOWN_STORAGE_KEY, String(Date.now() - 60 * 60 * 1000));
+    await mount();
+    await act(async () => vi.advanceTimersByTimeAsync(IDLE_SETTLE_MS));
+    expect(dialog()).toBeNull();
+
+    await act(async () => vi.advanceTimersByTimeAsync(RESHOW_QUIET_MS));
+    await act(async () => vi.advanceTimersByTimeAsync(IDLE_SETTLE_MS));
+
+    expect(dialog()).not.toBeNull();
   });
 });

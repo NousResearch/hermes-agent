@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 351
+   "undecided": 352
   },
   "rpc": {
    "authority": 113,
@@ -266,6 +266,7 @@
   {"current_path": "hermes_cli.web_routers.git:git_worktree_remove_route", "decision": "undecided", "handler": "POST /api/git/worktree/remove", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:post_health_retirement", "decision": "undecided", "handler": "POST /api/health/retirement", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:update_hermes", "decision": "undecided", "handler": "POST /api/hermes/update", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.in_app_offer:dismiss_in_app_offer", "decision": "undecided", "handler": "POST /api/in-app-offer/dismiss", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.in_app_offer:report_in_app_offer_event", "decision": "undecided", "handler": "POST /api/in-app-offer/event", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_activate", "decision": "undecided", "handler": "POST /api/local-models/activate", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_download", "decision": "undecided", "handler": "POST /api/local-models/download", "kind": "http", "ref": ""},

@@ -10,18 +10,52 @@ export interface InAppOffer {
 }
 
 /** The Nous Portal's in-app offer for the managed profile (null when none). `refresh` fetches the
- * account first; otherwise this is a local read. Profile-scoped by fetchJSON. */
-export function getInAppOffer(refresh = false): Promise<{ in_app_offer: InAppOffer | null }> {
-  return fetchJSON(refresh ? "/api/in-app-offer?refresh=1" : "/api/in-app-offer");
+ * account first; otherwise this is a local read. Profile-scoped by fetchJSON. The answer is
+ * checked here, not trusted: a malformed offer, or a CTA that is not an https link, is no offer. */
+export async function getInAppOffer(refresh = false): Promise<{ in_app_offer: InAppOffer | null }> {
+  const res: unknown = await fetchJSON(refresh ? "/api/in-app-offer?refresh=1" : "/api/in-app-offer");
+  const offer = typeof res === "object" && res !== null ? (res as { in_app_offer?: unknown }).in_app_offer : null;
+  return { in_app_offer: validOffer(offer) };
+}
+
+const filled = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+
+/** The five wire fields as non-blank strings with an https CTA, or null. */
+export function validOffer(value: unknown): InAppOffer | null {
+  if (typeof value !== "object" || value === null) return null;
+  const o = value as Partial<Record<keyof InAppOffer, unknown>>;
+  if (!filled(o.id) || !filled(o.title) || !filled(o.body) || !filled(o.cta_label) || !filled(o.cta_url)) {
+    return null;
+  }
+  try {
+    const url = new URL(o.cta_url);
+    if (url.protocol !== "https:" || !url.hostname) return null;
+  } catch {
+    return null;
+  }
+  return { id: o.id, title: o.title, body: o.body, cta_label: o.cta_label, cta_url: o.cta_url };
+}
+
+/** Close the offer for the profile on every surface (Desktop and the Webapp read the same record).
+ * Silent on failure: the browser's own dismissal still holds here. */
+export function dismissInAppOfferForProfile(offerId: string): void {
+  void fetchJSON("/api/in-app-offer/dismiss", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ offer_id: offerId }),
+  }).catch(() => undefined);
 }
 
 /** Offer events this browser already reported (`<id>:shown`, `<id>:clicked`). */
 export const REPORTED_STORAGE_KEY = "hermes.dashboard.in-app-offer.reported-v1";
 
+/** Reports in flight in this tab, so a re-render never sends one twice. */
+const inFlight = new Set<string>();
+
 /**
- * Tell the Portal the offer was shown or clicked, once per offer per event in this browser (its
- * campaign counts). Recorded before the call so another tab or a retry never double-counts; a
- * failure is silent and not retried.
+ * Tell the Portal the offer was shown or clicked (its campaign counts). The Portal counts each person
+ * once per offer and event, so a repeat is harmless; this record only saves requests. It is written
+ * once the Portal took the report, so a report lost to an expired token is sent again next time.
  */
 export function reportInAppOfferEvent(
   storage: OfferStorage,
@@ -36,13 +70,20 @@ export function reportInAppOfferEvent(
   } catch {
     reported = [];
   }
-  if (reported.includes(key)) return;
-  storage.setItem(REPORTED_STORAGE_KEY, JSON.stringify([...reported, key].slice(-100)));
-  void fetchJSON("/api/in-app-offer/event", {
+  if (reported.includes(key) || inFlight.has(key)) return;
+  inFlight.add(key);
+  void fetchJSON<{ reported?: boolean }>("/api/in-app-offer/event", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ offer_id: offerId, event }),
-  }).catch(() => undefined);
+  })
+    .then((res) => {
+      if (res?.reported) {
+        storage.setItem(REPORTED_STORAGE_KEY, JSON.stringify([...reported, key].slice(-100)));
+      }
+    })
+    .catch(() => undefined)
+    .finally(() => inFlight.delete(key));
 }
 
 /**

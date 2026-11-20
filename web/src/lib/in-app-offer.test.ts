@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  validOffer,
   DISMISSED_STORAGE_KEY,
   LAST_SHOWN_STORAGE_KEY,
   MAX_DISMISSED_IDS,
@@ -99,5 +100,32 @@ describe("pageIsIdle / readPageActivity", () => {
 
     expect(activity.otherDialogOpen).toBe(false);
     expect(activity.typing).toBe(false);
+  });
+});
+
+describe("validOffer", () => {
+  const OK = {
+    id: "offer_1",
+    title: "T",
+    body: "B",
+    cta_label: "Go",
+    cta_url: "https://portal.nousresearch.com/promos/x",
+  };
+
+  it("accepts a complete offer with an https CTA", () => {
+    expect(validOffer(OK)).toEqual(OK);
+  });
+
+  it.each(["http://portal.nousresearch.com", "javascript:alert(1)", "/local/path", "https://"])(
+    "rejects the CTA %s (window.open would run or open it)",
+    (cta_url) => {
+      expect(validOffer({ ...OK, cta_url })).toBeNull();
+    },
+  );
+
+  it("rejects blank copy and non-objects", () => {
+    expect(validOffer({ ...OK, title: " " })).toBeNull();
+    expect(validOffer(null)).toBeNull();
+    expect(validOffer("offer")).toBeNull();
   });
 });

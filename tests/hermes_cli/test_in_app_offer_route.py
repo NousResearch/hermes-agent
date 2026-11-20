@@ -97,3 +97,37 @@ def test_event_route_never_errors(client, monkeypatch):
 
     assert res.status_code == 200
     assert res.json() == {"reported": False}
+
+
+def test_dismiss_route_forwards_to_dismiss(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(in_app_offer, "dismiss", lambda offer_id: calls.append(offer_id) or True)
+
+    res = client.post("/api/in-app-offer/dismiss", json={"offer_id": "offer_1"})
+
+    assert res.status_code == 200
+    assert res.json() == {"dismissed": True}
+    assert calls == ["offer_1"]
+
+
+def test_routes_never_wait_on_the_process_wide_profile_lock(client, monkeypatch):
+    """The refresh and the report make 8s network calls; under the lock they would stall every
+    other profile-scoped dashboard request behind a slow portal. Proven by holding the lock: a
+    route that took it would hang here."""
+    import threading
+
+    from hermes_cli import web_server_profiles
+
+    monkeypatch.setattr(in_app_offer, "refresh_from_portal", lambda: dict(OFFER))
+    monkeypatch.setattr(in_app_offer, "report_event", lambda offer_id, event: True)
+    done = threading.Event()
+
+    def call_routes():
+        client.get("/api/in-app-offer?refresh=1")
+        client.post("/api/in-app-offer/event", json={"offer_id": "offer_1", "event": "shown"})
+        done.set()
+
+    with web_server_profiles._SKILLS_PROFILE_LOCK:
+        worker = threading.Thread(target=call_routes, daemon=True)
+        worker.start()
+        assert done.wait(timeout=10), "an in-app offer route waited on the profile lock"

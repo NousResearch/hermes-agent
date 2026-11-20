@@ -11,7 +11,12 @@ The dashboard is a separate SPA over REST, so it reads the same per-profile memo
 
 Both answer ``{"in_app_offer": {...}}`` or ``{"in_app_offer": null}``, never an error: an offer is
 optional and a failed fetch keeps the last answer. ``POST /api/in-app-offer/event`` reports a show or a
-click for the Portal's counts, through the same ``report_event`` the Desktop RPC uses.
+click for the Portal's counts, through the same ``report_event`` the Desktop RPC uses, and
+``POST /api/in-app-offer/dismiss`` closes the offer for the profile on every surface.
+
+Every route runs under ``config_scoped_to_thread`` (the profile's home and secrets, without the
+process-wide lock ``scoped_to_thread`` takes): the refresh and the report make network calls of up
+to 8 seconds, which must not hold every other profile-scoped dashboard request behind them.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_routers._common import config_scoped_to_thread
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,7 +46,7 @@ def _read(refresh: bool) -> dict:
 
 @router.get("/api/in-app-offer")
 async def get_in_app_offer(profile: Optional[str] = None, refresh: bool = False):
-    return await scoped_to_thread(profile, lambda: _read(refresh))
+    return await config_scoped_to_thread(profile, lambda: _read(refresh))
 
 
 class InAppOfferEvent(BaseModel):
@@ -62,4 +67,23 @@ async def report_in_app_offer_event(body: InAppOfferEvent, profile: Optional[str
             logger.warning("in-app offer report failed", exc_info=True)
             return {"reported": False}
 
-    return await scoped_to_thread(profile, _report)
+    return await config_scoped_to_thread(profile, _report)
+
+
+class InAppOfferDismissal(BaseModel):
+    offer_id: str
+
+
+@router.post("/api/in-app-offer/dismiss")
+async def dismiss_in_app_offer(body: InAppOfferDismissal, profile: Optional[str] = None):
+    """Close the offer for the managed profile on every surface (``in_app_offer.dismiss``)."""
+    from hermes_cli import in_app_offer
+
+    def _dismiss() -> dict:
+        try:
+            return {"dismissed": in_app_offer.dismiss(body.offer_id)}
+        except Exception:  # the browser keeps its own record anyway
+            logger.warning("in-app offer dismiss failed", exc_info=True)
+            return {"dismissed": False}
+
+    return await config_scoped_to_thread(profile, _dismiss)

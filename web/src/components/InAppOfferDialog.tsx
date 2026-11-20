@@ -6,15 +6,19 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { useI18n } from "@/i18n";
 import {
   FIRST_REFRESH_DELAY_MS,
+  dismissInAppOfferForProfile,
   getInAppOffer,
   type InAppOffer,
   IDLE_SETTLE_MS,
   offerIsEligible,
   pageIsIdle,
+  readDismissedIds,
+  readLastShownAt,
   readPageActivity,
   recordDismissal,
   recordShown,
   REFRESH_EVERY_MS,
+  RESHOW_QUIET_MS,
   reportInAppOfferEvent,
 } from "@/lib/in-app-offer";
 import { cn, themedBody } from "@/lib/utils";
@@ -33,6 +37,8 @@ export function InAppOfferDialog() {
   const { profile } = useProfileScope();
   const [offer, setOffer] = useState<InAppOffer | null>(null);
   const [openFor, setOpenFor] = useState<string | null>(null);
+  // Bumped when the daily cap may have expired, so a long-lived tab re-checks.
+  const [capCheck, setCapCheck] = useState(0);
   const open = openFor !== null && openFor === offer?.id;
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -44,7 +50,12 @@ export function InAppOfferDialog() {
     const load = (refresh: boolean) =>
       getInAppOffer(refresh)
         .then((res) => {
-          if (live) setOffer(res.in_app_offer ?? null);
+          if (!live) return;
+          const next = res.in_app_offer ?? null;
+          setOffer(next);
+          // A withdrawn offer forgets that it was open, so if it comes back it waits for an idle
+          // moment again instead of reopening at once.
+          if (next === null) setOpenFor(null);
         })
         .catch(() => undefined);
     const tick = () => {
@@ -67,7 +78,14 @@ export function InAppOfferDialog() {
   // Open on a settled idle moment. Every sign of activity restarts the clock.
   useEffect(() => {
     if (!offerId || open) return;
-    if (!offerIsEligible(window.localStorage, offerId, Date.now())) return;
+    if (!offerIsEligible(window.localStorage, offerId, Date.now())) {
+      // Inside the daily cap (not dismissed): check again once it expires, so a tab left open all
+      // day still shows the offer tomorrow.
+      if (readDismissedIds(window.localStorage).includes(offerId)) return;
+      const wait = Math.max(0, readLastShownAt(window.localStorage) + RESHOW_QUIET_MS - Date.now());
+      const recheck = setTimeout(() => setCapCheck((n) => n + 1), Math.min(wait + 1_000, 2 ** 31 - 1));
+      return () => clearTimeout(recheck);
+    }
     let timer: ReturnType<typeof setTimeout> | null = null;
     const arm = () => {
       if (timer !== null) clearTimeout(timer);
@@ -93,10 +111,14 @@ export function InAppOfferDialog() {
       events.forEach((name) => document.removeEventListener(name, arm, true));
       window.removeEventListener("focus", arm);
     };
-  }, [offerId, open]);
+  }, [offerId, open, capCheck]);
 
   const close = () => {
-    if (offerId) recordDismissal(window.localStorage, offerId);
+    if (offerId) {
+      recordDismissal(window.localStorage, offerId);
+      // For the profile too, so Desktop and the Webapp never show it again either.
+      dismissInAppOfferForProfile(offerId);
+    }
     setOpenFor(null);
   };
 
@@ -109,6 +131,7 @@ export function InAppOfferDialog() {
       if (e.key === "Escape") {
         e.preventDefault();
         recordDismissal(window.localStorage, offerId);
+        dismissInAppOfferForProfile(offerId);
         setOpenFor(null);
       }
     };

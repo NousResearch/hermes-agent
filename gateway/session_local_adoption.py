@@ -5,12 +5,15 @@ the owner loop that stalls every profile it serves (streams, controls, admission
 a hot-profile activation. So the async paths that restore a receipt (boot and hot-profile recovery, a
 socket's first read) commit the catch-up in a worker first, and the restore that follows only reads.
 A restore reached synchronously on the loop hands it to a tracked worker (``schedule_adoption``).
+
+Boot and hot-profile recovery first re-key, in a worker too, the receipts the home's other gateway
+mode spelled (``adopt_local_routes``), since the catch-up and the restore both check the route.
 """
 import asyncio
 import logging
 from functools import partial
 
-from persistence.core.errors import AuthorityRefusal
+from persistence.core.errors import AuthorityRefusal, PersistenceError
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,35 @@ async def adopt_before_restore(authority, sid, *, tracked=True):
             await asyncio.to_thread(write)
     except AuthorityRefusal as exc:  # the restore that follows refuses the receipt and logs it
         logger.warning('Local session %s compression catch-up failed: %s', sid, exc.reason)
+
+
+def _respell_local_routes(authority):
+    """Re-key every receipt ``respelled_route`` finds spelled by the home's other gateway mode, logging each."""
+    from gateway.session_local_recovery import respelled_route
+    from gateway.session_persistence import authority_persistence
+    bindings = authority_persistence(authority).bindings
+    for sid in bindings.local_session_ids():
+        due = respelled_route(authority, sid)
+        if due is None:
+            continue
+        receipt, route, profile = due
+        try:
+            respelled = bindings.respell_route(epoch=authority.epoch, expected=_binding(receipt), route=route,
+                                               profile=profile)
+        except PersistenceError as exc:  # the restore that follows refuses and logs it
+            logger.warning('Local session %s route re-key failed: %s', sid, getattr(exc, 'reason', exc))
+            continue
+        if respelled is not None:
+            logger.warning("Local session %s: re-keyed its route %s to %s (created under this home's other "
+                           'gateway mode)', sid, receipt['route'], route)
+
+
+async def adopt_local_routes(authority):
+    """Boot and hot-profile recovery: re-key receipts the home's other gateway mode spelled (a named
+    profile's own gateway before the host multiplexed it), before the compression catch-up and
+    ``recover_local_sessions``, which both check the route. Every receipt, ended ones too: ``authorize``
+    restores those on first touch. Off the loop: it reads every receipt and writes the ones it re-keys."""
+    await asyncio.to_thread(_respell_local_routes, authority)
 
 
 async def adopt_local_compressions(authority):

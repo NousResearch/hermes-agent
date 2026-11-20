@@ -87,6 +87,12 @@ class SQLiteSessionBindingRepository:
         with refused():
             return _local.release_handed_off_receipts(self._store.holder(), epoch=epoch, lanes=lanes)
 
+    def respell_route(self, *, epoch: int, expected: SessionBinding, route: str, profile: Optional[str]) -> Optional[SessionBinding]:
+        with refused():
+            receipt = _local.respell_local_route(self._store.holder(), epoch=epoch, expected=expected, route=route,
+                                                 profile=profile)
+        return None if receipt is None else _local.binding_record(receipt)
+
     # Reads
 
     def target_has_history(self, session_id: str) -> bool:

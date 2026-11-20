@@ -1,13 +1,15 @@
 """``SessionBindingRepository`` on SQLite: the local reservation, the untracked-compression adoption, the local ``/new``
-reset, the idle end and the boot hand-off of receipts a messaging lane took over each open exactly one write
-transaction, which a failure right after its first mutating statement leaves unchanged. The reservation's ``created``
-is True only when its own write inserted the receipt.
+reset, the idle end, the boot hand-off of receipts a messaging lane took over and the re-key of a route the home's other
+gateway mode spelled each open exactly one write transaction, which a failure right after its first mutating statement
+leaves unchanged. The reservation's ``created`` is True only when its own write inserted the receipt.
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any
+
+import pytest
 
 from persistence.authority.bindings import NewSessionBinding, local_session_id
 from persistence.core.identity import SessionId
@@ -142,3 +144,39 @@ def test_release_handed_off_receipts_is_one_write(store):
     _lineage_seed(store)
     build_seed(store, _handed_off)
     assert_one_write(store, lambda: store.bindings.release_handed_off_receipts(epoch=1, lanes=frozenset({"telegram"})))
+
+
+# ── respell_route ─────────────────────────────────────────────────────────────
+
+
+SERVED = f"agent:alpha:local:dm:{SID}"
+
+
+def test_respell_route_is_one_write(store):
+    seed(store, reserved(make_binding()))
+    expected = store.bindings.receipt(SessionId(SID))
+    assert_one_write(store, lambda: store.bindings.respell_route(epoch=1, expected=expected, route=SERVED, profile="alpha"))
+
+
+@pytest.mark.parametrize("ledger", [False, True], ids=["no-ledger", "ledger"])
+def test_respell_route_moves_the_delivery_ledger_only_where_the_store_created_it(store, ledger):
+    """A profile store creates ``delivery_obligations`` only once a gateway opens its ledger: the re-key runs
+    without it, and moves the route's rows when it exists."""
+    from persistence.sqlite.gateway._delivery_ledger import _ensure_obligations_table
+
+    def obligation(db: Any) -> None:
+        def write(conn: Any) -> None:
+            _ensure_obligations_table(conn)
+            conn.execute("INSERT INTO delivery_obligations(obligation_id,session_key,platform,chat_id,content,state,"
+                         "created_at,updated_at) VALUES('reply',?,'local',?,'hi','pending',1.0,1.0)",
+                         (f"agent:main:local:dm:{SID}", SID))
+        db._execute_write(write)
+
+    seed(store, reserved(make_binding()), *([obligation] if ledger else []))
+    expected = store.bindings.receipt(SessionId(SID))
+    assert store.bindings.respell_route(epoch=1, expected=expected, route=SERVED, profile="alpha").route == SERVED
+    with store.holder()._read_ctx() as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert ("delivery_obligations" in tables) is ledger
+        if ledger:
+            assert [row[0] for row in conn.execute("SELECT session_key FROM delivery_obligations")] == [SERVED]

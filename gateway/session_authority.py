@@ -1546,7 +1546,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
                                  persistence=persistence)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.
-    from gateway.session_local_adoption import adopt_local_compressions
+    from gateway.session_local_adoption import adopt_local_compressions, adopt_local_routes
+    await adopt_local_routes(authority)  # first: the catch-up's ownership check reads the route
     await adopt_local_compressions(authority)
     if register:
         runner.session_authority = authority

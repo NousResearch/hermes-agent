@@ -5,9 +5,10 @@ import json
 import logging
 
 from gateway.config import Platform
-from gateway.session import SessionEntry, SessionSource
+from gateway.session import SessionEntry, SessionSource, build_session_key
 from gateway.session_contract import SessionRef
 from gateway.session_persistence import authority_persistence
+from hermes_constants import profile_name_for_home
 from persistence.authority.bindings import local_session_id
 from persistence.core.errors import AuthorityRefusal
 
@@ -120,6 +121,18 @@ def _checked_entry(authority, receipt, source, route):
     return entry
 
 
+def _receipt_source(authority, sid):
+    """*sid*'s stored receipt, its LOCAL source and this owner's route for it, once the receipt's
+    identity is its own (``owned_receipt``)."""
+    receipt = _stored_receipt(authority, sid)
+    chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
+               local_session_id(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
+    if receipt['session_id'] != sid or sid != chat_id:
+        raise ValueError('identity mismatch')
+    source = local_source(authority, chat_id, receipt['principal_id'])
+    return receipt, source, authority.runner.session_store._generate_session_key(source)
+
+
 def owned_receipt(authority, sid):
     """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's.
 
@@ -127,14 +140,34 @@ def owned_receipt(authority, sid):
     hashes it (``local_session_id``; a legacy-adopted receipt is bound by its route alone), so a
     store that moved with its profile (another machine, a moved home) still owns its rows. Its
     owner is this store; the route namespace binds the profile."""
-    receipt = _stored_receipt(authority, sid)
-    chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
-               local_session_id(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
-    if receipt['session_id'] != sid or sid != chat_id:
-        raise ValueError('identity mismatch')
-    source = local_source(authority, chat_id, receipt['principal_id'])
-    route = authority.runner.session_store._generate_session_key(source)
+    receipt, source, route = _receipt_source(authority, sid)
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
+
+
+def respelled_route(authority, sid):
+    """``(receipt, route, profile)`` when *sid*'s receipt is this store's but its route and entry still
+    carry the spelling of the home's other gateway mode, else None. Read-only.
+
+    Only the namespace differs: a named profile's own gateway (multiplexing off) keys LOCAL routes
+    ``agent:main:…``, the multiplex host serving the home ``agent:<profile>:…`` (and back, under the
+    ``gateway.standalone`` shim). Both name this home's profile, as the store holding the receipt does
+    (``owned_receipt``). Serving the old key is never an option: the multiplex store resolves
+    ``agent:main:`` to the LAUNCH store. ``bindings.respell_route`` commits the re-key.
+    """
+    try:
+        receipt, source, route = _receipt_source(authority, sid)
+        stored = receipt['route']
+        if stored == route or receipt['entry']['session_key'] != stored:
+            return None
+        config = authority.runner.session_store.config
+        flags = {'group_sessions_per_user': getattr(config, 'group_sessions_per_user', True),
+                 'thread_sessions_per_user': getattr(config, 'thread_sessions_per_user', False)}
+        name = source.profile or profile_name_for_home(authority.profile_id)
+        if stored not in {build_session_key(source, profile=mode, **flags) for mode in (None, name)}:
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None  # the restore refuses this receipt and logs the check that failed
+    return receipt, route, source.profile
 
 
 def restorable_receipt(authority, sid):

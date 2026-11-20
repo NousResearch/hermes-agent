@@ -285,6 +285,10 @@ class SessionBindingRepository(Protocol):
         """One write: epoch, then every receipt whose current target row now carries another route and a source in ``lanes`` is handed off: its earlier segments take the lane's identity, the conversation's title follows its head, and the receipt and its legacy binding are deleted. Returns owner to (row, source) for the receipts handed off."""
         ...
 
+    def respell_route(self, *, epoch: int, expected: SessionBinding, route: str, profile: Optional[str]) -> Optional[SessionBinding]:
+        """Re-key a local receipt the home's other gateway mode spelled (``agent:main:`` from a named profile's own gateway, ``agent:<profile>:`` from the multiplex host) to ``route``, in one write: epoch; then nothing changes and None is returned unless the stored receipt is still ``expected`` with an object origin, its current target row carries ``expected.route`` or already ``route`` (rows re-keyed alone), and nothing outside the receipt's lineage and target holds ``route`` (the routing index, a session row, a per-key counter: conversation generations, the hygiene streak, delivery obligations). Otherwise the receipt's ``route`` and ``entry['session_key']``, every session row keyed ``expected.route`` or ``route``, the routing entry (only its key and origin change) and the per-key counters move to ``route``; every origin carries ``profile`` (``None`` drops it). Returns the rewritten receipt."""
+        ...
+
     def target_has_history(self, session_id: str) -> bool:
         """Whether ``session_id`` has a message, an admission, a worker execution or a child session."""
         ...

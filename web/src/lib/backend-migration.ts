@@ -242,6 +242,19 @@ export function isFileNote(step: string): boolean {
     || /^the migration stopped while writing \S.*, so it may hold the migration's changes: /.test(step);
 }
 
+/** An engine step that copies a backup over config.yaml or .env, or removes one of them (the engine's
+ *  `cp <backup> <home>/config.yaml`, `cp <backup> <home>/.env && chmod <mode> <home>/.env`, `rm <home>/<name>`).
+ *  Edits made to the file since the backup are lost when it runs. */
+export function replacesConfigFile(step: string): boolean {
+  return /^cp .+[/\\](config\.yaml|\.env)( && chmod [0-7]+ .+)?$/.test(step)
+    || /^rm .+[/\\](config\.yaml|\.env)$/.test(step) && !step.startsWith("rm -f ");
+}
+
+/** The CLI's advice before steps that replace or remove config.yaml or .env, shown whenever any step does. */
+export const SAVE_BOTH_WARNING = "Before running these steps, save a copy of your current config.yaml and .env: the "
+  + "steps may replace or remove them. To keep changes you made to those files, merge them into any backup copy a "
+  + "step copies back (before you run it), or re-apply them after the last step.";
+
 /** The engine's account of an incomplete rollback (`<reason>; rollback incomplete: <detail>`), or "". */
 export function incompleteDetail(status: BackendMigrationStatus): string {
   return (status.message.split("; rollback incomplete: ")[1] ?? "").trim();
@@ -283,15 +296,8 @@ export function viewOf(st: BackendMigrationStatus): PollView {
       // A refused background run changed nothing: say why it did not start, not "could not be undone".
       if (st.refused) {
         const steps = st.manual_steps ?? [];
-        // The CLI's own advice, true for a refused apply too: the steps may replace config.yaml and .env.
-        // Per-file notes already say what to do with each file; the general warning would then repeat them,
-        // unless another step still copies a backup over config.yaml or .env.
-        const copiesBack = steps.some((s) => !isFileNote(s) && /config\.yaml|\.env\b/.test(s));
-        const warning = steps.length && (!steps.some(isFileNote) || copiesBack)
-          ? ["Before running these steps, save a copy of your current config.yaml and .env: the steps may "
-             + "replace or remove them. To keep changes you made to those files, merge them into any backup "
-             + "copy a step copies back (before you run it), or re-apply them after the last step."]
-          : [];
+        // The CLI's own advice, true for a refused apply too: shown whenever a step replaces or removes a file.
+        const warning = steps.some(replacesConfigFile) ? [SAVE_BOTH_WARNING] : [];
         return { kind: "notStarted", lines: [st.message, ...warning, ...steps] };
       }
       // What the rollback could not do (a file kept for its edits, an old backend left down), as the engine says it.

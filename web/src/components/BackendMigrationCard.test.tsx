@@ -9,6 +9,8 @@ import { BackendMigrationCard } from "./BackendMigrationCard";
 import { containerPlans, systemSystemdPlans } from "./BackendMigrationCard.plans.fixture";
 import {
   changedBackendStatus,
+  engineStepStrings,
+  exit5BundleStatus,
   killedWhileWritingStatus,
   lateTurnStatus,
   nonFileBackendApply,
@@ -23,6 +25,7 @@ import {
   applyOutcome,
   blockerAdvice,
   readPoll,
+  replacesConfigFile,
   type BackendMigrationPlanResponse,
   type BackendMigrationStatus,
   type PollRef,
@@ -269,6 +272,24 @@ describe("BackendMigrationCard", () => {
         .toEqual(steps.filter((s) => s.startsWith("hermes ") || s.startsWith("systemctl ")));
       expect(note).toBeDefined();
     });
+
+  it.each([["a systemd unit", exit5BundleStatus.systemd], ["a hand-started backend", exit5BundleStatus.manual]])(
+    "warns to save both files before an incomplete rollback's steps that copy backups back (%s)", async (_what, record) => {
+      const failed = record as unknown as BackendMigrationStatus;
+      expect(failed.manual_steps!.some((s) => s.startsWith("cp "))).toBe(true);
+      await render(planWith({ nothing_to_do: true }, failed));
+      const manual = container.querySelector('[data-slot="backend-migration-manual"]')!;
+      const text = manual.textContent ?? "";
+      expect(text).toContain("Before running these steps, save a copy of your current config.yaml and .env");
+      expect(text.indexOf("Before running these steps")).toBeLessThan(text.indexOf("cp "));
+    });
+
+  it("leaves the warning out of an incomplete rollback whose steps never copy over or remove either file", async () => {
+    const killed = killedWhileWritingStatus.config as unknown as BackendMigrationStatus;
+    await render(planWith({ nothing_to_do: true }, killed));
+    expect(container.querySelector('[data-slot="backend-migration-manual"]')?.textContent)
+      .not.toContain("Before running these steps");
+  });
 
   it("shows an unrecognized record state in the engine's words, with no empty list of steps", async () => {
     const record = unknownStateStatus as unknown as BackendMigrationStatus;
@@ -573,6 +594,17 @@ describe("readPoll", () => {
   it("keeps the engine's blocker sentences but drops flags the card does not offer", () => {
     expect(blockerAdvice("This command runs inside x itself; stopping it would end this run. Re-run with --detach.").text)
       .not.toContain("--detach");
+  });
+});
+
+describe("replacesConfigFile", () => {
+  it("is true for exactly the engine's steps that copy a backup over, or remove, config.yaml or .env", () => {
+    // From the engine's _file_step: `cp <backup> <home>/config.yaml`, `cp <backup> <home>/.env && chmod 600
+    // <home>/.env`, and `rm <home>/<name>` (the file did not exist before the migration). Not the restart-guard
+    // drop-in's `rm -f … && systemctl --user daemon-reload`, the per-file notes, or `# copy … into <home>/.env`.
+    const expected = engineStepStrings.filter((s) => s.startsWith("cp ") || (s.startsWith("rm ") && !s.startsWith("rm -f ")));
+    expect(expected).toHaveLength(4);
+    expect(engineStepStrings.filter(replacesConfigFile)).toEqual(expected);
   });
 });
 

@@ -270,6 +270,32 @@ def test_a_registration_for_another_address_never_sends_the_browser_there_and_sa
         f"or set {changed} back to that address and restart the gateway.")
 
 
+def test_a_loopback_socket_that_cannot_bind_is_named_with_the_oss_reason(monkeypatch, tmp_path):
+    """``::1`` beside an IPv6 address on a host with IPv6 loopback off: the reason names that socket
+    and the OS's words, never the specific address as unassigned."""
+    import asyncio
+    import errno
+    from types import SimpleNamespace
+
+    from gateway import run_api, run_runtime
+    from gateway.control_socket import GatewayControlServer
+
+    home = _home(tmp_path, "webapp:\n  enabled: true\n  host: 'fd7a:115c:a1e0::5'\n  port: 9555\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    async def start(runner, *, host="127.0.0.1", port=0, webapp=None):
+        if webapp is not None:
+            raise run_api.ListenerAddressError(
+                "::1:9555", OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address"))
+        return SimpleNamespace(api_origin="http://127.0.0.1:50001")
+
+    monkeypatch.setattr(run_api, "start_gateway_api", start)
+    runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
+                             session_control_server=GatewayControlServer(home))
+    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    assert runner.webapp_status["reason"] == "could not listen on ::1:9555 (Cannot assign requested address)"
+
+
 @pytest.mark.parametrize(("registered", "note"), [
     (f"http://{BOUND}/auth/callback", None),  # the same address: no port is port 80
     ("http://192.168.1.20/auth/callback",

@@ -145,6 +145,61 @@ class TestCredentialStoreReads:
         assert redact_terminal_output(rc, "cat ~/.bashrc", force=True) == rc
 
 
+    @pytest.mark.parametrize("line, leak", [
+        ("machine example.com login bob password open\\ sesame\n", "sesame"),
+        ('machine h login bob password "open\\"sesame tail"\n', 'sesame tail"'),
+    ])
+    def test_netrc_backslash_escaped_values_are_masked_whole(self, line, leak):
+        # #157366: ``\ `` escapes a space inside a bare value and ``\"`` a quote inside a quoted
+        # value; the escaped character and everything after it belong to the same secret.
+        assert _is_secret_file_arg("~/.netrc")
+        for out in (redact_sensitive_text(line, force=True, file_read=True, secret_file=True),
+                    redact_terminal_output(line, "cat ~/.netrc", force=True)):
+            assert leak not in out
+
+    def test_netrc_trailing_lone_backslash_is_masked(self):
+        # A value ending in a lone backslash must not split: the escape run is part of the token.
+        text = "machine h login bob password open\\\n"
+        for out in (redact_sensitive_text(text, force=True, file_read=True, secret_file=True),
+                    redact_terminal_output(text, "cat ~/.netrc", force=True)):
+            assert "open" not in out.replace("«redacted", "").replace("***", "")
+
+
+GOLDEN_NO_BACKSLASH_LINES = [
+    # (input, redact_sensitive_text output, redact_terminal_output output) captured at the
+    # pre-fix HEAD (f6c3eb1a): the escape branches in the netrc tokenizer must be strictly
+    # additive — lines without backslashes mask byte-identically.
+    ("machine example.com login bob password hunter2weak port x\n",
+     "machine example.com login bob password «redacted-secret» port x\n",
+     "machine example.com login bob password *** port x\n"),
+    ("machine a login u password hunter2weak1 machine b login v password hunter2weak2\n",
+     "machine a login u password «redacted-secret» machine b login v password «redacted-secret»\n",
+     "machine a login u password *** machine b login v password ***\n"),
+    ('machine h login bob password "a b hunter2weak"\n',
+     "machine h login bob password «redacted-secret»\n",
+     "machine h login bob password ***\n"),
+    ("default login password password hunter2weak\n",
+     "default login password password «redacted-secret»\n",
+     "default login password password ***\n"),
+    ("machine h login u password :hunter2weak\n",
+     "machine h login u password «redacted-secret»\n",
+     "machine h login u password ***\n"),
+    ("machine h login u password hunter2weak\n",
+     "machine h login u password «redacted-secret»\n",
+     "machine h login u password ***\n"),
+    ('machine h login bob password "open sesame tail"\n',
+     "machine h login bob password «redacted-secret»\n",
+     'machine h login bob password "open ...ail"\n'),
+]
+
+
+@pytest.mark.parametrize("line, sensitive, terminal", GOLDEN_NO_BACKSLASH_LINES)
+def test_netrc_no_backslash_lines_byte_identical(line, sensitive, terminal):
+    # #157366 control: no-backslash tokenization is unchanged by the escape fix.
+    assert redact_sensitive_text(line, force=True, file_read=True, secret_file=True) == sensitive
+    assert redact_terminal_output(line, "cat ~/.netrc", force=True) == terminal
+
+
 def test_ini_pass_is_linear_on_a_long_keyword_line():
     # A secret word repeated with no ``=``: the INI key run backtracked O(n^2) (12s at 80k chars).
     # A subprocess with a hard timeout, because an in-process regex cannot be interrupted.

@@ -152,6 +152,8 @@ def test_stable_release_tracks_only_completed_admitted_canary_runs(admit_result,
     # Canary tracking shares the exact lock group as live manual replays so both cannot open a tracker.
     expected_group = "install-e2e-red-tracker-auto" if policy == "canary" else f"install-e2e-red-tracker-{RUN_ID}"
     assert gha.render(job["concurrency"]["group"], ctx) == expected_group
+    # red-tracker.mjs drops this job by name: a failed tracker run is not a red release.
+    assert job["name"] == "Update the install-e2e-red tracker"
     # Diagnostic calls must keep the "Build diagnostic " prefix so red-tracker.mjs ignores them.
     for call in lane_set.DIAGNOSTIC_CALLS:
         assert stable["jobs"][call]["name"].startswith("Build diagnostic "), call

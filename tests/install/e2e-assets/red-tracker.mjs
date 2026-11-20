@@ -23,7 +23,12 @@ import { parseArgs } from 'node:util';
 export const LABEL = 'install-e2e-red';
 const RED = new Set(['failure', 'cancelled', 'timed_out', 'startup_failure']);
 const DIAGNOSTIC_PREFIX = 'Build diagnostic ';
+// stable-release.yml's track-canary-red job reports on its run; its own failure is not the release's.
+const TRACKER_JOB = 'Update the install-e2e-red tracker';
 const MAX_ROWS = 60;
+
+/** A job whose failure does not make the release red. @param {{name?: string}} job */
+const nonGating = (job) => String(job.name || '').startsWith(DIAGNOSTIC_PREFIX) || job.name === TRACKER_JOB;
 
 /**
  * Decide what the tracker does for one completed run. Pure, so the policy is
@@ -42,11 +47,10 @@ export function planTracker(run, jobs, openIssue) {
   // A run a newer one replaced while it was still pending ends cancelled with
   // no jobs: nothing ran, so it says nothing about the commit.
   if (run.conclusion === 'cancelled' && jobs.length === 0) return { action: 'none' };
-  const isDiagnostic = (/** @type {{name?: string}} */ j) => String(j.name || '').startsWith(DIAGNOSTIC_PREFIX);
-  const diagnosticRed = jobs.filter((j) => RED.has(String(j.conclusion)) && isDiagnostic(j));
-  const red = jobs.filter((j) => RED.has(String(j.conclusion)) && !isDiagnostic(j));
-  const diagnosticOnlyFailure = run.conclusion === 'failure' && red.length === 0 && diagnosticRed.length > 0;
-  const effectiveConclusion = diagnosticOnlyFailure ? 'success' : run.conclusion;
+  const nonGatingRed = jobs.filter((j) => RED.has(String(j.conclusion)) && nonGating(j));
+  const red = jobs.filter((j) => RED.has(String(j.conclusion)) && !nonGating(j));
+  const nonGatingOnlyFailure = run.conclusion === 'failure' && red.length === 0 && nonGatingRed.length > 0;
+  const effectiveConclusion = nonGatingOnlyFailure ? 'success' : run.conclusion;
   const runRed = RED.has(String(effectiveConclusion)) || red.length > 0;
   if (!runRed) {
     if (effectiveConclusion === 'success' && openIssue) {
@@ -115,9 +119,7 @@ async function main() {
     .filter((/** @type {any} */ i) => !i.pull_request);
   const openIssue = open.length ? { number: open[0].number } : null;
   const plan = planTracker(run, jobs, openIssue);
-  const redCount = jobs.filter(
-    (j) => RED.has(String(j.conclusion)) && !String(j.name || '').startsWith(DIAGNOSTIC_PREFIX),
-  ).length;
+  const redCount = jobs.filter((j) => RED.has(String(j.conclusion)) && !nonGating(j)).length;
   console.log(`run ${runId}: conclusion=${run.conclusion} red-jobs=${redCount} open-tracker=${openIssue ? `#${openIssue.number}` : 'none'} -> ${plan.action}`);
   if (values['dry-run'] || plan.action === 'none') {
     if (plan.body) console.log(`\n--- ${plan.title || 'comment'} ---\n${plan.body}`);

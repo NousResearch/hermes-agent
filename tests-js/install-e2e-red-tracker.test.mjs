@@ -66,3 +66,15 @@ test('manual replay of a failed run with only diagnostic Linux failures closes t
   const diagCancelled = leg('Build diagnostic Linux bundle (linux-x64) / bundled linux-x64 (linux-x64)', 'cancelled', 'Audit')
   expect(planTracker(run('cancelled'), [passed, diagCancelled], { number: 7 }).action).toBe('update')
 })
+
+test('a replay never counts the run\'s own tracker job as a release failure', () => {
+  // continue-on-error keeps the release going, but the jobs API still reports the failed tracker job.
+  const tracker = leg('Update the install-e2e-red tracker', 'failure', 'Open, update or close the tracker')
+  const passed = leg('Stable release is green', 'success')
+  expect(planTracker(run('success'), [passed, tracker], { number: 7 }).action).toBe('close')
+  expect(planTracker(run('failure'), [passed, tracker], { number: 7 }).action).toBe('close')
+  const realFail = leg('Build signed release candidates (win32-bundle) / Assemble and stage', 'failure', 'Assemble')
+  const opened = planTracker(run('failure'), [tracker, realFail], null)
+  expect(opened.title).toContain('(1 job)')
+  expect(opened.body).not.toContain('Update the install-e2e-red tracker')
+})

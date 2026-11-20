@@ -93,7 +93,7 @@ def test_authenticated_webhook_receipt_through_real_owner(tmp_path, monkeypatch,
             args = Namespace(name='fixture', prompt='{text}', events='', description='', skills='',
                              deliver='bot-chat', deliver_chat_id='', secret='owned-secret',
                              route_profile='secondary', script='', cron_job='', deliver_only=False,
-                             mirror_to_session=False)
+                             mirror_to_session=False, signature='github')
             assert _cmd_subscribe(args) != 1
             assert (launch / 'webhook_subscriptions.json').exists()
             assert not (home / 'webhook_subscriptions.json').exists()

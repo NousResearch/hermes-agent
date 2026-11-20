@@ -83,6 +83,8 @@ async def test_non_bot_chat_watcher_keeps_ordinary_terminal_notice(monkeypatch, 
 async def test_consumed_process_completion_never_mints_bot_chat_origin(monkeypatch, consume):
     from tools.process_registry import process_registry
     async with settled_before_finalizer(deliver='bot-chat') as (_, _, _, runner, authority, original):
+        before = records(authority)
+        assert len(before) == 1 and before[0]['origin_kind'] == 'linked_native_admission'
         native = json.loads(original['payload_json'])['native_text_v1']
         session = process_registry.spawn_local('printf CONSUMED_PROCESS_FINAL',
             cwd=str(authority.persistence.scope.profile_dir), session_key=native['route'])
@@ -98,7 +100,8 @@ async def test_consumed_process_completion_never_mints_bot_chat_origin(monkeypat
                 session_key=native['route'], chat_id=native['source']['chat_id'],
                 parent_session_id=original['target_session_id'], notify_on_complete=False)
             await runner._watch_process(watcher)
-            assert records(authority) == []
+            assert records(authority) == before
+            assert len(raw_holder(authority.persistence)._read_all('SELECT * FROM session_admissions')) == 1
         finally:
             if session.process is not None:
                 session.process.wait(timeout=10)

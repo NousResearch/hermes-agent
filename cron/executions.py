@@ -56,7 +56,13 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    # The restart-safe worker adopts its claim while the dispatching gateway may
+    # still be under load from maintenance/other cron writers.  A 5s default
+    # (or a transient I/O stall) can turn that narrow contention into a failed
+    # dispatch, so give this small ledger a longer busy window.
+    return open_db(path, db_label="cron/executions.db", busy_timeout_ms=30000,
+                  wal_lock_retries=3, synchronous_full=True,
+                  initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -309,20 +315,30 @@ def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
     now = _hermes_now().isoformat()
-    with _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE executions
-               SET process_id=?, pid=?, process_started_at=?,
-                   status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        record = _fetch(conn, execution_id)
-    _emit_execution_state(record)
-    return record
+    # A worker can arrive just as another cron writer holds the tiny ledger's
+    # write lock. Retry the adoption itself (bounded) instead of failing the
+    # whole restart-safe dispatch on a transient ``database is locked``.
+    for attempt in range(6):
+        try:
+            with _transaction() as conn:
+                cur = conn.execute(
+                    """UPDATE executions
+                       SET process_id=?, pid=?, process_started_at=?,
+                           status='running', started_at=?, handoff_pending=0,
+                           handoff_started_at=NULL
+                       WHERE id=? AND status='claimed' AND handoff_pending=1""",
+                    (_PROCESS_ID, pid, process_started_at, now, execution_id),
+                )
+                if cur.rowcount != 1:
+                    return None
+                record = _fetch(conn, execution_id)
+            _emit_execution_state(record)
+            return record
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == 5:
+                raise
+            time.sleep(0.25 * (2 ** attempt))
+    raise AssertionError("unreachable")
 
 
 def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:

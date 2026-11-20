@@ -23,18 +23,19 @@ _RETIRED_STATES = frozenset({"running", "done", "failed"})
 
 def backend_retired_by_migration(home: Optional[Path] = None) -> bool:
     """Whether this home's backend migration manifest says the old backend must stay down. No manifest
-    is False: the update then behaves exactly as without a migration. A manifest that exists but cannot
-    be read is True: a migration may have stopped half-way, so nothing starts the old backend on a guess."""
+    (or an unreadable marker path) is False: startup and update behave as without a migration and never
+    raise. A readable manifest that is corrupt or incomplete JSON is True: a migration may have stopped
+    half-way, so nothing starts the old backend on a guess."""
     if home is None:
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
     path = Path(home) / MANIFEST_NAME
     try:
         manifest = json.loads(path.read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
+    except OSError:
         return False
-    except (OSError, ValueError):
-        return path.exists()
+    except ValueError:
+        return True
     if not isinstance(manifest, dict) or not isinstance(manifest.get("state"), str):
         return True
     return manifest["state"] in _RETIRED_STATES

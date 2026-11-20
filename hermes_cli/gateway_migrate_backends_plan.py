@@ -274,20 +274,23 @@ def _is_standard_root(root) -> bool:
 _SECRET_NAME = re.compile(r"pass(word|wd)?|secret|token|api[-_]?key|credential", re.IGNORECASE)
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=", re.DOTALL)
 _URL_USERINFO = re.compile(r"(\w+://)[^/@\s]+@")
+_PYTHON_EXE = re.compile(r"^python(\d+(\.\d+)*)?(\.exe)?$", re.IGNORECASE)
+_SHORT_C_CLUSTER = re.compile(r"^-[A-Za-z]+c$")
 
 
 def redacted_argv(argv: list[str]) -> list[str]:
     """*argv* for printing: inline ``NAME=value`` environment assignments, the value of a flag named like
     a credential (``--password …``, ``--token=…``), URL credentials (userinfo and query-string secrets) and
-    inline ``-c`` launcher source are redacted."""
+    inline ``-c`` (or Python short-option cluster ending in ``c``, e.g. ``-Ic``) launcher source are redacted."""
     from agent.redact import redact_sensitive_text
     out: list[str] = []
     next_placeholder: Optional[str] = None
+    seen_python = False
     for token in argv:
         if next_placeholder is not None:
             out.append(next_placeholder)
             next_placeholder = None
-        elif token == "-c":
+        elif token == "-c" or (seen_python and _SHORT_C_CLUSTER.match(token)):
             out.append(token)
             next_placeholder = "<inline launcher source>"
         elif _ENV_ASSIGNMENT.match(token) or (token.startswith("-") and _SECRET_NAME.search(token.split("=", 1)[0])
@@ -298,6 +301,8 @@ def redacted_argv(argv: list[str]) -> list[str]:
             out.append(token)
             next_placeholder = "<redacted>"
         else:
+            if _PYTHON_EXE.match(token.replace("\\", "/").rsplit("/", 1)[-1]):
+                seen_python = True
             out.append(redact_sensitive_text(_URL_USERINFO.sub(r"\1<redacted>@", token),
                                              force=True, redact_url_credentials=True))
     return out

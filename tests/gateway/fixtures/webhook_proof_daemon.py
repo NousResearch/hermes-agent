@@ -11,10 +11,19 @@ from hermes_cli.plugins import get_plugin_manager
 original_handoff = webhook_final_intent._handoff
 
 
+def stop_after_marker(identity):
+    # Existence is the parent's synchronization event: publish complete bytes
+    # atomically, never an empty open/truncate window before SIGSTOP.
+    marker = Path(os.environ['TEST_BARRIER'])
+    staged = marker.with_suffix('.ready')
+    staged.write_text(identity)
+    staged.replace(marker)
+    os.kill(os.getpid(), signal.SIGSTOP)
+
+
 def handoff(authority, value, *args):
     if value['origin_kind'] == 'completion_final' and value['message'].endswith('GROUP_FINAL_2'):
-        Path(os.environ['TEST_BARRIER']).write_text(value['delivery_id'])
-        os.kill(os.getpid(), signal.SIGSTOP)
+        stop_after_marker(value['delivery_id'])
     return original_handoff(authority, value, *args)
 
 
@@ -33,12 +42,10 @@ async def receipt(home, record, **kwargs):
     stage = os.environ.get('TEST_RECEIPT_STAGE')
     marker = Path(os.environ['TEST_BARRIER'])
     if stage == 'admitted' and record.get('admission_id') and not marker.exists():
-        marker.write_text(record['delivery_id'])
-        os.kill(os.getpid(), signal.SIGSTOP)
+        stop_after_marker(record['delivery_id'])
     answer = await original_receipt(home, record, **kwargs)
     if stage == 'pin' and not record.get('admission_id') and not marker.exists():
-        marker.write_text(record['delivery_id'])
-        os.kill(os.getpid(), signal.SIGSTOP)
+        stop_after_marker(record['delivery_id'])
     return answer
 
 

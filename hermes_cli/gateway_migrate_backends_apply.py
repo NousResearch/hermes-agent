@@ -764,8 +764,10 @@ def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -
         elif s["name"] not in ("preflight", "manifest") and s["state"] in ("done", "running", "failed"):
             s["state"] = "undone"
     done = "restored" if final_state == "restored" else "rolled back"
-    _discard_launcher_snapshot(m)  # kept above on an incomplete rollback: the next one needs it
     run.finish(final_state, f"{reason}; {done}, old backend verified on {m['old_address']}")
+    # Only once the final state is saved (kept above on an incomplete rollback: the next one needs it).
+    _discard_launcher_snapshot(m)
+    run.save()
     print(f"\n↩ {done.capitalize()}: the old backend answers on {m['old_address']} again ({reason}).")
     return EXIT_ROLLED_BACK if final_state == "rolled_back" else EXIT_OK
 

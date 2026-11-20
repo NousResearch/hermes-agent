@@ -90,7 +90,7 @@ _FS_READDIR_HIDDEN = {
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_client_secret.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json", *HOME_ENV_FILES, "vault.key", "vault.json.enc",
+    "webhook_subscriptions.json", *HOME_ENV_FILES, "vault.key", "vault.json.enc", "backend_migration.json",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
     *HOME_CREDENTIAL_FILES,  # ~/.netrc, ~/.npmrc, ~/.git-credentials, ... (file_safety's write guard)
 })

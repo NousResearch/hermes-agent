@@ -5,6 +5,8 @@ see a name the installed SDK no longer exports or a resource request the SDK ref
 import the real package and stop only at the network call.
 """
 
+import inspect
+
 import pytest
 
 sandbox_sdk = pytest.importorskip("vercel.sandbox")
@@ -20,12 +22,14 @@ class _CreateCalled(Exception):
 def create_calls(monkeypatch):
     calls: list[dict] = []
 
+    real_create = sandbox_sdk.Sandbox.create  # an SDK without Sandbox.create fails here
+
     def create(**kwargs):
+        inspect.signature(real_create).bind(**kwargs)  # TypeError on a keyword the SDK doesn't take
         calls.append(kwargs)
         raise _CreateCalled
 
-    # raising=False: on an SDK without Sandbox.create the backend's own failure is what surfaces.
-    monkeypatch.setattr(sandbox_sdk.Sandbox, "create", staticmethod(create), raising=False)
+    monkeypatch.setattr(sandbox_sdk.Sandbox, "create", staticmethod(create))
     monkeypatch.setattr(vercel_sandbox, "_load_snapshots", dict)
     return calls
 

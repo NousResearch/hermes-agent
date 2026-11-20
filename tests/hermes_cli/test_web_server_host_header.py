@@ -656,3 +656,44 @@ def test_a_malformed_extra_url_warns_without_the_oauth_redirect_claim(monkeypatc
     text = caplog.text
     assert "hermes.example.com" in text and "extra_public_urls" in text
     assert "redirect" not in text.lower()
+
+
+@pytest.mark.parametrize("origin, trusted", [
+    ("https://localhost:8443", True),    # extra_public_urls: a second loopback proxy
+    ("https://localhost:8444", False),   # another loopback port
+])
+def test_a_loopback_extra_public_url_is_a_trusted_origin_for_cors_and_sockets(
+        monkeypatch, tmp_path, origin, trusted):
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import hermes_cli.web_server as ws
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {
+        "public_url": "http://localhost:3000",
+        "extra_public_urls": ["https://localhost:8443"],
+    })
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    for name in ("trusted_public_hosts", "trusted_public_origins", "auth_required"):
+        monkeypatch.setattr(ws.app.state, name, None, raising=False)
+    if hasattr(ws.app.state, "listener_public_url"):
+        monkeypatch.delattr(ws.app.state, "listener_public_url")
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9120, raising=False)
+    monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    ws._configure_auth_gate("127.0.0.1", False, None, None)
+    assert ws.app.state.auth_required is False
+    client = TestClient(ws.app)
+
+    headers = {"Host": "127.0.0.1:9120", "Origin": origin}
+    grant = client.get("/api/status", headers=headers)
+    assert (grant.headers.get("access-control-allow-origin") == origin) is trusted
+    url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+    if trusted:
+        with client.websocket_connect(url, headers=headers):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert exc.value.code == 4403

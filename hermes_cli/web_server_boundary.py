@@ -230,10 +230,13 @@ def public_url_origins(public_url: str) -> frozenset[tuple[str, str, int]]:
 
 
 def _dashboard_public_origins() -> frozenset[tuple[str, str, int]]:
-    """:func:`public_url_origins` of ``dashboard.public_url``."""
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    """:func:`public_url_origins` of ``dashboard.public_url`` and ``dashboard.extra_public_urls``."""
+    from hermes_cli.dashboard_auth.prefix import resolve_extra_public_urls, resolve_public_url
 
-    return public_url_origins(resolve_public_url())
+    origins = public_url_origins(resolve_public_url())
+    for url in resolve_extra_public_urls():
+        origins |= public_url_origins(url)
+    return origins
 
 
 def is_trusted_local_origin(origin: str, state) -> bool:

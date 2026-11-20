@@ -101,9 +101,15 @@ def test_routed_spawn_reloads_profile_policy_without_changing_parent(
             assert json.loads(os.environ["TERMINAL_DOCKER_FORWARD_ENV"]) == forwarded
             from agent.runtime_scope import bind_profile_scope
             from tools.terminal_scope import terminal_env
-            with bind_profile_scope(home):
-                assert terminal_env("TERMINAL_HOME_MODE") == mode
-                assert terminal_env("TERMINAL_ENV") == backend
-                assert terminal_env("TERMINAL_DOCKER_IMAGE") == image
-                assert json.loads(terminal_env("TERMINAL_DOCKER_FORWARD_ENV")) == forwarded
+            from tui_gateway import launch_profile_policy
+            # Each row above models a NEW owner process, not a profile switch in
+            # the dispatcher that already froze its own launch overlay.
+            with monkeypatch.context() as child_process:
+                child_process.setattr(launch_profile_policy, "_snapshot", None)
+                child_process.setattr(launch_profile_policy, "_source_writes", {})
+                with bind_profile_scope(home):
+                    assert terminal_env("TERMINAL_HOME_MODE") == mode
+                    assert terminal_env("TERMINAL_ENV") == backend
+                    assert terminal_env("TERMINAL_DOCKER_IMAGE") == image
+                    assert json.loads(terminal_env("TERMINAL_DOCKER_FORWARD_ENV")) == forwarded
     assert dict(os.environ) == before

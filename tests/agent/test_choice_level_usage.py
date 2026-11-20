@@ -79,3 +79,20 @@ def test_choice_level_usage_is_counted(endpoint, streaming):
 
     assert result["final_response"] == "Hello."
     assert counts == (1234, 56, 1234)
+
+
+def test_responses_usage_on_the_terminal_event_is_kept():
+    """Responses-compatible servers can put usage on ``response.completed`` itself rather than in its
+    ``response`` object (the shape kimi-code#4485 restored); the nested copy still wins."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    def stream(nested, outer):
+        done = {"type": "response.completed", "response": {"id": "r1", "status": "completed",
+                                                           **({"usage": nested} if nested else {})}}
+        return [{"type": "response.created", "response": {"id": "r1"}},
+                {"type": "response.output_text.delta", "delta": "hi", "item_id": "m1", "output_index": 0},
+                {**done, **({"usage": outer} if outer else {})}]
+
+    outer, nested = {"input_tokens": 3, "output_tokens": 1}, {"input_tokens": 9, "output_tokens": 9}
+    assert _consume_codex_event_stream(stream(None, outer), model="x").usage == outer
+    assert _consume_codex_event_stream(stream(nested, outer), model="x").usage == nested

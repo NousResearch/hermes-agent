@@ -90,3 +90,40 @@ def test_profile_home_waits_for_the_live_owner_to_release_it(profile, monkeypatc
         assert outcome == {"ok": True} and not profile.exists()
     else:
         assert "still owns" in outcome["error"] and (profile / "gateway.lock").is_file()
+
+
+def test_a_refused_delete_is_shown_as_delete_incomplete_until_retried(profile, monkeypatch, capsys):
+    """#141466: the refused delete keeps its tombstone over a populated home; every surface names
+    that state and the retry instead of hiding the profile or calling it missing/existing."""
+    import argparse
+    from hermes_cli import main as hermes_main, profile_cmd
+    from hermes_constants import named_profile_delete_incomplete
+    monkeypatch.setattr(profiles_remove, "OWNER_RELEASE_WAIT_SECONDS", 1.0)
+    holder = _hold(profile)
+    try:
+        with pytest.raises(RuntimeError) as failed:
+            profiles.delete_profile("owned-delete", yes=True)
+    finally:
+        _release(holder)
+    assert named_profile_delete_incomplete(profile) and (profile / "SOUL.md").is_file()
+    unfinished = f"Deletion of profile 'owned-delete' did not finish: {profile} still holds its files."
+    assert "still owns" in str(failed.value) and unfinished in str(failed.value)
+    capsys.readouterr()
+    profile_cmd._profile_list(argparse.Namespace())
+    rows = capsys.readouterr().out
+    assert any(line.split()[:1] == ["owned-delete"] and "delete incomplete" in line for line in rows.splitlines())
+    assert unfinished in rows
+    for refused in (lambda: profiles.resolve_profile_env("owned-delete"),  # the -p resolution
+                    lambda: profile_cmd._profile_use(argparse.Namespace(profile_name="owned-delete")),
+                    lambda: profiles.create_profile("owned-delete", no_alias=True)):
+        with pytest.raises((FileNotFoundError, FileExistsError, SystemExit)) as exc:
+            refused()
+        text = str(exc.value) if exc.type is not SystemExit else capsys.readouterr().out
+        assert unfinished in text and "hermes profile delete owned-delete" in text
+        assert "does not exist" not in text and "profile use" not in text
+    monkeypatch.setattr(hermes_main.sys, "argv", ["hermes", "-p", "owned-delete", "config", "show"])
+    with pytest.raises(SystemExit):
+        hermes_main._apply_profile_override()
+    assert unfinished in capsys.readouterr().err
+    profiles.delete_profile("owned-delete", yes=True)  # the retry finishes it
+    assert not profile.exists() and not named_profile_delete_incomplete(profile)

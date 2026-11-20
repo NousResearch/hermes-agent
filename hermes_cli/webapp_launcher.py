@@ -62,7 +62,7 @@ def _deleted_profile_refusal(home: Path) -> str | None:
     profile = named_profile_home(home)
     if profile is None or named_profile_is_live(profile):
         return None
-    return str(_missing_profile_error(profile.name))
+    return str(_missing_profile_error(profile.name, profile))
 
 
 def _build(args):

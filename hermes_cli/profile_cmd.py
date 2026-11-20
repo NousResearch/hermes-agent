@@ -107,6 +107,7 @@ def _profile_status(args):
 
 def _profile_list(args):
     from hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
+    from hermes_cli.profiles_remove import delete_incomplete_message
     profiles = list_profiles()
     active = get_active_profile_name()
     if not profiles:
@@ -122,9 +123,24 @@ def _profile_list(args):
         alias = (p.alias_name or p.name) if p.alias_path and not p.is_default else "—"
         dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
         print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
+    unfinished = _unfinished_deletes()
+    for canon, _ in unfinished:
+        print(f"  {canon:<15} {'—':<28} {'delete incomplete':<12}")
     print()
+    for canon, profile_dir in unfinished:
+        print(delete_incomplete_message(canon, profile_dir))
+    if unfinished:
+        print()
     for line in _shared_credential_warnings(profiles):
         print(line)
+
+
+def _unfinished_deletes() -> list:
+    """``(name, dir)`` per profile whose delete did not finish: hidden from ``list_profiles`` (it
+    is tombstoned), but its files are still there, so ``profile list`` must not hide it."""
+    from hermes_cli.profiles import _iter_named_profile_dirs
+    from hermes_constants import named_profile_delete_incomplete
+    return [(d.name, d) for d in _iter_named_profile_dirs(live_only=False) if named_profile_delete_incomplete(d)]
 
 
 def _shared_credential_warnings(profiles) -> list:

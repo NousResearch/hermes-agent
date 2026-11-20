@@ -451,6 +451,14 @@ def named_profile_is_live(profile_home: str | Path) -> bool:
     return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
 
 
+def named_profile_delete_incomplete(profile_home: str | Path) -> bool:
+    """A delete that did not finish: the tombstone is down, but the dir still carries identity.
+    ``profile delete`` writes the tombstone before its rmtree; a refused or failed rmtree leaves
+    the profile in this state until the delete is retried (or the profile is renamed)."""
+    home = Path(profile_home)
+    return home.is_dir() and named_profile_has_identity(home) and named_profile_is_deleted(home)
+
+
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
     marker = profile_tombstone_path(Path(profile_home))
     marker.parent.mkdir(parents=True, exist_ok=True)

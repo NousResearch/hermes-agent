@@ -13,6 +13,23 @@ import time
 OWNER_RELEASE_WAIT_SECONDS = 60.0
 
 
+def delete_incomplete_message(canon: str, profile_dir: Path | None) -> str | None:
+    """The one refusal every surface gives for a profile whose delete did not finish
+    (``named_profile_delete_incomplete``), else None."""
+    from hermes_constants import named_profile_delete_incomplete
+    if profile_dir is None or not named_profile_delete_incomplete(profile_dir):
+        return None
+    return (f"Deletion of profile '{canon}' did not finish: {profile_dir} still holds its files. "
+            f"Finish it with `hermes profile delete {canon}`, or keep it with "
+            f"`hermes profile rename {canon} <new-name>`.")
+
+
+def delete_failed_error(canon: str, profile_dir: Path, error: Exception) -> RuntimeError:
+    """A delete whose rmtree was refused or failed; names the state it left and how to finish."""
+    left = delete_incomplete_message(canon, profile_dir)
+    return RuntimeError(f"Could not remove profile directory {profile_dir}: {error}" + (f". {left}" if left else ""))
+
+
 def wait_profile_unowned(profile_dir: Path, *, timeout: float | None = None) -> bool:
     """True once no gateway runtime holds ``profile_dir``'s ``gateway.lock`` (taken and released
     through ``exclusive_maintenance``); False when it is still held after ``timeout`` seconds."""

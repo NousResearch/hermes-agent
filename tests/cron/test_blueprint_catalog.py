@@ -18,7 +18,6 @@ from cron.blueprint_catalog import (
     BlueprintSlot,
     fill_blueprint,
     get_blueprint,
-    blueprint_deeplink,
 )
 import itertools
 
@@ -106,16 +105,6 @@ class TestValidation:
         assert spec["origin"] == {"platform": "telegram", "chat_id": "9"}
 
 
-class TestRenderers:
-
-
-
-    def test_deeplink_shape(self):
-        url = blueprint_deeplink(get_blueprint("morning-brief"), {"time": "07:15"})
-        assert url.startswith("hermes://blueprint/morning-brief?")
-        assert "time=07" in url
-
-
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -183,4 +172,4 @@ class TestDocsGenerator:
         assert isinstance(index, list) and len(index) == len(CATALOG)
         # Each entry must round-trip through json and carry the surfaces.
         json.dumps(index)
-        assert all("command" in e and "appUrl" in e for e in index)
+        assert all("command" in e for e in index)

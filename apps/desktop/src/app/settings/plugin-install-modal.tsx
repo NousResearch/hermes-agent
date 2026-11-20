@@ -152,11 +152,11 @@ function RepositoryEntry({ request }: { request: PluginInstallRequest }) {
 }
 
 /**
- * THE plugin install dialog, for every door: a reviewed catalog pick (Plugins tab, `hermes://` link,
- * the setup chat's plugins card) and a raw git URL. A catalog entry shows its name, one line, "Verified"
+ * THE plugin install dialog, for every door: a reviewed catalog pick (Plugins tab, the setup chat's
+ * plugins card) and a raw git URL. A catalog entry shows its name, one line, "Verified"
  * and Install; its particulars wait behind Advanced. A git URL is marked Unverified with the same
  * particulars open, because there they are the security check. Install always turns the plugin on
- * (a deep link's explicit `enable=0` aside) and shows one loader until it is done.
+ * (a request's explicit `enable: false` aside) and shows one loader until it is done.
  */
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)

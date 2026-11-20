@@ -174,7 +174,6 @@ import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
-import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -1329,7 +1328,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <PetGenerateOverlay />
       <SessionSwitcher />
       <FileActionDialogs />
-      <McpInstallDeepLinkDialog />
       <RemoteFolderPicker />
       <FindBar />
 

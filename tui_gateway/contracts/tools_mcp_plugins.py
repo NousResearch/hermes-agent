@@ -949,4 +949,4 @@ class PluginCatalogLookupResult(Result):
 
 method("plugins.catalog.lookup", params=PluginCatalogLookupParams, result=PluginCatalogLookupResult,
        doc="One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the "
-           "in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.")
+           "in-tree fallback and kill list).")

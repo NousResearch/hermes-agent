@@ -1899,21 +1899,7 @@ export const esOverrides = {
       authenticatedTitle: 'Autenticado',
       authenticatedMessage: (server, count) => `${server}: ${count} herramientas`,
       authenticate: 'Autenticar',
-      noOutput: 'Aún no hay salida.',
-      deepLinkTitle: '¿Añadir servidor MCP?',
-      deepLinkDescription:
-        'Un enlace pidió añadir este servidor MCP a Hermes. Revisa la configuración exacta de abajo: viene del enlace, no de Hermes.',
-      deepLinkStdioWarning:
-        'Este servidor ejecuta un proceso local en tu equipo con el comando que se muestra abajo. Continúa solo si confías en su origen.',
-      deepLinkConfirm: 'Añadir servidor',
-      deepLinkNameInvalid: 'Los nombres usan de 1 a 64 letras, dígitos, puntos, guiones o guiones bajos.',
-      deepLinkNameConflict: name => `Ya existe un servidor llamado ${name}: elige otro nombre o cancela.`,
-      deepLinkErrorTitle: 'Enlace de instalación de MCP rechazado',
-      deepLinkErrorName: 'Falta el nombre del servidor del enlace o no es válido.',
-      deepLinkErrorConfig: 'La configuración del enlace no es JSON válido codificado en base64.',
-      deepLinkErrorShape: 'La configuración debe ser un objeto JSON con un campo `url` o `command` de tipo cadena.',
-      deepLinkErrorUrl: 'Solo se permiten URL de servidor http:// y https://.',
-      deepLinkErrorTooLarge: 'La configuración supera el límite de 32 KB.'
+      noOutput: 'Aún no hay salida.'
     },
     model: esModelSettings,
     localModels: esLocalModels,
@@ -2538,12 +2524,6 @@ export const esOverrides = {
       uninstallDesktopConfirmBody: (name: string) =>
         `Esto elimina ${name} de la carpeta desktop-plugins de este equipo y lo descarga ahora. Puedes reinstalarlo desde Git o volver a poner la carpeta cuando quieras.`,
       uninstalledDesktop: (name: string) => `${name} desinstalado.`,
-      deepLinkErrorTitle: 'Enlace de instalación de plugin rechazado',
-      deepLinkCatalogInvalidName: 'Falta el nombre del catálogo del enlace o no es válido.',
-      deepLinkCatalogUnknown: (name: string) =>
-        `\u201C${name}\u201D no está en el catálogo de plugins de Hermes. No se instaló nada.`,
-      deepLinkCatalogUnavailable:
-        'No se pudo cargar el catálogo de plugins de Hermes. Comprueba tu conexión y vuelve a abrir el enlace.',
       settingsToggle: (name: string) => `Configuración: ${name}`,
       settingsForm: {
         save: 'Guardar configuración',

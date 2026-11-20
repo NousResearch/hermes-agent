@@ -56,10 +56,9 @@ This issue was opened by `.github/workflows/skills-index-freshness.yml`. Close i
 **Status:** `{status}`
 **Detail:** {detail}
 
-Desktop's `hermes://plugin/install?catalog=` links fetch `/docs/api/plugins.json` cross-origin.
-A browser rejects that fetch when any response in the redirect chain, including the docs host's
-redirect to GitHub Pages, lacks `Access-Control-Allow-Origin`. Every catalog install link then
-shows "Could not load the Hermes plugin catalog". Background: #136483.
+Desktop's plugin catalog picker fetches `/docs/api/plugins.json` cross-origin when its backend
+predates `plugins.catalog.lookup`. A browser rejects that fetch when any response in the redirect
+chain, including the docs host's redirect to GitHub Pages, lacks `Access-Control-Allow-Origin`. Background: #136483.
 
 This issue was opened by `.github/workflows/skills-index-freshness.yml` (job `check-catalog-cors`). Close it once the header is back; the next probe will reopen it if it's still broken.""",
     ),

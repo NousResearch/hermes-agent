@@ -550,52 +550,12 @@ Ordinary Hermes application updates preserve user plugin directories, including
 wrapper files and external sidecar links. Explicit plugin updates or removals
 can change those files. See [Package management](../../reference/package-management.md)
 and the [plugin authoring guide](../../developer-guide/plugins/index.md#lazy-install-optional-python-dependencies).
-### One-click install links (Desktop)
+### `hermes://` links (Desktop)
 
-Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
-chat message can link straight to a plugin install:
-
-```
-hermes://plugin/install?catalog=NAME               # catalog entry, installs the reviewed pin
-hermes://plugin/install?repo=owner/repo            # any git repo
-hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
-hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
-hermes://plugin/install?catalog=<name>             # reviewed catalog entry at its pinned commit
-```
-
-The `catalog=<name>` form is what the **Open in Hermes Desktop** button on
-every [Plugin Catalog](./plugin-catalog.md) card uses. Desktop resolves the
-name against the live catalog (the same feed the **Capabilities → Plugins**
-picker shows) and opens the same **reviewed catalog entry** dialog an in-app
-pick does: the agent half installs at the catalog's pinned commit, never the
-branch tip. The link carries no repo URL, and a name that is not in the
-catalog shows an error toast and nothing else — it is never reinterpreted as a
-git path, so a link cannot smuggle an unreviewed repo behind a
-familiar-looking name.
-
-For a `repo=` link, clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
-a "Before you install" note, and GitHub browse + clone links — then
-shallow-clones the repo to detect what it ships (an **agent plugin** —
-backend Python, a **desktop plugin** — app UI, or both). You pick the
-components with checkboxes and confirm. Nothing is installed until you do;
-deep links never auto-install, and agent-plugin installs go through the same
-[install-time security scanning](#install-time-security-scanning) as
-`hermes plugins install`.
-
-Hybrid repos (agent + desktop halves in one repo) use one link and one
-dialog. The same modal is reachable without a link via **Capabilities →
-Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
-`hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
-(`pnpm run dev`) the scheme is `hermes-dev://`.
-
-Websites need no SDK — a normal anchor works:
-
-```html
-<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
-```
-
-MCP servers have the equivalent link form — see
-[Add to Hermes link](../../reference/mcp-config-reference.md#add-to-hermes-link).
+Hermes Desktop registers the `hermes://` URL scheme, but a link only opens and
+focuses the app. It never installs, pre-fills or navigates to anything, because
+any web page can fire one. Install plugins from **Capabilities → Plugins** (the
+catalog picker or **Install from Git**) or with `hermes plugins install`.
 
 ### Plugin capabilities and consent
 

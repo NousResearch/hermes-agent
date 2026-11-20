@@ -20,7 +20,6 @@ interface Blueprint {
   fields: BlueprintField[];
   scheduleHuman: string;
   command: string;
-  appUrl: string;
 }
 
 const INDEX_URL = "/docs/api/automation-blueprints-index.json";
@@ -66,14 +65,7 @@ function BlueprintCard({ blueprint }: { blueprint: Blueprint }): React.JSX.Eleme
         <CopyButton text={blueprint.command} />
       </div>
 
-      <div className={styles.actions}>
-        <a className={styles.appBtn} href={blueprint.appUrl}>
-          Send to App ↗
-        </a>
-        <span className={styles.hint}>
-          or paste the command into the CLI, TUI, or any messenger
-        </span>
-      </div>
+      <p className={styles.hint}>Paste the command into the CLI, TUI, desktop app or any messenger.</p>
     </div>
   );
 }

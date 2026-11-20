@@ -3,7 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
-import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
+import { zhCatalog } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhCronControl } from './zh_cron_control'
@@ -1591,20 +1591,7 @@ export const zhOverrides = {
       authenticatedTitle: '已认证',
       authenticatedMessage: (server, count) => `${server}：${count} 个工具`,
       authenticate: '认证',
-      noOutput: '暂无输出。',
-      deepLinkTitle: '添加 MCP 服务器？',
-      deepLinkDescription:
-        '一个链接请求将此 MCP 服务器添加到 Hermes。请检查下方的完整配置——它来自该链接，而非 Hermes。',
-      deepLinkStdioWarning: '此服务器会使用下方所示命令在你的电脑上运行本地进程。仅在信任其来源时继续。',
-      deepLinkConfirm: '添加服务器',
-      deepLinkNameInvalid: '名称须为 1-64 个字母、数字、点、连字符或下划线。',
-      deepLinkNameConflict: name => `已存在名为 ${name} 的服务器——请改用其他名称或取消。`,
-      deepLinkErrorTitle: 'MCP 安装链接已拒绝',
-      deepLinkErrorName: '链接中的服务器名称缺失或无效。',
-      deepLinkErrorConfig: '链接中的配置不是有效的 base64 编码 JSON。',
-      deepLinkErrorShape: '配置必须是包含字符串 `url` 或 `command` 字段的 JSON 对象。',
-      deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
-      deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
+      noOutput: '暂无输出。'
     },
     model: zhModelSettings,
     localModels: zhLocalModels,
@@ -2022,7 +2009,6 @@ export const zhOverrides = {
     }
   },
 
-  skillDeepLink: zhSkillDeepLink,
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
@@ -2128,11 +2114,7 @@ export const zhOverrides = {
       uninstallDesktopTip: (name: string) => `从本应用卸载 ${name}`,
       uninstallDesktopConfirmBody: (name: string) =>
         `这将从本机的 desktop-plugins 文件夹中删除 ${name} 并立即卸载。之后可随时从 Git 重新安装或将文件夹放回。`,
-      uninstalledDesktop: (name: string) => `${name} 已卸载。`,
-      deepLinkErrorTitle: '插件安装链接已拒绝',
-      deepLinkCatalogInvalidName: '链接中的目录名称缺失或无效。',
-      deepLinkCatalogUnknown: (name: string) => `“${name}”不在 Hermes 插件目录中。未安装任何内容。`,
-      deepLinkCatalogUnavailable: '无法加载 Hermes 插件目录。请检查网络连接后重新打开链接。'
+      uninstalledDesktop: (name: string) => `${name} 已卸载。`
     },
     officialCatalog: '可安装',
     officialPill: '官方',

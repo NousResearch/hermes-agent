@@ -1600,9 +1600,9 @@ ctx.os.notify({
 })
 ```
 
-`activate` is deeplink-compatible: `hermes://index-network/intent/1` and the
-hash path `/index-network/intent/1` resolve to the same in-app route (and the
-same `hermes://…` URL works as an OS deep link). Action buttons only render on
+`activate` takes `hermes://index-network/intent/1` or the hash path
+`/index-network/intent/1`; both resolve to the same in-app route. (An OS-level
+`hermes://` link only opens the app and never routes.) Action buttons only render on
 signed macOS builds; elsewhere the body click still activates. Navigation only
 happens on user click — never from a background event alone.
 
@@ -2216,20 +2216,11 @@ was installed on the remote host without that clone shows its Desktop half as
 and the tooltip points at **Install from Git** with the Desktop target checked.
 :::
 
-### Distributing with an install link {#install-link}
+### Distributing your plugin {#install-link}
 
-Ship your plugin repo (agent half, desktop half, or both) and link to it with
-the `hermes://` scheme — a plain anchor on your website or README:
-
-```html
-<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
-```
-
-The user gets a confirmation dialog (repo id, source links, a probe of what
-the repo ships) and picks components before anything is installed — deep links
-never auto-install. `force=1` replaces an existing install; dev builds use
-`hermes-dev://`. Full link reference:
-[One-click install links](../user-guide/features/plugins.md#one-click-install-links-desktop).
+Ship your plugin repo (agent half, desktop half, or both) and tell users to install it from
+**Capabilities → Plugins → Install from Git** or with `hermes plugins install owner/repo`. `hermes://`
+links only open the app, so they cannot start an install.
 
 ### The Python side
 

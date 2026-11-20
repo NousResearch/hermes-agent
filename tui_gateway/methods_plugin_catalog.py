@@ -1,8 +1,8 @@
 """``plugins.catalog.lookup``: one curated-catalog entry, resolved by the backend.
 
-The Desktop's ``hermes://plugin/install?catalog=<name>`` deep link used to fetch the docs-site JSON
-from the renderer. That URL answers with a cross-origin 301, so the browser's CORS check fails on the
-redirect and every link reported the catalog as unreachable (hermes-agent 136483). The backend already
+Desktop's in-app catalog picks used to fetch the docs-site JSON from the renderer. That URL answers
+with a cross-origin 301, so the browser's CORS check fails on the redirect and every lookup reported
+the catalog as unreachable (hermes-agent 136483). The backend already
 reads the live catalog (cache, failure window, in-tree fallback and kill list), and ``plugins.manage
 install {catalog_name}`` resolves the pin from the same place, so the lookup lives here too.
 

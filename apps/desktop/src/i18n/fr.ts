@@ -1911,21 +1911,7 @@ export const frOverrides = {
       authenticatedTitle: 'Authentifié',
       authenticatedMessage: (server, count) => `${server} : ${count} outils`,
       authenticate: 'Authentifier',
-      noOutput: 'Aucune sortie pour le moment.',
-      deepLinkTitle: 'Ajouter un serveur MCP ?',
-      deepLinkDescription:
-        "Un lien demande d'ajouter ce serveur MCP à Hermes. Vérifiez attentivement la configuration ci-dessous : elle provient du lien, pas de Hermes.",
-      deepLinkStdioWarning:
-        'Ce serveur exécute sur votre machine un processus local avec la commande affichée ci-dessous. Continuez uniquement si vous faites confiance à sa source.',
-      deepLinkConfirm: 'Ajouter le serveur',
-      deepLinkNameInvalid: 'Les noms utilisent 1 à 64 lettres, chiffres, points, tirets ou underscores.',
-      deepLinkNameConflict: name => `Un serveur nommé ${name} existe déjà — choisissez un autre nom ou annulez.`,
-      deepLinkErrorTitle: "Lien d'installation MCP rejeté",
-      deepLinkErrorName: 'Le nom du serveur est absent ou invalide dans le lien.',
-      deepLinkErrorConfig: "La configuration du lien n'est pas un JSON valide encodé en base64.",
-      deepLinkErrorShape: 'La configuration doit être un objet JSON comportant un champ chaîne `url` ou `command`.',
-      deepLinkErrorUrl: 'Seules les URL de serveur http:// et https:// sont autorisées.',
-      deepLinkErrorTooLarge: 'La configuration dépasse la limite de 32 Ko.'
+      noOutput: 'Aucune sortie pour le moment.'
     },
     model: frModelSettings,
     localModels: frLocalModels,
@@ -2556,12 +2542,6 @@ export const frOverrides = {
       uninstallDesktopConfirmBody: (name: string) =>
         `Cette action supprime ${name} du dossier desktop-plugins de cet ordinateur et le décharge immédiatement. Réinstallez-le depuis Git ou remettez le dossier en place à tout moment.`,
       uninstalledDesktop: (name: string) => `${name} désinstallé.`,
-      deepLinkErrorTitle: 'Lien d’installation de plugin refusé',
-      deepLinkCatalogInvalidName: 'Le nom de catalogue du lien est manquant ou invalide.',
-      deepLinkCatalogUnknown: (name: string) =>
-        `\u00AB\u00A0${name}\u00A0\u00BB ne figure pas dans le catalogue de plugins Hermes. Rien n’a été installé.`,
-      deepLinkCatalogUnavailable:
-        'Impossible de charger le catalogue de plugins Hermes. Vérifiez votre connexion et rouvrez le lien.',
       settingsToggle: (name: string) => `Paramètres : ${name}`,
       settingsForm: {
         save: 'Enregistrer les paramètres',

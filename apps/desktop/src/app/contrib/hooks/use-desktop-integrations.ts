@@ -9,13 +9,11 @@ import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-si
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
-import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
-import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
+import { resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { recordAction } from '@/store/desktop-metrics'
 import { onKeptRouteOpened } from '@/store/gateway-kept-routes'
-import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
   clearPluginNotifyHandlers,
@@ -23,8 +21,6 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
-import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
-import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $selectedStoredSessionId,
@@ -41,12 +37,10 @@ import {
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
-import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
-import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
 import { resolveRememberedSessionId } from './remembered-session'
@@ -408,100 +402,28 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [navigate])
 
-  // hermes:// deep links:
-  //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
-  //  - plugin/install?catalog=<name> → curated-catalog lookup, then the same
-  //    reviewed/pinned install modal an in-app catalog pick opens; unknown
-  //    names toast an error and never fall back to a git-path install.
-  //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
-  //    modal awaiting explicit confirmation. Never auto-installs.
-  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
-  //  - blueprint/<name>?… → reviewable /blueprint command in the composer
-  //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
-  //  - open/<path>?… → in-app navigate (generic)
+  // hermes:// links only open the app; main forwards exactly one link here: a connector sign-in
+  // the user finished in their browser (connections/done?op=…). Show its card and wake the
+  // watcher; nothing else a link carries ever reaches the renderer.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload?.kind) {
+      const op = payload?.kind === 'connections' && payload.name === 'done' ? (payload.params?.op || '').trim() : ''
+
+      if (!op) {
         return
       }
 
-      if (payload.kind === 'mcp' && payload.name === 'install') {
-        requestMcpInstallFromDeepLink(payload.params || {})
+      void resumeAccountConnect(op, navigate).then(handled => {
+        if (handled) {
+          return
+        }
 
-        return
-      }
+        return openConnectionDoneLink(op, navigate, runtimeId => {
+          const viaLocalMap = storedSessionIdForNotification(runtimeId, runtimeIdByStoredSessionId.current)
 
-      const action = resolveDeepLinkAction(payload)
-
-      // The user finished a sign-in in their browser and the portal sent them back. Show the card
-      // and wake its watcher; the link's status is not allowed to move any row.
-      if (action.type === 'connection-done') {
-        void resumeAccountConnect(action.op, navigate).then(handled => {
-          if (handled) {
-            return
-          }
-
-          return openConnectionDoneLink(action.op, navigate, runtimeId => {
-            const viaLocalMap = storedSessionIdForNotification(runtimeId, runtimeIdByStoredSessionId.current)
-
-            return viaLocalMap !== runtimeId ? viaLocalMap : (storedSessionIdForRuntimeId(runtimeId) ?? runtimeId)
-          })
+          return viaLocalMap !== runtimeId ? viaLocalMap : (storedSessionIdForRuntimeId(runtimeId) ?? runtimeId)
         })
-
-        return
-      }
-
-      if (action.type === 'composer-blueprint') {
-        const slots = Object.entries(action.params || {})
-          .map(([k, v]) => {
-            const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
-
-            return `${k}=${sval}`
-          })
-          .join(' ')
-
-        const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
-        requestComposerInsert(command, { mode: 'block', target: 'main' })
-        requestComposerFocus('main')
-
-        return
-      }
-
-      if (action.type === 'plugin-catalog-install') {
-        void requestPluginCatalogInstallFromDeepLink(action.name)
-
-        return
-      }
-
-      if (action.type === 'plugin-install') {
-        openPluginInstallRequest({
-          repo: action.repo,
-          enable: action.enable,
-          force: action.force,
-          legacyHint: action.legacyHint
-        })
-
-        return
-      }
-
-      if (action.type === 'skill-install') {
-        void requestSkillInstallFromDeepLink(action.identifier)
-
-        return
-      }
-
-      if (payload.kind === 'skill') {
-        return
-      }
-
-      // Not a core action — treat as a plugin-scoped or open/ navigation deep
-      // link (hermes://index-network/intent/1, hermes://open/…). The resolver
-      // rejects reserved kinds and unsafe paths.
-      const path = pathFromHermesDeepLink(payload.kind, payload.name || '', payload.params || {})
-
-      if (path) {
-        navigate(path)
-      }
+      })
     })
 
     void window.hermesDesktop?.signalDeepLinkReady?.()

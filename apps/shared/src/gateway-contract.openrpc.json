@@ -2492,7 +2492,7 @@
     },
     {
       "name": "plugins.catalog.lookup",
-      "summary": "One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.",
+      "summary": "One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list).",
       "params": [
         {
           "name": "params",

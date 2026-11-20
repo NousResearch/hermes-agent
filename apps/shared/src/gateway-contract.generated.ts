@@ -6649,7 +6649,7 @@ export interface RpcMethods {
   'pet.thumb': { params: PetThumbParams; result: PetThumbResult }
   /** Cheapest liveness probe; answered on the WS reader thread even while every agent is mid-turn. */
   ping: { params: PingParams; result: PingResult }
-  /** One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links. */
+  /** One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list). */
   'plugins.catalog.lookup': { params: PluginCatalogLookupParams; result: PluginCatalogLookupResult }
   /** Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list. */
   'plugins.list': { params: PluginsListParams; result: PluginsListResult }

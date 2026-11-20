@@ -65,17 +65,3 @@ export const jaCatalog = {
   results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
   back: '結果に戻る'
 } satisfies TranslationOverrides['catalog']
-
-export const jaSkillDeepLink = {
-  installTitle: (name: string) => `「${name}」をインストールしますか？`,
-  installDescription:
-    'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-  installTo: 'インストール先',
-  thisComputer: 'このコンピューター',
-  installing: 'インストール中…',
-  installComplete: (name: string) => `「${name}」をインストールしました`,
-  destinationChanged:
-    'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-  installed: 'インストール済み',
-  source: '提供元'
-} satisfies TranslationOverrides['skillDeepLink']

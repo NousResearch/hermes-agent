@@ -84,31 +84,8 @@
   background: var(--ifm-color-emphasis-200);
 }
 
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.appBtn {
-  display: inline-block;
-  padding: 0.4rem 0.85rem;
-  border-radius: 6px;
-  background: var(--ifm-color-primary);
-  color: var(--ifm-color-primary-contrast-background, #fff);
-  font-size: 0.85rem;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.appBtn:hover {
-  background: var(--ifm-color-primary-dark);
-  text-decoration: none;
-  color: var(--ifm-color-primary-contrast-background, #fff);
-}
-
 .hint {
+  margin: 0;
   font-size: 0.78rem;
   color: var(--ifm-color-emphasis-600);
 }

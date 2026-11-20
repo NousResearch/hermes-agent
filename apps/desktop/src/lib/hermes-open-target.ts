@@ -1,12 +1,10 @@
 /**
- * Shared resolver for in-app navigation targets that must stay compatible with
- * `hermes://` deep links and `host.navigate('/path?…')`.
+ * Shared resolver for in-app navigation targets (`host.navigate('/path?…')`,
+ * notification and plugin `activate` payloads). The `hermes://` string forms are
+ * an in-app vocabulary for trusted plugin code; an OS-delivered `hermes://` link
+ * never reaches here (it only opens the app — electron/deep-link-protocol.ts).
  *
- * Notification activation, deep-link delivery, and plugin `activate` payloads
- * all funnel through here so a toast click and an OS deep link land on the
- * same hash-router path.
- *
- * Supported deep-link shapes:
+ * Supported shapes:
  *  - `hermes://index-network/intent/1` → `/index-network/intent/1` (plugin-scoped)
  *  - `hermes://open/my-page?item=x` → `/my-page?item=x` (generic open)
  *  - `/my-page?item=x` / `#/my-page?item=x` (hash-router paths)
@@ -149,29 +147,4 @@ export function resolveHermesOpenPath(target: HermesOpenTarget | null | undefine
   }
 
   return null
-}
-
-/**
- * Build a navigate path from a parsed deep-link payload
- * (`hermes://<kind>/<name>?…` → kind/name/params).
- */
-export function pathFromHermesDeepLink(kind: string, name: string, params: Record<string, string> = {}): string | null {
-  if (!kind || !name) {
-    return null
-  }
-
-  if (kind === 'open') {
-    return resolveHermesOpenPath({ path: `/${name.replace(/^\//, '')}`, params })
-  }
-
-  if (!isPluginDeepLinkHost(kind)) {
-    return null
-  }
-
-  return resolveHermesOpenPath({ path: `/${kind}/${name.replace(/^\//, '')}`, params })
-}
-
-/** Convenience for `hermes://open/<name>?…` payloads. */
-export function pathFromOpenDeepLink(name: string, params: Record<string, string> = {}): string | null {
-  return pathFromHermesDeepLink('open', name, params)
 }

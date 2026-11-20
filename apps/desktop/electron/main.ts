@@ -218,7 +218,7 @@ import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopUserData } from './data-paths'
-import { registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
+import { classifyDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -17152,21 +17152,18 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00,
-// hermes://mcp/install?name=NAME&config=B64 — the vendor "Add to Hermes"
-// button, or hermes://plugin/install?repo=owner/repo). Dev
-// (`HERMES_DESKTOP_DEV_SERVER`) registers hermes-dev:// instead — bare
-// Electron or a stale OS handler often owns hermes:// on dev machines.
-// Parsing is generic ({kind, name, params}); the renderer routes per kind
-// and anything install-shaped requires explicit user confirmation there.
-// A docs/dashboard "Send to App" button opens this URL; we route it into the
-// running app. Three delivery paths: macOS 'open-url',
+// hermes:// deep links open and focus the app, nothing else: any web page can
+// fire one, so `classifyDeepLink` (deep-link-protocol.ts) drops the URL's
+// content before it can reach the renderer. Dev (`HERMES_DESKTOP_DEV_SERVER`)
+// registers hermes-dev:// instead — bare Electron or a stale OS handler often
+// owns hermes:// on dev machines. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
 const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
 /** Schemes accepted when parsing inbound URLs (dev accepts both). */
 const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
-let _pendingDeepLink = null
+/** A connector sign-in's op id that came back before the renderer could hear it. */
+let _pendingConnectionDoneOp = null
 let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
@@ -17179,46 +17176,28 @@ function _extractDeepLink(argv) {
   return argv.find(a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))) || null
 }
 
-function handleDeepLink(url) {
-  if (!url || typeof url !== 'string') {
+function deliverConnectionDone(op) {
+  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
+    _pendingConnectionDoneOp = op
+
     return
   }
-
-  let parsed
 
   try {
-    parsed = new URL(url)
-  } catch {
-    rememberLog(`[deeplink] ignoring malformed url: ${url}`)
-
-    return
+    // #130810 un-hide a tray-hidden window; #83998 no foreground re-pump.
+    activateWindow(mainWindow)
+    mainWindow.webContents.send('hermes:deep-link', { kind: 'connections', name: 'done', params: { op } })
+    rememberLog('[deeplink] delivered connections/done')
+  } catch (err) {
+    rememberLog(`[deeplink] delivery failed: ${err.message}`)
   }
+}
 
-  const scheme = parsed.protocol.replace(/:$/, '')
+function handleDeepLink(url) {
+  const verdict = classifyDeepLink(url, DEEPLINK_SCHEMES)
 
-  if (!DEEPLINK_SCHEMES.includes(scheme)) {
-    rememberLog(`[deeplink] ignoring scheme ${scheme} (expected ${DEEPLINK_SCHEMES.join(' or ')})`)
-
-    return
-  }
-
-  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
-  const kind = parsed.hostname || ''
-  const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
-  const params = {}
-  parsed.searchParams.forEach((v, k) => {
-    params[k] = v
-  })
-  const payload = { kind, name, params }
-
-  // Route the Windows Copilot hardware key (registered by the MSIX
-  // copilotkeyprovider fragment). quick-entry is the eventual summon; for
-  // now it falls through to the renderer's deep-link listener. stop and
-  // unknown copilot-key paths are activation noise and must not reach the
-  // renderer (a tap fires start+stop nearly together; acting on stop would
-  // undo the summon).
-  if (kind === 'copilot-key' && name !== 'start') {
-    rememberLog(`[deeplink] ignoring copilot-key path: ${name}`)
+  if (verdict.type === 'ignore') {
+    rememberLog(`[deeplink] ignoring link (${verdict.reason})`)
 
     return
   }
@@ -17228,19 +17207,9 @@ function handleDeepLink(url) {
   // rather than in the renderer because the whole point is to work when the
   // renderer cannot hear anything: exit the fullscreen window and close the
   // pane from the main process.
-  if (kind === 'close-preview') {
+  if (verdict.type === 'close-preview') {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore()
-      }
-
-      // #130810: a tray-hidden primary reports invisible but not minimized;
-      // without an explicit show the focus below lands on a hidden window.
-      if (!mainWindow.isVisible()) {
-        mainWindow.show()
-      }
-
-      mainWindow.focus()
+      activateWindow(mainWindow)
 
       if (mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(false)
@@ -17252,25 +17221,20 @@ function handleDeepLink(url) {
     return
   }
 
-  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
-    _pendingDeepLink = payload
+  if (verdict.type === 'connection-done') {
+    deliverConnectionDone(verdict.op)
 
     return
   }
 
-  try {
-    // #130810 un-hide a tray-hidden window; #83998 no foreground re-pump.
-    activateWindow(mainWindow)
-
-    mainWindow.webContents.send('hermes:deep-link', payload)
-    rememberLog(`[deeplink] delivered ${kind}/${name}`)
-  } catch (err) {
-    rememberLog(`[deeplink] delivery failed: ${err.message}`)
-  }
+  // Every other link only brings the app forward. A cold start is already
+  // creating the window, so there is nothing to focus yet.
+  activateWindow(mainWindow)
+  rememberLog('[deeplink] opened the app (link content dropped)')
 }
 
 // Renderer calls this (via IPC) once it has mounted its deep-link listener, so
-// a link that arrived during boot/install is flushed exactly once.
+// a sign-in that came back during boot is flushed exactly once.
 ipcMain.handle('hermes:deep-link-ready', () => {
   _rendererReadyForDeepLink = true
 
@@ -17279,13 +17243,10 @@ ipcMain.handle('hermes:deep-link-ready', () => {
     sendOpenUpdatesRequested()
   }
 
-  if (_pendingDeepLink) {
-    const queued = _pendingDeepLink
-    _pendingDeepLink = null
-    handleDeepLink(
-      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
-        (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
-    )
+  if (_pendingConnectionDoneOp) {
+    const op = _pendingConnectionDoneOp
+    _pendingConnectionDoneOp = null
+    deliverConnectionDone(op)
   }
 
   return { ok: true }

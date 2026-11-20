@@ -17,29 +17,12 @@ See also:
 - [Bundled Skills Catalog](../../reference/skills-catalog.md)
 - [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
-## Desktop install links {#install-from-the-website}
+## Installing from the website {#install-from-the-website}
 
-Skill cards on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) have an **Install in Hermes**
-button that opens one of these links. Hermes Desktop accepts install links with a URL-encoded, source-qualified skill
-target: `official/...` for optional skills, `clawhub/...` for ClawHub, and an
-explicit repository path for bundled skills rather than an ambiguous bare name.
-Use the same target with `hermes skills install <identifier>`:
-
-```text
-hermes://skill/install?identifier=official%2Fsecurity%2F1password
-```
-
-Desktop shows **Install “skill-name”?** with separate **Source** and **Install to**
-rows. Cancel makes no changes. After confirmation the dialog shows **Installing…**,
-then **Installed** and a completion notification; errors stay in the dialog so you
-can retry. Installation goes through the normal Skills Hub pipeline (security scan,
-action log, installed-list refresh). If you switch profile or connection while the
-confirmation is open, reopen the link for the new destination; a link cannot bypass
-scanning or pick a different profile. Open conversations are told about the new skill on their next message.
-
-The `skill/install` route needs an updated Desktop build. If the app is missing or
-does not recognize the link, run `hermes skills install <identifier>` with the
-same source-qualified target.
+Skill cards on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) list each skill's
+source-qualified identifier (`official/...` for optional skills, `clawhub/...` for ClawHub). Install it with
+`hermes skills install <identifier>` or from Desktop's Skills tab. `hermes://` links only open the app; they never
+install anything.
 
 ## Starting with a blank slate
 

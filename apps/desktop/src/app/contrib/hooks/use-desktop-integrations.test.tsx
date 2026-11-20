@@ -2,15 +2,10 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
+import { $confirmRequest } from '@/store/confirm'
 import { keepRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
-import { $hubInstalledOverride } from '@/store/hub-actions'
-import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
-import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
-import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import {
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
@@ -37,18 +32,6 @@ const { hudWindowMock, peerWindowMock } = vi.hoisted(() => ({
 const closeActiveTab = vi.hoisted(() => vi.fn(() => true))
 
 vi.mock('@/app/chat/close-tab', () => ({ closeActiveTab }))
-
-vi.mock('@/store/mcp-deeplink-install', () => ({
-  requestMcpInstallFromDeepLink: vi.fn()
-}))
-
-vi.mock('@/store/plugin-catalog-install', () => ({
-  requestPluginCatalogInstallFromDeepLink: vi.fn()
-}))
-
-vi.mock('@/store/plugin-install-request', () => ({
-  openPluginInstallRequest: vi.fn()
-}))
 
 vi.mock('@/store/windows', async importOriginal => {
   const actual = await importOriginal<typeof WindowsStore>()
@@ -78,9 +61,6 @@ describe('useDesktopIntegrations', () => {
   beforeEach(() => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
-    vi.mocked(requestMcpInstallFromDeepLink).mockClear()
-    vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
-    vi.mocked(openPluginInstallRequest).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -832,7 +812,7 @@ describe('useDesktopIntegrations', () => {
       expect(navigate).toHaveBeenCalledWith('/index-network/intent/1')
     })
 
-    it('navigates hermes://index-network/intent/1 deep links through the same path vocabulary', () => {
+    it('acts on no deep link except a finished connector sign-in', () => {
       let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
       desktopWindow.hermesDesktop = {
         ...desktopWindow.hermesDesktop,
@@ -845,150 +825,23 @@ describe('useDesktopIntegrations', () => {
       } as unknown as Window['hermesDesktop']
 
       render({ profileReady: true, sessions: [] })
-      deepLink?.({ kind: 'index-network', name: 'intent/1', params: {} })
-      expect(navigate).toHaveBeenCalledWith('/index-network/intent/1')
-    })
 
-    it('routes hermes://mcp/install to the pending-install dialog, not navigation', () => {
-      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
-        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
-          deepLink = cb
+      const payloads: { kind: string; name: string; params: Record<string, string> }[] = [
+        { kind: 'index-network', name: 'intent/1', params: {} },
+        { kind: 'open', name: 'settings', params: { tab: 'vault', label: 'github' } },
+        { kind: 'chat', name: 'new', params: { prompt: 'run rm -rf ~' } },
+        { kind: 'blueprint', name: 'morning-brief', params: { time: '08:00' } },
+        { kind: 'mcp', name: 'install', params: { name: 'x', config: 'e30' } },
+        { kind: 'plugin', name: 'install', params: { repo: 'evil/repo' } },
+        { kind: 'skill', name: 'install', params: { identifier: 'official/x' } }
+      ]
 
-          return () => undefined
-        },
-        signalDeepLinkReady: vi.fn()
-      } as unknown as Window['hermesDesktop']
-
-      render({ profileReady: true, sessions: [] })
-      deepLink?.({ kind: 'mcp', name: 'install', params: { name: 'context7' } })
-      expect(requestMcpInstallFromDeepLink).toHaveBeenCalledWith({ name: 'context7' })
-      expect(navigate).not.toHaveBeenCalled()
-    })
-
-    it('routes hermes://plugin/install?catalog= to the catalog lookup, not the git-path modal', () => {
-      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
-        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
-          deepLink = cb
-
-          return () => undefined
-        },
-        signalDeepLinkReady: vi.fn()
-      } as unknown as Window['hermesDesktop']
-
-      render({ profileReady: true, sessions: [] })
-      deepLink?.({ kind: 'plugin', name: 'install', params: { catalog: 'weather', repo: 'evil/repo' } })
-      expect(requestPluginCatalogInstallFromDeepLink).toHaveBeenCalledWith('weather')
-      expect(openPluginInstallRequest).not.toHaveBeenCalled()
-      expect(navigate).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('catalog install deep links', () => {
-    function listen() {
-      render({ profileReady: true, resumeLastSession: false })
-
-      return vi.mocked(window.hermesDesktop.onDeepLink!).mock.calls[0]![0]
-    }
-
-    afterEach(() => {
-      settleConfirm(false)
-      $hubInstalledOverride.set({})
-      setApiRequestConnection(null)
-      setApiRequestProfile(null)
-    })
-
-    it('opens repository confirmation without trusting catalog metadata from the link', () => {
-      const deepLink = listen()
-      const params = { repo: 'owner/repo#plugin', catalog_name: 'catalog-plugin', sha: 'display-pin' }
-      deepLink({ kind: 'plugin', name: 'install', params })
-
-      expect(openPluginInstallRequest).toHaveBeenCalledExactlyOnceWith({
-        repo: params.repo,
-        enable: true,
-        force: false,
-        legacyHint: null
-      })
-      expect(requestPluginCatalogInstallFromDeepLink).not.toHaveBeenCalled()
-      expect(navigate).not.toHaveBeenCalled()
-    })
-
-    it('requires skill confirmation, preserves the request scope, and uses the hub pipeline', async () => {
-      const api = vi.fn(async (request: { path: string }) => {
-        if (request.path === '/api/skills/hub/install') {
-          return { name: 'skill-link-test' }
-        }
-
-        if (request.path.startsWith('/api/actions/skill-link-test/')) {
-          return { name: 'skill-link-test', running: false, exit_code: 0, lines: ['Installed'], pid: 123 }
-        }
-
-        return {}
-      })
-
-      desktopWindow.hermesDesktop = { ...desktopWindow.hermesDesktop, api } as unknown as Window['hermesDesktop']
-      const deepLink = listen()
-      const installs = () => api.mock.calls.filter(([r]) => r.path === '/api/skills/hub/install')
-      const identifier = 'skills-sh/owner/repo/skill'
-      const payload = { kind: 'skill', name: 'install', params: { identifier } }
-
-      for (const [connection, profile] of [
-        ['server-a', 'research'],
-        ['server-b', 'work'],
-        ['server-a', 'research']
-      ]) {
-        setApiRequestConnection(connection)
-        setApiRequestProfile(profile)
-        api.mockClear()
-        $hubInstalledOverride.set({})
-        act(() => deepLink(payload))
-        expect($confirmRequest.get()?.title).toBe('Install “skill”?')
-        expect($confirmRequest.get()?.details).toEqual([
-          { label: 'Source', value: identifier },
-          { label: 'Install to', value: `${connection} · ${profile}` }
-        ])
-        expect(installs()).toHaveLength(0)
-        await act(async () => settleConfirm(false))
-        expect(installs()).toHaveLength(0)
-
-        act(() => deepLink(payload))
-        await act(async () => runConfirm($confirmRequest.get()!))
-        expect($confirmRequest.get()?.phase).toBe('done')
-        settleConfirm(true)
-        await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
-        expect(installs()).toEqual([
-          [
-            {
-              connectionId: connection,
-              profile,
-              priority: 'foreground',
-              path: '/api/skills/hub/install',
-              method: 'POST',
-              body: { identifier }
-            }
-          ]
-        ])
-        expect(api).toHaveBeenCalledWith({
-          connectionId: connection,
-          profile,
-          priority: 'foreground',
-          path: '/api/actions/skill-link-test/status?lines=200'
-        })
+      for (const payload of payloads) {
+        act(() => deepLink?.(payload))
       }
 
-      api.mockClear()
-      act(() => deepLink(payload))
-      setApiRequestConnection('server-b')
-      setApiRequestProfile('work')
-      await expect(runConfirm($confirmRequest.get()!)).rejects.toThrow('The destination changed')
-      settleConfirm(false)
-      expect(installs()).toHaveLength(0)
-      act(() => deepLink({ kind: 'skill', name: 'install', params: {} }))
-      expect($confirmRequest.get()).toBeNull()
       expect(navigate).not.toHaveBeenCalled()
+      expect($confirmRequest.get()).toBeNull()
     })
   })
 

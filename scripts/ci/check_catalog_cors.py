@@ -5,7 +5,7 @@ The Desktop renderer fetches ``/docs/api/plugins.json`` cross-origin (a packaged
 ``Origin: null``). A browser checks CORS on every response of a redirect chain, so the docs host's
 redirect to GitHub Pages needs ``Access-Control-Allow-Origin`` as much as the final response does
 (#136483). ``curl -L`` never checks it, which is why the skills-index watchdog stayed green while
-every ``hermes://plugin/install?catalog=`` link failed.
+every Desktop catalog lookup failed.
 
 Exit 0: every hop allows the origin and the final body is a non-empty JSON array.
 Exit 1: a browser would reject the fetch (missing header, error status, unusable body).

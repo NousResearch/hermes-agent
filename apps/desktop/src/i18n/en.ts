@@ -11,7 +11,7 @@ import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enCronControl } from './en_cron_control'
-import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
+import { enGatewayGroupOpen } from './en_deep_links'
 import { enErrorCodes } from './en_error_codes'
 import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
@@ -1552,21 +1552,7 @@ export const en: Translations = {
       authenticatedTitle: 'Authenticated',
       authenticatedMessage: (server, count) => `${server}: ${count} tools`,
       authenticate: 'Authenticate',
-      noOutput: 'No output yet.',
-      deepLinkTitle: 'Add MCP server?',
-      deepLinkDescription:
-        'A link asked to add this MCP server to Hermes. Review the exact configuration below — it comes from the link, not from Hermes.',
-      deepLinkStdioWarning:
-        'This server runs a local process on your machine with the command shown below. Only continue if you trust its source.',
-      deepLinkConfirm: 'Add server',
-      deepLinkNameInvalid: 'Names use 1-64 letters, digits, dots, dashes, or underscores.',
-      deepLinkNameConflict: name => `A server named ${name} already exists — choose a different name or cancel.`,
-      deepLinkErrorTitle: 'MCP install link rejected',
-      deepLinkErrorName: 'The link\u2019s server name is missing or invalid.',
-      deepLinkErrorConfig: 'The link\u2019s config is not valid base64-encoded JSON.',
-      deepLinkErrorShape: 'The config must be a JSON object with a string `url` or `command` field.',
-      deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
-      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
+      noOutput: 'No output yet.'
     },
     model: enModelSettings,
     localModels: enLocalModels,
@@ -2054,7 +2040,6 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2180,12 +2165,6 @@ export const en: Translations = {
       uninstallDesktopConfirmBody: (name: string) =>
         `This deletes ${name} from the desktop-plugins folder on this computer and unloads it now. Reinstall it from Git or drop the folder back at any time.`,
       uninstalledDesktop: (name: string) => `${name} uninstalled.`,
-      deepLinkErrorTitle: 'Plugin install link rejected',
-      deepLinkCatalogInvalidName: 'The link\u2019s catalog name is missing or invalid.',
-      deepLinkCatalogUnknown: (name: string) =>
-        `\u201C${name}\u201D is not in the Hermes plugin catalog. Nothing was installed.`,
-      deepLinkCatalogUnavailable:
-        'Could not load the Hermes plugin catalog. Check your connection and open the link again.',
       settingsToggle: (name: string) => `Settings: ${name}`,
       settingsForm: {
         save: 'Save settings',

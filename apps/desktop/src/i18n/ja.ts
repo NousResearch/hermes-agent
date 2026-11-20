@@ -4,7 +4,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
-import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
+import { jaCatalog } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaCronControl } from './ja_cron_control'
@@ -1154,23 +1154,7 @@ export const jaOverrides = {
       authenticatedTitle: '認証済み',
       authenticatedMessage: (server, count) => `${server}: ツール ${count} 個`,
       authenticate: '認証',
-      noOutput: 'まだ出力がありません。',
-      deepLinkTitle: 'MCP サーバーを追加しますか？',
-      deepLinkDescription:
-        'リンクがこの MCP サーバーを Hermes に追加するよう要求しました。下の設定はリンク側から来たものです。内容を必ず確認してください。',
-      deepLinkStdioWarning:
-        'このサーバーは下記のコマンドでローカルプロセスを実行します。提供元を信頼できる場合のみ続行してください。',
-      deepLinkConfirm: 'サーバーを追加',
-      deepLinkNameInvalid: '名前は 1〜64 文字の英数字、ドット、ハイフン、アンダースコアです。',
-      deepLinkNameConflict: name =>
-        `${name} という名前のサーバーは既に存在します。別の名前にするかキャンセルしてください。`,
-      deepLinkErrorTitle: 'MCP インストールリンクを拒否しました',
-      deepLinkErrorName: 'リンクのサーバー名が欠落しているか無効です。',
-      deepLinkErrorConfig: 'リンクの設定が有効な base64 エンコード JSON ではありません。',
-      deepLinkErrorShape:
-        '設定は文字列の `url` または `command` フィールドを持つ JSON オブジェクトである必要があります。',
-      deepLinkErrorUrl: 'サーバー URL は http:// と https:// のみ許可されます。',
-      deepLinkErrorTooLarge: '設定ペイロードが 32KB の上限を超えています。'
+      noOutput: 'まだ出力がありません。'
     },
     model: jaModelSettings,
     localModels: jaLocalModels,
@@ -1334,7 +1318,6 @@ export const jaOverrides = {
     }
   },
 
-  skillDeepLink: jaSkillDeepLink,
   skills: {
     plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {

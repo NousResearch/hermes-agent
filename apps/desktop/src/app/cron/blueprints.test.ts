@@ -12,7 +12,6 @@ function blueprint(fields: AutomationBlueprint['fields']): AutomationBlueprint {
     category: 'general',
     tags: [],
     command: '',
-    appUrl: '',
     fields
   }
 }

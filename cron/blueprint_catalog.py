@@ -1,6 +1,6 @@
 """Automation Blueprints — one slot-schema definition per automation that every surface renders
 natively: dashboard form (``blueprint_form_schema``), pre-filled ``/blueprint`` slash command
-(``blueprint_slash_command``), agent seed prompt, docs deep-link. ``fill_blueprint`` validates
+(``blueprint_slash_command``), agent seed prompt. ``fill_blueprint`` validates
 values into ``cron.jobs.create_job`` kwargs — there is no second job engine. Users never type raw
 cron: ``schedule_template`` fixes the recurrence; only human parts (time, weekdays) are slots.
 """
@@ -18,7 +18,6 @@ __all__ = [
     "BlueprintFillError",
     "BlueprintSlot",
     "blueprint_catalog_entry",
-    "blueprint_deeplink",
     "blueprint_form_schema",
     "blueprint_slash_command",
     "fill_blueprint",
@@ -628,20 +627,6 @@ def blueprint_slash_command(blueprint: AutomationBlueprint, values: Optional[dic
     return " ".join(parts)
 
 
-def blueprint_deeplink(blueprint: AutomationBlueprint, values: Optional[dict[str, Any]] = None) -> str:
-    """Build the ``hermes://blueprint/<key>?slot=val`` deep-link URL."""
-    from urllib.parse import quote, urlencode
-
-    values = values or {}
-    query = {
-        s.name: str(values.get(s.name, s.default))
-        for s in blueprint.slots
-        if values.get(s.name, s.default) not in (None, "")
-    }
-    qs = ("?" + urlencode(query)) if query else ""
-    return f"hermes://blueprint/{quote(blueprint.key)}{qs}"
-
-
 def _humanize_schedule(blueprint: AutomationBlueprint) -> str:
     """A short human-readable description of when a blueprint runs (defaults)."""
     sched = blueprint.schedule_template
@@ -666,7 +651,7 @@ def _humanize_schedule(blueprint: AutomationBlueprint) -> str:
 
 def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> dict[str, Any]:
     """Unified serializable shape (docs generator + dashboard API): form schema + ready-to-paste
-    slash command + deep-link URL + human-readable schedule."""
+    slash command + human-readable schedule."""
     return {
         **blueprint_form_schema(blueprint),
         "source": "plugin" if blueprint.plugin else "builtin",
@@ -674,7 +659,6 @@ def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> dict[str, Any]:
         "schedule": blueprint.schedule_template,
         "scheduleHuman": _humanize_schedule(blueprint),
         "command": blueprint_slash_command(blueprint),
-        "appUrl": blueprint_deeplink(blueprint),
     }
 
 

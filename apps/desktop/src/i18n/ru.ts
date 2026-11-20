@@ -3,7 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruBoot } from './ru_boot'
-import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
+import { ruCatalog } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruCronControl } from './ru_cron_control'
@@ -1265,21 +1265,7 @@ export const ruOverrides = {
       authenticatedMessage: (server, count) =>
         `${server}: ${count} ${RU_PLURAL(count, 'инструмент', 'инструмента', 'инструментов')}`,
       authenticate: 'Аутентифицироваться',
-      noOutput: 'Вывода пока нет.',
-      deepLinkTitle: 'Добавить MCP-сервер?',
-      deepLinkDescription:
-        'Ссылка запросила добавить этот MCP-сервер в Hermes. Проверьте конфигурацию ниже — она пришла из ссылки, а не из Hermes.',
-      deepLinkStdioWarning:
-        'Этот сервер запускает локальный процесс на вашей машине командой, показанной ниже. Продолжайте только если доверяете источнику.',
-      deepLinkConfirm: 'Добавить сервер',
-      deepLinkNameInvalid: 'Имя: 1–64 символа — буквы, цифры, точки, дефисы или подчёркивания.',
-      deepLinkNameConflict: name => `Сервер с именем ${name} уже существует — выберите другое имя или отмените.`,
-      deepLinkErrorTitle: 'Ссылка установки MCP отклонена',
-      deepLinkErrorName: 'Имя сервера в ссылке отсутствует или некорректно.',
-      deepLinkErrorConfig: 'Конфигурация в ссылке не является корректным JSON в base64.',
-      deepLinkErrorShape: 'Конфигурация должна быть JSON-объектом со строковым полем `url` или `command`.',
-      deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
-      deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
+      noOutput: 'Вывода пока нет.'
     },
     model: ruModelSettings,
     providers: {
@@ -1439,7 +1425,6 @@ export const ruOverrides = {
       }
     }
   },
-  skillDeepLink: ruSkillDeepLink,
   skills: {
     plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab, ...ruPluginUpdateAll },
     tabSkills: 'Навыки',

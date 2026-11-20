@@ -433,24 +433,3 @@ mcp_servers:
 `user_agent` replaces the default `User-Agent` on **token-endpoint requests only** (authorization-code exchange, refresh and the device-flow token poll). Without it Hermes sends `Hermes-Agent/<version>` — never a header-less request, which WAF-fronted authorization servers answer with `403`. It never applies to MCP traffic, and no other token-request headers are configurable. Empty or null values are ignored. A failed exchange reports the status plus a short, redacted excerpt of the error body (a WAF's "Request blocked" page vs the issuer's `invalid_grant`), so the cause is visible without packet captures. `hermes mcp login` clears the stale grant and client registration before re-authorizing but keeps the cached authorization-server metadata, so the announced authorize URL stays the discovered one even when the metadata document cannot be re-fetched.
 
 OAuth discovery and dynamic-client-registration requests (the `/.well-known/...` metadata documents and the `registration_endpoint` POST) always carry `User-Agent: Hermes-Agent/<version>`. The MCP SDK builds those requests without any client default headers, and WAF-fronted authorization servers answer a header-less request with `403` — the metadata document then looks unreadable, registration falls back to a guessed `/register` on the MCP host, and the login fails with `Registration failed: 404`. When every metadata fetch does fail, the error now leads with those statuses (`Could not read authorization-server metadata (403 from https://…/.well-known/oauth-authorization-server; …)`) before the registration fallback's own error.
-
-## Add to Hermes link
-
-MCP vendors and docs can offer a one-click **"Add to Hermes"** button that opens the Hermes desktop app with a pre-filled server config, mirroring Cursor's `cursor://anysphere.cursor-deeplink/mcp/install` scheme:
-
-```text
-hermes://mcp/install?name=NAME&config=BASE64
-```
-
-- `name` — the server name. Must match `^[A-Za-z0-9._-]{1,64}$`.
-- `config` — the server config object as **base64url-encoded JSON** (standard base64 is also accepted). The decoded JSON must be an object with either a string `url` field (`http://`/`https://` only) or a string `command` field, and may carry any of the server keys documented above. Payloads over 32KB are rejected.
-
-Example (JavaScript):
-
-```js
-const config = { url: 'https://mcp.example.com/mcp' }
-const link = `hermes://mcp/install?name=example&config=${btoa(JSON.stringify(config))
-  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
-```
-
-Opening the link never installs anything by itself: the desktop app shows a confirmation dialog with the server name and the full pretty-printed config (with an extra caution for `command`-based servers, which run a local process), and the user must explicitly confirm. Existing server names are never overwritten — the user is asked to rename or cancel.

@@ -1905,22 +1905,7 @@ export const deOverrides = {
       authenticatedTitle: 'Authentifiziert',
       authenticatedMessage: (server, count) => `${server}: ${count} Tools`,
       authenticate: 'Authentifizieren',
-      noOutput: 'Noch keine Ausgabe.',
-      deepLinkTitle: 'MCP-Server hinzufügen?',
-      deepLinkDescription:
-        'Ein Link möchte diesen MCP-Server zu Hermes hinzufügen. Prüfen Sie die genaue Konfiguration unten – sie stammt vom Link, nicht von Hermes.',
-      deepLinkStdioWarning:
-        'Dieser Server führt mit dem unten angezeigten Befehl einen lokalen Prozess auf Ihrem Rechner aus. Fahren Sie nur fort, wenn Sie seiner Quelle vertrauen.',
-      deepLinkConfirm: 'Server hinzufügen',
-      deepLinkNameInvalid: 'Namen verwenden 1–64 Buchstaben, Ziffern, Punkte, Striche oder Unterstriche.',
-      deepLinkNameConflict: name =>
-        `Ein Server namens ${name} existiert bereits — wählen Sie einen anderen Namen oder brechen Sie ab.`,
-      deepLinkErrorTitle: 'MCP-Installationslink abgelehnt',
-      deepLinkErrorName: 'Der Servername des Links fehlt oder ist ungültig.',
-      deepLinkErrorConfig: 'Die Config des Links ist kein gültiges base64-kodiertes JSON.',
-      deepLinkErrorShape: 'Die Config muss ein JSON-Objekt mit einem String-Feld `url` oder `command` sein.',
-      deepLinkErrorUrl: 'Nur http:// und https:// Server-URLs sind erlaubt.',
-      deepLinkErrorTooLarge: 'Die Config-Payload überschreitet das 32-KB-Limit.'
+      noOutput: 'Noch keine Ausgabe.'
     },
     model: deModelSettings,
     localModels: deLocalModels,
@@ -2548,12 +2533,6 @@ export const deOverrides = {
       uninstallDesktopConfirmBody: (name: string) =>
         `Dadurch wird ${name} aus dem Ordner desktop-plugins auf diesem Computer gelöscht und sofort entladen. Sie können es jederzeit aus Git neu installieren oder den Ordner zurücklegen.`,
       uninstalledDesktop: (name: string) => `${name} deinstalliert.`,
-      deepLinkErrorTitle: 'Plugin-Installationslink abgelehnt',
-      deepLinkCatalogInvalidName: 'Der Katalogname im Link fehlt oder ist ungültig.',
-      deepLinkCatalogUnknown: (name: string) =>
-        `\u201E${name}\u201C ist nicht im Hermes-Plugin-Katalog. Es wurde nichts installiert.`,
-      deepLinkCatalogUnavailable:
-        'Der Hermes-Plugin-Katalog konnte nicht geladen werden. Prüfen Sie Ihre Verbindung und öffnen Sie den Link erneut.',
       settingsToggle: (name: string) => `Einstellungen: ${name}`,
       settingsForm: {
         save: 'Einstellungen speichern',

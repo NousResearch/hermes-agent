@@ -3,9 +3,8 @@
  *
  * `PLUGIN_CATALOG_URL` (`/docs/api/plugins.json`, generated from the repo's
  * `plugin-catalog/` directory at site build) is the catalog the Capabilities →
- * Plugins card catalog browses. A `hermes://plugin/install?catalog=<name>`
- * deep link resolves against the SAME document so a link and an in-app pick
- * always agree on the repo, subdir and reviewed pin for a name.
+ * Plugins card catalog browses; every in-app lookup by name resolves against
+ * the SAME document, so they agree on the repo, subdir and reviewed pin.
  *
  * The lookup asks the backend (`plugins.catalog.lookup`), which reads the live
  * catalog with its cache, kill list and in-tree fallback: the same catalog the

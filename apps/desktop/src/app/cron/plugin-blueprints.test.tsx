@@ -28,7 +28,6 @@ vi.mock('@/store/profile', async importOriginal => ({
 const { CronView } = await import('./index')
 
 const pluginBlueprint: AutomationBlueprint = {
-  appUrl: 'hermes://blueprint/teamtools%3Astandup',
   category: 'work',
   command: '/blueprint teamtools:standup',
   description: 'Weekday summary of what changed in a repo.',
@@ -53,7 +52,6 @@ const pluginBlueprint: AutomationBlueprint = {
 
 const builtinBlueprint: AutomationBlueprint = {
   ...pluginBlueprint,
-  appUrl: 'hermes://blueprint/morning-brief',
   command: '/blueprint morning-brief',
   key: 'morning-brief',
   plugin: null,

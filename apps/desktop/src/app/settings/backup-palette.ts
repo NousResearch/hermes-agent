@@ -7,8 +7,7 @@ export const BACKUP_SETTINGS_HREF = '/settings?tab=backup'
 /** The query param naming the cloud agent to preselect in the transfer list. */
 export const CLOUD_AGENT_PARAM = 'cloudAgent'
 
-/** The old `/move-to-cloud?agent=<name>` route (the portal's `hermes://open/move-to-cloud` link)
- *  → Settings ▸ Backup & Transfer, keeping the agent it names. */
+/** The old `/move-to-cloud?agent=<name>` route → Settings ▸ Backup & Transfer, keeping the agent it names. */
 export function backupSettingsHrefForLegacy(search: string): string {
   const agent = (new URLSearchParams(search).get('agent') ?? '').trim()
 

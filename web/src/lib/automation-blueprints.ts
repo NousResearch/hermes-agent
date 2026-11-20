@@ -20,7 +20,6 @@ export interface AutomationBlueprint {
   tags: string[]
   fields: AutomationBlueprintField[]
   command: string
-  appUrl: string
   /** Absent on backends that predate plugin blueprints. */
   source?: 'builtin' | 'plugin'
   /** Registering plugin's name when source is "plugin" (key is `<plugin>:<key>`). */

@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  normalizeHermesOpenString,
-  pathFromHermesDeepLink,
-  pathFromOpenDeepLink,
-  resolveHermesOpenPath
-} from './hermes-open-target'
+import { normalizeHermesOpenString, resolveHermesOpenPath } from './hermes-open-target'
 
 describe('normalizeHermesOpenString', () => {
   it('accepts hash-router paths and strips a leading hash', () => {
@@ -43,21 +38,5 @@ describe('resolveHermesOpenPath', () => {
 
   it('resolves href the same as a bare string', () => {
     expect(resolveHermesOpenPath({ href: 'hermes://index-network/intent/1' })).toBe('/index-network/intent/1')
-  })
-})
-
-describe('pathFromHermesDeepLink', () => {
-  it('builds the navigate path from a plugin-scoped deep-link payload', () => {
-    expect(pathFromHermesDeepLink('index-network', 'intent/1')).toBe('/index-network/intent/1')
-  })
-
-  it('builds the navigate path from hermes://open/… payloads', () => {
-    expect(pathFromOpenDeepLink('index-network/intent/1')).toBe('/index-network/intent/1')
-    expect(pathFromHermesDeepLink('open', 'agent/42')).toBe('/agent/42')
-  })
-
-  it('ignores reserved kinds', () => {
-    expect(pathFromHermesDeepLink('blueprint', 'morning-brief')).toBeNull()
-    expect(pathFromHermesDeepLink('plugin', 'install')).toBeNull()
   })
 })

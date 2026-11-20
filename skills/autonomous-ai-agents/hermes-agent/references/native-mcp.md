@@ -171,8 +171,8 @@ All other environment variables (API keys, tokens, secrets) are excluded unless 
 ```yaml
 mcp_servers:
   github:
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    command: "docker"
+    args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
     env:
       # Only this token is passed to the subprocess
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
@@ -261,8 +261,8 @@ Registers tools like `mcp_filesystem_read_file`, `mcp_filesystem_write_file`, `m
 ```yaml
 mcp_servers:
   github:
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    command: "docker"
+    args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
     timeout: 60
@@ -296,8 +296,8 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 
   github:
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    command: "docker"
+    args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
 

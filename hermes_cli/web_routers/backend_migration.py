@@ -462,34 +462,25 @@ def _launcher_busy(home: Path) -> bool:
     return proc is not None and proc.poll() is None
 
 
-def _new_launch_log(home: Path) -> Path:
-    """An empty file, readable by its owner only, for one launcher's output: per launch and per home, read by
-    these routes alone (never the shared action log, which every profile's launches would share)."""
-    import tempfile
-    (Path(home) / "logs").mkdir(parents=True, exist_ok=True)
-    fd, path = tempfile.mkstemp(prefix="backend-migration-launch-", suffix=".log", dir=Path(home) / "logs")
-    os.close(fd)
-    return Path(path)
-
-
-def _spawn(argv: list[str], target: Target, launch_log: Path):
+def _spawn(argv: list[str], target: Target, output):
     """``hermes [-p <profile>] <argv>`` for the target's home: ``-p`` pins the child's home even where a sticky
     ``hermes profile use`` choice would re-home a bare ``HERMES_HOME`` (the default home), and gives a named
     profile the scrubbed environment every other profile action gets."""
     from hermes_cli.web_server_gateway import _spawn_hermes_action
     selector = ["-p", target.profile] if target.profile else []
     proc = _spawn_hermes_action(selector + argv, ACTION_NAME, env_overrides={"HERMES_HOME": str(target.home)},
-                                log_path=launch_log)
+                                output=output)
     with _LAUNCHERS_LOCK:
         _LAUNCHERS[str(target.home)] = proc
     return proc
 
 
-def _launcher_report(home: Path, launch_log: Path) -> Optional[dict]:
-    """The launcher's own ``--json`` answer for *home*, from this launch's own output file (a start names
-    its run log; a refusal names none)."""
+def _launcher_report(home: Path, output) -> Optional[dict]:
+    """The launcher's own ``--json`` answer for *home*, from this launch's own output (a start names its
+    run log; a refusal names none)."""
     try:
-        tail = launch_log.read_text(encoding="utf-8-sig", errors="replace")
+        output.seek(0)
+        tail = output.read().decode("utf-8", "replace")
     except OSError:
         return None
     mine = str(_log_path(home))
@@ -532,20 +523,17 @@ def _launch(argv: list[str], target: Target) -> Launch:
     requests (to this process or to another server of this home) can never both start a migration."""
     import subprocess
     from hermes_cli.gateway_migrate_backends_lock import ACK_WAIT_SECONDS
-    launch_log = _new_launch_log(target.home)
-    try:
-        proc = _spawn(argv, target, launch_log)
+    import tempfile
+    # The launcher's output goes to an anonymous file only this request holds (no name in any home, where
+    # the Files browser could read it; on Windows a delete-on-close file in the system temp directory).
+    with tempfile.TemporaryFile(buffering=0) as output:
+        proc = _spawn(argv, target, output)
         _forget_scan(target.home)
         try:
             code = proc.wait(timeout=ACK_WAIT_SECONDS + 30)
         except subprocess.TimeoutExpired:
             return Launch(proc.pid, "unconfirmed", None)
-        report = _launcher_report(target.home, launch_log) or {}
-    finally:
-        try:
-            launch_log.unlink(missing_ok=True)
-        except OSError:  # Windows: the timed-out launcher still holds it open
-            pass
+        report = _launcher_report(target.home, output) or {}
     if code == 6:  # the launcher's own plan is unsupported (manual steps only): it started nothing
         return Launch(proc.pid, "unsupported", code)
     if code == 3:  # nothing changed: another run holds the lock, or the run could not be started

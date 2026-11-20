@@ -1,0 +1,34 @@
+name: handoff
+repo: https://github.com/kostyk348/hermes-handoff
+sha: f09d2cdf4c1e4cfc52f6f02e16a37734e9afa58a
+description: >-
+  A durable agent bus on the filesystem: post, take, ack, nack, sweep, list, stats and a short
+  blocking wait, plus a dashboard panel that shows the same queue. Messages are files and state
+  transitions are one atomic rename, so two consumers cannot claim the same message and a consumer
+  that dies mid-work loses nothing — its lease expires and sweep returns the message with the
+  attempt count recorded. Posting is idempotent by key, a poison message lands in dead instead of
+  looping. No daemon, no port, no database: the queue is ~/.local/share/handoff (override with
+  HANDOFF_HOME to share a channel between profiles or machines). The same on-disk protocol is
+  implemented as a zero-dependency Rust binary in kostyk348/tools, so scripts, cron and agents read
+  one queue. Disclosure — messages are plain text files readable by anything with access to that
+  directory; delivery is at-least-once, so consumers must tolerate redelivery; atomicity holds
+  within a single filesystem.
+maintainer: kostyk348
+tier: community
+category: automation
+docs_url: https://github.com/kostyk348/hermes-handoff#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - handoff_post
+    - handoff_take
+    - handoff_ack
+    - handoff_nack
+    - handoff_sweep
+    - handoff_list
+    - handoff_stats
+    - handoff_wait
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -59,6 +59,7 @@ def mic(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_VOICE", "1")
     monkeypatch.setattr(server, "_fd_listener_active", False)
     monkeypatch.setattr(server, "_fd_owner", None, raising=False)
+    monkeypatch.setattr(server, "_fd_closed", False, raising=False)
     monkeypatch.setattr(server, "_sessions", {})
     emitted = fake.emitted
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
@@ -176,9 +177,7 @@ def test_shutdown_cancels_a_pending_hand_off(mic, tmp_path, monkeypatch):
     mic.trip.set()
     assert _wait(lambda: a.interrupted.is_set())
     _arm_as(b)  # the hand-off waits behind A's in-flight take
-    for step in ("_flush_sessions_before_exit", "_release_gateway_wake_owner", "_stop_turns_before_exit"):
-        monkeypatch.setattr(server, step, lambda *_a, **_k: None)
-    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: None)
+    _stub_shutdown_steps(monkeypatch)
     server._shutdown_sessions()
     mic.transcribe_gate.set()
     assert _wait(lambda: len(mic.listens) == 2 or not server._fd_listener_active)
@@ -186,6 +185,84 @@ def test_shutdown_cancels_a_pending_hand_off(mic, tmp_path, monkeypatch):
     assert not server._fd_listener_active and server._fd_owner is None
     assert mic.transcripts == [a.home]
     assert ("voice.transcript", "sid-a", {"text": "said in a"}) in mic.emitted
+
+
+def _stub_shutdown_steps(monkeypatch, flush=None):
+    """``_shutdown_sessions`` runs for real; only its other steps are stubbed (*flush* replaces the flush)."""
+    monkeypatch.setattr(server, "_flush_sessions_before_exit", flush or (lambda *_a, **_k: None))
+    for step in ("_release_gateway_wake_owner", "_stop_turns_before_exit"):
+        monkeypatch.setattr(server, step, lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: None)
+
+
+@pytest.mark.parametrize("handoff", [False, True], ids=["arm-spawn-gap", "handoff-spawn-gap"])
+def test_shutdown_after_owner_selection_does_not_start_a_listener(mic, tmp_path, monkeypatch, handoff):
+    """Shutdown lands after an owner was chosen (a first arm, or a listener exit picking the pending
+    owner) but before its thread starts: the mic is not opened for it (the real ``full_duplex_listen``
+    opens the input stream before its first stop check)."""
+    a, b = _session(tmp_path, "sid-a", "a"), _session(tmp_path, "sid-b", "b")
+    if handoff:
+        _arm_as(a)
+        assert _wait(lambda: len(mic.listens) == 1)
+    prior = len(mic.listens)
+    chosen, release_spawn = threading.Event(), threading.Event()
+    flushing, release_flush = threading.Event(), threading.Event()
+    real_spawn = server._fd_spawn_listener
+
+    def paused_spawn(owner, gen):
+        chosen.set()
+        assert release_spawn.wait(3)
+        return real_spawn(owner, gen)
+    monkeypatch.setattr(server, "_fd_spawn_listener", paused_spawn)
+
+    def flush(*_a, **_k):
+        flushing.set()
+        release_flush.wait(3)
+    _stub_shutdown_steps(monkeypatch, flush)
+    arm = threading.Thread(target=_arm_as, args=(b if handoff else a,), daemon=True)
+    shutdown = threading.Thread(target=server._shutdown_sessions, daemon=True)
+    try:
+        arm.start()
+        assert chosen.wait(2), "spawn boundary not reached"
+        shutdown.start()
+        assert flushing.wait(2), "real shutdown did not reach post-release flush"
+        assert server._fd_owner is None
+        release_spawn.set()
+        reopened = _wait(lambda: len(mic.listens) > prior, timeout=0.5)
+        assert not reopened, "a listener starts after shutdown released the selected owner"
+    finally:
+        for turn in (a, b):
+            turn.record["running"] = False
+        release_spawn.set()
+        release_flush.set()
+        arm.join(2)
+        if shutdown.ident is not None:
+            shutdown.join(2)
+
+
+def test_shutdown_stops_a_live_listener_while_its_turn_runs(mic, tmp_path, monkeypatch):
+    """A listener already listening (or whose stream opened just as shutdown began) stops at its next
+    block, though its owner's turn still runs."""
+    a = _session(tmp_path, "sid-a", "a")
+    _arm_as(a)
+    assert _wait(lambda: len(mic.listens) == 1)
+    _stub_shutdown_steps(monkeypatch)
+    server._shutdown_sessions()
+    stopped = _wait(lambda: mic.listens[0]["stopped"], timeout=2)
+    assert stopped, "the live listener kept the mic open after shutdown"
+    assert a.record["running"] and _wait(lambda: not server._fd_listener_active)
+
+
+def test_an_arm_after_shutdown_never_claims_the_mic(mic, tmp_path, monkeypatch):
+    """A voice turn still starting when the process shuts down cannot republish an owner."""
+    a = _session(tmp_path, "sid-a", "a")
+    spawned = []
+    monkeypatch.setattr(server, "_fd_spawn_listener", lambda owner, gen: spawned.append(owner["sid"]))
+    _stub_shutdown_steps(monkeypatch)
+    server._shutdown_sessions()
+    _arm_as(a)
+    assert spawned == [] and server._fd_owner is None, "an arm after shutdown claimed the mic"
+    assert not server._fd_listener_active and mic.listens == []
 
 
 def test_multiplexing_without_a_profile_scope_never_opens_the_mic(mic, tmp_path):

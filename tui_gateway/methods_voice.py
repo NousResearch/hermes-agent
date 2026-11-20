@@ -232,6 +232,7 @@ _fd_listener_lock = threading.Lock()
 _fd_listener_active = False
 _fd_owner: Optional[dict] = None
 _fd_gen = 0
+_fd_closed = False  # one-way, set at process shutdown: the mic is never claimed or opened after it
 _fd_speak_pipelines: set[tuple[threading.Event, threading.Event]] = set()
 
 
@@ -260,6 +261,8 @@ def _arm_full_duplex_listener() -> None:
     global _fd_listener_active, _fd_owner, _fd_gen
     owner = _fd_owner_from_context()
     with _fd_listener_lock:
+        if _fd_closed:
+            return
         if _fd_listener_active:
             if (owner["session"] is not None and _fd_owner is not None
                     and _fd_owner["session"] is not owner["session"]):
@@ -283,11 +286,12 @@ def _fd_listener_exit(gen: int) -> None:
 
 
 def _release_fd_listener_owner() -> None:
-    """Process shutdown: drop the mic owner, so the live listener releases the mic at exit instead of
-    handing it off (a take already tripped still finishes under the owner it began with)."""
-    global _fd_owner
+    """Process shutdown: close the mic for good. The live listener releases it at exit instead of
+    handing it off, no later arm claims it, and a listener already spawned for an owner chosen before
+    this returns without opening it. A take already tripped still finishes under its own owner."""
+    global _fd_owner, _fd_closed
     with _fd_listener_lock:
-        _fd_owner = None
+        _fd_owner, _fd_closed = None, True
 
 
 def _arm_barge_listener_if_enabled() -> None:
@@ -315,6 +319,9 @@ def _full_duplex_listener(gen: int, owner: dict) -> None:
     """Mic live from utterance-submit to turn-complete; a trip transcribes -> ``voice.transcript``.
     Runs in *owner*'s context; stops without a take once a newer owner holds the mic."""
     try:
+        with _fd_listener_lock:
+            if _fd_closed:  # shutdown landed between choosing this owner and starting its thread
+                return
         if _fd_scope_missing():
             logger.warning("full-duplex listener: no profile scope for the owning turn; mic not opened")
             return
@@ -324,7 +331,7 @@ def _full_duplex_listener(gen: int, owner: dict) -> None:
 
         def _superseded() -> bool:
             with _fd_listener_lock:
-                return _fd_gen != gen
+                return _fd_gen != gen or _fd_closed
 
         def _should_stop() -> bool:
             if _superseded():

@@ -9,6 +9,7 @@ Importing it once here, before any window opens, keeps boot out of the mocked im
 
 import hermes_bootstrap
 
+import sys
 import threading
 import time
 
@@ -18,6 +19,14 @@ from tests.waiting import DEFAULT_TIMEOUT
 
 
 _TURN_WORKER_PREFIXES = ("prompt-submit-", "prompt-turn-")
+
+
+@pytest.fixture(autouse=True)
+def _reopen_full_duplex_mic():
+    """A test that drives ``_shutdown_sessions`` closes the one-way full-duplex mic fence; lower it after."""
+    yield
+    if (srv := sys.modules.get("tui_gateway.server")) is not None:
+        srv._fd_closed = False
 
 
 @pytest.fixture(autouse=True)

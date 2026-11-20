@@ -60,6 +60,9 @@ def test_load_picker_context_coerces_numeric_yaml_provider():
             }
         },
     )
+    cfg["model_catalog"] = {
+        "excluded_models": {2070: ["Qwen3.5-*.gguf"]},
+    }
     with patch("hermes_cli.config.load_config", return_value=cfg):
         ctx = load_picker_context()
     assert ctx.current_provider == "2070"
@@ -68,6 +71,22 @@ def test_load_picker_context_coerces_numeric_yaml_provider():
     assert all(isinstance(k, str) for k in ctx.user_providers)
     assert ctx.current_model == "Qwen3.5-9B-Q4_K_M.gguf"
     assert ctx.current_base_url == "http://192.168.1.10:8082/v1"
+    assert ctx.excluded_models == {2070: ["Qwen3.5-*.gguf"]}
+
+
+def test_load_picker_context_reads_provider_scoped_model_exclusions():
+    cfg = _cfg()
+    cfg["model_catalog"] = {
+        "excluded_models": {
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+
+    assert ctx.excluded_models == {
+        "openrouter": ["anthropic/*", "openai/*"],
+    }
 
 
 # ─── with_overrides ────────────────────────────────────────────────────
@@ -108,6 +127,93 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
         "is_user_defined": False,
         "source": "built-in",
     }
+
+
+def test_build_models_payload_filters_models_by_provider_scope():
+    rows = [
+        {
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "models": [
+                "anthropic/claude-opus-4.8",
+                "openai/gpt-5.6-sol",
+                "deepseek/deepseek-v4",
+            ],
+            "total_models": 3,
+            "is_current": True,
+            "is_user_defined": False,
+            "source": "built-in",
+        },
+        {
+            "slug": "meridian",
+            "name": "Meridian",
+            "models": ["claude-opus-4-8"],
+            "total_models": 1,
+            "is_current": False,
+            "is_user_defined": True,
+            "source": "user-config",
+        },
+    ]
+    ctx = ConfigContext(
+        current_provider="openrouter",
+        current_model="anthropic/claude-opus-4.8",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_models={
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    )
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    providers = {
+        row["slug"]: row
+        for row in payload["providers"]
+        if row["slug"] != "moa"
+    }
+    assert providers["openrouter"]["models"] == ["deepseek/deepseek-v4"]
+    assert providers["openrouter"]["total_models"] == 1
+    assert providers["meridian"]["models"] == ["claude-opus-4-8"]
+
+
+def test_build_models_payload_filters_before_picker_cap():
+    rows = [{
+        "slug": "together",
+        "name": "Together",
+        "models": [
+            "blocked/model-1",
+            "blocked/model-2",
+            "blocked/model-3",
+            "blocked/model-4",
+            "blocked/model-5",
+            "allowed/model-6",
+        ],
+        "total_models": 6,
+        "is_current": True,
+        "is_user_defined": False,
+        "source": "built-in",
+    }]
+    ctx = ConfigContext(
+        current_provider="together",
+        current_model="allowed/model-6",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_models={"together": ["blocked/*"]},
+    )
+
+    with _list_auth_returning(rows) as mock_list:
+        payload = build_models_payload(ctx, max_models=5)
+
+    assert mock_list.call_args.kwargs["max_models"] is None
+    together = next(
+        row for row in payload["providers"]
+        if row["slug"] == "together"
+    )
+    assert together["models"] == ["allowed/model-6"]
+    assert together["total_models"] == 1
 
 
 def test_build_models_payload_returns_expected_shape():

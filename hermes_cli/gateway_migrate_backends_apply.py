@@ -603,16 +603,22 @@ def _relative_path(word: str) -> bool:
 def _launch_needs_cwd(argv: list) -> Optional[str]:
     """What in *argv* depends on the working directory it was started in, else None: a relative launcher
     path, or after a Python interpreter ``-m`` (module mode imports from it) or a relative script. A word
-    after a non-Python launcher (``hermes -m MODEL``) is that program's own option."""
-    from hermes_cli.gateway_migrate_backends_plan import _PYTHON_EXE
+    after a non-Python launcher (``hermes -m MODEL``) is that program's own option; after ``-c`` the words
+    are the inline code's arguments (code that itself uses the working directory is not detected)."""
+    from hermes_cli.gateway_migrate_backends_plan import _PYTHON_EXE, _SHORT_C_CLUSTER
     if _relative_path(str(argv[0])):
         return "was started by a relative path"
     if not _PYTHON_EXE.match(Path(str(argv[0])).name):
         return None
-    for word in map(str, argv[1:]):
+    words = iter(map(str, argv[1:]))
+    for word in words:
         if word == "-m":
             return "runs `python -m ...`"
-        if not word.startswith("-"):
+        if word == "-c" or _SHORT_C_CLUSTER.match(word):  # inline source (the installed launcher): no script path
+            return None
+        if word in ("-W", "-X", "--check-hash-based-pycs"):  # the next word is this option's value
+            next(words, None)
+        elif not word.startswith("-"):
             return None if os.path.isabs(word) else "runs a Python script by a relative path"
     return None
 

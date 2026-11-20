@@ -81,6 +81,30 @@ def test_choice_level_usage_is_counted(endpoint, streaming):
     assert counts == (1234, 56, 1234)
 
 
+@pytest.mark.parametrize("force_stream", [False, True], ids=["aux-plain", "aux-streamed"])
+def test_auxiliary_calls_count_choice_level_usage(endpoint, force_stream):
+    """Titles, compression and vision go through the auxiliary client, not the agent loop."""
+    from openai import OpenAI
+
+    from agent.auxiliary_client import _create_with_progress_once
+
+    client = OpenAI(base_url=endpoint, api_key="fixture")
+    response = _create_with_progress_once(
+        client, {"model": "fixture", "messages": [{"role": "user", "content": "hi"}]}, "compression",
+        force_stream=force_stream)
+
+    assert (response.usage.prompt_tokens, response.usage.completion_tokens) == (1234, 56)
+
+
+def test_top_level_usage_wins_over_the_choice_copy():
+    from types import SimpleNamespace
+
+    from agent.usage_pricing import response_usage
+
+    both = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=7), choices=[SimpleNamespace(usage={"prompt_tokens": 999})])
+    assert response_usage(both).prompt_tokens == 7
+
+
 def test_responses_usage_on_the_terminal_event_is_kept():
     """Responses-compatible servers can put usage on ``response.completed`` itself rather than in its
     ``response`` object (the shape kimi-code#4485 restored); the nested copy still wins."""

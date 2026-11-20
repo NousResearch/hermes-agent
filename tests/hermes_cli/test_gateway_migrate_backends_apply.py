@@ -108,6 +108,14 @@ class FakeHost(SystemHost):
         return False
 
     # --- network
+    same_netns = True  # the backend's process shares the planner's network namespace
+
+    def same_network_namespace(self, pid, *, container):
+        return self.same_netns
+
+    def health_status(self, host, port):
+        return self.http_status(host, port)
+
     def http_status(self, host, port):
         """The old backend answers where it is bound (a wildcard bind answers every address)."""
         self.probes.append((host, port))
@@ -1324,6 +1332,7 @@ def no_health_host(host_cls, home, stub, **kw):
     host = host_cls(home, host="127.0.0.1", **kw)
     host.argv = [a if a != "9119" else str(stub.port) for a in host.argv]
     host.http_status = SystemHost.http_status.__get__(host, SystemHost)
+    host.health_status = SystemHost.health_status.__get__(host, SystemHost)
     host.running_turns = SystemHost.running_turns.__get__(host, SystemHost)
     return host
 
@@ -1454,3 +1463,107 @@ def test_a_refused_old_public_url_withholds_the_by_hand_steps(home, capsys, monk
     assert f"The old backend's public URL ({source}) is not one the gateway accepts as webapp.public_url" \
         in " ".join(out["plan"]["blockers"])
     assert "url-pw-never-printed-62" not in _everything(host, capsys)
+
+
+# --- pre-push review: the by-hand health probe asks only a backend in the planner's network namespace
+
+_OUTSIDE = "could not be checked from outside its container"
+
+
+@contextlib.contextmanager
+def _listener(answer):
+    """A real loopback HTTP server; *answer(path)* -> (status, headers, body), or an Event to wait on."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            got = answer(self.path)
+            if isinstance(got, threading.Event):
+                got.wait(30)
+                return
+            status, headers, body = got
+            self.send_response(status)
+            for k, v in {**headers, "Content-Length": str(len(body))}.items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(port=server.server_address[1], seen=seen)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=35)
+
+
+_HEALTHY = (200, {}, json.dumps({"ok": True, "auth_required": False}).encode())
+
+
+def test_a_container_in_another_network_namespace_is_not_probed_on_the_planners_loopback(home, capsys):
+    """Docker publishes the container's 9119 elsewhere; the argv's 0.0.0.0:PORT on the planner's own
+    loopback is another process (here an unrelated service answering 404). The namespace comparison is
+    injected through the fake host: this account cannot create a network namespace (unshare -n fails)."""
+    with _listener(lambda path: (404, {}, b"")) as unrelated, \
+            _listener(lambda path: _HEALTHY) as published:
+        host = no_health_host(FakeHost, home, unrelated, supervisor="container")
+        host.same_netns = False
+
+        code, out = _plan(host, capsys)
+
+        assert unrelated.seen == [] and published.seen == []
+    (entry,) = out["plan"]["unsupported"]
+    assert code == engine.EXIT_UNSUPPORTED and out["plan"]["running_turns"] == 0 and entry["steps"]
+    assert out["plan"]["blockers"] == []  # the chat-activity markers decide, as before the probe existed
+    assert _OUTSIDE in entry["instructions"] and "v2026.7.30" in entry["instructions"]
+
+
+@pytest.mark.parametrize("supervisor", ["container", "s6", "systemd-system"])
+def test_an_old_backend_in_the_planners_namespace_still_blocks_without_the_outside_sentence(home, capsys,
+                                                                                            supervisor):
+    kw = {"supervisor": "systemd", "scope": "system"} if supervisor == "systemd-system" else {"supervisor": supervisor}
+    with _listener(lambda path: (404, {}, b"")) as stub:
+        host = no_health_host(FakeHost, home, stub, **kw)
+        code, out = _plan(host, capsys)
+        assert stub.seen == ["/api/health"]  # health only: never /api/auth/providers or /api/status
+    assert code == engine.EXIT_BLOCKED and out["plan"]["running_turns"] is None
+    assert _OUTSIDE not in out["plan"]["unsupported"][0]["instructions"]
+
+
+def test_the_by_hand_probe_reads_health_only(home, capsys):
+    gated = (200, {}, json.dumps({"ok": True, "auth_required": True}).encode())
+    with _listener(lambda path: gated if path == "/api/health" else (404, {}, b"")) as stub:
+        host = no_health_host(FakeHost, home, stub, supervisor="container")
+        code, _out = _plan(host, capsys)
+        assert stub.seen == ["/api/health"]
+    assert code == engine.EXIT_UNSUPPORTED
+
+
+def test_the_health_probe_follows_no_redirect(home):
+    with _listener(lambda path: (302, {"Location": "/api/health-elsewhere"}, b"")
+                   if path == "/api/health" else _HEALTHY) as stub:
+        assert SystemHost(home).health_status("127.0.0.1", stub.port) is None
+        assert stub.seen == ["/api/health"]
+
+
+def test_the_health_probe_is_bounded_by_one_timeout(home, monkeypatch):
+    import threading
+    import time
+    from hermes_cli import gateway_migrate_backends_host as host_mod
+    monkeypatch.setattr(host_mod, "HEALTH_TIMEOUT", 0.5)
+    release = threading.Event()
+    with _listener(lambda path: release) as stub:
+        started = time.monotonic()
+        try:
+            assert SystemHost(home).health_status("127.0.0.1", stub.port) is None
+        finally:
+            release.set()
+        assert time.monotonic() - started < 5 and stub.seen == ["/api/health"]

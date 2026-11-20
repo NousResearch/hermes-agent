@@ -27,6 +27,12 @@ _ENV_FILE_ENTRY = re.compile(r"(\S+) \(ignore_errors=(yes|no)\)")
 _SHOW_PROPS = ("MainPID", "ActiveState", "UnitFileState", "FragmentPath", "ExecStart", "ControlGroup",
                "Environment", "EnvironmentFiles", "User")
 _TIMEOUT = 30
+HEALTH_TIMEOUT = 3  # seconds for the by-hand plan's one GET /api/health
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # a 3xx is an answer about another URL: the health read stops there
 
 
 def _systemctl(scope: str, args: list[str], *, timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
@@ -252,6 +258,19 @@ class SystemHost:
             return os.readlink(f"/proc/{pid}/cwd")
         return None
 
+    def same_network_namespace(self, pid: int, *, container: bool) -> bool:
+        """Whether a request to an address on this machine reaches *pid*'s listener: on Linux its network
+        namespace is the planner's own (``/proc/PID/ns/net``); a pid that is not visible or a link that
+        cannot be read counts as another namespace. Elsewhere there are no per-process network
+        namespaces: a container is not local, any other pid this machine can see is."""
+        import sys
+        if sys.platform.startswith("linux"):
+            try:
+                return os.readlink(f"/proc/{pid}/ns/net") == os.readlink("/proc/self/ns/net")
+            except OSError:
+                return False
+        return not container and self.start_time(pid) is not None
+
     def start_time(self, pid: int) -> Optional[int]:
         from gateway.status import get_process_start_time
         return get_process_start_time(pid)
@@ -410,6 +429,22 @@ class SystemHost:
         return gw.get_systemd_linger_status()[0]
 
     # ------------------------------------------------------------------ network
+
+    def health_status(self, host: str, port: int) -> Optional[dict]:
+        """One GET /api/health with one bounded timeout and no redirect followed: ``{"health": "missing"}``
+        on 401, 403 or 404 (a Hermes older than v2026.7.30), the JSON object on 200, else None."""
+        from hermes_cli.url_utils import format_url_host
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        request = urllib.request.Request(f"http://{format_url_host(host)}:{port}/api/health",
+                                         headers={"Accept": "application/json"})
+        try:
+            with opener.open(request, timeout=HEALTH_TIMEOUT) as resp:
+                data = json.load(resp) if resp.status == 200 else None
+        except urllib.error.HTTPError as exc:
+            return {"health": "missing"} if exc.code in (401, 403, 404) else None
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def http_status(self, host: str, port: int) -> Optional[dict]:
         """Read sign-in state without invoking /api/status's install-ID or stale-record maintenance.

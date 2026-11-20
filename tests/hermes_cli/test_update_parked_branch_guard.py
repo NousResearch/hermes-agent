@@ -709,3 +709,75 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
     assert head == remote
+
+
+def _release_tag_fixture(repo_pair):
+    """Tag a release on origin, one commit past what the clone has."""
+    origin = repo_pair.parent / "origin"
+    (origin / "release.txt").write_text("release\n", encoding="utf-8")
+    _git(origin, "add", "release.txt")
+    _git(origin, "commit", "-qm", "c4 release")
+    _git(origin, "tag", "v9.9.9")
+    _git(repo_pair, "fetch", "-q", "origin", "tag", "v9.9.9")
+    return _git(origin, "rev-parse", "v9.9.9").stdout.strip()
+
+
+def _run_release_update(repo_pair, monkeypatch, tag_sha, config):
+    """Drive cmd_update with a release-tag target; stop before dependency install."""
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(hermes_config, "load_config", lambda: config)
+    (repo_pair / "feature.txt").write_text("unmerged work\n", encoding="utf-8")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+    _patch_update_flow(monkeypatch, repo_pair)
+    monkeypatch.setattr(
+        update_cmd._check, "select_apply_target",
+        lambda *a, **k: ("refs/tags/v9.9.9", tag_sha, False, None),
+    )
+    monkeypatch.setattr(update_cmd._check, "fetch_release_tag", lambda *a, **k: None)
+    monkeypatch.setattr(
+        update_cmd._check, "hold_channel_release_behind_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_update_run_channel", lambda *a, **k: "stable")
+
+    class _StopFlow(Exception):
+        pass
+
+    monkeypatch.setattr(
+        update_cmd, "_complete_source_update",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(
+            SimpleNamespace(branch=None, yes=True, force=False, force_venv=False))
+
+
+def test_release_target_merges_into_maintained_branch_when_configured(
+    repo_pair, monkeypatch, capsys
+):
+    """updates.release_merge_into_branch: a RELEASE target (stable channel) merges into
+    the maintained branch instead of detaching the checkout at the release commit —
+    the running code advances to the release, the branch's own commit survives, and
+    the checkout never moves."""
+    tag_sha = _release_tag_fixture(repo_pair)
+    _run_release_update(
+        repo_pair, monkeypatch, tag_sha,
+        {"updates": {"release_merge_into_branch": True}})
+
+    out = capsys.readouterr().out
+    assert "CODE UPDATE SKIPPED" not in out
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "old-feature"
+    assert (repo_pair / "release.txt").exists()
+    assert (repo_pair / "feature.txt").read_text(encoding="utf-8-sig") == "unmerged work\n"
+
+
+def test_release_target_stays_detached_without_the_opt_in(repo_pair, monkeypatch, capsys):
+    """Default (off): a release target still lands detached at its exact commit and
+    leaves the maintained branch where it was."""
+    tag_sha = _release_tag_fixture(repo_pair)
+    _run_release_update(repo_pair, monkeypatch, tag_sha, {"updates": {}})
+
+    out = capsys.readouterr().out
+    assert "CODE UPDATE SKIPPED" not in out
+    assert _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "HEAD"
+    assert not (repo_pair / "feature.txt").exists()

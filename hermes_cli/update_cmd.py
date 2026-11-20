@@ -177,6 +177,15 @@ def _updates_config() -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def _release_merge_into_branch() -> bool:
+    """``updates.release_merge_into_branch`` (default False): a release target merges into the
+    maintained branch instead of detaching the checkout at the release commit."""
+    _enabled = False
+    with _best_effort('Could not read updates.release_merge_into_branch: %s'):
+        _enabled = bool(_updates_config().get("release_merge_into_branch", False))
+    return _enabled
+
+
 def _map_ssl_cert_file_for_git(git_cmd) -> None:
     """Point git's libcurl at the same CA bundle Python already trusts.
 
@@ -1014,12 +1023,12 @@ def _resolved_commit(git_cmd, ref: str) -> str:
     return (_git_run(git_cmd, ["rev-parse", "-q", "--verify", f"{ref}^{{commit}}"]).stdout or "").strip()
 
 
-def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> None:
+def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha, *, release_merge: bool = False) -> None:
     """The principal pull's one checkout move onto *target_sha*; exits when it cannot be made."""
     # merge --ff-only the already-fetched commit instead of `git pull`, which would do a
     # SECOND network fetch. Every move names ``target_sha``, never the ref: a ref that moves
     # after the arm cannot land a commit the marker and the debt do not name (review O3).
-    if merge_ref != f"origin/{branch}":
+    if merge_ref != f"origin/{branch}" and not release_merge:
         # Keep detached local commits reachable, too. Named branches are
         # untouched by checkout --detach; an autostash protects dirty files.
         _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
@@ -1054,7 +1063,7 @@ def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> N
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash, target_ref=None, pre_sync_sha=None, rollback_branch=None, sync_upstream=False, assume_yes=False,
-    in_place_update=False, _windows_gateway_resume=None, expected_sha=None):
+    in_place_update=False, release_merge=False, _windows_gateway_resume=None, expected_sha=None):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> rescue ref then reset; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns the SHA HEAD had to move off."""
@@ -1095,7 +1104,8 @@ def _pull_updates(
         try:
             # The paused gateways' tree gate must know this move's target before git writes a file.
             with _checkout_move(_windows_gateway_resume, target_sha):
-                _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha)
+                _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha,
+                                  release_merge=release_merge)
             _refuse_unselected_head(git_cmd, target_sha, pre_pull_sha)  # before the marker goes
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
@@ -1292,6 +1302,7 @@ class _CheckoutPlan:
     prompt_for_restore: bool
     switch_block_reason: str | None
     upstream_checked: bool
+    release_merge: bool = False
     pre_sync_sha: str | None = None
     rollback_branch: str | None = None
     # The switch changed the running code with no new commits to count (commit_count == -1).
@@ -1353,10 +1364,21 @@ def _prepare_checkout_for_update(
     if target_ref is None:
         target_ref = f"origin/{branch}"
     release_tag = target_ref != f"origin/{branch}"
+    release_merge = False
     if release_tag:
         # A release lands detached at its exact commit, never merges into or
         # rewrites the user's branch. Branch-policy machinery is main-only.
+        # Opt-in exception (updates.release_merge_into_branch): a maintained branch carrying
+        # unmerged work keeps its checkout and the release is merged INTO it — the same trade
+        # the origin/<branch> in-place strategy makes, applied to a release target.
         parked_branch_switched, in_place_update, switch_block_reason = False, True, None
+        if current_branch not in (branch, "HEAD") and _release_merge_into_branch():
+            _safe, _reason = _m()._assess_parked_branch_switch(
+                git_cmd, _m().PROJECT_ROOT, current_branch, branch)
+            release_merge = bool(_safe and _reason.startswith("unmerged:"))
+            if release_merge:
+                print(f"  ℹ On branch '{current_branch}' — merging {target_ref} into it "
+                      f"(no branch switch; local commits preserved).")
     else:
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
@@ -1401,7 +1423,7 @@ def _prepare_checkout_for_update(
         head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         return _CheckoutPlan(
             auto_stash_ref=auto_stash_ref, commit_count=0 if head_sha == target_ref else -1,
-            in_place_update=True, parked_branch_switched=False,
+            in_place_update=True, parked_branch_switched=False, release_merge=release_merge,
             prompt_for_restore=prompt_for_restore, switch_block_reason=None, upstream_checked=True)
 
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
@@ -1464,6 +1486,7 @@ def _prepare_checkout_for_update(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
         switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
+        release_merge=release_merge,
         pre_sync_sha=moved_from_sha, rollback_branch=rollback_branch,
         switched_without_new_commits=switched_without_new_commits)
 
@@ -1944,7 +1967,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
             rollback_branch=_plan.rollback_branch,
             sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
-            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume,
+            in_place_update=_plan.in_place_update, release_merge=_plan.release_merge,
+            _windows_gateway_resume=_windows_gateway_resume,
             expected_sha=completion_request.get("expected_sha"))
         _apply_pulled_update(
             git_cmd, branch, movement_baseline, _plan,

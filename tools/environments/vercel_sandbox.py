@@ -39,6 +39,7 @@ _CREATE_RETRY_ATTEMPTS = 3
 _TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 _RUNNING_WAIT_TIMEOUT = timedelta(seconds=30)
 _VERCEL_MB_PER_VCPU = 2048
+_TOKEN_VARS = ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID")
 
 
 def _ensure_vercel_sdk() -> None:
@@ -168,6 +169,28 @@ def _sandbox_resources(cpu: float, memory: int) -> Any:
     return Resources(memory=memory) if memory > 0 else None
 
 
+def _routed_credentials() -> dict[str, str]:
+    """``Sandbox.create`` credentials for a routed profile: its own token, project and team.
+
+    A single-profile process passes none and keeps the SDK's own resolution (an OIDC token, else the
+    process env). Without them the SDK reads ``os.environ``, which holds the launch profile's
+    credentials, so a routed profile that lacks any of the three is refused before a request is sent.
+    Read for every create (restore, fallback, retry, recreate), so a rotated token takes effect on the
+    next sandbox; every later call on a sandbox (commands, files, refresh, snapshot, stop) reuses the
+    client ``Sandbox.create`` built from them.
+    """
+    from agent.secret_scope import get_secret, serves_routed_profile
+
+    if not serves_routed_profile():
+        return {}
+    token, project_id, team_id = ((get_secret(name) or "").strip() for name in _TOKEN_VARS)
+    if not (token and project_id and team_id):
+        raise ValueError("VERCEL_TOKEN, VERCEL_PROJECT_ID and VERCEL_TEAM_ID are not all set for this profile: add "
+                         "them to this profile's .env (or its secret source). Another profile's Vercel credentials "
+                         "are never used for it, and VERCEL_OIDC_TOKEN serves only a single-profile Hermes.")
+    return {"token": token, "project_id": project_id, "team_id": team_id}
+
+
 def _is_terminal(status: Any) -> bool:
     S = _sandbox_status_type()
     return status in {S.ABORTED, S.FAILED, S.STOPPED}
@@ -222,13 +245,14 @@ class VercelSandboxEnvironment(BaseEnvironment):
     def _create_sandbox(self) -> Sandbox:
         _ensure_vercel_sdk()
         from vercel.sandbox import Sandbox
+        create_kwargs = {**self._create_kwargs, **_routed_credentials()}
         snapshot_id = _load_snapshots().get(self._task_id) if self._persistent and self._task_id else None
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
                 source = {"type": "snapshot", "snapshot_id": snapshot_id}
                 # A snapshot carries its own filesystem: Vercel refuses runtime with a snapshot
                 # source, and the image would describe a base the snapshot already replaced.
-                restore_kwargs = {k: v for k, v in self._create_kwargs.items() if k not in ("runtime", "image")}
+                restore_kwargs = {k: v for k, v in create_kwargs.items() if k not in ("runtime", "image")}
                 return _retry_vercel_call(
                     "sandbox restore", lambda: Sandbox.create(**restore_kwargs, source=source),
                     attempts=_CREATE_RETRY_ATTEMPTS)
@@ -236,7 +260,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                 logger.warning("Vercel: failed to restore snapshot %s for task %s; falling back to a fresh sandbox: %s",
                                snapshot_id, self._task_id, exc)
                 _delete_snapshot(self._task_id, snapshot_id)
-        return _retry_vercel_call("sandbox create", lambda: Sandbox.create(**self._create_kwargs),
+        return _retry_vercel_call("sandbox create", lambda: Sandbox.create(**create_kwargs),
                                   attempts=_CREATE_RETRY_ATTEMPTS)
 
     def _attach_fresh_sandbox(self, requested_cwd: str) -> None:

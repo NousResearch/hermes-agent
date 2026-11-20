@@ -336,8 +336,10 @@ def _check_vercel(config: dict[str, Any]) -> bool:
     if importlib.util.find_spec("vercel") is None:
 
         return _reject("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
-    from agent.secret_scope import get_secret
-    if get_secret("VERCEL_OIDC_TOKEN"):
+    from agent.secret_scope import get_secret, serves_routed_profile
+    # A routed profile needs its own token triple: the SDK reads an OIDC token from the process env.
+    routed = serves_routed_profile()
+    if not routed and get_secret("VERCEL_OIDC_TOKEN"):
         return True
     present = [bool(get_secret(k)) for k in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID")]
     if all(present):
@@ -346,7 +348,9 @@ def _check_vercel(config: dict[str, Any]) -> bool:
             "set together." if any(present) else
             "selected but no supported auth configuration was found. Set VERCEL_TOKEN, VERCEL_PROJECT_ID, "
             "and VERCEL_TEAM_ID for normal use.")
-    return _reject(f"Vercel Sandbox backend {head} VERCEL_OIDC_TOKEN is supported for one-off local development only.")
+    tail = ("This profile must set all three in its own .env; VERCEL_OIDC_TOKEN serves only a single-profile "
+            "Hermes." if routed else "VERCEL_OIDC_TOKEN is supported for one-off local development only.")
+    return _reject(f"Vercel Sandbox backend {head} {tail}")
 
 
 def _modal_pre(config: dict[str, Any]) -> Optional[bool]:

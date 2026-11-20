@@ -395,8 +395,12 @@ def _profile_action_environment(
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root, is_launch_only_env_key
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
+        from agent.runtime_scope import bind_profile_scope
+
         target_home = _resolve_profile_dir(profile)
-        action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
+        # Target identity and policy precede the FIRST factory, including native auto HOME.
+        with bind_profile_scope(target_home):
+            action_env = build_subprocess_env(scrub_secrets=True)
 
         profile_keys = set(_PROFILE_MANAGED_ENV_KEYS)
         try:
@@ -421,7 +425,8 @@ def _profile_action_environment(
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
-        apply_subprocess_home_env(action_env)
+        with bind_profile_scope(target_home):
+            apply_subprocess_home_env(action_env)
 
     action_env["HERMES_NONINTERACTIVE"] = "1"
     # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that

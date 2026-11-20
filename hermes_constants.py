@@ -746,7 +746,7 @@ def _norm_home_path(path: str | None) -> str:
 
 def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
     """Return ``{HERMES_HOME}/home`` when the profile-home directory exists."""
-    hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
+    hermes_home = (env or {}).get("HERMES_HOME") or get_hermes_home_override() or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
     profile_home = str(_expand_hermes_home(hermes_home) / "home")
@@ -822,7 +822,7 @@ def _bound_terminal_home_mode() -> str | None:
     return None if mode is None else str(mode).strip() or "auto"
 
 
-def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
+def get_subprocess_home(env: dict[str, str] | None = None, *, use_terminal_scope: bool = False) -> str | None:
     """Subprocess ``HOME`` override, or ``None``.
 
     ``auto``: hosts keep real HOME (repairing a profile-home parent), containers use
@@ -830,7 +830,9 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = (_bound_terminal_home_mode() or _env_get(env, "TERMINAL_HOME_MODE", "auto")).lower() or "auto"
+    bound_mode = _bound_terminal_home_mode()  # Refusal is authoritative even for explicit children.
+    explicit_mode = None if use_terminal_scope else env.get("TERMINAL_HOME_MODE")
+    mode = str(explicit_mode or bound_mode or _env_get(env, "TERMINAL_HOME_MODE", "auto")).strip().lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":
@@ -848,13 +850,13 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
-def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
+def apply_subprocess_home_env(env: MutableMapping[str, str], *, use_terminal_scope: bool = True) -> None:
     """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
     per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
-    home = get_subprocess_home(env)
+    home = get_subprocess_home(env, use_terminal_scope=use_terminal_scope)
     if home:
         env["HOME"] = home
     apply_scratch_tmp_env(env)

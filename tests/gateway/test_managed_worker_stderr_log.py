@@ -28,7 +28,7 @@ def test_worker_stderr_reaches_a_private_redacted_profile_log(tmp_path, monkeypa
     def crashing_child(args, **kwargs):
         return original([sys.executable, '-c', CRASH], **kwargs)
     monkeypatch.setattr(managed.subprocess, 'Popen', crashing_child)
-    monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
+    monkeypatch.setattr(managed, '_worker_env', lambda authority, policy: None)
     authority = SimpleNamespace(profile_id=str(tmp_path), pending_results={}, waiters={},
                                 adopt_agent=lambda session_id, generation, worker: None)
     row = {'admission_id': 'adm', 'principal_id': 'owner', 'generation': 3, 'payload': {'text': 'go'}}

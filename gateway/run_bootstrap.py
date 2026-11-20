@@ -736,6 +736,20 @@ def _start_gateway_early_environment_probe() -> None:
         logger.debug("early environment probe did not start", exc_info=True)
 
 
+def _start_gateway_own_process_env() -> None:
+    """Make the gateway's ``os.environ`` its own before anything reads it.
+
+    Set here (not at import) so incidental gateway.run imports from CLI code don't poison it. Drops
+    ``HERMES_SERVE_HEADLESS``: ``hermes serve`` marks its own process headless, and every shell under it
+    (its agent's terminal, a Desktop terminal) inherits that. A gateway started from such a shell would
+    mount its Webapp headless and answer every page "web UI disabled". The gateway is never the headless
+    backend, and its children must not carry the flag on either.
+    """
+    import os
+    os.environ["HERMES_EXEC_ASK"] = "1"
+    os.environ.pop("HERMES_SERVE_HEADLESS", None)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Run the gateway without ever turning an inherited daemon TTY (tmux respawn loop, hidden
@@ -768,8 +782,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         os,
         threading,
     )
-    # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
-    os.environ["HERMES_EXEC_ASK"] = "1"
+    _start_gateway_own_process_env()
     from hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
     _start_gateway_resolve_terminal_cwd()

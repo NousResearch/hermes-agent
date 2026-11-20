@@ -728,3 +728,36 @@ def test_deleted_or_renamed_profile_home_is_not_recreated(tmp_path, monkeypatch,
     pi._recent_test_tracks["s_dead"] = {"x"}
     pi._on_session_end(session_id="s_dead")  # caught: the cleanup is skipped
     assert not home.exists()
+
+
+@pytest.mark.parametrize("sub", ("quick", "deep"))
+def test_profile_deleted_mid_cleanup_reply_admits_removed_files(tmp_path, monkeypatch, sub):
+    """The home goes away after quick() removed a file but before save_tracked(): the reply
+    must not claim disk-cleanup did nothing."""
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / ".hermes" / "profiles" / "b"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pi = _load_plugin_init()
+    victim = home / "test_scratch.py"
+    victim.write_text("x", encoding="utf-8")
+    pi.dg.save_tracked([{"path": str(victim), "category": "test",
+                         "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
+
+    removed_first = []
+
+    def _delete_home_mid_run(_home):
+        removed_first.append(not victim.exists())
+        mark_named_profile_deleted(home)
+        shutil.rmtree(home)
+        return 0
+
+    monkeypatch.setattr(pi.dg, "_sweep_empty_dirs", _delete_home_mid_run)
+    reply = pi._handle_slash(sub)
+    assert removed_first == [True], "quick() removed the tracked file before the home vanished"
+    assert "Profile 'b' no longer exists" in reply
+    assert "did nothing" not in reply
+    assert "files it already removed stay removed" in reply
+    assert not home.exists()

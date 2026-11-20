@@ -186,3 +186,28 @@ def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
     host = manager._running_plugin_host()
     assert host is not None and host.pid == pid
     assert json.loads((play / "hook.json").read_text())["name"] == "work"  # created hook, cloned along
+
+
+@pytest.mark.platforms("any")
+def test_a_profile_hook_teardown_leaves_a_concurrent_load_on_the_shared_host(hosted_home):
+    """The hook runs in its own throwaway host: a real load of the same profile's provider while the
+    hook runs keeps the shared host, its registrations and its next call (#155595 F10)."""
+    from hermes_cli import profile_memory_config as pmc
+    from hermes_cli.profiles import create_profile
+    from plugins.memory import load_memory_provider
+    from tools.registry import registry
+
+    work = create_profile("work", clone_config=True, no_alias=True)
+    (work / "hostedprov.json").write_text(json.dumps({"workspace": "w"}), encoding="utf-8")
+    shared = []
+
+    def hook(provider):  # notify binds work's home: this load goes through work's shared manager
+        shared.append((plugins_mod.get_plugin_manager(), load_memory_provider("hostedprov")))
+
+    pmc.notify_memory_provider(work, hook)
+
+    (manager, provider), = shared
+    assert manager._running_plugin_host() is not None
+    assert any(manager._ownership_ledger.values())
+    assert registry.get_entry("hostedprov_probe", scope=manager.scope_key) is not None
+    assert provider.read_config_fields(str(work)) == {"values": {"workspace": "w"}}

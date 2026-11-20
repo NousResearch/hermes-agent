@@ -214,11 +214,13 @@ def discover_memory_providers() -> list[tuple[str, str, bool]]:
     return results
 
 
-def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -> Optional[MemoryProvider]:
+def load_memory_provider(name: str, *, register_skills: Optional[bool] = None,
+                         manager=None) -> Optional[MemoryProvider]:
     """Load a MemoryProvider by name (bundled, user, project, then pip entry point);
     None if not found or failing to load. Skills register only for the configured
     active provider unless ``register_skills`` is explicit, so inspecting inactive
-    providers leaves no registry side effects."""
+    providers leaves no registry side effects. ``manager``: a hosted provider loads into that
+    plugin manager and its host, not the active profile's (``transient_plugin_host``)."""
     if register_skills is None:
         register_skills = name == _get_active_memory_provider()
 
@@ -235,7 +237,7 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
 
     def _load(_dir):
         if provider_dir:
-            return _load_provider_from_dir(provider_dir, register_skills=register_skills)
+            return _load_provider_from_dir(provider_dir, register_skills=register_skills, manager=manager)
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed memory provider {name!r}")
         if refusal:
@@ -368,13 +370,15 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     return provider
 
 
-def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional[MemoryProvider]:
+def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True,
+                            manager=None) -> Optional[MemoryProvider]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
     from hermes_cli.plugin_isolation import user_plugin_host
-    host = None if _is_bundled(provider_dir) else user_plugin_host()
+    host = None if _is_bundled(provider_dir) else (
+        manager._plugin_host() if manager is not None else user_plugin_host())
     if host is not None:
-        return _ProviderCollector(name, register_skills=register_skills).collect_in_host(
+        return _ProviderCollector(name, register_skills=register_skills, manager=manager).collect_in_host(
             host, provider_dir, _module_name(provider_dir, name))
     mod = _load_package(provider_dir, name)
     if mod is None:
@@ -439,11 +443,12 @@ class _ProviderCollector:
     (the one call the activation path owns) and delegates other ``register_*``
     calls to a real ``PluginContext`` so providers have the full plugin surface."""
 
-    def __init__(self, name: str, *, register_skills: bool = True):
+    def __init__(self, name: str, *, register_skills: bool = True, manager=None):
         self.name = name
         self.provider = None
         self._register_skills = register_skills
         self._context = None
+        self._manager = manager  # None: the active profile's plugin manager
         self._hook_source = None
 
     def collect(self, register, *, source=None):
@@ -541,33 +546,8 @@ class _ProviderCollector:
             from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 
             manifest = PluginManifest(name=self.name, key=self.name)
-            self._context = PluginContext(manifest, get_plugin_manager())
+            self._context = PluginContext(manifest, get_plugin_manager() if self._manager is None else self._manager)
         return self._context
-
-
-@contextlib.contextmanager
-def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
-    """Yield a ``release()`` that disposes every registration provider ``name``'s loads made on the
-    active profile's plugin manager since the block began: hooks, tools, middleware and the rest
-    ``_ProviderCollector`` forwards (all in the manager's ownership ledger). For a one-shot load
-    whose plugin host is about to stop, so nothing is left proxying into a dead host; the
-    provider's next real load registers them again. A real load of the same provider on the same
-    profile inside the block loses its registrations too, until it next loads (they would
-    proxy into the stopped host anyway, unless it loaded in-process)."""
-    from hermes_cli.plugins import get_plugin_manager
-
-    provider_dir = find_provider_dir(name)
-    key = provider_dir.name if provider_dir else name  # the collector's key (_load_provider_from_dir)
-    manager = get_plugin_manager()
-    with manager._discovery_lock:
-        before = {id(r) for r in manager._ownership_ledger.get(key, ())}
-
-    def release() -> None:
-        with manager._discovery_lock:
-            made = [r for r in manager._ownership_ledger.get(key, ()) if id(r) not in before]
-            manager._dispose_registrations(made)
-
-    yield release
 
 
 def _get_active_memory_provider() -> Optional[str]:

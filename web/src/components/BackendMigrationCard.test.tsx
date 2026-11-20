@@ -144,6 +144,22 @@ describe("BackendMigrationCard", () => {
       "The old backend's turn activity could not be read: the move goes ahead and any turn running on it is interrupted.");
   });
 
+  it("shows what an incomplete rollback could not do, in the engine's words, next to the steps", async () => {
+    const detail = "restored config.yaml: /h/config.yaml changed since the migration wrote it, so it was not written "
+      + "back and your edits were kept; merge them with /h/backend_migration/config.yaml.bak by hand; did not start "
+      + "the old backend again: this background run is in hermes-backend-migration-1.service, which stops what it "
+      + "starts when the run ends; start it again from a terminal, without --detach: hermes gateway migrate --backends --restore";
+    await render(planWith({ nothing_to_do: true }, {
+      ...none, state: "failed", step: "verify", started_at: 10, finished_at: 20,
+      message: `verify failed: no HTTP 200; rollback incomplete: ${detail}`,
+      reason: "verify failed: no HTTP 200", manual_steps: ["hermes -p work gateway stop"],
+    }));
+    const manual = container.querySelector('[data-slot="backend-migration-manual"]')?.textContent ?? "";
+    expect(manual).toContain("(verify failed: no HTTP 200)");
+    expect(manual).toContain("so it was not written back and your edits were kept; merge them with /h/backend_migration/config.yaml.bak by hand");
+    expect(manual).toContain("start it again from a terminal, without --detach: hermes -p work gateway migrate --backends --restore");
+  });
+
   it("reports a rolled-back run with its reason even when nothing is left to move", async () => {
     await render(planWith({ nothing_to_do: true }, {
       ...none, state: "rolled_back", step: "verify", started_at: 10, finished_at: 20,

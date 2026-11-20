@@ -401,15 +401,16 @@ def _build_plan(host, body: ApplyBody):
         return BackendPlan(home=str(host.home))  # already migrated: a retired unit is never offered again
     plan = build_plan(host, address=_parse_address(body.address), keep_webapp=body.keep_webapp_address,
                       force_interrupt=body.force_interrupt)
-    if plan.rec and not plan.unsupported:
-        _owner_blockers(_Detached(host), plan)
-    elif plan.unsupported:
-        _manual_gateway_blockers(host, plan)
     if plan.rec and plan.rec.get("supervisor") == "systemd" and _own_cgroup_inside(plan):
         # The button's run is always --detach: "this command runs inside the old unit" is true of THIS
-        # process, not of the run it starts outside that unit.
+        # process, not of the run it starts outside that unit. Strip it before _owner_blockers so it does
+        # not mask the unknown-running-turns check.
         own = f"This command runs inside {plan.rec['unit']} itself"
         plan.blockers = [b for b in plan.blockers if not b.startswith(own)]
+    if plan.rec and not plan.unsupported:
+        _owner_blockers(_Detached(host), plan, force_interrupt=body.force_interrupt)
+    elif plan.unsupported:
+        _manual_gateway_blockers(host, plan)
     return plan
 
 

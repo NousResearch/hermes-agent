@@ -93,6 +93,156 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+# ---------------------------------------------------------------------------
+# Line-1 task_type marker carry-over (fleet dispatcher requirement)
+# ---------------------------------------------------------------------------
+
+
+def test_specify_task_carries_task_type_marker(kanban_home):
+    """The old body's ``task_type:`` marker is authoritative: it survives the
+    LLM rewrite even when the reply drops it entirely."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="rough", triage=True,
+            body="task_type: code\nRough one-liner body.")
+
+    content = jsonlib.dumps({
+        "title": "Refined rough",
+        "body": "**Goal**\nShip the thing.",
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.body.startswith("task_type: code\n")
+    assert "**Goal**" in (task.body or "")
+
+
+def test_specify_task_normalizes_drifted_task_type_marker(kanban_home):
+    """A drifted first-line marker in the reply (wrong casing / spacing, or an
+    attempted type change) is restored to the canonical old-body form; noise
+    that merely looks like a marker further down is kept verbatim."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="rough", triage=True,
+            body="task_type: review\nRough body.")
+
+    content = jsonlib.dumps({
+        "title": "Refined rough",
+        "body": "TASK_TYPE:  code\n**Goal**\nTaskType: OPS\nExtra tail.",
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    # Old body wins: canonical marker restored, LLM's type override rejected.
+    assert task.body.startswith("task_type: review\n")
+    assert "task_type: code" not in (task.body or "")
+    # Marker-like noise below line 1 is not touched.
+    assert "TaskType: OPS" in (task.body or "")
+
+
+def test_specify_task_without_old_marker_not_decorated(kanban_home):
+    """No marker in the old body → none is invented in the new body."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="rough", triage=True, body="Rough body, no marker.")
+
+    content = jsonlib.dumps({
+        "title": "Refined rough",
+        "body": "**Goal**\nDo it.",
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert not task.body.startswith("task_type:")
+    assert "task_type" not in (task.body or "")
+
+
+def test_specify_task_canonical_echo_passes_through_unchanged(kanban_home):
+    """A reply that already carries the exact canonical marker is kept
+    byte-for-byte (no double-prefix, no rewrite)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="rough", triage=True,
+            body="task_type: ops\nRough body.")
+
+    canonical_new = "task_type: ops\n**Goal**\nAlready canonical."
+    content = jsonlib.dumps({"title": "Refined rough", "body": canonical_new})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.body == canonical_new
+
+
+def test_specify_task_marker_survives_non_json_fallback_body(kanban_home):
+    """The lenient parse fallback (whole reply becomes the body) still carries
+    the marker — the reconcile runs on both reply shapes."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="rough", triage=True,
+            body="task_type: research\nRough body.")
+
+    p, _ = _patch_aux_client("not json at all — raw prose reply")
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.body.startswith("task_type: research\n")
+    assert "not json at all" in (task.body or "")
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_task_type — pure-function invariants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("marker", ["research", "code", "review", "ops"])
+def test_reconcile_all_four_types_round_trip(marker):
+    out = spec._reconcile_task_type(
+        f"task_type: {marker}\nold", "**Goal**\nnew")
+    assert out == f"task_type: {marker}\n**Goal**\nnew"
+
+
+@pytest.mark.parametrize("drifted", [
+    "TASK_TYPE: code", "task_type:CODE", "  task_type :  Code ", "task_type: Code",
+])
+def test_reconcile_normalizes_drifted_first_line(drifted):
+    out = spec._reconcile_task_type(
+        "task_type: code\nold", f"{drifted}\nrest")
+    assert out == "task_type: code\nrest"
+
+
+def test_reconcile_unknown_type_in_old_body_is_not_a_marker():
+    """An old first line that is not one of the four types carries nothing —
+    the specifier never invents a type."""
+    body = "**Goal**\nnew"
+    assert spec._reconcile_task_type("task_type: banana\nold", body) == body
+    assert spec._reconcile_task_type(None, body) == body
+    assert spec._reconcile_task_type("", body) == body
+
+
+def test_reconcile_none_new_body_stays_none():
+    """title-only replies (body=None) keep ``specify_triage_task``'s
+    preserve-existing-body semantics: None in → None out, marker untouched."""
+    assert spec._reconcile_task_type("task_type: code\nold", None) is None
+
 
 
 

@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.i18n import t
-from gateway.platforms.base_exec_approval import ea_t
+from gateway.platforms.base import ea_t
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,

@@ -86,7 +86,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
-from gateway.platforms.base_exec_approval import ea_t
+from gateway.platforms.base import ea_t
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error, env_proxy_for_redaction,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,

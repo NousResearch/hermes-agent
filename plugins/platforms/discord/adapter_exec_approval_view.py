@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 
 from agent.i18n import t
-from gateway.platforms.base_exec_approval import ea_key
+from gateway.platforms.base import ea_key
 from plugins.platforms.discord.adapter_config_readers import _read_discord_prompt_timeout
 
 logger = logging.getLogger(__name__)

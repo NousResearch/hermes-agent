@@ -39,7 +39,7 @@ if str(_checkout_root) not in sys.path:
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
-from gateway.platforms.base_exec_approval import ea_t
+from gateway.platforms.base import ea_t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig

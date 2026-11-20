@@ -59,8 +59,8 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
-from gateway.platforms.base_exec_approval import (
-    approval_kind, approval_timeout_seconds, ea_header_text, format_approval_deadline_line)
+from gateway.platforms.base import approval_kind, ea_header_text
+from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (

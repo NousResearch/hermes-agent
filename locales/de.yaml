@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Vorschau gekürzt: Der vollständige Befehl ({total} Zeichen) steht in der Nachricht darüber."
     truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Befehl konnte hier nicht angezeigt werden, daher ist nur Ablehnen möglich. Prüfe ihn in der CLI oder der Desktop-App."
     text_prompt_deny_only: "Die vollständige Freigabeanfrage ist für diese Plattform zu lang, daher ist nur Ablehnen möglich. Prüfe sie in der CLI oder der Desktop-App."
+    schedule_header: "Hermes möchte einen Job planen"
+    schedule_action_once: "Erlauben"
+    schedule_action_session: "Für diesen Chat erlauben"
+    schedule_action_always: "Neue Jobs immer erlauben"
+    schedule_deadline: "Wenn du nicht innerhalb von {window} antwortest, wird der Job NICHT erstellt."
+    schedule_timed_out_notice: "⌛ Genehmigung nach {window} abgelaufen — der Job wurde nicht erstellt. Bitte mich erneut, wenn du ihn noch willst, oder erhöhe approvals.timeout in config.yaml."
+    schedule_text_choice_once: "Antworte `{prefix}approve`, um ihn zu erstellen"
+    schedule_text_choice_session: "`{prefix}approve session`, um neue Jobs für den Rest dieses Chats zu erlauben"
+    schedule_text_choice_always: "`{prefix}approve always`, um neue Jobs immer zu erlauben"
+    schedule_truncated_full_above: "Vorschau gekürzt: Der vollständige Job ({total} Zeichen) steht in der Nachricht oben."
+    schedule_truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Job konnte hier nicht angezeigt werden, daher wird nur Ablehnen angeboten. Prüfe ihn in der CLI oder Desktop-App."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "Audio"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Für diese Sitzung genehmigt"
       resolved_always: "Dauerhaft genehmigt"
       resolved_deny: "Abgelehnt"
+      schedule_question: "Soll Hermes diesen geplanten Job erstellen?"
+      schedule_requested_command_label: "Job:"
     slash_confirm:
       already_resolved: "Diese Abfrage wurde bereits entschieden~"
       approve_once: "Einmalig genehmigen"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} von {user}"
       expired: "⌛ Genehmigung abgelaufen"
       expired_detail: "{label} — kein Befehl wartete mehr. Er ist bereits abgelaufen (und wurde abgelehnt) oder wurde anderswo beantwortet."
+      schedule_action_once: "✅ Erlauben"
+      schedule_action_session: "✅ Für diesen Chat erlauben"
+      schedule_action_always: "✅ Neue Jobs immer erlauben"
     slash_confirm:
       approve_once: "✅ Einmalig genehmigen"
       always_approve: "🔒 Immer genehmigen"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Für diese Sitzung genehmigt von {user}"
       resolved_always: "✅ Dauerhaft genehmigt von {user}"
       resolved_deny: "❌ Abgelehnt von {user}"
+      schedule_fallback_text: "⚠️ Hermes möchte einen Job planen: {command}"
     confirm:
       default_title: "Bestätigen"
       approve_once: "Einmalig genehmigen"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = ablehnen"
       invalid_reaction: "Diese Reaktion ist für diese Genehmigungsabfrage nicht gültig."
       expired: "Diese Genehmigungsabfrage ist abgelaufen. Führen Sie den Befehl erneut aus, wenn Sie ihn weiterhin genehmigen möchten."
+      schedule_typed_hint_once: "Antworte `!approve`, um ihn zu erstellen, oder `!deny`, um abzubrechen."
+      schedule_typed_hint_session: "Antworte `!approve session`, um neue Jobs für den Rest dieses Chats zu erlauben, `!approve`, um ihn zu erstellen, oder `!deny`, um abzubrechen."
+      schedule_typed_hint_always: "Antworte `!approve session`, um neue Jobs für den Rest dieses Chats zu erlauben, `!approve always`, um neue Jobs immer zu erlauben, `!approve`, um ihn zu erstellen, oder `!deny`, um abzubrechen."
     picker:
       no_models: "Für diese Sitzung sind keine authentifizierten Modelle verfügbar."
       title: "⚙ **Modell-Konfiguration**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Abgelehnt"
       resolved_fallback: "Beantwortet"
       resolved_by_user: "{icon} **{label}** von {user}"
+      schedule_action_session: "Für diesen Chat erlauben"
+      schedule_action_always: "Neue Jobs immer erlauben"
     update_prompt:
       title: "☤ Update benötigt Ihre Eingabe"
       default_hint: "\n\nStandard: `{default}`"

@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Превью сокращено: полная команда ({total} символов) — в сообщении выше."
     truncated_deny_only: "Превью сокращено ({total} символов), и полную команду не удалось показать здесь, поэтому доступно только «Отклонить». Проверьте её в CLI или в настольном приложении."
     text_prompt_deny_only: "Полный запрос подтверждения слишком длинный для этой платформы, поэтому доступно только «Отклонить». Проверьте его в CLI или в настольном приложении."
+    schedule_header: "Hermes хочет запланировать задачу"
+    schedule_action_once: "Разрешить"
+    schedule_action_session: "Разрешить в этом чате"
+    schedule_action_always: "Всегда разрешать новые задачи"
+    schedule_deadline: "Если вы не ответите в течение {window}, задача НЕ будет создана."
+    schedule_timed_out_notice: "⌛ Время на одобрение истекло через {window} — задача не создана. Попросите снова, если она всё ещё нужна, или увеличьте approvals.timeout в config.yaml."
+    schedule_text_choice_once: "Ответьте `{prefix}approve`, чтобы создать её"
+    schedule_text_choice_session: "`{prefix}approve session`, чтобы разрешить новые задачи до конца этого чата"
+    schedule_text_choice_always: "`{prefix}approve always`, чтобы всегда разрешать новые задачи"
+    schedule_truncated_full_above: "Предпросмотр сокращён: полная задача ({total} символов) — в сообщении выше."
+    schedule_truncated_deny_only: "Предпросмотр сокращён ({total} символов), а полную задачу здесь показать не удалось, поэтому доступно только «Отклонить». Проверьте её в CLI или настольном приложении."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "аудио"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Одобрено на сеанс"
       resolved_always: "Одобрено навсегда"
       resolved_deny: "Отклонено"
+      schedule_question: "Хотите, чтобы Hermes создал эту запланированную задачу?"
+      schedule_requested_command_label: "Задача:"
     slash_confirm:
       already_resolved: "Решение по этому запросу уже принято~"
       approve_once: "Одобрить один раз"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} — {user}"
       expired: "⌛ Срок одобрения истёк"
       expired_detail: "{label} — команда уже не ожидала. Либо сработал тайм-аут (и она отклонена), либо решение принято в другом месте."
+      schedule_action_once: "✅ Разрешить"
+      schedule_action_session: "✅ Разрешить в этом чате"
+      schedule_action_always: "✅ Всегда разрешать новые задачи"
     slash_confirm:
       approve_once: "✅ Одобрить один раз"
       always_approve: "🔒 Одобрять всегда"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Одобрено на сеанс: {user}"
       resolved_always: "✅ Одобрено навсегда: {user}"
       resolved_deny: "❌ Отклонено: {user}"
+      schedule_fallback_text: "⚠️ Hermes хочет запланировать задачу: {command}"
     confirm:
       default_title: "Подтверждение"
       approve_once: "Одобрить один раз"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = отклонить"
       invalid_reaction: "Эта реакция не подходит для данного запроса на одобрение."
       expired: "Срок этого запроса на одобрение истёк. Выполните команду ещё раз, если всё ещё хотите её одобрить."
+      schedule_typed_hint_once: "Ответьте `!approve`, чтобы создать её, или `!deny`, чтобы отменить."
+      schedule_typed_hint_session: "Ответьте `!approve session`, чтобы разрешить новые задачи до конца этого чата, `!approve`, чтобы создать её, или `!deny`, чтобы отменить."
+      schedule_typed_hint_always: "Ответьте `!approve session`, чтобы разрешить новые задачи до конца этого чата, `!approve always`, чтобы всегда разрешать новые задачи, `!approve`, чтобы создать её, или `!deny`, чтобы отменить."
     picker:
       no_models: "Для этого сеанса нет доступных моделей с авторизацией."
       title: "⚙ **Настройка модели**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Отклонено"
       resolved_fallback: "Решено"
       resolved_by_user: "{icon} **{label}**: {user}"
+      schedule_action_session: "Разрешить в этом чате"
+      schedule_action_always: "Всегда разрешать новые задачи"
     update_prompt:
       title: "☤ Обновлению нужен ваш ответ"
       default_hint: "\n\nПо умолчанию: `{default}`"

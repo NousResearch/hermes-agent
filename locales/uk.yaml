@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Попередній перегляд скорочено: повна команда ({total} символів) — у повідомленні вище."
     truncated_deny_only: "Попередній перегляд скорочено ({total} символів), і повну команду не вдалося показати тут, тому доступно лише «Відхилити». Перегляньте її в CLI або в настільному застосунку."
     text_prompt_deny_only: "Повний запит на підтвердження задовгий для цієї платформи, тому доступно лише «Відхилити». Перегляньте його в CLI або в настільному застосунку."
+    schedule_header: "Hermes хоче запланувати завдання"
+    schedule_action_once: "Дозволити"
+    schedule_action_session: "Дозволити в цьому чаті"
+    schedule_action_always: "Завжди дозволяти нові завдання"
+    schedule_deadline: "Якщо ви не відповісте протягом {window}, завдання НЕ буде створено."
+    schedule_timed_out_notice: "⌛ Час на схвалення сплив через {window} — завдання не створено. Попросіть знову, якщо воно ще потрібне, або збільште approvals.timeout у config.yaml."
+    schedule_text_choice_once: "Відповідайте `{prefix}approve`, щоб створити його"
+    schedule_text_choice_session: "`{prefix}approve session`, щоб дозволити нові завдання до кінця цього чату"
+    schedule_text_choice_always: "`{prefix}approve always`, щоб завжди дозволяти нові завдання"
+    schedule_truncated_full_above: "Попередній перегляд скорочено: повне завдання ({total} символів) — у повідомленні вище."
+    schedule_truncated_deny_only: "Попередній перегляд скорочено ({total} символів), а повне завдання тут показати не вдалося, тож доступне лише «Відхилити». Перегляньте його в CLI або настільному застосунку."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "аудіо"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Схвалено для сеансу"
       resolved_always: "Схвалено назавжди"
       resolved_deny: "Відхилено"
+      schedule_question: "Бажаєте, щоб Hermes створив це заплановане завдання?"
+      schedule_requested_command_label: "Завдання:"
     slash_confirm:
       already_resolved: "Цей запит вже опрацьовано~"
       approve_once: "Схвалити один раз"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} — {user}"
       expired: "⌛ Час схвалення минув"
       expired_detail: "{label} — жодна команда не очікувала. Час уже вичерпано (і команду відхилено) або її опрацювали в іншому місці."
+      schedule_action_once: "✅ Дозволити"
+      schedule_action_session: "✅ Дозволити в цьому чаті"
+      schedule_action_always: "✅ Завжди дозволяти нові завдання"
     slash_confirm:
       approve_once: "✅ Схвалити один раз"
       always_approve: "🔒 Завжди схвалювати"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Схвалено на сеанс: {user}"
       resolved_always: "✅ Схвалено назавжди: {user}"
       resolved_deny: "❌ Відхилено: {user}"
+      schedule_fallback_text: "⚠️ Hermes хоче запланувати завдання: {command}"
     confirm:
       default_title: "Підтвердження"
       approve_once: "Схвалити один раз"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = відхилити"
       invalid_reaction: "Ця реакція не підходить для цього запиту на схвалення."
       expired: "Час цього запиту на схвалення минув. Виконайте команду ще раз, якщо все ще хочете її схвалити."
+      schedule_typed_hint_once: "Відповідайте `!approve`, щоб створити його, або `!deny`, щоб скасувати."
+      schedule_typed_hint_session: "Відповідайте `!approve session`, щоб дозволити нові завдання до кінця цього чату, `!approve`, щоб створити його, або `!deny`, щоб скасувати."
+      schedule_typed_hint_always: "Відповідайте `!approve session`, щоб дозволити нові завдання до кінця цього чату, `!approve always`, щоб завжди дозволяти нові завдання, `!approve`, щоб створити його, або `!deny`, щоб скасувати."
     picker:
       no_models: "Для цього сеансу немає доступних автентифікованих моделей."
       title: "⚙ **Налаштування моделі**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Відхилено"
       resolved_fallback: "Вирішено"
       resolved_by_user: "{icon} **{label}** — {user}"
+      schedule_action_session: "Дозволити в цьому чаті"
+      schedule_action_always: "Завжди дозволяти нові завдання"
     update_prompt:
       title: "☤ Оновлення потребує вашої відповіді"
       default_hint: "\n\nЗа замовчуванням: `{default}`"

@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "미리보기가 줄여졌습니다: 전체 명령({total}자)은 위 메시지에 있습니다."
     truncated_deny_only: "미리보기가 줄여졌고({total}자) 전체 명령을 여기에 표시할 수 없어 거부만 선택할 수 있습니다. CLI나 데스크톱 앱에서 확인하세요."
     text_prompt_deny_only: "전체 승인 프롬프트가 이 플랫폼에는 너무 길어 거부만 선택할 수 있습니다. CLI나 데스크톱 앱에서 확인하세요."
+    schedule_header: "Hermes가 작업을 예약하려고 합니다"
+    schedule_action_once: "허용"
+    schedule_action_session: "이 채팅에서 허용"
+    schedule_action_always: "새 작업 항상 허용"
+    schedule_deadline: "{window} 안에 응답하지 않으면 작업이 생성되지 않습니다."
+    schedule_timed_out_notice: "⌛ {window} 후 승인 시간이 초과되었습니다 — 작업이 생성되지 않았습니다. 여전히 원하면 다시 요청하거나 config.yaml의 approvals.timeout을 늘리세요."
+    schedule_text_choice_once: "`{prefix}approve`로 답하면 생성합니다"
+    schedule_text_choice_session: "`{prefix}approve session`으로 이 채팅의 남은 시간 동안 새 작업 허용"
+    schedule_text_choice_always: "`{prefix}approve always`로 새 작업 항상 허용"
+    schedule_truncated_full_above: "미리보기가 줄었습니다: 전체 작업({total}자)은 위 메시지에 있습니다."
+    schedule_truncated_deny_only: "미리보기가 줄었고({total}자) 전체 작업을 여기에 표시할 수 없어 거부만 제공됩니다. CLI 또는 데스크톱 앱에서 확인하세요."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "오디오"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "세션 동안 승인됨"
       resolved_always: "영구 승인됨"
       resolved_deny: "거부됨"
+      schedule_question: "Hermes가 이 예약 작업을 생성하도록 할까요?"
+      schedule_requested_command_label: "작업:"
     slash_confirm:
       already_resolved: "이 프롬프트는 이미 처리되었어요~"
       approve_once: "한 번 승인"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{user}: {label}"
       expired: "⌛ 승인 만료됨"
       expired_detail: "{label} — 대기 중인 명령이 없었어요. 이미 시간 초과로 거부되었거나 다른 곳에서 처리되었어요."
+      schedule_action_once: "✅ 허용"
+      schedule_action_session: "✅ 이 채팅에서 허용"
+      schedule_action_always: "✅ 새 작업 항상 허용"
     slash_confirm:
       approve_once: "✅ 한 번 승인"
       always_approve: "🔒 항상 승인"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ {user}이(가) 세션 동안 승인했어요"
       resolved_always: "✅ {user}이(가) 영구 승인했어요"
       resolved_deny: "❌ {user}이(가) 거부했어요"
+      schedule_fallback_text: "⚠️ Hermes가 작업을 예약하려고 합니다: {command}"
     confirm:
       default_title: "확인"
       approve_once: "한 번 승인"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = 거부"
       invalid_reaction: "이 승인 요청에는 사용할 수 없는 반응이에요."
       expired: "이 승인 요청은 만료됐어요. 여전히 승인하려면 명령을 다시 실행해 주세요."
+      schedule_typed_hint_once: "`!approve`로 생성하거나 `!deny`로 취소하세요."
+      schedule_typed_hint_session: "`!approve session`으로 이 채팅의 남은 시간 동안 새 작업을 허용하거나, `!approve`로 생성하거나, `!deny`로 취소하세요."
+      schedule_typed_hint_always: "`!approve session`으로 이 채팅의 남은 시간 동안 새 작업을 허용하거나, `!approve always`로 새 작업을 항상 허용하거나, `!approve`로 생성하거나, `!deny`로 취소하세요."
     picker:
       no_models: "이 세션에서 사용할 수 있는 인증된 모델이 없어요."
       title: "⚙ **모델 설정**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "거부됨"
       resolved_fallback: "처리됨"
       resolved_by_user: "{icon} **{label}** — {user}"
+      schedule_action_session: "이 채팅에서 허용"
+      schedule_action_always: "새 작업 항상 허용"
     update_prompt:
       title: "☤ 업데이트에 입력이 필요해요"
       default_hint: "\n\n기본값: `{default}`"

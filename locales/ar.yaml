@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "المعاينة مختصرة: الأمر الكامل ({total} حرفًا) موجود في الرسالة أعلاه."
     truncated_deny_only: "المعاينة مختصرة ({total} حرفًا) وتعذّر عرض الأمر الكامل هنا، لذا يتوفر الرفض فقط. راجعه في سطر الأوامر أو تطبيق سطح المكتب."
     text_prompt_deny_only: "رسالة الموافقة الكاملة طويلة جدًا لهذه المنصة، لذا يتوفر الرفض فقط. راجعه في سطر الأوامر أو تطبيق سطح المكتب."
+    schedule_header: "يريد Hermes جدولة مهمة"
+    schedule_action_once: "سماح"
+    schedule_action_session: "السماح في هذه المحادثة"
+    schedule_action_always: "السماح دائمًا بالمهام الجديدة"
+    schedule_deadline: "إذا لم ترد خلال {window} فلن يتم إنشاء المهمة."
+    schedule_timed_out_notice: "⌛ انتهت مهلة الموافقة بعد {window} — لم يتم إنشاء المهمة. اطلب مني المحاولة مجددًا إن كنت لا تزال تريدها، أو ارفع approvals.timeout في config.yaml."
+    schedule_text_choice_once: "رد بـ `{prefix}approve` لإنشائها"
+    schedule_text_choice_session: "`{prefix}approve session` للسماح بالمهام الجديدة لبقية هذه المحادثة"
+    schedule_text_choice_always: "`{prefix}approve always` للسماح دائمًا بالمهام الجديدة"
+    schedule_truncated_full_above: "تم اختصار المعاينة: المهمة الكاملة ({total} حرفًا) في الرسالة أعلاه."
+    schedule_truncated_deny_only: "تم اختصار المعاينة ({total} حرفًا) وتعذّر عرض المهمة الكاملة هنا، لذا يُعرض الرفض فقط. راجعها في واجهة سطر الأوامر أو تطبيق سطح المكتب."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "صوت"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "تمت الموافقة للجلسة"
       resolved_always: "تمت الموافقة بشكل دائم"
       resolved_deny: "مرفوض"
+      schedule_question: "هل تريد أن ينشئ Hermes هذه المهمة المجدولة؟"
+      schedule_requested_command_label: "المهمة:"
     slash_confirm:
       already_resolved: "تم البتّ في هذه المطالبة مسبقًا~"
       approve_once: "موافقة مرة واحدة"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} بواسطة {user}"
       expired: "⌛ انتهت صلاحية الموافقة"
       expired_detail: "{label} — لم يكن هناك أمر ينتظر. إما أن مهلته انتهت (ورُفض) أو تم البت فيه في مكان آخر."
+      schedule_action_once: "✅ سماح"
+      schedule_action_session: "✅ السماح في هذه المحادثة"
+      schedule_action_always: "✅ السماح دائمًا بالمهام الجديدة"
     slash_confirm:
       approve_once: "✅ الموافقة مرة"
       always_approve: "🔒 الموافقة دائمًا"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ تمت الموافقة للجلسة بواسطة {user}"
       resolved_always: "✅ تمت الموافقة دائمًا بواسطة {user}"
       resolved_deny: "❌ رُفض بواسطة {user}"
+      schedule_fallback_text: "⚠️ يريد Hermes جدولة مهمة: {command}"
     confirm:
       default_title: "تأكيد"
       approve_once: "الموافقة مرة"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = رفض"
       invalid_reaction: "هذا التفاعل غير صالح لطلب الموافقة هذا."
       expired: "انتهت صلاحية طلب الموافقة هذا. شغّل الأمر من جديد إن كنت لا تزال تريد الموافقة عليه."
+      schedule_typed_hint_once: "رد بـ `!approve` لإنشائها، أو `!deny` للإلغاء."
+      schedule_typed_hint_session: "رد بـ `!approve session` للسماح بالمهام الجديدة لبقية هذه المحادثة، أو `!approve` لإنشائها، أو `!deny` للإلغاء."
+      schedule_typed_hint_always: "رد بـ `!approve session` للسماح بالمهام الجديدة لبقية هذه المحادثة، أو `!approve always` للسماح دائمًا بالمهام الجديدة، أو `!approve` لإنشائها، أو `!deny` للإلغاء."
     picker:
       no_models: "لا توجد نماذج مصادَق عليها متاحة لهذه الجلسة."
       title: "⚙ **إعدادات النموذج**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "مرفوض"
       resolved_fallback: "تم البتّ"
       resolved_by_user: "{icon} **{label}** بواسطة {user}"
+      schedule_action_session: "السماح في هذه المحادثة"
+      schedule_action_always: "السماح دائمًا بالمهام الجديدة"
     update_prompt:
       title: "☤ التحديث يحتاج إلى ردّك"
       default_hint: "\n\nالافتراضي: `{default}`"

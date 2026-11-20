@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Önizleme kısaltıldı: komutun tamamı ({total} karakter) yukarıdaki mesajda."
     truncated_deny_only: "Önizleme kısaltıldı ({total} karakter) ve komutun tamamı burada gösterilemedi, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
     text_prompt_deny_only: "Tam onay istemi bu platform için çok uzun, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
+    schedule_header: "Hermes bir görev zamanlamak istiyor"
+    schedule_action_once: "İzin ver"
+    schedule_action_session: "Bu sohbet için izin ver"
+    schedule_action_always: "Yeni görevlere her zaman izin ver"
+    schedule_deadline: "{window} içinde yanıt vermezsen görev OLUŞTURULMAYACAK."
+    schedule_timed_out_notice: "⌛ Onay {window} sonra zaman aşımına uğradı — görev oluşturulmadı. Hâlâ istiyorsan tekrar iste ya da config.yaml içindeki approvals.timeout değerini artır."
+    schedule_text_choice_once: "Oluşturmak için `{prefix}approve` yanıtını ver"
+    schedule_text_choice_session: "Bu sohbetin geri kalanında yeni görevlere izin vermek için `{prefix}approve session`"
+    schedule_text_choice_always: "Yeni görevlere her zaman izin vermek için `{prefix}approve always`"
+    schedule_truncated_full_above: "Önizleme kısaltıldı: tam görev ({total} karakter) yukarıdaki mesajda."
+    schedule_truncated_deny_only: "Önizleme kısaltıldı ({total} karakter) ve tam görev burada gösterilemedi, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında incele."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "ses"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Oturum için onaylandı"
       resolved_always: "Kalıcı olarak onaylandı"
       resolved_deny: "Reddedildi"
+      schedule_question: "Hermes'in bu zamanlanmış görevi oluşturmasını istiyor musun?"
+      schedule_requested_command_label: "Görev:"
     slash_confirm:
       already_resolved: "Bu istem zaten sonuçlandırıldı~"
       approve_once: "Bir Kez Onayla"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} — {user}"
       expired: "⌛ Onay süresi doldu"
       expired_detail: "{label} — bekleyen komut yoktu. Ya zaman aşımına uğradı (ve reddedildi) ya da başka bir yerde sonuçlandırıldı."
+      schedule_action_once: "✅ İzin ver"
+      schedule_action_session: "✅ Bu sohbet için izin ver"
+      schedule_action_always: "✅ Yeni görevlere her zaman izin ver"
     slash_confirm:
       approve_once: "✅ Bir Kez Onayla"
       always_approve: "🔒 Her Zaman Onayla"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ {user} tarafından oturum için onaylandı"
       resolved_always: "✅ {user} tarafından kalıcı olarak onaylandı"
       resolved_deny: "❌ {user} tarafından reddedildi"
+      schedule_fallback_text: "⚠️ Hermes bir görev zamanlamak istiyor: {command}"
     confirm:
       default_title: "Onayla"
       approve_once: "Bir Kez Onayla"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = reddet"
       invalid_reaction: "Bu tepki, bu onay istemi için geçerli değil."
       expired: "Bu onay isteminin süresi doldu. Yine de onaylamak istiyorsanız komutu yeniden çalıştırın."
+      schedule_typed_hint_once: "Oluşturmak için `!approve`, iptal etmek için `!deny` yanıtını ver."
+      schedule_typed_hint_session: "Bu sohbetin geri kalanında yeni görevlere izin vermek için `!approve session`, oluşturmak için `!approve`, iptal etmek için `!deny` yanıtını ver."
+      schedule_typed_hint_always: "Bu sohbetin geri kalanında yeni görevlere izin vermek için `!approve session`, yeni görevlere her zaman izin vermek için `!approve always`, oluşturmak için `!approve`, iptal etmek için `!deny` yanıtını ver."
     picker:
       no_models: "Bu oturum için kimliği doğrulanmış model bulunmuyor."
       title: "⚙ **Model Yapılandırması**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Reddedildi"
       resolved_fallback: "Sonuçlandırıldı"
       resolved_by_user: "{icon} **{label}** — {user}"
+      schedule_action_session: "Bu sohbet için izin ver"
+      schedule_action_always: "Yeni görevlere her zaman izin ver"
     update_prompt:
       title: "☤ Güncelleme Girdinizi Bekliyor"
       default_hint: "\n\nVarsayılan: `{default}`"

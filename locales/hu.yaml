@@ -665,6 +665,19 @@ gateway:
     truncated_full_above: "Rövidített előnézet: a teljes parancs ({total} karakter) a fenti üzenetben van."
     truncated_deny_only: "Rövidített előnézet ({total} karakter), és a teljes parancsot nem lehetett itt megjeleníteni, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
     text_prompt_deny_only: "A teljes jóváhagyási kérés túl hosszú ehhez a platformhoz, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
+    schedule_header: "A Hermes ütemezni szeretne egy feladatot"
+    schedule_action_once: "Engedélyezés"
+    schedule_action_session: "Engedélyezés ebben a csevegésben"
+    schedule_action_always: "Új feladatok mindig engedélyezve"
+    schedule_deadline: "Ha {window} alatt nem válaszolsz, a feladat NEM jön létre."
+    schedule_timed_out_notice: "⌛ A jóváhagyás {window} után lejárt — a feladat nem jött létre. Kérj meg újra, ha még szeretnéd, vagy növeld az approvals.timeout értékét a config.yaml-ban."
+    schedule_text_choice_once: "Válaszolj `{prefix}approve` paranccsal a létrehozáshoz"
+    schedule_text_choice_session: "`{prefix}approve session` az új feladatok engedélyezéséhez a csevegés hátralévő részében"
+    schedule_text_choice_always: "`{prefix}approve always` az új feladatok mindenkori engedélyezéséhez"
+    schedule_truncated_full_above: "Rövidített előnézet: a teljes feladat ({total} karakter) a fenti üzenetben van."
+    schedule_truncated_deny_only: "Rövidített előnézet ({total} karakter), és a teljes feladat itt nem jeleníthető meg, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
 
   notify:
     media_kind:
@@ -1065,6 +1078,8 @@ platform:
       resolved_session: "Jóváhagyva a munkamenetre"
       resolved_always: "Véglegesen jóváhagyva"
       resolved_deny: "Elutasítva"
+      schedule_question: "Szeretnéd, hogy a Hermes létrehozza ezt az ütemezett feladatot?"
+      schedule_requested_command_label: "Feladat:"
     slash_confirm:
       already_resolved: "Ez a kérdés már eldőlt~"
       approve_once: "Egyszer jóváhagy"
@@ -1257,6 +1272,9 @@ platform:
       resolved_by_user: "{label} — {user}"
       expired: "⌛ A jóváhagyás lejárt"
       expired_detail: "{label} — nem várakozott parancs. Már lejárt (és el lett utasítva), vagy máshol bírálták el."
+      schedule_action_once: "✅ Engedélyezés"
+      schedule_action_session: "✅ Engedélyezés ebben a csevegésben"
+      schedule_action_always: "✅ Új feladatok mindig engedélyezve"
     slash_confirm:
       approve_once: "✅ Jóváhagyás egyszer"
       always_approve: "🔒 Mindig jóváhagy"
@@ -1349,6 +1367,7 @@ platform:
       resolved_session: "✅ Munkamenetre jóváhagyta: {user}"
       resolved_always: "✅ Véglegesen jóváhagyta: {user}"
       resolved_deny: "❌ Elutasította: {user}"
+      schedule_fallback_text: "⚠️ A Hermes ütemezni szeretne egy feladatot: {command}"
     confirm:
       default_title: "Megerősítés"
       approve_once: "Jóváhagyás egyszer"
@@ -1410,6 +1429,9 @@ platform:
       legend_deny: "❎ = elutasítás"
       invalid_reaction: "Ez a reakció nem érvényes ennél a jóváhagyási kérdésnél."
       expired: "Ez a jóváhagyási kérdés lejárt. Futtasd újra a parancsot, ha még mindig jóvá akarod hagyni."
+      schedule_typed_hint_once: "Válaszolj `!approve` paranccsal a létrehozáshoz, vagy `!deny` paranccsal a megszakításhoz."
+      schedule_typed_hint_session: "Válaszolj `!approve session` paranccsal az új feladatok engedélyezéséhez a csevegés hátralévő részében, `!approve` paranccsal a létrehozáshoz, vagy `!deny` paranccsal a megszakításhoz."
+      schedule_typed_hint_always: "Válaszolj `!approve session` paranccsal az új feladatok engedélyezéséhez a csevegés hátralévő részében, `!approve always` paranccsal a mindenkori engedélyezéshez, `!approve` paranccsal a létrehozáshoz, vagy `!deny` paranccsal a megszakításhoz."
     picker:
       no_models: "Ehhez a munkamenethez nem érhető el hitelesített modell."
       title: "⚙ **Modellbeállítás**"
@@ -1442,6 +1464,8 @@ platform:
       resolved_deny: "Elutasítva"
       resolved_fallback: "Elbírálva"
       resolved_by_user: "{icon} **{label}** — {user}"
+      schedule_action_session: "Engedélyezés ebben a csevegésben"
+      schedule_action_always: "Új feladatok mindig engedélyezve"
     update_prompt:
       title: "☤ A frissítéshez a válaszod kell"
       default_hint: "\n\nAlapértelmezett: `{default}`"

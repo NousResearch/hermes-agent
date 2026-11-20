@@ -215,6 +215,25 @@ def test_a_create_another_process_published_first_gets_already_exists(root, monk
     assert type(other.value) is FileNotFoundError and "already exists" not in str(other.value)
 
 
+@pytest.mark.parametrize(("family", "lost"), [("win32", True), ("linux", False)])
+def test_a_publish_permission_error_onto_an_existing_profile_is_already_exists_only_on_windows(
+        root, monkeypatch, family, lost):
+    """Windows refuses a rename onto an existing directory with PermissionError: there the loser gets
+    "already exists"; elsewhere a PermissionError is a real failure and stays raw."""
+    from hermes_cli.profiles_initialization import publish_staging
+    from hermes_platform.host import facts
+    monkeypatch.setattr(facts, "os_family", lambda: family)
+    dest = root / "profiles" / "racer"
+    dest.mkdir(parents=True)
+
+    def refuse(src, dst, *a, **k):
+        raise PermissionError(13, "Access is denied", str(dst))
+    monkeypatch.setattr(profiles.os, "rename", refuse)
+    with pytest.raises(OSError) as caught:
+        publish_staging(root / "staging", dest, lambda: profiles._profile_exists_error("racer"))
+    assert ("already exists" in str(caught.value)) is lost
+    assert (type(caught.value) is PermissionError) is not lost
+
 def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway

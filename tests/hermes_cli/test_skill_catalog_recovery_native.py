@@ -10,13 +10,15 @@ from tests.hermes_cli.test_skill_catalog_service import fixture
 from tests.hermes_cli.test_skill_catalog_mutations import operation
 
 
-def test_native_after_reregistration_revalidates_exact_pending_operation(tmp_path, monkeypatch):
+@pytest.mark.parametrize('effect_present', [True, False])
+def test_native_after_reregistration_revalidates_exact_pending_operation(tmp_path, monkeypatch, effect_present):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     manager, entry, plan = fixture(tmp_path)
     api = context(entry).skill_catalog_mutations
     first = api.admit_native(plan, {'acknowledgements': []})
     manager.unload()
-    (tmp_path / 'skills/new').mkdir(parents=True)
+    if effect_present:
+        (tmp_path / 'skills/new').mkdir(parents=True)
     from hermes_cli.plugins import PluginManager
     from hermes_cli.skill_catalog.registry import snapshot
     manager = PluginManager(scope_key=str(tmp_path))
@@ -33,11 +35,18 @@ def test_native_after_reregistration_revalidates_exact_pending_operation(tmp_pat
         assert result['operation_id'] == first['operation_id']
         assert result['admission']['registration_id'] != first['admission']['registration_id']
         assert calls == [first['operation_id']]
+        row = entry.mutations.projection.read()['reservations'][result['admission']['reservation_id']]
+        assert row['recovery'] is True
         with pytest.raises(CatalogError):
             with context(entry).skill_catalog_mutations.commit(result['admission'], result['operation_id']):
                 pytest.fail('recovery-only native reservation entered ordinary commit')
         with context(entry).skill_catalog_mutations.recover(result['operation_id']) as recovery:
-            recovery.decide(dict(kind='reconciled', journal_digest=recovery.observed_revision, result=pending))
+            if effect_present:
+                recovery.decide(dict(kind='reconciled', journal_digest=recovery.observed_revision, result=pending))
+            else:
+                recovery.decide(dict(kind='retry_effect'))
+                (tmp_path / 'skills/new').mkdir(parents=True)
+                recovery.settle(pending)
     finally:
         manager.unload()
 

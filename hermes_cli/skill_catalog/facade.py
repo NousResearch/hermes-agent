@@ -58,20 +58,19 @@ class ContextMutations:
         if type(key) is not str:
             raise CatalogError('invalid_request', 'Invalid native receipt identity.')
         operation_id = hashlib.sha256((hermes_home_key(self.home) + '\0' + entry.source_id + '\0' + key).encode()).hexdigest()
+        from hermes_cli.skill_catalog.worker import call
         try:
-            admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id)
+            pending = call(entry, 'operation', dict(operation_id=operation_id))
         except CatalogError as exc:
-            if exc.code not in ('review_changed', 'review_expired'):
+            if exc.code != 'not_found':
                 raise
-            from hermes_cli.skill_catalog.worker import call
-            try:
-                pending = call(entry, 'operation', dict(operation_id=operation_id))
-            except CatalogError:
-                raise exc from None
-            if (pending['operation_id'] != operation_id or pending['state'] not in ('pending', 'unknown')
-                    or pending['identifier'] != review['identifier'] or pending['action'] != review['action']):
-                raise CatalogError('review_changed', 'Native pending journal does not match this review.') from None
-            admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id, recovery=True)
+            pending = None
+        if pending is not None and (
+                pending['operation_id'] != operation_id or pending['state'] not in ('pending', 'unknown')
+                or pending['identifier'] != review['identifier'] or pending['action'] != review['action']):
+            raise CatalogError('review_changed', 'Native pending journal does not match this review.')
+        admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id,
+                                                        recovery=pending is not None)
         return dict(admission=admission, operation_id=operation_id)
 
     def _mutations(self, payload):

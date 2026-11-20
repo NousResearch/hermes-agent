@@ -37,6 +37,8 @@ class Catalog(SkillCatalogProvider):
         return {'ok': True, 'data': {'kind': 'completed' if self.saved else 'unstarted',
                 'review': self.plan, 'operation': self.saved}}
     def operation(self, request):
+        if self.saved is None:
+            return {'ok': False, 'error': {'code': 'not_found', 'message': 'Absent'}}
         return {'ok': True, 'data': self.saved}
     def confirm(self, request):
         if self.saved:

@@ -197,8 +197,8 @@ def _specific_address(host: str) -> bool:
     unspecified, multicast and reserved ranges (IPv4 ``240.0.0.0/4`` holds ``255.255.255.255``) and
     IPv4 ``0.0.0.0/8``, which no interface holds;
     IPv6 link-local, which binds only with a zone, and zoned (``%eth0``) or IPv4-mapped addresses.
-    IPv4 link-local is an interface address like any other. Whether this machine holds it is the
-    bind's verdict (``gateway.run_runtime``)."""
+    IPv4 link-local is an interface address like any other. Whether this machine holds it is checked
+    before the bind (``gateway.run_api._bind_primary``)."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:

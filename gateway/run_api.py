@@ -139,8 +139,10 @@ class GatewayDashboardMount:
             if self._closed:
                 raise RuntimeError("gateway API stopped")
             import importlib
-            web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
-                importlib.import_module, "hermes_cli.web_server")
+            # import_module, not a sys.modules lookup: the module is listed there while another
+            # thread still runs its body. It returns a loaded module at once and waits for one
+            # that is still importing.
+            web = await asyncio.to_thread(importlib.import_module, "hermes_cli.web_server")
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
@@ -224,8 +226,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     # Existing routers/auth helpers share one process-local app. Never rebind it
     # underneath another listener. Each authority is bound to its own profile DB.
     loaded_web = sys.modules.get("hermes_cli.web_server")
+    # Another thread may still be importing this module, before its app has been assigned.
+    loaded_app = getattr(loaded_web, "app", None)
     if _ACTIVE_RUNNER is not None or (
-            loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
+            loaded_app is not None and getattr(loaded_app.state, "gateway_runner", None) is not None):
         raise RuntimeError("gateway API already started")
     public_url = _listener_public_url(webapp)
     if public_url is None:

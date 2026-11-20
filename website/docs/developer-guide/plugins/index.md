@@ -379,15 +379,16 @@ with open_persistence_reader(profile_scope().profile_dir) as store:
 
 #### Turn helpers kept for pinned catalog plugins
 
-The same refactor moved a few turn helpers into `session_rules.turns`. The catalog's pinned OpenViking (2.1.2) and Honcho (1.2.0) memory plugins import them from their old place at load time, and a catalog repin does not change an installed plugin's source, so these exact names stay importable as an exception to the rule above:
+The same refactor moved a few turn helpers into `session_rules.turns` and folded `hermes_state_wal` into `sqlite_support`. The catalog's pinned OpenViking (2.1.2), Honcho (1.2.0) and holographic (0.29.x) memory plugins import them from their old place at load time, and a catalog repin does not change an installed plugin's source, so these exact names stay importable as an exception to the rule above:
 
 | Old import | Defined now in |
 |---|---|
 | `agent.message_content.flatten_message_text`, `_text_from_part` | `session_rules.turns` |
 | `agent.skill_commands.extract_user_instruction_from_skill_message` | `session_rules.turns` |
 | `hermes_state_common.TITLE_SOURCE_DERIVED`, `TITLE_SOURCE_LLM` | the values stored in `sessions.title_source` |
+| `hermes_state_wal` (the whole module, e.g. `apply_wal_with_fallback`) | `sqlite_support` |
 
-They follow the `hermes_state` window: supported through v0.26 and removed no earlier than v0.27.0. No other moved name is carried. A plugin should import from `session_rules.turns` now.
+They follow the `hermes_state` window: supported through v0.26 and removed no earlier than v0.27.0. No other moved name is carried. A plugin should import from `session_rules.turns` and `sqlite_support` now.
 
 ## What you're building
 
@@ -1075,6 +1076,12 @@ Config and state have different owners: settings are user-visible behavior in
 `<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
 
 ### Settings form in the Desktop
+
+The same declaration also gives your plugin a terminal editor: `hermes plugins config <name>`
+lists every `config_schema` key and every `requires_env` variable with its current value and
+edits them one at a time (choices and `bool` as pickers, `secret` and `secret: true` env
+entries masked). It saves through the same writers as the form below, so no CLI code is
+needed either. Give each key a `label` and `description`: they are all the user sees.
 
 Every key you declare in the manifest's `config_schema` renders as a row on the
 plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the

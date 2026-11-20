@@ -170,7 +170,7 @@ gateway:
     full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share --nous` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
-    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a {agent_name} fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
     upload_hint: "Semmi sem lett feltöltve. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
     upload_hint_local: "Semmi sem lett feltöltve. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez, vagy a `/debug local` parancsot a megtekintéséhez itt."
     nous_refused: "Semmi sem lett feltöltve. A privát Nous-feltöltés innen nem érhető el: futtasd a `hermes debug share --nous` parancsot egy terminálban, vagy használd a Send diagnostics funkciót az asztali alkalmazásban. A `/debug upload` ehelyett nyilvános paste-be tölti fel az összefoglalót."
@@ -219,7 +219,7 @@ gateway:
     set: "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ A /goal gate add parancshoz kifejezetten beállított átjáró-admin kell (allow_admin_from a DM-ekhez, group_allow_admin_from a csoportokhoz)."
   help:
-    header: "📖 **Hermes parancsok**\n"
+    header: "📖 **{agent_name} parancsok**\n"
     skill_header: "\n⚡ **Készségparancsok** ({count} aktív):"
     more_use_commands: "\n... és még {count}. Használd a `/commands` parancsot a teljes, lapozható listához."
   insights:
@@ -346,7 +346,7 @@ gateway:
     db_unavailable: "A munkamenet-adatbázis nem érhető el."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ A Matrix /resume blokkolva: ennek a nevesített munkamenetnek nincs rögzített forrásszobája, ezért a Hermes alapból nem folytatja az aktuális szobában. Ha szándékosan akarsz szobahatárt átlépni, használd: `/resume --cross-room {name}`."
+    matrix_blocked_no_origin: "⚠️ A Matrix /resume blokkolva: ennek a nevesített munkamenetnek nincs rögzített forrásszobája, ezért a {agent_name} alapból nem folytatja az aktuális szobában. Ha szándékosan akarsz szobahatárt átlépni, használd: `/resume --cross-room {name}`."
     matrix_blocked_other_room: "⚠️ A Matrix /resume blokkolva: az a munkamenet egy másik Matrix-szobához tartozik ({room}). Ha szándékosan itt akarod folytatni, használd: `/resume --cross-room {name}`."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ A /resume blokkolva: a '**{name}**' munkamenet másik felhasználóhoz vagy csevegéshez tartozik. Csak ebből a csevegésből származó munkameneteket folytathatsz."
@@ -443,7 +443,7 @@ gateway:
     cache_maybe_warm: "Prompt-gyorsítótár: {until}-ig még meleg lehet (legfeljebb még {remaining}; {ttl}, {confidence})."
     cache_unknown_moved: "Prompt-gyorsítótár: ismeretlen (az útvonal, a munkamenet vagy a kontextus megváltozott az utolsó gyorsítótárazott kérés óta)."
     cache_unknown_route: "Prompt-gyorsítótár: ismeretlen (ez a szolgáltató nem teszi közzé a gyorsítótár megőrzési idejét)."
-    cache_unknown_runtime: "Prompt-gyorsítótár: ismeretlen (ez a futtatókörnyezet saját gyorsítótár-beállításokat használ, amelyeket a Hermes nem lát)."
+    cache_unknown_runtime: "Prompt-gyorsítótár: ismeretlen (ez a futtatókörnyezet saját gyorsítótár-beállításokat használ, amelyeket a {agent_name} nem lát)."
     cache_unknown_storage: "Prompt-gyorsítótár: ismeretlen (a munkamenet-tároló nem olvasható)."
     cache_warming_off: "Életben tartás: ki (kétszer elmaradt)."
     cache_tier_pending: "Szint: 5m az első 5 percnél hosszabb szünetig, utána 1h."
@@ -453,7 +453,7 @@ gateway:
       declared: "kért"
       assumed: "feltételezett"
   status:
-    header: "📊 **Hermes Gateway állapot**"
+    header: "📊 **{agent_name} Gateway állapot**"
     matrix_scope_header: "**Matrix-hatókör:**"
     matrix_scope_room: "  szoba: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -499,22 +499,22 @@ gateway:
     topics_user_disallowed: "A Telegram topicok engedélyezve vannak, de a felhasználók nem hozhatnak létre topicokat.\n\nNyisd meg a @BotFather → válaszd ki a botod → Bot Settings → Threads Settings menüt, majd kapcsold ki a 'Disallow users to create new threads' opciót.\n\nEzután küldd újra a /topic parancsot."
     enable_failed: "Nem sikerült engedélyezni a Telegram topic módot: {error}"
     bound_status: "Ez a topic ehhez van kapcsolva:\nMunkamenet: {label}\nID: {session_id}\n\nHasználd a /new parancsot, hogy lecseréld ezt a topicot új munkamenetre.\nPárhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
-    thread_ready: "A többmunkamenetes Telegram topicok engedélyezve vannak.\n\nEz a topic független Hermes-munkamenetként szolgál. Használd a /new parancsot, hogy lecseréld a topic jelenlegi munkamenetét. Párhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
+    thread_ready: "A többmunkamenetes Telegram topicok engedélyezve vannak.\n\nEz a topic független {agent_name}-munkamenetként szolgál. Használd a /new parancsot, hogy lecseréld a topic jelenlegi munkamenetét. Párhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
     untitled_session: "Cím nélküli munkamenet"
     restore_step_1: "1. Hozz létre vagy nyiss meg egy topicot. Újat úgy hozhatsz létre, hogy megnyitod az All Messages részt, és küldesz oda egy tetszőleges üzenetet."
     restore_step_2: "2. Küldd el a /topic <session-id> parancsot abban a topicban."
-    default_title: "Hermes Chat"
-    root_lobby: "Ez a fő csevegés a rendszerparancsoknak van fenntartva.\n\nÚj Hermes-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre az üzenethez; minden topic önálló Hermes-munkamenetként működik."
-    root_new: "Új párhuzamos Hermes-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre hozzá.\n\nMinden topic önálló Hermes-munkamenet. A /new parancsot csak akkor használd egy meglévő topicban, ha le akarod cserélni annak a topicnak a jelenlegi munkamenetét."
-    new_header: "Új Hermes-munkamenet indult ebben a topicban.\n\nTipp: párhuzamos munkához nyisd meg az All Messages részt, és küldj oda egy üzenetet — így külön topic jön létre, nem kell itt a /new. A /new az aktuális topichoz kötött munkamenetet cseréli le."
-    help: "/topic — többmunkamenetes DM-mód bekapcsolása (egy bot, sok párhuzamos csevegés)\n\nHasználat:\n  /topic             Topicmód bekapcsolása, vagy az állapot megjelenítése, ha már be van kapcsolva\n  /topic help        Ennek az üzenetnek a megjelenítése\n  /topic off         Topicmód kikapcsolása és a topic-hozzárendelések törlése\n  /topic <id>        Topicon belül: korábbi munkamenet visszaállítása azonosító alapján\n\nHogyan működik:\n1. Futtasd egyszer a /topic parancsot ebben a DM-ben — a Hermes ellenőrzi,\n   hogy a BotFather Threads Settings be van-e kapcsolva, és bekapcsolja a többmunkamenetes módot.\n2. Koppints az All Messages részre a bot tetején, és küldj egy tetszőleges üzenetet.\n   A Telegram új topicot hoz létre az üzenethez; minden topic\n   önálló Hermes-munkamenet (friss előzmények, friss kontextus).\n3. A gyökér DM rendszerelőtérré válik — oda küldd a /topic, /status,\n   /help, /usage parancsokat. A normál promptok topicba valók.\n4. A /new egy topicon belül csak annak a topicnak a munkamenetét állítja alaphelyzetbe.\n5. A /topic <id> egy topicon belül egy régi munkamenetet állít vissza oda."
+    default_title: "{agent_name} Chat"
+    root_lobby: "Ez a fő csevegés a rendszerparancsoknak van fenntartva.\n\nÚj {agent_name}-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre az üzenethez; minden topic önálló {agent_name}-munkamenetként működik."
+    root_new: "Új párhuzamos {agent_name}-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre hozzá.\n\nMinden topic önálló {agent_name}-munkamenet. A /new parancsot csak akkor használd egy meglévő topicban, ha le akarod cserélni annak a topicnak a jelenlegi munkamenetét."
+    new_header: "Új {agent_name}-munkamenet indult ebben a topicban.\n\nTipp: párhuzamos munkához nyisd meg az All Messages részt, és küldj oda egy üzenetet — így külön topic jön létre, nem kell itt a /new. A /new az aktuális topichoz kötött munkamenetet cseréli le."
+    help: "/topic — többmunkamenetes DM-mód bekapcsolása (egy bot, sok párhuzamos csevegés)\n\nHasználat:\n  /topic             Topicmód bekapcsolása, vagy az állapot megjelenítése, ha már be van kapcsolva\n  /topic help        Ennek az üzenetnek a megjelenítése\n  /topic off         Topicmód kikapcsolása és a topic-hozzárendelések törlése\n  /topic <id>        Topicon belül: korábbi munkamenet visszaállítása azonosító alapján\n\nHogyan működik:\n1. Futtasd egyszer a /topic parancsot ebben a DM-ben — a {agent_name} ellenőrzi,\n   hogy a BotFather Threads Settings be van-e kapcsolva, és bekapcsolja a többmunkamenetes módot.\n2. Koppints az All Messages részre a bot tetején, és küldj egy tetszőleges üzenetet.\n   A Telegram új topicot hoz létre az üzenethez; minden topic\n   önálló {agent_name}-munkamenet (friss előzmények, friss kontextus).\n3. A gyökér DM rendszerelőtérré válik — oda küldd a /topic, /status,\n   /help, /usage parancsokat. A normál promptok topicba valók.\n4. A /new egy topicon belül csak annak a topicnak a munkamenetét állítja alaphelyzetbe.\n5. A /topic <id> egy topicon belül egy régi munkamenetet állít vissza oda."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "A csevegésazonosító nem állapítható meg."
     mode_not_enabled: "A többmunkamenetes topicmód jelenleg nincs bekapcsolva ebben a csevegésben."
     disable_failed: "A topicmód kikapcsolása nem sikerült: {error}"
-    mode_disabled: "A többmunkamenetes topicmód mostantól KI van kapcsolva ebben a csevegésben.\n\nA meglévő Telegram-topicok nem tűnnek el — csak nem számítanak többé önálló munkamenetnek. A gyökér DM újra normál Hermes-csevegésként működik. Később a /topic paranccsal kapcsolhatod vissza."
+    mode_disabled: "A többmunkamenetes topicmód mostantól KI van kapcsolva ebben a csevegésben.\n\nA meglévő Telegram-topicok nem tűnnek el — csak nem számítanak többé önálló munkamenetnek. A gyökér DM újra normál {agent_name}-csevegésként működik. Később a /topic paranccsal kapcsolhatod vissza."
     status_enabled: "A Telegram többmunkamenetes topicok be vannak kapcsolva."
-    status_how_to: "Új Hermes-csevegéshez nyisd meg az All Messages részt a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre hozzá."
+    status_how_to: "Új {agent_name}-csevegéshez nyisd meg az All Messages részt a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre hozzá."
     previous_unlinked: "Korábbi, nem hozzárendelt munkamenetek:"
     restore_one: "Visszaállításhoz:"
     restore_example: "Példa: küldd el a /topic {session_id} parancsot egy topicban."
@@ -525,7 +525,7 @@ gateway:
     not_your_session: "Az a munkamenet nem ehhez a Telegram-felhasználóhoz tartozik."
     already_linked: "Az a munkamenet már egy másik Telegram-topichoz van rendelve."
     restored: "Munkamenet visszaállítva: {title}"
-    restored_last_message: "\n\nUtolsó Hermes-üzenet:\n{text}"
+    restored_last_message: "\n\nUtolsó {agent_name}-üzenet:\n{text}"
   undo:
     nothing: "Nincs mit visszavonni."
     removed: "↩️ {turns} fordulat visszavonva ({count} üzenet).\nBiztonsági mentés ide: \"{preview}\"\nMásold/szerkeszd a fenti szöveget, és küldd el, hogy innen újra kérdezz."
@@ -533,18 +533,18 @@ gateway:
   update:
     platform_not_messaging: "✗ A /update csak üzenetküldő platformokról érhető el. Futtasd a `hermes update` parancsot a terminálból."
     not_git_repo: "✗ Nem git-tárhely — frissítés nem lehetséges."
-    hermes_cmd_not_found: "✗ Nem sikerült megtalálni a `hermes` parancsot. A Hermes fut, de a frissítőparancs nem találta a futtatható fájlt a PATH-on vagy a jelenlegi Python interpreteren keresztül. Próbáld futtatni a `hermes update` parancsot manuálisan a terminálban."
+    hermes_cmd_not_found: "✗ Nem sikerült megtalálni a `hermes` parancsot. A {agent_name} fut, de a frissítőparancs nem találta a futtatható fájlt a PATH-on vagy a jelenlegi Python interpreteren keresztül. Próbáld futtatni a `hermes update` parancsot manuálisan a terminálban."
     start_failed: "✗ Nem sikerült elindítani a frissítést: {error}"
     already_running: "⏳ Már fut egy frissítés; a kérdéseire csak az válaszolhat, aki elindította. Várd meg, amíg befejeződik, majd próbáld újra a /update parancsot."
-    starting: "☤ Hermes frissítés indítása… A folyamatot itt fogom közvetíteni."
+    starting: "☤ {agent_name} frissítés indítása… A folyamatot itt fogom közvetíteni."
     reply_failed: "✗ Nem sikerült elküldeni a választ a frissítési folyamatnak: {error}"
     reply_sent: "✓ `{label}` elküldve a frissítési folyamatnak."
-    failed_notice: "❌ A Hermes frissítése nem sikerült; továbbra is az előző verzió fut. Futtasd a `hermes update` parancsot a gazdagépen a teljes hibaüzenetért, vagy próbáld újra később a /update parancsot."
+    failed_notice: "❌ A {agent_name} frissítése nem sikerült; továbbra is az előző verzió fut. Futtasd a `hermes update` parancsot a gazdagépen a teljes hibaüzenetért, vagy próbáld újra később a /update parancsot."
     prompt_default: " (alapértelmezett: {default})"
     prompt: "☤ **A frissítéshez a válaszod kell:**\n\n{prompt}{default_hint}\n\nVálaszolj: `{prefix}approve` (igen) vagy `{prefix}deny` (nem), vagy írd be közvetlenül a válaszodat."
-    finished: "✅ A Hermes frissítése befejeződött."
-    timed_out: "❌ A Hermes frissítése 30 perc után időtúllépéssel leállt."
-    finished_success: "✅ A Hermes frissítése sikeresen befejeződött."
+    finished: "✅ A {agent_name} frissítése befejeződött."
+    timed_out: "❌ A {agent_name} frissítése 30 perc után időtúllépéssel leállt."
+    finished_success: "✅ A {agent_name} frissítése sikeresen befejeződött."
     last_lines: "{msg}\n\nUtolsó sorok:\n```\n{tail}\n```"
     managed_action: "a Hermes Agent frissítése"
     not_applicable: "✗ A `hermes update` nem alkalmazható erre a telepítésre ({method}).\nFrissítés így: {command}"
@@ -634,7 +634,7 @@ gateway:
     none_value: "nincs"
     unknown_value: "ismeretlen"
   exec_approval:
-    header: "A Hermes olyan parancsot futtatna, amihez a jóváhagyásod kell"
+    header: "A {agent_name} olyan parancsot futtatna, amihez a jóváhagyásod kell"
     reason_label: "Miért lett megjelölve"
     default_reason: "veszélyes parancs"
     smart_deny_line: "Okos ELUTASÍTÁS: a tulajdonosi felülbírálás csak erre az egy műveletre vonatkozik."
@@ -677,7 +677,7 @@ gateway:
     plain_fallback_prefix: "(A válasz formázása nem sikerült, egyszerű szöveg:)\n\n{content}"
     turn_error: "Sajnálom, hibába ütköztem."
     context_injection_refused: "A kontextusbeszúrás elutasítva."
-    no_home_channel: "📬 Nincs beállítva home csatorna a(z) {platform} platformhoz. A home csatornába kézbesíti a Hermes a cronfeladatok eredményeit és a platformok közötti üzeneteket.\n\nÍrd be: {sethome_cmd}, hogy ez a csevegés legyen a home csatornád, vagy hagyd figyelmen kívül."
+    no_home_channel: "📬 Nincs beállítva home csatorna a(z) {platform} platformhoz. A home csatornába kézbesíti a {agent_name} a cronfeladatok eredményeit és a platformok közötti üzeneteket.\n\nÍrd be: {sethome_cmd}, hogy ez a csevegés legyen a home csatornád, vagy hagyd figyelmen kívül."
   unauthorized:
     action_notice: "Ez a bot privát, és te nem szerepelsz az engedélyezett listáján. Ha a tiéd, futtasd a gazdagépen: `hermes pairing approve {platform} <request-id>` (az azonosítót a `hermes pairing list` mutatja)."
     admin_only_can_run: "Ezeket futtathatod: "
@@ -705,7 +705,7 @@ gateway:
     bad_request: "⚠️ Az AI-modellszolgáltatás visszautasította ezt a kérést. Fogalmazd át az üzenetet, vagy válts modellt a /model paranccsal."
     connection_interrupted: "⚠️ Az AI-modellszolgáltatással a kapcsolat megszakadt a kérés közben — ez általában átmeneti. Próbáld újra a /retry paranccsal; ha ismétlődik, futtasd a `hermes doctor` parancsot a gépen."
     unreachable: "⚠️ Az AI-modellszolgáltatás jelenleg nem érhető el — a beállított modellvégpont nem fut, vagy nem elérhető. Várj egy kicsit, és használd a /retry parancsot; ha nem oldódik meg, futtasd a `hermes doctor` parancsot a gépen."
-    connection_unknown: "⚠️ A Hermes nem érte el az AI-modellszolgáltatást (az SDK nem adott további részletet). Próbáld újra a /retry paranccsal; ha nem oldódik meg, futtasd a `hermes doctor` parancsot a gépen."
+    connection_unknown: "⚠️ A {agent_name} nem érte el az AI-modellszolgáltatást (az SDK nem adott további részletet). Próbáld újra a /retry paranccsal; ha nem oldódik meg, futtasd a `hermes doctor` parancsot a gépen."
     context_overflow: "⚠️ Ez a beszélgetés túl hosszú lett ahhoz, hogy egyben elolvassam. Rövidítsd le az előzményeket a /compress paranccsal, vagy kezdj új beszélgetést a /new paranccsal."
     usage_limit_resets: "⏱️ Elérted az AI-modellszolgáltatás használati keretét; {window} múlva áll vissza. Utána használd a /retry parancsot, vagy válts modellt a /model paranccsal."
     provider_kept_failing: "⚠️ Az AI-modellszolgáltatás folyamatosan hibázott. Próbáld újra a /retry paranccsal, vagy válts modellt a /model paranccsal. A részletek az átjáró naplójában vannak (`hermes logs`)."
@@ -776,20 +776,20 @@ gateway:
     setup_timeout: "⏳ A kör előkészítése ügynöki tevékenység nélkül elakadt, ezért megszakítottuk. Kérlek, küldd el újra az üzeneted."
     setup_waiting: "⏳ Ez a kör még indul ({minutes} perc, még nincs ügynöki tevékenység). Az üzeneted sorban áll. A /stop paranccsal megszakíthatod, a sorban álló üzenetekkel együtt."
     behavior_queue_short: "sorba áll a következő körre"
-    behavior_queue_long: "Amíg a Hermes foglalt, az üzenetek a következő körre kerülnek sorba."
+    behavior_queue_long: "Amíg a {agent_name} foglalt, az üzenetek a következő körre kerülnek sorba."
     behavior_steer_short: "beirányít a futó feladatba (a következő eszközhívás után)"
     behavior_steer_long: "Az üzenetek a futó feladatba kerülnek beirányításra (a következő eszközhívás után)."
     behavior_interrupt_short: "megszakítja a futó feladatot"
-    behavior_interrupt_long: "Amíg a Hermes foglalt, az üzenetek megszakítják a futó feladatot."
+    behavior_interrupt_long: "Amíg a {agent_name} foglalt, az üzenetek megszakítják a futó feladatot."
     status: "**Foglalt beviteli mód: `{mode}`\nÜzenetek foglalt állapotban: _{behavior}_\nMódosítás: `/busy queue`, `/busy steer` vagy `/busy interrupt`."
     unknown_mode: "Ismeretlen mód: `{arg}`. Használd a `/busy queue`, `/busy steer` vagy `/busy interrupt` parancsot."
     save_failed: "A foglalt beviteli módot nem sikerült a konfigurációba menteni. A mód nem változott."
     set: "Foglalt beviteli mód beállítva: **`{mode}`** (mentve).\n_{behavior}_"
   pause:
     resumed: "▶️ Folytatás — újra fogadjuk az új munkát."
-    not_paused: "A Hermes nem volt szüneteltetve."
+    not_paused: "A {agent_name} nem volt szüneteltetve."
     reason_suffix: " (ok: {reason})"
-    already_paused: "⏸️ A Hermes már szünetel{suffix}. Folytatás: `/pause off`."
+    already_paused: "⏸️ A {agent_name} már szünetel{suffix}. Folytatás: `/pause off`."
     paused: "⏸️ Szüneteltetve{suffix}. Az új cron-/kanban-/átjárómunka várakozik; a folyamatban lévő munka rendesen befejeződik. Folytatás: `/pause off`."
   queue:
     usage: "Használat: /queue <prompt>"
@@ -877,7 +877,7 @@ gateway:
     task_status_complete: "kész"
     task_status_error: "hiba"
     task_line: "- {title} - {status}"
-    task_card_title: "A Hermes dolgozik"
+    task_card_title: "A {agent_name} dolgozik"
   pairing:
     validity_hour: "{hours} óra"
     validity_hours: "{hours} óra"
@@ -886,13 +886,13 @@ gateway:
   shutdown:
     action_shutting_down: "leáll"
     action_restarting: "újraindul"
-    cron_interrupted: "⚠️ A(z) '{job}' ütemezett feladat megszakadt, mert a Hermes {action}; ebben a futásban nincs eredmény. Ütemezés szerint újra lefut, vagy futtasd most a `hermes cron run {job}` paranccsal, amint a Hermes visszatért."
-    notice_shutdown: "⚠️ A Hermes leáll — a jelenlegi feladatod megszakad. Amikor újra elérhető, küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytuk."
-    notice_restart: "⚠️ A Hermes újraindul — a jelenlegi feladatod megszakad. Az újraindítás után küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytad."
+    cron_interrupted: "⚠️ A(z) '{job}' ütemezett feladat megszakadt, mert a {agent_name} {action}; ebben a futásban nincs eredmény. Ütemezés szerint újra lefut, vagy futtasd most a `hermes cron run {job}` paranccsal, amint a {agent_name} visszatért."
+    notice_shutdown: "⚠️ A {agent_name} leáll — a jelenlegi feladatod megszakad. Amikor újra elérhető, küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytuk."
+    notice_restart: "⚠️ A {agent_name} újraindul — a jelenlegi feladatod megszakad. Az újraindítás után küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytad."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ Az átjáró sikeresen újraindult. A munkameneted folytatódik."
-    online: "♻️ Az átjáró elérhető — a Hermes visszatért, és készen áll."
+    online: "♻️ Az átjáró elérhető — a {agent_name} visszatért, és készen áll."
     db_corrupt: "⚠️ A munkamenet-adatbázis sérülését észleltük. Az üzenetek mentése sikertelen lehet. Helyreállítási lehetőségek:\n1. Futtasd: `hermes {profile_arg}doctor --fix`\n2. Állítsd le az átjárót, majd állítsd helyre így:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (ha helyreállíthatónak jelzi) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — a helyreállítás először pillanatképet készít a sérült fájlról; NE futtasd a `sqlite3 ... \".recover\"` parancsot az élő state.db fájlon, egy sebezhető sqlite3 CLI tovább rongálhatja\n3. Állítsd vissza egy biztonsági mentésből innen: {backups_dir}/\nA `hermes {profile_arg}doctor` parancs tisztított diagnosztikát ad."
     db_fts_corrupt: "⚠️ A munkamenet-adatbázis a keresőindexre (FTS5) korlátozódó sérülési hibát jelzett; az üzenettáblák nem sérültek. A javításig az üzenetek mentése sikertelen lehet: futtasd a `hermes {profile_arg}doctor --fix` parancsot, majd indítsd újra az átjárót. Ne futtass helyreállító eszközöket, és ne állíts vissza biztonsági mentést, hacsak a `hermes {profile_arg}doctor` nem igazol sérülést."
     db_then_restart: "{action} Ezután: `hermes {profile_arg}gateway restart`."
@@ -1052,7 +1052,7 @@ platform:
       [A válasz streamelés után átalakítva]
   discord:
     approval:
-      question: "Szeretnéd, hogy a Hermes lefuttassa ezt a parancsot?"
+      question: "Szeretnéd, hogy a {agent_name} lefuttassa ezt a parancsot?"
       requested_command_label: "Kért parancs:"
       confirm_title: "Megerősítés"
       already_resolved: "Ez a jóváhagyás már eldőlt~"
@@ -1074,7 +1074,7 @@ platform:
       resolved_cancel: "Megszakítva"
     prompt:
       truncated_marker: "... [csonkolva]"
-      clarify_title: "A Hermes a válaszodra vár"
+      clarify_title: "A {agent_name} a válaszodra vár"
       clarify_hint_buttons: "Válassz lentről, vagy kattints az ✏️ Egyéb gombra saját válaszhoz."
       clarify_hint_text: "Válaszolj ebben a csatornában."
       default_hint: " (alapértelmezett: {default})"
@@ -1117,7 +1117,7 @@ platform:
         description: "Új beszélgetés indítása"
         followup: "Új beszélgetés indítva~"
       reset:
-        description: "Hermes-munkameneted visszaállítása"
+        description: "{agent_name}-munkameneted visszaállítása"
         followup: "Munkamenet visszaállítva~"
       model:
         description: "Modell megjelenítése vagy váltása"
@@ -1139,10 +1139,10 @@ platform:
       undo:
         description: "Utolsó üzenetváltás eltávolítása"
       status:
-        description: "Munkamenet állapotának mutatása"
+        description: "{agent_name}-munkamenet állapotának mutatása"
         followup: "Állapot elküldve~"
       stop:
-        description: "A futó Hermes-ügynök leállítása"
+        description: "A futó {agent_name}-ügynök leállítása"
         followup: "Leállítás kérve~"
       steer:
         description: "Üzenet beszúrása a következő eszközhívás után (megszakítás nélkül)"
@@ -1178,7 +1178,7 @@ platform:
       update:
         followup: "Frissítés elindítva~"
       restart:
-        description: "A Hermes-átjáró kíméletes újraindítása"
+        description: "A {agent_name}-átjáró kíméletes újraindítása"
         followup: "Újraindítás kérve~"
       approve:
         arg_scope: "Opcionális: 'all', 'session', 'always', 'all session', 'all always'"
@@ -1186,9 +1186,9 @@ platform:
         description: "Függőben lévő veszélyes parancs elutasítása"
         arg_scope: "Opcionális: 'all' az összes függő parancs elutasításához"
       thread:
-        description: "Új szál létrehozása és Hermes-munkamenet indítása benne"
+        description: "Új szál létrehozása és {agent_name}-munkamenet indítása benne"
         arg_name: "Szál neve"
-        arg_message: "Opcionális első üzenet a Hermesnek a szálban"
+        arg_message: "Opcionális első üzenet {agent_name} számára a szálban"
         arg_auto_archive: "Automatikus archiválás percben (60, 1440, 4320, 10080)"
         error_unknown: "ismeretlen hiba"
         failed: "Nem sikerült létrehozni a szálat: {error}"
@@ -1211,7 +1211,7 @@ platform:
         arg_question: "A megszakítás nélkül megválaszolandó mellékkérdés"
         followup: "Mellékkérdés elküldve~"
       skill:
-        description: "Hermes-skill futtatása"
+        description: "{agent_name}-skill futtatása"
         arg_name: "Melyik skill fusson"
         arg_args: "Opcionális argumentumok a skillnek"
         unknown: "Ismeretlen skill: `{name}`. Kezdj el gépelni az automatikus kiegészítéshez."
@@ -1229,17 +1229,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ Jogosulatlan Discord slash-parancs kísérlet\nFelhasználó: {user_name} ({user_id})\nCsatorna: {chan_id} (szerver: {guild_id})\nParancs: {command_text}\nOk: {reason}"
     thread:
-      seed_message: "🧵 A Hermes által létrehozott szál: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Hermes-átadás: **{name}**"
-      auto_create_failed: "⚠️ A Hermes nem tudott Discord-szálat létrehozni ehhez az üzenethez, ezért a kérés nem lett feldolgozva. Próbáld újra."
+      seed_message: "🧵 A {agent_name} által létrehozott szál: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 {agent_name}-átadás: **{name}**"
+      auto_create_failed: "⚠️ A {agent_name} nem tudott Discord-szálat létrehozni ehhez az üzenethez, ezért a kérés nem lett feldolgozva. Próbáld újra."
       auto_create_failed_generic: "A kérés nem lett feldolgozva. Próbáld újra."
     media:
       upload_too_large: "⚠️ Nem sikerült csatolni: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét ebben a csatornában. Tömörítsd a fájlt, vagy ossz meg egy linket helyette."
       image_skipped_too_large: "⚠️ Kihagyva: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét."
   telegram:
     vault_code:
-      body: "Válaszolj erre az üzenetre a kóddal. A Hermes azonnal törli a válaszodat, és beírja a kódot az oldalba; a modell soha nem látja."
+      body: "Válaszolj erre az üzenetre a kóddal. A {agent_name} azonnal törli a válaszodat, és beírja a kódot az oldalba; a modell soha nem látja."
       delete_failed: "Nem sikerült törölni a válaszodat. Kérlek, töröld te."
     approval:
       action_once: "✅ Egyszer"
@@ -1387,15 +1387,15 @@ platform:
       thinking: "gondolkodik..."
       still_working: "még dolgozik… ({elapsed})"
     task_card:
-      title: "Hermes dolgozik"
+      title: "{agent_name} dolgozik"
     slash:
       reply_truncated: "\n\n_[A válasz csonkolva: még {count} rész túllépte a Slack ideiglenes válaszainak korlátját.]_"
       running: "`/{command}` futtatása…"
     handoff:
-      seed: ":thread: Hermes átadás — *{name}*"
+      seed: ":thread: {agent_name} átadás — *{name}*"
   matrix:
     handoff:
-      default_name: "Hermes-munkamenet"
+      default_name: "{agent_name}-munkamenet"
     media:
       image_download_failed: "Nem sikerült letölteni és feltölteni a képet a Matrixba. A forrás URL-t nem mutatom, mert privát tokeneket tartalmazhat."
     approval:
@@ -1427,7 +1427,7 @@ platform:
       not_requester: "Ezeket a vezérlőket csak az a felhasználó használhatja, aki a műveletet kérte."
   feishu:
     clarify:
-      title: "A Hermes a válaszodra vár"
+      title: "A {agent_name} a válaszodra vár"
       other: "✏️ Egyéb (írd be a választ)"
       awaiting_typed: "Várakozás {user} beírt válaszára…"
     picker:
@@ -1459,7 +1459,7 @@ platform:
       header: "Kérdés"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes gondolkodik…"
+      thinking: "{agent_name} gondolkodik…"
       interrupted: "(megszakítva)"
       no_reply: "(nincs válasz)"
     attachment_fallback:

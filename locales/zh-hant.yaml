@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share --nous`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
-    local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug upload` 可上傳摘要報告。"
+    local_refused: "`/debug local` 會把報告留在執行 {agent_name} 的機器上，因此無法在聊天中使用。傳送 `/debug upload` 可上傳摘要報告。"
     upload_hint: "未上傳任何內容。傳送 `/debug upload` 可上傳摘要報告。"
     upload_hint_local: "未上傳任何內容。傳送 `/debug upload` 可上傳摘要報告，或傳送 `/debug local` 在此檢視。"
     nous_refused: "未上傳任何內容。此處無法使用 Nous 私人上傳：請在終端機執行 `hermes debug share --nous`，或使用桌面應用程式中的 Send diagnostics。`/debug upload` 則會將摘要上傳到公開的貼上服務。"
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"
   help:
-    header: "📖 **Hermes 指令**\n"
+    header: "📖 **{agent_name} 指令**\n"
     skill_header: "\n⚡ **技能指令**（{count} 個作用中）："
     more_use_commands: "\n... 還有 {count} 個。使用 `/commands` 檢視完整分頁清單。"
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "工作階段資料庫無法使用。"
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume 已封鎖：此已命名的工作階段沒有記錄來源聊天室，因此 Hermes 預設不會在目前聊天室中恢復它。若你確實想跨越聊天室界線，請使用 `/resume --cross-room {name}`。"
+    matrix_blocked_no_origin: "⚠️ Matrix /resume 已封鎖：此已命名的工作階段沒有記錄來源聊天室，因此 {agent_name} 預設不會在目前聊天室中恢復它。若你確實想跨越聊天室界線，請使用 `/resume --cross-room {name}`。"
     matrix_blocked_other_room: "⚠️ Matrix /resume 已封鎖：該工作階段屬於另一個 Matrix 聊天室（{room}）。若你確實想在此處恢復它，請使用 `/resume --cross-room {name}`。"
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume 已封鎖：'**{name}**' 屬於其他使用者或聊天。你只能恢復來自此聊天的工作階段。"
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "提示詞快取：可能仍有效至 {until}（最多再 {remaining}；{ttl}，{confidence}）。"
     cache_unknown_moved: "提示詞快取：未知（自上次快取請求以來，路由、工作階段或上下文已變更）。"
     cache_unknown_route: "提示詞快取：未知（此供應商未公布其快取保留時間）。"
-    cache_unknown_runtime: "提示詞快取：未知（此執行環境自行設定快取選項，Hermes 無法觀察）。"
+    cache_unknown_runtime: "提示詞快取：未知（此執行環境自行設定快取選項，{agent_name} 無法觀察）。"
     cache_unknown_storage: "提示詞快取：未知（無法讀取工作階段儲存）。"
     cache_warming_off: "保活：已關閉（兩次未命中）。"
     cache_tier_pending: "層級：首次停頓超過 5 分鐘前為 5m，之後為 1h。"
@@ -450,7 +450,7 @@ gateway:
       declared: "已宣告"
       assumed: "推定"
   status:
-    header: "📊 **Hermes 閘道狀態**"
+    header: "📊 **{agent_name} 閘道狀態**"
     matrix_scope_header: "**Matrix 範圍：**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "Telegram topics 已啟用，但不允許使用者建立 topics。\n\n開啟 @BotFather → 選擇您的 bot → Bot Settings → Threads Settings，然後關閉 'Disallow users to create new threads'。\n\n然後再次傳送 /topic。"
     enable_failed: "啟用 Telegram topic 模式失敗：{error}"
     bound_status: "此 topic 已連結至：\n工作階段：{label}\nID：{session_id}\n\n使用 /new 將此 topic 取代為新工作階段。\n如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
-    thread_ready: "Telegram 多工作階段 topics 已啟用。\n\n此 topic 將作為獨立的 Hermes 工作階段使用。使用 /new 取代此 topic 目前的工作階段。如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
+    thread_ready: "Telegram 多工作階段 topics 已啟用。\n\n此 topic 將作為獨立的 {agent_name} 工作階段使用。使用 /new 取代此 topic 目前的工作階段。如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
     untitled_session: "未命名工作階段"
     restore_step_1: "1. 建立或開啟一個話題。若要建立新話題，請開啟「All Messages」並在那裡傳送任意訊息。"
     restore_step_2: "2. 在該話題內傳送 /topic <session-id>。"
-    default_title: "Hermes 聊天"
-    root_lobby: "此主聊天保留給系統指令使用。\n\n若要開始新的 Hermes 聊天，請開啟此 bot 介面頂端的「All Messages」話題並在那裡傳送任意訊息。Telegram 會為該訊息建立新話題；每個話題都是獨立的 Hermes 工作階段。"
-    root_new: "若要開始新的平行 Hermes 聊天，請開啟此 bot 介面頂端的「All Messages」話題並在那裡傳送任意訊息。Telegram 會為它建立新話題。\n\n每個話題都是獨立的 Hermes 工作階段。只有在想取代某個話題目前的工作階段時，才在既有話題內使用 /new。"
-    new_header: "已在此話題中開始新的 Hermes 工作階段。\n\n提示：若要平行作業，請開啟「All Messages」並在那裡傳送訊息以建立另一個話題，而不是在這裡使用 /new。/new 會取代目前話題所綁定的工作階段。"
-    help: "/topic — 啟用多工作階段私訊模式（一個 bot，多個平行聊天）\n\n用法：\n  /topic             啟用話題模式；若已開啟則顯示狀態\n  /topic help        顯示此訊息\n  /topic off         停用話題模式並清除話題綁定\n  /topic <id>        在話題內：依 ID 恢復先前的工作階段\n\n運作方式：\n1. 在此私訊中執行一次 /topic — Hermes 會檢查 BotFather 的\n   Threads Settings 是否已啟用，並開啟多工作階段模式。\n2. 點選 bot 頂端的「All Messages」並傳送任意訊息。\n   Telegram 會為該訊息建立新話題；每個話題都是\n   獨立的 Hermes 工作階段（全新的歷史與上下文）。\n3. 根私訊成為系統大廳 — 在那裡傳送 /topic、/status、\n   /help、/usage。一般提示請在話題內傳送。\n4. 在話題內使用 /new 只會重設該話題的工作階段。\n5. 在話題內使用 /topic <id> 可將舊的工作階段恢復到該話題。"
+    default_title: "{agent_name} 聊天"
+    root_lobby: "此主聊天保留給系統指令使用。\n\n若要開始新的 {agent_name} 聊天，請開啟此 bot 介面頂端的「All Messages」話題並在那裡傳送任意訊息。Telegram 會為該訊息建立新話題；每個話題都是獨立的 {agent_name} 工作階段。"
+    root_new: "若要開始新的平行 {agent_name} 聊天，請開啟此 bot 介面頂端的「All Messages」話題並在那裡傳送任意訊息。Telegram 會為它建立新話題。\n\n每個話題都是獨立的 {agent_name} 工作階段。只有在想取代某個話題目前的工作階段時，才在既有話題內使用 /new。"
+    new_header: "已在此話題中開始新的 {agent_name} 工作階段。\n\n提示：若要平行作業，請開啟「All Messages」並在那裡傳送訊息以建立另一個話題，而不是在這裡使用 /new。/new 會取代目前話題所綁定的工作階段。"
+    help: "/topic — 啟用多工作階段私訊模式（一個 bot，多個平行聊天）\n\n用法：\n  /topic             啟用話題模式；若已開啟則顯示狀態\n  /topic help        顯示此訊息\n  /topic off         停用話題模式並清除話題綁定\n  /topic <id>        在話題內：依 ID 恢復先前的工作階段\n\n運作方式：\n1. 在此私訊中執行一次 /topic — {agent_name} 會檢查 BotFather 的\n   Threads Settings 是否已啟用，並開啟多工作階段模式。\n2. 點選 bot 頂端的「All Messages」並傳送任意訊息。\n   Telegram 會為該訊息建立新話題；每個話題都是\n   獨立的 {agent_name} 工作階段（全新的歷史與上下文）。\n3. 根私訊成為系統大廳 — 在那裡傳送 /topic、/status、\n   /help、/usage。一般提示請在話題內傳送。\n4. 在話題內使用 /new 只會重設該話題的工作階段。\n5. 在話題內使用 /topic <id> 可將舊的工作階段恢復到該話題。"
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "無法判斷聊天 ID。"
     mode_not_enabled: "此聊天目前未啟用多工作階段話題模式。"
     disable_failed: "停用話題模式失敗：{error}"
-    mode_disabled: "此聊天的多工作階段話題模式已關閉。\n\nTelegram 中既有的話題不會被移除 — 只是不再作為獨立工作階段管控。根私訊會恢復為一般的 Hermes 聊天。之後可執行 /topic 重新啟用。"
+    mode_disabled: "此聊天的多工作階段話題模式已關閉。\n\nTelegram 中既有的話題不會被移除 — 只是不再作為獨立工作階段管控。根私訊會恢復為一般的 {agent_name} 聊天。之後可執行 /topic 重新啟用。"
     status_enabled: "Telegram 多工作階段話題已啟用。"
-    status_how_to: "若要開始新的 Hermes 聊天，請開啟此 bot 介面頂端的「All Messages」並在那裡傳送任意訊息。Telegram 會為它建立新話題。"
+    status_how_to: "若要開始新的 {agent_name} 聊天，請開啟此 bot 介面頂端的「All Messages」並在那裡傳送任意訊息。Telegram 會為它建立新話題。"
     previous_unlinked: "先前未連結的工作階段："
     restore_one: "若要恢復其中一個："
     restore_example: "範例：在話題內傳送 /topic {session_id}。"
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "該工作階段不屬於此 Telegram 使用者。"
     already_linked: "該工作階段已連結至另一個 Telegram 話題。"
     restored: "已恢復工作階段：{title}"
-    restored_last_message: "\n\nHermes 的最後一則訊息：\n{text}"
+    restored_last_message: "\n\n{agent_name} 的最後一則訊息：\n{text}"
   undo:
     nothing: "沒有可復原的內容。"
     removed: "↩️ 已復原 {turns} 個回合（{count} 則訊息）。\n已備份至：「{preview}」\n複製/編輯上方的文字並傳送，即可從此處重新提問。"
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update 僅在訊息平台上可用。請在終端機執行 `hermes update`。"
     not_git_repo: "✗ 不是 git 儲存庫 — 無法更新。"
-    hermes_cmd_not_found: "✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
+    hermes_cmd_not_found: "✗ 找不到 `hermes` 指令。{agent_name} 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
     start_failed: "✗ 啟動更新失敗：{error}"
     already_running: "⏳ 已有更新正在進行；只有啟動它的人可以回答它的提問。請等它完成後再試一次 /update。"
-    starting: "☤ 正在啟動 Hermes 更新…… 進度將在此處顯示。"
+    starting: "☤ 正在啟動 {agent_name} 更新…… 進度將在此處顯示。"
     reply_failed: "✗ 無法將回應送至更新程序：{error}"
     reply_sent: "✓ 已將 `{label}` 送至更新程序。"
-    failed_notice: "❌ Hermes 更新失敗；先前的版本仍在執行。在主機上執行 `hermes update` 查看完整錯誤，或稍後再試 /update。"
+    failed_notice: "❌ {agent_name} 更新失敗；先前的版本仍在執行。在主機上執行 `hermes update` 查看完整錯誤，或稍後再試 /update。"
     prompt_default: "（預設：{default}）"
     prompt: "☤ **更新需要你的輸入：**\n\n{prompt}{default_hint}\n\n回覆 `{prefix}approve`（是）或 `{prefix}deny`（否），或直接輸入你的答案。"
-    finished: "✅ Hermes 更新完成。"
-    timed_out: "❌ Hermes 更新已逾時（30 分鐘）。"
-    finished_success: "✅ Hermes 更新已成功完成。"
+    finished: "✅ {agent_name} 更新完成。"
+    timed_out: "❌ {agent_name} 更新已逾時（30 分鐘）。"
+    finished_success: "✅ {agent_name} 更新已成功完成。"
     last_lines: "{msg}\n\n最後幾行：\n```\n{tail}\n```"
     managed_action: "更新 Hermes Agent"
     not_applicable: "✗ `hermes update` 不適用於此安裝方式（{method}）。\n請改用：{command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "無"
     unknown_value: "未知"
   exec_approval:
-    header: "Hermes 想執行一個需要你批准的指令"
+    header: "{agent_name} 想執行一個需要你批准的指令"
     reason_label: "標記原因"
     default_reason: "危險指令"
     smart_deny_line: "智慧拒絕：擁有者覆寫僅適用於這一次操作。"
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "（回應格式化失敗，以純文字顯示：）\n\n{content}"
     turn_error: "抱歉，我遇到了錯誤。"
     context_injection_refused: "上下文注入已被拒絕。"
-    no_home_channel: "📬 {platform} 尚未設定主頻道。主頻道是 Hermes 傳送排程任務結果與跨平台訊息的地方。\n\n輸入 {sethome_cmd} 將這個聊天設為主頻道，或忽略此訊息以略過。"
+    no_home_channel: "📬 {platform} 尚未設定主頻道。主頻道是 {agent_name} 傳送排程任務結果與跨平台訊息的地方。\n\n輸入 {sethome_cmd} 將這個聊天設為主頻道，或忽略此訊息以略過。"
   unauthorized:
     action_notice: "這個 bot 是私人的，而你不在允許清單中。如果你是擁有者，請在主機上執行 `hermes pairing approve {platform} <request-id>`（`hermes pairing list` 可查看 id）。"
     admin_only_can_run: "你可以執行："
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ AI 模型服務拒絕了這個請求。請試著換個說法，或使用 /model 切換模型。"
     connection_interrupted: "⚠️ 與 AI 模型服務的連線在請求途中中斷 — 通常是暫時性的。請使用 /retry 重試；若持續發生，請在主機上執行 `hermes doctor`。"
     unreachable: "⚠️ 目前無法連上 AI 模型服務 — 設定的模型端點未在執行或無法連線。請稍候再使用 /retry；若問題持續，請在主機上執行 `hermes doctor`。"
-    connection_unknown: "⚠️ Hermes 無法連上 AI 模型服務（SDK 未提供更多細節）。請使用 /retry 重試；若問題持續，請在主機上執行 `hermes doctor`。"
+    connection_unknown: "⚠️ {agent_name} 無法連上 AI 模型服務（SDK 未提供更多細節）。請使用 /retry 重試；若問題持續，請在主機上執行 `hermes doctor`。"
     context_overflow: "⚠️ 這段對話已過長，我無法一次讀完。請使用 /compress 壓縮歷史紀錄，或使用 /new 開始新的對話。"
     usage_limit_resets: "⏱️ 已達 AI 模型服務的用量上限，將於 {window} 後重置。之後請使用 /retry，或使用 /model 切換模型。"
     provider_kept_failing: "⚠️ AI 模型服務持續失敗。請使用 /retry 重試，或使用 /model 切換模型。詳細資訊請見閘道日誌（`hermes logs`）。"
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ 本輪準備工作卡住且代理沒有任何活動，已取消。請重新傳送你的訊息。"
     setup_waiting: "⏳ 本輪仍在啟動中（{minutes} 分鐘，代理尚無活動）。你的訊息已排入佇列。使用 /stop 可取消本輪及佇列中的全部訊息。"
     behavior_queue_short: "排入下一輪佇列"
-    behavior_queue_long: "Hermes 忙碌時，訊息會排入下一輪的佇列。"
+    behavior_queue_long: "{agent_name} 忙碌時，訊息會排入下一輪的佇列。"
     behavior_steer_short: "引導至目前的執行（於下一次工具呼叫後）"
     behavior_steer_long: "訊息會被引導至目前的執行（於下一次工具呼叫後）。"
     behavior_interrupt_short: "中斷目前的執行"
-    behavior_interrupt_long: "Hermes 忙碌時，訊息會中斷目前的執行。"
+    behavior_interrupt_long: "{agent_name} 忙碌時，訊息會中斷目前的執行。"
     status: "**忙碌輸入模式：`{mode}`\n忙碌時的訊息：_{behavior}_\n可用 `/busy queue`、`/busy steer` 或 `/busy interrupt` 變更。"
     unknown_mode: "未知模式 `{arg}`。請使用 `/busy queue`、`/busy steer` 或 `/busy interrupt`。"
     save_failed: "忙碌輸入模式無法儲存至設定。模式未變更。"
     set: "忙碌輸入模式已設為 **`{mode}`**（已儲存）。\n_{behavior}_"
   pause:
     resumed: "▶️ 已恢復 — 重新開始接受新工作。"
-    not_paused: "Hermes 並未暫停。"
+    not_paused: "{agent_name} 並未暫停。"
     reason_suffix: " （原因：{reason}）"
-    already_paused: "⏸️ Hermes 已處於暫停狀態{suffix}。使用 `/pause off` 恢復。"
+    already_paused: "⏸️ {agent_name} 已處於暫停狀態{suffix}。使用 `/pause off` 恢復。"
     paused: "⏸️ 已暫停{suffix}。新的排程／kanban／閘道工作將暫緩；進行中的工作會正常完成。使用 `/pause off` 恢復。"
   queue:
     usage: "用法：/queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "已完成"
     task_status_error: "錯誤"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes 正在處理"
+    task_card_title: "{agent_name} 正在處理"
   pairing:
     validity_hour: "{hours} 小時"
     validity_hours: "{hours} 小時"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "關閉中"
     action_restarting: "重新啟動中"
-    cron_interrupted: "⚠️ 排程任務 '{job}' 因 Hermes 正在{action}而中斷；本次沒有結果。它會依排程再次執行，或在 Hermes 恢復後用 `hermes cron run {job}` 立即執行。"
-    notice_shutdown: "⚠️ Hermes 正在關閉 — 你目前的任務將被中斷。恢復上線後，傳送任何訊息，我會試著從中斷處繼續。"
-    notice_restart: "⚠️ Hermes 正在重新啟動 — 你目前的任務將被中斷。重新啟動後傳送任何訊息，我會試著從中斷處繼續。"
+    cron_interrupted: "⚠️ 排程任務 '{job}' 因 {agent_name} 正在{action}而中斷；本次沒有結果。它會依排程再次執行，或在 {agent_name} 恢復後用 `hermes cron run {job}` 立即執行。"
+    notice_shutdown: "⚠️ {agent_name} 正在關閉 — 你目前的任務將被中斷。恢復上線後，傳送任何訊息，我會試著從中斷處繼續。"
+    notice_restart: "⚠️ {agent_name} 正在重新啟動 — 你目前的任務將被中斷。重新啟動後傳送任何訊息，我會試著從中斷處繼續。"
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ 閘道已成功重新啟動。你的工作階段將繼續。"
-    online: "♻️ 閘道已上線 — Hermes 已恢復並準備就緒。"
+    online: "♻️ 閘道已上線 — {agent_name} 已恢復並準備就緒。"
     db_corrupt: "⚠️ 偵測到工作階段資料庫損毀。訊息可能無法保存。復原選項：\n1. 執行 `hermes {profile_arg}doctor --fix`\n2. 停止閘道，然後以下列指令復原：\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   （若回報可復原）hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — 復原前會先為受損檔案建立快照；切勿對線上的 state.db 執行 `sqlite3 ... \".recover\"`，有漏洞的 sqlite3 CLI 可能使其進一步損毀\n3. 從 {backups_dir}/ 中的備份還原\n執行 `hermes {profile_arg}doctor` 可取得去識別化的診斷資訊。"
     db_fts_corrupt: "⚠️ 工作階段資料庫回報的損毀錯誤僅限於搜尋索引（FTS5）；訊息資料表並未受損。修復前訊息可能無法保存：請執行 `hermes {profile_arg}doctor --fix`，然後重新啟動閘道。除非 `hermes {profile_arg}doctor` 確認有損毀，否則請勿執行復原工具或還原備份。"
     db_then_restart: "{action} 然後執行 `hermes {profile_arg}gateway restart`。"
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[回應已在串流後轉換]\n"
   discord:
     approval:
-      question: "要讓 Hermes 執行這個指令嗎？"
+      question: "要讓 {agent_name} 執行這個指令嗎？"
       requested_command_label: "要求執行的指令："
       confirm_title: "確認"
       already_resolved: "這個批准請求已處理過～"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "已取消"
     prompt:
       truncated_marker: "... [已截斷]"
-      clarify_title: "Hermes 需要你的輸入"
+      clarify_title: "{agent_name} 需要你的輸入"
       clarify_hint_buttons: "從下方選一個，或點 ✏️ 其他 來輸入自訂回答。"
       clarify_hint_text: "請在此頻道回覆你的答案。"
       default_hint: " (預設：{default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "開始新對話"
         followup: "已開始新對話～"
       reset:
-        description: "重設你的 Hermes 工作階段"
+        description: "重設你的 {agent_name} 工作階段"
         followup: "工作階段已重設～"
       model:
         description: "顯示或變更模型"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "移除最後一輪對話"
       status:
-        description: "顯示 Hermes 工作階段狀態"
+        description: "顯示 {agent_name} 工作階段狀態"
         followup: "狀態已送出～"
       stop:
-        description: "停止執行中的 Hermes 代理"
+        description: "停止執行中的 {agent_name} 代理"
         followup: "已要求停止～"
       steer:
         description: "在下一次工具呼叫後插入訊息（不中斷）"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "已開始更新～"
       restart:
-        description: "平順地重新啟動 Hermes 閘道"
+        description: "平順地重新啟動 {agent_name} 閘道"
         followup: "已要求重新啟動～"
       approve:
         arg_scope: "選填：'all'、'session'、'always'、'all session'、'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "拒絕待處理的危險指令"
         arg_scope: "選填：'all' 可拒絕所有待處理指令"
       thread:
-        description: "建立新討論串並在其中開始 Hermes 工作階段"
+        description: "建立新討論串並在其中開始 {agent_name} 工作階段"
         arg_name: "討論串名稱"
-        arg_message: "選填：在討論串中傳給 Hermes 的第一則訊息"
+        arg_message: "選填：在討論串中傳給 {agent_name} 的第一則訊息"
         arg_auto_archive: "自動封存時間（分鐘：60、1440、4320、10080）"
         error_unknown: "未知錯誤"
         failed: "建立討論串失敗：{error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "要在不中斷的情況下回答的附帶問題"
         followup: "附帶問題已送出～"
       skill:
-        description: "執行 Hermes 技能"
+        description: "執行 {agent_name} 技能"
         arg_name: "要執行的技能"
         arg_args: "選填：技能的引數"
         unknown: "未知技能：`{name}`。開始輸入即可取得自動完成建議。"
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ 未授權的 Discord 斜線指令嘗試\n使用者：{user_name}（{user_id}）\n頻道：{chan_id}（guild {guild_id}）\n指令：{command_text}\n原因：{reason}"
     thread:
-      seed_message: "🧵 Hermes 建立的討論串：**{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Hermes 交接：**{name}**"
-      auto_create_failed: "⚠️ Hermes 無法為這則訊息建立 Discord 討論串，因此未處理此請求。請重試。"
+      seed_message: "🧵 {agent_name} 建立的討論串：**{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 {agent_name} 交接：**{name}**"
+      auto_create_failed: "⚠️ {agent_name} 無法為這則訊息建立 Discord 討論串，因此未處理此請求。請重試。"
       auto_create_failed_generic: "此請求未處理。請重試。"
     media:
       upload_too_large: "⚠️ 無法附加 `{filename}` — {size_mb} MB 超過 Discord 在此頻道的 {limit_mb} MB 上傳上限。請壓縮檔案或改為分享連結。"
       image_skipped_too_large: "⚠️ 已略過 `{filename}` — {size_mb} MB 超過 Discord 的 {limit_mb} MB 上傳上限。"
   telegram:
     vault_code:
-      body: "請用驗證碼回覆此訊息。Hermes 會立即刪除你的回覆並把驗證碼填入頁面；模型不會看到它。"
+      body: "請用驗證碼回覆此訊息。{agent_name} 會立即刪除你的回覆並把驗證碼填入頁面；模型不會看到它。"
       delete_failed: "無法在此刪除你的回覆，請手動刪除。"
     approval:
       action_once: "✅ 允許一次"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "正在思考..."
       still_working: "仍在處理中…（{elapsed}）"
     task_card:
-      title: "Hermes 正在處理"
+      title: "{agent_name} 正在處理"
     slash:
       reply_truncated: "\n\n_[回覆已截斷：還有 {count} 個部分超過 Slack 的臨時回覆長度限制。]_"
       running: "正在執行 `/{command}`…"
     handoff:
-      seed: ":thread: Hermes 交接 — *{name}*"
+      seed: ":thread: {agent_name} 交接 — *{name}*"
   matrix:
     handoff:
-      default_name: "Hermes 工作階段"
+      default_name: "{agent_name} 工作階段"
     media:
       image_download_failed: "我無法下載圖片並上傳到 Matrix。來源 URL 可能含有私密 token，因此未顯示。"
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "只有提出此操作的使用者可以使用這些控制項。"
   feishu:
     clarify:
-      title: "Hermes 需要你的輸入"
+      title: "{agent_name} 需要你的輸入"
       other: "✏️ 其他（輸入答案）"
       awaiting_typed: "等待 {user} 輸入回應…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "問題"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes 正在思考…"
+      thinking: "{agent_name} 正在思考…"
       interrupted: "（已中斷）"
       no_reply: "（沒有回覆）"
     attachment_fallback:

@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Щоб завантажити повні журнали, використайте `hermes debug share --nous` з CLI."
     share_hint: "Поділіться цими посиланнями з командою Hermes для отримання підтримки."
     report_label: "Звіт"
-    local_refused: "`/debug local` залишає звіт на машині, де працює Hermes, тому недоступна з чату. Надішліть `/debug upload`, щоб завантажити короткий звіт."
+    local_refused: "`/debug local` залишає звіт на машині, де працює {agent_name}, тому недоступна з чату. Надішліть `/debug upload`, щоб завантажити короткий звіт."
     upload_hint: "Нічого не завантажено. Надішліть `/debug upload`, щоб завантажити короткий звіт."
     upload_hint_local: "Нічого не завантажено. Надішліть `/debug upload`, щоб завантажити короткий звіт, або `/debug local`, щоб переглянути його тут."
     nous_refused: "Нічого не завантажено. Приватне завантаження до Nous звідси недоступне: виконайте `hermes debug share --nous` у терміналі або скористайтеся Send diagnostics у настільному застосунку. `/debug upload` натомість завантажить короткий звіт у публічний paste."
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ Ціль встановлено (бюджет {budget} ходів): {goal}\nЯ продовжуватиму працювати, доки ціль не буде досягнута, ви її не призупините/очистите, або бюджет не вичерпається.\nКерування: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add потребує явно налаштованого адміністратора шлюзу (allow_admin_from для приватних чатів, group_allow_admin_from для груп)."
   help:
-    header: "📖 **Команди Hermes**\n"
+    header: "📖 **Команди {agent_name}**\n"
     skill_header: "\n⚡ **Команди навичок** ({count} активних):"
     more_use_commands: "\n... і ще {count}. Використайте `/commands` для повного списку зі сторінками."
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "База даних сеансів недоступна."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume заблоковано: для цього іменованого сеансу не записано кімнату походження, тому Hermes за замовчуванням не відновить його в поточній кімнаті. Використайте `/resume --cross-room {name}`, якщо ви навмисно хочете перейти межі кімнат."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume заблоковано: для цього іменованого сеансу не записано кімнату походження, тому {agent_name} за замовчуванням не відновить його в поточній кімнаті. Використайте `/resume --cross-room {name}`, якщо ви навмисно хочете перейти межі кімнат."
     matrix_blocked_other_room: "⚠️ Matrix /resume заблоковано: цей сеанс належить іншій кімнаті Matrix ({room}). Використайте `/resume --cross-room {name}`, якщо ви навмисно хочете відновити його тут."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume заблоковано: '**{name}**' належить іншому користувачу або чату. Відновлювати можна лише сеанси з цього чату."
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "Кеш промпту: може бути ще активним до {until} (щонайбільше {remaining}; {ttl}, {confidence})."
     cache_unknown_moved: "Кеш промпту: невідомо (маршрут, сесія або контекст змінилися після останнього кешованого запиту)."
     cache_unknown_route: "Кеш промпту: невідомо (цей провайдер не публікує термін зберігання кешу)."
-    cache_unknown_runtime: "Кеш промпту: невідомо (це середовище виконання задає власні параметри кешу, яких Hermes не бачить)."
+    cache_unknown_runtime: "Кеш промпту: невідомо (це середовище виконання задає власні параметри кешу, яких {agent_name} не бачить)."
     cache_unknown_storage: "Кеш промпту: невідомо (не вдалося прочитати сховище сесії)."
     cache_warming_off: "Keep-alive: вимк. (два промахи)."
     cache_tier_pending: "Рівень: 5m до першої паузи довше 5 хвилин, потім 1h."
@@ -450,7 +450,7 @@ gateway:
       declared: "запитано"
       assumed: "припущено"
   status:
-    header: "📊 **Стан Hermes Gateway**"
+    header: "📊 **Стан {agent_name} Gateway**"
     matrix_scope_header: "**Область Matrix:**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "Telegram topics увімкнено, але користувачам не дозволено створювати topics.\n\nВідкрийте @BotFather → виберіть свого бота → Bot Settings → Threads Settings, потім вимкніть 'Disallow users to create new threads'.\n\nПотім надішліть /topic знову."
     enable_failed: "Не вдалося ввімкнути режим Telegram topic: {error}"
     bound_status: "Цей topic пов'язано з:\nСесія: {label}\nID: {session_id}\n\nВикористовуйте /new, щоб замінити цей topic новою сесією.\nДля паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
-    thread_ready: "Багатосесійні Telegram topics увімкнено.\n\nЦей topic використовуватиметься як незалежна сесія Hermes. Використовуйте /new, щоб замінити поточну сесію цього topic. Для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
+    thread_ready: "Багатосесійні Telegram topics увімкнено.\n\nЦей topic використовуватиметься як незалежна сесія {agent_name}. Використовуйте /new, щоб замінити поточну сесію цього topic. Для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
     untitled_session: "Сесія без назви"
     restore_step_1: "1. Створіть або відкрийте topic. Щоб створити новий, відкрийте All Messages і надішліть там будь-яке повідомлення."
     restore_step_2: "2. Надішліть /topic <session-id> усередині цього topic."
-    default_title: "Чат Hermes"
-    root_lobby: "Цей головний чат зарезервовано для системних команд.\n\nЩоб почати новий чат з Hermes, відкрийте topic All Messages угорі інтерфейсу бота й надішліть там будь-яке повідомлення. Telegram створить для нього новий topic; кожен topic працює як незалежний сеанс Hermes."
-    root_new: "Щоб почати новий паралельний чат з Hermes, відкрийте topic All Messages угорі інтерфейсу бота й надішліть там будь-яке повідомлення. Telegram створить для нього новий topic.\n\nКожен topic — це незалежний сеанс Hermes. Використовуйте /new усередині наявного topic лише якщо хочете замінити його поточний сеанс."
-    new_header: "У цьому topic розпочато новий сеанс Hermes.\n\nПорада: для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити окремий topic, замість /new тут. /new замінює сеанс, прив'язаний до поточного topic."
-    help: "/topic — увімкнути багатосеансний режим у приватному чаті (один бот, багато паралельних чатів)\n\nВикористання:\n  /topic             Увімкнути режим topic або показати стан, якщо вже ввімкнено\n  /topic help        Показати це повідомлення\n  /topic off         Вимкнути режим topic і скинути прив'язки\n  /topic <id>        Усередині topic: відновити попередній сеанс за ID\n\nЯк це працює:\n1. Виконайте /topic один раз у цьому приватному чаті — Hermes перевірить, що в BotFather\n   увімкнено Threads Settings, і ввімкне багатосеансний режим.\n2. Натисніть All Messages угорі бота й надішліть будь-яке повідомлення.\n   Telegram створить для нього новий topic; кожен topic —\n   незалежний сеанс Hermes (нова історія, новий контекст).\n3. Кореневий приватний чат стає системним лобі — надсилайте туди /topic, /status,\n   /help, /usage. Звичайні запити пишіть у topic.\n4. /new усередині topic скидає лише сеанс цього topic.\n5. /topic <id> усередині topic відновлює в нього старий сеанс."
+    default_title: "Чат {agent_name}"
+    root_lobby: "Цей головний чат зарезервовано для системних команд.\n\nЩоб почати новий чат з {agent_name}, відкрийте topic All Messages угорі інтерфейсу бота й надішліть там будь-яке повідомлення. Telegram створить для нього новий topic; кожен topic працює як незалежний сеанс {agent_name}."
+    root_new: "Щоб почати новий паралельний чат з {agent_name}, відкрийте topic All Messages угорі інтерфейсу бота й надішліть там будь-яке повідомлення. Telegram створить для нього новий topic.\n\nКожен topic — це незалежний сеанс {agent_name}. Використовуйте /new усередині наявного topic лише якщо хочете замінити його поточний сеанс."
+    new_header: "У цьому topic розпочато новий сеанс {agent_name}.\n\nПорада: для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити окремий topic, замість /new тут. /new замінює сеанс, прив'язаний до поточного topic."
+    help: "/topic — увімкнути багатосеансний режим у приватному чаті (один бот, багато паралельних чатів)\n\nВикористання:\n  /topic             Увімкнути режим topic або показати стан, якщо вже ввімкнено\n  /topic help        Показати це повідомлення\n  /topic off         Вимкнути режим topic і скинути прив'язки\n  /topic <id>        Усередині topic: відновити попередній сеанс за ID\n\nЯк це працює:\n1. Виконайте /topic один раз у цьому приватному чаті — {agent_name} перевірить, що в BotFather\n   увімкнено Threads Settings, і ввімкне багатосеансний режим.\n2. Натисніть All Messages угорі бота й надішліть будь-яке повідомлення.\n   Telegram створить для нього новий topic; кожен topic —\n   незалежний сеанс {agent_name} (нова історія, новий контекст).\n3. Кореневий приватний чат стає системним лобі — надсилайте туди /topic, /status,\n   /help, /usage. Звичайні запити пишіть у topic.\n4. /new усередині topic скидає лише сеанс цього topic.\n5. /topic <id> усередині topic відновлює в нього старий сеанс."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Не вдалося визначити ID чату."
     mode_not_enabled: "Багатосеансний режим topic для цього чату зараз не ввімкнено."
     disable_failed: "Не вдалося вимкнути режим topic: {error}"
-    mode_disabled: "Багатосеансний режим topic для цього чату вимкнено.\n\nНаявні topics у Telegram не видаляються — вони просто перестануть працювати як окремі сеанси. Кореневий приватний чат знову працює як звичайний чат Hermes. Виконайте /topic, щоб увімкнути режим знову."
+    mode_disabled: "Багатосеансний режим topic для цього чату вимкнено.\n\nНаявні topics у Telegram не видаляються — вони просто перестануть працювати як окремі сеанси. Кореневий приватний чат знову працює як звичайний чат {agent_name}. Виконайте /topic, щоб увімкнути режим знову."
     status_enabled: "Багатосеансні Telegram topics увімкнено."
-    status_how_to: "Щоб створити новий чат з Hermes, відкрийте All Messages угорі інтерфейсу бота й надішліть там будь-яке повідомлення. Telegram створить для нього новий topic."
+    status_how_to: "Щоб створити новий чат з {agent_name}, відкрийте All Messages угорі інтерфейсу бота й надішліть там будь-яке повідомлення. Telegram створить для нього новий topic."
     previous_unlinked: "Попередні неприв'язані сеанси:"
     restore_one: "Щоб відновити один із них:"
     restore_example: "Приклад: надішліть /topic {session_id} усередині topic."
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "Цей сеанс не належить цьому користувачеві Telegram."
     already_linked: "Цей сеанс уже прив'язано до іншого topic у Telegram."
     restored: "Сеанс відновлено: {title}"
-    restored_last_message: "\n\nОстаннє повідомлення Hermes:\n{text}"
+    restored_last_message: "\n\nОстаннє повідомлення {agent_name}:\n{text}"
   undo:
     nothing: "Немає чого скасовувати."
     removed: "↩️ Скасовано ходів: {turns} (повідомлень: {count}).\nРезервна копія: «{preview}»\nСкопіюйте/відредагуйте текст вище та надішліть його, щоб запитати знову звідси."
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update доступний лише на платформах обміну повідомленнями. Виконайте `hermes update` у терміналі."
     not_git_repo: "✗ Не git-репозиторій — оновлення неможливе."
-    hermes_cmd_not_found: "✗ Не вдалося знайти команду `hermes`. Hermes запущено, але команда оновлення не знайшла виконуваний файл у PATH або через поточний інтерпретатор Python. Спробуйте виконати `hermes update` вручну у вашому терміналі."
+    hermes_cmd_not_found: "✗ Не вдалося знайти команду `hermes`. {agent_name} запущено, але команда оновлення не знайшла виконуваний файл у PATH або через поточний інтерпретатор Python. Спробуйте виконати `hermes update` вручну у вашому терміналі."
     start_failed: "✗ Не вдалося запустити оновлення: {error}"
     already_running: "⏳ Оновлення вже виконується; на його запитання відповідає лише той, хто його запустив. Дочекайтеся завершення й повторіть /update."
-    starting: "☤ Запуск оновлення Hermes… Я транслюватиму прогрес сюди."
+    starting: "☤ Запуск оновлення {agent_name}… Я транслюватиму прогрес сюди."
     reply_failed: "✗ Не вдалося надіслати відповідь процесу оновлення: {error}"
     reply_sent: "✓ Надіслано `{label}` процесу оновлення."
-    failed_notice: "❌ Оновлення Hermes не вдалося; попередня версія працює далі. Виконайте `hermes update` на хості, щоб побачити повну помилку, або спробуйте /update пізніше."
+    failed_notice: "❌ Оновлення {agent_name} не вдалося; попередня версія працює далі. Виконайте `hermes update` на хості, щоб побачити повну помилку, або спробуйте /update пізніше."
     prompt_default: " (за замовчуванням: {default})"
     prompt: "☤ **Оновлення потребує вашої відповіді:**\n\n{prompt}{default_hint}\n\nВідповідайте `{prefix}approve` (так) або `{prefix}deny` (ні), або введіть відповідь напряму."
-    finished: "✅ Оновлення Hermes завершено."
-    timed_out: "❌ Час оновлення Hermes вичерпано через 30 хвилин."
-    finished_success: "✅ Оновлення Hermes успішно завершено."
+    finished: "✅ Оновлення {agent_name} завершено."
+    timed_out: "❌ Час оновлення {agent_name} вичерпано через 30 хвилин."
+    finished_success: "✅ Оновлення {agent_name} успішно завершено."
     last_lines: "{msg}\n\nОстанні рядки:\n```\n{tail}\n```"
     managed_action: "оновити Hermes Agent"
     not_applicable: "✗ `hermes update` не застосовується до цієї інсталяції ({method}).\nОновіть командою: {command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "немає"
     unknown_value: "невідомо"
   exec_approval:
-    header: "Hermes хоче виконати команду, яка потребує вашого дозволу"
+    header: "{agent_name} хоче виконати команду, яка потребує вашого дозволу"
     reason_label: "Чому позначено"
     default_reason: "небезпечна команда"
     smart_deny_line: "Smart DENY: перевизначення власника діє лише для цієї однієї операції."
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "(Не вдалося відформатувати відповідь, звичайний текст:)\n\n{content}"
     turn_error: "Вибачте, сталася помилка."
     context_injection_refused: "Впровадження контексту відхилено."
-    no_home_channel: "📬 Для {platform} не задано головний канал. Головний канал — це місце, куди Hermes доставляє результати cron-завдань і міжплатформні повідомлення.\n\nВведіть {sethome_cmd}, щоб зробити цей чат головним каналом, або просто проігноруйте це повідомлення."
+    no_home_channel: "📬 Для {platform} не задано головний канал. Головний канал — це місце, куди {agent_name} доставляє результати cron-завдань і міжплатформні повідомлення.\n\nВведіть {sethome_cmd}, щоб зробити цей чат головним каналом, або просто проігноруйте це повідомлення."
   unauthorized:
     action_notice: "Цей бот приватний, і вас немає в його списку дозволених. Якщо ви його власник, виконайте `hermes pairing approve {platform} <request-id>` на хості (`hermes pairing list` показує id)."
     admin_only_can_run: "Вам доступні: "
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ Сервіс AI-моделі відхилив цей запит. Спробуйте переформулювати повідомлення або скористайтеся /model, щоб змінити модель."
     connection_interrupted: "⚠️ З'єднання із сервісом AI-моделі обірвалося посеред запиту — зазвичай це тимчасово. Скористайтеся /retry, щоб повторити; якщо повторюється, виконайте `hermes doctor` на хості."
     unreachable: "⚠️ Сервіс AI-моделі зараз недоступний — налаштована кінцева точка моделі не запущена або до неї немає доступу. Зачекайте трохи та скористайтеся /retry; якщо проблема не зникає, виконайте `hermes doctor` на хості."
-    connection_unknown: "⚠️ Hermes не зміг з'єднатися із сервісом AI-моделі (SDK не надав подробиць). Скористайтеся /retry, щоб повторити; якщо проблема не зникає, виконайте `hermes doctor` на хості."
+    connection_unknown: "⚠️ {agent_name} не зміг з'єднатися із сервісом AI-моделі (SDK не надав подробиць). Скористайтеся /retry, щоб повторити; якщо проблема не зникає, виконайте `hermes doctor` на хості."
     context_overflow: "⚠️ Ця розмова стала надто довгою, щоб я міг прочитати її цілком. Скористайтеся /compress, щоб скоротити історію, або /new, щоб почати нову розмову."
     usage_limit_resets: "⏱️ Ліміт використання сервісу AI-моделі вичерпано; він скидається через {window}. Після цього скористайтеся /retry або /model, щоб змінити модель."
     provider_kept_failing: "⚠️ Сервіс AI-моделі раз за разом повертав помилку. Скористайтеся /retry, щоб повторити, або /model, щоб змінити модель. Подробиці — в журналі шлюзу (`hermes logs`)."
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ Підготовка ходу зависла без активності агента й була скасована. Надішліть повідомлення ще раз."
     setup_waiting: "⏳ Цей хід ще запускається ({minutes} хв, агент поки не активний). Ваше повідомлення в черзі. Скористайтеся /stop, щоб скасувати його й усе, що в черзі."
     behavior_queue_short: "ставить у чергу на наступний хід"
-    behavior_queue_long: "Поки Hermes зайнятий, повідомлення ставитимуться в чергу на наступний хід."
+    behavior_queue_long: "Поки {agent_name} зайнятий, повідомлення ставитимуться в чергу на наступний хід."
     behavior_steer_short: "скеровує в поточний запуск (після наступного виклику інструмента)"
     behavior_steer_long: "Повідомлення скеровуватимуться в поточний запуск (після наступного виклику інструмента)."
     behavior_interrupt_short: "перериває поточний запуск"
-    behavior_interrupt_long: "Поки Hermes зайнятий, повідомлення перериватимуть поточний запуск."
+    behavior_interrupt_long: "Поки {agent_name} зайнятий, повідомлення перериватимуть поточний запуск."
     status: "**Режим введення під час зайнятості: `{mode}`\nПовідомлення під час зайнятості: _{behavior}_\nЗмінити можна через `/busy queue`, `/busy steer` або `/busy interrupt`."
     unknown_mode: "Невідомий режим `{arg}`. Використовуйте `/busy queue`, `/busy steer` або `/busy interrupt`."
     save_failed: "Не вдалося зберегти режим введення під час зайнятості в конфігурацію. Режим не змінено."
     set: "Режим введення під час зайнятості: **`{mode}`** (збережено).\n_{behavior}_"
   pause:
     resumed: "▶️ Відновлено — нова робота знову приймається."
-    not_paused: "Hermes не був на паузі."
+    not_paused: "{agent_name} не був на паузі."
     reason_suffix: " (причина: {reason})"
-    already_paused: "⏸️ Hermes уже на паузі{suffix}. Скористайтеся `/pause off`, щоб відновити."
+    already_paused: "⏸️ {agent_name} уже на паузі{suffix}. Скористайтеся `/pause off`, щоб відновити."
     paused: "⏸️ Пауза{suffix}. Нові завдання cron, kanban і шлюзу призупинено; вже розпочата робота завершується як звичайно. Скористайтеся `/pause off`, щоб відновити."
   queue:
     usage: "Використання: /queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "завершено"
     task_status_error: "помилка"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes працює"
+    task_card_title: "{agent_name} працює"
   pairing:
     validity_hour: "{hours} година"
     validity_hours: "{hours} годин"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "вимикається"
     action_restarting: "перезапускається"
-    cron_interrupted: "⚠️ Заплановане завдання '{job}' перервано, бо Hermes {action}; цього разу результату немає. Воно знову виконається за розкладом, або запустіть його зараз командою `hermes cron run {job}`, коли Hermes знову запрацює."
-    notice_shutdown: "⚠️ Hermes вимикається — ваше поточне завдання буде перервано. Коли він знову буде онлайн, надішліть будь-яке повідомлення, і я спробую продовжити з того місця, де ми зупинилися."
-    notice_restart: "⚠️ Hermes перезапускається — ваше поточне завдання буде перервано. Після перезапуску надішліть будь-яке повідомлення, і я спробую продовжити з того місця, де ви зупинилися."
+    cron_interrupted: "⚠️ Заплановане завдання '{job}' перервано, бо {agent_name} {action}; цього разу результату немає. Воно знову виконається за розкладом, або запустіть його зараз командою `hermes cron run {job}`, коли {agent_name} знову запрацює."
+    notice_shutdown: "⚠️ {agent_name} вимикається — ваше поточне завдання буде перервано. Коли він знову буде онлайн, надішліть будь-яке повідомлення, і я спробую продовжити з того місця, де ми зупинилися."
+    notice_restart: "⚠️ {agent_name} перезапускається — ваше поточне завдання буде перервано. Після перезапуску надішліть будь-яке повідомлення, і я спробую продовжити з того місця, де ви зупинилися."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ Шлюз успішно перезапущено. Ваш сеанс продовжується."
-    online: "♻️ Шлюз онлайн — Hermes повернувся й готовий до роботи."
+    online: "♻️ Шлюз онлайн — {agent_name} повернувся й готовий до роботи."
     db_corrupt: "⚠️ Виявлено пошкодження бази даних сеансів. Повідомлення можуть не зберігатися. Варіанти відновлення:\n1. Виконайте `hermes {profile_arg}doctor --fix`\n2. Зупиніть шлюз, потім відновіть командами:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (якщо повідомляє, що відновлення можливе) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — відновлення спочатку робить знімок пошкодженого файлу; НЕ запускайте `sqlite3 ... \".recover\"` на робочому state.db — вразливий CLI sqlite3 може пошкодити його ще більше\n3. Відновіть із резервної копії в {backups_dir}/\nВиконайте `hermes {profile_arg}doctor` для очищеної діагностики."
     db_fts_corrupt: "⚠️ База даних сеансів повідомила про пошкодження, обмежене пошуковим індексом (FTS5); таблиці повідомлень не пошкоджено. Повідомлення можуть не зберігатися, доки його не полагоджено: виконайте `hermes {profile_arg}doctor --fix`, потім перезапустіть шлюз. Не запускайте інструменти відновлення й не відновлюйте резервну копію, якщо `hermes {profile_arg}doctor` не підтвердить пошкодження."
     db_then_restart: "{action} Потім `hermes {profile_arg}gateway restart`."
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[Відповідь перетворено після потокового виведення]\n"
   discord:
     approval:
-      question: "Дозволити Hermes виконати цю команду?"
+      question: "Дозволити {agent_name} виконати цю команду?"
       requested_command_label: "Запитана команда:"
       confirm_title: "Підтвердження"
       already_resolved: "Це схвалення вже опрацьовано~"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "Скасовано"
     prompt:
       truncated_marker: "... [скорочено]"
-      clarify_title: "Hermes потребує вашої відповіді"
+      clarify_title: "{agent_name} потребує вашої відповіді"
       clarify_hint_buttons: "Виберіть варіант нижче або натисніть ✏️ Інше, щоб ввести власну відповідь."
       clarify_hint_text: "Надішліть відповідь у цьому каналі."
       default_hint: " (за замовчуванням: {default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "Почати нову розмову"
         followup: "Нову розмову почато~"
       reset:
-        description: "Скинути ваш сеанс Hermes"
+        description: "Скинути ваш сеанс {agent_name}"
         followup: "Сеанс скинуто~"
       model:
         description: "Показати або змінити модель"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "Видалити останній обмін"
       status:
-        description: "Показати стан сеансу Hermes"
+        description: "Показати стан сеансу {agent_name}"
         followup: "Стан надіслано~"
       stop:
-        description: "Зупинити запущений агент Hermes"
+        description: "Зупинити запущений агент {agent_name}"
         followup: "Запит на зупинку надіслано~"
       steer:
         description: "Вставити повідомлення після наступного виклику інструмента (без переривання)"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "Оновлення запущено~"
       restart:
-        description: "Коректно перезапустити шлюз Hermes"
+        description: "Коректно перезапустити шлюз {agent_name}"
         followup: "Запит на перезапуск надіслано~"
       approve:
         arg_scope: "Необов'язково: 'all', 'session', 'always', 'all session', 'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "Відхилити небезпечну команду, що очікує схвалення"
         arg_scope: "Необов'язково: 'all', щоб відхилити всі команди в очікуванні"
       thread:
-        description: "Створити новий тред і почати в ньому сеанс Hermes"
+        description: "Створити новий тред і почати в ньому сеанс {agent_name}"
         arg_name: "Назва треду"
-        arg_message: "Необов'язкове перше повідомлення для Hermes у треді"
+        arg_message: "Необов'язкове перше повідомлення для {agent_name} у треді"
         arg_auto_archive: "Автоархівація через N хвилин (60, 1440, 4320, 10080)"
         error_unknown: "невідома помилка"
         failed: "Не вдалося створити тред: {error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "Побіжне питання, на яке відповісти без переривання роботи"
         followup: "Побіжне питання надіслано~"
       skill:
-        description: "Запустити навичку Hermes"
+        description: "Запустити навичку {agent_name}"
         arg_name: "Яку навичку запустити"
         arg_args: "Необов'язкові аргументи для навички"
         unknown: "Невідома навичка: `{name}`. Почніть вводити, щоб побачити підказки автодоповнення."
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ Неавторизована спроба slash-команди в Discord\nКористувач: {user_name} ({user_id})\nКанал: {chan_id} (сервер {guild_id})\nКоманда: {command_text}\nПричина: {reason}"
     thread:
-      seed_message: "🧵 Тред створено Hermes: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Передача від Hermes: **{name}**"
-      auto_create_failed: "⚠️ Hermes не вдалося створити тред Discord для цього повідомлення, тому запит не оброблено. Спробуйте ще раз."
+      seed_message: "🧵 Тред створено {agent_name}: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 Передача від {agent_name}: **{name}**"
+      auto_create_failed: "⚠️ {agent_name} не вдалося створити тред Discord для цього повідомлення, тому запит не оброблено. Спробуйте ще раз."
       auto_create_failed_generic: "Запит не оброблено. Спробуйте ще раз."
     media:
       upload_too_large: "⚠️ Не вдалося прикріпити `{filename}` — {size_mb} МБ перевищує ліміт Discord у {limit_mb} МБ для завантажень у цьому каналі. Стисніть файл або поділіться посиланням."
       image_skipped_too_large: "⚠️ Пропущено `{filename}` — {size_mb} МБ перевищує ліміт Discord у {limit_mb} МБ для завантажень."
   telegram:
     vault_code:
-      body: "Дайте відповідь на це повідомлення кодом. Hermes одразу видалить вашу відповідь і введе код на сторінці; модель його не побачить."
+      body: "Дайте відповідь на це повідомлення кодом. {agent_name} одразу видалить вашу відповідь і введе код на сторінці; модель його не побачить."
       delete_failed: "Не вдалося видалити вашу відповідь. Видаліть її, будь ласка, самі."
     approval:
       action_once: "✅ Один раз"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "думає..."
       still_working: "ще працює… ({elapsed})"
     task_card:
-      title: "Hermes працює"
+      title: "{agent_name} працює"
     slash:
       reply_truncated: "\n\n_[Відповідь обрізано: ще {count} частин(и) перевищили ліміт ефемерних відповідей Slack.]_"
       running: "Виконуємо `/{command}`…"
     handoff:
-      seed: ":thread: Передача Hermes — *{name}*"
+      seed: ":thread: Передача {agent_name} — *{name}*"
   matrix:
     handoff:
-      default_name: "Сеанс Hermes"
+      default_name: "Сеанс {agent_name}"
     media:
       image_download_failed: "Не вдалося завантажити зображення та вивантажити його в Matrix. URL джерела не показано, оскільки він може містити приватні токени."
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "Ці елементи керування доступні лише користувачу, який запросив цю дію."
   feishu:
     clarify:
-      title: "Hermes потребує вашої відповіді"
+      title: "{agent_name} потребує вашої відповіді"
       other: "✏️ Інше (ввести відповідь)"
       awaiting_typed: "Очікуємо текстову відповідь від {user}…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "Питання"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes думає…"
+      thinking: "{agent_name} думає…"
       interrupted: "(перервано)"
       no_reply: "(без відповіді)"
     attachment_fallback:

@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Para subir registros completos, usa `hermes debug share --nous` desde la CLI."
     share_hint: "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
     report_label: "Informe"
-    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug upload` para subir el informe resumido."
+    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta {agent_name}, así que no está disponible desde un chat. Envía `/debug upload` para subir el informe resumido."
     upload_hint: "No se subió nada. Envía `/debug upload` para subir el informe resumido."
     upload_hint_local: "No se subió nada. Envía `/debug upload` para subir el informe resumido, o `/debug local` para verlo aquí."
     nous_refused: "No se subió nada. Las subidas privadas a Nous no están disponibles desde aquí: ejecuta `hermes debug share --nous` en una terminal o usa Send diagnostics en la app de escritorio. `/debug upload` sube el resumen a un paste público en su lugar."
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add requiere un administrador del gateway configurado explícitamente (allow_admin_from para MD, group_allow_admin_from para grupos)."
   help:
-    header: "📖 **Comandos de Hermes**\n"
+    header: "📖 **Comandos de {agent_name}**\n"
     skill_header: "\n⚡ **Comandos de skill** ({count} activos):"
     more_use_commands: "\n... y {count} más. Usa `/commands` para la lista paginada completa."
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "Base de datos de sesiones no disponible."
     parse_error: "⚠️ No se pudo analizar los argumentos de `/resume`: {error}.\nUsa comillas alrededor de títulos con espacios, por ejemplo: `/resume \"Proyecto A Plan\"`."
     matrix_no_named_sessions: "No se encontraron sesiones con nombre para esta sala de Matrix.\nUsa `/title Mi Sesión` para nombrar la sesión de la sala actual, `/resume --all` para listar todas las sesiones de Matrix, o `/resume --cross-room <nombre de sesión>` para cruzar límites de sala explícitamente."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que Hermes no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que {agent_name} no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
     matrix_blocked_other_room: "⚠️ Matrix /resume bloqueado: esa sesión pertenece a una sala de Matrix diferente ({room}). Usa `/resume --cross-room {name}` si quieres reanudarla aquí intencionadamente."
     matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume bloqueado: '**{name}**' pertenece a otro usuario o chat. Solo puedes reanudar sesiones de este chat."
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "Caché del prompt: puede seguir activa hasta {until} (como máximo {remaining} más; {ttl}, {confidence})."
     cache_unknown_moved: "Caché del prompt: desconocida (la ruta, la sesión o el contexto cambiaron desde la última solicitud en caché)."
     cache_unknown_route: "Caché del prompt: desconocida (este proveedor no publica su retención de caché)."
-    cache_unknown_runtime: "Caché del prompt: desconocida (este entorno fija sus propias opciones de caché, que Hermes no puede observar)."
+    cache_unknown_runtime: "Caché del prompt: desconocida (este entorno fija sus propias opciones de caché, que {agent_name} no puede observar)."
     cache_unknown_storage: "Caché del prompt: desconocida (no se pudo leer el almacén de la sesión)."
     cache_warming_off: "Keep-alives: desactivados (fallaron dos veces)."
     cache_tier_pending: "Nivel: 5m hasta la primera pausa de más de 5 minutos, luego 1h."
@@ -450,7 +450,7 @@ gateway:
       declared: "declarado"
       assumed: "supuesto"
   status:
-    header: "📊 **Estado de Hermes Gateway**"
+    header: "📊 **Estado de {agent_name} Gateway**"
     matrix_scope_header: "**Ámbito de Matrix:**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "Los topics de Telegram están habilitados, pero los usuarios no pueden crearlos.\n\nAbre @BotFather → elige tu bot → Bot Settings → Threads Settings, luego desactiva 'Disallow users to create new threads'.\n\nLuego envía /topic de nuevo."
     enable_failed: "No se pudo habilitar el modo topic de Telegram: {error}"
     bound_status: "Este topic está vinculado a:\nSesión: {label}\nID: {session_id}\n\nUsa /new para reemplazar este topic con una sesión nueva.\nPara trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
-    thread_ready: "Los topics multisesión de Telegram están habilitados.\n\nEste topic se usará como una sesión independiente de Hermes. Usa /new para reemplazar la sesión actual de este topic. Para trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
+    thread_ready: "Los topics multisesión de Telegram están habilitados.\n\nEste topic se usará como una sesión independiente de {agent_name}. Usa /new para reemplazar la sesión actual de este topic. Para trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
     untitled_session: "Sesión sin título"
     restore_step_1: "1. Crea o abre un topic. Para crear uno nuevo, abre All Messages y envía cualquier mensaje allí."
     restore_step_2: "2. Envía /topic <session-id> dentro de ese topic."
-    default_title: "Chat de Hermes"
-    root_lobby: "Este chat principal está reservado para comandos del sistema.\n\nPara iniciar un nuevo chat de Hermes, abre el topic All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para ese mensaje; cada topic funciona como una sesión independiente de Hermes."
-    root_new: "Para iniciar un nuevo chat paralelo de Hermes, abre el topic All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para él.\n\nCada topic es una sesión independiente de Hermes. Usa /new dentro de un topic existente solo si quieres reemplazar la sesión actual de ese topic."
-    new_header: "Se inició una nueva sesión de Hermes en este topic.\n\nConsejo: para trabajo paralelo, abre All Messages y envía un mensaje allí para crear un topic aparte en lugar de usar /new aquí. /new reemplaza la sesión vinculada al topic actual."
-    help: "/topic — activa el modo MD multisesión (un bot, muchos chats paralelos)\n\nUso:\n  /topic             Activa el modo topic, o muestra el estado si ya está activo\n  /topic help        Muestra este mensaje\n  /topic off         Desactiva el modo topic y borra las vinculaciones de topics\n  /topic <id>        Dentro de un topic: restaura una sesión anterior por ID\n\nCómo funciona:\n1. Ejecuta /topic una vez en este MD: Hermes comprueba que Threads\n   Settings esté activado en BotFather y enciende el modo multisesión.\n2. Toca All Messages en la parte superior del bot y envía cualquier mensaje.\n   Telegram crea un topic nuevo para ese mensaje; cada topic es\n   una sesión independiente de Hermes (historial y contexto nuevos).\n3. El MD raíz pasa a ser un lobby del sistema: envía allí /topic, /status,\n   /help, /usage. Los prompts normales van en un topic.\n4. /new dentro de un topic reinicia solo la sesión de ese topic.\n5. /topic <id> dentro de un topic restaura en él una sesión antigua."
+    default_title: "Chat de {agent_name}"
+    root_lobby: "Este chat principal está reservado para comandos del sistema.\n\nPara iniciar un nuevo chat de {agent_name}, abre el topic All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para ese mensaje; cada topic funciona como una sesión independiente de {agent_name}."
+    root_new: "Para iniciar un nuevo chat paralelo de {agent_name}, abre el topic All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para él.\n\nCada topic es una sesión independiente de {agent_name}. Usa /new dentro de un topic existente solo si quieres reemplazar la sesión actual de ese topic."
+    new_header: "Se inició una nueva sesión de {agent_name} en este topic.\n\nConsejo: para trabajo paralelo, abre All Messages y envía un mensaje allí para crear un topic aparte en lugar de usar /new aquí. /new reemplaza la sesión vinculada al topic actual."
+    help: "/topic — activa el modo MD multisesión (un bot, muchos chats paralelos)\n\nUso:\n  /topic             Activa el modo topic, o muestra el estado si ya está activo\n  /topic help        Muestra este mensaje\n  /topic off         Desactiva el modo topic y borra las vinculaciones de topics\n  /topic <id>        Dentro de un topic: restaura una sesión anterior por ID\n\nCómo funciona:\n1. Ejecuta /topic una vez en este MD: {agent_name} comprueba que Threads\n   Settings esté activado en BotFather y enciende el modo multisesión.\n2. Toca All Messages en la parte superior del bot y envía cualquier mensaje.\n   Telegram crea un topic nuevo para ese mensaje; cada topic es\n   una sesión independiente de {agent_name} (historial y contexto nuevos).\n3. El MD raíz pasa a ser un lobby del sistema: envía allí /topic, /status,\n   /help, /usage. Los prompts normales van en un topic.\n4. /new dentro de un topic reinicia solo la sesión de ese topic.\n5. /topic <id> dentro de un topic restaura en él una sesión antigua."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "No se pudo determinar el ID del chat."
     mode_not_enabled: "El modo topic multisesión no está activado actualmente en este chat."
     disable_failed: "No se pudo desactivar el modo topic: {error}"
-    mode_disabled: "El modo topic multisesión ahora está DESACTIVADO en este chat.\n\nLos topics existentes en Telegram no se eliminan; simplemente dejarán de tratarse como sesiones independientes. El MD raíz vuelve a funcionar como un chat normal de Hermes. Ejecuta /topic para volver a activarlo más adelante."
+    mode_disabled: "El modo topic multisesión ahora está DESACTIVADO en este chat.\n\nLos topics existentes en Telegram no se eliminan; simplemente dejarán de tratarse como sesiones independientes. El MD raíz vuelve a funcionar como un chat normal de {agent_name}. Ejecuta /topic para volver a activarlo más adelante."
     status_enabled: "Los topics multisesión de Telegram están activados."
-    status_how_to: "Para crear un nuevo chat de Hermes, abre All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para él."
+    status_how_to: "Para crear un nuevo chat de {agent_name}, abre All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para él."
     previous_unlinked: "Sesiones anteriores sin vincular:"
     restore_one: "Para restaurar una:"
     restore_example: "Ejemplo: envía /topic {session_id} dentro de un topic."
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "Esa sesión no pertenece a este usuario de Telegram."
     already_linked: "Esa sesión ya está vinculada a otro topic de Telegram."
     restored: "Sesión restaurada: {title}"
-    restored_last_message: "\n\nÚltimo mensaje de Hermes:\n{text}"
+    restored_last_message: "\n\nÚltimo mensaje de {agent_name}:\n{text}"
   undo:
     nothing: "Nada que deshacer."
     removed: "↩️ {turns} turno(s) deshecho(s) ({count} mensaje(s)).\nRespaldado en: \"{preview}\"\nCopia/edita el texto de arriba y envíalo para volver a preguntar desde aquí."
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
     not_git_repo: "✗ No es un repositorio git — no se puede actualizar."
-    hermes_cmd_not_found: "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
+    hermes_cmd_not_found: "✗ No se pudo localizar el comando `hermes`. {agent_name} está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
     start_failed: "✗ No se pudo iniciar la actualización: {error}"
     already_running: "⏳ Ya hay una actualización en curso; solo quien la inició puede responder sus preguntas. Espera a que termine y vuelve a probar /update."
-    starting: "☤ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
+    starting: "☤ Iniciando la actualización de {agent_name}… Transmitiré el progreso aquí."
     reply_failed: "✗ No se pudo enviar la respuesta al proceso de actualización: {error}"
     reply_sent: "✓ Se envió `{label}` al proceso de actualización."
-    failed_notice: "❌ La actualización de Hermes falló; la versión anterior sigue en ejecución. Ejecuta `hermes update` en el host para ver el error completo, o prueba /update de nuevo más tarde."
+    failed_notice: "❌ La actualización de {agent_name} falló; la versión anterior sigue en ejecución. Ejecuta `hermes update` en el host para ver el error completo, o prueba /update de nuevo más tarde."
     prompt_default: " (predeterminado: {default})"
     prompt: "☤ **La actualización necesita tu respuesta:**\n\n{prompt}{default_hint}\n\nResponde `{prefix}approve` (sí) o `{prefix}deny` (no), o escribe tu respuesta directamente."
-    finished: "✅ Actualización de Hermes terminada."
-    timed_out: "❌ La actualización de Hermes expiró tras 30 minutos."
-    finished_success: "✅ La actualización de Hermes terminó correctamente."
+    finished: "✅ Actualización de {agent_name} terminada."
+    timed_out: "❌ La actualización de {agent_name} expiró tras 30 minutos."
+    finished_success: "✅ La actualización de {agent_name} terminó correctamente."
     last_lines: "{msg}\n\nÚltimas líneas:\n```\n{tail}\n```"
     managed_action: "actualizar Hermes Agent"
     not_applicable: "✗ `hermes update` no aplica a esta instalación ({method}).\nActualiza con: {command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "ninguno"
     unknown_value: "desconocido"
   exec_approval:
-    header: "Hermes quiere ejecutar un comando que necesita tu aprobación"
+    header: "{agent_name} quiere ejecutar un comando que necesita tu aprobación"
     reason_label: "Por qué se marcó"
     default_reason: "comando peligroso"
     smart_deny_line: "DENEGACIÓN inteligente: la anulación del propietario aplica solo a esta operación."
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "(Falló el formato de la respuesta, texto sin formato:)\n\n{content}"
     turn_error: "Lo siento, ocurrió un error."
     context_injection_refused: "Inyección de contexto rechazada."
-    no_home_channel: "📬 No hay un canal principal configurado para {platform}. El canal principal es donde Hermes entrega los resultados de las tareas programadas (cron) y los mensajes entre plataformas.\n\nEscribe {sethome_cmd} para convertir este chat en tu canal principal, o ignora este mensaje para omitirlo."
+    no_home_channel: "📬 No hay un canal principal configurado para {platform}. El canal principal es donde {agent_name} entrega los resultados de las tareas programadas (cron) y los mensajes entre plataformas.\n\nEscribe {sethome_cmd} para convertir este chat en tu canal principal, o ignora este mensaje para omitirlo."
   unauthorized:
     action_notice: "Este bot es privado y no estás en su lista de permitidos. Si eres el propietario, ejecuta `hermes pairing approve {platform} <request-id>` en el host (`hermes pairing list` muestra el id)."
     admin_only_can_run: "Puedes ejecutar: "
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ El servicio del modelo de IA rechazó esta solicitud. Intenta reformular tu mensaje o usa /model para cambiar de modelo."
     connection_interrupted: "⚠️ La conexión con el servicio del modelo de IA se interrumpió a mitad de la solicitud — suele ser pasajero. Usa /retry para intentarlo de nuevo; si sigue ocurriendo, ejecuta `hermes doctor` en el host."
     unreachable: "⚠️ El servicio del modelo de IA no está accesible ahora mismo — el endpoint del modelo configurado no está en ejecución o no responde. Espera un momento y usa /retry; si persiste, ejecuta `hermes doctor` en el host."
-    connection_unknown: "⚠️ Hermes no pudo conectar con el servicio del modelo de IA (el SDK no dio más detalles). Usa /retry para intentarlo de nuevo; si persiste, ejecuta `hermes doctor` en el host."
+    connection_unknown: "⚠️ {agent_name} no pudo conectar con el servicio del modelo de IA (el SDK no dio más detalles). Usa /retry para intentarlo de nuevo; si persiste, ejecuta `hermes doctor` en el host."
     context_overflow: "⚠️ Esta conversación es demasiado larga para leerla de una sola vez. Usa /compress para acortar el historial o /new para empezar una conversación nueva."
     usage_limit_resets: "⏱️ Se alcanzó el límite de uso del servicio del modelo de IA; se restablece en {window}. Usa /retry después de eso, o /model para cambiar de modelo."
     provider_kept_failing: "⚠️ El servicio del modelo de IA siguió fallando. Usa /retry para intentarlo de nuevo o /model para cambiar de modelo. Los detalles están en el registro del gateway (`hermes logs`)."
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ La preparación del turno se atascó sin actividad del agente y se canceló. Vuelve a enviar tu mensaje."
     setup_waiting: "⏳ Este turno aún se está iniciando ({minutes} min, sin actividad del agente todavía). Tu mensaje está en cola. Usa /stop para cancelarlo junto con todo lo que está en cola."
     behavior_queue_short: "se ponen en cola para el siguiente turno"
-    behavior_queue_long: "Los mensajes se pondrán en cola para el siguiente turno mientras Hermes esté ocupado."
+    behavior_queue_long: "Los mensajes se pondrán en cola para el siguiente turno mientras {agent_name} esté ocupado."
     behavior_steer_short: "se redirigen a la ejecución actual (tras la próxima herramienta)"
     behavior_steer_long: "Los mensajes se redirigirán a la ejecución actual (tras la siguiente llamada a herramienta)."
     behavior_interrupt_short: "interrumpen la ejecución actual"
-    behavior_interrupt_long: "Los mensajes interrumpirán la ejecución actual mientras Hermes esté ocupado."
+    behavior_interrupt_long: "Los mensajes interrumpirán la ejecución actual mientras {agent_name} esté ocupado."
     status: "**Modo de entrada al estar ocupado: `{mode}`\nMensajes mientras está ocupado: _{behavior}_\nCámbialo con `/busy queue`, `/busy steer` o `/busy interrupt`."
     unknown_mode: "Modo desconocido `{arg}`. Usa `/busy queue`, `/busy steer` o `/busy interrupt`."
     save_failed: "No se pudo guardar el modo de entrada al estar ocupado en la configuración. El modo no cambió."
     set: "Modo de entrada al estar ocupado establecido en **`{mode}`** (guardado).\n_{behavior}_"
   pause:
     resumed: "▶️ Reanudado — se acepta trabajo nuevo de nuevo."
-    not_paused: "Hermes no estaba pausado."
+    not_paused: "{agent_name} no estaba pausado."
     reason_suffix: " (motivo: {reason})"
-    already_paused: "⏸️ Hermes ya está pausado{suffix}. Usa `/pause off` para reanudar."
+    already_paused: "⏸️ {agent_name} ya está pausado{suffix}. Usa `/pause off` para reanudar."
     paused: "⏸️ Pausado{suffix}. El trabajo nuevo de cron/kanban/gateway queda en espera; el trabajo en curso termina con normalidad. Usa `/pause off` para reanudar."
   queue:
     usage: "Uso: /queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "completada"
     task_status_error: "error"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes está trabajando"
+    task_card_title: "{agent_name} está trabajando"
   pairing:
     validity_hour: "{hours} hora"
     validity_hours: "{hours} horas"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "apagándose"
     action_restarting: "reiniciándose"
-    cron_interrupted: "⚠️ La tarea programada '{job}' se interrumpió porque Hermes se está {action}; esta vez no hay resultado. Volverá a ejecutarse según lo programado, o puedes lanzarla ahora con `hermes cron run {job}` cuando Hermes vuelva a estar disponible."
-    notice_shutdown: "⚠️ Hermes se está apagando — tu tarea actual se interrumpirá. Cuando vuelva a estar en línea, envía cualquier mensaje e intentaré continuar donde lo dejamos."
-    notice_restart: "⚠️ Hermes se está reiniciando — tu tarea actual se interrumpirá. Envía cualquier mensaje después del reinicio e intentaré retomar donde lo dejaste."
+    cron_interrupted: "⚠️ La tarea programada '{job}' se interrumpió porque {agent_name} se está {action}; esta vez no hay resultado. Volverá a ejecutarse según lo programado, o puedes lanzarla ahora con `hermes cron run {job}` cuando {agent_name} vuelva a estar disponible."
+    notice_shutdown: "⚠️ {agent_name} se está apagando — tu tarea actual se interrumpirá. Cuando vuelva a estar en línea, envía cualquier mensaje e intentaré continuar donde lo dejamos."
+    notice_restart: "⚠️ {agent_name} se está reiniciando — tu tarea actual se interrumpirá. Envía cualquier mensaje después del reinicio e intentaré retomar donde lo dejaste."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ Gateway reiniciado correctamente. Tu sesión continúa."
-    online: "♻️ Gateway en línea — Hermes está de vuelta y listo."
+    online: "♻️ Gateway en línea — {agent_name} está de vuelta y listo."
     db_corrupt: "⚠️ Se detectó corrupción en la base de datos de sesiones. Es posible que los mensajes no se guarden. Opciones de recuperación:\n1. Ejecuta `hermes {profile_arg}doctor --fix`\n2. Detén el gateway y luego recupera con:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (si indica que es recuperable) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — la recuperación primero toma una instantánea del archivo dañado; NO ejecutes `sqlite3 ... \".recover\"` sobre el state.db en uso, una CLI sqlite3 vulnerable puede dañarlo aún más\n3. Restaura una copia de seguridad desde {backups_dir}/\nEjecuta `hermes {profile_arg}doctor` para obtener diagnósticos anonimizados."
     db_fts_corrupt: "⚠️ La base de datos de sesiones informó un error de corrupción limitado al índice de búsqueda (FTS5); las tablas de mensajes no están dañadas. Es posible que los mensajes no se guarden hasta repararlo: ejecuta `hermes {profile_arg}doctor --fix` y luego reinicia el gateway. No ejecutes herramientas de recuperación ni restaures una copia de seguridad a menos que `hermes {profile_arg}doctor` confirme daños."
     db_then_restart: "{action} Luego ejecuta `hermes {profile_arg}gateway restart`."
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[Respuesta transformada después del streaming]\n"
   discord:
     approval:
-      question: "¿Quieres que Hermes ejecute este comando?"
+      question: "¿Quieres que {agent_name} ejecute este comando?"
       requested_command_label: "Comando solicitado:"
       confirm_title: "Confirmar"
       already_resolved: "Esta aprobación ya se resolvió~"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "Cancelado"
     prompt:
       truncated_marker: "... [truncado]"
-      clarify_title: "Hermes necesita tu respuesta"
+      clarify_title: "{agent_name} necesita tu respuesta"
       clarify_hint_buttons: "Elige una opción abajo o haz clic en ✏️ Otra para escribir una respuesta personalizada."
       clarify_hint_text: "Responde en este canal con tu respuesta."
       default_hint: " (predeterminado: {default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "Iniciar una conversación nueva"
         followup: "Nueva conversación iniciada~"
       reset:
-        description: "Restablecer tu sesión de Hermes"
+        description: "Restablecer tu sesión de {agent_name}"
         followup: "Sesión restablecida~"
       model:
         description: "Mostrar o cambiar el modelo"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "Eliminar el último intercambio"
       status:
-        description: "Mostrar el estado de la sesión de Hermes"
+        description: "Mostrar el estado de la sesión de {agent_name}"
         followup: "Estado enviado~"
       stop:
-        description: "Detener el agente Hermes en ejecución"
+        description: "Detener el agente {agent_name} en ejecución"
         followup: "Detención solicitada~"
       steer:
         description: "Inyectar un mensaje tras la próxima llamada a herramienta (sin interrumpir)"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "Actualización iniciada~"
       restart:
-        description: "Reiniciar el gateway de Hermes de forma ordenada"
+        description: "Reiniciar el gateway de {agent_name} de forma ordenada"
         followup: "Reinicio solicitado~"
       approve:
         arg_scope: "Opcional: 'all', 'session', 'always', 'all session', 'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "Denegar un comando peligroso pendiente"
         arg_scope: "Opcional: 'all' para denegar todos los comandos pendientes"
       thread:
-        description: "Crear un hilo nuevo e iniciar en él una sesión de Hermes"
+        description: "Crear un hilo nuevo e iniciar en él una sesión de {agent_name}"
         arg_name: "Nombre del hilo"
-        arg_message: "Primer mensaje opcional para enviar a Hermes en el hilo"
+        arg_message: "Primer mensaje opcional para enviar a {agent_name} en el hilo"
         arg_auto_archive: "Archivado automático en minutos (60, 1440, 4320, 10080)"
         error_unknown: "error desconocido"
         failed: "No se pudo crear el hilo: {error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "La pregunta aparte que se responderá sin interrumpir"
         followup: "Pregunta aparte enviada~"
       skill:
-        description: "Ejecutar una skill de Hermes"
+        description: "Ejecutar una skill de {agent_name}"
         arg_name: "Qué skill ejecutar"
         arg_args: "Argumentos opcionales para la skill"
         unknown: "Skill desconocida: `{name}`. Empieza a escribir para ver sugerencias de autocompletado."
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ Intento de comando slash de Discord no autorizado\nUsuario: {user_name} ({user_id})\nCanal: {chan_id} (servidor {guild_id})\nComando: {command_text}\nMotivo: {reason}"
     thread:
-      seed_message: "🧵 Hilo creado por Hermes: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Traspaso de Hermes: **{name}**"
-      auto_create_failed: "⚠️ Hermes no pudo crear un hilo de Discord para este mensaje, así que la solicitud no se procesó. Vuelve a intentarlo."
+      seed_message: "🧵 Hilo creado por {agent_name}: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 Traspaso de {agent_name}: **{name}**"
+      auto_create_failed: "⚠️ {agent_name} no pudo crear un hilo de Discord para este mensaje, así que la solicitud no se procesó. Vuelve a intentarlo."
       auto_create_failed_generic: "La solicitud no se procesó. Vuelve a intentarlo."
     media:
       upload_too_large: "⚠️ No se pudo adjuntar `{filename}` — {size_mb} MB supera el límite de subida de Discord de {limit_mb} MB para este canal. Comprime el archivo o comparte un enlace."
       image_skipped_too_large: "⚠️ Se omitió `{filename}` — {size_mb} MB supera el límite de subida de Discord de {limit_mb} MB."
   telegram:
     vault_code:
-      body: "Responde a este mensaje con el código. Hermes borra tu respuesta de inmediato e introduce el código en la página; el modelo nunca lo ve."
+      body: "Responde a este mensaje con el código. {agent_name} borra tu respuesta de inmediato e introduce el código en la página; el modelo nunca lo ve."
       delete_failed: "No se pudo borrar tu respuesta aquí. Bórrala tú, por favor."
     approval:
       action_once: "✅ Permitir una vez"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "está pensando..."
       still_working: "sigue trabajando… ({elapsed})"
     task_card:
-      title: "Hermes está trabajando"
+      title: "{agent_name} está trabajando"
     slash:
       reply_truncated: "\n\n_[Respuesta truncada: {count} parte(s) más superaron el límite de respuestas efímeras de Slack.]_"
       running: "Ejecutando `/{command}`…"
     handoff:
-      seed: ":thread: Traspaso de Hermes — *{name}*"
+      seed: ":thread: Traspaso de {agent_name} — *{name}*"
   matrix:
     handoff:
-      default_name: "Sesión de Hermes"
+      default_name: "Sesión de {agent_name}"
     media:
       image_download_failed: "No pude descargar y subir la imagen a Matrix. No se muestra la URL de origen porque podría contener tokens privados."
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "Solo el usuario que solicitó esta acción puede usar estos controles."
   feishu:
     clarify:
-      title: "Hermes necesita tu respuesta"
+      title: "{agent_name} necesita tu respuesta"
       other: "✏️ Otra (escribir respuesta)"
       awaiting_typed: "Esperando la respuesta escrita de {user}…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "Pregunta"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes está pensando…"
+      thinking: "{agent_name} está pensando…"
       interrupted: "(interrumpido)"
       no_reply: "(sin respuesta)"
     attachment_fallback:

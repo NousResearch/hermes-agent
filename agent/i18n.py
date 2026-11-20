@@ -245,11 +245,24 @@ def get_language() -> str:
     return _resolve_language(_current_home())
 
 
+_AGENT_NAME = "{agent_name}"
+
+
+def _agent_display_name() -> str:
+    """The skin's agent name for ``{agent_name}``; ``Hermes`` on a stock install or when the skin can't load."""
+    try:
+        from hermes_cli.skin_engine import agent_display_name  # late: the skin engine reads the profile's config
+        return agent_display_name()
+    except Exception:  # health: allow BLE001 -- a broken skin or config must not break a notice
+        return "Hermes"
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted catalog key to the active (or explicit ``lang``) language.
 
-    ``format_kwargs`` are applied with ``str.format``. Falls back to English,
-    then to the bare key; a format failure returns the unformatted string.
+    ``format_kwargs`` are applied with ``str.format``; ``{agent_name}`` is the active skin's
+    agent name unless the caller passes one. Falls back to English, then to the bare key; a
+    format failure returns the unformatted string.
     """
     home = _current_home()
     target = _normalize_lang(lang, home) if lang else _resolve_language(home)
@@ -259,6 +272,8 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     if value is None:
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
+    if _AGENT_NAME in value and "agent_name" not in format_kwargs:
+        format_kwargs["agent_name"] = _agent_display_name()
     if not format_kwargs:
         return value
     try:

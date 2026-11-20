@@ -442,7 +442,8 @@ def get_active_skin() -> SkinConfig:
             entry = _active_skin_by_home[home_key]
         return entry[1]
     if _active_skin is None:
-        _active_skin = load_skin(_active_skin_name)
+        # Cold unscoped process (the gateway, cron): its own ``display.skin``, as for a routed profile.
+        init_skin_from_config(_profile_config())
     return _active_skin
 
 
@@ -493,6 +494,13 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
 
 def get_active_goodbye(fallback: str = "Goodbye! ☤") -> str:
     return _active_branding("goodbye", fallback)
+
+
+def agent_display_name() -> str:
+    """The agent's name in what it tells people on a messaging platform: the active skin's
+    ``branding.agent_name``, or ``Hermes`` while that is the stock brand, as those texts always read."""
+    name = str(_active_branding("agent_name", "") or "").strip()
+    return name if name and name != _HERMES_BRANDING["agent_name"] else "Hermes"
 
 
 # Palette resolution order for prompt_toolkit styles: (name, skin color key, fallback). A

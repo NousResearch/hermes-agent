@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share --nous` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
-    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug upload` لرفع التقرير الموجز."
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل {agent_name}، لذا فهو غير متاح من المحادثة. أرسل `/debug upload` لرفع التقرير الموجز."
     upload_hint: "لم يُرفع أي شيء. أرسل `/debug upload` لرفع التقرير الموجز."
     upload_hint_local: "لم يُرفع أي شيء. أرسل `/debug upload` لرفع التقرير الموجز، أو `/debug local` لعرضه هنا."
     nous_refused: "لم يُرفع أي شيء. الرفع الخاص إلى Nous غير متاح من هنا: شغّل `hermes debug share --nous` في الطرفية، أو استخدم Send diagnostics في تطبيق سطح المكتب. يرفع `/debug upload` الملخص إلى موقع لصق عام بدلًا من ذلك."
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ حُدِّد الهدف (ميزانية {budget} دور): {goal}\nسأواصل العمل حتى يكتمل الهدف، أو توقفه/تمسحه، أو تنفد الميزانية.\nالتحكم: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ يتطلّب /goal gate add مشرف بوّابة مضبوطًا صراحةً (allow_admin_from للرسائل الخاصة، group_allow_admin_from للمجموعات)."
   help:
-    header: "📖 **أوامر Hermes**\n"
+    header: "📖 **أوامر {agent_name}**\n"
     skill_header: "\n⚡ **أوامر المهارات** ({count} نشطة):"
     more_use_commands: "\n... و{count} آخر. استخدم `/commands` للقائمة الكاملة المُقسّمة إلى صفحات."
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "قاعدة بيانات الجلسات غير متاحة."
     parse_error: "⚠️ تعذّر تحليل وسائط `/resume`: {error}.\nاستخدم علامات اقتباس حول العناوين التي تحتوي مسافات، مثال: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "لم يُعثر على جلسات مُسمّاة لغرفة Matrix هذه.\nاستخدم `/title My Session` لتسمية جلسة الغرفة الحالية، أو `/resume --all` لسرد كل جلسات Matrix، أو `/resume --cross-room <session name>` لتجاوز حدود الغرفة صراحةً."
-    matrix_blocked_no_origin: "⚠️ حُجب /resume في Matrix: هذه الجلسة المُسمّاة لا تملك أصل غرفة مُسجّلًا، لذا لن يستأنفها Hermes داخل الغرفة الحالية افتراضيًا. استخدم `/resume --cross-room {name}` إن كنت تريد عمدًا تجاوز حدود الغرفة."
+    matrix_blocked_no_origin: "⚠️ حُجب /resume في Matrix: هذه الجلسة المُسمّاة لا تملك أصل غرفة مُسجّلًا، لذا لن يستأنفها {agent_name} داخل الغرفة الحالية افتراضيًا. استخدم `/resume --cross-room {name}` إن كنت تريد عمدًا تجاوز حدود الغرفة."
     matrix_blocked_other_room: "⚠️ حُجب /resume في Matrix: تلك الجلسة تخصّ غرفة Matrix مختلفة ({room}). استخدم `/resume --cross-room {name}` إن كنت تريد عمدًا استئنافها هنا."
     matrix_cross_room_success: "⚠️ استئناف عبر الغرف: استُؤنفت **{title}** داخل غرفة Matrix ‏**{room}**.\nستستخدم الرسائل المستقبلية في هذه الغرفة ذلك النص حتى `/reset` أو `/resume` آخر.{msg_part}"
     blocked_not_owner: "⚠️ حُجب /resume: '**{name}**' تخصّ مستخدمًا أو محادثة مختلفة. يمكنك فقط استئناف جلسات هذه المحادثة."
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "ذاكرة الموجه المؤقتة: قد تبقى نشطة حتى {until} (بحد أقصى {remaining} إضافية؛ {ttl}، {confidence})."
     cache_unknown_moved: "ذاكرة التخزين المؤقت للموجه: غير معروفة (تغيّر المسار أو الجلسة أو السياق منذ آخر طلب مخزّن)."
     cache_unknown_route: "ذاكرة التخزين المؤقت للموجه: غير معروفة (هذا المزوّد لا ينشر مدة الاحتفاظ)."
-    cache_unknown_runtime: "ذاكرة الموجه المؤقتة: غير معروفة (بيئة التشغيل هذه تضبط خيارات التخزين المؤقت بنفسها ولا يستطيع Hermes رصدها)."
+    cache_unknown_runtime: "ذاكرة الموجه المؤقتة: غير معروفة (بيئة التشغيل هذه تضبط خيارات التخزين المؤقت بنفسها ولا يستطيع {agent_name} رصدها)."
     cache_unknown_storage: "ذاكرة التخزين المؤقت للموجه: غير معروفة (تعذّرت قراءة مخزن الجلسة)."
     cache_warming_off: "إبقاء النشاط: متوقف (فشل مرتين)."
     cache_tier_pending: "المستوى: 5m حتى أول توقف يتجاوز 5 دقائق، ثم 1h."
@@ -450,7 +450,7 @@ gateway:
       declared: "مُعلَن"
       assumed: "مُفترَض"
   status:
-    header: "📊 **حالة بوابة Hermes**"
+    header: "📊 **حالة بوابة {agent_name}**"
     matrix_scope_header: "**نطاق Matrix:**"
     matrix_scope_room: "  الغرفة: {room}"
     matrix_scope_room_id: "  معرّف الغرفة: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "مواضيع Telegram مُفعّلة، لكن غير مسموح للمستخدمين بإنشاء مواضيع.\n\nافتح @BotFather → اختر البوت → Bot Settings → Threads Settings، ثم أوقف 'Disallow users to create new threads'.\n\nثم أرسل /topic مرة أخرى."
     enable_failed: "فشل تفعيل وضع مواضيع Telegram: {error}"
     bound_status: "هذا الموضوع مرتبط بـ:\nالجلسة: {label}\nالمعرّف: {session_id}\n\nاستخدم /new لاستبدال هذا الموضوع بجلسة جديدة.\nللعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
-    thread_ready: "مواضيع Telegram متعددة الجلسات مُفعّلة.\n\nسيُستخدم هذا الموضوع كجلسة Hermes مستقلة. استخدم /new لاستبدال جلسة هذا الموضوع الحالية. للعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
+    thread_ready: "مواضيع Telegram متعددة الجلسات مُفعّلة.\n\nسيُستخدم هذا الموضوع كجلسة {agent_name} مستقلة. استخدم /new لاستبدال جلسة هذا الموضوع الحالية. للعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
     untitled_session: "جلسة دون عنوان"
     restore_step_1: "1. أنشئ موضوعًا أو افتحه. لإنشاء موضوع جديد، افتح All Messages وأرسل أي رسالة هناك."
     restore_step_2: "2. أرسل /topic <session-id> داخل ذلك الموضوع."
-    default_title: "محادثة Hermes"
-    root_lobby: "هذه المحادثة الرئيسية مخصّصة لأوامر النظام.\n\nلبدء محادثة Hermes جديدة، افتح موضوع All Messages في أعلى واجهة البوت وأرسل أي رسالة هناك. سينشئ Telegram موضوعًا جديدًا لتلك الرسالة؛ ويعمل كل موضوع كجلسة Hermes مستقلة."
-    root_new: "لبدء محادثة Hermes متوازية جديدة، افتح موضوع All Messages في أعلى واجهة البوت وأرسل أي رسالة هناك. سينشئ Telegram موضوعًا جديدًا لها.\n\nكل موضوع جلسة Hermes مستقلة. استخدم /new داخل موضوع موجود فقط إذا أردت استبدال الجلسة الحالية لذلك الموضوع."
-    new_header: "بدأت جلسة Hermes جديدة في هذا الموضوع.\n\nنصيحة: للعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع منفصل بدلًا من استخدام /new هنا. فـ /new يستبدل الجلسة المرتبطة بالموضوع الحالي."
-    help: "/topic — تفعيل وضع الجلسات المتعددة في الرسائل الخاصة (بوت واحد، محادثات متوازية كثيرة)\n\nالاستخدام:\n  /topic             تفعيل وضع المواضيع، أو عرض الحالة إن كان مفعّلًا\n  /topic help        عرض هذه الرسالة\n  /topic off         تعطيل وضع المواضيع ومسح ارتباطاتها\n  /topic <id>        داخل موضوع: استعادة جلسة سابقة بمعرّفها\n\nكيف يعمل:\n1. شغّل /topic مرة واحدة في هذه المحادثة الخاصة — يتحقّق Hermes من تفعيل\n   Threads Settings في BotFather ويشغّل وضع الجلسات المتعددة.\n2. اضغط All Messages في أعلى البوت وأرسل أي رسالة.\n   ينشئ Telegram موضوعًا جديدًا لتلك الرسالة؛ وكل موضوع\n   جلسة Hermes مستقلة (سجل جديد وسياق جديد).\n3. تصبح المحادثة الخاصة الرئيسية ردهة للنظام — أرسل فيها /topic و/status\n   و/help و/usage. أما المطالبات العادية فتُرسل داخل موضوع.\n4. /new داخل موضوع يعيد ضبط جلسة ذلك الموضوع فقط.\n5. /topic <id> داخل موضوع يستعيد جلسة قديمة إليه."
+    default_title: "محادثة {agent_name}"
+    root_lobby: "هذه المحادثة الرئيسية مخصّصة لأوامر النظام.\n\nلبدء محادثة {agent_name} جديدة، افتح موضوع All Messages في أعلى واجهة البوت وأرسل أي رسالة هناك. سينشئ Telegram موضوعًا جديدًا لتلك الرسالة؛ ويعمل كل موضوع كجلسة {agent_name} مستقلة."
+    root_new: "لبدء محادثة {agent_name} متوازية جديدة، افتح موضوع All Messages في أعلى واجهة البوت وأرسل أي رسالة هناك. سينشئ Telegram موضوعًا جديدًا لها.\n\nكل موضوع جلسة {agent_name} مستقلة. استخدم /new داخل موضوع موجود فقط إذا أردت استبدال الجلسة الحالية لذلك الموضوع."
+    new_header: "بدأت جلسة {agent_name} جديدة في هذا الموضوع.\n\nنصيحة: للعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع منفصل بدلًا من استخدام /new هنا. فـ /new يستبدل الجلسة المرتبطة بالموضوع الحالي."
+    help: "/topic — تفعيل وضع الجلسات المتعددة في الرسائل الخاصة (بوت واحد، محادثات متوازية كثيرة)\n\nالاستخدام:\n  /topic             تفعيل وضع المواضيع، أو عرض الحالة إن كان مفعّلًا\n  /topic help        عرض هذه الرسالة\n  /topic off         تعطيل وضع المواضيع ومسح ارتباطاتها\n  /topic <id>        داخل موضوع: استعادة جلسة سابقة بمعرّفها\n\nكيف يعمل:\n1. شغّل /topic مرة واحدة في هذه المحادثة الخاصة — يتحقّق {agent_name} من تفعيل\n   Threads Settings في BotFather ويشغّل وضع الجلسات المتعددة.\n2. اضغط All Messages في أعلى البوت وأرسل أي رسالة.\n   ينشئ Telegram موضوعًا جديدًا لتلك الرسالة؛ وكل موضوع\n   جلسة {agent_name} مستقلة (سجل جديد وسياق جديد).\n3. تصبح المحادثة الخاصة الرئيسية ردهة للنظام — أرسل فيها /topic و/status\n   و/help و/usage. أما المطالبات العادية فتُرسل داخل موضوع.\n4. /new داخل موضوع يعيد ضبط جلسة ذلك الموضوع فقط.\n5. /topic <id> داخل موضوع يستعيد جلسة قديمة إليه."
     setup_image_caption: "في BotFather: Bot Settings → Threads Settings"
     no_chat_id: "تعذّر تحديد معرّف المحادثة."
     mode_not_enabled: "وضع المواضيع متعددة الجلسات غير مفعّل حاليًا لهذه المحادثة."
     disable_failed: "فشل تعطيل وضع المواضيع: {error}"
-    mode_disabled: "أصبح وضع المواضيع متعددة الجلسات معطّلًا لهذه المحادثة.\n\nلن تُحذف المواضيع الموجودة في Telegram — لكنها لن تُعامل بعد الآن كجلسات مستقلة. وتعود المحادثة الخاصة الرئيسية للعمل كمحادثة Hermes عادية. شغّل /topic لإعادة التفعيل لاحقًا."
+    mode_disabled: "أصبح وضع المواضيع متعددة الجلسات معطّلًا لهذه المحادثة.\n\nلن تُحذف المواضيع الموجودة في Telegram — لكنها لن تُعامل بعد الآن كجلسات مستقلة. وتعود المحادثة الخاصة الرئيسية للعمل كمحادثة {agent_name} عادية. شغّل /topic لإعادة التفعيل لاحقًا."
     status_enabled: "مواضيع Telegram متعددة الجلسات مفعّلة."
-    status_how_to: "لإنشاء محادثة Hermes جديدة، افتح All Messages في أعلى واجهة البوت وأرسل أي رسالة هناك. سينشئ Telegram موضوعًا جديدًا لها."
+    status_how_to: "لإنشاء محادثة {agent_name} جديدة، افتح All Messages في أعلى واجهة البوت وأرسل أي رسالة هناك. سينشئ Telegram موضوعًا جديدًا لها."
     previous_unlinked: "الجلسات السابقة غير المرتبطة:"
     restore_one: "لاستعادة إحداها:"
     restore_example: "مثال: أرسل /topic {session_id} داخل موضوع."
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "تلك الجلسة لا تنتمي إلى مستخدم Telegram هذا."
     already_linked: "تلك الجلسة مرتبطة بالفعل بموضوع Telegram آخر."
     restored: "تمت استعادة الجلسة: {title}"
-    restored_last_message: "\n\nآخر رسالة من Hermes:\n{text}"
+    restored_last_message: "\n\nآخر رسالة من {agent_name}:\n{text}"
   undo:
     nothing: "لا شيء للتراجع عنه."
     removed: "↩️ تم التراجع عن {turns} دور ({count} رسالة).\nنُسخ احتياطيًا إلى: \"{preview}\"\nانسخ/عدّل النص أعلاه وأرسله لإعادة التوجيه من هنا."
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update متاح فقط من منصّات المراسلة. شغّل `hermes update` من الطرفية."
     not_git_repo: "✗ ليس مستودع git — لا يمكن التحديث."
-    hermes_cmd_not_found: "✗ تعذّر تحديد موقع أمر `hermes`. Hermes يعمل، لكن أمر التحديث لم يجد الملف التنفيذي على PATH أو عبر مُفسّر Python الحالي. جرّب تشغيل `hermes update` يدويًا في طرفيتك."
+    hermes_cmd_not_found: "✗ تعذّر تحديد موقع أمر `hermes`. {agent_name} يعمل، لكن أمر التحديث لم يجد الملف التنفيذي على PATH أو عبر مُفسّر Python الحالي. جرّب تشغيل `hermes update` يدويًا في طرفيتك."
     start_failed: "✗ فشل بدء التحديث: {error}"
     already_running: "⏳ يوجد تحديث قيد التشغيل بالفعل؛ لا يجيب على أسئلته إلا من بدأه. انتظر حتى ينتهي، ثم جرّب /update مرة أخرى."
-    starting: "☤ جارٍ بدء تحديث Hermes… سأبثّ التقدّم هنا."
+    starting: "☤ جارٍ بدء تحديث {agent_name}… سأبثّ التقدّم هنا."
     reply_failed: "✗ فشل إرسال الردّ إلى عملية التحديث: {error}"
     reply_sent: "✓ أُرسل `{label}` إلى عملية التحديث."
-    failed_notice: "❌ فشل تحديث Hermes؛ الإصدار السابق لا يزال يعمل. شغّل `hermes update` على المضيف لرؤية الخطأ كاملًا، أو جرّب /update لاحقًا."
+    failed_notice: "❌ فشل تحديث {agent_name}؛ الإصدار السابق لا يزال يعمل. شغّل `hermes update` على المضيف لرؤية الخطأ كاملًا، أو جرّب /update لاحقًا."
     prompt_default: " (الافتراضي: {default})"
     prompt: "☤ **التحديث يحتاج إلى ردّك:**\n\n{prompt}{default_hint}\n\nأرسل `{prefix}approve` (نعم) أو `{prefix}deny` (لا)، أو اكتب إجابتك مباشرة."
-    finished: "✅ انتهى تحديث Hermes."
-    timed_out: "❌ انتهت مهلة تحديث Hermes بعد 30 دقيقة."
-    finished_success: "✅ انتهى تحديث Hermes بنجاح."
+    finished: "✅ انتهى تحديث {agent_name}."
+    timed_out: "❌ انتهت مهلة تحديث {agent_name} بعد 30 دقيقة."
+    finished_success: "✅ انتهى تحديث {agent_name} بنجاح."
     last_lines: "{msg}\n\nآخر الأسطر:\n```\n{tail}\n```"
     managed_action: "تحديث Hermes Agent"
     not_applicable: "✗ لا ينطبق `hermes update` على هذا التثبيت ({method}).\nحدّث باستخدام: {command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "لا شيء"
     unknown_value: "غير معروف"
   exec_approval:
-    header: "يريد Hermes تشغيل أمر يحتاج إلى موافقتك"
+    header: "يريد {agent_name} تشغيل أمر يحتاج إلى موافقتك"
     reason_label: "سبب التنبيه"
     default_reason: "أمر خطير"
     smart_deny_line: "رفض ذكي: تجاوز المالك ينطبق على هذه العملية وحدها."
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "(فشل تنسيق الرد، نص عادي:)\n\n{content}"
     turn_error: "عذرًا، واجهت خطأ."
     context_injection_refused: "رُفض حقن السياق."
-    no_home_channel: "📬 لم تُحدَّد قناة رئيسية لـ {platform}. القناة الرئيسية هي المكان الذي يرسل إليه Hermes نتائج المهام المجدولة والرسائل العابرة للمنصات.\n\nاكتب {sethome_cmd} لجعل هذه المحادثة قناتك الرئيسية، أو تجاهل هذا للتخطّي."
+    no_home_channel: "📬 لم تُحدَّد قناة رئيسية لـ {platform}. القناة الرئيسية هي المكان الذي يرسل إليه {agent_name} نتائج المهام المجدولة والرسائل العابرة للمنصات.\n\nاكتب {sethome_cmd} لجعل هذه المحادثة قناتك الرئيسية، أو تجاهل هذا للتخطّي."
   unauthorized:
     action_notice: "هذا البوت خاص ولستَ ضمن قائمة المسموح لهم. إن كنت مالكه، شغّل `hermes pairing approve {platform} <request-id>` على المضيف (يعرض `hermes pairing list` المعرّف)."
     admin_only_can_run: "يمكنك تشغيل: "
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ رفضت خدمة نموذج الذكاء الاصطناعي هذا الطلب. جرّب إعادة صياغة رسالتك، أو استخدم /model لتبديل النموذج."
     connection_interrupted: "⚠️ انقطع الاتصال بخدمة نموذج الذكاء الاصطناعي أثناء الطلب — وهو أمر عابر عادةً. استخدم /retry لإعادة المحاولة؛ وإن تكرّر، شغّل `hermes doctor` على المضيف."
     unreachable: "⚠️ لا يمكن الوصول إلى خدمة نموذج الذكاء الاصطناعي الآن — نقطة نهاية النموذج المُعدّة غير مشغّلة أو غير قابلة للوصول. انتظر قليلًا واستخدم /retry؛ وإن استمرّ الأمر، شغّل `hermes doctor` على المضيف."
-    connection_unknown: "⚠️ تعذّر على Hermes الوصول إلى خدمة نموذج الذكاء الاصطناعي (لا تفاصيل إضافية من SDK). استخدم /retry لإعادة المحاولة؛ وإن استمرّ الأمر، شغّل `hermes doctor` على المضيف."
+    connection_unknown: "⚠️ تعذّر على {agent_name} الوصول إلى خدمة نموذج الذكاء الاصطناعي (لا تفاصيل إضافية من SDK). استخدم /retry لإعادة المحاولة؛ وإن استمرّ الأمر، شغّل `hermes doctor` على المضيف."
     context_overflow: "⚠️ أصبحت هذه المحادثة أطول من أن أقرأها كاملةً في مرة واحدة. استخدم /compress لتقليص السجل، أو /new لبدء محادثة جديدة."
     usage_limit_resets: "⏱️ تم الوصول إلى حد استخدام خدمة نموذج الذكاء الاصطناعي؛ يُعاد تعيينه خلال {window}. استخدم /retry بعد ذلك، أو /model لتبديل النموذج."
     provider_kept_failing: "⚠️ استمرّ فشل خدمة نموذج الذكاء الاصطناعي. استخدم /retry لإعادة المحاولة، أو /model لتبديل النموذج. التفاصيل في سجل البوّابة (`hermes logs`)."
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ توقف إعداد الدور دون أي نشاط من الوكيل وتم إلغاؤه. يُرجى إعادة إرسال رسالتك."
     setup_waiting: "⏳ لا يزال بدء هذا الدور جاريًا ({minutes} دقيقة، لا نشاط للوكيل بعد). رسالتك في قائمة الانتظار. استخدم /stop لإلغائه مع كل ما في قائمة الانتظار."
     behavior_queue_short: "تُوضع في قائمة الانتظار للدور التالي"
-    behavior_queue_long: "ستُوضع الرسائل في قائمة الانتظار للدور التالي عندما يكون Hermes مشغولًا."
+    behavior_queue_long: "ستُوضع الرسائل في قائمة الانتظار للدور التالي عندما يكون {agent_name} مشغولًا."
     behavior_steer_short: "تُوجَّه إلى التشغيل الحالي (بعد استدعاء الأداة التالي)"
     behavior_steer_long: "ستُوجَّه الرسائل إلى التشغيل الحالي (بعد استدعاء الأداة التالي)."
     behavior_interrupt_short: "تقاطع التشغيل الحالي"
-    behavior_interrupt_long: "ستقاطع الرسائل التشغيل الحالي عندما يكون Hermes مشغولًا."
+    behavior_interrupt_long: "ستقاطع الرسائل التشغيل الحالي عندما يكون {agent_name} مشغولًا."
     status: "**وضع الإدخال أثناء الانشغال: `{mode}`\nالرسائل أثناء الانشغال: _{behavior}_\nغيّره بـ `/busy queue` أو `/busy steer` أو `/busy interrupt`."
     unknown_mode: "وضع غير معروف `{arg}`. استخدم `/busy queue` أو `/busy steer` أو `/busy interrupt`."
     save_failed: "تعذّر حفظ وضع الإدخال أثناء الانشغال في الإعدادات. لم يتغيّر الوضع."
     set: "تم تعيين وضع الإدخال أثناء الانشغال إلى **`{mode}`** (تم الحفظ).\n_{behavior}_"
   pause:
     resumed: "▶️ تم الاستئناف — يُقبل العمل الجديد مجددًا."
-    not_paused: "لم يكن Hermes متوقفًا مؤقتًا."
+    not_paused: "لم يكن {agent_name} متوقفًا مؤقتًا."
     reason_suffix: " (السبب: {reason})"
-    already_paused: "⏸️ Hermes متوقّف مؤقتًا بالفعل{suffix}. استخدم `/pause off` للاستئناف."
+    already_paused: "⏸️ {agent_name} متوقّف مؤقتًا بالفعل{suffix}. استخدم `/pause off` للاستئناف."
     paused: "⏸️ تم الإيقاف المؤقت{suffix}. أعمال cron/كانبان/البوّابة الجديدة معلّقة؛ والأعمال الجارية تُكمَل كالمعتاد. استخدم `/pause off` للاستئناف."
   queue:
     usage: "الاستخدام: /queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "مكتمل"
     task_status_error: "خطأ"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes يعمل"
+    task_card_title: "{agent_name} يعمل"
   pairing:
     validity_hour: "{hours} ساعة"
     validity_hours: "{hours} ساعات"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "قيد إيقاف التشغيل"
     action_restarting: "قيد إعادة التشغيل"
-    cron_interrupted: "⚠️ قُطعت المهمة المجدولة '{job}' لأن Hermes {action}؛ لا نتيجة لهذا التشغيل. ستعمل مجددًا في موعدها، أو شغّلها الآن بـ `hermes cron run {job}` بعد عودة Hermes."
-    notice_shutdown: "⚠️ Hermes قيد إيقاف التشغيل — ستُقطع مهمتك الحالية. عند عودته إلى الاتصال، أرسل أي رسالة وسأحاول المتابعة من حيث توقفنا."
-    notice_restart: "⚠️ Hermes قيد إعادة التشغيل — ستُقطع مهمتك الحالية. أرسل أي رسالة بعد إعادة التشغيل وسأحاول الاستئناف من حيث توقفت."
+    cron_interrupted: "⚠️ قُطعت المهمة المجدولة '{job}' لأن {agent_name} {action}؛ لا نتيجة لهذا التشغيل. ستعمل مجددًا في موعدها، أو شغّلها الآن بـ `hermes cron run {job}` بعد عودة {agent_name}."
+    notice_shutdown: "⚠️ {agent_name} قيد إيقاف التشغيل — ستُقطع مهمتك الحالية. عند عودته إلى الاتصال، أرسل أي رسالة وسأحاول المتابعة من حيث توقفنا."
+    notice_restart: "⚠️ {agent_name} قيد إعادة التشغيل — ستُقطع مهمتك الحالية. أرسل أي رسالة بعد إعادة التشغيل وسأحاول الاستئناف من حيث توقفت."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ أُعيد تشغيل البوّابة بنجاح. جلستك مستمرة."
-    online: "♻️ البوّابة متصلة — Hermes عاد وجاهز."
+    online: "♻️ البوّابة متصلة — {agent_name} عاد وجاهز."
     db_corrupt: "⚠️ رُصد تلف في قاعدة بيانات الجلسات. قد لا تُحفظ الرسائل. خيارات الاستعادة:\n1. شغّل `hermes {profile_arg}doctor --fix`\n2. أوقف البوّابة، ثم استعد بـ:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (إذا أفاد بإمكانية الاستعادة) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — تأخذ الاستعادة لقطة من الملف المتضرر أولًا؛ لا تشغّل `sqlite3 ... \".recover\"` على state.db الحي، فقد يزيد sqlite3 CLI المعرّض للثغرات من تلفه\n3. استعد من نسخة احتياطية في {backups_dir}/\nشغّل `hermes {profile_arg}doctor` للحصول على تشخيصات منقّحة."
     db_fts_corrupt: "⚠️ أفادت قاعدة بيانات الجلسات بخطأ تلف محصور في فهرس البحث (FTS5)؛ جداول الرسائل غير متضررة. قد لا تُحفظ الرسائل حتى إصلاحه: شغّل `hermes {profile_arg}doctor --fix` ثم أعد تشغيل البوّابة. لا تشغّل أدوات الاستعادة ولا تستعد نسخة احتياطية إلا إذا أكّد `hermes {profile_arg}doctor` وجود تلف."
     db_then_restart: "{action} ثم `hermes {profile_arg}gateway restart`."
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[تم تحويل الرد بعد البث]\n"
   discord:
     approval:
-      question: "هل تريد أن يشغّل Hermes هذا الأمر؟"
+      question: "هل تريد أن يشغّل {agent_name} هذا الأمر؟"
       requested_command_label: "الأمر المطلوب:"
       confirm_title: "تأكيد"
       already_resolved: "تم البتّ في هذه الموافقة مسبقًا~"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "أُلغي"
     prompt:
       truncated_marker: "... [مقتطع]"
-      clarify_title: "Hermes يحتاج إلى ردّك"
+      clarify_title: "{agent_name} يحتاج إلى ردّك"
       clarify_hint_buttons: "اختر أحد الخيارات أدناه، أو اضغط ✏️ أخرى لكتابة إجابة مخصصة."
       clarify_hint_text: "أجب في هذه القناة بردّك."
       default_hint: " (افتراضي: {default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "بدء محادثة جديدة"
         followup: "بدأت محادثة جديدة~"
       reset:
-        description: "إعادة تعيين جلسة Hermes الخاصة بك"
+        description: "إعادة تعيين جلسة {agent_name} الخاصة بك"
         followup: "تمت إعادة تعيين الجلسة~"
       model:
         description: "عرض النموذج أو تغييره"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "إزالة آخر تبادل"
       status:
-        description: "عرض حالة جلسة Hermes"
+        description: "عرض حالة جلسة {agent_name}"
         followup: "أُرسلت الحالة~"
       stop:
-        description: "إيقاف وكيل Hermes قيد التشغيل"
+        description: "إيقاف وكيل {agent_name} قيد التشغيل"
         followup: "طُلب الإيقاف~"
       steer:
         description: "إدراج رسالة بعد استدعاء الأداة التالي (دون مقاطعة)"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "بدأ التحديث~"
       restart:
-        description: "إعادة تشغيل بوّابة Hermes بسلاسة"
+        description: "إعادة تشغيل بوّابة {agent_name} بسلاسة"
         followup: "طُلبت إعادة التشغيل~"
       approve:
         arg_scope: "اختياري: 'all' أو 'session' أو 'always' أو 'all session' أو 'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "رفض أمر خطير قيد الانتظار"
         arg_scope: "اختياري: 'all' لرفض جميع الأوامر قيد الانتظار"
       thread:
-        description: "إنشاء سلسلة جديدة وبدء جلسة Hermes فيها"
+        description: "إنشاء سلسلة جديدة وبدء جلسة {agent_name} فيها"
         arg_name: "اسم السلسلة"
-        arg_message: "رسالة أولى اختيارية تُرسل إلى Hermes في السلسلة"
+        arg_message: "رسالة أولى اختيارية تُرسل إلى {agent_name} في السلسلة"
         arg_auto_archive: "الأرشفة التلقائية بالدقائق (60، 1440، 4320، 10080)"
         error_unknown: "خطأ غير معروف"
         failed: "فشل إنشاء السلسلة: {error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "السؤال الجانبي المراد الإجابة عنه دون مقاطعة"
         followup: "أُرسل السؤال الجانبي~"
       skill:
-        description: "تشغيل مهارة Hermes"
+        description: "تشغيل مهارة {agent_name}"
         arg_name: "المهارة المراد تشغيلها"
         arg_args: "وسائط اختيارية للمهارة"
         unknown: "مهارة غير معروفة: `{name}`. ابدأ الكتابة للحصول على اقتراحات الإكمال التلقائي."
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ محاولة أمر مائل غير مصرّح بها على Discord\nالمستخدم: {user_name} ({user_id})\nالقناة: {chan_id} (الخادم {guild_id})\nالأمر: {command_text}\nالسبب: {reason}"
     thread:
-      seed_message: "🧵 سلسلة أنشأها Hermes: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 تسليم Hermes: **{name}**"
-      auto_create_failed: "⚠️ تعذّر على Hermes إنشاء سلسلة Discord لهذه الرسالة، لذا لم تتم معالجة الطلب. يرجى إعادة المحاولة."
+      seed_message: "🧵 سلسلة أنشأها {agent_name}: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 تسليم {agent_name}: **{name}**"
+      auto_create_failed: "⚠️ تعذّر على {agent_name} إنشاء سلسلة Discord لهذه الرسالة، لذا لم تتم معالجة الطلب. يرجى إعادة المحاولة."
       auto_create_failed_generic: "لم تتم معالجة الطلب. يرجى إعادة المحاولة."
     media:
       upload_too_large: "⚠️ تعذّر إرفاق `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord لهذه القناة وهو {limit_mb} MB. اضغط الملف أو شارك رابطًا بدلًا من ذلك."
       image_skipped_too_large: "⚠️ تم تخطّي `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord وهو {limit_mb} MB."
   telegram:
     vault_code:
-      body: "رُدّ على هذه الرسالة بالرمز. يحذف Hermes ردّك فورًا ويُدخل الرمز في الصفحة؛ لا يرى النموذج الرمز أبدًا."
+      body: "رُدّ على هذه الرسالة بالرمز. يحذف {agent_name} ردّك فورًا ويُدخل الرمز في الصفحة؛ لا يرى النموذج الرمز أبدًا."
       delete_failed: "تعذّر حذف ردّك هنا. يُرجى حذفه بنفسك."
     approval:
       action_once: "✅ السماح مرة"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "يفكّر..."
       still_working: "لا يزال يعمل… ({elapsed})"
     task_card:
-      title: "Hermes يعمل"
+      title: "{agent_name} يعمل"
     slash:
       reply_truncated: "\n\n_[اقتُطع الرد: {count} جزء إضافي تجاوز حد الردود المؤقتة في Slack.]_"
       running: "جارٍ تشغيل `/{command}`…"
     handoff:
-      seed: ":thread: تسليم Hermes — *{name}*"
+      seed: ":thread: تسليم {agent_name} — *{name}*"
   matrix:
     handoff:
-      default_name: "جلسة Hermes"
+      default_name: "جلسة {agent_name}"
     media:
       image_download_failed: "تعذّر عليّ تنزيل الصورة ورفعها إلى Matrix. لم يُعرض عنوان المصدر لأنه قد يحتوي على رموز وصول خاصة."
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "لا يمكن استخدام عناصر التحكم هذه إلا للمستخدم الذي طلب هذا الإجراء."
   feishu:
     clarify:
-      title: "Hermes يحتاج إلى ردّك"
+      title: "{agent_name} يحتاج إلى ردّك"
       other: "✏️ غير ذلك (اكتب الإجابة)"
       awaiting_typed: "بانتظار رد مكتوب من {user}…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "سؤال"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes يفكّر…"
+      thinking: "{agent_name} يفكّر…"
       interrupted: "(قُطع)"
       no_reply: "(لا ردّ)"
     attachment_fallback:

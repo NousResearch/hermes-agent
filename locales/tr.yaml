@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share --nous` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
-    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."
+    local_refused: "`/debug local` raporu {agent_name}'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."
     upload_hint: "Hiçbir şey yüklenmedi. Özet raporu yüklemek için `/debug upload` gönderin."
     upload_hint_local: "Hiçbir şey yüklenmedi. Özet raporu yüklemek için `/debug upload`, burada görüntülemek için `/debug local` gönderin."
     nous_refused: "Hiçbir şey yüklenmedi. Özel Nous yüklemeleri buradan kullanılamaz: bir terminalde `hermes debug share --nous` çalıştırın veya masaüstü uygulamasındaki Send diagnostics seçeneğini kullanın. `/debug upload` bunun yerine özeti herkese açık bir paste'e yükler."
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add, açıkça yapılandırılmış bir gateway yöneticisi gerektirir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."
   help:
-    header: "📖 **Hermes Komutları**\n"
+    header: "📖 **{agent_name} Komutları**\n"
     skill_header: "\n⚡ **Skill Komutları** ({count} aktif):"
     more_use_commands: "\n... ve {count} tane daha. Tam sayfalı liste için `/commands` kullanın."
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "Oturum veritabanı kullanılamıyor."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume engellendi: bu adlandırılmış oturumun kayıtlı bir oda kökeni yok, bu yüzden Hermes onu varsayılan olarak mevcut odada sürdürmez. Oda sınırlarını bilerek aşmak istiyorsanız `/resume --cross-room {name}` kullanın."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume engellendi: bu adlandırılmış oturumun kayıtlı bir oda kökeni yok, bu yüzden {agent_name} onu varsayılan olarak mevcut odada sürdürmez. Oda sınırlarını bilerek aşmak istiyorsanız `/resume --cross-room {name}` kullanın."
     matrix_blocked_other_room: "⚠️ Matrix /resume engellendi: bu oturum farklı bir Matrix odasına ({room}) ait. Onu bilerek burada sürdürmek istiyorsanız `/resume --cross-room {name}` kullanın."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume engellendi: '**{name}**' farklı bir kullanıcıya veya sohbete ait. Yalnızca bu sohbetin oturumlarını sürdürebilirsiniz."
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "İstem önbelleği: {until} saatine kadar hâlâ sıcak olabilir (en fazla {remaining} daha; {ttl}, {confidence})."
     cache_unknown_moved: "İstem önbelleği: bilinmiyor (son önbelleğe alınmış istekten beri rota, oturum veya bağlam değişti)."
     cache_unknown_route: "İstem önbelleği: bilinmiyor (bu sağlayıcı önbellek saklama süresini yayımlamıyor)."
-    cache_unknown_runtime: "İstem önbelleği: bilinmiyor (bu çalışma ortamı kendi önbellek seçeneklerini belirliyor ve Hermes bunları göremiyor)."
+    cache_unknown_runtime: "İstem önbelleği: bilinmiyor (bu çalışma ortamı kendi önbellek seçeneklerini belirliyor ve {agent_name} bunları göremiyor)."
     cache_unknown_storage: "İstem önbelleği: bilinmiyor (oturum deposu okunamadı)."
     cache_warming_off: "Canlı tutma: kapalı (iki kez kaçtı)."
     cache_tier_pending: "Seviye: 5 dakikayı aşan ilk molaya kadar 5m, sonra 1h."
@@ -450,7 +450,7 @@ gateway:
       declared: "beyan edildi"
       assumed: "varsayıldı"
   status:
-    header: "📊 **Hermes Gateway Durumu**"
+    header: "📊 **{agent_name} Gateway Durumu**"
     matrix_scope_header: "**Matrix kapsamı:**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "Telegram topic'leri etkin, ancak kullanıcıların topic oluşturmasına izin verilmiyor.\n\n@BotFather → botunuz → Bot Settings → Threads Settings yolunu açın ve 'Disallow users to create new threads' seçeneğini kapatın.\n\nArdından /topic'i tekrar gönderin."
     enable_failed: "Telegram topic modu etkinleştirilemedi: {error}"
     bound_status: "Bu topic şuna bağlı:\nOturum: {label}\nID: {session_id}\n\nBu topic'i yeni bir oturumla değiştirmek için /new kullanın.\nParalel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
-    thread_ready: "Telegram çok oturumlu topic'leri etkin.\n\nBu topic bağımsız bir Hermes oturumu olarak kullanılacak. Bu topic'in mevcut oturumunu değiştirmek için /new kullanın. Paralel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
+    thread_ready: "Telegram çok oturumlu topic'leri etkin.\n\nBu topic bağımsız bir {agent_name} oturumu olarak kullanılacak. Bu topic'in mevcut oturumunu değiştirmek için /new kullanın. Paralel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
     untitled_session: "Adsız oturum"
     restore_step_1: "1. Bir konu oluşturun veya açın. Yeni bir konu oluşturmak için Tüm Mesajlar'ı açıp orada herhangi bir mesaj gönderin."
     restore_step_2: "2. O konunun içinde /topic <session-id> gönderin."
-    default_title: "Hermes Sohbeti"
-    root_lobby: "Bu ana sohbet sistem komutlarına ayrılmıştır.\n\nYeni bir Hermes sohbeti başlatmak için bu bot arayüzünün üst kısmındaki Tüm Mesajlar konusunu açın ve orada herhangi bir mesaj gönderin. Telegram o mesaj için yeni bir konu oluşturur; her konu bağımsız bir Hermes oturumu olarak çalışır."
-    root_new: "Yeni bir paralel Hermes sohbeti başlatmak için bu bot arayüzünün üst kısmındaki Tüm Mesajlar konusunu açın ve orada herhangi bir mesaj gönderin. Telegram bunun için yeni bir konu oluşturur.\n\nHer konu bağımsız bir Hermes oturumudur. Mevcut bir konunun içinde /new komutunu yalnızca o konunun geçerli oturumunu değiştirmek istiyorsanız kullanın."
-    new_header: "Bu konuda yeni bir Hermes oturumu başlatıldı.\n\nİpucu: paralel çalışma için burada /new kullanmak yerine Tüm Mesajlar'ı açıp orada bir mesaj göndererek ayrı bir konu oluşturun. /new, geçerli konuya bağlı oturumun yerini alır."
-    help: "/topic — çoklu oturumlu DM modunu etkinleştirir (tek bot, birçok paralel sohbet)\n\nKullanım:\n  /topic             Konu modunu etkinleştir veya zaten açıksa durumu göster\n  /topic help        Bu mesajı göster\n  /topic off         Konu modunu kapat ve konu bağlantılarını temizle\n  /topic <id>        Bir konunun içinde: önceki bir oturumu kimliğiyle geri yükle\n\nNasıl çalışır:\n1. Bu DM'de /topic komutunu bir kez çalıştırın — Hermes, BotFather Threads\n   Settings ayarının etkin olduğunu doğrular ve çoklu oturum modunu açar.\n2. Botun üst kısmındaki Tüm Mesajlar'a dokunup herhangi bir mesaj gönderin.\n   Telegram o mesaj için yeni bir konu oluşturur; her konu bağımsız bir\n   Hermes oturumudur (yeni geçmiş, yeni bağlam).\n3. Kök DM bir sistem lobisine dönüşür — /topic, /status, /help, /usage\n   komutlarını orada gönderin. Normal istemler bir konuya yazılır.\n4. Bir konunun içindeki /new yalnızca o konunun oturumunu sıfırlar.\n5. Bir konunun içindeki /topic <id> eski bir oturumu o konuya geri yükler."
+    default_title: "{agent_name} Sohbeti"
+    root_lobby: "Bu ana sohbet sistem komutlarına ayrılmıştır.\n\nYeni bir {agent_name} sohbeti başlatmak için bu bot arayüzünün üst kısmındaki Tüm Mesajlar konusunu açın ve orada herhangi bir mesaj gönderin. Telegram o mesaj için yeni bir konu oluşturur; her konu bağımsız bir {agent_name} oturumu olarak çalışır."
+    root_new: "Yeni bir paralel {agent_name} sohbeti başlatmak için bu bot arayüzünün üst kısmındaki Tüm Mesajlar konusunu açın ve orada herhangi bir mesaj gönderin. Telegram bunun için yeni bir konu oluşturur.\n\nHer konu bağımsız bir {agent_name} oturumudur. Mevcut bir konunun içinde /new komutunu yalnızca o konunun geçerli oturumunu değiştirmek istiyorsanız kullanın."
+    new_header: "Bu konuda yeni bir {agent_name} oturumu başlatıldı.\n\nİpucu: paralel çalışma için burada /new kullanmak yerine Tüm Mesajlar'ı açıp orada bir mesaj göndererek ayrı bir konu oluşturun. /new, geçerli konuya bağlı oturumun yerini alır."
+    help: "/topic — çoklu oturumlu DM modunu etkinleştirir (tek bot, birçok paralel sohbet)\n\nKullanım:\n  /topic             Konu modunu etkinleştir veya zaten açıksa durumu göster\n  /topic help        Bu mesajı göster\n  /topic off         Konu modunu kapat ve konu bağlantılarını temizle\n  /topic <id>        Bir konunun içinde: önceki bir oturumu kimliğiyle geri yükle\n\nNasıl çalışır:\n1. Bu DM'de /topic komutunu bir kez çalıştırın — {agent_name}, BotFather Threads\n   Settings ayarının etkin olduğunu doğrular ve çoklu oturum modunu açar.\n2. Botun üst kısmındaki Tüm Mesajlar'a dokunup herhangi bir mesaj gönderin.\n   Telegram o mesaj için yeni bir konu oluşturur; her konu bağımsız bir\n   {agent_name} oturumudur (yeni geçmiş, yeni bağlam).\n3. Kök DM bir sistem lobisine dönüşür — /topic, /status, /help, /usage\n   komutlarını orada gönderin. Normal istemler bir konuya yazılır.\n4. Bir konunun içindeki /new yalnızca o konunun oturumunu sıfırlar.\n5. Bir konunun içindeki /topic <id> eski bir oturumu o konuya geri yükler."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Sohbet kimliği belirlenemedi."
     mode_not_enabled: "Çoklu oturumlu konu modu bu sohbet için şu anda etkin değil."
     disable_failed: "Konu modu devre dışı bırakılamadı: {error}"
-    mode_disabled: "Çoklu oturumlu konu modu bu sohbet için artık KAPALI.\n\nTelegram'daki mevcut konular silinmez — yalnızca bağımsız oturum olarak ayrılmaları sona erer. Kök DM yeniden normal bir Hermes sohbeti olarak çalışır. Daha sonra yeniden etkinleştirmek için /topic çalıştırın."
+    mode_disabled: "Çoklu oturumlu konu modu bu sohbet için artık KAPALI.\n\nTelegram'daki mevcut konular silinmez — yalnızca bağımsız oturum olarak ayrılmaları sona erer. Kök DM yeniden normal bir {agent_name} sohbeti olarak çalışır. Daha sonra yeniden etkinleştirmek için /topic çalıştırın."
     status_enabled: "Telegram çoklu oturumlu konular etkin."
-    status_how_to: "Yeni bir Hermes sohbeti başlatmak için bu bot arayüzünün üst kısmındaki Tüm Mesajlar'ı açın ve orada herhangi bir mesaj gönderin. Telegram bunun için yeni bir konu oluşturur."
+    status_how_to: "Yeni bir {agent_name} sohbeti başlatmak için bu bot arayüzünün üst kısmındaki Tüm Mesajlar'ı açın ve orada herhangi bir mesaj gönderin. Telegram bunun için yeni bir konu oluşturur."
     previous_unlinked: "Önceki bağlantısız oturumlar:"
     restore_one: "Birini geri yüklemek için:"
     restore_example: "Örnek: Bir konunun içinde /topic {session_id} gönderin."
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "Bu oturum bu Telegram kullanıcısına ait değil."
     already_linked: "Bu oturum zaten başka bir Telegram konusuna bağlı."
     restored: "Oturum geri yüklendi: {title}"
-    restored_last_message: "\n\nSon Hermes mesajı:\n{text}"
+    restored_last_message: "\n\nSon {agent_name} mesajı:\n{text}"
   undo:
     nothing: "Geri alınacak bir şey yok."
     removed: "↩️ {turns} tur geri alındı ({count} mesaj).\nYedeklendiği yer: \"{preview}\"\nYukarıdaki metni kopyalayıp/düzenleyip göndererek buradan yeniden sorabilirsiniz."
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."
     not_git_repo: "✗ Git deposu değil — güncellenemiyor."
-    hermes_cmd_not_found: "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
+    hermes_cmd_not_found: "✗ `hermes` komutu bulunamadı. {agent_name} çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
     start_failed: "✗ Güncelleme başlatılamadı: {error}"
     already_running: "⏳ Zaten bir güncelleme çalışıyor; sorularını yalnızca onu başlatan kişi yanıtlayabilir. Bitmesini bekleyin, sonra /update komutunu yeniden deneyin."
-    starting: "☤ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
+    starting: "☤ {agent_name} güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
     reply_failed: "✗ Yanıt güncelleme sürecine gönderilemedi: {error}"
     reply_sent: "✓ `{label}` güncelleme sürecine gönderildi."
-    failed_notice: "❌ Hermes güncellemesi başarısız oldu; önceki sürüm hâlâ çalışıyor. Hatanın tamamını görmek için ana makinede `hermes update` çalıştırın veya daha sonra /update komutunu yeniden deneyin."
+    failed_notice: "❌ {agent_name} güncellemesi başarısız oldu; önceki sürüm hâlâ çalışıyor. Hatanın tamamını görmek için ana makinede `hermes update` çalıştırın veya daha sonra /update komutunu yeniden deneyin."
     prompt_default: " (varsayılan: {default})"
     prompt: "☤ **Güncelleme girdinizi bekliyor:**\n\n{prompt}{default_hint}\n\n`{prefix}approve` (evet) veya `{prefix}deny` (hayır) yazın ya da yanıtınızı doğrudan yazın."
-    finished: "✅ Hermes güncellemesi tamamlandı."
-    timed_out: "❌ Hermes güncellemesi 30 dakika sonra zaman aşımına uğradı."
-    finished_success: "✅ Hermes güncellemesi başarıyla tamamlandı."
+    finished: "✅ {agent_name} güncellemesi tamamlandı."
+    timed_out: "❌ {agent_name} güncellemesi 30 dakika sonra zaman aşımına uğradı."
+    finished_success: "✅ {agent_name} güncellemesi başarıyla tamamlandı."
     last_lines: "{msg}\n\nSon satırlar:\n```\n{tail}\n```"
     managed_action: "Hermes Agent'ı güncelle"
     not_applicable: "✗ `hermes update` bu kuruluma uygulanamaz ({method}).\nŞununla güncelleyin: {command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "yok"
     unknown_value: "bilinmiyor"
   exec_approval:
-    header: "Hermes, onayınızı gerektiren bir komut çalıştırmak istiyor"
+    header: "{agent_name}, onayınızı gerektiren bir komut çalıştırmak istiyor"
     reason_label: "İşaretlenme nedeni"
     default_reason: "tehlikeli komut"
     smart_deny_line: "Akıllı REDDET: sahip geçersiz kılması yalnızca bu tek işlem için geçerlidir."
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "(Yanıt biçimlendirilemedi, düz metin:)\n\n{content}"
     turn_error: "Üzgünüm, bir hatayla karşılaştım."
     context_injection_refused: "Bağlam eklemesi reddedildi."
-    no_home_channel: "📬 {platform} için ana kanal ayarlanmamış. Ana kanal, Hermes'in cron işi sonuçlarını ve platformlar arası mesajları ilettiği yerdir.\n\nBu sohbeti ana kanalınız yapmak için {sethome_cmd} yazın veya atlamak için yoksayın."
+    no_home_channel: "📬 {platform} için ana kanal ayarlanmamış. Ana kanal, {agent_name}'in cron işi sonuçlarını ve platformlar arası mesajları ilettiği yerdir.\n\nBu sohbeti ana kanalınız yapmak için {sethome_cmd} yazın veya atlamak için yoksayın."
   unauthorized:
     action_notice: "Bu bot özeldir ve izin listesinde değilsiniz. Sahibi sizseniz ana makinede `hermes pairing approve {platform} <request-id>` çalıştırın (`hermes pairing list` kimliği gösterir)."
     admin_only_can_run: "Çalıştırabileceğiniz komutlar: "
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ Yapay zekâ model servisi bu isteği reddetti. Mesajınızı farklı ifade etmeyi deneyin veya model değiştirmek için /model kullanın."
     connection_interrupted: "⚠️ Yapay zekâ model servisiyle bağlantı istek sırasında kesildi — genellikle geçicidir. Yeniden denemek için /retry kullanın; tekrarlarsa ana makinede `hermes doctor` çalıştırın."
     unreachable: "⚠️ Yapay zekâ model servisine şu anda erişilemiyor — yapılandırılan model uç noktası çalışmıyor veya ulaşılamaz durumda. Biraz bekleyip /retry kullanın; sürerse ana makinede `hermes doctor` çalıştırın."
-    connection_unknown: "⚠️ Hermes yapay zekâ model servisine ulaşamadı (SDK'dan ek ayrıntı yok). Yeniden denemek için /retry kullanın; sürerse ana makinede `hermes doctor` çalıştırın."
+    connection_unknown: "⚠️ {agent_name} yapay zekâ model servisine ulaşamadı (SDK'dan ek ayrıntı yok). Yeniden denemek için /retry kullanın; sürerse ana makinede `hermes doctor` çalıştırın."
     context_overflow: "⚠️ Bu konuşma, tek seferde okuyamayacağım kadar uzadı. Geçmişi kısaltmak için /compress, yeni bir konuşma başlatmak için /new kullanın."
     usage_limit_resets: "⏱️ Yapay zekâ model servisinin kullanım sınırına ulaşıldı; {window} içinde sıfırlanacak. Sonrasında /retry kullanın veya model değiştirmek için /model kullanın."
     provider_kept_failing: "⚠️ Yapay zekâ model servisi sürekli hata verdi. Yeniden denemek için /retry, model değiştirmek için /model kullanın. Ayrıntılar gateway günlüğünde (`hermes logs`)."
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ Tur hazırlığı ajan etkinliği olmadan takıldı ve iptal edildi. Lütfen mesajını yeniden gönder."
     setup_waiting: "⏳ Bu tur hâlâ başlıyor ({minutes} dk, henüz ajan etkinliği yok). Mesajın sırada. Bunu ve sıradaki her şeyi iptal etmek için /stop kullan."
     behavior_queue_short: "sonraki tur için sıraya alır"
-    behavior_queue_long: "Hermes meşgulken mesajlar sonraki tur için sıraya alınır."
+    behavior_queue_long: "{agent_name} meşgulken mesajlar sonraki tur için sıraya alınır."
     behavior_steer_short: "mevcut çalışmaya yönlendirir (sonraki araç çağrısından sonra)"
     behavior_steer_long: "Mesajlar mevcut çalışmaya yönlendirilir (sonraki araç çağrısından sonra)."
     behavior_interrupt_short: "mevcut çalışmayı keser"
-    behavior_interrupt_long: "Hermes meşgulken mesajlar mevcut çalışmayı keser."
+    behavior_interrupt_long: "{agent_name} meşgulken mesajlar mevcut çalışmayı keser."
     status: "**Meşgul giriş modu: `{mode}`\nMeşgulken gelen mesajlar: _{behavior}_\n`/busy queue`, `/busy steer` veya `/busy interrupt` ile değiştirin."
     unknown_mode: "Bilinmeyen mod `{arg}`. `/busy queue`, `/busy steer` veya `/busy interrupt` kullanın."
     save_failed: "Meşgul giriş modu yapılandırmaya kaydedilemedi. Mod değişmedi."
     set: "Meşgul giriş modu **`{mode}`** olarak ayarlandı (kaydedildi).\n_{behavior}_"
   pause:
     resumed: "▶️ Devam ediliyor — yeni işler yeniden kabul ediliyor."
-    not_paused: "Hermes duraklatılmamıştı."
+    not_paused: "{agent_name} duraklatılmamıştı."
     reason_suffix: " (neden: {reason})"
-    already_paused: "⏸️ Hermes zaten duraklatılmış{suffix}. Devam etmek için `/pause off` kullanın."
+    already_paused: "⏸️ {agent_name} zaten duraklatılmış{suffix}. Devam etmek için `/pause off` kullanın."
     paused: "⏸️ Duraklatıldı{suffix}. Yeni cron/kanban/gateway işleri beklemeye alındı; sürmekte olan işler normal şekilde tamamlanır. Devam etmek için `/pause off` kullanın."
   queue:
     usage: "Kullanım: /queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "tamamlandı"
     task_status_error: "hata"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes çalışıyor"
+    task_card_title: "{agent_name} çalışıyor"
   pairing:
     validity_hour: "{hours} saat"
     validity_hours: "{hours} saat"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "kapanıyor"
     action_restarting: "yeniden başlatılıyor"
-    cron_interrupted: "⚠️ Zamanlanmış '{job}' işi Hermes {action} olduğu için yarıda kesildi; bu çalıştırmada sonuç yok. Zamanı geldiğinde yeniden çalışacak; Hermes geri geldiğinde `hermes cron run {job}` ile hemen de çalıştırabilirsiniz."
-    notice_shutdown: "⚠️ Hermes kapanıyor — geçerli göreviniz yarıda kesilecek. Yeniden çevrimiçi olduğunda herhangi bir mesaj gönderin; kaldığımız yerden devam etmeyi deneyeceğim."
-    notice_restart: "⚠️ Hermes yeniden başlatılıyor — geçerli göreviniz yarıda kesilecek. Yeniden başlatmadan sonra herhangi bir mesaj gönderin; kaldığınız yerden sürdürmeyi deneyeceğim."
+    cron_interrupted: "⚠️ Zamanlanmış '{job}' işi {agent_name} {action} olduğu için yarıda kesildi; bu çalıştırmada sonuç yok. Zamanı geldiğinde yeniden çalışacak; {agent_name} geri geldiğinde `hermes cron run {job}` ile hemen de çalıştırabilirsiniz."
+    notice_shutdown: "⚠️ {agent_name} kapanıyor — geçerli göreviniz yarıda kesilecek. Yeniden çevrimiçi olduğunda herhangi bir mesaj gönderin; kaldığımız yerden devam etmeyi deneyeceğim."
+    notice_restart: "⚠️ {agent_name} yeniden başlatılıyor — geçerli göreviniz yarıda kesilecek. Yeniden başlatmadan sonra herhangi bir mesaj gönderin; kaldığınız yerden sürdürmeyi deneyeceğim."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ Gateway başarıyla yeniden başlatıldı. Oturumunuz devam ediyor."
-    online: "♻️ Gateway çevrimiçi — Hermes geri döndü ve hazır."
+    online: "♻️ Gateway çevrimiçi — {agent_name} geri döndü ve hazır."
     db_corrupt: "⚠️ Oturum veritabanında bozulma tespit edildi. Mesajlar kalıcı olarak kaydedilmeyebilir. Kurtarma seçenekleri:\n1. `hermes {profile_arg}doctor --fix` çalıştırın\n2. Gateway'i durdurun, ardından şununla kurtarın:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (kurtarılabilir olduğunu bildirirse) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — kurtarma önce hasarlı dosyanın anlık görüntüsünü alır; canlı state.db üzerinde `sqlite3 ... \".recover\"` ÇALIŞTIRMAYIN, açığı olan bir sqlite3 CLI dosyayı daha da bozabilir\n3. {backups_dir}/ içindeki bir yedekten geri yükleyin\nTemizlenmiş tanılama için `hermes {profile_arg}doctor` çalıştırın."
     db_fts_corrupt: "⚠️ Oturum veritabanı yalnızca arama dizinini (FTS5) etkileyen bir bozulma hatası bildirdi; mesaj tabloları hasarlı değil. Onarılana kadar mesajlar kalıcı olarak kaydedilmeyebilir: `hermes {profile_arg}doctor --fix` çalıştırıp gateway'i yeniden başlatın. `hermes {profile_arg}doctor` hasarı doğrulamadıkça kurtarma araçlarını çalıştırmayın veya yedek geri yüklemeyin."
     db_then_restart: "{action} Ardından `hermes {profile_arg}gateway restart` çalıştırın."
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[Yanıt akıştan sonra dönüştürüldü]\n"
   discord:
     approval:
-      question: "Hermes bu komutu çalıştırsın mı?"
+      question: "{agent_name} bu komutu çalıştırsın mı?"
       requested_command_label: "İstenen komut:"
       confirm_title: "Onayla"
       already_resolved: "Bu onay zaten sonuçlandırıldı~"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "İptal edildi"
     prompt:
       truncated_marker: "... [kısaltıldı]"
-      clarify_title: "Hermes girdinize ihtiyaç duyuyor"
+      clarify_title: "{agent_name} girdinize ihtiyaç duyuyor"
       clarify_hint_buttons: "Aşağıdan birini seçin veya özel bir yanıt yazmak için ✏️ Diğer'e tıklayın."
       clarify_hint_text: "Yanıtınızı bu kanala yazın."
       default_hint: " (varsayılan: {default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "Yeni bir konuşma başlat"
         followup: "Yeni konuşma başlatıldı~"
       reset:
-        description: "Hermes oturumunuzu sıfırla"
+        description: "{agent_name} oturumunuzu sıfırla"
         followup: "Oturum sıfırlandı~"
       model:
         description: "Modeli göster veya değiştir"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "Son alışverişi kaldır"
       status:
-        description: "Hermes oturum durumunu göster"
+        description: "{agent_name} oturum durumunu göster"
         followup: "Durum gönderildi~"
       stop:
-        description: "Çalışan Hermes ajanını durdur"
+        description: "Çalışan {agent_name} ajanını durdur"
         followup: "Durdurma istendi~"
       steer:
         description: "Bir sonraki araç çağrısından sonra mesaj ekle (kesintisiz)"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "Güncelleme başlatıldı~"
       restart:
-        description: "Hermes gateway'ini düzgün şekilde yeniden başlat"
+        description: "{agent_name} gateway'ini düzgün şekilde yeniden başlat"
         followup: "Yeniden başlatma istendi~"
       approve:
         arg_scope: "İsteğe bağlı: 'all', 'session', 'always', 'all session', 'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "Bekleyen tehlikeli bir komutu reddet"
         arg_scope: "İsteğe bağlı: tüm bekleyen komutları reddetmek için 'all'"
       thread:
-        description: "Yeni bir konu oluştur ve içinde bir Hermes oturumu başlat"
+        description: "Yeni bir konu oluştur ve içinde bir {agent_name} oturumu başlat"
         arg_name: "Konu adı"
-        arg_message: "İsteğe bağlı: konuda Hermes'e gönderilecek ilk mesaj"
+        arg_message: "İsteğe bağlı: konuda {agent_name}'e gönderilecek ilk mesaj"
         arg_auto_archive: "Otomatik arşivleme süresi, dakika (60, 1440, 4320, 10080)"
         error_unknown: "bilinmeyen hata"
         failed: "Konu oluşturulamadı: {error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "Konuşmayı kesmeden yanıtlanacak yan soru"
         followup: "Yan soru gönderildi~"
       skill:
-        description: "Bir Hermes skill'i çalıştır"
+        description: "Bir {agent_name} skill'i çalıştır"
         arg_name: "Çalıştırılacak skill"
         arg_args: "Skill için isteğe bağlı argümanlar"
         unknown: "Bilinmeyen skill: `{name}`. Otomatik tamamlama önerileri için yazmaya başlayın."
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ Yetkisiz Discord slash komutu denemesi\nKullanıcı: {user_name} ({user_id})\nKanal: {chan_id} (sunucu {guild_id})\nKomut: {command_text}\nNeden: {reason}"
     thread:
-      seed_message: "🧵 Hermes tarafından oluşturulan konu: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Hermes devri: **{name}**"
-      auto_create_failed: "⚠️ Hermes bu mesaj için bir Discord konusu oluşturamadı, bu yüzden istek işlenmedi. Lütfen yeniden deneyin."
+      seed_message: "🧵 {agent_name} tarafından oluşturulan konu: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 {agent_name} devri: **{name}**"
+      auto_create_failed: "⚠️ {agent_name} bu mesaj için bir Discord konusu oluşturamadı, bu yüzden istek işlenmedi. Lütfen yeniden deneyin."
       auto_create_failed_generic: "İstek işlenmedi. Lütfen yeniden deneyin."
     media:
       upload_too_large: "⚠️ `{filename}` eklenemedi — {size_mb} MB, Discord'un bu kanal için {limit_mb} MB yükleme sınırını aşıyor. Dosyayı sıkıştırın veya bunun yerine bir bağlantı paylaşın."
       image_skipped_too_large: "⚠️ `{filename}` atlandı — {size_mb} MB, Discord'un {limit_mb} MB yükleme sınırını aşıyor."
   telegram:
     vault_code:
-      body: "Bu mesajı kodla yanıtla. Hermes yanıtını hemen siler ve kodu sayfaya girer; model kodu hiç görmez."
+      body: "Bu mesajı kodla yanıtla. {agent_name} yanıtını hemen siler ve kodu sayfaya girer; model kodu hiç görmez."
       delete_failed: "Yanıtın burada silinemedi. Lütfen kendin sil."
     approval:
       action_once: "✅ Bir Kez"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "düşünüyor..."
       still_working: "hâlâ çalışıyor… ({elapsed})"
     task_card:
-      title: "Hermes çalışıyor"
+      title: "{agent_name} çalışıyor"
     slash:
       reply_truncated: "\n\n_[Yanıt kısaltıldı: {count} parça daha Slack'in geçici yanıt sınırını aştı.]_"
       running: "`/{command}` çalıştırılıyor…"
     handoff:
-      seed: ":thread: Hermes devri — *{name}*"
+      seed: ":thread: {agent_name} devri — *{name}*"
   matrix:
     handoff:
-      default_name: "Hermes oturumu"
+      default_name: "{agent_name} oturumu"
     media:
       image_download_failed: "Görüntüyü indirip Matrix'e yükleyemedim. Kaynak URL, özel token'lar içerebileceği için gösterilmedi."
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "Bu kontrolleri yalnızca bu işlemi isteyen kullanıcı kullanabilir."
   feishu:
     clarify:
-      title: "Hermes girdinize ihtiyaç duyuyor"
+      title: "{agent_name} girdinize ihtiyaç duyuyor"
       other: "✏️ Diğer (yanıt yazın)"
       awaiting_typed: "{user} kullanıcısının yazılı yanıtı bekleniyor…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "Soru"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes düşünüyor…"
+      thinking: "{agent_name} düşünüyor…"
       interrupted: "(kesildi)"
       no_reply: "(yanıt yok)"
     attachment_fallback:

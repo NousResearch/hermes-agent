@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share --nous`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
-    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    local_refused: "`/debug local`은 보고서를 {agent_name}가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
     upload_hint: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
     upload_hint_local: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를, 여기에서 보려면 `/debug local`을 보내세요."
     nous_refused: "아무것도 업로드되지 않았습니다. 여기에서는 Nous 비공개 업로드를 사용할 수 없습니다. 터미널에서 `hermes debug share --nous`를 실행하거나 데스크톱 앱의 Send diagnostics를 사용하세요. `/debug upload`는 대신 요약을 공개 paste에 업로드합니다."
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add는 명시적으로 설정된 게이트웨이 관리자가 필요해요(DM은 allow_admin_from, 그룹은 group_allow_admin_from)."
   help:
-    header: "📖 **Hermes 명령**\n"
+    header: "📖 **{agent_name} 명령**\n"
     skill_header: "\n⚡ **스킬 명령** ({count}개 활성):"
     more_use_commands: "\n... 외 {count}개 더. 전체 목록은 `/commands`로 확인하세요."
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume 차단됨: 이 이름이 지정된 세션에는 기록된 원본 방이 없어 Hermes가 기본적으로 현재 방에서 재개하지 않습니다. 의도적으로 방 경계를 넘어 재개하려면 `/resume --cross-room {name}`을 사용하세요."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume 차단됨: 이 이름이 지정된 세션에는 기록된 원본 방이 없어 {agent_name}가 기본적으로 현재 방에서 재개하지 않습니다. 의도적으로 방 경계를 넘어 재개하려면 `/resume --cross-room {name}`을 사용하세요."
     matrix_blocked_other_room: "⚠️ Matrix /resume 차단됨: 해당 세션은 다른 Matrix 방({room})에 속합니다. 의도적으로 여기서 재개하려면 `/resume --cross-room {name}`을 사용하세요."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume 차단됨: '**{name}**'은(는) 다른 사용자 또는 채팅에 속합니다. 이 채팅의 세션만 재개할 수 있습니다."
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "프롬프트 캐시: {until}까지 유효할 수 있음 (최대 {remaining} 남음; {ttl}, {confidence})."
     cache_unknown_moved: "프롬프트 캐시: 알 수 없음 (마지막 캐시 요청 이후 경로, 세션 또는 컨텍스트가 변경됨)."
     cache_unknown_route: "프롬프트 캐시: 알 수 없음 (이 공급자는 캐시 보존 기간을 공개하지 않음)."
-    cache_unknown_runtime: "프롬프트 캐시: 알 수 없음 (이 런타임은 자체 캐시 옵션을 사용하며 Hermes가 관찰할 수 없습니다)."
+    cache_unknown_runtime: "프롬프트 캐시: 알 수 없음 (이 런타임은 자체 캐시 옵션을 사용하며 {agent_name}가 관찰할 수 없습니다)."
     cache_unknown_storage: "프롬프트 캐시: 알 수 없음 (세션 저장소를 읽을 수 없습니다)."
     cache_warming_off: "킵얼라이브: 꺼짐 (두 번 실패)."
     cache_tier_pending: "단계: 5분이 넘는 첫 휴식까지 5m, 이후 1h."
@@ -450,7 +450,7 @@ gateway:
       declared: "요청됨"
       assumed: "추정"
   status:
-    header: "📊 **Hermes 게이트웨이 상태**"
+    header: "📊 **{agent_name} 게이트웨이 상태**"
     matrix_scope_header: "**Matrix 범위:**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "Telegram 토픽이 활성화되어 있지만, 사용자가 토픽을 만들 수 없습니다.\n\n@BotFather → 봇 선택 → Bot Settings → Threads Settings를 열고 'Disallow users to create new threads'를 끄세요.\n\n그런 다음 다시 /topic을 보내세요."
     enable_failed: "Telegram 토픽 모드 활성화에 실패했습니다: {error}"
     bound_status: "이 토픽은 다음에 연결되어 있습니다:\n세션: {label}\nID: {session_id}\n\n이 토픽을 새 세션으로 교체하려면 /new를 사용하세요.\n병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    thread_ready: "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
+    thread_ready: "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 {agent_name} 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
     untitled_session: "제목 없는 세션"
     restore_step_1: "1. 토픽을 만들거나 여세요. 새로 만들려면 All Messages를 열고 그곳에 아무 메시지나 보내세요."
     restore_step_2: "2. 그 토픽 안에서 /topic <session-id>를 보내세요."
-    default_title: "Hermes 채팅"
-    root_lobby: "이 메인 채팅은 시스템 명령 전용이에요.\n\n새 Hermes 채팅을 시작하려면 이 봇 화면 상단의 All Messages 토픽을 열고 그곳에 아무 메시지나 보내세요. Telegram이 그 메시지로 새 토픽을 만들고, 각 토픽은 독립된 Hermes 세션으로 동작해요."
-    root_new: "새 Hermes 채팅을 병렬로 시작하려면 이 봇 화면 상단의 All Messages 토픽을 열고 그곳에 아무 메시지나 보내세요. Telegram이 새 토픽을 만들어 줘요.\n\n각 토픽은 독립된 Hermes 세션이에요. 기존 토픽의 현재 세션을 교체하고 싶을 때만 그 토픽 안에서 /new를 사용하세요."
-    new_header: "이 토픽에서 새 Hermes 세션을 시작했어요.\n\n팁: 병렬 작업을 하려면 여기서 /new를 쓰는 대신 All Messages를 열고 메시지를 보내 별도 토픽을 만드세요. /new는 현재 토픽에 연결된 세션을 교체해요."
-    help: "/topic — 다중 세션 DM 모드 켜기(봇 하나로 여러 채팅을 병렬로)\n\n사용법:\n  /topic             토픽 모드를 켜거나, 이미 켜져 있으면 상태 표시\n  /topic help        이 메시지 표시\n  /topic off         토픽 모드를 끄고 토픽 연결 지우기\n  /topic <id>        토픽 안에서: ID로 이전 세션 복원\n\n동작 방식:\n1. 이 DM에서 /topic을 한 번 실행하세요 — Hermes가 BotFather의 Threads\n   Settings가 켜져 있는지 확인하고 다중 세션 모드를 켜요.\n2. 봇 상단의 All Messages를 누르고 아무 메시지나 보내세요.\n   Telegram이 그 메시지로 새 토픽을 만들고, 각 토픽은\n   독립된 Hermes 세션이 돼요(새 기록, 새 컨텍스트).\n3. 루트 DM은 시스템 로비가 돼요 — /topic, /status,\n   /help, /usage는 거기서 보내세요. 일반 프롬프트는 토픽에서 보내요.\n4. 토픽 안에서 /new를 쓰면 그 토픽의 세션만 초기화돼요.\n5. 토픽 안에서 /topic <id>를 쓰면 이전 세션을 그 토픽으로 복원해요."
+    default_title: "{agent_name} 채팅"
+    root_lobby: "이 메인 채팅은 시스템 명령 전용이에요.\n\n새 {agent_name} 채팅을 시작하려면 이 봇 화면 상단의 All Messages 토픽을 열고 그곳에 아무 메시지나 보내세요. Telegram이 그 메시지로 새 토픽을 만들고, 각 토픽은 독립된 {agent_name} 세션으로 동작해요."
+    root_new: "새 {agent_name} 채팅을 병렬로 시작하려면 이 봇 화면 상단의 All Messages 토픽을 열고 그곳에 아무 메시지나 보내세요. Telegram이 새 토픽을 만들어 줘요.\n\n각 토픽은 독립된 {agent_name} 세션이에요. 기존 토픽의 현재 세션을 교체하고 싶을 때만 그 토픽 안에서 /new를 사용하세요."
+    new_header: "이 토픽에서 새 {agent_name} 세션을 시작했어요.\n\n팁: 병렬 작업을 하려면 여기서 /new를 쓰는 대신 All Messages를 열고 메시지를 보내 별도 토픽을 만드세요. /new는 현재 토픽에 연결된 세션을 교체해요."
+    help: "/topic — 다중 세션 DM 모드 켜기(봇 하나로 여러 채팅을 병렬로)\n\n사용법:\n  /topic             토픽 모드를 켜거나, 이미 켜져 있으면 상태 표시\n  /topic help        이 메시지 표시\n  /topic off         토픽 모드를 끄고 토픽 연결 지우기\n  /topic <id>        토픽 안에서: ID로 이전 세션 복원\n\n동작 방식:\n1. 이 DM에서 /topic을 한 번 실행하세요 — {agent_name}가 BotFather의 Threads\n   Settings가 켜져 있는지 확인하고 다중 세션 모드를 켜요.\n2. 봇 상단의 All Messages를 누르고 아무 메시지나 보내세요.\n   Telegram이 그 메시지로 새 토픽을 만들고, 각 토픽은\n   독립된 {agent_name} 세션이 돼요(새 기록, 새 컨텍스트).\n3. 루트 DM은 시스템 로비가 돼요 — /topic, /status,\n   /help, /usage는 거기서 보내세요. 일반 프롬프트는 토픽에서 보내요.\n4. 토픽 안에서 /new를 쓰면 그 토픽의 세션만 초기화돼요.\n5. 토픽 안에서 /topic <id>를 쓰면 이전 세션을 그 토픽으로 복원해요."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "채팅 ID를 확인할 수 없어요."
     mode_not_enabled: "이 채팅에는 다중 세션 토픽 모드가 아직 켜져 있지 않아요."
     disable_failed: "토픽 모드를 끄지 못했어요: {error}"
-    mode_disabled: "이 채팅의 다중 세션 토픽 모드가 이제 꺼졌어요.\n\nTelegram의 기존 토픽은 삭제되지 않고, 더 이상 독립 세션으로 구분되지 않을 뿐이에요. 루트 DM은 다시 일반 Hermes 채팅으로 동작해요. 나중에 다시 켜려면 /topic을 실행하세요."
+    mode_disabled: "이 채팅의 다중 세션 토픽 모드가 이제 꺼졌어요.\n\nTelegram의 기존 토픽은 삭제되지 않고, 더 이상 독립 세션으로 구분되지 않을 뿐이에요. 루트 DM은 다시 일반 {agent_name} 채팅으로 동작해요. 나중에 다시 켜려면 /topic을 실행하세요."
     status_enabled: "Telegram 다중 세션 토픽이 켜져 있어요."
-    status_how_to: "새 Hermes 채팅을 시작하려면 이 봇 화면 상단의 All Messages를 열고 그곳에 아무 메시지나 보내세요. Telegram이 새 토픽을 만들어 줘요."
+    status_how_to: "새 {agent_name} 채팅을 시작하려면 이 봇 화면 상단의 All Messages를 열고 그곳에 아무 메시지나 보내세요. Telegram이 새 토픽을 만들어 줘요."
     previous_unlinked: "이전에 연결 해제된 세션:"
     restore_one: "복원하려면:"
     restore_example: "예시: 토픽 안에서 /topic {session_id}를 보내세요."
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "그 세션은 이 Telegram 사용자의 세션이 아니에요."
     already_linked: "그 세션은 이미 다른 Telegram 토픽에 연결되어 있어요."
     restored: "세션을 복원했어요: {title}"
-    restored_last_message: "\n\n마지막 Hermes 메시지:\n{text}"
+    restored_last_message: "\n\n마지막 {agent_name} 메시지:\n{text}"
   undo:
     nothing: "되돌릴 내용이 없습니다."
     removed: "↩️ {turns}개 턴을 되돌렸습니다 (메시지 {count}개).\n백업 위치: \"{preview}\"\n위 텍스트를 복사/편집한 후 보내면 여기서 다시 프롬프트할 수 있습니다."
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update는 메시징 플랫폼에서만 사용할 수 있습니다. 터미널에서 `hermes update`를 실행하세요."
     not_git_repo: "✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다."
-    hermes_cmd_not_found: "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
+    hermes_cmd_not_found: "✗ `hermes` 명령을 찾을 수 없습니다. {agent_name}는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
     start_failed: "✗ 업데이트 시작 실패: {error}"
     already_running: "⏳ 이미 업데이트가 진행 중이에요. 업데이트 질문에는 시작한 사람만 답할 수 있어요. 끝난 뒤 /update를 다시 시도해 주세요."
-    starting: "☤ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
+    starting: "☤ {agent_name} 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
     reply_failed: "✗ 업데이트 프로세스에 응답을 보내지 못했어요: {error}"
     reply_sent: "✓ 업데이트 프로세스에 `{label}`을(를) 보냈어요."
-    failed_notice: "❌ Hermes 업데이트에 실패했어요. 이전 버전이 계속 실행 중이에요. 전체 오류를 보려면 호스트에서 `hermes update`를 실행하거나, 나중에 /update를 다시 시도하세요."
+    failed_notice: "❌ {agent_name} 업데이트에 실패했어요. 이전 버전이 계속 실행 중이에요. 전체 오류를 보려면 호스트에서 `hermes update`를 실행하거나, 나중에 /update를 다시 시도하세요."
     prompt_default: " (기본값: {default})"
     prompt: "☤ **업데이트에 입력이 필요해요:**\n\n{prompt}{default_hint}\n\n`{prefix}approve`(예) 또는 `{prefix}deny`(아니요)로 답하거나, 답을 직접 입력하세요."
-    finished: "✅ Hermes 업데이트가 끝났어요."
-    timed_out: "❌ Hermes 업데이트가 30분이 지나 시간 초과됐어요."
-    finished_success: "✅ Hermes 업데이트가 성공적으로 끝났어요."
+    finished: "✅ {agent_name} 업데이트가 끝났어요."
+    timed_out: "❌ {agent_name} 업데이트가 30분이 지나 시간 초과됐어요."
+    finished_success: "✅ {agent_name} 업데이트가 성공적으로 끝났어요."
     last_lines: "{msg}\n\n마지막 줄:\n```\n{tail}\n```"
     managed_action: "Hermes Agent 업데이트"
     not_applicable: "✗ `hermes update`는 이 설치 방식({method})에는 적용되지 않아요.\n업데이트 방법: {command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "없음"
     unknown_value: "알 수 없음"
   exec_approval:
-    header: "Hermes가 승인이 필요한 명령을 실행하려고 해요"
+    header: "{agent_name}가 승인이 필요한 명령을 실행하려고 해요"
     reason_label: "표시된 이유"
     default_reason: "위험한 명령"
     smart_deny_line: "스마트 거부: 소유자 재정의는 이 작업 한 번에만 적용돼요."
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "(응답 서식 지정에 실패해 일반 텍스트로 표시해요:)\n\n{content}"
     turn_error: "죄송해요, 오류가 발생했어요."
     context_injection_refused: "컨텍스트 주입이 거부되었어요."
-    no_home_channel: "📬 {platform}에 홈 채널이 설정되어 있지 않아요. 홈 채널은 Hermes가 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳이에요.\n\n이 채팅을 홈 채널로 만들려면 {sethome_cmd}을(를) 입력하고, 건너뛰려면 무시하세요."
+    no_home_channel: "📬 {platform}에 홈 채널이 설정되어 있지 않아요. 홈 채널은 {agent_name}가 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳이에요.\n\n이 채팅을 홈 채널로 만들려면 {sethome_cmd}을(를) 입력하고, 건너뛰려면 무시하세요."
   unauthorized:
     action_notice: "이 봇은 비공개이며 허용 목록에 포함되어 있지 않아요. 소유자라면 호스트에서 `hermes pairing approve {platform} <request-id>`를 실행하세요 (`hermes pairing list`로 ID를 확인할 수 있어요)."
     admin_only_can_run: "실행 가능한 명령: "
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ AI 모델 서비스가 이 요청을 거부했어요. 메시지를 다르게 표현해 보거나 /model로 모델을 바꿔 보세요."
     connection_interrupted: "⚠️ 요청 도중 AI 모델 서비스와의 연결이 끊어졌어요 — 대개 일시적인 문제예요. /retry로 다시 시도하고, 계속 반복되면 호스트에서 `hermes doctor`를 실행하세요."
     unreachable: "⚠️ 지금은 AI 모델 서비스에 연결할 수 없어요 — 설정된 모델 엔드포인트가 실행 중이 아니거나 접근할 수 없어요. 잠시 기다린 뒤 /retry를 사용하고, 계속되면 호스트에서 `hermes doctor`를 실행하세요."
-    connection_unknown: "⚠️ Hermes가 AI 모델 서비스에 연결하지 못했어요 (SDK에서 추가 정보를 제공하지 않았어요). /retry로 다시 시도하고, 계속되면 호스트에서 `hermes doctor`를 실행하세요."
+    connection_unknown: "⚠️ {agent_name}가 AI 모델 서비스에 연결하지 못했어요 (SDK에서 추가 정보를 제공하지 않았어요). /retry로 다시 시도하고, 계속되면 호스트에서 `hermes doctor`를 실행하세요."
     context_overflow: "⚠️ 이 대화가 너무 길어져서 한 번에 모두 읽을 수 없어요. /compress로 기록을 줄이거나, /new로 새 대화를 시작하세요."
     usage_limit_resets: "⏱️ AI 모델 서비스의 사용 한도에 도달했어요. {window} 후에 초기화돼요. 그 뒤에 /retry를 사용하거나, /model로 모델을 바꾸세요."
     provider_kept_failing: "⚠️ AI 모델 서비스가 계속 실패했어요. /retry로 다시 시도하거나, /model로 모델을 바꾸세요. 자세한 내용은 게이트웨이 로그(`hermes logs`)에 있어요."
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ 에이전트 활동 없이 턴 준비가 멈춰 취소되었습니다. 메시지를 다시 보내 주세요."
     setup_waiting: "⏳ 이 턴은 아직 시작 중입니다({minutes}분, 아직 에이전트 활동 없음). 메시지는 대기열에 있습니다. /stop을 사용하면 이 턴과 대기열의 모든 메시지가 취소됩니다."
     behavior_queue_short: "다음 턴 대기열에 추가"
-    behavior_queue_long: "Hermes가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."
+    behavior_queue_long: "{agent_name}가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."
     behavior_steer_short: "현재 실행에 조정 메시지로 전달 (다음 도구 호출 뒤)"
     behavior_steer_long: "메시지는 현재 실행에 조정 메시지로 전달돼요 (다음 도구 호출 뒤)."
     behavior_interrupt_short: "현재 실행 중단"
-    behavior_interrupt_long: "Hermes가 바쁠 때 받은 메시지는 현재 실행을 중단시켜요."
+    behavior_interrupt_long: "{agent_name}가 바쁠 때 받은 메시지는 현재 실행을 중단시켜요."
     status: "**바쁠 때 입력 모드: `{mode}`\n바쁠 때 받은 메시지: _{behavior}_\n`/busy queue`, `/busy steer`, `/busy interrupt`로 변경할 수 있어요."
     unknown_mode: "알 수 없는 모드 `{arg}`. `/busy queue`, `/busy steer`, `/busy interrupt` 중 하나를 사용하세요."
     save_failed: "바쁠 때 입력 모드를 설정에 저장하지 못했어요. 모드는 변경되지 않았어요."
     set: "바쁠 때 입력 모드를 **`{mode}`**(으)로 설정했어요 (저장됨).\n_{behavior}_"
   pause:
     resumed: "▶️ 재개됨 — 새 작업을 다시 받아요."
-    not_paused: "Hermes는 일시 중지 상태가 아니었어요."
+    not_paused: "{agent_name}는 일시 중지 상태가 아니었어요."
     reason_suffix: " (이유: {reason})"
-    already_paused: "⏸️ Hermes는 이미 일시 중지되어 있어요{suffix}. 재개하려면 `/pause off`를 사용하세요."
+    already_paused: "⏸️ {agent_name}는 이미 일시 중지되어 있어요{suffix}. 재개하려면 `/pause off`를 사용하세요."
     paused: "⏸️ 일시 중지됨{suffix}. 새 크론/칸반/게이트웨이 작업은 보류되고, 진행 중인 작업은 정상적으로 끝나요. 재개하려면 `/pause off`를 사용하세요."
   queue:
     usage: "사용법: /queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "완료"
     task_status_error: "오류"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes가 작업 중이에요"
+    task_card_title: "{agent_name}가 작업 중이에요"
   pairing:
     validity_hour: "{hours}시간"
     validity_hours: "{hours}시간"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "종료 중"
     action_restarting: "재시작 중"
-    cron_interrupted: "⚠️ Hermes가 {action}이어서 예약 작업 '{job}'이(가) 중단되었고, 이번 실행의 결과는 없어요. 예약대로 다시 실행되며, Hermes가 돌아온 뒤 `hermes cron run {job}`으로 지금 실행할 수도 있어요."
-    notice_shutdown: "⚠️ Hermes가 종료 중이에요 — 현재 작업이 중단돼요. 다시 온라인이 되면 아무 메시지나 보내 주세요. 중단된 곳부터 이어서 진행해 볼게요."
-    notice_restart: "⚠️ Hermes가 재시작 중이에요 — 현재 작업이 중단돼요. 재시작 후 아무 메시지나 보내 주시면 중단된 곳부터 이어서 진행해 볼게요."
+    cron_interrupted: "⚠️ {agent_name}가 {action}이어서 예약 작업 '{job}'이(가) 중단되었고, 이번 실행의 결과는 없어요. 예약대로 다시 실행되며, {agent_name}가 돌아온 뒤 `hermes cron run {job}`으로 지금 실행할 수도 있어요."
+    notice_shutdown: "⚠️ {agent_name}가 종료 중이에요 — 현재 작업이 중단돼요. 다시 온라인이 되면 아무 메시지나 보내 주세요. 중단된 곳부터 이어서 진행해 볼게요."
+    notice_restart: "⚠️ {agent_name}가 재시작 중이에요 — 현재 작업이 중단돼요. 재시작 후 아무 메시지나 보내 주시면 중단된 곳부터 이어서 진행해 볼게요."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ 게이트웨이가 성공적으로 재시작되었어요. 세션은 계속 이어져요."
-    online: "♻️ 게이트웨이 온라인 — Hermes가 돌아왔고 준비되었어요."
+    online: "♻️ 게이트웨이 온라인 — {agent_name}가 돌아왔고 준비되었어요."
     db_corrupt: "⚠️ 세션 데이터베이스 손상이 감지되었어요. 메시지가 저장되지 않을 수 있어요. 복구 방법:\n1. `hermes {profile_arg}doctor --fix` 실행\n2. 게이트웨이를 중지한 뒤 다음으로 복구:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (복구 가능하다고 나오면) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — 복구는 먼저 손상된 파일의 스냅샷을 만들어요. 실행 중인 state.db에 `sqlite3 ... \\\".recover\\\"`를 실행하지 마세요. 취약한 sqlite3 CLI가 손상을 더 키울 수 있어요\n3. {backups_dir}/의 백업에서 복원\n정리된 진단 정보는 `hermes {profile_arg}doctor`로 확인하세요."
     db_fts_corrupt: "⚠️ 세션 데이터베이스가 검색 인덱스(FTS5)에 한정된 손상 오류를 보고했어요. 메시지 테이블은 손상되지 않았어요. 수리될 때까지 메시지가 저장되지 않을 수 있어요: `hermes {profile_arg}doctor --fix`를 실행한 뒤 게이트웨이를 재시작하세요. `hermes {profile_arg}doctor`가 손상을 확인하지 않는 한 복구 도구를 실행하거나 백업을 복원하지 마세요."
     db_then_restart: "{action} 그런 다음 `hermes {profile_arg}gateway restart`를 실행하세요."
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[스트리밍 후 응답이 변환됨]\n"
   discord:
     approval:
-      question: "Hermes가 이 명령을 실행해도 될까요?"
+      question: "{agent_name}가 이 명령을 실행해도 될까요?"
       requested_command_label: "요청된 명령:"
       confirm_title: "확인"
       already_resolved: "이 승인은 이미 처리되었어요~"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "취소됨"
     prompt:
       truncated_marker: "... [잘림]"
-      clarify_title: "Hermes가 입력을 기다리고 있어요"
+      clarify_title: "{agent_name}가 입력을 기다리고 있어요"
       clarify_hint_buttons: "아래에서 하나를 고르거나, ✏️ 기타를 눌러 직접 답변을 입력하세요."
       clarify_hint_text: "이 채널에 답변을 남겨 주세요."
       default_hint: " (기본값: {default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "새 대화 시작"
         followup: "새 대화를 시작했어요~"
       reset:
-        description: "Hermes 세션 초기화"
+        description: "{agent_name} 세션 초기화"
         followup: "세션을 초기화했어요~"
       model:
         description: "모델 보기 또는 변경"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "마지막 대화 주고받기 제거"
       status:
-        description: "Hermes 세션 상태 보기"
+        description: "{agent_name} 세션 상태 보기"
         followup: "상태를 보냈어요~"
       stop:
-        description: "실행 중인 Hermes 에이전트 중지"
+        description: "실행 중인 {agent_name} 에이전트 중지"
         followup: "중지를 요청했어요~"
       steer:
         description: "다음 도구 호출 후 메시지 삽입 (중단 없음)"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "업데이트를 시작했어요~"
       restart:
-        description: "Hermes 게이트웨이 정상 재시작"
+        description: "{agent_name} 게이트웨이 정상 재시작"
         followup: "재시작을 요청했어요~"
       approve:
         arg_scope: "선택 사항: 'all', 'session', 'always', 'all session', 'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "대기 중인 위험 명령 거부"
         arg_scope: "선택 사항: 'all'을 지정하면 대기 중인 모든 명령을 거부해요"
       thread:
-        description: "새 스레드를 만들고 그 안에서 Hermes 세션 시작"
+        description: "새 스레드를 만들고 그 안에서 {agent_name} 세션 시작"
         arg_name: "스레드 이름"
-        arg_message: "선택 사항: 스레드에서 Hermes에게 보낼 첫 메시지"
+        arg_message: "선택 사항: 스레드에서 {agent_name}에게 보낼 첫 메시지"
         arg_auto_archive: "자동 보관 시간(분) (60, 1440, 4320, 10080)"
         error_unknown: "알 수 없는 오류"
         failed: "스레드 생성 실패: {error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "중단 없이 답변받을 부수적인 질문"
         followup: "부수 질문을 보냈어요~"
       skill:
-        description: "Hermes 스킬 실행"
+        description: "{agent_name} 스킬 실행"
         arg_name: "실행할 스킬"
         arg_args: "스킬에 전달할 선택적 인수"
         unknown: "알 수 없는 스킬: `{name}`. 입력을 시작하면 자동 완성 제안이 표시돼요."
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ 권한 없는 Discord 슬래시 명령 시도\n사용자: {user_name} ({user_id})\n채널: {chan_id} (길드 {guild_id})\n명령: {command_text}\n사유: {reason}"
     thread:
-      seed_message: "🧵 Hermes가 만든 스레드: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Hermes 인계: **{name}**"
-      auto_create_failed: "⚠️ Hermes가 이 메시지에 대한 Discord 스레드를 만들 수 없어서 요청이 처리되지 않았어요. 다시 시도해 주세요."
+      seed_message: "🧵 {agent_name}가 만든 스레드: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 {agent_name} 인계: **{name}**"
+      auto_create_failed: "⚠️ {agent_name}가 이 메시지에 대한 Discord 스레드를 만들 수 없어서 요청이 처리되지 않았어요. 다시 시도해 주세요."
       auto_create_failed_generic: "요청이 처리되지 않았어요. 다시 시도해 주세요."
     media:
       upload_too_large: "⚠️ `{filename}`을(를) 첨부할 수 없었어요 — {size_mb} MB는 이 채널의 Discord 업로드 한도 {limit_mb} MB를 초과해요. 파일을 압축하거나 링크로 공유해 주세요."
       image_skipped_too_large: "⚠️ `{filename}` 건너뜀 — {size_mb} MB는 Discord 업로드 한도 {limit_mb} MB를 초과해요."
   telegram:
     vault_code:
-      body: "이 메시지에 코드로 답장하세요. Hermes가 답장을 즉시 삭제하고 코드를 페이지에 입력합니다. 모델은 코드를 보지 않습니다."
+      body: "이 메시지에 코드로 답장하세요. {agent_name}가 답장을 즉시 삭제하고 코드를 페이지에 입력합니다. 모델은 코드를 보지 않습니다."
       delete_failed: "여기서 답장을 삭제하지 못했습니다. 직접 삭제해 주세요."
     approval:
       action_once: "✅ 한 번 허용"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "생각하는 중..."
       still_working: "아직 작업 중… ({elapsed})"
     task_card:
-      title: "Hermes가 작업 중이에요"
+      title: "{agent_name}가 작업 중이에요"
     slash:
       reply_truncated: "\n\n_[답변 잘림: {count}개 부분이 Slack의 임시 답변 한도를 초과했어요.]_"
       running: "`/{command}` 실행 중…"
     handoff:
-      seed: ":thread: Hermes 인계 — *{name}*"
+      seed: ":thread: {agent_name} 인계 — *{name}*"
   matrix:
     handoff:
-      default_name: "Hermes 세션"
+      default_name: "{agent_name} 세션"
     media:
       image_download_failed: "이미지를 내려받아 Matrix에 업로드하지 못했어요. 원본 URL에 비공개 토큰이 포함될 수 있어 표시하지 않았어요."
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "이 작업을 요청한 사용자만 이 컨트롤을 사용할 수 있어요."
   feishu:
     clarify:
-      title: "Hermes가 입력을 기다리고 있어요"
+      title: "{agent_name}가 입력을 기다리고 있어요"
       other: "✏️ 기타 (직접 입력)"
       awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "질문"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes가 생각하고 있어요…"
+      thinking: "{agent_name}가 생각하고 있어요…"
       interrupted: "(중단됨)"
       no_reply: "(응답 없음)"
     attachment_fallback:

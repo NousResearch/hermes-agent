@@ -101,6 +101,23 @@ def test_default_when_nothing_set(monkeypatch):
     assert i18n.get_language() == "en"
 
 
+def test_agent_name_in_a_notice(monkeypatch):
+    """``{agent_name}`` is the skin's name; the stock skin reads as the notices always did."""
+    from hermes_cli import skin_engine
+    monkeypatch.setattr(skin_engine, "_active_skin", None)
+    monkeypatch.setattr(skin_engine, "_active_skin_name", "default")
+    monkeypatch.setattr(skin_engine, "_profile_config", dict)
+    restart = ("⚠️ Hermes is restarting — your current task will be interrupted. "
+               "Send any message after the restart and I'll try to resume where you left off.")
+    assert i18n.t("gateway.shutdown.notice_restart", lang="en") == restart
+    monkeypatch.setattr(skin_engine, "agent_display_name", lambda: "Acme")
+    assert i18n.t("gateway.shutdown.notice_restart", lang="en") == restart.replace("Hermes", "Acme")
+    assert i18n.t("gateway.pause.already_paused", lang="en", suffix="") == (
+        "⏸️ Acme is already paused. Use `/pause off` to resume.")
+    # A name the caller passes wins.
+    assert i18n.t("gateway.progress.task_card_title", lang="en", agent_name="Sam") == "Sam is working"
+
+
 def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
     """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
     turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""

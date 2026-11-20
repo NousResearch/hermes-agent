@@ -217,6 +217,7 @@ subcommand. Rules:
 | Spinner verbs / wings (optional) | `spinner.thinking_verbs`, `spinner.wings` | `display.py` |
 | Tool output prefix / per-tool emojis | `tool_prefix`, `tool_emojis` | `display.py` → `get_tool_emoji()` |
 | Agent name / welcome / response label / prompt symbol | `branding.agent_name`, `welcome`, `response_label`, `prompt_symbol` | `banner.py`, `cli.py` |
+| Agent name in gateway and platform notices (`{agent_name}` in `locales/*.yaml`) | `branding.agent_name` via `agent_display_name()` | `agent/i18n.py` → `t()` |
 
 Built-in skins (`_BUILTIN_SKINS` in `hermes_cli/skin_engine.py`): `default` (classic gold/kawaii),
 `ares` (crimson/bronze with custom spinner wings), `mono` (grayscale), `slate` (cool blue). Add a

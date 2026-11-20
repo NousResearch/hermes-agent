@@ -257,3 +257,34 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+class TestAgentDisplayName:
+    """The name gateway and platform notices give the agent (``{agent_name}`` in the catalogs)."""
+
+    def test_stock_brand_keeps_the_short_name(self):
+        from hermes_cli.skin_engine import agent_display_name, set_active_skin
+        for name in ("default", "mono", "daylight"):
+            set_active_skin(name)
+            assert agent_display_name() == "Hermes"
+
+    def test_a_skins_own_name(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import agent_display_name, set_active_skin
+        import hermes_yaml as yaml
+        (tmp_path / "acme.yaml").write_text(yaml.safe_dump({"name": "acme", "branding": {"agent_name": "Acme"}}))
+        (tmp_path / "plain.yaml").write_text(yaml.safe_dump({"name": "plain", "colors": {"banner_title": "#FF0000"}}))
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: tmp_path)
+        set_active_skin("acme")
+        assert agent_display_name() == "Acme"
+        set_active_skin("ares")
+        assert agent_display_name() == "Ares Agent"
+        # A skin that sets no name inherits the stock one.
+        set_active_skin("plain")
+        assert agent_display_name() == "Hermes"
+
+    def test_a_process_that_never_initialised_the_skin_reads_its_config(self, monkeypatch):
+        # The gateway never runs the CLI's init_skin_from_config.
+        from hermes_cli.skin_engine import agent_display_name, get_active_skin
+        monkeypatch.setattr("hermes_cli.skin_engine._profile_config", lambda: {"display": {"skin": "ares"}})
+        assert get_active_skin().name == "ares"
+        assert agent_display_name() == "Ares Agent"

@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share --nous` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
-    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
+    local_refused: "`/debug local` hou die verslag op die masjien waarop {agent_name} loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
     upload_hint: "Niks is opgelaai nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
     upload_hint_local: "Niks is opgelaai nie. Stuur `/debug upload` om die opsommingsverslag op te laai, of `/debug local` om dit hier te bekyk."
     nous_refused: "Niks is opgelaai nie. Private Nous-oplaaie is nie van hier af beskikbaar nie: voer `hermes debug share --nous` in 'n terminaal uit, of gebruik Send diagnostics in die rekenaartoepassing. `/debug upload` laai die opsomming eerder na 'n publieke plakblad op."
@@ -216,7 +216,7 @@ gateway:
     set: "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add vereis 'n uitdruklik opgestelde gateway-administrateur (allow_admin_from vir privaatgesprekke, group_allow_admin_from vir groepe)."
   help:
-    header: "📖 **Hermes-opdragte**\n"
+    header: "📖 **{agent_name}-opdragte**\n"
     skill_header: "\n⚡ **Vaardigheidsopdragte** ({count} aktief):"
     more_use_commands: "\n... en nog {count}. Gebruik `/commands` vir die volledige bladsy-lys."
   insights:
@@ -343,7 +343,7 @@ gateway:
     db_unavailable: "Sessie-databasis is nie beskikbaar nie."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume geblokkeer: hierdie benoemde sessie het geen aangetekende kamer-oorsprong nie, so Hermes sal dit nie by verstek binne die huidige kamer hervat nie. Gebruik `/resume --cross-room {name}` as jy doelbewus kamergrense wil oorsteek."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume geblokkeer: hierdie benoemde sessie het geen aangetekende kamer-oorsprong nie, so {agent_name} sal dit nie by verstek binne die huidige kamer hervat nie. Gebruik `/resume --cross-room {name}` as jy doelbewus kamergrense wil oorsteek."
     matrix_blocked_other_room: "⚠️ Matrix /resume geblokkeer: daardie sessie behoort aan 'n ander Matrix-kamer ({room}). Gebruik `/resume --cross-room {name}` as jy dit doelbewus hier wil hervat."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume geblokkeer: '**{name}**' behoort aan 'n ander gebruiker of geselsie. Jy kan slegs sessies vanaf hierdie geselsie hervat."
@@ -440,7 +440,7 @@ gateway:
     cache_maybe_warm: "Prompt-kas: mag nog warm wees tot {until} (hoogstens nog {remaining}; {ttl}, {confidence})."
     cache_unknown_moved: "Prompt-kas: onbekend (die roete, sessie of konteks het sedert die laaste gekaste versoek verander)."
     cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
-    cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat Hermes nie kan sien nie)."
+    cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat {agent_name} nie kan sien nie)."
     cache_unknown_storage: "Prompt-kas: onbekend (die sessiestoor kon nie gelees word nie)."
     cache_warming_off: "Lewendhouers: af (twee keer gemis)."
     cache_tier_pending: "Vlak: 5m tot die eerste pouse langer as 5 minute, dan 1h."
@@ -450,7 +450,7 @@ gateway:
       declared: "verklaar"
       assumed: "aanvaar"
   status:
-    header: "📊 **Hermes Gateway-status**"
+    header: "📊 **{agent_name} Gateway-status**"
     matrix_scope_header: "**Matrix-omvang:**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -496,22 +496,22 @@ gateway:
     topics_user_disallowed: "Telegram-onderwerpe is geaktiveer, maar gebruikers mag nie onderwerpe skep nie.\n\nOpen @BotFather → kies jou bot → Bot Settings → Threads Settings, en skakel dan 'Disallow users to create new threads' af.\n\nStuur dan weer /topic."
     enable_failed: "Kon nie Telegram-onderwerpmodus aktiveer nie: {error}"
     bound_status: "Hierdie onderwerp is gekoppel aan:\nSessie: {label}\nID: {session_id}\n\nGebruik /new om hierdie onderwerp met 'n vars sessie te vervang.\nVir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
-    thread_ready: "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike Hermes-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
+    thread_ready: "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike {agent_name}-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
     untitled_session: "Sessie sonder titel"
     restore_step_1: "1. Skep of open 'n onderwerp. Om 'n nuwe een te skep, open All Messages en stuur enige boodskap daar."
     restore_step_2: "2. Stuur /topic <session-id> binne daardie onderwerp."
-    default_title: "Hermes-klets"
-    root_lobby: "Hierdie hoofklets is vir stelselopdragte gereserveer.\n\nOm 'n nuwe Hermes-klets te begin, open die All Messages-onderwerp bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp vir daardie boodskap skep; elke onderwerp werk as 'n onafhanklike Hermes-sessie."
-    root_new: "Om 'n nuwe parallelle Hermes-klets te begin, open die All Messages-onderwerp bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp daarvoor skep.\n\nElke onderwerp is 'n onafhanklike Hermes-sessie. Gebruik /new binne 'n bestaande onderwerp slegs as jy daardie onderwerp se huidige sessie wil vervang."
-    new_header: "'n Nuwe Hermes-sessie is in hierdie onderwerp begin.\n\nWenk: vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n aparte onderwerp te skep in plaas van /new hier. /new vervang die sessie wat aan die huidige onderwerp gekoppel is."
-    help: "/topic — aktiveer multi-sessie-privaatgesprekmodus (een bot, baie parallelle kletse)\n\nGebruik:\n  /topic             Aktiveer onderwerpmodus, of wys status as dit reeds aan is\n  /topic help        Wys hierdie boodskap\n  /topic off         Deaktiveer onderwerpmodus en verwyder onderwerpkoppelings\n  /topic <id>        Binne 'n onderwerp: herstel 'n vorige sessie volgens ID\n\nHoe dit werk:\n1. Voer /topic een keer in hierdie privaatgesprek uit — Hermes kontroleer dat BotFather\n   Threads Settings geaktiveer is en skakel multi-sessiemodus aan.\n2. Tik All Messages bo-aan die bot en stuur enige boodskap.\n   Telegram skep 'n nuwe onderwerp vir daardie boodskap; elke onderwerp is\n   'n onafhanklike Hermes-sessie (vars geskiedenis, vars konteks).\n3. Die hoof-privaatgesprek word 'n stelsel-voorportaal — stuur /topic, /status,\n   /help, /usage daar. Gewone prompts gaan in 'n onderwerp.\n4. /new binne 'n onderwerp herstel net daardie onderwerp se sessie.\n5. /topic <id> binne 'n onderwerp herstel 'n ou sessie daarin."
+    default_title: "{agent_name}-klets"
+    root_lobby: "Hierdie hoofklets is vir stelselopdragte gereserveer.\n\nOm 'n nuwe {agent_name}-klets te begin, open die All Messages-onderwerp bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp vir daardie boodskap skep; elke onderwerp werk as 'n onafhanklike {agent_name}-sessie."
+    root_new: "Om 'n nuwe parallelle {agent_name}-klets te begin, open die All Messages-onderwerp bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp daarvoor skep.\n\nElke onderwerp is 'n onafhanklike {agent_name}-sessie. Gebruik /new binne 'n bestaande onderwerp slegs as jy daardie onderwerp se huidige sessie wil vervang."
+    new_header: "'n Nuwe {agent_name}-sessie is in hierdie onderwerp begin.\n\nWenk: vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n aparte onderwerp te skep in plaas van /new hier. /new vervang die sessie wat aan die huidige onderwerp gekoppel is."
+    help: "/topic — aktiveer multi-sessie-privaatgesprekmodus (een bot, baie parallelle kletse)\n\nGebruik:\n  /topic             Aktiveer onderwerpmodus, of wys status as dit reeds aan is\n  /topic help        Wys hierdie boodskap\n  /topic off         Deaktiveer onderwerpmodus en verwyder onderwerpkoppelings\n  /topic <id>        Binne 'n onderwerp: herstel 'n vorige sessie volgens ID\n\nHoe dit werk:\n1. Voer /topic een keer in hierdie privaatgesprek uit — {agent_name} kontroleer dat BotFather\n   Threads Settings geaktiveer is en skakel multi-sessiemodus aan.\n2. Tik All Messages bo-aan die bot en stuur enige boodskap.\n   Telegram skep 'n nuwe onderwerp vir daardie boodskap; elke onderwerp is\n   'n onafhanklike {agent_name}-sessie (vars geskiedenis, vars konteks).\n3. Die hoof-privaatgesprek word 'n stelsel-voorportaal — stuur /topic, /status,\n   /help, /usage daar. Gewone prompts gaan in 'n onderwerp.\n4. /new binne 'n onderwerp herstel net daardie onderwerp se sessie.\n5. /topic <id> binne 'n onderwerp herstel 'n ou sessie daarin."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Kon nie klets-ID bepaal nie."
     mode_not_enabled: "Multi-sessie-onderwerpmodus is tans nie vir hierdie klets geaktiveer nie."
     disable_failed: "Kon nie onderwerpmodus deaktiveer nie: {error}"
-    mode_disabled: "Multi-sessie-onderwerpmodus is nou AF vir hierdie klets.\n\nBestaande onderwerpe in Telegram word nie verwyder nie — hulle sal net nie meer as onafhanklike sessies afgesonder word nie. Die hoof-privaatgesprek werk weer as 'n gewone Hermes-klets. Voer /topic uit om dit later weer te aktiveer."
+    mode_disabled: "Multi-sessie-onderwerpmodus is nou AF vir hierdie klets.\n\nBestaande onderwerpe in Telegram word nie verwyder nie — hulle sal net nie meer as onafhanklike sessies afgesonder word nie. Die hoof-privaatgesprek werk weer as 'n gewone {agent_name}-klets. Voer /topic uit om dit later weer te aktiveer."
     status_enabled: "Telegram multi-sessie-onderwerpe is geaktiveer."
-    status_how_to: "Om 'n nuwe Hermes-klets te skep, open All Messages bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp daarvoor skep."
+    status_how_to: "Om 'n nuwe {agent_name}-klets te skep, open All Messages bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp daarvoor skep."
     previous_unlinked: "Vorige ongekoppelde sessies:"
     restore_one: "Om een te herstel:"
     restore_example: "Voorbeeld: Stuur /topic {session_id} binne 'n onderwerp."
@@ -522,7 +522,7 @@ gateway:
     not_your_session: "Daardie sessie behoort nie aan hierdie Telegram-gebruiker nie."
     already_linked: "Daardie sessie is reeds aan 'n ander Telegram-onderwerp gekoppel."
     restored: "Sessie herstel: {title}"
-    restored_last_message: "\n\nLaaste Hermes-boodskap:\n{text}"
+    restored_last_message: "\n\nLaaste {agent_name}-boodskap:\n{text}"
   undo:
     nothing: "Niks om ongedaan te maak nie."
     removed: "↩️ {turns} beurt(e) ongedaan gemaak ({count} boodskap(pe)).\nGerugsteun na: \"{preview}\"\nKopieer/wysig die teks hierbo en stuur dit om van hier af weer te vra."
@@ -530,18 +530,18 @@ gateway:
   update:
     platform_not_messaging: "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."
     not_git_repo: "✗ Nie 'n git-bewaarplek nie — kan nie opdateer nie."
-    hermes_cmd_not_found: "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
+    hermes_cmd_not_found: "✗ Kon nie die `hermes`-opdrag vind nie. {agent_name} loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
     start_failed: "✗ Kon nie opdatering begin nie: {error}"
     already_running: "⏳ 'n Opdatering loop reeds; net wie dit begin het, kan sy vrae beantwoord. Wag tot dit klaar is en probeer dan weer /update."
-    starting: "☤ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    starting: "☤ Begin {agent_name}-opdatering… Ek sal vordering hier stroom."
     reply_failed: "✗ Kon nie antwoord na die opdateerproses stuur nie: {error}"
     reply_sent: "✓ `{label}` na die opdateerproses gestuur."
-    failed_notice: "❌ Hermes-opdatering het misluk; die vorige weergawe loop steeds. Voer `hermes update` op die gasheer uit om die volledige fout te sien, of probeer /update later weer."
+    failed_notice: "❌ {agent_name}-opdatering het misluk; die vorige weergawe loop steeds. Voer `hermes update` op die gasheer uit om die volledige fout te sien, of probeer /update later weer."
     prompt_default: " (verstek: {default})"
     prompt: "☤ **Opdatering benodig jou insette:**\n\n{prompt}{default_hint}\n\nAntwoord `{prefix}approve` (ja) of `{prefix}deny` (nee), of tik jou antwoord direk in."
-    finished: "✅ Hermes-opdatering voltooi."
-    timed_out: "❌ Hermes-opdatering het na 30 minute uitgetel."
-    finished_success: "✅ Hermes-opdatering suksesvol voltooi."
+    finished: "✅ {agent_name}-opdatering voltooi."
+    timed_out: "❌ {agent_name}-opdatering het na 30 minute uitgetel."
+    finished_success: "✅ {agent_name}-opdatering suksesvol voltooi."
     last_lines: "{msg}\n\nLaaste reëls:\n```\n{tail}\n```"
     managed_action: "Hermes Agent opdateer"
     not_applicable: "✗ `hermes update` geld nie vir hierdie installasie nie ({method}).\nOpdateer met: {command}"
@@ -631,7 +631,7 @@ gateway:
     none_value: "geen"
     unknown_value: "onbekend"
   exec_approval:
-    header: "Hermes wil 'n opdrag uitvoer wat jou goedkeuring nodig het"
+    header: "{agent_name} wil 'n opdrag uitvoer wat jou goedkeuring nodig het"
     reason_label: "Hoekom dit gemerk is"
     default_reason: "gevaarlike opdrag"
     smart_deny_line: "Slim WEIER: eienaar-oorskrywing geld slegs vir hierdie een bewerking."
@@ -667,7 +667,7 @@ gateway:
     plain_fallback_prefix: "(Antwoordformatering het misluk, gewone teks:)\n\n{content}"
     turn_error: "Jammer, ek het 'n fout ondervind."
     context_injection_refused: "Konteksinspuiting geweier."
-    no_home_channel: "📬 Geen tuiste-kanaal is vir {platform} gestel nie. 'n Tuiste-kanaal is waar Hermes cron-taakresultate en kruisplatform-boodskappe aflewer.\n\nTik {sethome_cmd} om hierdie klets jou tuiste-kanaal te maak, of ignoreer dit om oor te slaan."
+    no_home_channel: "📬 Geen tuiste-kanaal is vir {platform} gestel nie. 'n Tuiste-kanaal is waar {agent_name} cron-taakresultate en kruisplatform-boodskappe aflewer.\n\nTik {sethome_cmd} om hierdie klets jou tuiste-kanaal te maak, of ignoreer dit om oor te slaan."
   unauthorized:
     action_notice: "Hierdie bot is privaat en jy is nie op sy toelaatlys nie. As dit joune is, voer `hermes pairing approve {platform} <request-id>` op die gasheer uit (`hermes pairing list` wys die ID)."
     admin_only_can_run: "Jy kan uitvoer: "
@@ -695,7 +695,7 @@ gateway:
     bad_request: "⚠️ Die KI-modeldiens het hierdie versoek verwerp. Probeer jou boodskap anders formuleer, of gebruik /model om modelle te wissel."
     connection_interrupted: "⚠️ Die verbinding met die KI-modeldiens is halfpad deur die versoek onderbreek — gewoonlik tydelik. Gebruik /retry om weer te probeer; as dit aanhou gebeur, voer `hermes doctor` op die gasheer uit."
     unreachable: "⚠️ Die KI-modeldiens is tans nie bereikbaar nie — die opgestelde model-eindpunt loop nie of is onbereikbaar. Wag 'n oomblik en gebruik /retry; as dit voortduur, voer `hermes doctor` op die gasheer uit."
-    connection_unknown: "⚠️ Hermes kon nie die KI-modeldiens bereik nie (geen verdere besonderhede van die SDK nie). Gebruik /retry om weer te probeer; as dit voortduur, voer `hermes doctor` op die gasheer uit."
+    connection_unknown: "⚠️ {agent_name} kon nie die KI-modeldiens bereik nie (geen verdere besonderhede van die SDK nie). Gebruik /retry om weer te probeer; as dit voortduur, voer `hermes doctor` op die gasheer uit."
     context_overflow: "⚠️ Hierdie gesprek het te lank geword om alles op een slag te lees. Gebruik /compress om die geskiedenis te verkort, of /new om 'n vars gesprek te begin."
     usage_limit_resets: "⏱️ Die KI-modeldiens se gebruikslimiet is bereik; dit word oor {window} teruggestel. Gebruik /retry daarna, of /model om modelle te wissel."
     provider_kept_failing: "⚠️ Die KI-modeldiens het aanhou misluk. Gebruik /retry om weer te probeer, of /model om modelle te wissel. Besonderhede is in die gateway-log (`hermes logs`)."
@@ -766,20 +766,20 @@ gateway:
     setup_timeout: "⏳ Die beurt se opstelling het vasgehaak sonder agentaktiwiteit en is gekanselleer. Stuur asseblief jou boodskap weer."
     setup_waiting: "⏳ Begin steeds hierdie beurt ({minutes} min, nog geen agentaktiwiteit nie). Jou boodskap is in die tou. Gebruik /stop om dit en alles in die tou te kanselleer."
     behavior_queue_short: "gaan in die tou vir die volgende beurt"
-    behavior_queue_long: "Boodskappe sal in die tou geplaas word vir die volgende beurt terwyl Hermes besig is."
+    behavior_queue_long: "Boodskappe sal in die tou geplaas word vir die volgende beurt terwyl {agent_name} besig is."
     behavior_steer_short: "stuur in die huidige lopie in (na die volgende gereedskapsoproep)"
     behavior_steer_long: "Boodskappe sal in die huidige lopie ingestuur word (na die volgende gereedskapsoproep)."
     behavior_interrupt_short: "onderbreek die huidige lopie"
-    behavior_interrupt_long: "Boodskappe sal die huidige lopie onderbreek terwyl Hermes besig is."
+    behavior_interrupt_long: "Boodskappe sal die huidige lopie onderbreek terwyl {agent_name} besig is."
     status: "**Besig-invoermodus: `{mode}`\nBoodskappe terwyl besig: _{behavior}_\nVerander met `/busy queue`, `/busy steer`, of `/busy interrupt`."
     unknown_mode: "Onbekende modus `{arg}`. Gebruik `/busy queue`, `/busy steer`, of `/busy interrupt`."
     save_failed: "Besig-invoermodus kon nie in die konfigurasie gestoor word nie. Modus onveranderd."
     set: "Besig-invoermodus gestel op **`{mode}`** (gestoor).\n_{behavior}_"
   pause:
     resumed: "▶️ Hervat — nuwe werk word weer aanvaar."
-    not_paused: "Hermes was nie gepouseer nie."
+    not_paused: "{agent_name} was nie gepouseer nie."
     reason_suffix: " (rede: {reason})"
-    already_paused: "⏸️ Hermes is reeds gepouseer{suffix}. Gebruik `/pause off` om te hervat."
+    already_paused: "⏸️ {agent_name} is reeds gepouseer{suffix}. Gebruik `/pause off` om te hervat."
     paused: "⏸️ Gepouseer{suffix}. Nuwe cron-/kanban-/gateway-werk is opgeskort; werk wat reeds loop, word normaal voltooi. Gebruik `/pause off` om te hervat."
   queue:
     usage: "Gebruik: /queue <prompt>"
@@ -865,7 +865,7 @@ gateway:
     task_status_complete: "voltooi"
     task_status_error: "fout"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes werk"
+    task_card_title: "{agent_name} werk"
   pairing:
     validity_hour: "{hours} uur"
     validity_hours: "{hours} uur"
@@ -874,13 +874,13 @@ gateway:
   shutdown:
     action_shutting_down: "besig om af te sluit"
     action_restarting: "besig om te herbegin"
-    cron_interrupted: "⚠️ Geskeduleerde taak '{job}' is kortgeknip omdat Hermes {action} is; geen resultaat vir hierdie lopie nie. Dit sal weer volgens skedule loop, of voer dit nou uit met `hermes cron run {job}` sodra Hermes terug is."
-    notice_shutdown: "⚠️ Hermes sluit af — jou huidige taak sal onderbreek word. Wanneer dit weer aanlyn is, stuur enige boodskap en ek sal probeer voortgaan waar ons opgehou het."
-    notice_restart: "⚠️ Hermes herbegin — jou huidige taak sal onderbreek word. Stuur enige boodskap na die herbegin en ek sal probeer voortgaan waar jy opgehou het."
+    cron_interrupted: "⚠️ Geskeduleerde taak '{job}' is kortgeknip omdat {agent_name} {action} is; geen resultaat vir hierdie lopie nie. Dit sal weer volgens skedule loop, of voer dit nou uit met `hermes cron run {job}` sodra {agent_name} terug is."
+    notice_shutdown: "⚠️ {agent_name} sluit af — jou huidige taak sal onderbreek word. Wanneer dit weer aanlyn is, stuur enige boodskap en ek sal probeer voortgaan waar ons opgehou het."
+    notice_restart: "⚠️ {agent_name} herbegin — jou huidige taak sal onderbreek word. Stuur enige boodskap na die herbegin en ek sal probeer voortgaan waar jy opgehou het."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "{agent_name} — {title}"
     restarted: "♻ Gateway suksesvol herbegin. Jou sessie gaan voort."
-    online: "♻️ Gateway aanlyn — Hermes is terug en gereed."
+    online: "♻️ Gateway aanlyn — {agent_name} is terug en gereed."
     db_corrupt: "⚠️ Sessie-databasis-korrupsie opgespoor. Boodskappe word moontlik nie bewaar nie. Herstelopsies:\n1. Voer `hermes {profile_arg}doctor --fix` uit\n2. Stop die gateway en herstel dan met:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (as dit herstelbaar rapporteer) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — herstel neem eers 'n momentopname van die beskadigde lêer; voer NIE `sqlite3 ... \".recover\"` teen die lewendige state.db uit nie, 'n kwesbare sqlite3 CLI kan dit verder korrupteer\n3. Herstel vanaf 'n rugsteun in {backups_dir}/\nVoer `hermes {profile_arg}doctor` uit vir gesuiwerde diagnostiek."
     db_fts_corrupt: "⚠️ Sessie-databasis het 'n korrupsiefout gerapporteer wat beperk is tot die soekindeks (FTS5); die boodskaptabelle is nie beskadig nie. Boodskappe word moontlik nie bewaar totdat dit herstel is nie: voer `hermes {profile_arg}doctor --fix` uit en herbegin dan die gateway. Voer nie herstelgereedskap uit of herstel 'n rugsteun nie tensy `hermes {profile_arg}doctor` skade bevestig."
     db_then_restart: "{action} Dan `hermes {profile_arg}gateway restart`."
@@ -1035,7 +1035,7 @@ platform:
     transformed_notice: "\n\n[Antwoord getransformeer na stroming]\n"
   discord:
     approval:
-      question: "Wil jy hê Hermes moet hierdie opdrag uitvoer?"
+      question: "Wil jy hê {agent_name} moet hierdie opdrag uitvoer?"
       requested_command_label: "Aangevraagde opdrag:"
       confirm_title: "Bevestig"
       already_resolved: "Hierdie goedkeuring is reeds afgehandel~"
@@ -1057,7 +1057,7 @@ platform:
       resolved_cancel: "Gekanselleer"
     prompt:
       truncated_marker: "... [afgekap]"
-      clarify_title: "Hermes het jou insette nodig"
+      clarify_title: "{agent_name} het jou insette nodig"
       clarify_hint_buttons: "Kies een hieronder, of klik ✏️ Ander om 'n eie antwoord te tik."
       clarify_hint_text: "Antwoord in hierdie kanaal met jou antwoord."
       default_hint: " (verstek: {default})"
@@ -1100,7 +1100,7 @@ platform:
         description: "Begin 'n nuwe gesprek"
         followup: "Nuwe gesprek begin~"
       reset:
-        description: "Herstel jou Hermes-sessie"
+        description: "Herstel jou {agent_name}-sessie"
         followup: "Sessie herstel~"
       model:
         description: "Wys of verander die model"
@@ -1122,10 +1122,10 @@ platform:
       undo:
         description: "Verwyder die laaste uitruiling"
       status:
-        description: "Wys Hermes-sessiestatus"
+        description: "Wys {agent_name}-sessiestatus"
         followup: "Status gestuur~"
       stop:
-        description: "Stop die lopende Hermes-agent"
+        description: "Stop die lopende {agent_name}-agent"
         followup: "Stop aangevra~"
       steer:
         description: "Voeg 'n boodskap in na die volgende gereedskapsoproep (geen onderbreking)"
@@ -1161,7 +1161,7 @@ platform:
       update:
         followup: "Opdatering begin~"
       restart:
-        description: "Herbegin die Hermes-gateway ordelik"
+        description: "Herbegin die {agent_name}-gateway ordelik"
         followup: "Herbegin aangevra~"
       approve:
         arg_scope: "Opsioneel: 'all', 'session', 'always', 'all session', 'all always'"
@@ -1169,9 +1169,9 @@ platform:
         description: "Weier 'n hangende gevaarlike opdrag"
         arg_scope: "Opsioneel: 'all' om alle hangende opdragte te weier"
       thread:
-        description: "Skep 'n nuwe draad en begin 'n Hermes-sessie daarin"
+        description: "Skep 'n nuwe draad en begin 'n {agent_name}-sessie daarin"
         arg_name: "Draadnaam"
-        arg_message: "Opsionele eerste boodskap om aan Hermes in die draad te stuur"
+        arg_message: "Opsionele eerste boodskap om aan {agent_name} in die draad te stuur"
         arg_auto_archive: "Outo-argiveer in minute (60, 1440, 4320, 10080)"
         error_unknown: "onbekende fout"
         failed: "Kon nie draad skep nie: {error}"
@@ -1194,7 +1194,7 @@ platform:
         arg_question: "Die newevraag om te beantwoord sonder om te onderbreek"
         followup: "Newevraag gestuur~"
       skill:
-        description: "Voer 'n Hermes-vaardigheid uit"
+        description: "Voer 'n {agent_name}-vaardigheid uit"
         arg_name: "Watter vaardigheid om uit te voer"
         arg_args: "Opsionele argumente vir die vaardigheid"
         unknown: "Onbekende vaardigheid: `{name}`. Begin tik vir outovoltooi-voorstelle."
@@ -1212,17 +1212,17 @@ platform:
     security:
       unauthorized_slash_alert: "⚠️ Ongemagtigde Discord-slash-poging\nGebruiker: {user_name} ({user_id})\nKanaal: {chan_id} (guild {guild_id})\nOpdrag: {command_text}\nRede: {reason}"
     thread:
-      seed_message: "🧵 Draad geskep deur Hermes: **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Hermes-oorhandiging: **{name}**"
-      auto_create_failed: "⚠️ Hermes kon nie 'n Discord-draad vir hierdie boodskap skep nie, so die versoek is nie verwerk nie. Probeer asseblief weer."
+      seed_message: "🧵 Draad geskep deur {agent_name}: **{name}**"
+      default_name: "{agent_name}"
+      handoff_seed: "🧵 {agent_name}-oorhandiging: **{name}**"
+      auto_create_failed: "⚠️ {agent_name} kon nie 'n Discord-draad vir hierdie boodskap skep nie, so die versoek is nie verwerk nie. Probeer asseblief weer."
       auto_create_failed_generic: "Die versoek is nie verwerk nie. Probeer asseblief weer."
     media:
       upload_too_large: "⚠️ Kon nie `{filename}` aanheg nie — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB vir hierdie kanaal. Pers die lêer saam of deel eerder 'n skakel."
       image_skipped_too_large: "⚠️ `{filename}` oorgeslaan — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB."
   telegram:
     vault_code:
-      body: "Antwoord op hierdie boodskap met die kode. Hermes vee jou antwoord dadelik uit en vul die kode op die bladsy in; die model sien dit nooit."
+      body: "Antwoord op hierdie boodskap met die kode. {agent_name} vee jou antwoord dadelik uit en vul die kode op die bladsy in; die model sien dit nooit."
       delete_failed: "Kon nie jou antwoord hier uitvee nie. Vee dit asseblief self uit."
     approval:
       action_once: "✅ Eenmalig"
@@ -1370,15 +1370,15 @@ platform:
       thinking: "dink..."
       still_working: "werk nog… ({elapsed})"
     task_card:
-      title: "Hermes is aan die werk"
+      title: "{agent_name} is aan die werk"
     slash:
       reply_truncated: "\n\n_[Antwoord afgekap: nog {count} deel/dele het Slack se limiet vir kortstondige antwoorde oorskry.]_"
       running: "Voer `/{command}` uit…"
     handoff:
-      seed: ":thread: Hermes-oorhandiging — *{name}*"
+      seed: ":thread: {agent_name}-oorhandiging — *{name}*"
   matrix:
     handoff:
-      default_name: "Hermes-sessie"
+      default_name: "{agent_name}-sessie"
     media:
       image_download_failed: "Ek kon nie die beeld aflaai en na Matrix oplaai nie. Die bron-URL word nie gewys nie, want dit kan private tokens bevat."
     approval:
@@ -1410,7 +1410,7 @@ platform:
       not_requester: "Slegs die gebruiker wat hierdie aksie aangevra het, kan hierdie kontroles gebruik."
   feishu:
     clarify:
-      title: "Hermes het jou insette nodig"
+      title: "{agent_name} het jou insette nodig"
       other: "✏️ Ander (tik antwoord)"
       awaiting_typed: "Wag vir getikte antwoord van {user}…"
     picker:
@@ -1442,7 +1442,7 @@ platform:
       header: "Vraag"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes dink…"
+      thinking: "{agent_name} dink…"
       interrupted: "(onderbreek)"
       no_reply: "(geen antwoord)"
     attachment_fallback:

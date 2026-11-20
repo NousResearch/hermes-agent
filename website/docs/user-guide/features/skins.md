@@ -100,7 +100,7 @@ Text strings used throughout the CLI interface.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `agent_name` | Name shown in banner title and status display | `Hermes Agent` |
+| `agent_name` | Name shown in banner title and status display, and the agent's name in the gateway's notices on messaging platforms ("⚠️ My Agent is restarting…"; the stock name reads `Hermes` there) | `Hermes Agent` |
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
 | `goodbye` | Message shown on exit | `Goodbye! ☤` |
 | `response_label` | Label on the response box header | ` ☤ Hermes ` |

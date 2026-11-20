@@ -2231,8 +2231,8 @@ DEFAULT_CONFIG = {
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
-        # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
-        # nested under their parent. Off by default: they are machinery, not conversations.
+        # delegate_task subagent runs in session lists (sidebar, dashboard, session.list), under their
+        # parent: false = none (default), "active" = only runs in flight (unended, <24 h old), true = all.
         "show_subagents": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE, #54189). It blocks
         # writes (~seconds per 100MB): only at startup, only when ≥1 session went AND freelist/page_count > 25%.

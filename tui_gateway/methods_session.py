@@ -446,10 +446,10 @@ def _(rid, params: dict, persistence) -> dict:
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
-        from hermes_cli.session_listing import show_subagent_sessions
+        from hermes_cli.session_listing import subagent_include_marker
 
-        # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
-        include_subagents = show_subagent_sessions(persistence.scope.profile_dir)
+        # ``sessions.show_subagents`` (the store's profile config) re-admits all (true) or running ("active") delegate runs.
+        include_subagents = subagent_include_marker(persistence.scope.profile_dir)
         rows = _listing_rows(persistence, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
                              include_subagents=include_subagents)[:limit]
         # No live_message_count here on purpose: the bulk listing serves rows whose open

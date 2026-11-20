@@ -33,3 +33,20 @@ def test_include_subagents_lists_delegate_runs_with_a_matching_count(db):
     assert _ids(rows) == {"parent", "sub"}
     assert next(r for r in rows if r["id"] == "sub")["parent_session_id"] == "parent"
     assert session_count(db, exclude_children=True, include_subagents=True) == 2
+
+
+def test_running_marker_lists_only_delegate_runs_still_in_flight(db):
+    from persistence.sqlite.conversation._store.sessions import RUNNING_SUBAGENTS
+
+    create_session(db, session_id="sub-done", source="subagent", model="m", parent_session_id="parent",
+                   model_config={"_delegate_from": "parent"})
+    end_session(db, "sub-done", "agent_close")
+    rows = list_sessions_rich(db, limit=50, include_subagents=RUNNING_SUBAGENTS, project_compression_tips=False)
+    # The running child joins nested under its parent; the finished one and the compression
+    # continuation stay hidden.
+    assert _ids(rows) == {"parent", "sub"}
+    assert next(r for r in rows if r["id"] == "sub")["parent_session_id"] == "parent"
+    assert session_count(db, exclude_children=True, include_subagents=RUNNING_SUBAGENTS) == 2
+    # Every finished run shows only in the "all" mode.
+    assert {"sub", "sub-done"} <= _ids(list_sessions_rich(db, limit=50, include_subagents=True,
+                                                           project_compression_tips=False))

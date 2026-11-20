@@ -292,14 +292,14 @@ class TestSidebarShowSubagents:
     """``sessions.show_subagents`` is read from each profile's OWN config and only widens recents (#97202)."""
 
     @staticmethod
-    def _seed_subagent(home, parent_id, child_id):
+    def _seed_subagent(home, parent_id, child_id, end_reason="agent_close"):
         from persistence_assembly import open_persistence, profile_scope
         from tests.fixtures.storage_seed import seed_messages, seed_session
 
         _seed_session(home, parent_id, source="desktop")
         with open_persistence(profile_scope(home=home)) as db:
             seed_session(db, child_id, "subagent", parent_session_id=parent_id,
-                         model_config={"_delegate_from": parent_id})
+                         model_config={"_delegate_from": parent_id}, end_reason=end_reason)
             seed_messages(db, child_id, {"role": "user", "content": "audit billing"})
 
     def test_recents_list_subagent_runs_only_for_the_profile_that_opted_in(self, client, profiles_on_disk):
@@ -315,4 +315,20 @@ class TestSidebarShowSubagents:
         assert payload["errors"] == []
         assert _slice_ids(payload, "recents") == {"default-parent", "worker-parent", "worker-sub"}
         # The messaging slice keeps its shape: a subagent run is not a platform thread.
+        assert _slice_ids(payload, "messaging") == set()
+
+    def test_active_mode_lists_only_running_subagent_runs(self, client, profiles_on_disk):
+        (profiles_on_disk["worker"] / "config.yaml").write_text('sessions:\n  show_subagents: "active"\n')
+        self._seed_subagent(profiles_on_disk["worker"], "worker-parent", "worker-running", end_reason=None)
+        self._seed_subagent(profiles_on_disk["worker"], "worker-parent-2", "worker-done")
+        self._seed_subagent(profiles_on_disk["default"], "default-parent", "default-running", end_reason=None)
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron,subagent", "messaging_exclude": "cli,cron,desktop"},
+        ).json()
+
+        assert payload["errors"] == []
+        # "active" admits the running child only; the default profile (unset = false) admits none.
+        assert _slice_ids(payload, "recents") == {"default-parent", "worker-parent", "worker-parent-2", "worker-running"}
         assert _slice_ids(payload, "messaging") == set()

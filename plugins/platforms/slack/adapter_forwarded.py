@@ -13,6 +13,7 @@ import re
 from typing import Any, Callable, Collection
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
+from plugins.platforms.slack.files import email_marker, is_email_file
 
 #: One ceiling for every forward in a message: a long ("Show more") original arrives whole, and
 #: several forwards share the budget like the unfurl path's nested blocks do.
@@ -30,6 +31,8 @@ RenderBlocks = Callable[[list], str]
 def slack_file_marker(file_obj: dict[str, Any]) -> str:
     """Render a compact text marker for a Slack file so text-only context shows attachments. Name is
     sanitized (newlines/brackets stripped) so a hostile filename can't fake context structure."""
+    if is_email_file(file_obj):
+        return email_marker(file_obj)
     name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
     name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
     mimetype = str(file_obj.get("mimetype") or "")

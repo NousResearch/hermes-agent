@@ -259,7 +259,7 @@ jobs:
       # Every group selected: the joins that render or summarize a whole build.
       all-jobs: ${{ steps.admission.outputs.all-jobs }}
       canary-table-selected: >-
-        ${{ contains(inputs.tag, '+canary.') && inputs.release-phase == ''
+        ${{ startsWith(inputs.tag, 'canary.') && inputs.release-phase == ''
             && inputs.channel == '' && inputs.disposable_channel == ''
             && steps.admission.outputs.darwin-arm64 == 'true' && steps.admission.outputs.win32-arm64 == 'true'
             && steps.admission.outputs.win32-x64 == 'true' && steps.admission.outputs.win32-bundle == 'true'

@@ -134,6 +134,7 @@ lists every lane.
 | `windows-store` | on | the unsigned Microsoft Store bundle, submitted to Partner Center (needs no Azure signing) |
 | `macos-arm64` | on | macOS Apple Silicon DMG and ZIP |
 | `termux` | off | Termux (Android aarch64) APT package |
+| `linux` | off | diagnostic Linux x64 + arm64 AppImage builds (non-gating; on for canaries) |
 | `ci`, `nix`, `docker-tests`, `pm-bundle`, `windows-live`, `install-e2e`, `bootstrap-version` | on | the standalone suites |
 | `termux-checks` | on | Termux verification; runs only with `termux` |
 | `smoke` | on | native install and chat smoke of each built desktop package |

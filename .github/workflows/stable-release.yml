@@ -289,6 +289,50 @@ jobs:
       jobs: termux
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
 
+  candidates-linux-x64:
+    name: Build diagnostic Linux bundle (linux-x64)
+    needs: admit
+    # Diagnostic only (scripts/releases/lanes.py DIAGNOSTIC_CALLS): off on default stable,
+    # on for canaries, never in candidate-manifest, publish-canary, acceptance, or complete needs.
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-linux-x64']
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: linux-x64
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+
+  candidates-linux-arm64:
+    name: Build diagnostic Linux bundle (linux-arm64)
+    needs: admit
+    # Diagnostic only (scripts/releases/lanes.py DIAGNOSTIC_CALLS): off on default stable,
+    # on for canaries, never in candidate-manifest, publish-canary, acceptance, or complete needs.
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-linux-arm64']
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: linux-arm64
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+
   transitions-darwin-arm64:
     name: Pin actual OLD and NEW signed packages (darwin-arm64)
     needs: [admit, candidates-darwin-arm64]

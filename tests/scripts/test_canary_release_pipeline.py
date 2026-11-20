@@ -149,6 +149,7 @@ def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_p
     assert jobs == lane_set.jobs_to_run(lane_set.CANARY, "canary")
     assert jobs["publish-canary"] and not jobs["publish-bundles"]
     assert jobs["candidates-termux"] and jobs["termux-checks"]
+    assert jobs["candidates-linux-x64"] and jobs["candidates-linux-arm64"]
     # Old stable -> this commit runs unbundled (install-e2e); no signed-package upgrade arm runs.
     assert jobs["install-e2e"]
     assert not any(jobs[job] for job in ("transitions-win32", "windows-packaged", "macos-packaged-arm64"))

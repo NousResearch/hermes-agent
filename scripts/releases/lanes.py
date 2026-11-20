@@ -30,6 +30,7 @@ LANES = (
     Lane("windows-store", True, "unsigned Microsoft Store bundle, submitted to Partner Center (needs no signing)"),
     Lane("macos-arm64", True, "macOS Apple Silicon DMG + ZIP"),
     Lane("termux", False, "Termux (Android aarch64) APT package"),
+    Lane("linux", False, "diagnostic Linux x64 + arm64 AppImage builds (non-gating)"),
     Lane("ci", True, "the full CI pipeline"),
     Lane("nix", True, "Nix checks"),
     Lane("docker-tests", True, "tests of the Docker image before it is published"),
@@ -83,6 +84,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "candidates-win32-x64": ("windows-build",),
     "candidates-win32-bundle": ("windows-build",),
     "candidates-termux": ("termux",),
+    "candidates-linux-x64": ("linux",),
+    "candidates-linux-arm64": ("linux",),
     "candidate-manifest": ("bundles",),
     "publish-bundles": ("bundles",),
     # A canary only advances channels, so it publishes only the full desktop set they serve.
@@ -93,7 +96,12 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "windows-packaged": ("windows", "upgrade"),
 }.items()}
 
-CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
+# Diagnostic builds run in parallel on canaries (and when opted into) without entering
+# candidate-manifest or gating publication.
+DIAGNOSTIC_LANES = frozenset({"linux"})
+DIAGNOSTIC_CALLS = frozenset({"candidates-linux-x64", "candidates-linux-arm64"})
+CANDIDATE_CALLS = tuple(job for job in JOB_LANES
+                        if job.startswith("candidates-") and job not in DIAGNOSTIC_CALLS)
 
 # The release policies stable-release.yml runs. Every build and test job is shared; only these
 # publication jobs belong to one policy, and each runs only under its own. A stable release
@@ -261,7 +269,7 @@ def claim_lanes(metadata: Mapping) -> frozenset[str]:
     if metadata.get("includeMacosIntel"):
         raise ValueError("Stable claim metadata is invalid: it opts into macOS Intel (includeMacosIntel), "
                          "which is no longer built")
-    lanes = set(NAMES) - {"termux"}
+    lanes = set(DEFAULT)
     if metadata.get("includeTermux"):
         lanes.add("termux")
     if metadata["skipBundles"]:

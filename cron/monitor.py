@@ -141,7 +141,7 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
         from cron.scheduler_script import _run_job_script
 
         return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None,
-                               interpreter=job.get("interpreter"))
+                               interpreter=job.get("interpreter"), job_id=job.get("id"))
     monitor_url = _field(job, "monitor_url")
     if monitor_url:
         return _fetch_monitor_url(monitor_url)

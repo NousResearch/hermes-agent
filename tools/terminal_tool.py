@@ -1772,6 +1772,28 @@ TERMINAL_SCHEMA = {
 }
 
 
+def _bool_flag(value: Any, default: bool = False) -> bool:
+    """Read a boolean tool flag, repairing the model spellings ``"True"``/``"False"``.
+
+    Dispatch normally coerces schema-typed booleans (``tools/arg_coercion``),
+    but the handler is also reachable from callers that never run that layer
+    (ACP/relay forwarding, approval-batch preparation).  Without this, a
+    ``"False"`` string is truthy and silently starts a background job or marks
+    a process for persistence.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        if stripped == "true":
+            return True
+        if stripped == "false":
+            return False
+    return bool(value)
+
+
 def _handle_terminal(args, **kw):
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
@@ -1793,13 +1815,19 @@ def _handle_terminal(args, **kw):
     # identical-call retry loops (46 subagent sessions, 4 refusals each, 38 of
     # which never ran a single command), so it is normalized away instead.
     notify = args.get("notify")
-    notify_on_complete = args.get("notify_on_complete", False)
+    if isinstance(notify, str) and notify.strip().lower() in ("true", "false"):
+        # Same repair as _bool_flag for the union-typed `notify`
+        # (boolean | array<string>): "True"/"False" are spelled booleans.
+        notify = notify.strip().lower() == "true"
+    background = _bool_flag(args.get("background", False))
+    pty = _bool_flag(args.get("pty", False))
+    persist_on_release = _bool_flag(args.get("persist_on_release", False))
+    notify_on_complete = _bool_flag(args.get("notify_on_complete", False))
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
-    persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
-    if not args.get("background", False):
+    if not background:
         if notify or watch_patterns or notify_on_complete:
             return tool_error(
                 "notify only applies to background commands (foreground "
@@ -1807,7 +1835,7 @@ def _handle_terminal(args, **kw):
                 "terminal(command=..., background=true, notify=...)."
             )
         heartbeat = 0
-        if args.get("pty", False):
+        if pty:
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
                 "with via process_manage(action='write'/'submit'), which needs a "
@@ -1836,12 +1864,12 @@ def _handle_terminal(args, **kw):
         notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
+        background=background,
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
-        pty=args.get("pty", False),
+        pty=pty,
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
@@ -1858,7 +1886,7 @@ def _terminal_deadline_floor(args: dict) -> float | None:
     call blocks for ``timeout or TERMINAL_TIMEOUT`` — which the schema tells the model to
     set high, promising "Returns INSTANTLY when command finishes".
     """
-    if args.get("background"):
+    if _bool_flag(args.get("background")):
         return None
     requested = args.get("timeout")
     try:

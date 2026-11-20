@@ -358,3 +358,12 @@ def test_a_windows_backend_without_api_health_is_unknown_activity(home, capsys, 
 
     assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
     assert 'schtasks /End /TN "Hermes Dashboard"' in capsys.readouterr().out
+
+
+def test_a_forced_windows_plan_with_running_turns_keeps_the_count_in_its_instructions(home, capsys):
+    host = WindowsHost(home)
+    host.turns = 2
+
+    assert engine.cmd_apply(host, _args(dry_run=True, json=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    (entry,) = json.loads(capsys.readouterr().out)["plan"]["unsupported"]
+    assert entry["steps"] and "2 turn(s) are running on it now: stopping it interrupts them" in entry["instructions"]

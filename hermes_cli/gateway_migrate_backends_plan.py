@@ -687,7 +687,7 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
         plan.running_turns = 0
         return
     plan.running_turns = _manual_activity(item, host)
-    if plan.powershell and plan.running_turns:
+    if plan.running_turns:
         why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
                 f"so let them finish first.")
     elif plan.running_turns is None and force_interrupt:

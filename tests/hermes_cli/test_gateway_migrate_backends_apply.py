@@ -1343,3 +1343,26 @@ def test_a_by_hand_backend_without_api_health_is_unknown_activity(home, capsys, 
     code, out = _plan(host, capsys, force_interrupt=True)
     assert code == engine.EXIT_UNSUPPORTED and out["plan"]["running_turns"] is None
     assert out["plan"]["unsupported"][0]["steps"]
+
+
+# --- review round 5: forced past known running turns, every by-hand plan still says so
+
+
+_RUNNING = "2 turn(s) are running on it now: stopping it interrupts them"
+
+
+@pytest.mark.parametrize("supervisor", ["container", "s6", "systemd-system"])
+def test_a_forced_by_hand_plan_with_running_turns_warns_above_its_steps(home, capsys, supervisor):
+    """The forced plan (what the dashboard shows after "Show the steps anyway") names the count in its
+    instructions on Linux and macOS too, not only in the Windows recipe."""
+    kw = {"supervisor": "systemd", "scope": "system"} if supervisor == "systemd-system" else {"supervisor": supervisor}
+    host = FakeHost(home, host="127.0.0.1", **kw)
+    host.turns = 2
+
+    code, out = _plan(host, capsys, force_interrupt=True)
+    (entry,) = out["plan"]["unsupported"]
+    assert code == engine.EXIT_UNSUPPORTED and entry["steps"] and _RUNNING in entry["instructions"]
+
+    assert engine.cmd_apply(host, _args(dry_run=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    text = capsys.readouterr().out
+    assert _RUNNING in text and text.index(_RUNNING) < text.index("Steps, in this order")

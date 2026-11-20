@@ -9,6 +9,7 @@ nothing: no file in the home is written or added. (The real command on a scratch
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -1277,3 +1278,68 @@ def test_an_old_backend_without_api_health_is_not_restarted_mid_reply(home, caps
     assert code == engine.EXIT_BLOCKED and expect in blocker
     assert "Restart the old backend" not in blocker and "restart the old backend with the updated hermes" in blocker
     assert out["plan"]["running_turns"] == (turns if turns == 2 else None)
+
+
+# --- review round 5: a by-hand backend older than v2026.7.30 writes no turn markers
+
+
+@contextlib.contextmanager
+def no_health_server():
+    """A real HTTP server on loopback that answers 404 on every path, as a Hermes before v2026.7.30 does
+    for GET /api/health (it has no such route and writes no turn markers)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    seen: list[str] = []
+
+    class NoHealth(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), NoHealth)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(port=server.server_address[1], seen=seen)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=10)
+
+
+@pytest.fixture
+def no_health_backend():
+    with no_health_server() as stub:
+        yield stub
+
+
+def no_health_host(host_cls, home, stub, **kw):
+    """*host_cls* for a by-hand backend on the stub's port, probed with the real ``SystemHost.http_status``
+    and the real marker reader (no marker files in the home, as an old backend leaves it)."""
+    host = host_cls(home, host="127.0.0.1", **kw)
+    host.argv = [a if a != "9119" else str(stub.port) for a in host.argv]
+    host.http_status = SystemHost.http_status.__get__(host, SystemHost)
+    host.running_turns = SystemHost.running_turns.__get__(host, SystemHost)
+    return host
+
+
+@pytest.mark.parametrize("supervisor", ["container", "s6", "systemd-system"])
+def test_a_by_hand_backend_without_api_health_is_unknown_activity(home, capsys, no_health_backend, supervisor):
+    kw = {"supervisor": "systemd", "scope": "system"} if supervisor == "systemd-system" else {"supervisor": supervisor}
+    host = no_health_host(FakeHost, home, no_health_backend, **kw)
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED and out["plan"]["running_turns"] is None
+    assert "/api/health" in no_health_backend.seen
+    assert any("--force-interrupt" in b for b in out["plan"]["blockers"])
+    assert out["plan"]["unsupported"][0]["steps"] == []
+
+    code, out = _plan(host, capsys, force_interrupt=True)
+    assert code == engine.EXIT_UNSUPPORTED and out["plan"]["running_turns"] is None
+    assert out["plan"]["unsupported"][0]["steps"]

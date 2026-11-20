@@ -686,7 +686,7 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if item is None or not item.running:
         plan.running_turns = 0
         return
-    plan.running_turns = host.running_turns(item.pid, host.start_time(item.pid)) if item.pid else None
+    plan.running_turns = _manual_activity(item, host)
     if plan.powershell and plan.running_turns:
         why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
                 f"so let them finish first.")
@@ -695,6 +695,19 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
                 "interrupts them.")
     plan.unsupported[0] = (item, why, steps)
     _turns_blocker(plan, force_interrupt)
+
+
+def _manual_activity(item: BackendItem, host) -> Optional[int]:
+    """Turns running on a by-hand backend, read the way the automatic plan reads them: a backend with no
+    GET /api/health (older than v2026.7.30) writes no turn markers, so finding none there is unknown."""
+    if not item.pid:
+        return None
+    start = host.start_time(item.pid)
+    address = _address_of(item, host)
+    status = host.http_status(probe_host(address[0]), address[1]) if address else None
+    if status is not None and status.get("health") == "missing":
+        return _turns_before_restart(host, item.pid, start)
+    return host.running_turns(item.pid, start)
 
 
 def _manual_target(plan: BackendPlan, host, keep_webapp: bool) -> None:
@@ -743,13 +756,13 @@ def _restart_hint(plan: BackendPlan) -> str:
     return "stop it and start it again the way it was started"
 
 
-def _turns_before_restart(plan: BackendPlan, host) -> Optional[int]:
+def _turns_before_restart(host, pid: Optional[int], start_time) -> Optional[int]:
     """Turns found running on a backend whose health cannot be read; None when none can be shown (no pid,
     an unreadable marker, or none found: a Hermes before v2026.7.30 writes no turn markers)."""
-    if not (plan.item and plan.item.pid):
+    if not pid:
         return None
     try:
-        return host.running_turns(plan.item.pid, plan.rec.get("start_time")) or None
+        return host.running_turns(pid, start_time) or None
     except OSError:
         return None
 
@@ -772,7 +785,8 @@ def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
         return
     status = host.http_status(plan.old_probe_host, plan.old_port)
     if status is not None and status.get("health") == "missing":
-        plan.running_turns = _turns_before_restart(plan, host)
+        plan.running_turns = _turns_before_restart(host, plan.item.pid if plan.item else None,
+                                                   plan.rec.get("start_time"))
         if plan.running_turns:
             first = (f"{plan.running_turns} turn(s) are running on it now: let them finish before you restart it, "
                      f"or the reply being written is cut off. Then restart")

@@ -89,7 +89,11 @@ KANBAN_LIST_SCHEMA = _schema(
 KANBAN_COMPLETE_SCHEMA = _schema(
     "kanban_complete",
     (
-        "Mark your current task done with a structured handoff for others. Prefer ``summary`` for a "
+        "Finish your current task attempt with a structured handoff for "
+        "downstream workers and humans. The default disposition marks the task done. "
+        "Use ``disposition='continue'`` after a finite batch when runnable work remains: "
+        "it records the handoff and requeues the same unfinished task without blocking. "
+        "Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
@@ -123,6 +127,16 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "possible; this exists for compatibility with "
                 "callers that still set --result on the CLI."
         )),
+        "disposition": {
+            "type": "string",
+            "enum": ["done", "continue"],
+            "description": (
+                "Omit or use 'done' to complete the task. Use 'continue' to close this "
+                "successful finite-batch attempt and requeue the same task as ready. "
+                "Requires ownership of the current run; do not include final-completion "
+                "artifacts or created_cards."
+            ),
+        },
         "created_cards": {
             "type": "array",
             "items": {"type": "string"},

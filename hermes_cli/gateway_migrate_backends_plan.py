@@ -78,7 +78,7 @@ class BackendPlan:
     gateway: dict = field(default_factory=dict)
     linger: Optional[bool] = None
     bundle_missing: Optional[str] = None
-    running_turns: Optional[int] = 0  # None: the old backend's activity cannot be read
+    running_turns: Optional[int] = None  # None: the old backend's activity has not been read or cannot be read
     blockers: list[str] = field(default_factory=list)
     unsupported: list[tuple[Optional[BackendItem], str, list[str]]] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
@@ -468,8 +468,6 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
         env = (host.process_env(item.pid) if item is not None and item.pid else None) or {}
         dotenv = host.dotenv()
         keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
-        if item is not None and item.pid and (turns := host.running_turns(item.pid, host.start_time(item.pid))):
-            why += f" {turns} turn(s) are running on it now: stopping it interrupts them, so let them finish first."
         return item, why, windows_steps(old_host, old_port, item, env_keys=keys, home=str(host.home),
                                         public_url=resolve_public_url(host.effective_config(),
                                                                       backend_url_env(host, env)))
@@ -670,6 +668,20 @@ def _proposed_webapp(plan: BackendPlan, host) -> None:
                              f"config.yaml and re-run. Nothing changed.")
 
 
+def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
+    """Read activity once for the selected by-hand backend; block on active or unknown turns unless forced."""
+    item, why, steps = plan.unsupported[0]
+    if item is None or not item.running:
+        plan.running_turns = 0
+        return
+    plan.running_turns = host.running_turns(item.pid, host.start_time(item.pid)) if item.pid else None
+    if plan.powershell and plan.running_turns:
+        why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
+                f"so let them finish first.")
+        plan.unsupported[0] = (item, why, steps)
+    _turns_blocker(plan, force_interrupt)
+
+
 def _manual_target(plan: BackendPlan, host, keep_webapp: bool) -> None:
     """A by-hand move prints webapp.host/port commands: they pass the same checks as an automatic move."""
     item, why, _steps = plan.unsupported[0]
@@ -828,6 +840,7 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
     if (plan.unsupported or plan.candidates) and (problem := secret_source_blocker(host)):
         plan.blockers.append(problem)
     if plan.unsupported:
+        _manual_turns(plan, host, force_interrupt)
         _manual_target(plan, host, keep_webapp)
         return plan
     if not plan.candidates:

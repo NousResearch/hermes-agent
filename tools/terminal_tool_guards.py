@@ -424,66 +424,6 @@ _FOREGROUND_GUIDANCE = (
 )
 
 
-def _detached_script(args: list[str]) -> bool:
-    """Recognize a batch script, not an empty session, interactive shell or TUI."""
-    # tmux executes multiple payload arguments as argv, but a single string via a shell.
-    if len(args) == 1:
-        try:
-            args = shlex.split(args[0])
-        except ValueError:
-            return False
-    if not args:
-        return False
-    if args[0].endswith((".sh", ".bash", ".zsh")):
-        return True
-    return (os.path.basename(args[0]) in {"sh", "bash", "zsh", "dash", "ksh"}
-            and len(args) >= 2 and not args[1].startswith("-"))
-
-
-def _tmux_detaches_script(words: list[str]) -> bool:
-    # Skip common server socket selectors, then parse new-session options only.
-    i = 1
-    while words[i:i + 1] in (["-L"], ["-S"]):
-        i += 2
-    if words[i:i + 1] not in (["new"], ["new-session"]):
-        return False
-    i += 1
-    detached = False
-    while i < len(words) and words[i].startswith("-"):
-        option = words[i]
-        i += 1
-        if option == "--":
-            break
-        for j, flag in enumerate(option[1:], 2):
-            if flag in "ceFfnstxy":  # takes a value, attached or in the next word
-                i += j == len(option)
-                break
-            if flag not in "AdDEPX":
-                return False
-            detached |= flag == "d"
-    return detached and _detached_script(words[i:])
-
-
-def detached_tmux_script_guidance(command: str) -> str | None:
-    """A tracked tmux *client* exits immediately; it cannot own the worker's lifetime."""
-    if "tmux" not in command:
-        return None
-    from tools.approval_detection import _iter_top_level_shell_segments
-
-    for segment in _iter_top_level_shell_segments(strip_inert_heredoc_bodies(command)):
-        if "tmux" not in segment:
-            continue
-        try:
-            words = shlex.split(segment)
-        except ValueError:
-            continue
-        if words and os.path.basename(words[0]) == "tmux" and _tmux_detaches_script(words):
-            return ("A detached tmux launcher would exit while the script keeps running outside this session. "
-                    "Run the script itself with terminal(background=true, notify=true), not a separate watcher. "
-                    "If the user wants it to outlive the session, also set persist_on_release=true.")
-    return None
-
-
 def _looks_like_help_or_version_command(command: str) -> bool:
     """Return True for informational invocations that should never be blocked."""
     normalized = " ".join(command.lower().split())

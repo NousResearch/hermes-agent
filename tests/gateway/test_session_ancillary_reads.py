@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import shutil
+
+import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env
 
@@ -29,3 +32,8 @@ def test_control_snapshot_is_authorized_read_only_owner_projection(tmp_path):
 
 def test_activity_snapshot_requires_current_owner_objects(tmp_path):
     probe(tmp_path, 'activity')
+
+
+@pytest.mark.skipif(shutil.which('tmux') is None, reason='tmux required')
+def test_real_session_tmux_job_survives_watcher_and_reconnect(tmp_path):
+    probe(tmp_path, 'tmux')

@@ -1023,7 +1023,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    detached_tmux_script_guidance, gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
+    gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import _cwd_fallback_note, finalize_foreground_result
@@ -1315,8 +1315,7 @@ def _plan_execution(
     # value is truthy and would fire an immediate "-Ns" timeout.
     if timeout is not None and timeout <= 0:
         raise _Rejected(tool_error(f"timeout must be a positive number of seconds (got {timeout})."))
-    if guidance := detached_tmux_script_guidance(command):
-        raise _Rejected(_error_json(guidance, status="error"))
+
     promoted = None
     if not background:
         # An over-cap foreground timeout is a bounded job the caller wants to wait for (test suites,
@@ -1619,7 +1618,9 @@ def terminal_tool(
         env = _acquire_env(plan, task_id)
         # _lookup_active_env stamps whichever of the two keys holds the env.
         from tools.environments.base import shell_state_scope
-        with _call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)):
+        from tools.environments.local import terminal_tmux_scope
+        with (_call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)),
+              terminal_tmux_scope(session_id, local=plan.env_type == "local" and not _host_local)):
             env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
             # Session key for cwd records: the contextvar doesn't cross tool-worker

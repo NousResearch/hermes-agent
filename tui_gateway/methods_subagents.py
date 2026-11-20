@@ -127,8 +127,6 @@ def _(rid, params):
     process hosts several profiles, so only conversations stored in the requested profile's state.db are
     returned — a caller never learns another profile's session ids."""
     owners = _live_work_owners()
-    if not owners:
-        return _ok(rid, {"sessions": []})
     scope = params if isinstance(params, dict) else {}
     if not str(scope.get("profile") or "").strip():
         # A legacy-fallback socket ticketed to a non-launch profile answers for that profile only.
@@ -143,6 +141,12 @@ def _(rid, params):
         for kind, owner_ids in owners:
             if sid := _stored_owner(db, owner_ids, namespaces):
                 counts.setdefault(sid, {"subagents": 0, "background": 0})[kind] += 1
+        from tools.session_tmux import running_pane_owners
+        home = _profile_home(scope.get("profile"))
+        with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
+            for physical_sid, running in running_pane_owners():
+                if running > 0 and (sid := _stored_owner(db, (physical_sid, ""), namespaces)):
+                    counts.setdefault(sid, {"subagents": 0, "background": 0})["background"] += running
     return _ok(rid, {"sessions": [{"session_id": sid, **c} for sid, c in counts.items()]})
 
 

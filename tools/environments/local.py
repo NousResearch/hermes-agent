@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import contextlib
+import contextvars
 import logging
 import ntpath
 import os
@@ -356,12 +357,43 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
+_terminal_tmux_owner = contextvars.ContextVar("terminal_tmux_owner", default="")
+
+
+@contextlib.contextmanager
+def terminal_tmux_scope(session_id, *, local: bool):
+    """Bind only a local tool call, not its daemon's shell or a different turn's env mirror."""
+    owner = ""
+    if local and os.name == "posix":
+        from gateway.session_context import _bound_session_value, _UNSET
+        from tools.environments.sandbox_scope import hosted_scope
+        if hosted_scope() is None:
+            bound = _bound_session_value("HERMES_SESSION_ID")
+            owner = session_id if bound is _UNSET else bound
+    token = _terminal_tmux_owner.set(owner or "")
+    try:
+        yield
+    finally:
+        _terminal_tmux_owner.reset(token)
+
+
+def _tmux_child_env(env: dict) -> dict:
+    # Do not rewrite the approved command (or its background receipt). Both local
+    # execution paths build a fresh env; a shared LocalEnvironment must not retain it.
+    if owner := _terminal_tmux_owner.get():
+        from tools.session_tmux import session_directory
+        if (directory := session_directory(owner)) is not None:
+            env.pop("TMUX", None)
+            env["TMUX_TMPDIR"] = str(directory)
+    return env
+
+
 def _terminal_env(env: dict) -> dict:
     """*env* with the user's tools first on PATH (``_user_tools_first``), for background commands."""
     path_key = _path_env_key(env)
     if path_key is not None:
         env[path_key] = _user_tools_first(env[path_key])
-    return env
+    return _tmux_child_env(env)
 
 
 def hermes_subprocess_env(
@@ -870,7 +902,7 @@ def _make_run_env(env: dict) -> dict:
     if published:
         run_env.update(published)
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-    return run_env
+    return _tmux_child_env(run_env)
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---
@@ -1134,7 +1166,8 @@ class LocalEnvironment(BaseEnvironment):
         config-declared key holders: a key the snapshot captured before its declaration stays out."""
         from hermes_cli.plugins_session_env import session_env_names
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
-        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared,
+                             "TMUX", "TMUX_TMPDIR"}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)

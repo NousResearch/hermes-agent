@@ -238,8 +238,28 @@ async def read(connection, ref, params, *, kind):
     # event lock, which every streamed token takes too, reads state.db (compression lineage, local
     # receipt, control meta) and the process registry under its lock. Clients poll these every 1-5 s per
     # open session, so on the loop they were a large share of loop time with many sessions running.
+    if kind == 'processes':
+        return await asyncio.to_thread(_process_projection, authority, authority.sessions[ref.session_id], ref, params)
     return await asyncio.to_thread(locked_projection, authority, authority.sessions[ref.session_id], ref,
                                    partial(_project, authority, ref, params, kind))
+
+
+def _process_projection(authority, live, ref, params):
+    # tmux commands can take seconds; never hold the token-stream lock while waiting on them.
+    def registry_and_target():
+        return _project(authority, ref, params, 'processes'), physical_target(authority, ref)
+    result, sid = locked_projection(authority, live, ref, registry_and_target)
+    from tools.session_tmux import list_session_panes
+    panes = list_session_panes(sid)
+    def recheck():
+        if authority.sessions.get(ref.session_id) is not live:
+            raise AuthorityRefusal('not_found')
+        _require_current_route(authority, ref)
+        if physical_target(authority, ref) != sid:
+            raise AuthorityRefusal('stale_generation')
+    locked_projection(authority, live, ref, recheck)
+    result['processes'] += panes
+    return result
 
 
 def locked_projection(authority, live, ref, project):
@@ -271,7 +291,7 @@ def _project(authority, ref, params, kind):
     return {'processes': process_snapshot(authority, ref, agent, records)}
 
 
-def _owned_targets(connection, ref, params, *, select):
+def _owned_targets(connection, ref, params, *, select, include_target=False):
     """``(registry, ids)``: the session's own processes (what ``process.list`` shows) that
     ``select(process)`` keeps; ``(None, [])`` when no process was ever registered here."""
     authority = connection.authority
@@ -284,11 +304,28 @@ def _owned_targets(connection, ref, params, *, select):
         agent, records = _owner_objects(authority, ref)
         module = sys.modules.get('tools.process_registry')
         if module is None:
-            return None, []
+            return (None, [], physical_target(authority, ref)) if include_target else (None, [])
         registry = module.process_registry
         keys, owners = _ownership(authority, ref, agent, records)
         with registry._lock:
-            return registry, [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+            ids = [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+            return (registry, ids, physical_target(authority, ref)) if include_target else (registry, ids)
+
+
+def _stop_owned_pane(authority, live, ref, sid, process_id, stop):
+    # Authorize a concrete socket generation + pane, never a route name. Slow OS
+    # calls must not hold token streaming or the store-wide routing lock.
+    with live.event_stream.lock:
+        if authority.sessions.get(ref.session_id) is not live:
+            raise AuthorityRefusal('not_found')
+        if physical_target(authority, ref) != sid:
+            raise AuthorityRefusal('stale_generation')
+        store = authority.runner.session_store
+        with store._lock:
+            entry = store._entries.get(live.route)
+            if entry is None or entry.session_id != sid:
+                raise AuthorityRefusal('stale_generation')
+    return stop(sid, process_id)
 
 
 async def kill_process(connection, ref, params):
@@ -298,7 +335,20 @@ async def kill_process(connection, ref, params):
     if (set(params) - {'session_id', 'process_id', 'profile'} or not ref.session_id
             or not isinstance(params.get('process_id'), str) or not params['process_id']):
         raise AuthorityRefusal('invalid_params')
-    registry, ids = _owned_targets(connection, ref, params, select=lambda p: p.id == params['process_id'])
+    if params['process_id'].startswith('tmux:'):
+        # Authorize and fence the route before touching the session-owned tmux namespace.
+        def stop_pane():
+            _, _, sid = _owned_targets(connection, ref, params, select=lambda p: False, include_target=True)
+            authority = connection.authority
+            live = authority.sessions[ref.session_id]
+            from tools.session_tmux import stop_session_pane
+            return _stop_owned_pane(authority, live, ref, sid, params['process_id'], stop_session_pane)
+        result = await asyncio.to_thread(stop_pane)
+        if not result or result.get('status') == 'not_found':
+            raise AuthorityRefusal('process_not_found')
+        return result if isinstance(result, dict) else {'status': 'killed'}
+    registry, ids = await asyncio.to_thread(_owned_targets, connection, ref, params,
+                                             select=lambda p: p.id == params['process_id'])
     if not ids:
         # Never ``not_found``: Desktop reads that reason as "this chat is gone" (dokterdok N64).
         raise AuthorityRefusal('process_not_found')
@@ -414,14 +464,32 @@ async def stop_processes(connection, ref, params):
     ``persist_on_release`` job of THIS session is still reached (#41225)."""
     if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
         raise AuthorityRefusal('invalid_params')
-    registry, targets = _owned_targets(connection, ref, params,
-                                       select=lambda p: not p.exited or p._scope_stop_pending)
+    registry, targets, sid = await asyncio.to_thread(_owned_targets, connection, ref, params,
+        select=lambda p: not p.exited or p._scope_stop_pending, include_target=True)
 
     def kill():
         results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]
         return sum(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r
                    for r in results)
-    killed = await asyncio.to_thread(kill) if targets else 0
+    def stop_panes():
+        from tools.session_tmux import list_session_panes, stop_session_pane
+        authority = connection.authority
+        live = authority.sessions[ref.session_id]
+        # Fence each action against the authorized target after the potentially slow list.
+        killed = 0
+        for row in list_session_panes(sid):
+            if row.get('status') != 'running' or not row.get('session_id'):
+                continue
+            try:
+                result = _stop_owned_pane(authority, live, ref, sid, row['session_id'], stop_session_pane)
+                killed += result.get('status') == 'killed'
+            except AuthorityRefusal:
+                raise
+            except (OSError, ValueError, KeyError):
+                # A stale/broken pane must not prevent stopping the others.
+                continue
+        return killed
+    killed = (await asyncio.to_thread(kill) if targets else 0) + await asyncio.to_thread(stop_panes)
     return {'killed': killed, 'delegations': await asyncio.to_thread(_interrupt_delegations, connection.authority, ref)}
 
 

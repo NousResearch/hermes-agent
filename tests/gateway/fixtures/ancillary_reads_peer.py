@@ -11,6 +11,88 @@ from tests.fixtures.storage_holder import raw_holder
 from tests.fixtures.storage_read import transcript_rows
 
 
+async def _probe_tmux(home, authority, ws, sid, socket, rpc):
+    from gateway.session_context import scoped_current_session_id
+    from tools.approval_context import set_current_session_key, reset_current_session_key
+    from tools.terminal_tool import terminal_tool
+
+    other = (await rpc(ws, 'session.create', request_id='other', source='gui', toolsets=[]))['result']['session_id']
+    gate = home / 'tmux-release'
+    script = ("import pathlib,time;print('PANE_SECRET_DO_NOT_TRANSPORT',flush=True);p=pathlib.Path("
+              + repr(str(gate)) + ");\nwhile not p.exists(): time.sleep(.05)")
+    command = 'tmux new-session -d -s job ' + shlex.quote(shlex.quote(sys.executable) + ' -c ' + shlex.quote(script))
+
+    def run(sid_, cmd, **kwargs):
+        with scoped_current_session_id(sid_):
+            token = set_current_session_key(authority.sessions[sid_].route)
+            try:
+                return json.loads(terminal_tool(cmd, task_id=sid_, session_id=sid_, force=True, **kwargs))
+            finally:
+                reset_current_session_key(token)
+
+    try:
+        launched = await asyncio.to_thread(run, sid, command)
+        assert launched.get('exit_code') == 0, launched
+        watcher = await asyncio.to_thread(run, sid, 'tmux has-session -t job', background=True)
+        assert watcher.get('session_id'), watcher
+        from tools.process_registry import process_registry
+        proc = process_registry.get(watcher['session_id'])
+        assert proc and await asyncio.to_thread(proc._completion_event.wait, 10)
+        async with socket() as reopened:
+            opened = await rpc(reopened, 'session.resume', session_id=sid)
+            assert 'result' in opened, opened
+            async def job_row():
+                result = await rpc(reopened, 'process.list', session_id=sid)
+                return next((r for r in result.get('result', {}).get('processes', [])
+                             if r['session_id'].startswith('tmux:') and r.get('status') == 'running'), None)
+            row = await job_row()
+            for _ in range(100):
+                if row:
+                    break
+                await asyncio.sleep(.05)
+                row = await job_row()
+            assert row and row['status'] == 'running', (row, await rpc(reopened, 'process.list', session_id=sid))
+            assert row.get('command') and row['command'] != 'tmux pane', row
+            assert 'PANE_SECRET_DO_NOT_TRANSPORT' not in json.dumps(await rpc(reopened, 'process.list', session_id=sid))
+            roster = await rpc(reopened, 'subagent.roster')
+            assert any(r['session_id'] == sid and r['background'] >= 1
+                       for r in roster.get('result', {}).get('sessions', [])), roster
+            other_rows = (await rpc(reopened, 'process.list', session_id=other))['result']['processes']
+            assert not any(r['session_id'] == row['session_id'] for r in other_rows), other_rows
+            denied = await rpc(reopened, 'process.kill', session_id=other, process_id=row['session_id'])
+            assert denied.get('error', {}).get('message') == 'process_not_found', denied
+            stopped = await rpc(reopened, 'process.kill', session_id=sid, process_id=row['session_id'])
+            assert stopped.get('result', {}).get('status') == 'killed', stopped
+            again = await rpc(reopened, 'process.list', session_id=sid)
+            assert not any(r['session_id'] == row['session_id'] and r['status'] == 'running'
+                           for r in again['result']['processes']), again
+            # A job that finishes on its own must stop lighting the conversation.
+            assert (await asyncio.to_thread(run, sid, command)).get('exit_code') == 0
+            gate.touch()
+            for _ in range(100):
+                completed = await rpc(reopened, 'process.list', session_id=sid)
+                if not any(r['session_id'].startswith('tmux:') and r['status'] == 'running'
+                           for r in completed['result']['processes']):
+                    break
+                await asyncio.sleep(.05)
+            else:
+                raise AssertionError(completed)
+            roster = await rpc(reopened, 'subagent.roster')
+            assert not any(r['session_id'] == sid and r['background'] for r in roster['result']['sessions']), roster
+            gate.unlink()
+            assert (await asyncio.to_thread(run, sid, command)).get('exit_code') == 0
+            for _ in range(100):
+                if await job_row():
+                    break
+                await asyncio.sleep(.05)
+            else:
+                raise AssertionError('second job did not start')
+            stop = await rpc(reopened, 'process.stop', session_id=sid)
+            assert stop.get('result', {}).get('killed') == 1, stop
+    finally:
+        gate.touch()
+
+
 async def probe(mode):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
@@ -85,6 +167,8 @@ async def probe(mode):
                 assert result.get('error', {}).get('message') == 'not_found', result
                 assert sid not in authority.sessions, 'read restored a cold session'
                 authority.sessions[sid] = live
+            elif mode == 'tmux':
+                await _probe_tmux(home, authority, ws, sid, socket, rpc)
             else:
                 from tools.process_registry import process_registry
                 from tools.delegate_tool_child_run import _register_child
@@ -122,23 +206,12 @@ async def probe(mode):
                     rows = process_result.get('result', {}).get('processes')
                     assert rows and [p['session_id'] for p in rows] == [processes[0].id], process_result
                     assert rows[0]['status'] == 'running' and 'PROCESS_OWNED' in rows[0]['output_tail']
-                    # A short-lived watcher is not the job. Once it exits a fresh chat client
-                    # must still see the worker and its output, never a different session's work.
-                    watcher = process_registry.spawn_local('echo watcher', cwd=str(home), task_id=sid,
-                                                           owner_task_id=sid, session_key=live.route)
-                    processes.append(watcher)
-                    assert await asyncio.to_thread(watcher._completion_event.wait, 10)
-                    async with socket() as reopened:
-                        snapshot = await rpc(reopened, 'process.list', session_id=sid)
-                        running = [r for r in snapshot['result']['processes'] if r['status'] == 'running']
-                        assert [r['session_id'] for r in running] == [processes[0].id], running
-                        assert 'PROCESS_OWNED' in running[0]['output_tail']
                     # Real process handoff stores the parent physical ID as its routing key.
                     transferred = process_registry.transfer_ownership(
                         processes[1].id, from_owner='foreign', to_owner=sid, to_task_id=sid, to_session_key=sid)
                     assert transferred is processes[1]
                     handed = await rpc(ws, 'process.list', session_id=sid)
-                    assert {p['session_id'] for p in handed['result']['processes'] if p['status'] == 'running'} == {p.id for p in processes[:2]}, handed
+                    assert {p['session_id'] for p in handed['result']['processes']} == {p.id for p in processes[:2]}, handed
                     roster = await rpc(ws, 'subagent.list', session_id=sid)
                     assert [r['subagent_id'] for r in roster.get('result', {}).get('subagents', [])] == ['owned'], roster
                     assert 'agent' not in roster['result']['subagents'][0]

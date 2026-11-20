@@ -697,6 +697,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-raw-green-60` | `color-mix(in srgb, var(--portal-raw-green) 60%, transparent)` | ″ |  |
 | `--portal-raw-mint-deep` | `#1f8a65` | ″ | Connected / online ink on light: the green darkened to AA. |
 | `--portal-raw-orange` | `#f27900` | ″ | Figma secondary/orange: pending and warning. |
+| `--portal-raw-red-signal` | `#f20000` | ″ | Figma secondary/red: a status badge's fill under black ink (UNVERIFIED, 18732:33155). |
 | `--portal-raw-danger` | `#a22a20` | ″ | Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). |
 | `--portal-raw-danger-soft` | `#cc8a84` | ″ |  |
 | `--portal-raw-danger-bright` | `#ff7373` | ″ | The danger label on dark (1038:7836): bright enough for 4.5:1 on the danger tint. |
@@ -770,6 +771,11 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-settings-divider` | `var(--portal-raw-ink-5)` | ″ |  |
 | `--portal-welcome-card` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | The first-time splash's cards (Onboarding 18695:17163 "Information", the artwork cards): white .02 / black .60 / blue .20 over the stage. |
 | `--portal-surface-brand-card` | `var(--portal-raw-brand-10)` | ″ | Hermes' answer to a message held until sign up (18695:18641): the accent at 10%. |
+| `--portal-badge-alert-fill` | `var(--portal-raw-red-signal)` | ″ | A step's status badge on the sign-in screens (18732:33155, 18695:19224): Figma's red, green and white .4 fills under black ink. The waiting fill takes the ladder's .5 so black keeps 4.5:1. |
+| `--portal-badge-ok-fill` | `var(--portal-status-online)` | ″ |  |
+| `--portal-badge-waiting-fill` | `var(--portal-text-quaternary)` | ″ |  |
+| `--portal-badge-ink` | `var(--portal-raw-black)` | ″ |  |
+| `--portal-badge-waiting-ink` | `var(--portal-raw-black)` | `var(--portal-raw-pure-white)` | Light's waiting fill is the dark ink at .64: white reads on it, black does not. |
 | `--portal-choice-rim` | `color-mix(in srgb, var(--portal-raw-black) 80%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent)` | The dark rim inside a colour swatch and a chosen artwork card (18695:18079): black .80. |
 | `--portal-settings-section-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
 | `--portal-settings-link` | `var(--portal-raw-ink-5)` | ″ | The column's Agent settings card (16292:16428): light/5. |
@@ -1294,6 +1300,16 @@ row is "Sign up to start", the chat sidebar's foot is "Create an Account" (befor
 which waits for it), and what they send is held, not sent: the chat shows their message and Hermes'
 local answer with the way to sign up (`held-exchange.tsx`, 18695:18570), never as a transcript, and the
 held message runs first once they are signed in.
+
+A sign up that comes back without signing the visitor in (`?hermes_sign_in=failed`, read once) opens
+**"Let's try signing in again"** (`sign-in-recovery.tsx`, 18732:33066 / 18695:19224) over the chat, the
+first splash in line: the welcome splash's stage, column and card, with one row per step and a status
+badge (`--portal-badge-*`: Your account UNVERIFIED, Your request SAVED only while a message is held,
+Opening Hermes WAITING). Try again, Use another email and "Request a new one." all start sign up again
+(the hand-off takes no hint for either); a nav click or Escape puts it away, back to the ordinary
+signed-out app. It is the one place a failed sign in is told: the held answer and the tray's card stay
+as they were. There is no "verified" screen: nothing tells the app that a visitor just came back signed
+in while it is still opening.
 
 ### The chat sidebar is a variant
 

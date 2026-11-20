@@ -20,7 +20,7 @@ import {
   startActiveUpdate
 } from '@/store/updates'
 import { $usageStatsOfferPlace, clearUsageStatsOffer, openUsageStatsDetails } from '@/store/usage-stats-offer'
-import { $signInFailed, $signUpRequired, startSignUp } from '@/store/visitor-access'
+import { $signUpRequired, startSignUp } from '@/store/visitor-access'
 
 import { useDiscoveryCopy } from './discovery-copy'
 import { useFirstTimeCopy } from './first-time-copy'
@@ -161,28 +161,24 @@ function RenameSplashCard({ close, unseen }: TrayCardProps) {
   )
 }
 
-/** Sign up (Onboarding 18695:19432), for as long as it is required: news until the tray has been opened. A
- *  sign up that came back without signing the visitor in is news again, and the card says so (a held
- *  message says it in the chat instead, held-exchange.tsx). */
-const $signUpItem = computed([$signUpRequired, $signInFailed], (required, failed) =>
-  required ? { news: failed ? 'sign-in-failed' : 'v1' } : null
-)
+/** Sign up (Onboarding 18695:19432), for as long as it is required: news until the tray has been opened.
+ *  A sign up that came back without signing the visitor in has its own screen (sign-in-recovery.tsx). */
+const $signUpItem = computed($signUpRequired, required => (required ? { news: 'v1' } : null))
 
 function SignUpCard({ close, unseen }: TrayCardProps) {
   const copy = useFirstTimeCopy()
-  const failed = useStore($signInFailed)
 
   return (
     <TrayCard
       action={{
-        label: failed ? copy.held.tryAgain : copy.tray.signUp.action,
+        label: copy.tray.signUp.action,
         run: () => {
           close()
           startSignUp('tray')
         }
       }}
-      description={failed ? copy.held.failedBody : copy.tray.signUp.description}
-      title={failed ? copy.held.failedTitle : copy.tray.signUp.title}
+      description={copy.tray.signUp.description}
+      title={copy.tray.signUp.title}
       unseen={unseen}
     />
   )

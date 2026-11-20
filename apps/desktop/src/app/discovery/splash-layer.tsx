@@ -9,11 +9,13 @@ import { $onboardingPhase, $setupGuidePhase } from '@/store/onboarding-phase'
 import { $profiles } from '@/store/profile'
 import { $renameSplash, considerRenameSplash, dismissRenameSplash } from '@/store/rename-splash'
 import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session'
+import { $signInFailed, dismissSignInRecovery } from '@/store/visitor-access'
 
 import { KeptChatRoutes } from '../contrib/route-cover'
 
 import { FirstTimeSplash } from './first-time-splash'
 import { RenameSplash } from './rename-splash'
+import { SignInRecovery } from './sign-in-recovery'
 
 interface SplashDefinition {
   /** Why it is on screen (`reopened` from the tray, else `shown`), or null while closed. */
@@ -23,10 +25,17 @@ interface SplashDefinition {
   Splash: ComponentType<{ reopened: boolean }>
 }
 
-/** The splashes that cover the chat area. The verdict decides which one a person gets: the rename
- *  splash for someone who used Hermes before, the first-time splash for someone new, so at most one
- *  is ever open. */
+/** The splashes that cover the chat area, first come first. A sign up that came back without signing
+ *  the visitor in says so before anything else. The verdict decides which of the other two a person
+ *  gets: the rename splash for someone who used Hermes before, the first-time splash for someone new. */
 const SPLASHES: readonly SplashDefinition[] = [
+  {
+    $open: computed($signInFailed, failed => (failed ? 'shown' : null)),
+    // Read from the page once (store/visitor-access.ts), not from the machine's verdict.
+    consider: () => undefined,
+    closeByNav: dismissSignInRecovery,
+    Splash: SignInRecovery
+  },
   {
     $open: $renameSplash,
     consider: considerRenameSplash,

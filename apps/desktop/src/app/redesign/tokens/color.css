@@ -156,6 +156,13 @@
   );
   /* Hermes' answer to a message held until sign up (18695:18641): the accent at 10%. */
   --portal-surface-brand-card: var(--portal-raw-brand-10);
+  /* A step's status badge on the sign-in screens (18732:33155, 18695:19224): Figma's red, green and
+     white .4 fills under black ink. The waiting fill takes the ladder's .5 so black keeps 4.5:1. */
+  --portal-badge-alert-fill: var(--portal-raw-red-signal);
+  --portal-badge-ok-fill: var(--portal-status-online);
+  --portal-badge-waiting-fill: var(--portal-text-quaternary);
+  --portal-badge-ink: var(--portal-raw-black);
+  --portal-badge-waiting-ink: var(--portal-raw-black);
   /* The dark rim inside a colour swatch and a chosen artwork card (18695:18079): black .80. */
   --portal-choice-rim: color-mix(in srgb, var(--portal-raw-black) 80%, transparent);
   --portal-settings-section-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
@@ -336,6 +343,8 @@
   /* Figma draws the onboarding in dark only: light takes its settings cards' white, and a white rim. */
   --portal-welcome-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
   --portal-choice-rim: color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent);
+  /* Light's waiting fill is the dark ink at .64: white reads on it, black does not. */
+  --portal-badge-waiting-ink: var(--portal-raw-pure-white);
   --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
   --portal-panel-action: var(--portal-raw-ink-2);
   --portal-panel-action-hover: var(--portal-raw-ink-5);

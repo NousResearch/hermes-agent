@@ -285,19 +285,13 @@ describe('the tray for a first-timer', () => {
     expect(screen.queryByText(copy.tray.signUp.title)).toBeNull()
   })
 
-  it('says a failed sign in, with the way to try again, and lights the bell again', () => {
+  it('keeps the ordinary sign-up card when sign in failed: the recovery screen says that', () => {
     $visitorAccess.set(SIGN_UP)
+    $signInFailed.set(true)
     renderShell()
-    const bell = screen.getByRole('button', { name: tray.title })
-    fireEvent.click(bell)
-    fireEvent.click(bell)
-    expect(bell.getAttribute('aria-description')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: tray.title }))
 
-    act(() => $signInFailed.set(true))
-    expect(bell.getAttribute('aria-description')).toBe(tray.unseen)
-    fireEvent.click(bell)
-    expect(screen.getByText(copy.held.failedTitle)).toBeTruthy()
-    expect(screen.getByRole('button', { name: copy.held.tryAgain })).toBeTruthy()
+    expect(screen.getByText(copy.tray.signUp.title)).toBeTruthy()
   })
 })
 
@@ -361,6 +355,61 @@ describe('the starter ideas', () => {
   })
 })
 
+describe('the return from a sign up that did not sign the visitor in', () => {
+  const recovery = () => screen.queryByRole('region', { name: copy.recovery.title })
+
+  it('covers the chat with Let’s try signing in again, and every way on starts sign up again', () => {
+    $visitorAccess.set(SIGN_UP)
+    $signInFailed.set(true)
+    const assign = vi.fn()
+    vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })
+    renderShell()
+
+    expect(recovery()).not.toBeNull()
+    expect(screen.getByLabelText('Message').closest('[inert]')).not.toBeNull()
+    const steps = screen.getByRole('list', { name: copy.recovery.listLabel })
+    expect(within(steps).getByText(copy.recovery.unverified)).toBeTruthy()
+    expect(within(steps).getByText(copy.recovery.waiting)).toBeTruthy()
+    // No message held: no request row, and the line does not promise one.
+    expect(within(steps).queryByText(copy.recovery.saved)).toBeNull()
+    expect(screen.getByText(copy.recovery.subtitle)).toBeTruthy()
+
+    // Leaving for sign up clears the failure; each way on is tried from a fresh return.
+    for (const name of [copy.recovery.tryAgain, copy.recovery.otherEmail, copy.recovery.requestNew]) {
+      act(() => $signInFailed.set(true))
+      fireEvent.click(screen.getByRole('button', { name }))
+    }
+
+    expect(assign).toHaveBeenCalledTimes(3)
+  })
+
+  it('names the held request as saved', () => {
+    $visitorAccess.set(SIGN_UP)
+    $signInFailed.set(true)
+    holdPrompt('Compare the top 5 standing desks')
+    renderShell()
+
+    const steps = screen.getByRole('list', { name: copy.recovery.listLabel })
+    expect(within(steps).getByText('Compare the top 5 standing desks')).toBeTruthy()
+    expect(within(steps).getByText(copy.recovery.saved)).toBeTruthy()
+    expect(screen.getByText(copy.recovery.subtitleHeld)).toBeTruthy()
+  })
+
+  it('goes away on Escape or a nav click, leaving the ordinary signed-out app', () => {
+    $visitorAccess.set(SIGN_UP)
+    $signInFailed.set(true)
+    renderShell()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(recovery()).toBeNull()
+    expect($signInFailed.get()).toBe(false)
+
+    act(() => $signInFailed.set(true))
+    fireEvent.click(screen.getByRole('button', { name: 'Routines' }))
+    expect(recovery()).toBeNull()
+  })
+})
+
 describe('the composer while sign up is required', () => {
   it('offers sign up where the model row would be', () => {
     $visitorAccess.set(SIGN_UP)
@@ -374,7 +423,7 @@ describe('the composer while sign up is required', () => {
 })
 
 describe('a message held until sign up', () => {
-  it('shows the message and Hermes’ local answer, with sign up, and says so when sign in failed', () => {
+  it('shows the message and Hermes’ local answer, with sign up', () => {
     $visitorAccess.set(SIGN_UP)
     holdPrompt('Compare the top 5 standing desks')
     const assign = vi.fn()
@@ -388,11 +437,7 @@ describe('a message held until sign up', () => {
     expect(within(reply).getByText(copy.held.title)).toBeTruthy()
     expect(within(reply).getByText(copy.held.body)).toBeTruthy()
 
-    act(() => $signInFailed.set(true))
-    expect(within(reply).getByText(copy.held.failedTitle)).toBeTruthy()
-    expect(within(reply).getByText(copy.held.failedBody)).toBeTruthy()
-
-    fireEvent.click(within(reply).getByRole('button', { name: copy.held.tryAgain }))
+    fireEvent.click(within(reply).getByRole('button', { name: copy.held.signUp }))
     expect(assign).toHaveBeenCalledTimes(1)
   })
 

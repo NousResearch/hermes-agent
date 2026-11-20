@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { Button } from '@/components/ui/button'
 import { $heldPrompt } from '@/store/held-prompt'
 import { usePortalShell } from '@/store/shell-variant'
-import { $signInFailed, $signUpRequired, startSignUp } from '@/store/visitor-access'
+import { $signUpRequired, startSignUp } from '@/store/visitor-access'
 
 import { useFirstTimeCopy } from './first-time-copy'
 
@@ -11,7 +11,7 @@ import { useFirstTimeCopy } from './first-time-copy'
  * A visitor's message held until sign up, and Hermes' answer to it (Figma 18695:18570): "I can do
  * that. Sign up and I'll start on it right away." Nothing was sent anywhere; this is not a transcript
  * and holds no chat messages, only the held text (store/held-prompt.ts) laid out like the opening of
- * one. After a sign up that could not sign them in, the answer says so and offers to try again.
+ * one. A sign up that came back without signing them in says so on its own screen (sign-in-recovery.tsx).
  */
 interface HeldExchangeProps {
   /** The window's own chat, not a tile. */
@@ -40,7 +40,6 @@ export function useIntroUnlessHeld(showIntro: boolean, where: HeldExchangeProps)
 export function HeldExchange(where: HeldExchangeProps) {
   const shown = useHeldExchangeShown(where)
   const text = useStore($heldPrompt)
-  const failed = useStore($signInFailed)
   const copy = useFirstTimeCopy().held
 
   if (!shown || !text) {
@@ -56,11 +55,11 @@ export function HeldExchange(where: HeldExchangeProps) {
         </article>
         <article aria-label={copy.hermes} aria-live="polite" className="discovery-held-reply">
           <div className="discovery-held-words">
-            <h2 className="discovery-held-title">{failed ? copy.failedTitle : copy.title}</h2>
-            <p className="discovery-held-body">{failed ? copy.failedBody : copy.body}</p>
+            <h2 className="discovery-held-title">{copy.title}</h2>
+            <p className="discovery-held-body">{copy.body}</p>
           </div>
           <Button className="discovery-welcome-action discovery-held-action" onClick={() => startSignUp('chat')}>
-            {failed ? copy.tryAgain : copy.signUp}
+            {copy.signUp}
           </Button>
         </article>
       </div>

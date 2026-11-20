@@ -74,9 +74,29 @@ export interface FirstTimeCopy {
     title: string
     body: string
     signUp: string
-    failedTitle: string
-    failedBody: string
+  }
+  /** "Let's try signing in again" (Onboarding 18732:33066, 18695:19224): sign up came back without
+   *  signing the visitor in. */
+  recovery: {
+    eyebrow: string
+    title: string
+    /** With a message held, and without one. */
+    subtitleHeld: string
+    subtitle: string
+    /** The rows' list, for assistive tech. */
+    listLabel: string
+    account: string
+    accountLine: string
+    unverified: string
+    request: string
+    saved: string
+    opening: string
+    openingLine: string
+    waiting: string
     tryAgain: string
+    otherEmail: string
+    expired: string
+    requestNew: string
   }
 }
 
@@ -191,10 +211,26 @@ const en: FirstTimeCopy = {
     justNow: 'Just now',
     title: 'I can do that',
     body: 'Sign up and I’ll start on it right away. Your own agent will be ready in about a minute.',
-    signUp: 'Sign up to start',
-    failedTitle: 'Couldn’t sign you in.',
-    failedBody: 'Your request is still saved.',
-    tryAgain: 'Try again'
+    signUp: 'Sign up to start'
+  },
+  recovery: {
+    eyebrow: 'Sign in / Recovery',
+    title: 'Let’s try signing in again',
+    subtitleHeld: 'The sign-in window closed before we could finish. Your request is still saved.',
+    subtitle: 'The sign-in window closed before we could finish.',
+    listLabel: 'Where signing in stands',
+    account: 'Your account',
+    accountLine: 'One account for Hermes and Nous',
+    unverified: 'Unverified',
+    request: 'Your request',
+    saved: 'Saved',
+    opening: 'Opening Hermes',
+    openingLine: 'This should only take a moment',
+    waiting: 'Waiting',
+    tryAgain: 'Try again',
+    otherEmail: 'Use another email',
+    expired: 'Email link expired?',
+    requestNew: 'Request a new one.'
   }
 }
 
@@ -309,10 +345,26 @@ const fr: FirstTimeCopy = {
     justNow: 'À l’instant',
     title: 'Je peux m’en charger',
     body: 'Inscrivez-vous et je m’y mets tout de suite. Votre propre agent sera prêt en une minute environ.',
-    signUp: 'S’inscrire pour commencer',
-    failedTitle: 'Impossible de vous connecter.',
-    failedBody: 'Votre demande est toujours enregistrée.',
-    tryAgain: 'Réessayer'
+    signUp: 'S’inscrire pour commencer'
+  },
+  recovery: {
+    eyebrow: 'Connexion / Reprise',
+    title: 'Réessayons de vous connecter',
+    subtitleHeld: 'La fenêtre de connexion s’est fermée avant la fin. Votre demande est toujours enregistrée.',
+    subtitle: 'La fenêtre de connexion s’est fermée avant la fin.',
+    listLabel: 'Où en est la connexion',
+    account: 'Votre compte',
+    accountLine: 'Un seul compte pour Hermes et Nous',
+    unverified: 'Non vérifié',
+    request: 'Votre demande',
+    saved: 'Enregistrée',
+    opening: 'Ouverture de Hermes',
+    openingLine: 'Cela ne devrait prendre qu’un instant',
+    waiting: 'En attente',
+    tryAgain: 'Réessayer',
+    otherEmail: 'Utiliser une autre adresse',
+    expired: 'Lien e-mail expiré ?',
+    requestNew: 'En demander un nouveau.'
   }
 }
 
@@ -427,10 +479,27 @@ const de: FirstTimeCopy = {
     justNow: 'Gerade eben',
     title: 'Das kann ich erledigen',
     body: 'Registriere dich und ich lege sofort los. Dein eigener Agent ist in etwa einer Minute bereit.',
-    signUp: 'Registrieren und loslegen',
-    failedTitle: 'Anmeldung fehlgeschlagen.',
-    failedBody: 'Deine Anfrage ist weiterhin gespeichert.',
-    tryAgain: 'Erneut versuchen'
+    signUp: 'Registrieren und loslegen'
+  },
+  recovery: {
+    eyebrow: 'Anmelden / Wiederherstellen',
+    title: 'Versuchen wir die Anmeldung noch einmal',
+    subtitleHeld:
+      'Das Anmeldefenster wurde geschlossen, bevor wir fertig waren. Deine Anfrage ist weiterhin gespeichert.',
+    subtitle: 'Das Anmeldefenster wurde geschlossen, bevor wir fertig waren.',
+    listLabel: 'Stand der Anmeldung',
+    account: 'Dein Konto',
+    accountLine: 'Ein Konto für Hermes und Nous',
+    unverified: 'Nicht bestätigt',
+    request: 'Deine Anfrage',
+    saved: 'Gespeichert',
+    opening: 'Hermes wird geöffnet',
+    openingLine: 'Das dauert nur einen Moment',
+    waiting: 'Wartet',
+    tryAgain: 'Erneut versuchen',
+    otherEmail: 'Andere E-Mail verwenden',
+    expired: 'E-Mail-Link abgelaufen?',
+    requestNew: 'Neuen anfordern.'
   }
 }
 
@@ -545,10 +614,26 @@ const es: FirstTimeCopy = {
     justNow: 'Justo ahora',
     title: 'Puedo hacerlo',
     body: 'Regístrate y empiezo ahora mismo. Tu propio agente estará listo en un minuto aproximadamente.',
-    signUp: 'Regístrate para empezar',
-    failedTitle: 'No pudimos iniciar tu sesión.',
-    failedBody: 'Tu petición sigue guardada.',
-    tryAgain: 'Reintentar'
+    signUp: 'Regístrate para empezar'
+  },
+  recovery: {
+    eyebrow: 'Iniciar sesión / Recuperación',
+    title: 'Intentemos iniciar sesión de nuevo',
+    subtitleHeld: 'La ventana de inicio de sesión se cerró antes de terminar. Tu petición sigue guardada.',
+    subtitle: 'La ventana de inicio de sesión se cerró antes de terminar.',
+    listLabel: 'Estado del inicio de sesión',
+    account: 'Tu cuenta',
+    accountLine: 'Una cuenta para Hermes y Nous',
+    unverified: 'Sin verificar',
+    request: 'Tu petición',
+    saved: 'Guardada',
+    opening: 'Abriendo Hermes',
+    openingLine: 'Solo tardará un momento',
+    waiting: 'En espera',
+    tryAgain: 'Reintentar',
+    otherEmail: 'Usar otro correo',
+    expired: '¿Caducó el enlace del correo?',
+    requestNew: 'Pide uno nuevo.'
   }
 }
 
@@ -663,10 +748,26 @@ const ja: FirstTimeCopy = {
     justNow: 'たった今',
     title: 'お任せください',
     body: '登録すれば、すぐに取りかかります。あなた専用のエージェントは 1 分ほどで準備できます。',
-    signUp: '登録して始める',
-    failedTitle: 'サインインできませんでした。',
-    failedBody: 'リクエストは保存されたままです。',
-    tryAgain: 'もう一度試す'
+    signUp: '登録して始める'
+  },
+  recovery: {
+    eyebrow: 'サインイン / 復旧',
+    title: 'もう一度サインインしましょう',
+    subtitleHeld: '完了する前にサインイン画面が閉じました。リクエストは保存されたままです。',
+    subtitle: '完了する前にサインイン画面が閉じました。',
+    listLabel: 'サインインの状況',
+    account: 'アカウント',
+    accountLine: 'Hermes と Nous で共通のアカウント',
+    unverified: '未確認',
+    request: 'リクエスト',
+    saved: '保存済み',
+    opening: 'Hermes を開いています',
+    openingLine: 'すぐに終わります',
+    waiting: '待機中',
+    tryAgain: 'もう一度試す',
+    otherEmail: '別のメールアドレスを使う',
+    expired: 'メールのリンクの期限が切れましたか？',
+    requestNew: '新しいリンクを請求する。'
   }
 }
 
@@ -781,10 +882,26 @@ const zh: FirstTimeCopy = {
     justNow: '刚刚',
     title: '这个我能做',
     body: '注册后我会立刻开始。你自己的智能体大约一分钟就能准备好。',
-    signUp: '注册并开始',
-    failedTitle: '无法为你登录。',
-    failedBody: '你的请求仍已保存。',
-    tryAgain: '重试'
+    signUp: '注册并开始'
+  },
+  recovery: {
+    eyebrow: '登录 / 恢复',
+    title: '我们再试一次登录',
+    subtitleHeld: '登录窗口在完成前关闭了。你的请求仍已保存。',
+    subtitle: '登录窗口在完成前关闭了。',
+    listLabel: '登录进度',
+    account: '你的账户',
+    accountLine: 'Hermes 与 Nous 共用一个账户',
+    unverified: '未验证',
+    request: '你的请求',
+    saved: '已保存',
+    opening: '正在打开 Hermes',
+    openingLine: '马上就好',
+    waiting: '等待中',
+    tryAgain: '重试',
+    otherEmail: '使用其他邮箱',
+    expired: '邮件链接已过期？',
+    requestNew: '重新获取一个。'
   }
 }
 
@@ -899,10 +1016,26 @@ const zhHant: FirstTimeCopy = {
     justNow: '剛剛',
     title: '這個我能做',
     body: '註冊後我會馬上開始。你自己的代理大約一分鐘就能準備好。',
-    signUp: '註冊並開始',
-    failedTitle: '無法為你登入。',
-    failedBody: '你的請求仍然保存著。',
-    tryAgain: '再試一次'
+    signUp: '註冊並開始'
+  },
+  recovery: {
+    eyebrow: '登入 / 復原',
+    title: '我們再試一次登入',
+    subtitleHeld: '登入視窗在完成前關閉了。你的請求仍然保存著。',
+    subtitle: '登入視窗在完成前關閉了。',
+    listLabel: '登入進度',
+    account: '你的帳戶',
+    accountLine: 'Hermes 與 Nous 共用一個帳戶',
+    unverified: '未驗證',
+    request: '你的請求',
+    saved: '已儲存',
+    opening: '正在開啟 Hermes',
+    openingLine: '馬上就好',
+    waiting: '等待中',
+    tryAgain: '再試一次',
+    otherEmail: '使用其他電子郵件',
+    expired: '郵件連結已過期？',
+    requestNew: '重新索取一個。'
   }
 }
 
@@ -1017,10 +1150,26 @@ const ru: FirstTimeCopy = {
     justNow: 'Только что',
     title: 'Я могу это сделать',
     body: 'Зарегистрируйтесь, и я сразу начну. Ваш собственный агент будет готов примерно за минуту.',
-    signUp: 'Зарегистрироваться',
-    failedTitle: 'Не удалось войти.',
-    failedBody: 'Ваш запрос по-прежнему сохранён.',
-    tryAgain: 'Попробовать снова'
+    signUp: 'Зарегистрироваться'
+  },
+  recovery: {
+    eyebrow: 'Вход / Восстановление',
+    title: 'Попробуем войти ещё раз',
+    subtitleHeld: 'Окно входа закрылось раньше, чем мы закончили. Ваш запрос по-прежнему сохранён.',
+    subtitle: 'Окно входа закрылось раньше, чем мы закончили.',
+    listLabel: 'Как идёт вход',
+    account: 'Ваш аккаунт',
+    accountLine: 'Один аккаунт для Hermes и Nous',
+    unverified: 'Не подтверждён',
+    request: 'Ваш запрос',
+    saved: 'Сохранён',
+    opening: 'Открываем Hermes',
+    openingLine: 'Это займёт всего момент',
+    waiting: 'Ожидание',
+    tryAgain: 'Попробовать снова',
+    otherEmail: 'Другой адрес почты',
+    expired: 'Ссылка из письма устарела?',
+    requestNew: 'Запросите новую.'
   }
 }
 
@@ -1135,10 +1284,26 @@ const ar: FirstTimeCopy = {
     justNow: 'الآن',
     title: 'يمكنني فعل ذلك',
     body: 'سجّل وسأبدأ عليه فورًا. سيكون وكيلك الخاص جاهزًا في نحو دقيقة.',
-    signUp: 'سجّل للبدء',
-    failedTitle: 'تعذّر تسجيل دخولك.',
-    failedBody: 'طلبك لا يزال محفوظًا.',
-    tryAgain: 'حاول مرة أخرى'
+    signUp: 'سجّل للبدء'
+  },
+  recovery: {
+    eyebrow: 'تسجيل الدخول / الاسترداد',
+    title: 'لنحاول تسجيل الدخول مرة أخرى',
+    subtitleHeld: 'أُغلقت نافذة تسجيل الدخول قبل أن ننتهي. طلبك لا يزال محفوظًا.',
+    subtitle: 'أُغلقت نافذة تسجيل الدخول قبل أن ننتهي.',
+    listLabel: 'حالة تسجيل الدخول',
+    account: 'حسابك',
+    accountLine: 'حساب واحد لـ Hermes و Nous',
+    unverified: 'غير مُتحقَّق',
+    request: 'طلبك',
+    saved: 'محفوظ',
+    opening: 'جارٍ فتح Hermes',
+    openingLine: 'لن يستغرق ذلك سوى لحظة',
+    waiting: 'في الانتظار',
+    tryAgain: 'حاول مرة أخرى',
+    otherEmail: 'استخدم بريدًا آخر',
+    expired: 'انتهت صلاحية رابط البريد؟',
+    requestNew: 'اطلب رابطًا جديدًا.'
   }
 }
 

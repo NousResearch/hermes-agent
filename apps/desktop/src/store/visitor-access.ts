@@ -34,8 +34,15 @@ export const $signUpRequired = computed(
   (access, portal) => portal && access.kind === 'sign_up_required'
 )
 
-/** Sign up came back without signing the visitor in. Cleared by the next attempt. */
+/** Sign up came back without signing the visitor in: the recovery screen is up. Cleared by the next
+ *  attempt, or when the visitor puts that screen away. */
 export const $signInFailed = atom(false)
+
+/** The visitor put "Let's try signing in again" away (a nav click, Escape): back to the ordinary
+ *  signed-out app, their held message still held. */
+export function dismissSignInRecovery(): void {
+  $signInFailed.set(false)
+}
 
 /** main.tsx, before the first render: settle access from the page, and take a failed sign-in's report
  *  off the address so a reload does not say it again. */
@@ -58,7 +65,7 @@ export function installVisitorAccess(): void {
   }
 }
 
-export type SignUpEntry = 'chat' | 'sidebar' | 'splash' | 'tray'
+export type SignUpEntry = 'chat' | 'recovery' | 'sidebar' | 'splash' | 'tray'
 
 /** Leave for sign up, which returns to this same place (this chat, this page) when it is done. A
  *  no-op where sign up is not required. */

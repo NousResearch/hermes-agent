@@ -263,11 +263,11 @@
 
 /* It is the stage itself, not a card on it: the stage's own veil over the art, edge to edge, so the
    chat sidebar can come back beside it (18695:17294) with nothing moving but the stage's width. */
-:root[data-shell='portal'] .discovery-splash-layer:has(> [data-splash='first-time']) {
+:root[data-shell='portal'] .discovery-splash-layer:has(> :is([data-splash='first-time'], [data-splash='recovery'])) {
   padding: 0;
 }
 
-:root[data-shell='portal'] .discovery-splash[data-splash='first-time'] {
+:root[data-shell='portal'] .discovery-splash:is([data-splash='first-time'], [data-splash='recovery']) {
   /* The text's inset in the 640 column (Figma's content inset, 32). */
   --discovery-welcome-inset: 2rem;
   border: 0;
@@ -596,7 +596,7 @@
 
 /* While the splash is up the rail lights only the place a row is pointing at (18695:17294,
    18695:17488): the open destination's selection stands down. */
-:root[data-shell='portal']:has(.discovery-splash[data-splash='first-time'])
+:root[data-shell='portal']:has(.discovery-splash:is([data-splash='first-time'], [data-splash='recovery']))
   [data-slot='global-nav']
   .portal-chrome-button[aria-current='page'] {
   background-color: var(--portal-rail-fill);
@@ -625,6 +625,93 @@
   .portal-chrome-button[data-nav-spot='artifacts'] {
   background-color: var(--portal-rail-fill-selected);
   color: var(--portal-rail-ink-selected);
+}
+
+/* ── Sign-in recovery (18732:33066, 18695:19224): the welcome card's rows, each with a status ── */
+
+:root[data-shell='portal'] .discovery-status-rows > li + li::before {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  block-size: 1px;
+  background-color: var(--portal-stroke-divider);
+  content: '';
+}
+
+:root[data-shell='portal'] .discovery-status-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-block-size: 4rem;
+  padding-block: 0.75rem;
+}
+
+/* A step still to come steps back, as Figma's Opening Hermes row does. */
+:root[data-shell='portal'] .discovery-status-row[data-tone='waiting'] > :not(.discovery-status-badge) {
+  opacity: var(--portal-text-quiet-opacity);
+}
+
+:root[data-shell='portal'] .discovery-status-row .discovery-welcome-place-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* UNVERIFIED / SAVED / WAITING: Nous/Uppercase Medium on its fill, 4px padding, 3 corners. */
+:root[data-shell='portal'] .discovery-status-badge {
+  flex: none;
+  padding: 0.25rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-badge-ink);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] .discovery-status-badge[data-tone='alert'] {
+  background-color: var(--portal-badge-alert-fill);
+}
+
+:root[data-shell='portal'] .discovery-status-badge[data-tone='ok'] {
+  background-color: var(--portal-badge-ok-fill);
+}
+
+:root[data-shell='portal'] .discovery-status-badge[data-tone='waiting'] {
+  background-color: var(--portal-badge-waiting-fill);
+  color: var(--portal-badge-waiting-ink);
+}
+
+/* "Email link expired? / Request a new one.": Nous/Metadata, the second line underlined. */
+:root[data-shell='portal'] .discovery-status-expired {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.2;
+}
+
+:root[data-shell='portal'] .discovery-status-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-position: from-font;
+}
+
+:root[data-shell='portal'] .discovery-status-link:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .discovery-status-link:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
 }
 
 /* ── Make it yours: colours and light / dark in one row (18695:18076) ── */
@@ -837,7 +924,7 @@
 /* A narrow stage (a phone, < 640 in breakpoints.ts, or a squeezed one): the column takes the stage
    less a 16px gutter, the text and cards inset 16. */
 @container discovery-splash (max-width: 39.98rem) {
-  :root[data-shell='portal'] .discovery-splash[data-splash='first-time'] {
+  :root[data-shell='portal'] .discovery-splash:is([data-splash='first-time'], [data-splash='recovery']) {
     --discovery-welcome-inset: 1rem;
   }
 

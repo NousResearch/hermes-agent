@@ -53,8 +53,9 @@ export const IA_ACTIONS = {
   // The ideas leaving (on their own after two finished chats, or by Hide) and coming back (Show ideas).
   starter_chips: ['hidden_auto', 'hidden_user', 'shown_again'],
   // Sign up started, by where: the first-time splash, the notifications tray, a held chat (or the
-  // composer's link beside it), or the chat sidebar's Create an Account card.
-  sign_up: ['splash', 'tray', 'chat', 'sidebar'],
+  // composer's link beside it), the chat sidebar's Create an Account card, or the screen a failed sign
+  // in comes back to.
+  sign_up: ['splash', 'tray', 'chat', 'sidebar', 'recovery'],
   // "Make it yours" in the first-time splash: a light / dark pick, or one of the eight colours.
   theme_pick: [
     'mode_light',

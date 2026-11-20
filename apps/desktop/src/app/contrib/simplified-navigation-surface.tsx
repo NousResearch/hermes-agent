@@ -7,6 +7,7 @@ import { setPaneRouteCollapsed } from '@/components/pane-shell/tree/store-route-
 import { $firstTimeSplashHoldsSidebar } from '@/store/first-time-splash'
 import { $focusedSessionIsTile } from '@/store/session-focus'
 import { usePortalShell } from '@/store/shell-variant'
+import { $signInFailed } from '@/store/visitor-access'
 
 import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
 import { $widthClass } from '../redesign/breakpoints'
@@ -29,9 +30,11 @@ function NavigationWithChatSidebar(props: Props) {
   const hiddenTabs = useStore($hiddenStripTabs)
   const hiddenPanes = useStore($hiddenTreePanes)
   // Only a docked sidebar: below wide it is a sheet the band's menu opens, which the splash leaves be.
-  const splashHolds = useStore($firstTimeSplashHoldsSidebar)
+  const firstTimeHolds = useStore($firstTimeSplashHoldsSidebar)
+  // The sign-in recovery screen has the stage to itself too (18732:33066).
+  const recovering = useStore($signInFailed)
   const wide = useStore($widthClass) === 'wide'
-  const splashHoldsSidebar = splashHolds && wide
+  const splashHoldsSidebar = (firstTimeHolds || recovering) && wide
   const titlebarHeight = useTitlebarHeight()
   const view = appViewForPath(pathname)
   // Chats show the sidebar; workspace pages take the whole stage. A route overlay covers whichever
@@ -50,7 +53,8 @@ function NavigationWithChatSidebar(props: Props) {
   // Route visibility is transient: it collapses the sidebar without unmounting it (so returning to
   // a chat is a flip, not a rebuild) and never touches the user's own hide preference.
   // The chat's tool panel follows the same layout: a page's right side is its own. The first-time
-  // splash takes the sidebar the same way while it is up, giving it back for its Chats row.
+  // splash and the sign-in recovery take the sidebar the same way while up (the welcome splash gives it
+  // back for its Chats row).
   useLayoutEffect(() => {
     const offChat = covering ? coveredPageLayout : pageLayout
     setPaneRouteCollapsed('sessions', offChat || splashHoldsSidebar)

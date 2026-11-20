@@ -13,6 +13,14 @@ from __future__ import annotations
 from typing import Any
 
 from agent.i18n import t
+from gateway.platforms.base_exec_approval import approval_kind_of, ea_t
+
+
+def kind_and_body(approval_data: dict, command: str, description: str) -> tuple[str, str]:
+    """``(kind, body)`` of the prompt: a schedule prompt's body is the job description; the
+    ``command`` it carries is a synthetic ``<cronjob_manage> ...`` label nobody needs to read."""
+    kind = approval_kind_of(approval_data)
+    return kind, (description if kind == "schedule" else command)
 
 
 def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_id: str | None, command: str,
@@ -41,7 +49,8 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     LINE has no ``MAX_MESSAGE_LENGTH``, so its 4096 default is used: conservative, never cut."""
     from gateway.platforms.base import fit_prefix
     from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, code_fence, ea_header_text, fit_fenced, ea_reason_label_text, format_approval_deadline_line)
+        approval_kind, approval_timeout_seconds, code_fence, ea_header_text, fit_fenced, ea_reason_label_text,
+        format_approval_deadline_line)
     limit = adapter.max_message_length_for_chat(chat_id)
     measure = adapter.message_len_fn_for_chat(chat_id)
     heading = t("gateway.exec_approval.smart_deny_heading") if smart_denied else f"⚠️ **{ea_header_text()}**"
@@ -49,14 +58,18 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     def prompt(choices: list[str], notice: str, shown: str, fence: str) -> str:
         instructions = (t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
                         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])) if choices[1:] else f"{choices[0]}.\n"
-        return (f"{heading}\n\n{instructions}{notice}{format_approval_deadline_line(approval_timeout_seconds())}"
+        deadline = format_approval_deadline_line(approval_timeout_seconds())
+        if schedule:  # the body is the job description: no command fence, nothing "flagged"
+            return f"{heading}\n\n{instructions}{notice}{deadline}\n\n{shown}"
+        return (f"{heading}\n\n{instructions}{notice}{deadline}"
                 f"\n\n{ea_reason_label_text()}: {description}\n{fence}\n{shown}\n{fence}")
 
-    choices = [t("gateway.exec_approval.text_choice_once", prefix=prefix)]
+    schedule = approval_kind() == "schedule"
+    choices = [ea_t("gateway.exec_approval.text_choice_once", prefix=prefix)]
     if not smart_denied and allow_session:
-        choices.append(t("gateway.exec_approval.text_choice_session", prefix=prefix))
+        choices.append(ea_t("gateway.exec_approval.text_choice_session", prefix=prefix))
         if allow_permanent:
-            choices.append(t("gateway.exec_approval.text_choice_always", prefix=prefix))
+            choices.append(ea_t("gateway.exec_approval.text_choice_always", prefix=prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=prefix))
     full = prompt(choices, "", command, code_fence(command))
     if measure(full) <= limit:
@@ -66,7 +79,7 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     whole = prompt(deny, t("gateway.exec_approval.text_prompt_deny_only") + "\n", command, code_fence(command))
     if measure(whole) <= limit:
         return whole, True
-    notice = t("gateway.exec_approval.truncated_deny_only", total=len(command)) + "\n"
+    notice = ea_t("gateway.exec_approval.truncated_deny_only", total=len(command)) + "\n"
     # The fence is sized from the shortened command, so it always closes within the cut; the budget stays
     # under the whole command so the "shortened" notice is never shown beside the full text.
     shown, fence = fit_fenced(command, lambda fence: fit_prefix(command, max(0, min(

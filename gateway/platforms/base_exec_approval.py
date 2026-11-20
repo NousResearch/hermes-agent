@@ -11,14 +11,79 @@ The ``EA_*`` / ``APPROVAL_TIMED_OUT_NOTICE`` module constants are the English so
 accessors (``ea_header_text()`` …) so the active ``display.language`` is honoured at render time.
 
 No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import this module.
+
+A new scheduled job (approval ``kind`` ``schedule``) asks the same question about a job instead of a
+command. The runner binds the kind for the render (``with_approval_kind`` / ``approval_kind_scope``),
+so every accessor here and every adapter header that reads its words through ``ea_t`` switches to the
+``schedule_*`` sibling keys without a new parameter on each adapter's ``send_exec_approval``.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Awaitable, Iterator, Optional, TypeVar
 
 from agent.i18n import t
+
+_T = TypeVar("_T")
+
+# The approval kind of the prompt being rendered; ``command`` (the default) keeps every string unchanged.
+_APPROVAL_KIND: ContextVar[str] = ContextVar("hermes_approval_kind", default="command")
+
+# kind -> {catalog key: the key that kind renders instead}. A kind missing here renders as a command.
+_KIND_KEYS: dict[str, dict[str, str]] = {"schedule": {
+    key: f"{key.rpartition('.')[0]}.schedule_{key.rpartition('.')[2]}" for key in (
+        "gateway.exec_approval.header", "gateway.exec_approval.action_once",
+        "gateway.exec_approval.action_session", "gateway.exec_approval.action_always",
+        "gateway.exec_approval.deadline", "gateway.exec_approval.timed_out_notice",
+        "gateway.exec_approval.timed_out_card_body", "gateway.exec_approval.text_body",
+        "gateway.exec_approval.text_choice_once", "gateway.exec_approval.text_choice_session",
+        "gateway.exec_approval.text_choice_always", "gateway.exec_approval.truncated_full_above",
+        "gateway.exec_approval.truncated_deny_only", "platform.discord.approval.question",
+        "platform.discord.approval.requested_command_label", "platform.slack.approval.fallback_text",
+        "platform.matrix.approval.typed_hint_once", "platform.matrix.approval.typed_hint_session",
+        "platform.matrix.approval.typed_hint_always", "platform.feishu.approval.action_session",
+        "platform.feishu.approval.action_always", "platform.telegram.approval.action_once",
+        "platform.telegram.approval.action_session", "platform.telegram.approval.action_always")}}
+
+
+def approval_kind_of(approval_data: dict) -> str:
+    """The card kind ``approval_data`` asks for; an absent or unknown ``kind`` is a command."""
+    kind = approval_data.get("kind")
+    return kind if kind in _KIND_KEYS else "command"
+
+
+def approval_kind() -> str:
+    """The kind bound for the prompt being rendered (``command`` outside any binding)."""
+    return _APPROVAL_KIND.get()
+
+
+def ea_key(key: str, kind: Optional[str] = None) -> str:
+    """The catalog key ``kind`` (default: the bound kind) renders in place of ``key``."""
+    return _KIND_KEYS.get(kind or _APPROVAL_KIND.get(), {}).get(key, key)
+
+
+def ea_t(key: str, kind: Optional[str] = None, **kwargs: Any) -> str:
+    """``t(key)`` for the bound approval kind: a schedule card reads its ``schedule_*`` sibling."""
+    return t(ea_key(key, kind), **kwargs)
+
+
+@contextmanager
+def approval_kind_scope(kind: str) -> Iterator[None]:
+    """Bind ``kind`` for a synchronous render (the plain-text ``/approve`` prompt)."""
+    token = _APPROVAL_KIND.set(kind)
+    try:
+        yield
+    finally:
+        _APPROVAL_KIND.reset(token)
+
+
+async def with_approval_kind(kind: str, awaitable: Awaitable[_T]) -> _T:
+    """Await ``awaitable`` with ``kind`` bound: the adapter's card is rendered inside it, on the loop."""
+    with approval_kind_scope(kind):
+        return await awaitable
 
 # Bare strings; adapters add their own bold/HTML around them.
 EA_HEADER_TEXT = "Hermes wants to run a command that needs your OK"
@@ -32,7 +97,7 @@ APPROVAL_TIMED_OUT_NOTICE = (
 
 def ea_header_text() -> str:
     """Localized ``EA_HEADER_TEXT``."""
-    return t("gateway.exec_approval.header")
+    return ea_t("gateway.exec_approval.header")
 
 
 def ea_reason_label_text() -> str:
@@ -53,16 +118,16 @@ def ea_default_reason_text() -> str:
 def ea_action_labels() -> dict[str, str]:
     """Localized ``choice -> button label`` for the four approval tiers."""
     return {
-        "once": t("gateway.exec_approval.action_once"),
-        "session": t("gateway.exec_approval.action_session"),
-        "always": t("gateway.exec_approval.action_always"),
+        "once": ea_t("gateway.exec_approval.action_once"),
+        "session": ea_t("gateway.exec_approval.action_session"),
+        "always": ea_t("gateway.exec_approval.action_always"),
         "deny": t("gateway.exec_approval.action_deny"),
     }
 
 
 def approval_timed_out_notice(window: str) -> str:
     """Localized ``APPROVAL_TIMED_OUT_NOTICE`` for an already-formatted ``window``."""
-    return t("gateway.exec_approval.timed_out_notice", window=window)
+    return ea_t("gateway.exec_approval.timed_out_notice", window=window)
 
 
 def approval_timeout_seconds() -> int:
@@ -80,7 +145,7 @@ def format_approval_window(seconds: int) -> str:
 
 def format_approval_deadline_line(timeout_s: int) -> str:
     """The last line of every approval prompt: doing nothing is a safe no."""
-    return t("gateway.exec_approval.deadline", window=format_approval_window(timeout_s))
+    return ea_t("gateway.exec_approval.deadline", window=format_approval_window(timeout_s))
 
 
 def format_approval_timed_out_notice(timeout_s: int) -> str:
@@ -129,6 +194,8 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
     says so in the card: where the full command was sent just before it (``full_command_shown``), or
     that only Deny is offered because it could not be (#62359)."""
+    if _APPROVAL_KIND.get() == "schedule":
+        return _render_schedule_approval(adapter, command, smart_denied, full_command_shown)
     if adapter._EA_REASON_BUDGET:
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
     key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
@@ -157,6 +224,23 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     text = (f"{adapter._EA_HEADER}"
             f"{code_open}{adapter._ea_escape(preview)}{code_close}"
             f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
+            f"{adapter._ea_deadline_line()}")
+    return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
+
+
+def _render_schedule_approval(adapter: Any, body: str, smart_denied: bool,
+                              full_shown: bool) -> tuple[str, bool]:
+    """A schedule card: the header, then the job description as plain text (no command fence, no
+    "why it was flagged" label: nothing was flagged, every new job asks). Cut like a command preview,
+    with the same notice, when it does not fit the adapter's budget."""
+    key = "truncated_full_above" if full_shown else "truncated_deny_only"
+    cut_notice = "\n\n" + adapter._ea_escape(ea_t(f"gateway.exec_approval.{key}", total=len(body)))
+    room = adapter._exec_approval_cmd_budget("", smart_denied)
+    shown = adapter._ea_fit(body, room, suffix="")
+    if shown != body:
+        shown = adapter._ea_fit(body, max(0, room - adapter.message_len_fn(cut_notice) - len("...")))
+    truncated = shown != body
+    text = (f"{adapter._EA_HEADER}{adapter._ea_escape(shown)}{cut_notice if truncated else ''}"
             f"{adapter._ea_deadline_line()}")
     return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
 

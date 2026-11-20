@@ -33,6 +33,7 @@ from urllib.parse import quote, urljoin
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
 from agent.i18n import get_language, t
+from gateway.platforms.base_exec_approval import ea_t
 from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
@@ -5407,13 +5408,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 logger.warning("[%s] %s failed: %s", self.name, fail_log, e)
             return SendResult(success=False, error=str(e))
 
-    # Payload lives in plain content: embeds can be invisible/detached on web/mobile. Properties, not
-    # class constants: the wording comes from the catalog for the language active at send time.
+    # Payload lives in plain content (embeds can be invisible on web/mobile). Properties: wording is read per send.
     @property
     def _EA_HEADER(self) -> str:
-        return (f"⚠️ **{t('gateway.exec_approval.header')}**\n\n"
-                f"{t('platform.discord.approval.question')}\n\n"
-                f"**{t('platform.discord.approval.requested_command_label')}**\n")
+        return (f"⚠️ **{ea_t('gateway.exec_approval.header')}**\n\n"
+                f"{ea_t('platform.discord.approval.question')}\n\n"
+                f"**{ea_t('platform.discord.approval.requested_command_label')}**\n")
 
     _EA_CODE_OPEN = "```bash\n"
     _EA_CODE_CLOSE = "\n```\n"
@@ -5459,7 +5459,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             if mention_content:
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
-                title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
+                title=_truncate_discord_component_text(f"⚠️ {ea_t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
             )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}

@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "Pré-visualização encurtada: o comando completo ({total} caracteres) está na mensagem acima."
     truncated_deny_only: "Pré-visualização encurtada ({total} caracteres) e não foi possível mostrar o comando completo aqui, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
     text_prompt_deny_only: "O pedido de aprovação completo é demasiado longo para esta plataforma, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
+    schedule_header: "O Hermes quer agendar uma tarefa"
+    schedule_action_once: "Permitir"
+    schedule_action_session: "Permitir neste chat"
+    schedule_action_always: "Sempre permitir novas tarefas"
+    schedule_deadline: "Se você não responder em {window}, a tarefa NÃO será criada."
+    schedule_timed_out_notice: "⌛ A aprovação expirou após {window} — a tarefa não foi criada. Peça de novo se ainda quiser, ou aumente approvals.timeout no config.yaml."
+    schedule_text_choice_once: "Responda `{prefix}approve` para criá-la"
+    schedule_text_choice_session: "`{prefix}approve session` para permitir novas tarefas no restante deste chat"
+    schedule_text_choice_always: "`{prefix}approve always` para sempre permitir novas tarefas"
+    schedule_truncated_full_above: "Prévia encurtada: a tarefa completa ({total} caracteres) está na mensagem acima."
+    schedule_truncated_deny_only: "Prévia encurtada ({total} caracteres) e a tarefa completa não pôde ser exibida aqui, então só Negar é oferecido. Revise-a na CLI ou no app desktop."
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "áudio"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "Aprovado para a sessão"
       resolved_always: "Aprovado permanentemente"
       resolved_deny: "Negado"
+      schedule_question: "Você quer que o Hermes crie esta tarefa agendada?"
+      schedule_requested_command_label: "Tarefa:"
     slash_confirm:
       already_resolved: "Este prompt já foi resolvido~"
       approve_once: "Aprovar uma vez"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{label} por {user}"
       expired: "⌛ Aprovação expirada"
       expired_detail: "{label} — nenhum comando estava aguardando. Ele já atingiu o tempo limite (e foi negado) ou foi resolvido em outro lugar."
+      schedule_action_once: "✅ Permitir"
+      schedule_action_session: "✅ Permitir neste chat"
+      schedule_action_always: "✅ Sempre permitir novas tarefas"
     slash_confirm:
       approve_once: "✅ Aprovar uma vez"
       always_approve: "🔒 Aprovar sempre"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ Aprovado para a sessão por {user}"
       resolved_always: "✅ Aprovado permanentemente por {user}"
       resolved_deny: "❌ Negado por {user}"
+      schedule_fallback_text: "⚠️ O Hermes quer agendar uma tarefa: {command}"
     confirm:
       default_title: "Confirmar"
       approve_once: "Aprovar uma vez"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = negar"
       invalid_reaction: "Essa reação não é válida para esta solicitação de aprovação."
       expired: "Esta solicitação de aprovação expirou. Execute o comando novamente se ainda quiser aprová-lo."
+      schedule_typed_hint_once: "Responda `!approve` para criá-la ou `!deny` para cancelar."
+      schedule_typed_hint_session: "Responda `!approve session` para permitir novas tarefas no restante deste chat, `!approve` para criá-la ou `!deny` para cancelar."
+      schedule_typed_hint_always: "Responda `!approve session` para permitir novas tarefas no restante deste chat, `!approve always` para sempre permitir novas tarefas, `!approve` para criá-la ou `!deny` para cancelar."
     picker:
       no_models: "Nenhum modelo autenticado está disponível para esta sessão."
       title: "⚙ **Configuração do modelo**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "Negado"
       resolved_fallback: "Resolvido"
       resolved_by_user: "{icon} **{label}** por {user}"
+      schedule_action_session: "Permitir neste chat"
+      schedule_action_always: "Sempre permitir novas tarefas"
     update_prompt:
       title: "☤ A atualização precisa da sua resposta"
       default_hint: "\n\nPadrão: `{default}`"

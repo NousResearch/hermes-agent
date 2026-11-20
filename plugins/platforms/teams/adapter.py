@@ -59,7 +59,8 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
-from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
+from gateway.platforms.base_exec_approval import (
+    approval_kind, approval_timeout_seconds, ea_header_text, format_approval_deadline_line)
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
@@ -339,10 +340,11 @@ _APPROVAL_LABEL_KEYS = {
 def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
+    schedule = approval_kind() == "schedule"  # the job description is the body: unfenced, nothing "flagged"
     if cmd or always:
-        body.append(TextBlock(text=f"⚠️ {t('gateway.exec_approval.header')}", wrap=True, weight="Bolder"))
-        body.append(TextBlock(text=f"```\n{cmd}\n```", wrap=True))
-    if desc or always:
+        body.append(TextBlock(text=f"⚠️ {ea_header_text()}", wrap=True, weight="Bolder"))
+        body.append(TextBlock(text=cmd if schedule else f"```\n{cmd}\n```", wrap=True))
+    if (desc or always) and not schedule:
         body.append(TextBlock(text=f"{t('gateway.exec_approval.reason_label')}: {desc}", wrap=True, isSubtle=True))
     return body
 

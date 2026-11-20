@@ -142,6 +142,7 @@ import sys
 
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
+from gateway.platforms.base_exec_approval import ea_t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
@@ -3810,12 +3811,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
-    # Template attrs for the shared _format_exec_approval core (HTML mode). Properties, not class
-    # constants: the wording comes from the catalog for the language active at send time, and the
-    # translated text is HTML-escaped BEFORE the <b> wrapper (a stray ``&``/``<`` would break the card).
+    # Template attrs for the shared _format_exec_approval core (HTML mode). Properties: the wording is read per send, in the
+    # active language and approval kind, and HTML-escaped BEFORE the <b> wrapper (a stray ``&``/``<`` would break the card).
     @property
     def _EA_HEADER(self) -> str:
-        return f"⚠️ <b>{_html.escape(t('gateway.exec_approval.header'))}</b>\n\n"
+        return f"⚠️ <b>{_html.escape(ea_t('gateway.exec_approval.header'))}</b>\n\n"
 
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
@@ -3839,7 +3839,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     @property
     def _EA_ACTION_LABELS(self) -> dict[str, str]:
         # Shorter than the base wording on purpose: two buttons share a row on mobile.
-        return {choice: t(f"platform.telegram.approval.action_{choice}") for choice in ("once", "session", "always", "deny")}
+        return {choice: ea_t(f"platform.telegram.approval.action_{choice}") for choice in ("once", "session", "always", "deny")}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the

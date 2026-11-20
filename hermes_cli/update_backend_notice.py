@@ -23,19 +23,6 @@ PLAN_ARGS = "gateway migrate --backends --apply --dry-run"
 _DESKTOP_OWNED = frozenset({"desktop-ssh", "desktop-local"})
 
 
-def _serves_this_home(item, home: Path) -> bool:
-    if item.this_home is not None:
-        return bool(item.this_home)
-    # A user unit that is not running and names no HERMES_HOME would run this user's own ~/.hermes; a
-    # system unit's user is not known here.
-    if item.running or item.scope != "user":
-        return False
-    from hermes_cli.dashboard_procs import _normalized_home_for_compare
-    from hermes_constants import _get_platform_default_hermes_home
-    return (_normalized_home_for_compare(str(home))
-            == _normalized_home_for_compare(str(_get_platform_default_hermes_home())))
-
-
 def _describe(item) -> str:
     from hermes_cli.main_dashboard import _parse_dashboard_runtime
     runtime = _parse_dashboard_runtime(shlex.join(item.argv)) if item.argv else None
@@ -62,12 +49,15 @@ def old_backend_notice(home: Path | None = None) -> str | None:
     """The paragraph, or None when no old backend serves *home* (the active home by default)."""
     from hermes_cli.backend_migration_marker import backend_retired_by_migration
     from hermes_cli.gateway_migrate_backends import collect_backends
+    from hermes_cli.gateway_migrate_backends_host import SystemHost
+    from hermes_cli.gateway_migrate_backends_plan import _for_this_home
     from hermes_constants import get_hermes_home
     home = Path(home) if home is not None else get_hermes_home()
+    host = SystemHost(home)
     # A unit a migration stopped but could not make `disabled` (a `static` one) is not a backend left over.
     retired = backend_retired_by_migration(home)
     found = [item for item in collect_backends()
-             if item.supervisor not in _DESKTOP_OWNED and _serves_this_home(item, home)
+             if item.supervisor not in _DESKTOP_OWNED and _for_this_home(item, host)
              and (item.running or not retired)]
     if not found:
         return None

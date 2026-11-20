@@ -166,6 +166,28 @@ def test_voice_off_cancels_a_pending_hand_off(mic, tmp_path, monkeypatch):
     assert len(mic.listens) == 1 and server._fd_owner is None
 
 
+def test_shutdown_cancels_a_pending_hand_off(mic, tmp_path, monkeypatch):
+    """Client gone (stdin EOF or a signal reaches ``_shutdown_sessions``) while B waits for A's take:
+    A's take still finishes as A, and no listener opens for B."""
+    a, b = _session(tmp_path, "sid-a", "a"), _session(tmp_path, "sid-b", "b")
+    mic.transcribe_gate = threading.Event()
+    _arm_as(a)
+    assert _wait(lambda: len(mic.listens) == 1)
+    mic.trip.set()
+    assert _wait(lambda: a.interrupted.is_set())
+    _arm_as(b)  # the hand-off waits behind A's in-flight take
+    for step in ("_flush_sessions_before_exit", "_release_gateway_wake_owner", "_stop_turns_before_exit"):
+        monkeypatch.setattr(server, step, lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: None)
+    server._shutdown_sessions()
+    mic.transcribe_gate.set()
+    assert _wait(lambda: len(mic.listens) == 2 or not server._fd_listener_active)
+    assert len(mic.listens) == 1, "a listener opened for B after shutdown"
+    assert not server._fd_listener_active and server._fd_owner is None
+    assert mic.transcripts == [a.home]
+    assert ("voice.transcript", "sid-a", {"text": "said in a"}) in mic.emitted
+
+
 def test_multiplexing_without_a_profile_scope_never_opens_the_mic(mic, tmp_path):
     from agent.secret_scope import reset_multiplex_context, set_multiplex_context
     a = _session(tmp_path, "sid-a", "a")

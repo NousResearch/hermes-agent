@@ -282,6 +282,14 @@ def _fd_listener_exit(gen: int) -> None:
     _fd_spawn_listener(owner, gen)
 
 
+def _release_fd_listener_owner() -> None:
+    """Process shutdown: drop the mic owner, so the live listener releases the mic at exit instead of
+    handing it off (a take already tripped still finishes under the owner it began with)."""
+    global _fd_owner
+    with _fd_listener_lock:
+        _fd_owner = None
+
+
 def _arm_barge_listener_if_enabled() -> None:
     """Arm the listener when voice mode is on and ``voice.barge_in`` isn't disabled."""
     if _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):

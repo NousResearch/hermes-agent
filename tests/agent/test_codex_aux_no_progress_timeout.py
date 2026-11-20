@@ -278,3 +278,27 @@ class TestCompressionRetryGate:
         assert result.choices[0].message.content == "fallback"
         assert primary.chat.completions.create.call_count == 1
         assert mock_fb.called
+
+
+
+def test_deadline_hit_is_not_judged_by_the_error_the_stream_then_raised():
+    """The stream raises a 401 after the no-progress deadline fired: the timeout is the verdict."""
+    import httpx
+    import openai
+
+    from agent.auxiliary_error_policy import Failure, auth_refresh, classify_attempt, fallback_label
+
+    def _consume_then_401(_stream, *, on_event, **_kw):
+        assert on_event.__self__.timed_out.wait(timeout=5)  # the stream guard's deadline fired
+        raise openai.APIError("Error code: 401 - invalid api key", httpx.Request("POST", "https://x.invalid"),
+                              body={"code": 401, "message": "invalid"})
+
+    with (
+        patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.1),
+        patch("agent.codex_runtime._consume_codex_event_stream", _consume_then_401),
+        pytest.raises(TimeoutError) as caught,
+    ):
+        _make_adapter(iter(())).create(messages=[{"role": "user", "content": "summarize"}], timeout=300)
+    assert caught.value.__context__ is None  # the classifier walks __context__
+    verdict = classify_attempt(caught.value, "openai-codex")
+    assert (fallback_label(Failure(caught.value, verdict)), auth_refresh(verdict)) == ("request timed out", False)

@@ -16,6 +16,7 @@ import pytest
 
 import tools.computer_use.tool as cu_tool
 from tools.computer_use.backend import CaptureResult
+from tests.computer_use_fakes import NoopBackend
 
 
 def _png_b64(seed: int) -> str:
@@ -129,7 +130,7 @@ class TestScreenshotDedup:
     def test_explicit_capture_action_after_input_is_subject_to_dedup(self):
         """The dispatch path (explicit `capture` and `capture_after`) carries the session key; an unchanged
         frame is reported as unchanged rather than re-sent, and the streak cap still forces re-delivery."""
-        backend = cu_tool._NoopBackend()
+        backend = NoopBackend()
         frame = _cap(seed=1)
         backend.capture = lambda **kw: frame
         first = cu_tool._dispatch(backend, "capture", {"mode": "som"}, session_id="s1")

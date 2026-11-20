@@ -97,7 +97,7 @@ export function ToolRow({ expanded, on, onExpand, onToggle, preview = false, rea
         {expandable ? (
           <button
             aria-expanded={expanded}
-            className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5 text-left outline-none focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50"
+            className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5 text-left focus-visible:outline-hidden focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50"
             onClick={onExpand}
             type="button"
           >

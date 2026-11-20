@@ -13,13 +13,15 @@ import {
   completeOpenTimelineParts,
   type GatewayEventPayload,
   hasUnresolvedToolCall,
+  isRedeliveredToolEvent,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
+  queuedPromptAwaitsNextTurn,
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
-  toolCallOwnerMessageId,
+  toolEventOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -28,6 +30,7 @@ import {
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
+import { scheduleStreamWork } from '@/lib/stream-work-clock'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
 import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import type { ScopedServerRequest } from '@/store/gateway'
@@ -47,11 +50,12 @@ import {
   type DuplicateFinalCollapse,
   identicalInterimSiblingIndex
 } from './collapse-duplicate-final'
+import { terminalCompletionState } from './completion-terminal-state'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -75,6 +79,8 @@ interface MessageStreamOptions {
 
 interface QueuedStreamDelta {
   occurredAt: number
+  /** Segment offset of `text`'s first code unit, when the frame was stamped. */
+  offset?: number
   text: string
   type: 'assistant' | 'reasoning'
 }
@@ -170,6 +176,9 @@ export function useMessageStream({
         // that crosses an interim/settle boundary must attach to the bubble
         // that still owns the call, wherever that bubble now sits.
         eventTarget?: (state: ClientSessionState) => string | null
+        // True when the event is a copy of something already applied, so
+        // the state stays exactly as it is.
+        skip?: (state: ClientSessionState) => boolean
       } = {},
       occurredAt = Date.now() / 1000
     ) => {
@@ -179,7 +188,7 @@ export function useMessageStream({
           // cancelled turn so they don't keep growing the (now finalized)
           // assistant bubble or, worse, seed a brand-new bubble that
           // appears to belong to the next user message.
-          if (state.interrupted) {
+          if (state.interrupted || opts.skip?.(state)) {
             return state
           }
 
@@ -289,7 +298,7 @@ export function useMessageStream({
   )
 
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
-  const flushHandleRef = useRef<number | null>(null)
+  const flushHandleRef = useRef<(() => void) | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
   // flush floor in scheduleDeltaFlush so multi-stream load yields to input.
@@ -300,6 +309,9 @@ export function useMessageStream({
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
+  // Per session: how far the live turn's stamped reply has been applied, so a
+  // re-sent delta or seal upserts instead of painting a second copy.
+  const segmentCursorsRef = useRef<Map<string, SegmentCursor>>(new Map())
   // Last session we applied a session.info cwd for — lets us tell an agent
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
@@ -322,7 +334,9 @@ export function useMessageStream({
           queued.reduce(
             (next, delta) =>
               delta.type === 'assistant'
-                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
+                ? dedupeGeneratedImageEchoesInParts(
+                    appendAssistantTextPart(next, delta.text, delta.occurredAt, delta.offset)
+                  )
                 : appendReasoningPart(next, delta.text, delta.occurredAt),
             parts
           )
@@ -349,10 +363,6 @@ export function useMessageStream({
   }, [])
 
   const scheduleDeltaFlush = useCallback(() => {
-    if (flushHandleRef.current !== null) {
-      return
-    }
-
     if (typeof window === 'undefined') {
       flushQueuedDeltas()
 
@@ -384,6 +394,10 @@ export function useMessageStream({
       Math.max(STREAM_DELTA_FLUSH_MS, lastFlushCostRef.current * 3),
       MAX_STREAM_FLUSH_GAP_MS
     )
+
+    if (flushHandleRef.current !== null && sinceLast < adaptiveFloor) {
+      return
+    }
 
     const runFlush = () => {
       flushHandleRef.current = null
@@ -425,38 +439,39 @@ export function useMessageStream({
       })
     }
 
-    // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
-    // renderer it considers hidden, and "hidden" is not something this code can
-    // verify: while a turn is in flight the main process unthrottles every chat
-    // window (stream-throttle.ts), but that doesn't guarantee frames for a
-    // minimized window, a fully off-screen one, or a renderer the compositor
-    // has otherwise parked. In those states an rAF-gated flush never runs, so a
-    // finished answer sits in this queue until some later input or focus event
-    // happens to wake a frame — the reply looks stalled, then arrives all at
-    // once on refocus.
-    //
-    // A timer keeps the same coalescing cadence (that's what the floor above is
-    // for) while guaranteeing delivery without user interaction. Timers are
-    // clamped in background renderers rather than suspended, and the
-    // stream-aware unthrottle lifts even that clamp for the life of the turn;
-    // in the worst case (a delta arriving before the unthrottle lands) the
-    // clamp only stretches one flush to ~1s in a window nobody can see.
-    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, adaptiveFloor - sinceLast))
+    // Incoming deltas can drain overdue work; the native deadline fallback
+    // also commits a quiet tail without enabling hidden-window painting.
+    if (flushHandleRef.current !== null) {
+      flushHandleRef.current()
+      runFlush()
+
+      return
+    }
+
+    flushHandleRef.current = scheduleStreamWork(runFlush, Math.max(0, adaptiveFloor - sinceLast))
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
+    (
+      sessionId: string,
+      key: 'assistant' | 'reasoning',
+      delta: string,
+      occurredAt = Date.now() / 1000,
+      offset?: number
+    ) => {
       if (!delta) {
         return
       }
 
       const queued = queuedDeltasRef.current.get(sessionId) ?? []
       const tail = queued.at(-1)
+      // Only a contiguous chunk joins the queued one, so each entry keeps one offset.
+      const contiguous = tail?.offset === undefined ? offset === undefined : offset === tail.offset + tail.text.length
 
-      if (tail?.type === key) {
+      if (tail?.type === key && contiguous) {
         tail.text += delta
       } else {
-        queued.push({ occurredAt, text: delta, type: key })
+        queued.push({ occurredAt, offset, text: delta, type: key })
       }
 
       queuedDeltasRef.current.set(sessionId, queued)
@@ -468,7 +483,7 @@ export function useMessageStream({
   useEffect(
     () => () => {
       if (flushHandleRef.current !== null && typeof window !== 'undefined') {
-        window.clearTimeout(flushHandleRef.current)
+        flushHandleRef.current()
       }
 
       flushHandleRef.current = null
@@ -493,7 +508,7 @@ export function useMessageStream({
   useEffect(() => {
     const flushPendingDeltas = () => {
       if (flushHandleRef.current !== null) {
-        window.clearTimeout(flushHandleRef.current)
+        flushHandleRef.current()
         flushHandleRef.current = null
       }
 
@@ -516,12 +531,22 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string, occurredAt?: number) => {
+    (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => {
       if (!delta) {
         return
       }
 
-      queueDelta(sessionId, 'assistant', delta, occurredAt)
+      let offset: number | undefined
+
+      if (stamp) {
+        const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+        // Admission trims only an already-applied head, so the rest starts that much later.
+        offset = stamp.offset === undefined ? undefined : stamp.offset + delta.length - admitted.text.length
+        delta = admitted.text
+      }
+
+      queueDelta(sessionId, 'assistant', delta, occurredAt, offset)
     },
     [queueDelta]
   )
@@ -617,8 +642,23 @@ export function useMessageStream({
           // lookup a completion seeds a new bubble with a duplicate row while
           // the sealed one keeps reading "Result unavailable", and a running
           // event for the same id seeds a second live row with its own timer
-          // under the user's message (#113035). Both phases route by id.
-          eventTarget: state => toolCallOwnerMessageId(state.messages, payload)
+          // under the user's message (#113035). Both phases route by id, but
+          // a running-phase event only re-arms a sealed-no-result part on a
+          // still-in-flight owner — a settled prior turn's sealed part is
+          // history, so a new turn reusing the id seeds its own row instead
+          // of clobbering the prior turn's command. With no turn live, a start
+          // carrying a sealed row's exact arguments is a late copy of that call.
+          eventTarget: state =>
+            toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive, state.turnAnchorId),
+          // A copy of a call this turn already finished (re-delivered start or
+          // completion) would otherwise draw that call a second time. A queued
+          // prompt row is passed over only until its own turn starts; from then
+          // on it is that turn's boundary.
+          skip: state =>
+            isRedeliveredToolEvent(state.messages, payload, phase, {
+              queuedIsNextTurn: queuedPromptAwaitsNextTurn(state.messages),
+              turnAnchorId: state.turnAnchorId
+            })
         },
         occurredAt
       )
@@ -627,7 +667,17 @@ export function useMessageStream({
   )
 
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, text: string, occurredAt = Date.now() / 1000, stamp?: null | SegmentStamp) => {
+      if (stamp) {
+        const admitted = admitSegmentSeal(segmentCursorsRef.current.get(sessionId), stamp)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+
+        // A copy of a seal this turn already applied: its bubble is on screen.
+        if (!admitted.fresh) {
+          return
+        }
+      }
+
       updateSessionState(sessionId, state => {
         if (state.interrupted) {
           return state
@@ -743,36 +793,33 @@ export function useMessageStream({
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      responseReused?: boolean
+      responseReused?: boolean,
+      failureReason?: string
     ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
-        // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble (kept the partial text, dropped it if
-        // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead — only
-        // extending the bubble to the partial the agent persisted (#121594).
-        if (state.interrupted) {
-          return {
-            ...state,
-            messages:
-              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
-            awaitingResponse: false,
-            busy: false,
-            needsInput: false,
-            pendingBranchGroup: null,
-            streamId: null,
-            turnStartedAt: null,
-            turnLive: false
-          }
+        // A cancelled turn or a provider safety-filter refusal collapses the
+        // turn into a fully-formed terminal state instead of the dedupe/merge
+        // below (see terminalCompletionState for the two cases and the WHY).
+        const terminalState = terminalCompletionState(state, {
+          text,
+          occurredAt,
+          persistedTurn,
+          failure,
+          status,
+          failureReason
+        })
+
+        if (terminalState) {
+          return terminalState
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
-        const completionError = failure?.error ?? completionErrorText(finalText)
+        const completionError = failure?.error ?? completionErrorText(finalText, status)
         // A partial failure's `text` is streamed output the user should keep,
         // not the error string — settle it like a normal reply AND mark the
         // bubble failed, instead of stripping the text.

@@ -98,7 +98,7 @@ class _ToolCallAccumulator:
                 entry["function"]["name"] = tc_function.name
             if getattr(tc_function, "arguments", None):
                 parts.append(tc_function.arguments)
-            # Copilot's Gemini 3 variant signs the call inside ``function``.
+            # Some gateways sign Gemini 3 calls inside ``function``.
             if isinstance(fn_sig := field(tc_function, "thought_signature"), str) and fn_sig:
                 entry["thought_signature"] = fn_sig
         extra = getattr(tc_delta, "extra_content", None)

@@ -89,7 +89,12 @@ describe('VersionDetails', () => {
     // clone (live provenance, no receipt): both honestly say Source.
     { version: { installedByScript: true }, visible: ['Source (install script)'] },
     { version: { source: 'git' }, visible: ['Distribution', 'Source'], absent: ['Source (install script)'] },
-    { version: {}, visible: ['Version'], absent: ['Distribution'] }
+    { version: {}, visible: ['Version'], absent: ['Distribution', 'This device', 'Connected backend'] },
+    // Both sides, labelled: this machine's install beside the active connection's backend.
+    {
+      version: { appVersion: '0.21.6', clientVersion: '0.22.2', backendVersion: '0.21.6' },
+      visible: ['This device', 'v0.22.2', 'Connected backend', 'v0.21.6']
+    }
   ]
 
   it.each(cases)('renders $version', ({ version, visible, absent = [] }: VersionCase): void => {

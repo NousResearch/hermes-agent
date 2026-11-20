@@ -1,0 +1,30 @@
+name: belive-aihub-media
+title: BeLive AI Hub Media
+repo: https://github.com/belivetech/hermes-belive-aihub
+sha: 6eeb45e5f212752ad941f32fc6de7f2bbeb757ca
+subdir: media
+description: >-
+  BeLive AI Hub backends for Hermes' image_generate, video_generate, text_to_speech and
+  speech-to-text (backend `belive-aihub` for image_gen.provider, video_gen.provider, tts.provider
+  and stt.provider), with models from the live AI Hub catalogues. Disclosure: registers four
+  backends and nothing else (no tools, hooks, commands or threads); when one is selected and its
+  tool runs, the prompt, source images, text to speak or recording go to
+  https://tokenhub-api.belive.sg/api/v1 (or the official staging base set in
+  BELIVE_TOKENHUB_BASE_URL) with BELIVE_TOKENHUB_API_KEY, read through Hermes' secret scope, and
+  each call is billed to that AI Hub workspace with no Hermes approval prompt; it reads the model
+  catalogues, polls video jobs (up to 15 minutes), stores a video job id and idempotency key under
+  the profile's plugin-data, and reads a local image or recording only when the agent names one.
+  Requests that can charge are sent once and never retried or redirected.
+maintainer: belivetech
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/belivetech/hermes-belive-aihub/blob/6eeb45e5f212752ad941f32fc6de7f2bbeb757ca/media/README.md
+version: "0.2.2"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BELIVE_TOKENHUB_API_KEY

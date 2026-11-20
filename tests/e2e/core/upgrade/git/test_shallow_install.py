@@ -1,7 +1,7 @@
 """Shallow and stale installs through the real ``hermes update``.
 
-N-1's ``scripts/install.sh`` clones ``--depth 1 --single-branch``: that is the checkout every
-N-1 user has. Three installs run concurrently over smart HTTP:
+The handoff generation's ``scripts/install.sh`` (to v2026.9.24) clones ``--depth 1 --single-branch``:
+that is the checkout every user of those releases has. Three installs run concurrently over smart HTTP:
 
 * ``depth1``: N-1's own depth-1 install, updated to HEAD and then to one more release. The first
   update must not download the whole project history to move one release (#123254: on a real
@@ -28,11 +28,14 @@ from tests.e2e.core.upgrade.git import _git_world as G
 
 pytestmark = G.PYTESTMARK
 
+# The depth-1 clone is the handoff generation's installer (to v2026.9.24); later installers clone blobless.
+SHALLOW_INSTALLER = "handoff"
+
 ORPHAN = "orphan divergence"
 
 
 def _depth1(root) -> dict:
-    cm, w = G.start_world(root / "depth1", base=G.n1_base(), installer_ref=G.n1_tag())
+    cm, w = G.start_world(root / "depth1", base=G.n1_base(SHALLOW_INSTALLER), installer_ref=G.n1_tag(SHALLOW_INSTALLER))
     run = {"cm": cm, "w": w, "shape0": w.install_shape}
     w.set_main(I.head_sha())
     run["mark1"] = w.srv.mark()
@@ -46,9 +49,10 @@ def _depth1(root) -> dict:
 
 
 def _checked(root) -> dict:
-    cm, w = G.start_world(root / "checked", base=G.n1_base(), installer_ref=G.n1_tag())
+    cm, w = G.start_world(root / "checked", base=G.n1_base(SHALLOW_INSTALLER), installer_ref=G.n1_tag(SHALLOW_INSTALLER))
     run = {"cm": cm, "w": w, "shape0": w.install_shape, "checks": []}
-    between = I.git("rev-list", "--first-parent", f"{G.n1_base()}..{I.head_sha()}", cwd=I.H.WORKTREE).split()
+    between = I.git("rev-list", "--first-parent", f"{G.n1_base(SHALLOW_INSTALLER)}..{I.head_sha()}",
+                    cwd=I.H.WORKTREE).split()
     for k in (len(between) * 3 // 4, len(between) // 2, len(between) // 4):
         w.set_main(between[k])
         run["checks"].append(w.sb.cli("update", "--check", timeout=600))

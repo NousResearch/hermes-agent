@@ -15,6 +15,17 @@ import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readIns
 import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts'
 import { MOCK_REPLY, startMockServer } from './mock-server.ts'
 
+test('a later CI step\'s mock rebinds the dead mock\'s port, so a gateway that outlived it still answers', async (): Promise<void> => {
+  // The detached gateway froze `http://127.0.0.1:<port>` at boot; the step that started that mock is gone.
+  const earlier = await startMockServer()
+  await earlier.close()
+  const later = await startMockServer({ port: earlier.port })
+
+  try {
+    expect(later.url).toBe(earlier.url)
+  } finally { await later.close() }
+})
+
 test('one server owns inference and a fresh, per-server prompt witness', async (): Promise<void> => {
   const first = await startMockServer()
   const second = await startMockServer()
@@ -68,7 +79,7 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
 
   try {
     const feed = { desktop_feed_base_url: 'http://127.0.0.1:8123/feed' }
-    fs.writeFileSync(path.join(home, 'config.yaml'), yaml.dump({ updates: feed, plugins: { witness: true }, model: { temperature: 0.7 } }))
+    fs.writeFileSync(path.join(home, 'config.yaml'), yaml.dump({ updates: feed, plugins: { witness: true }, model: { temperature: 0.7 }, stt: { provider: 'local' } }))
     fs.writeFileSync(path.join(home, 'state.db'), 'history witness')
     fs.writeFileSync(path.join(home, '.env'), 'OTHER_TEST_VALUE=kept\nMOCK_API_KEY=old\n')
     writeMockProviderConfig(home, 'http://127.0.0.1:9000')
@@ -85,6 +96,7 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
       custom_providers: [{ name: 'Mock', base_url: 'http://127.0.0.1:9001/v1', key_env: 'OPENAI_API_KEY' }],
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
       onboarding: { run: false },
+      stt: { provider: 'local', enabled: false },
     })
     expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe('OTHER_TEST_VALUE=kept\nMOCK_API_KEY=e2e-mock-key\n')
     expect(fs.readFileSync(path.join(home, 'state.db'), 'utf8')).toBe('history witness')
@@ -280,6 +292,24 @@ test('a canonical gateway proves its tree by the cwd `gateway ensure` starts it 
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test('a canonical gateway whose cwd is unreadable proves its tree by the commit it stamped', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-gateway-sha-'))
+
+  try {
+    // Windows: CIM exposes neither cwd nor environment for the detached `gateway run`.
+    const executable = path.join(os.tmpdir(), 'hermes-tools', 'python', 'python.exe')
+    const commit = 'a'.repeat(40)
+
+    const backend = { pid: 2, parentPid: 1, executable, ownership: 'host-gateway' as const, codeSha: commit,
+      command: [executable, '-m', 'hermes_cli.main', '--profile', 'default', 'gateway', 'run', '--quiet'].map(arg => JSON.stringify(arg)).join(' ') }
+
+    expect(() => assertBackendOrigin(backend, root, 'source', { appReportedRoot: root, installedCommit: commit })).not.toThrow()
+    // A gateway started from another commit (or one that stamped none) is not vouched for.
+    expect(() => assertBackendOrigin({ ...backend, codeSha: 'b'.repeat(40) }, root, 'source', { appReportedRoot: root, installedCommit: commit })).toThrow('different source tree')
+    expect(() => assertBackendOrigin({ ...backend, codeSha: undefined }, root, 'source', { appReportedRoot: root, installedCommit: commit })).toThrow('different source tree')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('a backend bound to the tree by environment needs no root in argv', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
 
@@ -377,7 +407,7 @@ test('OLD update-window source provenance carries its verified app identity to t
     fs.mkdirSync(other, { recursive: true })
 
     // As `localBackendProcess` reports a listener that descends from the app.
-    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child',
+    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child' as const,
       command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
 
     expect((): void => {
@@ -718,6 +748,40 @@ test.each<[Record<string, string | null> | undefined]>([
     } finally {
       await mock.close()
     }
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('the post-update smoke reseeds the profile the update kept, but no home outside the run', async (): Promise<void> => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-post-update-'))
+  const home = path.join(root, 'home')
+  const userData = path.join(root, 'root', 'user-data')
+  const exe = path.join(root, 'root', 'fake-desktop')
+  fs.mkdirSync(path.join(root, 'root'), { recursive: true })
+  fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n')
+  fs.chmodSync(exe, 0o755)
+  fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ payload: 'bundled', bundleEnv: {} }))
+  // What the OLD phase and the update left in the profile.
+  fs.mkdirSync(path.join(home, 'sessions'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'config.yaml'), 'display:\n  skin: ares\n')
+  fs.writeFileSync(path.join(home, 'sessions', 'old.json'), '{}')
+
+  const refuseLaunch = async (): Promise<never> => { throw new Error('launch refused by test') }
+
+  const options = { exe, root: path.join(root, 'root'), origin: 'bundled' as const, home, 'user-data': userData, out: root,
+    'expect-commit': 'a'.repeat(40) }
+
+  try {
+    await expect(runInstalledDesktopSmoke({ ...options, phase: 'new' }, refuseLaunch)).rejects.toThrow('launch refused by test')
+    expect(yaml.load(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'custom' }, display: { skin: 'ares' } })
+    expect(fs.readFileSync(path.join(home, 'sessions', 'old.json'), 'utf8')).toBe('{}')
+
+    // A fresh-install smoke still refuses the same populated profile.
+    await expect(runInstalledDesktopSmoke({ ...options, phase: 'installed' }, refuseLaunch)).rejects.toThrow('refusing to seed an existing profile')
+
+    // A prediction that falls through to a home this run never made is someone's real profile.
+    fs.writeFileSync(path.join(root, 'install-stamp.json'),
+      JSON.stringify({ payload: 'bundled', bundleEnv: { HERMES_HOME: null, HERMES_DESKTOP_USER_DATA_DIR: null } }))
+    await expect(runInstalledDesktopSmoke({ ...options, phase: 'new' }, refuseLaunch)).rejects.toThrow("is not one of this run's homes")
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 

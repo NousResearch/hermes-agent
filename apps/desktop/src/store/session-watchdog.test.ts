@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { errorRecoveryPlan } from '@/lib/error-surface'
+import { errorCardOffers } from '@/lib/error-surface'
 import { requestGatewayForAgent } from '@/store/gateway'
 
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
@@ -294,7 +294,7 @@ describe('live turn event silence', () => {
     const failed = card('rt-empty')
     expect($workingSessionIds.get()).not.toContain('s-empty')
     expect(failed?.errorSurface?.code).toBe('no_reply')
-    expect(errorRecoveryPlan(failed?.errorSurface).retry).toBe(true)
+    expect(errorCardOffers(failed?.errorSurface, 'retry')).toBe(true)
     expect(failed?.error).not.toMatch(/connection/i)
   })
 

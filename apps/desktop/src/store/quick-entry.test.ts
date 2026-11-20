@@ -1,15 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  $quickEntry,
+  canUseQuickEntry,
   initialQuickComposerState,
+  loadQuickEntrySettings,
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
   type QuickComposerState,
   quickEntryResultEvent,
+  type QuickEntryStatus,
   type QuickEntrySubmitPayload,
-  type QuickEntrySubmitResult
+  type QuickEntrySubmitResult,
+  saveQuickEntrySettings
 } from './quick-entry'
 
 // Drive the reducer like the window does, collecting every send it asked for.
@@ -452,5 +457,54 @@ describe('quickComposerReducer', () => {
     ])
     expect(state.draft).toBe('first prompt')
     expect(state.error).toBe('first failed')
+  })
+})
+
+describe('Quick Entry settings bridge', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const initialHermesDesktop = desktopWindow.hermesDesktop
+  const initialState = $quickEntry.get()
+
+  const status = (shortcut: string): QuickEntryStatus => ({ enabled: true, error: null, registered: true, shortcut })
+
+  afterEach(() => {
+    if (initialHermesDesktop) {
+      desktopWindow.hermesDesktop = initialHermesDesktop
+    } else {
+      delete desktopWindow.hermesDesktop
+    }
+
+    $quickEntry.set(initialState)
+  })
+
+  it('reads and writes through the bridge, adopting its reply and rolling back a failed write', async () => {
+    const getSettings = vi.fn().mockResolvedValue(status('Alt+Space'))
+
+    const setSettings = vi
+      .fn()
+      .mockResolvedValueOnce({ ...status('Alt+K'), error: 'taken', registered: false })
+      .mockRejectedValueOnce(new Error('ipc closed'))
+
+    desktopWindow.hermesDesktop = { quickEntry: { getSettings, setSettings } } as unknown as Window['hermesDesktop']
+
+    expect(canUseQuickEntry()).toBe(true)
+    await loadQuickEntrySettings()
+    expect($quickEntry.get()).toMatchObject({ registered: true, shortcut: 'Alt+Space' })
+    await saveQuickEntrySettings({ shortcut: 'Alt+K' })
+    expect(setSettings).toHaveBeenCalledWith({ shortcut: 'Alt+K' })
+    expect($quickEntry.get()).toMatchObject({ error: 'taken', registered: false, shortcut: 'Alt+K' })
+    const adopted = $quickEntry.get()
+    await saveQuickEntrySettings({ enabled: false })
+    expect($quickEntry.get()).toBe(adopted)
+  })
+
+  it('changes nothing where the shell has no Quick Entry bridge', async () => {
+    delete desktopWindow.hermesDesktop
+    const before = $quickEntry.get()
+
+    expect(canUseQuickEntry()).toBe(false)
+    await loadQuickEntrySettings()
+    await saveQuickEntrySettings({ enabled: false })
+    expect($quickEntry.get()).toBe(before)
   })
 })

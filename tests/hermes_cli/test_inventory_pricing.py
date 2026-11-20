@@ -5,6 +5,7 @@ columns + Free/Pro badges and gate paid models on free Nous accounts, the
 same way the `hermes model` CLI picker does.
 """
 
+from tests.usage_window_fixtures import usage_window
 from threading import Event
 from time import monotonic
 
@@ -105,6 +106,49 @@ def test_apply_pricing_omits_sale_when_original_not_cheaper(monkeypatch):
     rows = [{"slug": "nous", "models": ["a/eq"]}]
     inv._apply_pricing(rows)
     assert "discount_percent" not in rows[0]["pricing"]["a/eq"]
+
+
+def test_apply_pricing_window_plan_drops_prices_and_stamps_plan_usage(monkeypatch):
+    _patch_pricing(
+        monkeypatch, free_tier=False,
+        pricing={"nous": {"a/m": {"prompt": "0.000001", "completion": "0.000005", "usage_level": "medium"}}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_picker_usage.nous_picker_usage",
+        lambda **_kw: __import__("hermes_cli.model_picker_usage", fromlist=["picker_usage_from_account"]).picker_usage_from_account(
+            {"logged_in": True, "subscription": {"plan": "Window Plan"},
+             "usage_window": usage_window(day_used_bp=1000, week_used_bp=500, top_tier_used_bp=0,
+                                          day_resets_at_ms=1, week_resets_at_ms=2)}
+        ),
+    )
+    rows = [{"slug": "nous", "models": ["a/m"]}]
+    inv._apply_pricing(rows)
+    assert "pricing" not in rows[0]
+    assert rows[0]["plan_usage"]["kind"] == "usage_window"
+    assert rows[0]["plan_usage"]["plan"] == "Window Plan"
+    # The gateway's word, passed through; no prices and no Hermes-side bands.
+    assert rows[0]["usage_levels"] == {"a/m": "medium"}
+    assert "cost_intensity" not in rows[0]
+
+
+def test_apply_pricing_credit_grant_keeps_prices_and_stamps_plan_usage(monkeypatch):
+    _patch_pricing(
+        monkeypatch, free_tier=False,
+        pricing={"nous": {"a/m": {"prompt": "0.000001", "completion": "0.000005"}}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_picker_usage.nous_picker_usage",
+        lambda **_kw: __import__("hermes_cli.model_picker_usage", fromlist=["picker_usage_from_account"]).picker_usage_from_account(
+            {"logged_in": True,
+             "subscription": {"plan": "Credit Plan", "monthly_credits": 20, "credits_remaining": 8},
+             "paid_service_access_info": {"subscription_credits_remaining": 8}}
+        ),
+    )
+    rows = [{"slug": "nous", "models": ["a/m"]}]
+    inv._apply_pricing(rows)
+    assert rows[0]["pricing"]["a/m"]["input"] == "$1.00"
+    # A credit-grant row is exactly main's: prices, no plan_usage.
+    assert "plan_usage" not in rows[0]
 
 
 def test_model_options_cold_pricing_fetch_runs_off_the_request_path(monkeypatch):

@@ -1,0 +1,21 @@
+name: dropstation
+title: Dropstation
+repo: https://github.com/satiricalguru/Hermes-dropstation
+sha: e6a5ba6958097b482bef9455af2b7f0f17a43170
+description: "Turn private local folders into Hermes inboxes with standing tasks. Drop a document or image to get a Markdown reply and a durable processing receipt. The adapter polls the configured owner-private spool and uses its filesystem permissions as the inbound authorization boundary. Its events skip messaging allowlists and pairing. Snapshots, reports and receipts are stored locally. The configured Hermes provider processes the source contents. Disclosure — every supported file written into a configured inbox folder starts an unattended Hermes turn with that lane's task; the platform is trusted_inbound, so these events skip messaging allowlists and pairing and the folders' owner-only 0700 permissions are the only gate. The file's contents go to the configured model provider, and unless platform_toolsets.dropstation is set (the example config sets it to []) the turn gets the default core toolset, terminal and file tools included; commands that need approval cannot be approved from the inbox and are not run. Snapshots, receipts and reports are stored under the configured root."
+maintainer: satiricalguru
+tier: community
+category: platform
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/satiricalguru/Hermes-dropstation#readme
+image: https://raw.githubusercontent.com/satiricalguru/Hermes-dropstation/e6a5ba6958097b482bef9455af2b7f0f17a43170/assets/film-poster.webp
+screenshots:
+  - https://raw.githubusercontent.com/satiricalguru/Hermes-dropstation/e6a5ba6958097b482bef9455af2b7f0f17a43170/assets/incidents.webp
+  - https://raw.githubusercontent.com/satiricalguru/Hermes-dropstation/e6a5ba6958097b482bef9455af2b7f0f17a43170/assets/handoff.webp
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

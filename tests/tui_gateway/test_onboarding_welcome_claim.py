@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent.onboarding_flow import Facts
+from session_rules.onboarding_flow import Facts
 from hermes_cli import anon_auth, install_state
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, install_portal
 from tui_gateway import server
@@ -187,7 +187,7 @@ def _connector_guest_from_another_profile(_managed: Path) -> None:
 
     _write_shared_nous_state({"auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": anon_auth.ANON_ACCOUNT_TIER,
                               "anon_token": "anon_other", "client_id": anon_auth.ANON_CLIENT_ID,
-                              "portal_base_url": PORTAL, anon_auth.WELCOME_CLAIM_FLAG: False})
+                              "portal_base_url": PORTAL, anon_auth.WELCOME_CLAIM_FLAG: False}, renewal=False)
 
 
 ELSEWHERE = {

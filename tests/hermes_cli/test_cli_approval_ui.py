@@ -94,6 +94,40 @@ class TestCliApprovalUi:
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
+    def test_schedule_card_shows_the_job_not_the_synthetic_command(self):
+        """kind=schedule draws a schedule card whose body is the description; command cards are unchanged."""
+        import shutil as _shutil
+
+        synthetic = "<cronjob_manage> (schedule a new job)"
+        description = 'Schedule "water" (every 2h, first run 10:00 AM PST, forever): remind me to drink water'
+
+        def _render(**kw):
+            cli = _make_cli_stub()
+            thread = threading.Thread(
+                target=cli._approval_callback, args=(synthetic + " " * 80, description), kwargs=kw, daemon=True)
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._approval_state is not None
+            with patch("cli.shutil.get_terminal_size", return_value=_shutil.os.terminal_size((100, 40))):
+                rendered = "".join(text for _style, text in cli._get_approval_display_fragments())
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+            return rendered
+
+        schedule = _render(kind="schedule")
+        assert t("cli.tui.approval_title_schedule") in schedule
+        assert synthetic not in schedule and t("cli.tui.approval_view") not in schedule
+        assert "remind me to drink water" in schedule
+        for key in ("approval_schedule_once", "approval_schedule_session", "approval_schedule_always",
+                    "approval_deny"):
+            assert t(f"cli.tui.{key}") in schedule
+
+        command = _render()
+        assert t("cli.tui.approval_title") in command and synthetic in command
+        assert t("cli.tui.approval_once") in command and t("cli.tui.approval_view") in command
+
     def test_session_less_gate_offers_only_once_and_deny(self):
         """A gate that re-asks every time must not advertise a session scope.
 

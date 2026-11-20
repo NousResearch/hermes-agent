@@ -40,6 +40,7 @@ from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
 from hermes_cli import cli_enter_burst as _enter_burst
+from hermes_cli.cli_approval_kinds import approval_card, approval_choice_label as _approval_choice_label
 from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
 from hermes_cli.cli_footer_split import FooterSplit
 from hermes_cli.cli_panel import _Panel
@@ -49,21 +50,6 @@ from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
-
-# Approval-choice identifiers (protocol tokens, never translated) → catalog keys for their labels.
-_APPROVAL_CHOICE_KEYS = {
-    "once": "cli.tui.approval_once",
-    "session": "cli.tui.approval_session",
-    "always": "cli.tui.approval_always",
-    "deny": "cli.tui.approval_deny",
-    "view": "cli.tui.approval_view"}
-
-
-def _approval_choice_label(choice: str) -> str:
-    """Localized label for an approval choice id; unknown ids render verbatim."""
-    key = _APPROVAL_CHOICE_KEYS.get(choice)
-    return t(key) if key else choice
-
 
 def _agent_name() -> str:
     try:
@@ -157,18 +143,18 @@ class CLITuiMixin:
         if not state:
             return []
         wrap = _wrap_panel_text_keep_ws
-        command = state["command"]
-        description = state["description"]
+        card = approval_card(state.get("kind"))
+        command, description = card.subject(state["command"], state["description"])
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
-        title = t("cli.tui.approval_title")
+        title = t(card.title_key)
 
         preview_lines = wrap(description, 60)
         preview_lines.extend(wrap(command, 60))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
-            label = _approval_choice_label(choice)
+            label = card.choice_label(choice)
             preview_lines.extend(wrap(f"{prefix}{label}", 60, subsequent_indent="  "))
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
@@ -179,7 +165,7 @@ class CLITuiMixin:
             cmd_wrapped = cmd_wrapped[:3] + wrap(
                 t("cli.tui.approval_choose_full", label=t("cli.tui.approval_view")), inner_text_width)
         choice_labels = [
-            f"{'❯' if i == selected else ' '} {_num_prefix(i)}. {_approval_choice_label(choice)}"
+            f"{'❯' if i == selected else ' '} {_num_prefix(i)}. {card.choice_label(choice)}"
             for i, choice in enumerate(choices)]
         choice_wrapped = _wrap_rows(wrap, choice_labels, inner_text_width, "    ")
 
@@ -195,8 +181,7 @@ class CLITuiMixin:
         max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + wrap(
-                t("cli.tui.approval_command_truncated"), inner_text_width)
+            cmd_wrapped = cmd_wrapped[:keep] + wrap(t(card.truncated_key), inner_text_width)
 
         # Remaining rows go to the description (minus the blank separator in full mode), capped
         # at 10 so the panel stays compact even on huge terminals.

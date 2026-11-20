@@ -31,8 +31,8 @@ def test_codex_session_model_is_not_an_undiscovered_choice(listed, provider):
         picker = build_model_state("gpt-6.2-sol", provider, "")
 
     assert picker is not None
-    assert picker.current_model_id == "openai-codex:gpt-6.2-sol"
-    assert [item.model_id for item in picker.available_models] == [f"openai-codex:{model}" for model in listed]
+    assert picker.current_value == "openai-codex:gpt-6.2-sol"
+    assert [item.value for item in picker.options] == [f"openai-codex:{model}" for model in listed]
 
 
 def test_custom_codex_key_keeps_its_current_model():
@@ -48,8 +48,8 @@ def test_custom_codex_key_keeps_its_current_model():
         picker = build_model_state("gpt-6.2-sol", "custom:openai-codex", "https://proxy.example/v1")
 
     assert picker is not None
-    assert picker.current_model_id == "custom:openai-codex:gpt-6.2-sol"
-    assert picker.available_models[0].model_id == picker.current_model_id
+    assert picker.current_value == "custom:openai-codex:gpt-6.2-sol"
+    assert picker.options[0].value == picker.current_value
 
 
 def test_gateway_catalog_failure_keeps_codex_current_id_without_offering_it():
@@ -59,8 +59,8 @@ def test_gateway_catalog_failure_keeps_codex_current_id_without_offering_it():
         picker = model_state({"model": "gpt-6.2-sol", "provider": "chatgpt"})
 
     assert picker is not None
-    assert picker.current_model_id == "openai-codex:gpt-6.2-sol"
-    assert picker.available_models == []
+    assert picker.current_value == "openai-codex:gpt-6.2-sol"
+    assert picker.options == []
 
 
 def _cfg(providers=None, custom_providers=None):

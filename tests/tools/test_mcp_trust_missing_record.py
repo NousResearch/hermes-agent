@@ -192,3 +192,11 @@ def test_config_backend_outage_fails_closed(session, caplog):
         assert _write_call_asks()
     session.call_tool.assert_not_awaited()
     assert any("config read failed (ConfigBackendUnavailable)" in r.getMessage() for r in caplog.records)
+
+
+def test_every_call_server_without_a_trust_record_asks_despite_a_grant(session):
+    """``approve_every_call`` without a ``trust`` key: the fallback reads ``every_call``, not ``full``."""
+    _configure(None, approve_every_call=True)
+    with patch.object(_mcp_handlers, "_trust_granted", return_value=True):
+        assert _write_call_asks()
+    session.call_tool.assert_not_awaited()

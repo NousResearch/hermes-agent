@@ -990,3 +990,29 @@ def test_a_by_hand_plan_held_by_chat_activity_lists_its_steps_when_forced(home, 
     # A system unit shares the planner's network namespace: no "check inside the container" note.
     assert "outside its container" not in forced["plan"]["unsupported"][0]["instructions"]
     assert spawned == []
+
+
+# --- a non-file config backend: the --detach parent refuses (exit 3) and writes no refusal record
+
+_NON_FILE = ("HERMES_CONFIG_BACKEND=remote keeps the settings outside config.yaml, but the migration backs up, rolls "
+             "back and restores only config.yaml, so it needs the file config backend. Move this home by hand with "
+             "the steps in the docs. Nothing changed.")
+
+
+def test_a_detach_refused_for_a_non_file_config_backend_answers_with_the_engines_text(home, spawned, monkeypatch):
+    """The launcher's own answer (its --json line and exit 3, as `--apply --detach --json` prints it with Remote
+    Config selected): 409 not_started with the engine's text, no run shown as started, nothing to poll."""
+    line = json.dumps({"detached": False, "mode": "apply", "outcome": "refused", "message": _NON_FILE})
+
+    def spawn(subcommand, name, *, env_overrides=None, output=None):
+        spawned.append(list(subcommand))
+        output.write((line + "\n").encode())
+        return SimpleNamespace(pid=990, poll=lambda: 3, wait=lambda timeout=None: 3)
+
+    monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
+    client = _client(home, monkeypatch)
+    r = client.post("/api/gateway/migrate/backends/apply", json={})
+    assert (r.status_code, r.json()["error"], r.json()["message"]) == (409, "not_started", _NON_FILE), r.text
+    assert len(spawned) == 1 and "--detach" in spawned[0]
+    assert not list(home.rglob("detached-refused.json"))
+    assert client.get("/api/gateway/migrate/backends/status").json()["state"] == "none"

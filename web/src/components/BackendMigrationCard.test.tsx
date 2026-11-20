@@ -11,6 +11,7 @@ import {
   changedBackendStatus,
   killedWhileWritingStatus,
   lateTurnStatus,
+  nonFileBackendApply,
   refusalBlockers,
   refusedUrlPlans,
   relativeLauncherStatus,
@@ -308,6 +309,25 @@ describe("BackendMigrationCard", () => {
     expect(shown).not.toContain("Before running these steps");
     expect(button("Move anyway")).toBeUndefined();
   });
+
+  it.each([["the route's pre-check", 409, "precheck"], ["the launcher", 409, "launcher"]] as const)(
+    "shows a move refused for a non-file config backend by %s in the engine's words, and never follows a run",
+    async (_who, status, which) => {
+      const body = nonFileBackendApply[which];
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+        calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+        return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      }));
+      await render(planWith({}));
+      await confirmMove();
+      await wait(5000);
+      const refusal = container.querySelector('[data-slot="backend-migration-refusal"]')?.textContent ?? "";
+      expect(refusal).toContain("HERMES_CONFIG_BACKEND=remote keeps the settings outside config.yaml");
+      expect(container.querySelector('[data-slot="backend-migration-progress"]')).toBeNull();
+      expect(calls.filter((c) => c.includes("/status"))).toHaveLength(0);
+      expect(moveButton()).toBeDefined();
+    });
 
   describe("a move stopped before the old backend's stop (exit 4, the old backend never stopped)", () => {
     // The status route's records after the engine stopped the move right before the old backend's stop.

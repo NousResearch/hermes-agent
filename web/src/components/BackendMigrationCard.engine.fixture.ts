@@ -619,3 +619,22 @@ export const changedBackendStatus = {
     "restore": "hermes -p default gateway migrate --backends --restore"
   }
 };
+
+// The apply route's answers with Remote Config selected: its own pre-check, and the launcher's refusal (the
+// --detach parent exits 3 and writes no refusal record) when the pre-check let it through.
+export const nonFileBackendApply = {
+  "precheck": {
+    "ok": false,
+    "error": "blocked",
+    "message": "The move cannot start yet.",
+    "blockers": [
+      "HERMES_CONFIG_BACKEND=remote keeps the settings outside config.yaml, but the migration backs up, rolls back and restores only config.yaml, so it needs the file config backend. Move this home by hand with the steps in the docs. Nothing changed."
+    ]
+  },
+  "launcher": {
+    "ok": false,
+    "error": "not_started",
+    "message": "HERMES_CONFIG_BACKEND=remote keeps the settings outside config.yaml, but the migration backs up, rolls back and restores only config.yaml, so it needs the file config backend. Move this home by hand with the steps in the docs. Nothing changed.",
+    "status_command": "hermes -p default gateway migrate --backends --status"
+  }
+};

@@ -800,6 +800,27 @@ def test_a_head_whose_advance_stopped_after_the_head_moved_finishes_it(monkeypat
     assert len(events) == 2
 
 
+def test_an_unreadable_attempt_desktop_image_does_not_abort_the_pass(monkeypatch):
+    """Pointer and slim alias are current; the recovery check of stable-desktop then needs the
+    attempt's -desktop image, and a registry error there proves nothing about the promotion.
+    The pass carries on (here with nothing to do) instead of failing before it can plan."""
+    from scripts.releases import docker, sequencer
+
+    _tags, run, read_archive, events = _unfinished_head_fixture(monkeypatch, "current", slim=SLIM, desktop=OLD)
+    registry = docker._inspect
+
+    def inspect(reference, run_):
+        if reference == f"{docker.IMAGE}:rc.1-v0.21.5-desktop":
+            raise subprocess.CalledProcessError(1, ["docker", "buildx", "imagetools", "inspect", reference])
+        return registry(reference, run_)
+
+    monkeypatch.setattr(docker, "_inspect", inspect)
+
+    assert sequencer.reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run, read_head=lambda: "0.21.5",
+                               read_archive=read_archive) == []
+    assert events == []
+
+
 def test_an_unfinished_head_under_a_newer_release_repeats_only_its_desktop_advance(monkeypatch):
     """A newer release already moved the aliases; repeating 0.21.5's whole advance would move them back."""
     from scripts.releases import sequencer

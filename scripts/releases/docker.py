@@ -237,15 +237,17 @@ def stable_desktop_alias_behind(tag: str, run=output) -> bool:
     """Whether a readable ``stable-desktop`` alias misses the attempt's desktop image.
 
     promote_stable moves the slim aliases before the desktop ones, so a slim ``stable`` that
-    carries the release while this alias does not is a promotion that stopped halfway. An alias
-    that cannot be read proves nothing either way.
+    carries the release while this alias does not is a promotion that stopped halfway. The alias
+    or the attempt image failing to read proves nothing either way, and must not abort the
+    sequencer pass that asked: promote_stable reads both strictly when it actually moves them.
     """
     require_stable_tag(tag)
     try:
         alias = _inspect(f"{IMAGE}:stable-desktop", run)
-    except subprocess.CalledProcessError:
+        attempt = _version_digest(tag, "-desktop", run)
+    except (subprocess.CalledProcessError, DockerReleaseError):
         return False
-    return alias != _version_digest(tag, "-desktop", run)
+    return alias != attempt
 
 
 def published_digest(tag: str, run=output) -> str:

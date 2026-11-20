@@ -142,12 +142,6 @@ def release_windows_version(tag: str, epoch: object) -> str:
     return canary_windows_version(tag) if is_canary_claim(tag) else stable_windows_version(epoch)
 
 
-def docker_tag(claim_tag: str) -> str:
-    """The versioned image tag: the claim itself. A stable attempt ref and a canary tag are both
-    already valid Docker tags."""
-    return claim_tag
-
-
 def require_success(needs: dict, required: list[str]) -> None:
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
@@ -800,7 +794,7 @@ def admit(env: dict) -> None:
         "tag": admitted["tag"], "commit": admitted["commit"], "version": admitted["version"],
         "release-id": release["databaseId"], "release-epoch": admitted["claim_epoch"],
         # Which publication jobs run (lanes.POLICY_JOBS); every build and test job is shared.
-        "policy": policy, "docker-tag": docker_tag(admitted["claim_tag"]),
+        "policy": policy,
         # `lanes` is every lane's flag; `jobs` is every lane-controlled job's run flag. Each
         # job's `if` reads `jobs`, so the lane table is the only place that says what runs.
         "lanes": lane_set.flags(admitted["lanes"]),

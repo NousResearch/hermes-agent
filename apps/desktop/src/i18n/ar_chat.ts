@@ -145,6 +145,12 @@ export const arChat = {
     queueDroppedTitle: 'تم إسقاط عنصر قائمة الانتظار',
     queueDroppedBody:
       'أُسقط هذا العنصر في الخلفية لأن جلسته تعذّر استئنافها بعد محاولات متكررة. بقية قائمة الانتظار لم تتأثر.',
+    steerNotSentTitle: 'لم تُرسل الرسالة',
+    steerExternalNotSentBody: 'لم تُرسل هذه الرسالة ولم تُضف إلى قائمة الانتظار. انسخ نصها لإرسالها بنفسك.',
+    steerUnconfirmedTitle: 'لم يتم تأكيد التسليم',
+    steerUnconfirmedBody: 'التسليم غير مؤكد. تحقق من الرسائل وقائمة الانتظار قبل أن تقرر الإرسال مجددًا.',
+    steerExternalUnconfirmedBody:
+      'إرسال سابق غير مؤكد. انسخ نصه وتحقق من الرسائل وقائمة الانتظار قبل أن تقرر الإرسال مجددًا.',
     terminalSelectionMissingTitle: 'تحديد الطرفية غير متاح',
     terminalSelectionMissingBody:
       'أعد تحديد أسطر الطرفية (Ctrl/Cmd+L) قبل الإرسال — لا يحتوي هذا الوسم على النص الأصلي.',

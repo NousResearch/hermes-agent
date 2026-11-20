@@ -3329,6 +3329,13 @@ export const en: Translations = {
   },
 
   composer: {
+    steerNotSentTitle: 'Message not sent',
+    steerExternalNotSentBody: 'This message was not sent or queued. Copy its text to send it yourself.',
+    steerUnconfirmedTitle: 'Delivery unconfirmed',
+    steerUnconfirmedBody:
+      'Delivery is unconfirmed. Check messages and the queue before deciding whether to send again.',
+    steerExternalUnconfirmedBody:
+      'A previous submission is unconfirmed. Copy its text and check messages and the queue before deciding whether to send again.',
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',

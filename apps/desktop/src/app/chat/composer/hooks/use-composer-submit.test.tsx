@@ -171,12 +171,13 @@ describe('useComposerSubmit external request routing', () => {
   })
 
   it.each(['interrupt', 'steer'] as const)(
-    'keeps a rejected %s draft in the local queue without submit admission',
+    'retains an uncertain %s draft without replaying it',
     async mode => {
       const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
       h.onSteer.mockRejectedValue(new Error('correction unsupported'))
-      act(() => h.hook.result.current.submitDraft())
-      await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep guidance']))
+      await act(async () => h.hook.result.current.submitDraft())
+      expect(getQueuedPrompts('stored-session')).toEqual([])
+      expect(h.editor.textContent).toBe('keep guidance')
       expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
       expect(h.onSubmit).not.toHaveBeenCalled()
       expect(h.queueCurrentDraft).not.toHaveBeenCalled()
@@ -507,29 +508,35 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('puts a refused steer back in the composer when there is no queue to hold it', async () => {
-    // A brand-new chat is busy while its first session.create is in flight but
-    // has no queue key yet. The steer clears the draft first, so a refusal must
-    // restore the words rather than drop the only copy (#68927).
-    const { hook, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, sessionKey: null, text: 'keep me' })
+  it('retains a refused steer in the composer when there is no queue to hold it', async () => {
+    // A fresh busy chat has no queue key: keep its draft until acceptance (#68927).
+    const { hook, editor, clearDraft, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, sessionKey: null, text: 'keep me' })
     onSteer.mockResolvedValueOnce(false)
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
+    await act(async () => {})
+    expect(onSteer).toHaveBeenCalledWith('keep me', 'interrupt')
+    expect(editor.textContent).toBe('keep me')
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(loadIntoComposer).not.toHaveBeenCalled()
   })
 
-  it('queues a steer whose redirect RPC fails instead of losing it', async () => {
-    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
+  it('retains a steer whose redirect ACK is lost without replaying it', async () => {
+    const { hook, onSteer, editor, onSubmit } = renderSubmitHook({ busy: true, text: 'still here' })
     onSteer.mockRejectedValueOnce(new Error('request timed out: session.redirect'))
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
+    await act(async () => {})
+    expect(onSteer).toHaveBeenCalledWith('still here', 'interrupt')
+    expect(editor.textContent).toBe('still here')
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session')).toEqual([])
     clearQueuedPrompts('stored-session')
   })
 

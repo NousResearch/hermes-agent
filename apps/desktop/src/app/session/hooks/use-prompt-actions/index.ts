@@ -10,6 +10,7 @@ import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { UnconfirmedCorrectionError } from '@/lib/correction-delivery'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -28,9 +29,11 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { confirm } from '@/store/confirm'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import {
   $busy,
+  $connection,
   $currentCwd,
   $messages,
   $terminalBackend,
@@ -890,6 +893,15 @@ export function usePromptActions({
       // way the correction reaches the model, so record it once as a real user
       // message after the interrupted checkpoint, matching the durable core
       // transcript rather than a system note that changes role after reload.
+      const source = selectedStoredSessionIdRef.current
+      const connection = $connection.get()
+      const profile = $activeGatewayProfile.get()
+
+      const stillHere = () =>
+        selectedStoredSessionIdRef.current === source &&
+        $connection.get() === connection &&
+        $activeGatewayProfile.get() === profile
+
       const send = async (id: string): Promise<boolean> => {
         // Reserve the correction's arrival position, but do not seal the live
         // stream until acceptance: a refusal must leave in-flight deltas intact.
@@ -949,6 +961,14 @@ export function usePromptActions({
 
             return true
           }
+
+          if (result?.status === 'rejected' && result.delivered === false) {
+            discardOptimisticMessage()
+
+            return false
+          }
+
+          throw new Error('Correction delivery unconfirmed')
         } catch (err) {
           discardOptimisticMessage()
 
@@ -960,10 +980,6 @@ export function usePromptActions({
 
           throw err
         }
-
-        discardOptimisticMessage()
-
-        return false
       }
 
       try {
@@ -974,8 +990,7 @@ export function usePromptActions({
 
         return result
       } catch (err) {
-        notifyError(err, copy.promptFailed)
-        throw err
+        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyError(err, copy.promptFailed) : undefined)
       }
     },
     [
@@ -1015,15 +1030,27 @@ export function usePromptActions({
       const send = async (id: string): Promise<boolean> => {
         const response = await target.requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
 
-        return response?.status === 'queued'
+        if (response?.status === 'queued') {
+          return true
+        }
+
+        if (response?.status === 'rejected' && response.delivered === false) {
+          return false
+        }
+
+        throw new Error('Correction delivery unconfirmed')
       }
 
       try {
         const { result } = await withSessionNotFoundResume(target.sessionId, target.storedSessionId, send, target)
 
         return result
-      } catch {
-        return false
+      } catch (err) {
+        if (isUndeliveredCorrectionRefusal(err)) {
+          return false
+        }
+
+        throw err
       }
     },
     [

@@ -2929,6 +2929,11 @@ export interface Translations extends NoticeTranslations {
   }
 
   composer: {
+    steerNotSentTitle: string
+    steerExternalNotSentBody: string
+    steerUnconfirmedTitle: string
+    steerUnconfirmedBody: string
+    steerExternalUnconfirmedBody: string
     message: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string

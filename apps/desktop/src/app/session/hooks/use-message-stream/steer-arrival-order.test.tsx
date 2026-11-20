@@ -339,7 +339,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
   it.each([false, true])('a refused redirect preserves the continuing stream (tile=%s)', async tile => {
     await mountHarness(tile)
 
-    for (const refusal of ['not_running', 'error'] as const) {
+    for (const refusal of ['undelivered', 'unconfirmed', 'error'] as const) {
       emit({ payload: {}, session_id: SID, type: 'message.start' })
       emit({ payload: { text: 'before' }, session_id: SID, type: 'message.delta' })
       await flushDeltas()
@@ -350,7 +350,9 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
         () =>
           new Promise((resolve, reject) => {
             refuse = () =>
-              refusal === 'error' ? reject(new Error('correction refused')) : resolve({ status: refusal })
+              refusal === 'error'
+                ? reject(new Error('correction refused'))
+                : resolve({ status: 'rejected', ...(refusal === 'undelivered' ? { delivered: false } : {}) })
           })
       )
       let pending!: Promise<unknown>
@@ -363,8 +365,8 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
         refuse()
         const outcome = await pending
 
-        if (refusal === 'error') {expect(outcome).toBeInstanceOf(Error)}
-        else {expect(outcome).toBe(false)}
+        if (refusal === 'undelivered') {expect(outcome).toBe(false)}
+        else {expect(outcome).toBeInstanceOf(Error)}
       })
       emit({ payload: { text: ' after' }, session_id: SID, type: 'message.delta' })
       await flushDeltas()
@@ -406,7 +408,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     emit({ payload: { text: 'streaming along' }, session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
-    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'not_running' }))
+    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'rejected', delivered: false }))
 
     await act(async () => {
       await expect(redirect!('too late')).resolves.toBe(false)

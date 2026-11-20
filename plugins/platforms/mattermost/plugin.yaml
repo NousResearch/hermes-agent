@@ -1,0 +1,49 @@
+name: mattermost-platform
+label: Mattermost
+kind: platform
+version: 1.0.0
+description: >
+  Mattermost gateway adapter for Hermes Agent.
+  Connects to a self-hosted or cloud Mattermost instance via the v4 REST
+  API + WebSocket event stream and relays messages between Mattermost
+  channels/DMs and the Hermes agent. Supports thread-mode replies, native
+  file uploads, channel-scoped allowlists, and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: MATTERMOST_URL
+    description: "Mattermost server URL (e.g. https://mm.example.com)"
+    prompt: "Mattermost server URL"
+    password: false
+  - name: MATTERMOST_TOKEN
+    description: "Bot account token or personal-access token"
+    prompt: "Mattermost bot token"
+    password: true
+optional_env:
+  - name: MATTERMOST_ALLOWED_USERS
+    description: "Comma-separated Mattermost user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: MATTERMOST_ALLOW_ALL_USERS
+    description: "Allow any Mattermost user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: MATTERMOST_HOME_CHANNEL
+    description: "Default channel ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: MATTERMOST_REPLY_MODE
+    description: "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off."
+    prompt: "Reply mode (thread|off)"
+    password: false
+  - name: MATTERMOST_REQUIRE_MENTION
+    description: "Require @bot mention in channels (default true). Set false for free-response everywhere."
+    prompt: "Require @mention? (true/false)"
+    password: false
+  - name: MATTERMOST_FREE_RESPONSE_CHANNELS
+    description: "Comma-separated channel IDs where @mention is not required."
+    prompt: "Free-response channel IDs (comma-separated)"
+    password: false
+  - name: MATTERMOST_ALLOWED_CHANNELS
+    description: "If set, the bot only responds in these channels (whitelist)."
+    prompt: "Allowed channel IDs (comma-separated)"
+    password: false

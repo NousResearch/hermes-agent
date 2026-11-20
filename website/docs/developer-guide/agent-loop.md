@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent` class — roughly 9,200 lines that handle everything from prompt assembly to tool dispatch to provider failover.
+The core orchestration engine is the `AIAgent` class. `run_agent.py` is now a thin facade: the loop itself lives in `agent/conversation_loop.py`, each turn phase in `agent/turn_*.py` (iteration prep, API call, API error, overflow, truncation, recovery), constructor wiring in `agent/agent_init.py`, and everything from prompt assembly to tool dispatch to provider failover in focused `agent/*.py` modules mixed into `AIAgent`.
 
 ## Core Responsibilities
 
@@ -72,7 +72,7 @@ run_conversation()
      - anthropic_messages: convert via anthropic_adapter.py
   6. Inject ephemeral prompt layers (budget warnings, context pressure)
   7. Apply prompt caching markers if on Anthropic
-  8. Make interruptible API call (_api_call_with_interrupt)
+  8. Make interruptible API call (_interruptible_api_call)
   9. Parse response:
      - If tool_calls: execute them, append results, loop back to step 5
      - If text response: persist session, flush memory if needed, return
@@ -105,16 +105,17 @@ Providers validate these sequences and will reject malformed histories.
 
 ## Interruptible API Calls
 
-API requests are wrapped in `_api_call_with_interrupt()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
+API requests are wrapped in `_interruptible_api_call()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
 
 ```text
-┌──────────────────────┐     ┌──────────────┐
-│  Main thread         │     │  API thread   │
-│  wait on:            │────▶│  HTTP POST    │
-│  - response ready    │     │  to provider  │
-│  - interrupt event   │     └──────────────┘
-│  - timeout           │
-└──────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  Main thread                  API thread           │
+│                                                    │
+│   wait on:                     HTTP POST           │
+│    - response ready     ───▶   to provider         │
+│    - interrupt event                               │
+│    - timeout                                       │
+└────────────────────────────────────────────────────┘
 ```
 
 When interrupted (user sends new message, `/stop` command, or signal):
@@ -148,7 +149,7 @@ for each tool_call in response.tool_calls:
 
 ### Agent-Level Tools
 
-Some tools are intercepted by `run_agent.py` *before* reaching `handle_function_call()`:
+Some tools are intercepted by `agent/tool_executor.py` (called from `agent/conversation_loop.py`) *before* reaching `handle_function_call()`:
 
 | Tool | Why intercepted |
 |------|--------------------|
@@ -180,11 +181,8 @@ These tools modify agent state directly and return synthetic tool results withou
 
 The agent tracks iterations via `IterationBudget`:
 
-- Default: 90 iterations (configurable via `agent.max_turns`)
-- Shared across parent and child agents — a subagent consumes from the parent's budget
-- Two-tier budget pressure via `_get_budget_warning()`:
-  - At 70%+ usage (caution tier): appends `[BUDGET: Iteration X/Y. N iterations left. Start consolidating your work.]` to the last tool result
-  - At 90%+ usage (warning tier): appends `[BUDGET WARNING: Iteration X/Y. Only N iteration(s) left. Provide your final response NOW.]`
+- Default: 500 iterations (configurable via `agent.max_turns`)
+- Each agent gets its own budget. Subagents get independent budgets capped at `delegation.max_iterations` (default 50) — total iterations across parent + subagents can exceed the parent's cap
 - At 100%, the agent stops and returns a summary of work done
 
 ### Fallback Model
@@ -195,8 +193,9 @@ When the primary model fails (429 rate limit, 5xx server error, 401/403 auth err
 2. Try each fallback in order
 3. On success, continue the conversation with the new provider
 4. On 401/403, attempt credential refresh before failing over
+5. A Codex Responses turn that stalls on reasoning-only output (three consecutive continuations with no visible text or tool call) also fails over to the next fallback with reason `incomplete_response`; if the stall consumed the iteration budget, the fallback gets exactly one bounded grace call
 
-The fallback system also covers auxiliary tasks independently — vision, compression, web extraction, and session search each have their own fallback chain configurable via the `auxiliary.*` config section.
+The fallback system also covers auxiliary tasks independently — vision, compression, and title generation each have their own fallback chain configurable via the `auxiliary.*` config section.
 
 ## Compression and Persistence
 
@@ -216,7 +215,7 @@ The fallback system also covers auxiliary tasks independently — vision, compre
 ### Session Persistence
 
 After each turn:
-- Messages are saved to the session store (SQLite via `hermes_state.py`)
+- Messages are saved to the session store (SQLite through the storage interface in `persistence/`)
 - Memory changes are flushed to `MEMORY.md` / `USER.md`
 - The session can be resumed later via `/resume` or `hermes chat --resume`
 
@@ -224,9 +223,13 @@ After each turn:
 
 | File | Purpose |
 |------|---------|
-| `run_agent.py` | AIAgent class — the complete agent loop (~9,200 lines) |
+| `run_agent.py` | `AIAgent` facade — public entry points; loop and turn phases live in `agent/` |
+| `agent/conversation_loop.py` | The agent loop (`run_conversation()` body) |
+| `agent/turn_*.py` | Turn phases: iteration_prep, api_call, api_error, overflow, truncation, recovery |
+| `agent/tool_executor.py` | Tool-call execution and agent-level tool interception |
 | `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
-| `agent/context_compressor.py` | Conversation compression algorithm |
+| `agent/context_engine.py` | ContextEngine ABC — pluggable context management |
+| `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
 | `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
 | `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
 | `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |

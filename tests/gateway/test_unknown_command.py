@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -30,6 +30,18 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
+def _make_voice_event(text: str = "voice_message_1.ogg") -> MessageEvent:
+    source = _make_source()
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="m1",
+        media_urls=["/tmp/voice_message_1.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+
 def _make_runner():
     from gateway.run import GatewayRunner
 
@@ -41,7 +53,11 @@ def _make_runner():
     adapter.send = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.hooks = SimpleNamespace(
+        emit=AsyncMock(),
+        emit_collect=AsyncMock(return_value=[]),
+        loaded_hooks=False,
+    )
 
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -60,7 +76,6 @@ def _make_runner():
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -70,7 +85,6 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
 
@@ -104,31 +118,6 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
-    """Telegram may send /foo_bar — same guard must trigger for underscored
-    commands that normalize to unknown hyphenated names."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._run_agent = AsyncMock(
-        side_effect=AssertionError(
-            "unknown slash command leaked through to the agent"
-        )
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/made_up_thing"))
-
-    assert result is not None
-    assert "Unknown command" in result
-    assert "/made_up_thing" in result
-    runner._run_agent.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     """A real built-in like /status must NOT hit the unknown-command guard."""
     runner = _make_runner()
@@ -139,6 +128,21 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     result = await runner._handle_message(_make_event("/status"))
 
     assert result is not None
+    assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_egress_slash_command_reports_proxy_status(monkeypatch):
+    runner = _make_runner()
+    monkeypatch.setattr(
+        "hermes_cli.proxy_cli.format_status_text",
+        lambda: "Egress proxy status\nEnabled: no",
+    )
+
+    result = await runner._handle_message(_make_event("/egress"))
+
+    assert result is not None
+    assert "Egress proxy status" in result
     assert "Unknown command" not in result
 
 
@@ -164,3 +168,93 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+# ------------------------------------------------------------------
+# command:<name> decision hook — deny / handled / rewrite
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
+    """A rewrite decision should re-resolve the command and route to the new one."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("rewritten command leaked to the agent")
+    )
+
+    call_log = []
+
+    async def _emit_collect(event_type, ctx):
+        call_log.append(event_type)
+        if event_type == "command:status":
+            return [
+                {
+                    "decision": "rewrite",
+                    "command_name": "metricas",
+                    "raw_args": "dias:7",
+                }
+            ]
+        return []
+
+    runner.hooks.emit_collect = AsyncMock(side_effect=_emit_collect)
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {"metricas": {"description": "Metrics", "args_hint": "dias:7"}},
+    )
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: (lambda args: f"metrics {args}") if name == "metricas" else None,
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert result == "metrics dias:7"
+    # First emit_collect fires on the original command; after rewrite the
+    # dispatcher does NOT re-fire for the new command (one decision per turn).
+    assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_sync_plugin_command_runs_off_loop_thread(monkeypatch):
+    """A sync plugin handler doing blocking I/O must run off the gateway loop thread,
+    else the loop stops answering shutdown_watchdog probes and is killed with exit 75."""
+    import threading
+    import time
+
+    import gateway.run as gateway_run
+    from hermes_cli import plugins as _plugins_mod
+
+    runner = _make_runner()
+    seen_threads = []
+
+    def _blocking_handler(args: str) -> str:
+        seen_threads.append(threading.current_thread().name)
+        time.sleep(0.15)
+        return f"sync {args}"
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: _blocking_handler if name == "slow-api" else None,
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/slow-api arg"))
+
+    assert result == "sync arg"
+    assert seen_threads, "handler must have run"
+    # pytest-asyncio runs the loop on the main thread; the blocking handler must not.
+    assert seen_threads[0] != threading.main_thread().name

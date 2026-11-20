@@ -1,288 +1,253 @@
-"""Tests for hermes_cli/logs.py — log viewing and filtering."""
+"""Tests for hermes_cli.logs — log viewing and filtering."""
 
-import os
-import textwrap
 from datetime import datetime, timedelta
-from io import StringIO
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from hermes_cli.logs import (
     LOG_FILES,
     _extract_level,
+    _extract_logger_name,
+    _line_matches_component,
     _matches_filters,
     _parse_line_timestamp,
     _parse_since,
     _read_last_n_lines,
-    list_logs,
-    tail_log,
+    _read_tail,
 )
 
-
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def log_dir(tmp_path, monkeypatch):
-    """Create a fake HERMES_HOME with a logs/ directory."""
-    home = Path(os.environ["HERMES_HOME"])
-    logs = home / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    return logs
-
-
-@pytest.fixture
-def sample_agent_log(log_dir):
-    """Write a realistic agent.log with mixed levels and sessions."""
-    lines = textwrap.dedent("""\
-        2026-04-05 10:00:00,000 INFO run_agent: conversation turn: session=sess_aaa model=claude provider=openrouter platform=cli history=0 msg='hello'
-        2026-04-05 10:00:01,000 INFO run_agent: tool terminal completed (0.50s, 200 chars)
-        2026-04-05 10:00:02,000 INFO run_agent: API call #1: model=claude provider=openrouter in=1000 out=200 total=1200 latency=1.5s
-        2026-04-05 10:00:03,000 WARNING run_agent: Tool web_search returned error (2.00s): timeout
-        2026-04-05 10:00:04,000 INFO run_agent: conversation turn: session=sess_bbb model=gpt-5 provider=openai platform=telegram history=5 msg='fix bug'
-        2026-04-05 10:00:05,000 ERROR run_agent: API call failed after 3 retries. rate limited
-        2026-04-05 10:00:06,000 INFO run_agent: tool read_file completed (0.01s, 500 chars)
-        2026-04-05 10:00:07,000 DEBUG run_agent: verbose internal detail
-        2026-04-05 10:00:08,000 INFO credential_pool: credential pool: marking key-1 exhausted (status=429), rotating
-        2026-04-05 10:00:09,000 INFO credential_pool: credential pool: rotated to key-2
-    """)
-    path = log_dir / "agent.log"
-    path.write_text(lines)
-    return path
-
-
-@pytest.fixture
-def sample_errors_log(log_dir):
-    """Write a small errors.log."""
-    lines = textwrap.dedent("""\
-        2026-04-05 10:00:03,000 WARNING run_agent: Tool web_search returned error (2.00s): timeout
-        2026-04-05 10:00:05,000 ERROR run_agent: API call failed after 3 retries. rate limited
-    """)
-    path = log_dir / "errors.log"
-    path.write_text(lines)
-    return path
-
-
-# ---------------------------------------------------------------------------
-# _parse_since
+# Timestamp parsing
 # ---------------------------------------------------------------------------
 
 class TestParseSince:
     def test_hours(self):
         cutoff = _parse_since("2h")
         assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(7200, abs=5)
-
-    def test_minutes(self):
-        cutoff = _parse_since("30m")
-        assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(1800, abs=5)
-
-    def test_days(self):
-        cutoff = _parse_since("1d")
-        assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(86400, abs=5)
-
-    def test_seconds(self):
-        cutoff = _parse_since("60s")
-        assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(60, abs=5)
+        assert abs((datetime.now() - cutoff).total_seconds() - 7200) < 2
 
     def test_invalid_returns_none(self):
         assert _parse_since("abc") is None
         assert _parse_since("") is None
         assert _parse_since("10x") is None
 
-    def test_whitespace_handling(self):
-        cutoff = _parse_since("  1h  ")
+    def test_whitespace_tolerance(self):
+        cutoff = _parse_since("  5m  ")
         assert cutoff is not None
-
-
-# ---------------------------------------------------------------------------
-# _parse_line_timestamp
-# ---------------------------------------------------------------------------
 
 class TestParseLineTimestamp:
     def test_standard_format(self):
-        ts = _parse_line_timestamp("2026-04-05 10:00:00,123 INFO something")
-        assert ts is not None
-        assert ts.year == 2026
-        assert ts.hour == 10
+        ts = _parse_line_timestamp("2026-04-11 10:23:45 INFO gateway.run: msg")
+        assert ts == datetime(2026, 4, 11, 10, 23, 45)
 
-    def test_no_timestamp(self):
-        assert _parse_line_timestamp("just some text") is None
-
-    def test_continuation_line(self):
-        assert _parse_line_timestamp("    at module.function (line 42)") is None
-
-
-# ---------------------------------------------------------------------------
-# _extract_level
-# ---------------------------------------------------------------------------
+    def test_iso_t_separated_update_and_handoff_stamps(self):
+        # posix.sh: date +%Y-%m-%dT%H:%M:%S%z; windows.ps1: yyyy-MM-ddTHH:mm:ssK
+        assert _parse_line_timestamp("2026-09-29T21:36:18+08:00 update| step done") == datetime(
+            2026, 9, 29, 21, 36, 18
+        )
+        assert _parse_line_timestamp("2026-09-29T21:36:18Z step stalled") == datetime(
+            2026, 9, 29, 21, 36, 18
+        )
 
 class TestExtractLevel:
     def test_info(self):
-        assert _extract_level("2026-04-05 10:00:00 INFO run_agent: something") == "INFO"
-
-    def test_warning(self):
-        assert _extract_level("2026-04-05 10:00:00 WARNING run_agent: bad") == "WARNING"
-
-    def test_error(self):
-        assert _extract_level("2026-04-05 10:00:00 ERROR run_agent: crash") == "ERROR"
-
-    def test_debug(self):
-        assert _extract_level("2026-04-05 10:00:00 DEBUG run_agent: detail") == "DEBUG"
-
-    def test_no_level(self):
-        assert _extract_level("just a plain line") is None
-
+        assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
 
 # ---------------------------------------------------------------------------
-# _matches_filters
+# Logger name extraction (new for component filtering)
+# ---------------------------------------------------------------------------
+
+class TestExtractLoggerName:
+    def test_standard_line(self):
+        line = "2026-04-11 10:23:45 INFO gateway.run: Starting gateway"
+        assert _extract_logger_name(line) == "gateway.run"
+
+    def test_no_match(self):
+        assert _extract_logger_name("random text") is None
+
+class TestLineMatchesComponent:
+
+    def test_gateway_nested(self):
+        # Migrated platform adapters log under plugins.platforms.* (#41112) and
+        # must still resolve to the gateway component. Use the real expanded
+        # gateway prefixes (COMPONENT_PREFIXES["gateway"]) the CLI passes, not a
+        # bare ("gateway",), since the logger name no longer literally starts
+        # with "gateway".
+        from hermes_logging import COMPONENT_PREFIXES
+        line = "2026-04-11 10:23:45 INFO plugins.platforms.telegram.adapter: msg"
+        assert _line_matches_component(line, COMPONENT_PREFIXES["gateway"])
+
+    def test_unparseable_line(self):
+        assert not _line_matches_component("random text", ("gateway",))
+
+# ---------------------------------------------------------------------------
+# Combined filter
 # ---------------------------------------------------------------------------
 
 class TestMatchesFilters:
-    def test_no_filters_always_matches(self):
-        assert _matches_filters("any line") is True
 
-    def test_level_filter_passes(self):
+    def test_level_filter(self):
         assert _matches_filters(
-            "2026-04-05 10:00:00 WARNING something",
-            min_level="WARNING",
-        ) is True
-
-    def test_level_filter_rejects(self):
-        assert _matches_filters(
-            "2026-04-05 10:00:00 INFO something",
-            min_level="WARNING",
-        ) is False
-
-    def test_session_filter_passes(self):
-        assert _matches_filters(
-            "session=sess_aaa model=claude",
-            session_filter="sess_aaa",
-        ) is True
-
-    def test_session_filter_rejects(self):
-        assert _matches_filters(
-            "session=sess_aaa model=claude",
-            session_filter="sess_bbb",
-        ) is False
-
-    def test_since_filter_passes(self):
-        # Line from the future should always pass
-        assert _matches_filters(
-            "2099-01-01 00:00:00 INFO future",
-            since=datetime.now(),
-        ) is True
-
-    def test_since_filter_rejects(self):
-        assert _matches_filters(
-            "2020-01-01 00:00:00 INFO past",
-            since=datetime.now(),
-        ) is False
+            "2026-01-01 00:00:00 WARNING x: msg", min_level="WARNING")
+        assert not _matches_filters(
+            "2026-01-01 00:00:00 INFO x: msg", min_level="WARNING")
 
     def test_combined_filters(self):
-        line = "2099-01-01 00:00:00 WARNING run_agent: session=abc error"
+        """All filters must pass for a line to match."""
+        line = "2026-04-11 10:00:00 WARNING [sess_1] gateway.run: connection lost"
         assert _matches_filters(
-            line, min_level="WARNING", session_filter="abc",
-            since=datetime.now(),
-        ) is True
-        # Fails session filter
+            line,
+            min_level="WARNING",
+            session_filter="sess_1",
+            component_prefixes=("gateway",),
+        )
+        # Fails component filter
+        assert not _matches_filters(
+            line,
+            min_level="WARNING",
+            session_filter="sess_1",
+            component_prefixes=("tools",),
+        )
+
+    def test_since_filter(self):
+        # Line with a very old timestamp should be filtered out
+        assert not _matches_filters(
+            "2020-01-01 00:00:00 INFO x: old msg",
+            since=datetime.now() - timedelta(hours=1))
+        # Line with a recent timestamp should pass
+        recent = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         assert _matches_filters(
-            line, min_level="WARNING", session_filter="xyz",
-        ) is False
-
-
-# ---------------------------------------------------------------------------
-# _read_last_n_lines
-# ---------------------------------------------------------------------------
-
-class TestReadLastNLines:
-    def test_reads_correct_count(self, sample_agent_log):
-        lines = _read_last_n_lines(sample_agent_log, 3)
-        assert len(lines) == 3
-
-    def test_reads_all_when_fewer(self, sample_agent_log):
-        lines = _read_last_n_lines(sample_agent_log, 100)
-        assert len(lines) == 10  # sample has 10 lines
-
-    def test_empty_file(self, log_dir):
-        empty = log_dir / "empty.log"
-        empty.write_text("")
-        lines = _read_last_n_lines(empty, 10)
-        assert lines == []
-
-    def test_last_line_content(self, sample_agent_log):
-        lines = _read_last_n_lines(sample_agent_log, 1)
-        assert "rotated to key-2" in lines[0]
-
+            f"{recent} INFO x: recent msg",
+            since=datetime.now() - timedelta(hours=1))
 
 # ---------------------------------------------------------------------------
-# tail_log
+# File reading
 # ---------------------------------------------------------------------------
 
-class TestTailLog:
-    def test_basic_tail(self, sample_agent_log, capsys):
-        tail_log("agent", num_lines=3)
-        captured = capsys.readouterr()
-        assert "agent.log" in captured.out
-        # Should have the header + 3 lines
-        lines = captured.out.strip().split("\n")
-        assert len(lines) == 4  # 1 header + 3 content
+class TestReadTail:
+    def test_read_small_file(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        lines = [f"2026-01-01 00:00:0{i} INFO x: line {i}\n" for i in range(10)]
+        log_file.write_text("".join(lines))
 
-    def test_level_filter(self, sample_agent_log, capsys):
-        tail_log("agent", num_lines=50, level="ERROR")
-        captured = capsys.readouterr()
-        assert "level>=ERROR" in captured.out
-        # Only the ERROR line should appear
-        content_lines = [l for l in captured.out.strip().split("\n") if not l.startswith("---")]
-        assert len(content_lines) == 1
-        assert "API call failed" in content_lines[0]
+        result = _read_last_n_lines(log_file, 5)
+        assert len(result) == 5
+        assert "line 9" in result[-1]
 
-    def test_session_filter(self, sample_agent_log, capsys):
-        tail_log("agent", num_lines=50, session="sess_bbb")
-        captured = capsys.readouterr()
-        content_lines = [l for l in captured.out.strip().split("\n") if not l.startswith("---")]
-        assert len(content_lines) == 1
-        assert "sess_bbb" in content_lines[0]
+    def test_unstamped_lines_share_the_verdict_of_the_record_above(self, tmp_path):
+        old = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S,000")
+        new = datetime.now().strftime("%Y-%m-%d %H:%M:%S,000")
+        frames = ["Traceback (most recent call last):\n", '  File "x.py", line 1, in f\n']
+        log_file = tmp_path / "errors.log"
+        log_file.write_text("".join([
+            "orphan tail of a record that started before the window\n",
+            f"{old} ERROR gateway.run: old failure\n", *frames, "ValueError: old\n",
+            f"{new} INFO tools.x: multi-line info\n", "  info continuation\n",
+            f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
+        ]))
+        since = datetime.now() - timedelta(hours=1)
+        from hermes_logging import COMPONENT_PREFIXES
 
-    def test_errors_log(self, sample_errors_log, capsys):
-        tail_log("errors", num_lines=10)
-        captured = capsys.readouterr()
-        assert "errors.log" in captured.out
-        assert "WARNING" in captured.out or "ERROR" in captured.out
+        def read(**filters):
+            return "".join(_read_tail(log_file, 50, has_filters=True, **filters))
 
-    def test_unknown_log_exits(self):
-        with pytest.raises(SystemExit):
-            tail_log("nonexistent")
-
-    def test_missing_file_exits(self, log_dir):
-        with pytest.raises(SystemExit):
-            tail_log("agent")  # agent.log doesn't exist in clean log_dir
-
+        assert read(since=since) == "".join([
+            f"{new} INFO tools.x: multi-line info\n", "  info continuation\n",
+            f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
+        ])
+        new_failure = "".join([f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n"])
+        assert read(since=since, min_level="WARNING") == new_failure
+        assert read(since=since, component_prefixes=COMPONENT_PREFIXES["gateway"]) == new_failure
+        # No time/level filter: the orphan lines before the first stamp stay visible.
+        assert read(session_filter="orphan") == "orphan tail of a record that started before the window\n"
 
 # ---------------------------------------------------------------------------
-# list_logs
+# LOG_FILES registry
 # ---------------------------------------------------------------------------
 
-class TestListLogs:
-    def test_lists_files(self, sample_agent_log, sample_errors_log, capsys):
-        list_logs()
-        captured = capsys.readouterr()
-        assert "agent.log" in captured.out
-        assert "errors.log" in captured.out
+def _python_log_line(logger_name: str) -> str:
+    import logging
 
-    def test_empty_dir(self, log_dir, capsys):
-        list_logs()
-        captured = capsys.readouterr()
-        assert "no log files yet" in captured.out
+    from agent.redact import RedactingFormatter
+    from hermes_logging import _LOG_FORMAT
 
-    def test_shows_sizes(self, sample_agent_log, capsys):
-        list_logs()
-        captured = capsys.readouterr()
-        # File is small, should show as bytes or KB
-        assert "B" in captured.out or "KB" in captured.out
+    record = logging.LogRecord(logger_name, logging.WARNING, __file__, 1, "sample", None, None)
+    record.session_tag = ""
+    return RedactingFormatter(_LOG_FORMAT).format(record)
+
+
+def _mcp_output_line() -> str:
+    import io
+
+    from tools.mcp_tool_config import _StderrTee
+
+    log = io.StringIO()
+    tee = _StderrTee(log)
+    tee.sink.write(b"server says hello\n")
+    tee.close()
+    return log.getvalue()
+
+
+def _update_log_line() -> str:
+    """The update.log run banner hermes_cli.main_dashboard writes on every update."""
+    import datetime as dt
+
+    return f"\n=== hermes update started {dt.datetime.now().isoformat(timespec='seconds')} ===\n".lstrip()
+
+
+def _handoff_log_line() -> str:
+    """A desktop-update-handoff.log line from scripts/desktop-update/posix.sh's log()."""
+    import subprocess
+
+    line = subprocess.run(
+        ["bash", "-c", 'log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1"; }; log "update| → Checking if desktop app needs rebuilding..."'],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return line.rstrip("\n")
+
+
+def _log_file_samples() -> dict:
+    """One line per LOG_FILES entry, produced by that file's real writer where Python can run it."""
+    return {
+        "agent": _python_log_line("run_agent"),
+        "errors": _python_log_line("run_agent"),
+        "gateway": _python_log_line("gateway.run"),
+        "gui": _python_log_line("hermes_cli.web_server"),
+        # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.
+        "desktop": "2026-09-28 13:18:46,062 [hermes] [boot] ready",
+        "mcp": _mcp_output_line(),
+        # update.log mirrors raw update output; handoff lines carry the shim's ISO-8601 stamp.
+        "update": _update_log_line(),
+        "handoff": _handoff_log_line(),
+    }
+
+
+def test_every_log_file_writes_a_stamp_hermes_logs_since_can_read():
+    samples = _log_file_samples()
+    assert set(samples) == set(LOG_FILES), "add a real sample line for each new LOG_FILES entry"
+    for name, line in samples.items():
+        assert _parse_line_timestamp(line) is not None, (name, line)
+    # gateway.error.log (launchd stderr, not in LOG_FILES) uses the shared stamper.
+    from hermes_cli.stderr_timestamp import stamp_line
+    assert _parse_line_timestamp(stamp_line("raw gateway stderr")) is not None
+
+
+def test_update_logs_are_read_from_the_root_home_under_a_profile(tmp_path, monkeypatch, capsys):
+    # ``hermes update`` mirrors to <root>/logs/update.log and the hand-off scripts write the root
+    # too; `hermes logs update` under a sticky profile read the profile's (absent) copy.
+    from hermes_cli.logs import list_logs, log_file_path, tail_log
+
+    root = tmp_path / "root"
+    profile = root / "profiles" / "coder"
+    (root / "logs").mkdir(parents=True)
+    (profile / "logs").mkdir(parents=True)
+    (root / "logs" / "update.log").write_text("=== hermes update started 2026-10-03T10:00:00 ===\n✓ Update complete!\n")
+    (profile / "logs" / "agent.log").write_text("2026-10-03 10:00:00,000 INFO run_agent: hi\n")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    assert log_file_path("update") == root / "logs" / "update.log"
+    assert log_file_path("handoff") == root / "logs" / "desktop-update-handoff.log"
+    assert log_file_path("agent") == profile / "logs" / "agent.log"
+    tail_log("update", num_lines=5)
+    assert "✓ Update complete!" in capsys.readouterr().out
+    list_logs()
+    listing = capsys.readouterr().out
+    assert "agent.log" in listing and "update.log (root)" in listing

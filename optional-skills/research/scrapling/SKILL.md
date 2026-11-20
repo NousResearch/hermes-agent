@@ -1,13 +1,14 @@
 ---
 name: scrapling
-description: Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python.
+description: Scrape sites with stealth browsing and Cloudflare bypass.
 version: 1.0.0
 author: FEUAZUR
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Web Scraping, Browser, Cloudflare, Stealth, Crawling, Spider]
-    related_skills: [duckduckgo-search, domain-intel]
+    related_skills: [domain-intel]
     homepage: https://github.com/D4Vinci/Scrapling
 prerequisites:
   commands: [scrapling, python]

@@ -1,0 +1,961 @@
+---
+sidebar_position: 11
+title: "Plugin LLM Access"
+description: "Run any LLM call from inside a plugin via ctx.llm — chat or structured, sync or async. Host-owned auth, fail-closed trust gate, optional JSON Schema validation."
+---
+
+# Plugin LLM Access
+
+`ctx.llm` is the supported way for a plugin to make an LLM call.
+Chat completion, structured extraction, sync, async, with or without
+images — same surface, same trust gate, same host-owned credentials.
+
+Plugins reach for this when they need to do something that involves
+the model but isn't part of the agent's conversation. A hook that
+rewrites a tool error into something a non-engineer can read. A
+gateway adapter that translates an inbound message before queuing
+it. A slash command that summarises a long paste. A scheduled job
+that scores yesterday's activity and writes one line to a status
+board. A pre-filter that decides whether a message is worth waking
+the agent up for at all.
+
+These are jobs the agent shouldn't be in the loop on. They want one
+LLM call, a typed answer, and to be done.
+
+## The smallest possible call
+
+```python
+result = ctx.llm.complete(messages=[{"role": "user", "content": "ping"}])
+return result.text
+```
+
+That's the whole API in one line. No keys, no provider config, no
+SDK initialisation. The plugin runs against whatever provider and
+model the user is currently using — when they switch providers, the
+plugin follows them automatically.
+
+## A more complete chat example
+
+```python
+result = ctx.llm.complete(
+    messages=[
+        {"role": "system", "content": "Rewrite errors as one short sentence a non-engineer can act on."},
+        {"role": "user",   "content": traceback_text},
+    ],
+    max_tokens=64,
+    purpose="hooks.error-rewrite",
+)
+return result.text
+```
+
+`purpose` is a free-form audit string — it shows up in `agent.log`
+and in `result.audit` so operators can see which plugin made which
+call. Optional but recommended for anything that fires often.
+
+## Structured output
+
+When the plugin needs a typed answer, switch to the structured lane:
+
+```python
+result = ctx.llm.complete_structured(
+    instructions="Score this support reply for urgency (0–1) and pick a category.",
+    input=[{"type": "text", "text": message_body}],
+    json_schema=TRIAGE_SCHEMA,
+    purpose="support.triage",
+    temperature=0.0,
+    max_tokens=128,
+)
+
+if result.parsed["urgency"] > 0.8:
+    await dispatch_to_oncall(result.parsed["category"], message_body)
+```
+
+The host requests JSON output from the provider, parses it locally
+as a fallback, validates against your schema if `jsonschema` is
+installed, and hands back a Python object on `result.parsed`. If the
+model couldn't produce valid JSON, `result.parsed` is `None` and
+`result.text` carries the raw response.
+
+## What this lane gives you
+
+* **One call, four shapes.** `complete()` for chat,
+  `complete_structured()` for typed JSON, `acomplete()` and
+  `acomplete_structured()` for asyncio. Same arguments, same result
+  objects.
+* **Host-owned credentials.** OAuth tokens, refresh flows, the
+  credential pool, per-task aux overrides — every credential
+  concept Hermes already has applies. The plugin never sees a
+  token; the host attributes the call back through `result.audit`.
+* **Bounded.** Single sync or async call. No streaming, no tool
+  loops, no conversation state to manage. State the input, get the
+  result, return.
+* **Fail-closed trust.** A plugin you've never configured cannot
+  pick its own provider, model, agent, or stored credential. The
+  default posture is "use what the user is using." Operators opt in
+  to specific overrides, per plugin, in `config.yaml`.
+
+## Quick start
+
+Two complete plugins below — one chat, one structured. Both ship
+inside a single `register(ctx)` function and need zero outside
+configuration to run against whatever model the user has active.
+
+### Chat completion — `/tldr`
+
+```python
+def register(ctx):
+    ctx.register_command(
+        name="tldr",
+        handler=lambda raw: _tldr(ctx, raw),
+        description="Summarise the supplied text in one paragraph.",
+        args_hint="<text>",
+    )
+
+
+def _tldr(ctx, raw_args: str) -> str:
+    text = raw_args.strip()
+    if not text:
+        return "Usage: /tldr <text to summarise>"
+    result = ctx.llm.complete(
+        messages=[
+            {"role": "system",
+             "content": "Summarise the user's text in one tight paragraph. No preamble."},
+            {"role": "user", "content": text},
+        ],
+        max_tokens=256,
+        temperature=0.3,
+        purpose="tldr",
+    )
+    return result.text
+```
+
+`result.text` is the model's response; `result.usage` carries token
+counts; `result.provider` and `result.model` carry attribution.
+
+### Structured extraction — `/paste-to-tasks`
+
+```python
+def register(ctx):
+    ctx.register_command(
+        name="paste-to-tasks",
+        handler=lambda raw: _paste_to_tasks(ctx, raw),
+        description="Turn freeform meeting notes into structured tasks.",
+        args_hint="<text>",
+    )
+
+
+_TASKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "owner":  {"type": "string"},
+                    "action": {"type": "string"},
+                    "due":    {"type": "string", "description": "ISO date or empty"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    "required": ["tasks"],
+}
+
+
+def _paste_to_tasks(ctx, raw_args: str) -> str:
+    if not raw_args.strip():
+        return "Usage: /paste-to-tasks <meeting notes>"
+    result = ctx.llm.complete_structured(
+        instructions=(
+            "Extract concrete action items from these meeting notes. "
+            "One task per actionable line. If no owner is named, leave 'owner' blank."
+        ),
+        input=[{"type": "text", "text": raw_args}],
+        json_schema=_TASKS_SCHEMA,
+        schema_name="meeting.tasks",
+        purpose="paste-to-tasks",
+        temperature=0.0,
+        max_tokens=512,
+    )
+    if result.parsed is None:
+        return f"Couldn't parse a response. Raw output:\n{result.text}"
+    lines = [f"- [{t.get('owner') or '?'}] {t['action']}" for t in result.parsed["tasks"]]
+    return "\n".join(lines) or "(no tasks found)"
+```
+
+A third worked example, this time with image input, lives in the
+[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)
+repo (companion repo for reference plugins — not bundled with
+hermes-agent itself). For the async surface (`acomplete()` /
+`acomplete_structured()` with `asyncio.gather()`), see
+[`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example)
+in the same repo.
+
+## When to use which
+
+| You want… | Reach for |
+|---|---|
+| A free-form text response (translation, summary, rewrite, generation) | `complete()` |
+| A multi-turn prompt (system + few-shot examples + user) | `complete()` |
+| A typed dict back, validated against a schema | `complete_structured()` |
+| Image-or-text input with a typed dict back | `complete_structured()` |
+| The same call from async code (gateway adapters, async hooks) | `acomplete()` / `acomplete_structured()` |
+
+Everything else — provider selection, model resolution, auth, fallback,
+timeout, vision routing — is the same across all four.
+
+## API surface
+
+`ctx.llm` is an instance of `agent.plugin_llm.PluginLlm`.
+
+### `complete()`
+
+```python
+result = ctx.llm.complete(
+    messages=[{"role": "user", "content": "Hi"}],
+    provider=None,         # optional, gated — Hermes provider id (e.g. "openrouter")
+    model=None,            # optional, gated — whatever string that provider expects
+    temperature=None,
+    max_tokens=None,
+    timeout=None,          # seconds
+    agent_id=None,         # optional, gated
+    profile=None,          # optional, gated — explicit auth-profile name
+    purpose="optional-audit-string",
+    task=None,             # optional — a plugin-registered auxiliary slot
+)
+# → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
+```
+
+Plain chat completion. `messages` is the standard OpenAI shape — a
+list of `{"role": "...", "content": "..."}` dicts. Multi-turn
+prompts (system + few-shot user/assistant pairs + final user) work
+exactly as they would with the OpenAI SDK.
+
+`provider=` and `model=` are independent and follow the same shape
+as the host's main config (`model.provider` + `model.model`). Set
+just `model=` to use the user's active provider with a different
+model on it. Set both to switch providers entirely. Either argument
+without operator opt-in raises `PluginLlmTrustError`.
+
+### `complete_structured()`
+
+```python
+result = ctx.llm.complete_structured(
+    instructions="What you want extracted.",
+    input=[
+        {"type": "text",  "text": "..."},
+        {"type": "image", "data": b"...", "mime_type": "image/png"},
+        {"type": "image", "url":  "https://..."},
+    ],
+    json_schema={...},     # optional — triggers parsed result + validation
+    json_mode=False,       # set True without a schema to ask for JSON anyway
+    schema_name=None,      # optional human-readable schema name
+    system_prompt=None,
+    provider=None,         # optional, gated
+    model=None,            # optional, gated
+    temperature=None,
+    max_tokens=None,
+    timeout=None,
+    agent_id=None,
+    profile=None,
+    purpose=None,
+    task=None,             # optional — a plugin-registered auxiliary slot
+)
+# → PluginLlmStructuredResult(text, provider, model, agent_id,
+#                             usage, parsed, content_type, audit)
+```
+
+Inputs are typed text or image blocks (raw bytes get base64 encoded
+as a `data:` URL automatically). When `json_schema` or
+`json_mode=True` is supplied, the host requests JSON output via
+`response_format`, parses it locally as a fallback, and validates
+against your schema if `jsonschema` is installed.
+
+* `result.content_type == "json"` — `result.parsed` is a Python
+  object that matches your schema.
+* `result.content_type == "text"` — parsing or validation failed;
+  inspect `result.text` for the raw model response.
+
+### Async
+
+```python
+result = await ctx.llm.acomplete(messages=..., task="classifier")
+result = await ctx.llm.acomplete_structured(
+    instructions=..., input=..., task="classifier"
+)
+```
+
+Same arguments and result types as their sync counterparts. Use
+these from gateway adapters, async hooks, or any plugin code
+already running on an asyncio loop.
+
+### Task-routed auxiliary calls
+
+Pass `task=` to any of the four call shapes when a plugin needs its
+own configured auxiliary route. Register that task during plugin setup;
+plugin defaults apply until the operator overrides its provider and model
+in `auxiliary.<task>`:
+
+```python
+def register(ctx):
+    ctx.register_auxiliary_task(
+        "classifier", display_name="Classifier", description="Classify input."
+    )
+
+
+result = ctx.llm.complete(messages=[...], task="classifier")
+result = ctx.llm.complete_structured(instructions=..., input=..., task="classifier")
+```
+
+```yaml
+auxiliary:
+  classifier:
+    provider: openrouter
+    model: vendor/model-id
+```
+
+Plugins may supply provider/model registration defaults for their own
+tasks. Operator configuration in `auxiliary.<task>` overrides those
+defaults and controls the deployment choice. A registered task is a
+first-class slot on every model-assignment surface: the `hermes model` →
+*Configure auxiliary models* picker, the dashboard Models page, and Desktop
+Settings → Models → Auxiliary all list it (after the built-in tasks, under
+the plugin's `display_name`) and can pin, reset, or flag it as a stale
+provider pin like any built-in. A plugin can only use a task
+it registered itself; unknown or foreign task names fail before provider
+invocation. `allow_task_override: true` is an explicit operator grant for
+using Hermes built-in auxiliary tasks; it does not permit another plugin's
+tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
+
+#### From the plugin's frontend: a plugin RPC method
+
+A plugin's frontend (a Desktop page, or a client attached to the shared
+gateway) does not call the model itself. It calls its own Python half
+through a [plugin RPC method](plugins/index.md#talk-to-your-own-frontend-plugin-rpc-methods-and-session-events),
+and the handler calls `ctx.llm` on the task the plugin registered. A plugin
+RPC call holds its client's request lane until the handler returns, so the
+handler starts the model call in a thread, answers with a job id at once,
+and delivers the result as a session event:
+
+```python
+import contextvars
+import threading
+import uuid
+
+from agent.redact import redact_sensitive_text
+
+CHART = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
+
+
+def register(ctx):
+    ctx.register_auxiliary_task("chart_writer", display_name="Charts", description="Pick chart kinds.")
+    slots = threading.BoundedSemaphore(4)  # model calls in flight
+
+    def write_chart(params, *, session_id, **kwargs):
+        if not session_id:
+            raise ValueError("chart.write needs a session_id")
+        job = uuid.uuid4().hex
+        text = redact_sensitive_text(str(params.get("text", "")), force=True)
+
+        def run():
+            try:
+                result = ctx.llm.complete_structured(
+                    instructions="Pick a chart kind for this data.",
+                    input=[{"type": "text", "text": text}],
+                    json_schema=CHART,
+                    task="chart_writer",
+                )
+                if result.parsed is None:
+                    raise ValueError("the model did not answer with JSON")
+                payload = {"job": job, "chart": result.parsed}
+            except Exception as exc:
+                payload = {"job": job, "error": str(exc)}
+            finally:
+                slots.release()
+            ctx.emit_to_session(session_id, "chart.written", payload)
+
+        if not slots.acquire(blocking=False):
+            raise RuntimeError("chart.write is busy: wait for a chart.written event")
+        try:
+            # copy_context: the thread keeps the call's profile scope, which ctx.llm reads.
+            threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
+        except Exception:
+            slots.release()  # run() never started, so it never releases
+            raise
+        return {"job": job}
+
+    ctx.register_rpc("chart.write", write_chart)
+```
+
+The frontend sends
+`{"method": "plugin.<plugin_id>.chart.write", "params": {"session_id": "…", "text": "…"}}`,
+gets `{"job": "…"}` back at once, and receives the chart (or an `error`) as
+the session event `plugin.<plugin_id>.chart.written` with the same `job`.
+Called inline, the model call would hold that client's next requests on the
+connection, an interrupt or an approval answer included, until the model
+answered. The semaphore stands in for `llm.oneshot`'s per-owner cap: a fifth
+call while four run is refused. An exception in the handler itself answers
+the call with reason `plugin_rpc_failed`.
+
+- **Redact at the boundary.** `agent.redact.redact_sensitive_text` is part
+  of the [public plugin API](plugins/public-api.md). Pass `force=True` where
+  secrets must never leave the machine, such as text sent to a model: it then
+  masks secrets even when the operator turned redaction off with
+  `security.redact_secrets: false`. Without `force=True` it follows that
+  setting.
+- **The task is the route.** `task=` must name a task your plugin registered,
+  so the operator's `auxiliary.<task>` setting picks the model, and a
+  frontend cannot pick a different route.
+- **Check `parsed`.** It is `None` when the reply is not JSON. A reply that
+  does not match `json_schema` raises `ValueError` when the optional
+  `jsonschema` package is installed; without it, the schema is not checked.
+
+#### Inheriting a built-in slot
+
+`inherit_from` names a built-in auxiliary task the model picker lists
+(`compression`, `mcp`, `vision`, `curator`, ...), `background_review`, or a
+task your plugin (or one loaded before it) already registered. Other core
+`auxiliary.*` blocks are not bases. Your task then uses that slot's model
+until the operator pins one on your task directly.
+
+**Following a built-in slot's model needs the operator's grant.** The
+slot's route (`provider`, `model`, `base_url`, `api_key`, `api_mode`, the
+key env, `reasoning_effort`, `extra_body`, `fallback_chain`) carries over
+only when the operator sets `allow_task_override` for your plugin, the
+same grant that lets `task=` name a built-in slot. Without it your task
+inherits the slot's other settings (such as `timeout`) and runs on its
+own route: your `defaults`, else the active main model. Declare it in
+your setup instructions when your task should follow the user's review or
+curator model:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      llm:
+        allow_task_override: true
+```
+
+```python
+def register(ctx):
+    ctx.register_auxiliary_task(
+        "classifier",
+        display_name="Classifier",
+        description="Classify input.",
+        inherit_from="compression",         # use whatever compression uses...
+        defaults={"timeout": 90},           # ...but give slow classifiers more room
+    )
+```
+
+- **Resolved on every read, not copied at registration.** Change
+  `auxiliary.compression` (CLI, dashboard, Desktop, or `config.yaml`) and the
+  classifier follows on its next call, per profile.
+- **Precedence:** the inherited base, then the plugin's `defaults`, then the
+  operator's `auxiliary.<task>` block.
+- **A chain counts as its root.** Inheriting another plugin's task that
+  inherits a built-in slot carries that slot's route only when your plugin
+  holds the grant too.
+- **An operator pin wins as a whole route.** Once `auxiliary.classifier` sets a
+  non-`auto` provider, a model or a `base_url`, the provider, model, endpoint,
+  key and reasoning effort all come from that block; nothing from the base's
+  route is mixed in. `provider: auto` with an empty model is "no preference",
+  so the task keeps following its base (that is what "Reset all" and Desktop's
+  *Follow &lt;base&gt;* button write).
+- **A bad base never breaks the plugin.** An unknown or self-referential
+  `inherit_from` logs a warning and the task registers without inheritance.
+
+The Models settings show an unpinned inheriting task as
+*inherits Compression · &lt;provider · model&gt;*, and
+`GET /api/model/auxiliary` returns `inherit_from` plus an `effective`
+`{provider, model, base_url}` on such rows.
+
+### Result attributes
+
+```python
+@dataclass
+class PluginLlmCompleteResult:
+    text: str                    # the assistant's response
+    provider: str                # e.g. "openrouter", "anthropic"
+    model: str                   # whatever the provider returned for this call
+    agent_id: str                # whose model/auth was used
+    usage: PluginLlmUsage        # tokens + cache + cost estimate
+    audit: Dict[str, Any]        # plugin_id, purpose, profile
+
+@dataclass
+class PluginLlmStructuredResult:
+    # same fields as PluginLlmCompleteResult, plus:
+    parsed: Optional[Any]        # JSON object when content_type == "json"
+    content_type: str            # "json" or "text"
+    # audit also carries schema_name when supplied
+```
+
+`usage` carries `input_tokens`, `output_tokens`, `total_tokens`,
+`cache_read_tokens`, `cache_write_tokens`, and `cost_usd` when the
+provider returns those fields.
+
+## Trust gate
+
+The default behaviour is fail-closed. With no `plugins.entries`
+config block, a plugin can:
+
+* run any of the four methods against the user's active provider
+  and model,
+* set request-shaping arguments (`temperature`, `max_tokens`,
+  `timeout`, `system_prompt`, `purpose`, `messages`, `instructions`,
+  `input`, `json_schema`),
+
+…and that's it. `provider=`, `model=`, `agent_id=`, and `profile=`
+arguments raise `PluginLlmTrustError` until the operator opts in.
+Likewise, `task=` can use only the plugin's registered auxiliary task
+unless the operator grants `allow_task_override` for a built-in task.
+
+**Most plugins never need this section.** A plugin that just calls
+`ctx.llm.complete(messages=...)` with no overrides runs against
+whatever the user has active and works zero-config. The block below
+is only relevant when a plugin specifically wants to pin to a
+different model or provider than the user.
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      llm:
+        # Allow this plugin to choose a different Hermes provider
+        # (must be one Hermes already knows about — same names as
+        # `hermes model` and config.yaml model.provider).
+        allow_provider_override: true
+
+        # Optionally restrict which providers. Use ["*"] for any.
+        allowed_providers:
+          - openrouter
+          - anthropic
+
+        # Allow this plugin to ask for a specific model.
+        allow_model_override: true
+
+        # Optionally restrict which models. Use ["*"] for any.
+        # Models are matched literally against whatever string the
+        # plugin sends — Hermes does not look anything up.
+        allowed_models:
+          - openai/gpt-4o-mini
+          - anthropic/claude-3-5-haiku
+
+        # Allow cross-agent calls (rare).
+        allow_agent_id_override: false
+
+        # Allow the plugin to request a specific stored auth profile
+        # (e.g. a different OAuth account on the same provider).
+        allow_profile_override: false
+```
+
+The plugin id is the manifest `name:` field for flat plugins, or the
+path-derived key for nested plugins (`image_gen/openai`,
+`memory/honcho`, etc.).
+
+### What the gate enforces
+
+| Override        | Default | Config key                       |
+| --------------- | ------- | -------------------------------- |
+| `provider=`     | denied  | `allow_provider_override: true`  |
+| ↳ allowlist     | —       | `allowed_providers: [...]`       |
+| `model=`        | denied  | `allow_model_override: true`     |
+| ↳ allowlist     | —       | `allowed_models: [...]`          |
+| `agent_id=`     | denied  | `allow_agent_id_override: true`  |
+| `profile=`      | denied  | `allow_profile_override: true`   |
+| built-in `task=` | denied  | `allow_task_override: true`      |
+| route inherited from a built-in slot | stripped | `allow_task_override: true` |
+
+Each override is independently gated. Granting `allow_model_override`
+does **not** also grant `allow_provider_override` — a plugin trusted
+to pick a model is still pinned to the user's active provider unless
+it gets the provider gate as well.
+
+### What the gate does NOT need to enforce
+
+* Request-shaping arguments — `temperature`, `max_tokens`,
+  `timeout`, `system_prompt`, `purpose`, `messages`, `instructions`,
+  `input`, `json_schema`, `schema_name`, `json_mode` — are always
+  allowed; they don't pick credentials or routes.
+* The default deny posture means an unconfigured plugin can still do
+  useful work — it just runs against the active provider and model.
+  Operators only need to think about `plugins.entries` for plugins
+  that want finer routing.
+
+## What the host owns
+
+A complete list of the things `ctx.llm` does for the plugin so you
+don't have to:
+
+* **Provider resolution.** Reads `model.provider` + `model.model`
+  from the user's config (or the explicit overrides when trusted).
+* **Auth.** Pulls API keys, OAuth tokens, or refresh tokens from
+  `~/.hermes/auth.json` / env, including the credential pool when
+  one is configured. The plugin never sees them.
+* **Vision routing.** When image input is supplied and the user's
+  active text model is text-only, the host falls back to the
+  configured vision model automatically.
+* **Fallback chain.** If the user's primary provider 5xxs or 429s,
+  the request goes through Hermes' usual aggregator-aware fallback
+  before it returns an error to the plugin.
+* **Timeout.** Honours your `timeout=` argument, falling back to
+  `auxiliary.<task>.timeout` config or the global aux default.
+* **JSON shaping.** Sends `response_format` to the provider when
+  you ask for JSON, then re-parses locally from a code-fenced
+  response if the provider returned one.
+* **Schema validation.** Validates against your `json_schema` when
+  `jsonschema` is installed; logs a debug line and skips strict
+  validation otherwise.
+* **Audit log.** Each call writes one INFO line to `agent.log` with
+  the plugin id, provider/model, purpose, and token totals.
+
+## What the plugin owns
+
+* **Request shape.** `messages` for chat, `instructions` + `input`
+  for structured. The plugin builds the prompt; the host runs it.
+* **Schema.** Whatever shape you want back. The host doesn't infer
+  it for you.
+* **Error handling.** `complete_structured()` raises `ValueError` on
+  empty inputs and on schema-validation failure. `PluginLlmTrustError`
+  fires when the trust gate denies an override. Anything else
+  (provider 5xx, no credentials configured, timeout) raises whatever
+  `auxiliary_client.call_llm()` raises.
+* **Cost.** Every call runs against the user's paid provider. Don't
+  loop on `complete()` for every gateway message without thinking
+  about token spend.
+
+## Asking the session's own agent (`ctx.side_question`)
+
+`ctx.llm` runs a fresh call that knows only what the plugin sends it.
+`ctx.side_question` asks the session's *own* agent instead: the same
+model, the same system prompt (memory included) and the whole
+conversation so far, plus one question from the plugin. It replays
+the request the turn just sent, so the provider's prompt cache is
+still warm and the call is mostly cache reads.
+
+Reach for it when the answer depends on the conversation itself:
+suggesting the user's next prompt, labelling what the turn did,
+deciding whether the session needs a follow-up. For anything that
+doesn't need the session, use `ctx.llm`: it is cheaper and has no
+lease rules.
+
+```python
+import threading
+
+
+def register(ctx):
+    def on_post_llm_call(**kwargs):
+        token = kwargs.get("side_question_token")
+        if token is None:  # no consented plugin loaded, or not a user turn
+            return
+        # post_llm_call is time-bounded: never wait for the model inside the hook.
+        threading.Thread(target=_suggest, args=(token,), daemon=True).start()
+
+    def _suggest(token):
+        answer = ctx.side_question(
+            token, "Suggest the user's most likely next prompt in one short line.")
+        if answer:
+            ctx.state.set("next_prompt", answer)
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user
+must grant it (the consent screen shows: "Ask your agent a short
+question after each turn. It sees the whole session, including
+memory, and spends your main model's tokens."):
+
+```yaml
+capabilities:
+  - llm.side_question
+```
+
+### Lease rules
+
+* `post_llm_call` receives `side_question_token` (a string) when at
+  least one loaded plugin holds the capability, else `None`. Cron runs
+  and delegated subagent turns always get `None`: nobody is waiting on
+  them, so a side question would only spend tokens.
+* **One attempt per turn, shared by every plugin.** Every plugin's
+  hook gets the same token; the first `ctx.side_question` call spends
+  it, whether it succeeds or not. A plugin without the capability gets
+  `None` back and does not spend it.
+* The token expires after **60 seconds**, and as soon as the session
+  starts its next turn.
+* The token belongs to the profile whose turn issued it; a plugin
+  context of another profile gets `None` and does not spend it.
+* `prompt` is a non-empty string of at most **4096 characters**.
+* `timeout` defaults to **15 seconds** and is capped at 60. It covers
+  the whole call, including setting up the request.
+
+### What you get back
+
+The text of the agent's reply, or `None`. `None` means the call was
+refused or failed: a Mixture-of-Agents runtime, an agent-as-provider
+runtime (ACP, external-process providers, the Codex app-server), a
+session whose model changed since the turn (a voice-chat turn routed to
+`auxiliary.voice_chat` switches back right after it), a request that
+carries provider-executed (server-side) tools, a timeout, a provider
+error, or an empty reply. There are no retries
+and no fallback model.
+
+The call never runs a tool (tool calls in the reply are dropped) and
+never writes to the transcript. Its tokens are billed to the session
+whose turn issued the token (even if the session id has since rotated)
+and recorded in its usage as `plugin_side_question:<plugin id>`, apart
+from `/btw`'s `side_question`. You can't pick the
+model, tools, system prompt or output length: changing any of them
+would miss the warm cache. Ask for brevity in the prompt.
+
+Observability plugins see the call as an auxiliary call:
+`pre_auxiliary_call` / `post_auxiliary_call` fire with
+`aux_task="plugin_side_question"` and `plugin_id` set to the asking
+plugin, and the turn-scoped `pre_api_request` /
+`post_api_request` do not fire for it.
+
+## Forking the session's own agent (`ctx.fork_session`)
+
+:::caution Experimental
+`ctx.fork_session` and [`ctx.register_idle_task`](#idle-tasks-ctxregister_idle_task) are
+experimental. Their signatures and the fork handle's shape may change in a later release; keep
+the handle inside one small function of your plugin that returns plain data, and do not store it
+past the turn. Treat `fork_session` as optional: it returns `None` when the request is refused
+(no `llm.session_fork` grant, a bad, expired or spent token, a tool outside the allowlist), and it
+is not available everywhere. Under `plugins.isolation: host` a third-party plugin's
+`ctx.fork_session` exists but raises `PluginHostUnsupported` (a `RuntimeError`), because the handle
+tracks a thread of the live session agent inside the Hermes process. A plugin that degrades to
+"no fork" on `None` or an exception keeps working in both places.
+:::
+
+`ctx.side_question` gets one text reply. `ctx.fork_session` runs a
+bounded background copy of the session's agent instead: the same
+system prompt, `tools[]`, memory and conversation, on the warm prompt
+cache, working through a multi-step prompt that may call the plugin's
+own tools it names. It is the pattern Hermes uses for its own background
+memory/skill review, opened to plugins. A typical use: after a turn
+that created or edited a skill, ask the fork whether the skill is worth
+sharing, and let it call the plugin's own tool that offers the share.
+
+```python
+import json
+import threading
+
+
+def register(ctx):
+    def offer_share(args, turn_origin=None, **kwargs):
+        if turn_origin != "plugin_fork:wisdom":
+            return json.dumps({"error": "only the background check may offer a share"})
+        ...  # present the approval card for args["skill"]
+        return json.dumps({"offered": True})
+
+    ctx.register_tool("wisdom_offer_share", "wisdom", OFFER_SCHEMA, offer_share)
+
+    def on_post_llm_call(side_question_token=None, review_signals=None, **kwargs):
+        if side_question_token is None or not (review_signals or {}).get("skill_review_due"):
+            return
+        handle = ctx.fork_session(
+            side_question_token,
+            "Did this session create or change a skill the team would benefit from? "
+            "If so, call wisdom_offer_share once for it; otherwise answer 'no'.",
+            tools=["wisdom_offer_share"], max_iterations=4)
+        if handle is not None:  # runs in the background; never wait inside the hook
+            threading.Thread(target=lambda: handle.wait(600) and ctx.state.set(
+                "last_check", handle.outcome), daemon=True).start()
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+```yaml
+capabilities:
+  - llm.session_fork
+```
+
+The consent screen shows: "Run a background copy of your agent after a
+turn. It sees the whole session, including memory, can use the
+plugin's own tools, and spends your main model's tokens."
+
+### Signature and rules
+
+`ctx.fork_session(token, prompt, *, tools=(), max_iterations=8,
+input_budget=None, task=None, timeout=None)` returns a handle, or `None`
+when nothing was started.
+
+* `token` is `post_llm_call`'s `side_question_token`: the [lease
+  rules](#lease-rules) above apply unchanged. One token backs one request
+  per turn, a side question *or* a fork, shared by every plugin;
+  unattended turns (cron, subagents) get none; another profile's plugin
+  gets `None` and does not spend it. A plugin without `llm.session_fork`
+  gets `None` and does not spend it either, nor does a request naming a
+  tool outside the fork allowlist (below); every other `None` spends it.
+* `prompt` is a non-empty string of at most **8192 characters**, sent as
+  the fork's user message. The system prompt and `tools[]` stay
+  byte-identical to the session's, so the first request is mostly cache
+  reads.
+* `tools` lists the tool names the fork may call, drawn from the fork
+  allowlist: the names whose call reaches the handler this plugin
+  registered with `register_tool` (the name's current registration is
+  this plugin's, and Hermes dispatches it to the tool registry), plus
+  the core tools Hermes marks fork-safe in one central list (currently
+  none). Every other tool is outside it: another plugin's tools, every
+  MCP tool, and every core tool not marked fork-safe, including
+  `delegate_task`, `message_agent`, `cronjob_manage` and the Kanban
+  tools. A name Hermes dispatches before the tool registry is outside
+  it even when the plugin registered it, because the call would never
+  reach the plugin's handler: an agent-level tool, a legacy alias, the
+  Tool Search bridge, any `connectors__<connector>__<tool>` name, and
+  the session's memory-provider and context-engine tools. Naming a tool
+  outside the allowlist returns `None` without spending the token. A
+  tool's handler can start work the fork cannot follow (a subagent, a
+  remote agent task, a cron run, a detached worker, an MCP server's
+  sampling request), and that work would keep neither the fork's tool
+  list nor its auto-denied approvals; a plugin's own handler already
+  runs the plugin's code.
+* Each named tool must also be in the session, else the call returns
+  `None` and spends the token: advertised in its `tools[]`, or deferred
+  behind Tool Search (on by default, and plugin tools defer by default),
+  in which case the session's `tools[]` carry the `tool_call` bridge in
+  its place. The fork still *sees* every session tool, byte for byte
+  (cache parity); calls outside the list are refused at dispatch with a
+  message naming the allowed tools.
+* A deferred tool is called through `tool_call`, and the plugin does not
+  need to know which of its tools are deferred: Hermes appends one line
+  to the prompt telling the model to call the tool through `tool_call`
+  with its name, followed by the tool's parameters. Inside the fork
+  `tool_call` only carries a call to a named tool: a `tool_call` to any
+  other tool (the plugin's own unnamed tools, another plugin's tool, a
+  core tool, a connector) is refused at dispatch, and `tool_search` and
+  `tool_describe` stay refused, since the prompt line already names the
+  tool and its parameters. When the fork
+  starts, the allowlist is read again against the live session and a
+  tool that stopped being the plugin's own, or that the session now
+  serves before the registry, is refused at dispatch too. An empty list
+  means a tool-less fork.
+* `max_iterations` caps the fork's loop (1 to 16). The fork's aggregate
+  input tokens are bounded like the background review's
+  (`auxiliary.background_review.max_input_tokens`, default 75% of the
+  context window); `input_budget` can only lower that bound.
+* Dangerous-command approvals are auto-denied, and nothing the fork does
+  is written to the transcript or the session database.
+* The fork is cancelled as soon as the session starts its next turn,
+  whether it is running, starting or still deferred; a deferred fork
+  then never launches. A turn a plugin injects (`ctx.inject_message`,
+  including from the fork's own tool handler) is the exception: it
+  waits up to 120 seconds for the session's running background review
+  and running forks to finish, then cancels whatever is still running,
+  so do not rely on an injected turn to cancel background work. A person
+  never waits behind that grace: a message a person sends to the session
+  while the injected turn waits ends the wait at once, whatever
+  `display.busy_input_mode` makes of it, and the background work is
+  cancelled as for any person's turn. A message that is queued (queue
+  mode, an interrupt, any message before the injected turn has an agent)
+  runs as its own turn after the injected one, in the order they
+  arrived; a steer (steer mode or `/steer`) or an interrupt-mode
+  correction that redirects the turn goes into the injected turn itself.
+  Another plugin's injected message does not end the wait. A gateway
+  shutdown, restart or profile retirement ends the wait the same way,
+  inside the shutdown's drain budget. The
+  injected turn starts from the gateway's own context: its tool calls
+  carry no `turn_origin`, even when the fork injected it. `timeout`
+  (seconds, at most 1800) adds a wall clock. Both are cooperative:
+  they interrupt the fork, which stops at
+  its next interrupt check, and the handle settles when the fork's
+  worker exits. A provider call that ignores the interrupt holds the
+  handle open until it returns, so wait with a bound (`handle.wait(t)`).
+* `task` names one of this plugin's own
+  [`register_auxiliary_task`](#task-routed-auxiliary-calls) lanes: the
+  fork then runs on that lane's model, resolved like
+  `auxiliary.background_review` (a different model starts cache-cold and
+  sees a digest of the conversation). A task the plugin did not register
+  returns `None`. Without `task` the fork runs on the session's model. A
+  lane with `inherit_from="background_review"` follows the user's review
+  model only under `allow_task_override` ([Inheriting a built-in
+  slot](#inheriting-a-built-in-slot)).
+* On a runtime Hermes manages locally (the bundled llama-server), the fork
+  waits for the machine to go idle like the background review
+  (`outcome == "deferred"`); a newer deferred fork of the same plugin for
+  the same session replaces the queued one (`"superseded"`).
+
+### The handle
+
+`handle.done`, `handle.cancelled`, `handle.outcome`, `handle.result` (the
+fork's final text, or `None`), `handle.actions` (the whitelisted tool
+names it called, in order; a call through `tool_call` lists the tool it
+carried), `handle.wait(timeout)` and `handle.cancel()`.
+`outcome` is one of `deferred`, `running`, `ok`, `cancelled`,
+`superseded`, `timeout`, `budget_exhausted`, `error`, `error:spawn` (the
+fork's worker thread could not start; `fork_session` returns the settled
+handle rather than raising) or `refused:<reason>`: `parent_gone` (the
+session agent was released before the fork started), `moa` (a
+Mixture-of-Agents runtime), `agent_provider` (an agent-as-provider
+runtime that runs its own tools) or `runtime_changed` (the session
+switched model or provider since the turn). The handle never exposes the fork agent itself.
+
+### Telling a fork from the live agent
+
+A tool handler called inside the fork receives the keyword
+`turn_origin="plugin_fork:<plugin id>"` (declare it, or accept
+`**kwargs`); calls the live agent makes carry no `turn_origin`. The
+example above uses it so the live agent cannot fire the plugin's
+share-offer tool on its own.
+
+Usage is billed to the session as `plugin_fork:<plugin id>`. Each of the
+fork's provider requests fires `pre_auxiliary_call` /
+`post_auxiliary_call` with `aux_task="plugin_fork"` and `plugin_id`, never
+the turn-scoped `pre_api_request` / `post_api_request`.
+
+## Idle tasks (`ctx.register_idle_task`)
+
+Experimental, like `fork_session` (see the note [above](#forking-the-sessions-own-agent-ctxfork_session)).
+`ctx.register_idle_task(name, fn, *, interval_hours, min_idle_hours=2, first_run="defer")` runs a
+session-less job of the plugin on the skill curator's idle schedule; the full rules are in
+[Run a job when Hermes is idle](./plugins/index.md#run-a-job-when-hermes-is-idle-ctxregister_idle_task).
+The contract a task's `fn` is written against:
+
+* `fn` runs on its own thread, in the profile that registered it. The host's poll (gateway
+  housekeeping, CLI/TUI startup, the `hermes serve` maintenance tick) starts it and returns at
+  once; it never waits for the run and sets no time limit of its own.
+* Keep a run short: give it its own time limit, and work in small batches with a checkpoint in the
+  plugin's data so the next run picks up where this one stopped.
+* Keep a run idempotent: a run cut off by a restart leaves no record and runs again later from the
+  start, so running the same batch twice must do no harm.
+* When gateway housekeeping stops (gateway shutdown, or the multiplexer restarting in the same
+  process), no new run starts and the gateway waits a few seconds for a run in flight, then stops
+  without it. Plugin code cannot be stopped and `fn` gets no stop signal, so a run still going goes
+  on in the background; when it ends it records nothing (the task's state stays as it was before
+  the run, so the task runs again later) and releases its claim. Hermes guarantees only that no
+  run starts and no task state is written after the stop; keep a run short.
+* No second run of a task starts while one is in flight. A claim whose process has died (a crash
+  or a kill) is taken over at the next poll; a claim whose owner cannot be checked (one written on
+  another machine) counts as abandoned after an hour. An exception is caught, logged and recorded as
+  `last_status: error`; it never reaches the host.
+* Model calls from `fn` go through `ctx.llm` and its trust gate. `fn` has no turn, so it gets no
+  `side_question_token` and cannot fork the session.
+
+## Where this fits in the plugin surface
+
+Existing `ctx.*` methods extend an existing Hermes subsystem:
+
+| `ctx.register_tool` | adds a tool the agent can call |
+| `ctx.register_platform` | wires a new gateway adapter |
+| `ctx.register_image_gen_provider` | replaces an image-gen backend |
+| `ctx.register_memory_provider` | replaces the memory backend |
+| `ctx.register_context_engine` | replaces the context compressor |
+| `ctx.register_hook` | observes a lifecycle event |
+
+`ctx.llm` is the first surface that lets a plugin run the same
+model the user is talking to, *out of band*, without any of the
+above. That's its only job. If your plugin needs to register a
+tool the agent invokes, use `register_tool`. If it needs to react
+to a lifecycle event, use `register_hook`. If it needs to make its
+own model call — for any reason, structured or not — `ctx.llm`.
+
+## Reference
+
+* Implementation: [`agent/plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/plugin_llm.py)
+* Tests: [`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py)
+* Reference plugins (companion repo):
+  * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — sync structured extraction with image input
+  * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — async with `asyncio.gather()`
+* Auxiliary client (the engine under the hood): see
+  [Provider Runtime](./provider-runtime.md).

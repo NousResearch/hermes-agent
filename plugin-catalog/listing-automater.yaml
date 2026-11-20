@@ -1,0 +1,16 @@
+name: listing-automater
+repo: https://github.com/Summertimechi/listing-automater-skill
+sha: d751b49e5d849f2967d2f5281d23400098b0e718
+title: Listing AutomatEr
+description: 'Skill only plugin for real estate agents: explains Listing AutomatEr, a desktop app that posts listings an agent has permission to market to Facebook Marketplace with "Marketed by" and "Listing courtesy of" attribution, and gives guidance for writing clear, compliant listing posts. Registers one read only skill; no agent tools, hooks, middleware, network calls or env vars.'
+maintainer: Summertimechi
+tier: community
+category: general
+version: "1.0.0"
+docs_url: https://github.com/Summertimechi/listing-automater-skill
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

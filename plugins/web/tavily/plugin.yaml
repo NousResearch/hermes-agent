@@ -1,0 +1,7 @@
+name: web-tavily
+version: 1.0.0
+description: "Tavily web search + extract. Opt-in keyless via hermes tools; set TAVILY_API_KEY for higher limits — https://app.tavily.com/home."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - tavily

@@ -30,54 +30,42 @@ Every tool file in `tools/` calls `registry.register()` at module level to decla
 registry.register(
     name="terminal",               # Unique tool name (used in API schemas)
     toolset="terminal",            # Toolset this tool belongs to
-    schema={...},                  # OpenAI function-calling schema (description, parameters)
+    schema={...},                  # Model-facing schema (description, parameters)
     handler=handle_terminal,       # The function that executes when the tool is called
     check_fn=check_terminal,       # Optional: returns True/False for availability
     requires_env=["SOME_VAR"],     # Optional: env vars needed (for UI display)
     is_async=False,                # Whether the handler is an async coroutine
-    description="Run commands",    # Human-readable description
+    description="Run commands",    # Optional ToolEntry registry metadata
     emoji="💻",                    # Emoji for spinner/progress display
 )
 ```
 
-Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` dict keyed by tool name. If a name collision occurs across toolsets, a warning is logged and the later registration wins.
+Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` dict keyed by tool name. A registration that would shadow an existing tool from a **different** toolset is rejected (with an error log) unless the caller passes `override=True`; plugin overrides of built-in tools additionally require the operator opt-in `plugins.entries.<plugin_id>.allow_tool_override: true` in `config.yaml`.
 
-### Discovery: `_discover_tools()`
+`schema["description"]` is the authoritative model-facing description. The separate `description=` argument populates `ToolEntry.description`; when it is omitted, the registry metadata falls back to the schema description. `get_definitions()` builds the OpenAI function definition from `entry.schema` and does not copy `entry.description` into a schema that lacks `description`. Therefore, `description=` alone does not describe the tool to the model, and when both values differ the model sees the schema value. Prefer defining the description once in the schema unless a registry consumer intentionally needs different metadata.
 
-When `model_tools.py` is imported, it calls `_discover_tools()` which imports every tool module in order:
+### Discovery: `discover_builtin_tools()`
+
+When `model_tools.py` is imported, it calls `discover_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
 
 ```python
-_modules = [
-    "tools.web_tools",
-    "tools.terminal_tool",
-    "tools.file_tools",
-    "tools.vision_tools",
-    "tools.mixture_of_agents_tool",
-    "tools.image_generation_tool",
-    "tools.skills_tool",
-    "tools.skill_manager_tool",
-    "tools.browser_tool",
-    "tools.cronjob_tools",
-    "tools.rl_training_tool",
-    "tools.tts_tool",
-    "tools.todo_tool",
-    "tools.memory_tool",
-    "tools.session_search_tool",
-    "tools.clarify_tool",
-    "tools.code_execution_tool",
-    "tools.delegate_tool",
-    "tools.process_registry",
-    "tools.send_message_tool",
-    # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
-    "tools.homeassistant_tool",
-]
+# tools/registry.py (simplified)
+def discover_builtin_tools(tools_dir=None):
+    tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
+    for path in sorted(tools_path.glob("*.py")):
+        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        if _module_registers_tools(path):  # AST check for top-level registry.register()
+            importlib.import_module(f"tools.{path.stem}")
 ```
+
+This auto-discovery means new tool files are picked up automatically — no manual list to maintain. The AST check only matches top-level `registry.register()` calls (not calls inside functions), so helper modules in `tools/` are not imported.
 
 Each import triggers the module's `registry.register()` calls. Errors in optional tools (e.g., missing `fal_client` for image generation) are caught and logged — they don't prevent other tools from loading.
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 
-1. **MCP tools** — `tools.mcp_tool.discover_mcp_tools()` reads MCP server config and registers tools from external servers.
+1. **MCP tools** — `tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
 2. **Plugin tools** — `hermes_cli.plugins.discover_plugins()` loads user/project/pip plugins that may register additional tools.
 
 ## Tool availability checking (`check_fn`)
@@ -86,7 +74,7 @@ Each tool can optionally provide a `check_fn` — a callable that returns `True`
 
 - **API key present** — e.g., `lambda: bool(os.environ.get("SERP_API_KEY"))` for web search
 - **Service running** — e.g., checking if the Honcho server is configured
-- **Binary installed** — e.g., verifying `playwright` is available for browser tools
+- **Dependency installed** — e.g., verifying `browser-harness` is importable for `browser_exec`
 
 When `registry.get_definitions()` builds the schema list for the model, it runs each tool's `check_fn()`:
 
@@ -127,7 +115,7 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 4. **Registry filtering** — the resolved tool name set is passed to `registry.get_definitions()`, which applies `check_fn` filtering and returns OpenAI-format schemas.
 
-5. **Dynamic schema patching** — after filtering, `execute_code` and `browser_navigate` schemas are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
+5. **Dynamic schema patching** — after filtering, schemas such as `execute_code`, `browser_cdp` and `delegate_task` are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 
 ### Legacy toolset names
 
@@ -144,7 +132,7 @@ When the model returns a `tool_call`, the flow is:
 ```
 Model response with tool_call
     ↓
-run_agent.py agent loop
+agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓
@@ -178,7 +166,7 @@ This ensures the model always receives a well-formed JSON string, never an unhan
 
 Four tools are intercepted before registry dispatch because they need agent-level state (TodoStore, MemoryStore, etc.):
 
-- `todo` — planning/task tracking
+- `todo_list` — planning/task tracking
 - `memory` — persistent memory writes
 - `session_search` — cross-session recall
 - `delegate_task` — spawns subagent sessions
@@ -224,9 +212,10 @@ The terminal system supports multiple backends:
 - local
 - docker
 - ssh
-- singularity
 - modal
 - daytona
+- vercel_sandbox
+- plugin backends registered through `ctx.register_terminal_environment_provider` (e.g. `singularity`)
 
 It also supports:
 
@@ -234,6 +223,20 @@ It also supports:
 - background process management
 - PTY mode
 - approval callbacks for dangerous commands
+
+`tools/process_registry_checkpoint.py` owns running-process checkpoints and
+PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
+writes one atomic, redacted receipt per process under the profile's
+`logs/process-results/`. Producers cannot overwrite another parent's results by
+rewriting the shared PID checkpoint. The registry persists the receipt before
+releasing its completion event; one-shot linger waits on that event. The existing
+process query methods load retained snapshots without adopting PIDs or enqueuing
+notifications. Reads require the commissioning durable session or its compression
+continuation; knowing a handle alone does not authorize a retained result read.
+The registry captures that owner before starting any output reader, including on
+CLI and non-notifying processes, and preserves the producer's profile context in
+reader threads. Receipt redaction is forced independently of live-output opt-out;
+retention is bounded by age and count.
 
 ## Concurrency
 

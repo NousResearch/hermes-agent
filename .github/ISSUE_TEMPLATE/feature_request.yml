@@ -71,3 +71,15 @@ body:
       label: Contribution
       options:
         - label: I'd like to implement this myself and submit a PR
+
+  - type: textarea
+    id: debug-report
+    attributes:
+      label: Debug Report (optional)
+      description: |
+        If this feature request is related to a problem you're experiencing, run `hermes debug share` and paste the links here.
+        In an interactive chat session, you can use `/debug` instead.
+        This helps us understand your environment and any related logs.
+      placeholder: |
+        Report   https://paste.rs/abc123
+      render: shell

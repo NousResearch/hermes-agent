@@ -1,0 +1,293 @@
+"""CJK/wide-character-aware re-alignment of model-emitted markdown tables.
+
+Models pad tables assuming one cell per character; CJK glyphs and most emoji
+take two, so body rows drift right on real terminals. This rebuilds padding
+with ``wcwidth.wcswidth`` while preserving pipes/dashes (Rich already aligns CJK).
+Deliberately conservative: only contiguous ``| ... |`` blocks with a divider are
+rewritten; single-line/mid-stream fragments pass through (callers buffer rows and
+flush complete blocks). ``wcswidth`` returns ``-1`` for some emoji+variation-selector
+sequences (``⚠️``); those clamp to 0 — a 1-cell drift beats widening every table.
+"""
+
+from __future__ import annotations
+
+from bisect import bisect_left
+import re
+from typing import List
+
+from wcwidth import wcswidth
+
+__all__ = ["is_table_divider", "looks_like_table_row", "realign_markdown_tables", "split_table_row"]
+
+
+_DIVIDER_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
+_MIN_COL_WIDTH = 3  # matches the divider's minimum dash run.
+
+
+def _disp_width(s: str) -> int:
+    """``wcswidth`` clamped to >= 0 (it returns -1 for control/unknown sequences)."""
+    return max(wcswidth(s), 0)
+
+
+def _fills_cell(row: str, start: int, end: int) -> bool:
+    """The backtick run ``row[start:end]`` is a whole cell: whitespace, then a pipe or the row edge, on
+    both sides. A run touching a pipe (`` `| grep` ``, `` `cat |` ``) opens or closes code holding it."""
+    left = start
+    while left > 0 and row[left - 1].isspace():
+        left -= 1
+    right = end
+    while right < len(row) and row[right].isspace():
+        right += 1
+    return ((left == 0 or (row[left - 1] == "|" and left < start))
+            and (right == len(row) or (row[right] == "|" and right > end)))
+
+
+# The letters an English contraction leaves after its apostrophe (don`t, it`s, we`ll, you`re).
+_CONTRACTION_TAIL_RE = re.compile(r"(?:[stdm]|ll|re|ve)(?![A-Za-z])", re.IGNORECASE)
+
+
+def _is_apostrophe(row: str, start: int, end: int) -> bool:
+    """``row[start:end]`` is one backtick typed for an apostrophe inside an ASCII word (``don`t``)."""
+    return (end - start == 1 and start > 0 and row[start - 1].isascii() and row[start - 1].isalpha()
+            and _CONTRACTION_TAIL_RE.match(row, end) is not None)
+
+
+def _is_space(row: str, pos: int) -> bool:
+    return pos < 0 or pos >= len(row) or row[pos].isspace()
+
+
+def _not_a_code_span(row: str, opener: int, opener_end: int, closing_end: int) -> bool:
+    """A backtick pair that crosses a spaced pipe without being code: an opener typed as an
+    apostrophe (``don`t | it`s``: code never opens mid-contraction), an opener ending the word
+    before it (``foo` | ``), a closer starting the word after it (`` | `x``), or both runs alone in
+    their cells (`` `` | x | `` ``). Code glued to the text outside it (``运行`ls | grep`即可``,
+    ``run`ls | grep x`now``) is still code: only ASCII contraction tails count as apostrophes."""
+    closer = closing_end - (opener_end - opener)
+    return (_is_apostrophe(row, opener, opener_end)
+            or (_is_space(row, opener_end) and not _is_space(row, opener - 1) and row[opener - 1] != "|")
+            or (_is_space(row, closer - 1) and not _is_space(row, closing_end))
+            or (_fills_cell(row, opener, opener_end) and _fills_cell(row, closer, closing_end)))
+
+
+def split_table_row(row: str) -> list[str]:
+    """Split a GFM row on unescaped pipes outside matched inline-code spans."""
+    # Pre-index runs by delimiter width: unmatched backticks must not rescan
+    # the rest of a long, model-generated table row.
+    next_run: dict[int, int] = {}
+    matching_ends: dict[int, int] = {}
+    scan = len(row) - 1
+    while scan >= 0:
+        if row[scan] != "`":
+            scan -= 1
+            continue
+        end = scan + 1
+        while scan >= 0 and row[scan] == "`":
+            scan -= 1
+        start = scan + 1
+        width = end - start
+        if width > 1 and width - 1 in next_run:
+            matching_ends[start + 1] = next_run[width - 1]  # the opener left after an escaped first tick
+        if width in next_run:
+            matching_ends[start] = next_run[width]
+        next_run[width] = end
+
+    # A span may hold a spaced pipe (`` `ls | grep x` ``), but backticks used
+    # as apostrophes in two cells (``don`t | it`s``) never pair across one.
+    cell_edges = [m.start() + 1 for m in re.finditer(r" \| ", row)]
+    separators: list[int] = []
+    i = 0
+    while i < len(row):
+        if row[i] == "\\":
+            slash_start = i
+            while i < len(row) and row[i] == "\\":
+                i += 1
+            if (i - slash_start) % 2 and i < len(row):
+                i += 1  # the next character is escaped, including a pipe or backtick
+            continue
+        if row[i] == "`":
+            end = i + 1
+            while end < len(row) and row[end] == "`":
+                end += 1
+            closing_end = matching_ends.get(i)
+            if closing_end is not None:
+                edge = bisect_left(cell_edges, end)
+                within_cell = edge == len(cell_edges) or cell_edges[edge] >= closing_end - (end - i)
+                if within_cell or not _not_a_code_span(row, i, end, closing_end):
+                    i = closing_end
+                    continue
+            i = end  # unmatched or cross-cell backticks are literal
+            continue
+        if row[i] == "|":
+            separators.append(i)
+        i += 1
+
+    start, end = 0, len(row)
+    if separators and not row[: separators[0]].strip():
+        start = separators[0] + 1
+    if separators and not row[separators[-1] + 1 :].strip():
+        end = separators[-1]
+    if start > end:
+        return [""]
+
+    cells: list[str] = []
+    cell_start = start
+    for separator in separators:
+        if start <= separator < end:
+            cells.append(row[cell_start:separator].strip())
+            cell_start = separator + 1
+    cells.append(row[cell_start:end].strip())
+    return cells
+
+
+def is_table_divider(row: str) -> bool:
+    """True when ``row`` is a markdown table separator line."""
+    cells = split_table_row(row)
+    return len(cells) > 1 and all(_DIVIDER_CELL_RE.match(c) for c in cells)
+
+
+def looks_like_table_row(row: str) -> bool:
+    """True when ``row`` could plausibly be a markdown table row.
+
+    Intentionally permissive for streaming callers deciding whether to buffer a
+    line (a false positive at most delays printing one line). A leading pipe is
+    the strongest signal; without it we accept >= 2 pipes so models that omit
+    the leading pipe still match.
+    """
+    stripped = row.strip()
+    return bool(stripped) and (stripped.startswith("|") or stripped.count("|") >= 2)
+
+
+def _render_block(rows: list[list[str]], available_width: int | None = None) -> list[str]:
+    """Render ``rows`` (header + body, divider implied) at uniform widths.
+
+    When the horizontal table would exceed ``available_width`` fall back to a
+    vertical key-value rendering: terminal soft-wrap mid-cell destroys alignment
+    visually even when the bytes are perfectly padded.
+    """
+    ncols = max(len(r) for r in rows)
+    rows = [r + [""] * (ncols - len(r)) for r in rows]
+    widths = [max(_MIN_COL_WIDTH, *(_disp_width(r[c]) for r in rows)) for c in range(ncols)]
+    # `| ` + cell + ` ` per column, plus the closing `|`.
+    if available_width is not None and sum(widths) + 3 * ncols + 1 > max(available_width, 20):
+        return _render_vertical(rows, ncols, available_width)
+
+    def _row(cells: list[str]) -> str:
+        return "| " + " | ".join(c + " " * max(0, widths[k] - _disp_width(c)) for k, c in enumerate(cells)) + " |"
+
+    out = [_row(rows[0]), "|" + "|".join("-" * (w + 2) for w in widths) + "|"]
+    out.extend(_row(r) for r in rows[1:])
+    return out
+
+
+def _hard_break(word: str, w: int) -> list[str]:
+    """Split a single over-wide word into display-width-``w`` chunks."""
+    out: list[str] = []
+    buf, bw = "", 0
+    for ch in word:
+        cw = _disp_width(ch) or 1
+        if bw + cw > w and buf:
+            out.append(buf)
+            buf, bw = ch, cw
+        else:
+            buf, bw = buf + ch, bw + cw
+    return out + [buf] if buf else out
+
+
+def _wrap_to_width(text: str, width: int) -> list[str]:
+    """Soft-wrap ``text`` at word boundaries to ``width`` display cells.
+
+    Words wider than ``width`` are hard-broken. Empty input yields a single
+    empty string so the caller's row count stays predictable.
+    """
+    if width <= 0 or not text:
+        return [text]
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    current, current_w = "", 0
+
+    def _start(word: str, ww: int) -> None:
+        nonlocal current, current_w
+        if ww <= width:
+            current, current_w = word, ww
+        else:
+            pieces = _hard_break(word, width)
+            lines.extend(pieces[:-1])
+            current = pieces[-1] if pieces else ""
+            current_w = _disp_width(current)
+
+    for word in words:
+        ww = _disp_width(word)
+        if not current:
+            _start(word, ww)
+        elif current_w + 1 + ww <= width:
+            current += " " + word
+            current_w += 1 + ww
+        else:
+            lines.append(current)
+            _start(word, ww)
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _render_vertical(rows: list[list[str]], ncols: int, available_width: int) -> list[str]:
+    """Render a too-wide table as ``Header: value`` blocks (Claude Code's narrow fallback).
+
+    Each body row becomes one block with continuation lines indented two spaces,
+    blocks separated by a thin ``─`` rule; every line stays under ``available_width``.
+    """
+    if not rows:
+        return []
+    labels = [h or f"Column {i + 1}" for i, h in enumerate(rows[0] + [""] * (ncols - len(rows[0])))]
+    separator = "─" * (max(20, min(40, available_width - 2)) if available_width else 30)
+    cont_budget = max(10, available_width - 2)  # continuation lines are indented two spaces
+    out: list[str] = []
+    for ri, row in enumerate(rows[1:]):
+        if ri > 0:
+            out.append(separator)
+        for ci, label in enumerate(labels):
+            value = row[ci] if ci < len(row) else ""
+            if not value:
+                out.append(f"{label}:")
+                continue
+            wrapped = _wrap_to_width(value, max(10, available_width - _disp_width(label) - 2))
+            out.append(f"{label}: {wrapped[0]}")
+            # Re-flow continuation text at the wider continuation budget.
+            for cl in _wrap_to_width(" ".join(wrapped[1:]), cont_budget) if len(wrapped) > 1 else ():
+                if cl.strip():
+                    out.append(f"  {cl}")
+    return out
+
+
+def realign_markdown_tables(text: str, available_width: int | None = None) -> str:
+    """Rewrite every ``| ... |`` + divider block with wcwidth-aware padding.
+
+    Non-table lines are returned verbatim, so this is safe on arbitrary prose.
+    With ``available_width`` (terminal cells), tables wider than that render as
+    vertical key-value pairs instead of soft-wrapping mid-cell.
+    """
+    if "|" not in text:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        # A table starts with a header row whose next line is a divider.
+        if "|" in line and i + 1 < n and is_table_divider(lines[i + 1]):
+            header = split_table_row(line)
+            body: list[list[str]] = []
+            j = i + 2
+            while j < n and "|" in lines[j] and lines[j].strip():
+                if not is_table_divider(lines[j]):
+                    body.append(split_table_row(lines[j]))
+                j += 1
+            if any(header) or body:
+                out.extend(_render_block([header] + body, available_width))
+                i = j
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)

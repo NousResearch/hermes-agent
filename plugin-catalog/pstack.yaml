@@ -1,0 +1,16 @@
+name: pstack
+repo: https://github.com/Cloeille/pstack
+sha: d9454cc1ecba5f28b136deacdfe2df959cf7cdec
+description: "Engineering rigor stack: poteto-mode orchestrator with 17 playbooks, plus how, architect, interrogate, swarm, unslop, and 46 other skills and principles. Disclosure — skills only, no tools or network calls of their own; when the user asks, the setup-pstack skill changes Hermes `delegation` model/provider/reasoning settings via `hermes config set`, the autopilot, shipping and babysit playbooks push and force-push the agent's own branches, squash-merge pull requests and arm hourly Hermes cron jobs to watch them, and the reflect skill files backlog issues in your team's tracker without asking per item."
+maintainer: Cloeille
+tier: community
+category: tools
+version: "0.3.1"
+docs_url: https://github.com/Cloeille/pstack
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.0"

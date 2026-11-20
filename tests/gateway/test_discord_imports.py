@@ -14,10 +14,13 @@ class TestDiscordImportSafety:
                 raise ImportError("discord unavailable for test")
             return original_import(name, globals, locals, fromlist, level)
 
-        monkeypatch.delitem(sys.modules, "gateway.platforms.discord", raising=False)
+        # Purge the cached module so the import below actually re-runs the
+        # module body with discord.py simulated-missing.
+        monkeypatch.delitem(sys.modules, "plugins.platforms.discord.adapter", raising=False)
+        monkeypatch.delitem(sys.modules, "plugins.platforms.discord", raising=False)
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
-        module = importlib.import_module("gateway.platforms.discord")
+        module = importlib.import_module("plugins.platforms.discord.adapter")
 
         assert module.DISCORD_AVAILABLE is False
         assert module.discord is None

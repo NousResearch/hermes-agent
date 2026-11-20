@@ -2,6 +2,25 @@
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
+> **Reading the docs on GitHub?** The Markdown under `docs/` is authored for the rendered site at
+> <https://hermes-agent.nousresearch.com/docs/>. Cross-page links are relative Markdown paths, so they
+> follow through on GitHub's file viewer too. Every page on the site has an **Edit this page** link
+> that opens the source file here.
+
+## Authoring links in `docs/`
+
+- Link to another page with a relative Markdown path, anchors included:
+  `[Profiles](../user-guide/profiles.md)`, `[Bundles](../user-guide/features/skills.md#skill-bundles)`.
+  Docusaurus turns the file path into the page route; GitHub follows the same path. Site routes
+  (`/user-guide/profiles`, `/docs/user-guide/profiles`) only work on the rendered site — GitHub
+  resolves them as repository paths and 404s, and the `/docs/` form also emits
+  `/docs/zh-Hans/docs/...` 404s in the zh-Hans build because `baseUrl` is already `/docs/`.
+- `python3 website/scripts/check_doc_links.py` fails on any route-style link in hand-authored pages
+  (EN and the zh-Hans mirror); `--fix` rewrites them. It runs in the `Docs Site Checks` workflow.
+  Generated pages (`user-guide/skills/{bundled,optional}`, `reference/*skills-catalog.md`) are
+  produced by `scripts/generate-skill-docs.py`, which emits the same relative form.
+- Pin `{#anchor}` on cross-linked headings so the zh-Hans mirror keeps the same id.
+
 ## Installation
 
 ```bash

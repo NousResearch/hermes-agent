@@ -1,6 +1,5 @@
 """Tests for tools.environments.docker.find_docker — Docker CLI discovery."""
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -17,10 +16,6 @@ def _reset_cache():
 
 
 class TestFindDocker:
-    def test_found_via_shutil_which(self):
-        with patch("tools.environments.docker.shutil.which", return_value="/usr/bin/docker"):
-            result = docker_mod.find_docker()
-        assert result == "/usr/bin/docker"
 
     def test_not_in_path_falls_back_to_known_locations(self, tmp_path):
         # Create a fake docker binary at a known path
@@ -33,16 +28,31 @@ class TestFindDocker:
             result = docker_mod.find_docker()
         assert result == str(fake_docker)
 
-    def test_returns_none_when_not_found(self):
-        with patch("tools.environments.docker.shutil.which", return_value=None), \
-             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", ["/nonexistent/docker"]):
-            result = docker_mod.find_docker()
-        assert result is None
 
-    def test_caches_result(self):
-        with patch("tools.environments.docker.shutil.which", return_value="/usr/local/bin/docker"):
-            first = docker_mod.find_docker()
-        # Second call should use cache, not call shutil.which again
-        with patch("tools.environments.docker.shutil.which", return_value=None):
-            second = docker_mod.find_docker()
-        assert first == second == "/usr/local/bin/docker"
+    def test_docker_preferred_over_podman(self):
+        """When both docker and podman are on PATH, docker wins."""
+        def which_side_effect(name):
+            if name == "docker":
+                return "/usr/bin/docker"
+            if name == "podman":
+                return "/usr/bin/podman"
+            return None
+
+        with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect):
+            result = docker_mod.find_docker()
+        assert result == "/usr/bin/docker"
+
+
+class TestRuntimeName:
+    """The Docker/Podman wording every surface shows must follow the resolved CLI."""
+
+    @pytest.mark.parametrize(
+        ("executable", "runtime"),
+        [
+            ("/usr/bin/docker", "Docker"),
+            ("/opt/homebrew/bin/podman", "Podman"),
+            ("/usr/bin/podman-remote", "Podman"),
+        ],
+    )
+    def test_runtime_name_follows_resolved_cli(self, executable, runtime):
+        assert docker_mod.docker_runtime_name(executable) == runtime

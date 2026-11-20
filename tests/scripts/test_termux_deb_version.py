@@ -1,4 +1,5 @@
 """Literal tag boundaries and real Debian ordering (not a second parser)."""
+import os
 import shutil
 import subprocess
 import sys
@@ -89,32 +90,48 @@ def test_dpkg_orders_canary_and_numeric_versions():
         subprocess.run(["dpkg", "--compare-versions", earlier, "lt", later], check=True)
 
 
-def _release_commit_version_heredoc() -> str:
-    """The Python build_deb.sh runs to stamp the payload version on a pinned-commit build (the path
-    the release candidate job takes: --tag plus --release-commit)."""
-    script = (SCRIPT.parent / "build_deb.sh").read_text(encoding="utf-8")
-    opener = 'PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$TAG" <<\'PY\'\n'
-    assert script.count(opener) == 1
-    body = script.split(opener, 1)[1]
-    return body[:body.index("\nPY\n")] + "\n"
+def _build_deb(tmp_path, tag, *, release_commit):
+    """Run the real build_deb.sh up to its first post-version gate.
+
+    docker, dpkg-deb and jq are stubs (only their presence is checked before the version is
+    derived), and no --tui-product is passed, so the script logs the payload version it will stamp
+    and then stops before touching docker or the payload.
+    """
+    bin_dir, repo, payload = tmp_path / "bin", tmp_path / "repo", tmp_path / "payload"
+    bin_dir.mkdir()
+    payload.mkdir()
+    for tool in ("docker", "dpkg-deb", "jq"):
+        (bin_dir / tool).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (bin_dir / tool).chmod(0o755)
+    (bin_dir / "python3").symlink_to(sys.executable)
+    git = ["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "release"], check=True)
+    subprocess.run([*git, "tag", tag], check=True)
+    commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    pinned = ["--release-commit", commit] if release_commit else []
+    return subprocess.run(
+        ["bash", str(SCRIPT.parent / "build_deb.sh"), "--repo", str(repo), "--tag", tag, *pinned,
+         "--payload", str(payload), "--out", str(tmp_path / "out")],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
 
 
+@pytest.mark.parametrize("release_commit", [True, False])
 @pytest.mark.parametrize("tag,version", [
     ("v1.2.3", "1.2.3"),
     ("canary.20261021T064100Z-v1.2.3", "1.2.3+canary.20261021T064100Z"),
 ])
-def test_a_pinned_commit_build_stamps_the_tags_release_version(tag, version):
-    """The install stamp's base/display version is the tag's release version, never the tag with
-    its first character cut off (which turns a canary tag into 'anary.<stamp>-v1.2.3')."""
-    root = str(SCRIPT.parents[2])
-    result = subprocess.run([sys.executable, "-", root, root, "a" * 40, tag],
-                            input=_release_commit_version_heredoc(), capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == version
+def test_build_deb_stamps_the_tags_release_version(tmp_path, tag, version, release_commit):
+    """The install stamp's base/display version is the tag's release version, with or without a
+    pinned commit (the release candidate job passes --release-commit), never the tag with its first
+    character cut off (which turns a canary tag into 'anary.<stamp>-v1.2.3')."""
+    result = _build_deb(tmp_path, tag, release_commit=release_commit)
+    assert f"==> Payload version: {version}\n" in result.stdout, result.stderr
+    assert result.returncode == 1 and "--tui-product is required" in result.stderr
 
 
-def test_a_pinned_commit_build_refuses_a_malformed_tag():
-    root = str(SCRIPT.parents[2])
-    result = subprocess.run([sys.executable, "-", root, root, "a" * 40, "v1.2.3+canary.20261021T064100Z"],
-                            input=_release_commit_version_heredoc(), capture_output=True, text=True, check=False)
-    assert result.returncode != 0 and "malformed release tag" in result.stderr
+def test_build_deb_refuses_a_malformed_tag(tmp_path):
+    result = _build_deb(tmp_path, "v1.2.3+canary.20261021T064100Z", release_commit=True)
+    assert result.returncode == 1 and "malformed release tag" in result.stderr
+    assert "Payload version" not in result.stdout

@@ -45,6 +45,7 @@ import {
   type ApprovalRequest,
   clearApprovalRequest,
   isCommandApproval,
+  isTurnApproval,
   networkTarget,
   networkTargetName,
   replayPendingApproval,
@@ -88,8 +89,8 @@ export const PendingApprovalStack: FC = () => {
       initial={false}
       transition={reduced || requests.length ? { duration: 0 } : { duration: 0.22, ease: 'easeInOut' }}
     >
-      {/* The run summary explains a command approval; a folder or site card is not about the turn's tools. */}
-      <ApprovalActivity floating={placement === 'floating'} visible={requests.some(isCommandApproval)} />
+      {/* The run summary explains a command or new-job approval; a folder or site card is not about the turn's tools. */}
+      <ApprovalActivity floating={placement === 'floating'} visible={requests.some(isTurnApproval)} />
       <ApprovalQueue floating={placement === 'floating'} requests={requests} total={total} />
     </motion.section>
   )
@@ -290,6 +291,10 @@ function ApprovalTargetLines({ request }: { request: ApprovalRequest }) {
 }
 
 const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
+  if (request.kind === 'schedule') {
+    return <ScheduleApprovalCard position={position} request={request} stack={stack} total={total} />
+  }
+
   if (!isCommandApproval(request)) {
     return <AccessApprovalCard position={position} request={request} stack={stack} total={total} />
   }
@@ -465,6 +470,106 @@ const AccessApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, s
           <div className="rounded-md border border-(--ui-stroke-tertiary)">
             <ApprovalTargetLines request={request} />
           </div>
+
+          <DialogFooter>
+            <Button onClick={() => setConfirmAlways(false)} size="sm" variant="ghost">
+              {t.common.cancel}
+            </Button>
+            <Button
+              onClick={() => {
+                setConfirmAlways(false)
+                void respond('always')
+              }}
+              size="sm"
+              variant="destructive"
+            >
+              {copy.alwaysAllow}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </article>
+  )
+}
+
+/** A new scheduled job. The body is the job's own description (what, when,
+ *  first run) in full, never the synthetic `<cronjob_manage> (...)` target. */
+const ScheduleApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.approval
+  const { cardRef, rememberFocusOrigin, respond, submitting } = useApprovalResponder(request, stack)
+  const [confirmAlways, setConfirmAlways] = useState(false)
+  const present = stack.active
+  const busy = submitting !== null || !present || stack.busy
+  const choices = request.choices
+  const allowSession = choices ? choices.includes('session') : true
+  const allowAlways = choices ? choices.includes('always') : request.allowPermanent !== false
+  const details = request.description.trim()
+
+  return (
+    <article
+      aria-hidden={!present || undefined}
+      className="min-w-0"
+      data-approval-kind="schedule"
+      data-request-id={request.requestId}
+      data-slot="tool-approval-card"
+      inert={!present}
+      onPointerDownCapture={rememberFocusOrigin}
+      ref={cardRef}
+    >
+      <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
+        <Codicon name="watch" size="0.875rem" />
+        <span>{copy.schedule.title}</span>
+        {total > 1 && (
+          <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
+            {position} / {total}
+          </span>
+        )}
+      </div>
+      {details && (
+        <p
+          className="m-0 min-w-0 whitespace-pre-wrap px-2.5 py-2 text-xs leading-relaxed text-(--ui-text-primary) [overflow-wrap:anywhere]"
+          data-slot="tool-approval-target"
+        >
+          {details}
+        </p>
+      )}
+      <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
+        <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
+          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.deny}
+        </Button>
+        {(allowSession || allowAlways) && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button aria-label={copy.moreOptions} disabled={busy} size="sm" variant="secondary">
+                <ChevronDown className="size-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-44">
+              {allowSession && (
+                <DropdownMenuItem onSelect={() => void respond('session')}>{copy.schedule.allowSession}</DropdownMenuItem>
+              )}
+              {allowAlways && (
+                // One tick later, so Radix's focus return does not dismiss the dialog.
+                <DropdownMenuItem onSelect={() => setTimeout(() => setConfirmAlways(true), 0)}>
+                  {copy.schedule.alwaysAllowMenu}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
+          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.allow}
+          <span className="opacity-60">↵</span>
+        </Button>
+      </div>
+
+      <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{copy.schedule.alwaysTitle}</DialogTitle>
+            <DialogDescription>{copy.schedule.alwaysDescription}</DialogDescription>
+          </DialogHeader>
 
           <DialogFooter>
             <Button onClick={() => setConfirmAlways(false)} size="sm" variant="ghost">

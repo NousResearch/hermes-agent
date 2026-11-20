@@ -37,5 +37,15 @@ export const esApproval: Partial<ApprovalCopy> = {
     alwaysTitle: '¿Permitir siempre este sitio?',
     alwaysDescription:
       'El sitio se añade a los sitios permitidos de este perfil. Hermes no volverá a preguntar por él en ningún chat.'
+  },
+  schedule: {
+    title: '¿Programar esta tarea?',
+    allowSession: 'Permitir en este chat',
+    alwaysAllowMenu: 'Permitir siempre tareas nuevas…',
+    alwaysTitle: '¿Permitir siempre nuevas tareas programadas?',
+    alwaysDescription:
+      'Hermes creará tareas programadas sin preguntar antes. Puedes volver a activar la pregunta quitando cron_create de command_allowlist en config.yaml.',
+    timedOutSystemLine:
+      'La aprobación caducó: no se creó la tarea. Pide a Hermes que lo intente de nuevo o sube el límite en Ajustes → Seguridad → Tiempo de aprobación.'
   }
 }

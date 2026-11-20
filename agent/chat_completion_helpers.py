@@ -33,6 +33,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
+from agent.usage_pricing import hoist_choice_usage, response_usage
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -786,7 +787,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
-    return _chat_completion_capturing_headers(agent, request_client, api_kwargs)
+    return hoist_choice_usage(_chat_completion_capturing_headers(agent, request_client, api_kwargs))
 
 
 
@@ -3047,8 +3048,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
             finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
             self._mark_finish_seen(_diag, finish_reason)
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage_obj = chunk.usage
+            usage_obj = response_usage(chunk) or usage_obj
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream

@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
@@ -411,6 +412,35 @@ def _to_decimal(value: Any) -> Optional[Decimal]:
         return None if value is None else Decimal(str(value))
     except Exception:
         return None
+
+
+def response_usage(obj: Any) -> Any:
+    """``obj.usage``, else the usage an OpenAI-compatible provider put inside ``choices[0]``.
+
+    Moonshot/Kimi endpoints (and gateways copying them) can report usage only on the choice,
+    which the OpenAI SDK keeps as an untyped extra, so ``obj.usage`` reads ``None`` and the
+    turn's tokens are never counted. Top-level usage always wins; the choice copy is a fallback.
+    """
+    top = getattr(obj, "usage", None)
+    choices = None if top else getattr(obj, "choices", None)
+    raw = getattr(choices[0], "usage", None) if choices else None
+    if not isinstance(raw, dict) or not raw:
+        return top or raw or None
+    # Attribute access is all every usage reader needs (normalize_usage, Usage.from_openai,
+    # the turn log), and it never fails on a provider's extra or misspelled keys.
+    return SimpleNamespace(**{k: SimpleNamespace(**v) if isinstance(v, dict) else v
+                              for k, v in raw.items() if isinstance(k, str) and k.isidentifier()})
+
+
+def hoist_choice_usage(response: Any) -> Any:
+    """``response`` with a choice-level usage (see :func:`response_usage`) moved to ``.usage``."""
+    usage = response_usage(response)
+    if usage is not None and not getattr(response, "usage", None):
+        try:
+            response.usage = usage
+        except (AttributeError, TypeError, ValueError):  # frozen/foreign objects keep their shape
+            logger.debug("could not hoist choice-level usage onto %r", type(response))
+    return response
 
 
 def _usage_field(obj: Any, *path: str) -> int:

@@ -358,8 +358,13 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
     print("  ✓ the gateway is installed and enabled as a user service")
     run.step("gateway_service", "done")
     rec = m["old_backend"]
-    if not force_interrupt and rec.get("pid") and host.running_turns(rec["pid"], rec.get("start_time")):
-        raise StepFailed("a turn started on the old backend during migration; it has not been stopped")
+    if not force_interrupt and rec.get("pid"):
+        turns = host.running_turns(rec["pid"], rec.get("start_time"))
+        if turns is None:  # unknown is never idle, here as in the preflight
+            raise StepFailed("the old backend's turn activity cannot be read now, so a reply may be being written "
+                             "in it; it has not been stopped (confirm it is idle, or re-run with --force-interrupt)")
+        if turns:
+            raise StepFailed("a turn started on the old backend during migration; it has not been stopped")
     run.step("stop_old_backend")
     stopped_at = host.now()
     host.old_stop(rec)

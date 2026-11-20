@@ -402,6 +402,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_users = allowlist("LINE_ALLOWED_USERS", "allowed_users")
         self.allowed_groups = allowlist("LINE_ALLOWED_GROUPS", "allowed_groups")
         self.allowed_rooms = allowlist("LINE_ALLOWED_ROOMS", "allowed_rooms")
+        # Group/room keyword gate — LINE has no @mentions in group chats, so the only way
+        # not to answer every message is to require a trigger keyword. DMs are never gated.
+        self.group_keyword = (env_or("LINE_GROUP_KEYWORD", "group_keyword") or "").strip().lower()
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)
@@ -547,8 +550,6 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
-        if chat_id and reply_token:  # stash the reply token for outbound use
-            self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
         media_urls: list[str] = []
         media_types: list[str] = []
         if msg_type == "text":
@@ -565,6 +566,23 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {msg.get('title', '')} {msg.get('address', '')}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+        # Group/room keyword gate — when a trigger keyword is configured, stay silent
+        # in group/room chats unless the message text contains the keyword
+        # (case-insensitive).  DMs are never gated.  Runs BEFORE the reply token is
+        # stashed: a skipped event must not overwrite the pending token an earlier
+        # gated-in message left for this chat.
+        if (
+            self.group_keyword
+            and chat_type in ("group", "room")
+            and self.group_keyword not in text.lower()
+        ):
+            logger.debug(
+                "LINE: group message without keyword %r — skipping",
+                self.group_keyword,
+            )
+            return
+        if chat_id and reply_token:  # stash the reply token for outbound use
+            self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
             asyncio.create_task(self._client.loading(chat_id))
         source_obj = self.build_source(

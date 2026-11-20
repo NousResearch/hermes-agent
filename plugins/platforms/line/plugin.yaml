@@ -51,6 +51,10 @@ optional_env:
     description: "Comma-separated LINE room IDs the bot will respond in (R-prefixed)"
     prompt: "Allowed room IDs (comma-separated)"
     password: false
+  - name: LINE_GROUP_KEYWORD
+    description: "When set, group/room chats are only answered when the message text contains this keyword (case-insensitive); DMs are never gated (also settable as gateway.platforms.line.extra.group_keyword in config.yaml)"
+    prompt: "Group/room trigger keyword (or empty for no gate)"
+    password: false
   - name: LINE_ALLOW_ALL_USERS
     description: "Allow any LINE user to talk to the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"

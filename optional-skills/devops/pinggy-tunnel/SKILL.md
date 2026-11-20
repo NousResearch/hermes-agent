@@ -1,7 +1,7 @@
 ---
 name: pinggy-tunnel
-description: Zero-install localhost tunnels over SSH via Pinggy.
-version: 0.1.0
+description: Expose localhost via Pinggy SSH tunnel; flags after `--`.
+version: 0.2.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -15,7 +15,27 @@ metadata:
 
 Expose a local service (dev server, webhook receiver, MCP endpoint, demo) to the public internet using a Pinggy SSH reverse tunnel. No daemon to install — the user's stock SSH client connects to `a.pinggy.io:443` and Pinggy hands back a public HTTP/HTTPS URL.
 
-Free tier: 60-minute tunnels, random subdomain, no signup. Pro tier ($3/mo) is an opt-in with a token.
+Free tier: 60-minute tunnels, random subdomain, no signup. Pro tier is an opt-in with a token.
+
+## Access-control syntax — READ THIS FIRST
+
+**There are two different places flags can go, and only one of them works.**
+
+| Mechanism | Where | Works? | Use for |
+|---|---|---|---|
+| **Remote args** | after `--` on the ssh command line | YES — this is the real API | `b:`, `k:`, `w:`, `a:`, `r:`, `u:`, `x:*` |
+| Username keywords | inside the SSH username, joined with `+` | NO — silently ignored or `Permission denied` | tunnel TYPE only (`tcp@`, `tls@`, `tlstcp@`, `qr@`, `force@`) and the Pro token |
+
+An earlier version of this skill (and the Hermes optional-skill page) documented `"k:token+free@a.pinggy.io"`. **That syntax does not work.** Verified: `k:…+free@a.pinggy.io`, `b:…+free@a.pinggy.io`, `co+free@a.pinggy.io`, `qr@free.pinggy.io` all fail — either the gate is silently not applied (request returns 200 with no auth challenge) or the connection is refused with `Permission denied (publickey,password)`. Do not use it.
+
+Correct form:
+
+```bash
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
+    free@a.pinggy.io -T -- "b:admin:secret" "x:https"
+```
+
+`-T` is not optional in practice — it disables the interactive TUI so the URL lines land cleanly on stdout. Without it the session stays in the rich TUI (the tunnel still works, but the output is not parseable).
 
 ## When to Use
 
@@ -40,33 +60,48 @@ Optional:
 ```bash
 # Plain HTTP/HTTPS tunnel for port 8000 (free tier)
 ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
-    -R0:localhost:8000 free@a.pinggy.io
-
-# TCP tunnel (databases, raw SSH, etc.)
-ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:5432 tcp@a.pinggy.io
-
-# TLS tunnel (Pinggy can't decrypt — bring your own certs at origin)
-ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:443 tls@a.pinggy.io
+    -R0:localhost:8000 free@a.pinggy.io -T
 
 # Basic auth gate (b:user:pass)
 ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
-    "b:admin:secret+free@a.pinggy.io"
+    free@a.pinggy.io -T -- "b:admin:secret"
 
-# Bearer token gate (k:token)
+# Bearer token gate (visitor sends: Authorization: Bearer <token>)
 ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
-    "k:mysecrettoken+free@a.pinggy.io"
+    free@a.pinggy.io -T -- "k:mysecrettoken"
 
-# IP whitelist (w:CIDR)
+# IP whitelist (single IP or CIDR, comma-separated)
 ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
-    "w:203.0.113.0/24+free@a.pinggy.io"
+    free@a.pinggy.io -T -- "w:203.0.113.0/24"
 
-# Enable CORS + force HTTPS redirect
+# Add / update / remove a request header
 ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
-    "co+x:https+free@a.pinggy.io"
+    free@a.pinggy.io -T -- "a:X-Request-Tag:pinggy"
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
+    free@a.pinggy.io -T -- "u:Host:example.com"
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
+    free@a.pinggy.io -T -- "r:Accept"
 
-# Pro tier (persistent URL, no 60-min cap)
-ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 "$PINGGY_TOKEN+a.pinggy.io"
+# Advanced x: options
+#   x:https          force HTTPS (301 redirect from http://)
+#   x:xff            add X-Forwarded-For (reverse-proxy mode already adds it by default)
+#   x:fullurl        add X-Pinggy-Url with the original request URL
+#   x:passpreflight  let CORS preflight (OPTIONS) through unmodified
+#   x:noreverseproxy strip X-Forwarded-* / Forwarded headers
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
+    free@a.pinggy.io -T -- "k:mykey" "x:passpreflight"
+
+# TCP tunnel (databases, raw SSH, etc.) — returns tcp://host:port
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:5432 tcp@a.pinggy.io -T
+
+# TLS tunnel (end-to-end: Pinggy forwards TLS opaque, origin's own cert is served)
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:443 tls@a.pinggy.io -T
+
+# Pro tier (persistent URL, no 60-min cap) — token is the username, host is pro.pinggy.io
+ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 "$PINGGY_TOKEN@pro.pinggy.io" -T
 ```
+
+Every example passes `-T`. Omit it only for an interactive human session that wants the rich TUI.
 
 ## Procedure — Start a Tunnel and Get the URL
 
@@ -83,36 +118,43 @@ If nothing is listening yet, start it first (e.g. `python -m http.server 8000 --
 
 ### 2. Launch the tunnel as a background process
 
-Use `terminal(background=True)` and capture output to a logfile (Pinggy prints the URLs on stdout, then keeps the connection open):
+Use `terminal(background=True)`. Do NOT wrap it in `nohup … &` — the Hermes terminal tool rejects shell-level backgrounding and you lose process tracking. Read the URL from `process(action='log', session_id=…)`.
 
 ```bash
-LOG=~/.hermes/cache/scratch/pinggy-8000.log
-nohup ssh -p 443 \
+ssh -p 443 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
-    -R0:localhost:8000 free@a.pinggy.io \
-    > "$LOG" 2>&1 &
-echo $! > ~/.hermes/cache/scratch/pinggy-8000.pid
+    -R0:localhost:8000 free@a.pinggy.io -T
 ```
 
 `StrictHostKeyChecking=no` + `UserKnownHostsFile=/dev/null` skips the first-run host-key prompt. `ServerAliveInterval=30` keeps the SSH session from getting torn down by an idle NAT.
 
 ### 3. Parse the URL out of the log
 
-Wait ~4 seconds, then `search_files` for `https://[a-z0-9-]+\.[a-z]+\.pinggy\.link` in `~/.hermes/cache/scratch/pinggy-8000.log`.
+```bash
+sleep 6
+process(action='log', session_id='<id>')
+```
 
-Expected output looks like:
+Expected output:
 
 ```
+Allocated port 9 for remote forward to localhost:8000
 You are not authenticated.
-Your tunnel will expire in 60 minutes.
-http://yqycl-98-162-69-48.a.free.pinggy.link
-https://yqycl-98-162-69-48.a.free.pinggy.link
+Your tunnel will expire in 60 minutes. Upgrade to Pinggy Pro to get unrestricted tunnels.
+https://lilnv-104-28-235-104.free.pinggy.net
+https://ndejf-104-28-235-104.run.pinggy-free.link
 ```
 
-Hand the `https://...pinggy.link` URL to the user.
+Two URLs are printed. **Both are `https://` and both work.** The `.free.pinggy.net` one is canonical; `.run.pinggy-free.link` is the alternate. Parse with a regex covering both:
+
+```bash
+grep -oE 'https://[a-z0-9-]+\.(free\.pinggy\.net|run\.pinggy-free\.link)' <log> | head -1
+```
+
+Older docs show `*.pinggy.link`; current free-tier tunnels are on the two domains above. Handle both if you are reading someone else's log.
 
 ### 4. Verify
 
@@ -125,53 +167,79 @@ If you get `502 Bad Gateway`, the SSH session is up but the local origin isn't l
 
 ### 5. Teardown
 
+```
+process(action='kill', session_id='<id>')
+```
+
+If the session handle is lost, kill by PID. **`pkill` does not exist in the git-bash/MSYS shell on Windows** — it fails with `command not found`, so the tunnel stays up:
+
 ```bash
-kill "$(cat ~/.hermes/cache/scratch/pinggy-8000.pid)"
-# or, if the pid file got lost:
+# Windows / git-bash (MSYS)
+ps -W | grep '/usr/bin/ssh' | awk '{print $1}' | xargs -r kill -9
+
+# Linux / macOS
 pkill -f 'ssh -p 443 .* free@a\.pinggy\.io'
 ```
 
-If you have a session_id from `terminal(background=True)`, prefer `process(action='kill', session_id=...)`.
+## Access Control — Verified Behaviour
 
-## Access Control via Username Keywords
+All flags are **remote args** (after `--`), quoted individually.
 
-Pinggy stacks control flags into the SSH username separated by `+`. Always quote the whole `user@host` argument when it contains a `+`:
+To *prove* a flag's effect rather than trusting the table — serve a header-echo origin and inspect what arrives, and read the effective config back from the web debugger (`/urls`, `/ipwhitelist`). Recipes and the observed per-flag results: `references/verifying-tunnel-flags.md`.
 
-| Keyword | Effect |
-|---------|--------|
-| `b:user:pass` | HTTP Basic auth gate |
-| `k:token` | Bearer-token header gate (`Authorization: Bearer <token>`) |
-| `w:CIDR` | IP whitelist (single IP or CIDR, repeatable) |
-| `co` | Add `Access-Control-Allow-Origin: *` (CORS) |
-| `x:https` | Force HTTPS — auto-redirect HTTP to HTTPS |
-| `a:Name:Value` | Add request header |
-| `u:Name:Value` | Update request header |
-| `r:Name` | Remove request header |
-| `qr` | Print a QR code of the URL to stdout (handy for mobile sharing) |
+| Flag | Effect | Verified response |
+|---|---|---|
+| `b:user:pass` | HTTP Basic auth gate | `401` + `WWW-Authenticate: Basic realm="Pinggy Basic Auth Failed"` without credentials; `200` with correct ones |
+| `k:token` | Bearer-token gate | `401` + `WWW-Authenticate: Bearer realm="Pinggy Key Auth Failed"` without/with wrong token; `200` with `Authorization: Bearer <token>` |
+| `w:IP[,IP…]` | IP whitelist; requests from other IPs get **no response at all** (connection hangs / TLS handshake fails), not a 403 | silences the tunnel entirely for non-listed sources |
+| `a:Name:Value` | append header to every request | header visible at the origin |
+| `u:Name:Value` | remove then add header | `Host` is special: updatable, never removable |
+| `r:Name` | remove header | header absent at the origin |
+| `x:https` | force HTTPS | `301` from `http://` to `https://` |
+| `x:passpreflight` | pass CORS preflight through unmodified | OPTIONS reaches the origin even under `k:` |
+| `x:fullurl` | add `X-Pinggy-Url` with the original URL | verified present |
+| `x:noreverseproxy` | strip `X-Forwarded-*` / `Forwarded` | verified absent |
 
-Combine freely: `"b:admin:secret+co+x:https+free@a.pinggy.io"`.
+Notes that matter:
+
+- **Reverse-proxy mode is ON by default.** Every request already carries `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, and `Forwarded`. `x:xff` is a no-op unless you also pass `x:noreverseproxy`.
+- **`b:` and `k:` can be combined, but they are OR — either gate alone is sufficient.** Verified: with both set, a request carrying only the bearer token returns `200`, and one carrying only the Basic credential also returns `200`; only a request with neither gets `401`. Stack multiple values of the same kind by repeating the flag (`k:key1 k:key2`, `b:u1:p1 b:u2:p2`, `w:IP1,IP2`).
+- **`w:` evaluates the real client IP**, not a header the client controls. Sending `X-Forwarded-For: <listed IP>` does NOT get you in.
+- **There is no `co` flag.** Neither as a remote arg (`Unsupported argument provided.` → connection closed) nor as a username keyword (ignored). Pinggy does not add `Access-Control-Allow-Origin`; if the origin needs CORS, set the header on the local server itself.
+- **An unrecognised remote arg is fatal**, not ignored: the server prints `Unsupported argument provided.` and closes the connection. If a tunnel dies instantly, check the args.
+- **Do not tunnel anything sensitive without `b:`, `k:`, or `w:`.** A bare HTTP tunnel is reachable by anyone who has the URL.
+- **Prove a gate fires before reporting a URL as protected.** A `200` from the URL is not evidence of protection. Check the negative case: no credentials must return `401` with a `WWW-Authenticate` header, correct credentials `200`. If the negative case is also `200`, the flag never took effect — most often because it was put in the username instead of after `--`.
+- **Re-probe a URL after tearing its tunnel down.** A genuinely dead tunnel returns `000` (connection failure), never `200`. Do not conclude anything about reachability from a single probe on a URL you have just killed.
 
 ## Web Debugger (optional)
 
-Pinggy can mirror the inbound traffic to `localhost:4300` for inspection. Add a local forward to the SSH command:
+Add a local forward to the SSH command:
 
 ```bash
-ssh -p 443 -L4300:localhost:4300 -R0:localhost:8000 free@a.pinggy.io
+ssh -p 443 -L4300:localhost:4300 -R0:localhost:8000 free@a.pinggy.io -T
 ```
 
-Then open `http://localhost:4300` in a browser to see live request/response pairs.
+Then open `http://localhost:4300` for live request/response pairs, or query the API:
+
+```bash
+curl http://localhost:4300/urls          # {"urls": ["https://…", "https://…"]}
+curl http://localhost:4300/ipwhitelist   # ["104.28.235.104/32", "192.168.0.0/16"]
+```
+
+If `4300` is taken, map another local port: `-L9999:localhost:4300` and browse to that port. Use `-o ExitOnForwardFailure=yes` so a busy port fails loudly instead of silently dropping the debugger.
 
 ## Pitfalls
 
-- **60-minute hard cap on the free tier.** The SSH session terminates at the 60-minute mark; the URL goes dead. For longer shares, either use `PINGGY_TOKEN` (Pro) or auto-restart with a shell loop (note that the URL changes on every restart for free-tier).
+- **60-minute hard cap on the free tier.** The SSH session terminates at the 60-minute mark; the URL goes dead. For longer shares use a Pro token, or auto-restart with a shell loop. Note the URL changes on every restart.
 - **Free-tier URL is random and changes on restart.** Don't bookmark it, don't paste it into a config file. Re-parse from the log each time.
-- **Concurrent free tunnels are limited to one per source IP.** Starting a second tunnel from the same machine usually kills the first. Pro tier lifts this.
-- **`+` in usernames must be quoted.** Bare `ssh ... b:admin:secret+free@a.pinggy.io` works in bash but breaks under shells that treat `+` specially or when assembled programmatically. Always wrap in double quotes.
-- **Don't tunnel anything sensitive without an access-control flag.** A bare HTTP tunnel is reachable by anyone with the URL. Use `b:`, `k:`, or `w:` for non-public services.
-- **`process(action='log')` may miss SSH banner output.** Pinggy prints the URLs and then the SSH session goes interactive. Always redirect to a logfile and `search_files` the file directly — same pattern as `cloudflared-quick-tunnel`.
-- **Host-key prompt on first run.** Default OpenSSH config asks the user to accept Pinggy's host key. Always pass `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` for unattended runs.
-- **TCP and TLS tunnels return a `<subdomain>.a.pinggy.online:<port>` pair, not an https URL.** Parse with a different regex (`tcp://` and a port). Don't assume every Pinggy tunnel is HTTP.
-- **Pro mode requires the token as the username, not a flag.** Use `"$PINGGY_TOKEN+a.pinggy.io"` (no `free@`). With a token you can also add `:persistent` for a stable subdomain — see `pinggy.io/docs/`.
+- **Free tier does NOT limit you to one concurrent tunnel.** Verified 8/8 simultaneous free tunnels from the same source IP, all serving 200. The old "one tunnel per IP" claim is stale — but keep tunnel count sane anyway.
+- **Free tunnels show a one-time browser screening page.** Only for real browser User-Agents. `curl`, webhook senders, and any custom `User-Agent` pass straight through; browsers can be sent `X-Pinggy-No-Screen: 1`. Verify with a size diff: the screening page is much larger than the origin's response.
+- **`-T` for parseable output.** Without it the rich TUI takes over and the URL lines are not cleanly greppable.
+- **Never use `nohup … &` with the Hermes terminal tool.** Pass `background=True` instead; the tool rejects shell-level backgrounding.
+- **`process(action='log')` is the reliable way to read the URL.** Parsing a redirected logfile also works, but the session log is already captured for you.
+- **TCP and TLS tunnels return a different shape.** TCP gives `tcp://<subdomain>.run.pinggy-free.link:<port>`. TLS gives `tls://<subdomain>.run.pinggy-free.link` with **no port**, and it is end-to-end: Pinggy forwards TLS opaque, so the origin's own certificate is what the client sees and Pinggy cannot read the traffic. Verified with a self-signed origin cert served through the tunnel. Don't assume every tunnel is an https URL.
+- **Pro mode requires the token as the username**, and the host is `pro.pinggy.io`: `"$PINGGY_TOKEN@pro.pinggy.io"`. A persistent subdomain is assigned to the token in the dashboard, not via a flag.
+- **Pinggy needs no SSH key.** A password prompt means the client fell back to password auth; press enter, or use `auth` as a username keyword if a client insists.
 
 ## Recipes
 
@@ -181,16 +249,17 @@ Composite patterns combining a local origin with a Pinggy tunnel. Each recipe is
 
 Use this when an external service (Stripe, GitHub, Discord, AgentMail, etc.) needs to POST to a publicly reachable URL during a local task.
 
-```python
-# 1. Tiny capturing server: write_file ~/.hermes/cache/scratch/webhook-server.py with this,
-#    so every request gets appended to ~/.hermes/cache/scratch/webhook-hits.log
+```bash
+# 1. Tiny capturing server: every request gets appended to a hits log next to this file.
+#    Write it to the Hermes scratch dir, then start with terminal(background=True).
+cat >~/.hermes/cache/scratch/webhook-server.py <<'PY'
 import http.server, json, datetime, pathlib
 LOG = pathlib.Path("~/.hermes/cache/scratch/webhook-hits.log").expanduser()
 class H(http.server.BaseHTTPRequestHandler):
     def _capture(self):
         n = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(n).decode("utf-8", "replace") if n else ""
-        rec = {"t": datetime.datetime.utcnow().isoformat(), "path": self.path,
+        rec = {"t": datetime.datetime.now().astimezone().isoformat(), "path": self.path,
                "method": self.command, "headers": dict(self.headers), "body": body}
         with LOG.open("a") as f: f.write(json.dumps(rec) + "\n")
         self.send_response(200); self.send_header("content-type","application/json")
@@ -199,27 +268,24 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self): self._capture()
     def log_message(self,*a,**k): pass
 http.server.HTTPServer(("127.0.0.1", 18080), H).serve_forever()
-```
-
-```bash
-nohup python ~/.hermes/cache/scratch/webhook-server.py >~/.hermes/cache/scratch/webhook-server.log 2>&1 &
-echo $! >~/.hermes/cache/scratch/webhook-server.pid
+PY
+python ~/.hermes/cache/scratch/webhook-server.py    # terminal(background=True)
 
 # 2. Tunnel — bearer-token-gate so randos can't pollute the capture log
-nohup ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ServerAliveInterval=30 \
-    -R0:localhost:18080 "k:$(openssl rand -hex 12)+free@a.pinggy.io" \
-    >~/.hermes/cache/scratch/webhook-pinggy.log 2>&1 &
-echo $! >~/.hermes/cache/scratch/webhook-pinggy.pid
-sleep 5
-URL=$(grep -oE 'https://[a-z0-9-]+\.[a-z]+\.pinggy\.link' ~/.hermes/cache/scratch/webhook-pinggy.log | head -1)
+    -R0:localhost:18080 free@a.pinggy.io -T -- "k:$(openssl rand -hex 12)" \
+    >~/.hermes/cache/scratch/webhook-pinggy.log 2>&1
+# run with terminal(background=True), then read the URL from process(action='log')
+sleep 6
+URL=$(grep -oE 'https://[a-z0-9-]+\.(free\.pinggy\.net|run\.pinggy-free\.link)' ~/.hermes/cache/scratch/webhook-pinggy.log | head -1)
 echo "Webhook URL: $URL"
 
 # 3. While the agent works, watch hits land
 tail -f ~/.hermes/cache/scratch/webhook-hits.log
 ```
 
-Hand `$URL` to the service that needs to call you. Teardown: `kill $(cat ~/.hermes/cache/scratch/webhook-server.pid) $(cat ~/.hermes/cache/scratch/webhook-pinggy.pid)`.
+Hand `$URL` to the service that needs to call you, plus `Authorization: Bearer <token>`. Teardown: `process(action='kill', …)` on both the tunnel and the capture server.
 
 ### Recipe 2 — Expose an MCP server over HTTP/SSE
 
@@ -227,24 +293,24 @@ Use when a remote MCP client (Claude Desktop on another machine, a teammate's ed
 
 ```bash
 # 1. Start the MCP server in HTTP mode (example: a FastMCP server on port 8765)
-nohup python my_mcp_server.py --transport http --port 8765 \
-    >~/.hermes/cache/scratch/mcp-server.log 2>&1 &
-echo $! >~/.hermes/cache/scratch/mcp-server.pid
+python my_mcp_server.py --transport http --port 8765    # terminal(background=True)
 
 # 2. Tunnel with a bearer token — MCP traffic should not be open to the internet
 TOKEN=$(openssl rand -hex 16)
-nohup ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ServerAliveInterval=30 \
-    -R0:localhost:8765 "k:$TOKEN+free@a.pinggy.io" \
-    >~/.hermes/cache/scratch/mcp-pinggy.log 2>&1 &
-echo $! >~/.hermes/cache/scratch/mcp-pinggy.pid
-sleep 5
-URL=$(grep -oE 'https://[a-z0-9-]+\.[a-z]+\.pinggy\.link' ~/.hermes/cache/scratch/mcp-pinggy.log | head -1)
+    -R0:localhost:8765 free@a.pinggy.io -T -- "k:$TOKEN" \
+    >~/.hermes/cache/scratch/mcp-pinggy.log 2>&1
+# terminal(background=True); URL from process(action='log')
+sleep 6
+URL=$(grep -oE 'https://[a-z0-9-]+\.(free\.pinggy\.net|run\.pinggy-free\.link)' ~/.hermes/cache/scratch/mcp-pinggy.log | head -1)
 echo "MCP URL: $URL"
 echo "Bearer token: $TOKEN"
 ```
 
 The remote client connects to `$URL` with `Authorization: Bearer $TOKEN`. Hermes' own native MCP client config: `{"transport": "http", "url": "<URL>", "headers": {"Authorization": "Bearer <TOKEN>"}}`.
+
+Pinggy forwards the `Authorization` header unchanged, so the local server sees Pinggy's token. Let Pinggy do the gating and keep the local server on `127.0.0.1`.
 
 ### Recipe 3 — Expose a local LLM endpoint (Ollama / vLLM / llama.cpp)
 
@@ -253,13 +319,13 @@ Share a local model with a remote caller (another agent, a phone, a teammate). O
 ```bash
 # Pre-req: the model server is already running on 127.0.0.1:11434 (Ollama default)
 TOKEN=$(openssl rand -hex 16)
-nohup ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ServerAliveInterval=30 \
-    -R0:localhost:11434 "k:$TOKEN+co+free@a.pinggy.io" \
-    >~/.hermes/cache/scratch/llm-pinggy.log 2>&1 &
-echo $! >~/.hermes/cache/scratch/llm-pinggy.pid
-sleep 5
-URL=$(grep -oE 'https://[a-z0-9-]+\.[a-z]+\.pinggy\.link' ~/.hermes/cache/scratch/llm-pinggy.log | head -1)
+    -R0:localhost:11434 free@a.pinggy.io -T -- "k:$TOKEN" \
+    >~/.hermes/cache/scratch/llm-pinggy.log 2>&1
+# terminal(background=True); URL from process(action='log')
+sleep 6
+URL=$(grep -oE 'https://[a-z0-9-]+\.(free\.pinggy\.net|run\.pinggy-free\.link)' ~/.hermes/cache/scratch/llm-pinggy.log | head -1)
 echo "Endpoint: $URL"
 echo "Token:    $TOKEN"
 
@@ -267,7 +333,7 @@ echo "Token:    $TOKEN"
 curl -s "$URL/api/tags" -H "Authorization: Bearer $TOKEN" | head
 ```
 
-`co` enables CORS so a browser caller can hit the endpoint. Drop `co` for backend-only callers. For an OpenAI-compatible vLLM/llama.cpp endpoint, callers use base URL `$URL/v1` with `Authorization: Bearer $TOKEN` — but note Pinggy strips/replaces nothing in the body, so the model server itself sees Pinggy's token; the local server should be configured to ignore auth (it's already on `127.0.0.1`) and let Pinggy do the gating.
+For an OpenAI-compatible vLLM/llama.cpp endpoint, callers use base URL `$URL/v1` with `Authorization: Bearer $TOKEN`. Pinggy does not touch the body, and **it does not add CORS headers** — a browser caller needs the origin to emit `Access-Control-Allow-Origin` itself.
 
 ### Recipe 4 — Share a dev server with a one-shot password
 
@@ -278,31 +344,36 @@ PASS=$(openssl rand -base64 12 | tr -d '+/=' | head -c 12)
 echo "Dev server password: $PASS"
 ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ServerAliveInterval=30 \
-    -R0:localhost:3000 "b:dev:$PASS+co+x:https+free@a.pinggy.io"
-# URL prints to the terminal. Share URL + password. Ctrl-C to tear down.
+    -R0:localhost:3000 free@a.pinggy.io -T -- "b:dev:$PASS" "x:https"
+# URL from process(action='log'). Share URL + password. Kill the session to tear down.
 ```
 
-`b:dev:$PASS` gates the URL with HTTP Basic auth. `x:https` forces TLS. `co` adds CORS for SPA frontends.
+`b:dev:$PASS` gates the URL with HTTP Basic auth. `x:https` forces TLS. If the app is a browser SPA, set `Access-Control-Allow-Origin` on the local server — Pinggy won't add it.
 
 ## Verification
 
 ```bash
-# End-to-end: spin up a trivial origin, tunnel it, hit it, tear down
-python -m http.server 18000 --bind 127.0.0.1 >~/.hermes/cache/scratch/origin.log 2>&1 &
-ORIGIN_PID=$!
+# origin — terminal(background=True)
+python -m http.server 18000 --bind 127.0.0.1
 
-nohup ssh -p 443 \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -R0:localhost:18000 free@a.pinggy.io >~/.hermes/cache/scratch/pinggy-verify.log 2>&1 &
-SSH_PID=$!
+# tunnel — terminal(background=True)
+ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -R0:localhost:18000 free@a.pinggy.io -T
 
-sleep 5
-URL=$(grep -oE 'https://[a-z0-9-]+\.[a-z]+\.pinggy\.link' ~/.hermes/cache/scratch/pinggy-verify.log | head -1)
-echo "URL: $URL"
+sleep 6
+# URL from process(action='log'); then:
 curl -sI "$URL/" | head -1
 
-kill "$SSH_PID" "$ORIGIN_PID"
+# teardown
+process(action='kill', session_id='<tunnel>')
+process(action='kill', session_id='<origin>')
 ```
 
-Expected: a `pinggy.link` URL and `HTTP/2 200` on the curl head.
+Expected: a `https://<sub>.free.pinggy.net` (or `.run.pinggy-free.link`) URL and `HTTP/1.1 200` on the curl head.
+
+Stronger check that an auth gate actually fires — do this before reporting a URL as protected:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "$URL/"                                  # expect 401
+curl -s -o /dev/null -w "%{http_code}\n" "$URL/" -H "Authorization: Bearer $TOKEN"  # expect 200
+```

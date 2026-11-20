@@ -1,0 +1,31 @@
+name: memo-router
+repo: https://github.com/Gens-ai/hermes-memo-router
+sha: 46e78a19c60340aaf2b3b376e1b0514644aa8138
+description: >-
+  You say "memo" in a sentence and the thing you said ends up in the note file
+  you already keep. Two hooks watch every incoming message, classify it against
+  the markdown files that already exist in your notes directory, and ask once
+  before writing, with the destination shown up front. Reply yes, no, or name a
+  different category. The filing instruction is stripped, so the file gets the
+  memo and not the sentence you said to a robot. Ships a plain-markdown backend
+  and an Obsidian vault backend behind one interface, so a new destination needs
+  no change to the classification or trigger logic. Disclosure: reads and
+  appends markdown inside the notes directory you configure, which is outside
+  the plugin's own data directory, with every write gated on containment, the
+  Hermes home and Hermes's own write denylist. Rewrites incoming gateway
+  message text and injects turn context through its two hooks, and spends one
+  extra host LLM call per classified message, which you can switch off. No network calls, no subprocesses,
+  no credentials held, no telemetry.
+maintainer: Joe-Kneeland
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+version: "0.3.0"
+capabilities:
+  provides_tools:
+    - memo_route
+  provides_hooks:
+    - pre_gateway_dispatch
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -208,6 +208,9 @@ importers:
       '@novnc/novnc':
         specifier: 1.7.0
         version: 1.7.0
+      '@pen.dev/sdk':
+        specifier: ^0.1.0
+        version: 0.1.0(electron@44.10.2(supports-color@10.2.2))
       '@simple-git/argv-parser':
         specifier: 2.0.1
         version: 2.0.1
@@ -1718,6 +1721,14 @@ packages:
   '@peculiar/webcrypto@1.7.1':
     resolution: {integrity: sha512-ODOov0sGMJMf3jPonOkgGqPknTsu+DdQ7kD++gz8aI+aFMOMHFbWAA2taqXXVTdP+OTOQR/znGvSpmkeI0WTYQ==}
     engines: {node: '>=14.18.0'}
+
+  '@pen.dev/sdk@0.1.0':
+    resolution: {integrity: sha512-EhNdWZoFvhC7TSWlRBlFDxxrwMx32hQcBBYFauRSyJ1NKyFK65265Vmv18nY8wAJVZxKIpMavP+VGEeeJQ69dA==}
+    peerDependencies:
+      electron: '>=30'
+    peerDependenciesMeta:
+      electron:
+        optional: true
 
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
@@ -7613,6 +7624,10 @@ snapshots:
       '@peculiar/utils': 2.0.3
       tslib: 2.8.1
       webcrypto-core: 1.9.2
+
+  '@pen.dev/sdk@0.1.0(electron@44.10.2(supports-color@10.2.2))':
+    optionalDependencies:
+      electron: 44.10.2(supports-color@10.2.2)
 
   '@pkgjs/parseargs@0.11.0':
     optional: true

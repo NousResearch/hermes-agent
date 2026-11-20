@@ -1463,6 +1463,15 @@ export const jaOverrides = {
     tokens: value => `${value} トーク`
   },
 
+  penLibrary: {
+    title: 'キャンバス',
+    searchPlaceholder: 'キャンバスを検索…',
+    empty: 'キャンバスがありません',
+    delete: 'キャンバスを削除',
+    confirmDelete: '削除',
+    cancelDelete: '残す'
+  },
+
   commandCenter: {
     close: 'コマンドセンターを閉じる',
     paletteTitle: 'コマンドパレット',
@@ -3149,6 +3158,10 @@ export const jaOverrides = {
     terminalDisconnectedBody:
       'ターミナルが切断されました。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。',
     addToChat: 'チャットに追加'
+  },
+
+  pen: {
+    openFailed: 'キャンバスを開けませんでした'
   },
 
   preview: {

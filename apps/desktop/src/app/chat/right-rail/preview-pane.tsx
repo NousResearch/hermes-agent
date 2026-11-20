@@ -3,7 +3,7 @@
 import './preview-mind'
 
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, PointerEvent as ReactPointerEvent } from 'react'
+import type { ComponentProps, PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
@@ -33,6 +33,13 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import {
+  $penImport,
+  hoverPenImportPath,
+  importFromPreviewStrip,
+  selectPenImportPath,
+  togglePenImportPick
+} from '@/store/pen-import'
 import {
   $browserPages,
   $previewServerRestart,
@@ -77,6 +84,7 @@ import { previewConsoleState } from './preview-console-store'
 import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
+import { registerPreviewImport } from './preview-import'
 import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
@@ -110,6 +118,64 @@ type PreviewWebview = HTMLElement &
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
  *  the guest has been removed. Optional chaining does not help — the method
  *  exists, it just refuses. */
+/** Pop a web tab out into its own Browser window, where that's possible from here. */
+function browserPopOut(tabId: string | undefined): (() => void) | undefined {
+  return tabId && !isBrowserWindow() && canOpenBrowserWindow() ? () => popOutBrowserTab(tabId) : undefined
+}
+
+interface PenImportInputs {
+  isRemoteHtml: boolean
+  isWebPreview: boolean
+  liveUrlRef: RefObject<string>
+  loading: boolean
+  tabId: string | undefined
+  webviewRef: RefObject<PreviewWebview | null>
+}
+
+/**
+ * Import-to-canvas for this pane. Publishes the IMPORT handle for a web tab —
+ * who the <webview> guest is and what it shows — so pen.dev's capturer (in
+ * main) can be pointed at it, by the strip's control and by the agent's
+ * pen_canvas(action='import'); returns the strip's props (none without pen).
+ */
+function usePenImport({ isRemoteHtml, isWebPreview, liveUrlRef, loading, tabId, webviewRef }: PenImportInputs) {
+  const penImport = useStore($penImport)
+  const loadingRef = useRef(loading)
+  const importTabId = isWebPreview && !isRemoteHtml ? tabId : undefined
+
+  loadingRef.current = loading
+
+  useEffect(() => {
+    if (!importTabId) {
+      return
+    }
+
+    return registerPreviewImport(importTabId, {
+      guestId: () => {
+        try {
+          return webviewRef.current?.getWebContentsId?.()
+        } catch {
+          return undefined
+        }
+      },
+      loading: () => loadingRef.current,
+      page: () => guestPage(webviewRef.current, liveUrlRef.current)
+    })
+  }, [importTabId, liveUrlRef, webviewRef])
+
+  if (!tabId || !window.hermesDesktop?.pen) {
+    return {}
+  }
+
+  return {
+    importState: penImport?.tabId === tabId ? penImport : undefined,
+    onImport: (mode: 'page' | 'selection') => void importFromPreviewStrip(tabId, mode),
+    onImportHoverPath: (index: null | number) => hoverPenImportPath(tabId, index),
+    onImportSelectPath: (index: number) => selectPenImportPath(tabId, index),
+    onToggleImport: () => void togglePenImportPick(tabId)
+  }
+}
+
 function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = ''): { title: string; url: string } {
   try {
     return {
@@ -858,6 +924,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -883,6 +950,7 @@ export function PreviewPane({
   }, [tabId, usesWebview])
 
   usePreviewDriveChannels(webviewRef, tabId, usesWebview)
+  const penImportProps = usePenImport({ isRemoteHtml, isWebPreview, liveUrlRef, loading, tabId, webviewRef })
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -1401,7 +1469,7 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+   
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1509,17 +1577,14 @@ export function PreviewPane({
             onNavigate={navigateTo}
             onOpenExternal={externalOpenerFor(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
-            onPopOut={
-              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
-                ? undefined
-                : () => popOutBrowserTab(tabId)
-            }
+            onPopOut={browserPopOut(target.kind === 'url' ? tabId : undefined)}
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
             tabId={tabId}
             url={currentUrl}
+            {...penImportProps}
           />
         )}
 

@@ -76,7 +76,7 @@ export interface ComposerAttachment {
    * which is content/path-derived, this survives draft cloning but changes
    * when the user removes and re-adds the same attachment. */
   occurrenceId?: string
-  kind: 'file' | 'folder' | 'image' | 'terminal' | 'url'
+  kind: 'canvas' | 'file' | 'folder' | 'image' | 'terminal' | 'url'
   label: string
   detail?: string
   refText?: string

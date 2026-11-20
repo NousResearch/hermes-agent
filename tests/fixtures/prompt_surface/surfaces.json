@@ -191,7 +191,7 @@
       "stable": 1495,
       "volatile": 1269
     },
-    "tool_tokens": 10120,
+    "tool_tokens": 10954,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -201,6 +201,7 @@
       "execute_code",
       "memory",
       "patch",
+      "pen_canvas",
       "react_to_message",
       "read_file",
       "search_files",

@@ -8,6 +8,20 @@ export const BROWSER_WINDOW_WIDTH = 960
 export const BROWSER_WINDOW_HEIGHT = 720
 export const BROWSER_WINDOW_MIN_WIDTH = 480
 export const BROWSER_WINDOW_MIN_HEIGHT = 400
+export const BROWSER_WINDOW_SIZE = {
+  width: BROWSER_WINDOW_WIDTH,
+  height: BROWSER_WINDOW_HEIGHT,
+  minWidth: BROWSER_WINDOW_MIN_WIDTH,
+  minHeight: BROWSER_WINDOW_MIN_HEIGHT
+}
+
+/** What a popped-out surface (Browser, canvas) needs from main's window factory. */
+export interface PopoutWindowOptions {
+  kind: string
+  size: { width: number; height: number; minWidth: number; minHeight: number }
+  url: string
+  onClosed: () => void
+}
 
 /**
  * Renderer URL for a popped-out Browser. `tab` is the `$previewTabs` id the

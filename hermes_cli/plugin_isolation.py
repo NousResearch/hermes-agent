@@ -171,25 +171,23 @@ def user_plugin_host() -> Any:
 
 
 @contextlib.contextmanager
-def transient_plugin_host(before_stop: Optional[Any] = None) -> Iterator[None]:
-    """Stop the active profile's plugin host on exit when it was started inside the block: a one-shot
-    call for another profile (a profile lifecycle hook) must not leave a process behind. A host
-    that was already running is left alone; a stopped one restarts on its next use.
-    ``before_stop`` runs first, to drop registrations that would point at the stopped host.
-
-    A request that starts using the same profile's host while the block runs (the dashboard
-    serving that new profile at that moment) can lose its in-flight call; its next call restarts it."""
+def transient_plugin_host() -> Iterator[Any]:
+    """A throwaway plugin manager for a one-shot load in the active profile (a profile lifecycle
+    hook), or ``None`` when ``plugins.isolation`` is not ``host``. Its own scope key and host
+    process keep it apart from the profile's shared manager, so the teardown on exit (dispose its
+    registrations, stop its host) cannot touch a concurrent user of that profile's shared host."""
     if isolation_mode() != ISOLATION_HOST:
-        yield
+        yield None
         return
-    from hermes_cli.plugins import get_plugin_manager
-    manager = get_plugin_manager()
-    was_running = manager._running_plugin_host() is not None
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    manager.scope_key = f"{manager.scope_key}#transient"  # home_path stays the profile's home
     try:
-        yield
+        yield manager
     finally:
-        host = manager._running_plugin_host()
-        if host is not None and not was_running:
-            if before_stop is not None:
-                before_stop()
-            host.shutdown()
+        try:
+            manager.unload()
+        finally:
+            host = manager._running_plugin_host()
+            if host is not None:
+                host.shutdown()

@@ -1753,6 +1753,8 @@
     "gatewayGroupOpen.lookupFailed",
     "gatewayGroupOpen.missing",
     "gatewayGroupOpen.opening",
+    "inAppOffer.describedBy",
+    "inAppOffer.dismiss",
     "install.activeDesc",
     "install.applyRemote",
     "install.authNeedsOauth",

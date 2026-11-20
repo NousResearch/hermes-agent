@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 # Profile memo key -> the offer dict as served by the Portal (already
 # shape-checked by record_from_account_payload).
-_offers: Dict[str, Dict[str, str]] = {}
+_offers: dict[str, dict[str, str]] = {}
 
 _REQUIRED_STRINGS = ("id", "title", "body", "cta_label", "cta_url")
 
 
-def record_from_account_payload(payload: Dict[str, Any]) -> None:
+def record_from_account_payload(payload: dict[str, Any]) -> None:
     """Remember the offer this account fetch carried (or the absence of one).
 
     A payload whose ``in_app_offer`` is missing or malformed clears the memo:
@@ -59,7 +59,7 @@ def clear() -> None:
         _offers.pop(_mint_memo_key(), None)
 
 
-def pending_offer() -> Optional[Dict[str, str]]:
+def pending_offer() -> Optional[dict[str, str]]:
     """The offer the Portal currently serves this profile, or None.
 
     Signed out means None, whatever the memo holds: the offer was evaluated
@@ -94,7 +94,7 @@ def _signed_in() -> bool:
     return is_guest_state(state) or bool(held_connectors_token(state))
 
 
-def refresh_from_portal() -> Optional[Dict[str, str]]:
+def refresh_from_portal() -> Optional[dict[str, str]]:
     """Fetch the account once with the stored token and return the offer.
 
     Uses ``stored_token_account_info``: it never refreshes the token, so this
@@ -124,7 +124,7 @@ def refresh_from_portal() -> Optional[Dict[str, str]]:
     return pending_offer()
 
 
-def _validated(value: Any) -> Optional[Dict[str, str]]:
+def _validated(value: Any) -> Optional[dict[str, str]]:
     """The five wire fields as non-empty strings, or None.
 
     Shape-checks rather than trusting the JSON: the payload crosses a network
@@ -132,7 +132,7 @@ def _validated(value: Any) -> Optional[Dict[str, str]]:
     """
     if not isinstance(value, dict):
         return None
-    checked: Dict[str, str] = {}
+    checked: dict[str, str] = {}
     for field_name in _REQUIRED_STRINGS:
         text = value.get(field_name)
         if not isinstance(text, str) or not text.strip():

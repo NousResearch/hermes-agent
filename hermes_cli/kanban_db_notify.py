@@ -87,7 +87,8 @@ def add_notify_sub(
     existing row's value. ``delivery_mode``: ``None`` leaves an existing row
     untouched, an explicit valid value is last-write-wins, unknown falls back
     to ``"notify"``. ``delivery_metadata`` merges supplied routing anchors
-    into an existing row so re-subscribing never discards them. New subs start
+    into an existing row so re-subscribing never discards them. The requester is
+    recorded only on creation; re-subscribing cannot attribute legacy rows. New subs start
     caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
@@ -105,7 +106,9 @@ def add_notify_sub(
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
         merged_metadata = dict(existing_metadata)
         if delivery_metadata:
-            merged_metadata.update(delivery_metadata)
+            # Routing anchors may change; the first recorded requester still owns the completion ping.
+            merged_metadata.update({key: value for key, value in delivery_metadata.items()
+                                    if key != "requester_user_id" or existing is None})
         if chat_type:
             # The column defaults to 'dm' when no type is given; the metadata copy records that a
             # caller really supplied one, which the notifier's route gate takes as evidence.

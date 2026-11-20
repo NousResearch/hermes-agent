@@ -180,11 +180,11 @@ def _routed_credentials() -> dict[str, str]:
     them again, so a rotated token takes effect on the next sandbox. Every later call on a sandbox
     (commands, files, refresh, snapshot, stop) reuses the client ``Sandbox.create`` built from them.
     """
-    from agent.secret_scope import get_secret, serves_routed_profile
+    from agent.secret_scope import get_secret_str, serves_routed_profile
 
     if not serves_routed_profile():
         return {}
-    token, project_id, team_id = ((get_secret(name) or "").strip() for name in _TOKEN_VARS)
+    token, project_id, team_id = (get_secret_str(name).strip() for name in _TOKEN_VARS)
     if not (token and project_id and team_id):
         raise ValueError("VERCEL_TOKEN, VERCEL_PROJECT_ID and VERCEL_TEAM_ID are not all set for this profile: add "
                          "them to this profile's .env (or its secret source). Another profile's Vercel credentials "

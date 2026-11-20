@@ -164,8 +164,9 @@ def test_a_single_profile_keeps_the_sdks_own_credentials(wire, tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(("dotenv", "usable"), [
-    (None, True), ("VERCEL_OIDC_TOKEN=oidc-B\n", False), ("VERCEL_TOKEN=vtok-B\n", False)],
-    ids=["full-triple", "oidc-only", "token-only"])
+    (None, True), ("VERCEL_OIDC_TOKEN=oidc-B\n", False), ("VERCEL_TOKEN=vtok-B\n", False),
+    ('VERCEL_TOKEN="  "\nVERCEL_PROJECT_ID=prj_B\nVERCEL_TEAM_ID=team_B\n', False)],
+    ids=["full-triple", "oidc-only", "token-only", "quoted-blank-token"])
 def test_backend_selection_agrees_with_the_constructor_for_a_routed_profile(wire, profiles, dotenv, usable):
     from tools.terminal_tool_backends import _check_vercel
 

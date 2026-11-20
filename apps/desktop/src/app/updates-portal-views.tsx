@@ -75,7 +75,7 @@ export function PortalUpdatePitch(props: PortalUpdatePitchProps) {
       {shown.length > 0 && (
         <ol className="discovery-welcome-card discovery-check-in-rows">
           {shown.map((item, index) => (
-            <li className="updates-portal-row" key={item}>
+            <li className="updates-portal-row" key={`${index}:${item}`}>
               <span className="discovery-welcome-place-name updates-portal-row-text" title={item}>
                 {item}
               </span>
@@ -137,8 +137,8 @@ function reachedStages(apply: UpdateApplyState): { stage: DesktopUpdateStage; me
 }
 
 /**
- * The redesign's install progress (Figma E3 18677:29591): the stage as the heading and each stage
- * the updater has reached as a row, done or under way, with the real progress under them. Figma's
+ * The redesign's install progress (Figma E3 18677:29591): "Updating Hermes…" as the heading and each
+ * stage the updater has reached as a row, done or under way, with the real progress under them. Figma's
  * rows name the person's work (chats, agents, routines, machines); the updater reports its own
  * stages, not per-area progress, so the rows are those.
  */

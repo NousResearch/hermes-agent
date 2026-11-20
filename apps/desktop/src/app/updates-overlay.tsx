@@ -646,7 +646,7 @@ function ApplyingView({
       : null
 
   if (portal) {
-    return <PortalUpdateApplying apply={apply} body={body} closeNote={u.applyingClose} label={label} />
+    return <PortalUpdateApplying apply={apply} body={body} closeNote={u.applyingClose} label={u.stages.update} />
   }
 
   return (

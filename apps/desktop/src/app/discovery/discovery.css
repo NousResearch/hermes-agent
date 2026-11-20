@@ -738,6 +738,11 @@
   :root[data-shell='portal'] .discovery-welcome {
     --discovery-bleed: 1rem;
   }
+
+  /* The count hugs its digits, so the row's lines keep the width. */
+  :root[data-shell='portal'] .discovery-welcome-place-meta {
+    min-inline-size: 0;
+  }
 }
 
 /* ── The empty chat: heading and starter ideas (18695:18388) ──────────────────────────────── */

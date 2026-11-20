@@ -66,10 +66,11 @@ interface PlacesProps extends StepProps {
 }
 
 /**
- * Step 1 (Figma 18695:17147): what each place in the nav is for, one row each in one card. A row
- * that a pointer, focus or tap reaches says its example in place of its line, lights its place in
- * the rail (and Chats brings the chat sidebar back), and carries the seen check for the rest of the
- * showing (18695:17833). Each row's name stays its place and line for assistive tech; the example and
+ * Step 1 (Figma 18695:17147): what each place in the nav is for, one row each in one card. The row a
+ * pointer, focus or tap last reached is the place: it lights in the rail and Chats brings the chat
+ * sidebar back, and while the pointer or focus is still on the rows it says its example in place of
+ * its line (18695:17294). Every row reached carries the seen check for the rest of the showing
+ * (18695:17833). Each row's name stays its place and line for assistive tech; the example and
  * the check are its description.
  */
 function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
@@ -114,8 +115,9 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
                 <PlaceGlyph place={row} />
                 <span aria-hidden className="discovery-welcome-place-text">
                   <span className="discovery-welcome-place-name">{names[row]}</span>
-                  <span className="discovery-welcome-place-line">
-                    {active ? copy.lines[row].example : copy.lines[row].line}
+                  <span className="discovery-welcome-place-line">{copy.lines[row].line}</span>
+                  <span className="discovery-welcome-place-line" data-example="">
+                    {copy.lines[row].example}
                   </span>
                 </span>
                 {isSeen && (

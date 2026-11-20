@@ -440,14 +440,34 @@
   text-align: start;
 }
 
-:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place {
+/* The place speaks while the pointer or focus is on the rows: its fill, its example for its line, no
+   check (18695:17294). Away from them the card rests with every row's line (18695:17833). */
+:root[data-shell='portal']
+  .discovery-welcome-places:is(:hover, :focus-within)
+  > li[data-active]
+  .discovery-welcome-place {
   background-color: var(--portal-surface-selected);
 }
 
 /* The speaking row's fill covers the divider above it, as Figma's 65px fill does. */
-:root[data-shell='portal'] .discovery-welcome-places > li[data-active]::before,
-:root[data-shell='portal'] .discovery-welcome-places > li[data-active] + li::before {
+:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active]::before,
+:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active] + li::before {
   visibility: hidden;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-line[data-example],
+:root[data-shell='portal']
+  .discovery-welcome-places:is(:hover, :focus-within)
+  > li[data-active]
+  .discovery-welcome-place-line:not([data-example]) {
+  display: none;
+}
+
+:root[data-shell='portal']
+  .discovery-welcome-places:is(:hover, :focus-within)
+  > li[data-active]
+  .discovery-welcome-place-line[data-example] {
+  display: inline;
 }
 
 :root[data-shell='portal'] .discovery-welcome-place:focus-visible {
@@ -500,7 +520,10 @@
   color: var(--portal-text-chrome);
 }
 
-:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-seen {
+:root[data-shell='portal']
+  .discovery-welcome-places:is(:hover, :focus-within)
+  > li[data-active]
+  .discovery-welcome-seen {
   visibility: hidden;
 }
 
@@ -562,8 +585,8 @@
   box-shadow: none;
 }
 
-/* While the splash is up the rail lights only the place a row points at (18695:17294, 18695:17488):
-   the open destination's selection stands down until then. */
+/* While the splash is up the rail lights only the place a row is pointing at (18695:17294,
+   18695:17488): the open destination's selection stands down. */
 :root[data-shell='portal']:has(.discovery-splash[data-splash='first-time'])
   [data-slot='global-nav']
   .portal-chrome-button[aria-current='page'] {
@@ -571,16 +594,24 @@
   color: var(--portal-rail-ink);
 }
 
-:root[data-shell='portal']:has(.discovery-splash[data-place='chats'])
+:root[data-shell='portal']:has(
+    .discovery-splash[data-place='chats'] .discovery-welcome-places:is(:hover, :focus-within)
+  )
   [data-slot='global-nav']
   .portal-chrome-button[data-nav-spot='chat'],
-:root[data-shell='portal']:has(.discovery-splash[data-place='agents'])
+:root[data-shell='portal']:has(
+    .discovery-splash[data-place='agents'] .discovery-welcome-places:is(:hover, :focus-within)
+  )
   [data-slot='global-nav']
   .portal-chrome-button[data-nav-spot='profiles'],
-:root[data-shell='portal']:has(.discovery-splash[data-place='routines'])
+:root[data-shell='portal']:has(
+    .discovery-splash[data-place='routines'] .discovery-welcome-places:is(:hover, :focus-within)
+  )
   [data-slot='global-nav']
   .portal-chrome-button[data-nav-spot='cron'],
-:root[data-shell='portal']:has(.discovery-splash[data-place='library'])
+:root[data-shell='portal']:has(
+    .discovery-splash[data-place='library'] .discovery-welcome-places:is(:hover, :focus-within)
+  )
   [data-slot='global-nav']
   .portal-chrome-button[data-nav-spot='artifacts'] {
   background-color: var(--portal-rail-fill-selected);

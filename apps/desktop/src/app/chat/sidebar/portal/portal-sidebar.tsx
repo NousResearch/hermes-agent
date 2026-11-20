@@ -29,10 +29,10 @@ import { agentOwner } from '../use-simplified-agents'
 
 import { AGENT_CHAT_CAP } from './agent-chat-cap'
 import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
+import { CreateAccountCard } from './create-account-card'
 import { type GroupChatMatches, PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
 import { PortalSidebarHead, PortalSidebarSearchField, usePortalSidebarSearch } from './portal-sidebar-head'
-import { CreateAccountCard } from './create-account-card'
 import { UsageStatsCard } from './usage-stats-card'
 
 const ROW_STEP: Record<string, (index: number, count: number) => number> = {

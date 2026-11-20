@@ -1264,12 +1264,12 @@ is not a card on the stage but the stage itself (its veil over the art, edge to 
 up the chat sidebar stands down (`$firstTimeSplashHoldsSidebar` feeds the same route collapse that
 hides it beside a page), so the stage is the splash's alone. Step 1 is a 640 column: eyebrow, display
 title, one line, then Chats, Agents, Routines and Library as rows in one card (`--portal-welcome-card`).
-A row that a pointer, focus or tap reaches says its example in place of its line, lights its place in
-the rail (the rail's own selected fill; the open destination's selection stands down while the splash
-is up), brings the real chat sidebar back for Chats (Agents, Routines and Library have their panels
-on their own pages, which the splash does not open), and fades everything else to
-`--portal-backdrop-opacity`; from then on it carries the seen check (the band's chrome tile) for the
-rest of the showing. "Make it yours" leads to step 2: the accent's eight swatches and Light / Dark in
+The row a pointer, focus or tap last reached is the place: Chats brings the real chat sidebar back
+(Agents, Routines and Library have their panels on their own pages, which the splash does not open).
+While the pointer or focus is on the rows, that row says its example in place of its line, its place
+is lit in the rail (the rail's own selected fill; the open destination's selection stands down while
+the splash is up) and everything else fades to `--portal-backdrop-opacity`. Every row reached carries
+the seen check (the band's chrome tile) for the rest of the showing. "Make it yours" leads to step 2: the accent's eight swatches and Light / Dark in
 one card, "Make it beautiful" (the artworks the mode draws, as cards that run the stage's width and fade
 off both sides), and the way in: Sign up and Look around where sign up is required, one button
 elsewhere. A quiet Back on the eyebrow's line returns to step 1. Every control is a native button or

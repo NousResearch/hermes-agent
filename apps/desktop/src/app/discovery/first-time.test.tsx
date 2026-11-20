@@ -118,18 +118,20 @@ describe('the first-time splash in the shell', () => {
     // Named by the rail's own label for the place, then its line; the example is its description.
     const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
     const agents = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.agents.line}`) })
-    expect(within(routines).queryAllByText(copy.splash.lines.routines.example)).toHaveLength(1)
+    const routineRow = () => routines.closest('li')!
+    expect(routineRow().dataset.active).toBeUndefined()
     expect(firstTime()?.dataset.place).toBeUndefined()
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(0)
     expect($firstTimeSplashHoldsSidebar.get()).toBe(true)
 
+    // The active row is the one whose example shows (discovery.css swaps it for the line).
     fireEvent.focus(routines)
-    expect(within(routines).getAllByText(copy.splash.lines.routines.example)).toHaveLength(2)
+    expect(routineRow().dataset.active).toBe('true')
     expect(firstTime()?.dataset.place).toBe('routines')
     expect(routines.getAttribute('aria-describedby')).toContain(' ')
 
     fireEvent.click(agents)
-    expect(within(routines).getByText(copy.splash.lines.routines.line)).toBeTruthy()
+    expect(routineRow().dataset.active).toBeUndefined()
     expect(firstTime()?.dataset.place).toBe('agents')
     // Both rows reached keep their check for the rest of the showing.
     expect(routines.querySelector('[data-slot="seen-check"]')).not.toBeNull()

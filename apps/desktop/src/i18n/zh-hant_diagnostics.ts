@@ -78,6 +78,8 @@ export const zhHantDiagnostics = {
       accessReadWriteBody: folder => `讀寫：${folder}`,
       networkTitle: '需要網站存取權',
       networkTitleNamed: session => `需要網站存取權 — ${session}`,
+      scheduleTitle: 'Hermes 想要排定一項工作',
+      scheduleTitleNamed: session => `Hermes 想要排定一項工作 — ${session}`,
       allowAction: '允許',
       denyAction: '拒絕',
       inputTitle: '需要輸入',

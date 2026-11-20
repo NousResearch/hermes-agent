@@ -98,6 +98,8 @@ export const arDiagnostics = {
       accessReadWriteBody: folder => `قراءة وكتابة: ${folder}`,
       networkTitle: 'مطلوب الوصول إلى موقع',
       networkTitleNamed: session => `مطلوب الوصول إلى موقع — ${session}`,
+      scheduleTitle: 'يريد Hermes جدولة مهمة',
+      scheduleTitleNamed: session => `يريد Hermes جدولة مهمة — ${session}`,
       allowAction: 'السماح',
       denyAction: 'رفض',
       inputTitle: 'مطلوب إدخال',

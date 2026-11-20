@@ -493,6 +493,8 @@ export const en: Translations = {
       accessReadWriteBody: folder => `Read and write: ${folder}`,
       networkTitle: 'Website access needed',
       networkTitleNamed: session => `Website access needed — ${session}`,
+      scheduleTitle: 'Hermes wants to schedule a job',
+      scheduleTitleNamed: session => `Hermes wants to schedule a job — ${session}`,
       allowAction: 'Allow',
       denyAction: 'Deny',
       inputTitle: 'Input needed',

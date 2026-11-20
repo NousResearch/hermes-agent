@@ -509,6 +509,8 @@ export const esOverrides = {
       accessReadWriteBody: folder => `Lectura y escritura: ${folder}`,
       networkTitle: 'Se necesita acceso a un sitio web',
       networkTitleNamed: session => `Se necesita acceso a un sitio web — ${session}`,
+      scheduleTitle: 'Hermes quiere programar una tarea',
+      scheduleTitleNamed: session => `Hermes quiere programar una tarea — ${session}`,
       allowAction: 'Permitir',
       denyAction: 'Denegar',
       inputTitle: 'Se necesita información',

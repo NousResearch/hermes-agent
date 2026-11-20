@@ -182,6 +182,8 @@ export const ruOverrides = {
       accessReadWriteBody: folder => `Чтение и запись: ${folder}`,
       networkTitle: 'Нужен доступ к сайту',
       networkTitleNamed: session => `Нужен доступ к сайту — ${session}`,
+      scheduleTitle: 'Hermes хочет запланировать задание',
+      scheduleTitleNamed: session => `Hermes хочет запланировать задание — ${session}`,
       allowAction: 'Разрешить',
       denyAction: 'Запретить',
       inputTitle: 'Требуется ввод',

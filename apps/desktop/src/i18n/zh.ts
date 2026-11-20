@@ -284,6 +284,8 @@ export const zhOverrides = {
       accessReadWriteBody: folder => `读写：${folder}`,
       networkTitle: '需要网站访问权限',
       networkTitleNamed: session => `需要网站访问权限 — ${session}`,
+      scheduleTitle: 'Hermes 想要安排一个任务',
+      scheduleTitleNamed: session => `Hermes 想要安排一个任务 — ${session}`,
       allowAction: '允许',
       denyAction: '拒绝',
       inputTitle: '需要输入',

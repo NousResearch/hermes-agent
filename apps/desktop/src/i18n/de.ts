@@ -506,6 +506,8 @@ export const deOverrides = {
       accessReadWriteBody: folder => `Lesen und schreiben: ${folder}`,
       networkTitle: 'Website-Zugriff erforderlich',
       networkTitleNamed: session => `Website-Zugriff erforderlich — ${session}`,
+      scheduleTitle: 'Hermes möchte einen Job planen',
+      scheduleTitleNamed: session => `Hermes möchte einen Job planen — ${session}`,
       allowAction: 'Erlauben',
       denyAction: 'Ablehnen',
       inputTitle: 'Eingabe erforderlich',

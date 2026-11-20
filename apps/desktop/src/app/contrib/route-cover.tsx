@@ -10,6 +10,7 @@
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
 import { type Location, Routes, useLocation } from 'react-router'
 
+import { useRootAttribute } from '@/lib/root-attribute'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { appViewForPath, isOverlayView } from '../routes'
@@ -65,6 +66,8 @@ interface CoveredRegionProps {
  *  inert and hidden from assistive tech. */
 function CoveredRegion({ children, className, covered, slot }: CoveredRegionProps) {
   const ref = useFocusReturn(covered)
+
+  useRootAttribute('data-route-covered', covered)
 
   return (
     <div

@@ -6,6 +6,7 @@ import { type CSSProperties, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { useRootAttribute } from '@/lib/root-attribute'
 import { $butterbarItems, type ButterbarItem, dismissButterbar, isButterbarCloseable } from '@/store/butterbar'
 
 const DEFAULT_DWELL_MS = 3000
@@ -38,6 +39,8 @@ export function Butterbar() {
 
     return () => window.clearTimeout(timer)
   }, [index, item, items, multiple, paused])
+
+  useRootAttribute('data-butterbar', Boolean(item))
 
   if (!item) {
     return null

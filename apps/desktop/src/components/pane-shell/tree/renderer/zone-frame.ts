@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 
 import type { Contribution } from '@/contrib/types'
+import { useRootAttribute } from '@/lib/root-attribute'
 
 import type { Rect } from '../../geometry'
 
@@ -46,6 +47,17 @@ export function zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty
     'data-zone-page': paneChrome(active).headerVeto || undefined,
     'data-zone-pane': isEmpty ? undefined : activeId
   }
+}
+
+/** `zoneFrameAttrs` for a mounted zone. It also names on the root that the redesign's chat sidebar is
+ *  docked at the window's start: the artwork's veil follows it from the root (portal-artwork.css),
+ *  where a :has() would restyle the whole document on every DOM change. */
+export function useZoneFrameAttrs(input: ZoneFrameAttrsInput) {
+  const { activeId, edges, isEmpty, portal } = input
+
+  useRootAttribute('data-sessions-docked', portal && !isEmpty && activeId === 'sessions' && edges.left)
+
+  return zoneFrameAttrs(input)
 }
 
 interface ZoneFrameStyleInput {

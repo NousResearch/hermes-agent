@@ -4,6 +4,7 @@ import { type RefObject, useCallback, useEffect, useId, useRef, useState } from 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { FileText } from '@/lib/icons'
+import { useRootAttribute } from '@/lib/root-attribute'
 import {
   $firstTimeSplashPlace,
   $firstTimeSplashSeen,
@@ -79,6 +80,11 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
   const place = useStore($firstTimeSplashPlace)
   const seen = useStore($firstTimeSplashSeen)
   const id = useId()
+  // The rows under the pointer or holding focus: the rail lights the place only then (discovery.css).
+  const [pointerOver, setPointerOver] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+
+  useRootAttribute('data-discovery-place', pointerOver || focusWithin ? place : null)
 
   return (
     <>
@@ -91,7 +97,14 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
           {copy.subtitle}
         </p>
       </div>
-      <ul aria-label={copy.listLabel} className="discovery-welcome-card discovery-welcome-places">
+      <ul
+        aria-label={copy.listLabel}
+        className="discovery-welcome-card discovery-welcome-places"
+        onBlur={event => setFocusWithin(event.currentTarget.contains(event.relatedTarget))}
+        onFocus={() => setFocusWithin(true)}
+        onPointerEnter={() => setPointerOver(true)}
+        onPointerLeave={() => setPointerOver(false)}
+      >
         {FIRST_TIME_PLACES.map(row => {
           const active = row === place
           const isSeen = seen.has(row)

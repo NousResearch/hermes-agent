@@ -400,29 +400,19 @@
 
 /* While the splash is up the rail lights only the place a row is pointing at (18695:17294,
    18695:17488): the open destination's selection stands down. */
-:root[data-shell='portal']:has(.discovery-splash) [data-slot='global-nav'] .portal-chrome-button[aria-current='page'] {
+:root[data-shell='portal'][data-discovery-splash] [data-slot='global-nav'] .portal-chrome-button[aria-current='page'] {
   background-color: var(--portal-rail-fill);
   color: var(--portal-rail-ink);
 }
 
-:root[data-shell='portal']:has(
-    .discovery-splash[data-place='chats'] .discovery-welcome-places:is(:hover, :focus-within)
-  )
-  [data-slot='global-nav']
-  .portal-chrome-button[data-nav-spot='chat'],
-:root[data-shell='portal']:has(
-    .discovery-splash[data-place='agents'] .discovery-welcome-places:is(:hover, :focus-within)
-  )
+/* The place the welcome's rows point at, while the pointer or focus is on them (first-time-splash.tsx
+   names it on the root: a :root:has() here restyles the whole document on every DOM change). */
+:root[data-shell='portal'][data-discovery-place='chats'] [data-slot='global-nav'] .portal-chrome-button[data-nav-spot='chat'],
+:root[data-shell='portal'][data-discovery-place='agents']
   [data-slot='global-nav']
   .portal-chrome-button[data-nav-spot='profiles'],
-:root[data-shell='portal']:has(
-    .discovery-splash[data-place='routines'] .discovery-welcome-places:is(:hover, :focus-within)
-  )
-  [data-slot='global-nav']
-  .portal-chrome-button[data-nav-spot='cron'],
-:root[data-shell='portal']:has(
-    .discovery-splash[data-place='library'] .discovery-welcome-places:is(:hover, :focus-within)
-  )
+:root[data-shell='portal'][data-discovery-place='routines'] [data-slot='global-nav'] .portal-chrome-button[data-nav-spot='cron'],
+:root[data-shell='portal'][data-discovery-place='library']
   [data-slot='global-nav']
   .portal-chrome-button[data-nav-spot='artifacts'] {
   background-color: var(--portal-rail-fill-selected);

@@ -143,6 +143,30 @@ describe('the first-time splash in the shell', () => {
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(2)
   })
 
+  it('names the lit place on the root only while the pointer or focus is on the rows, for the rail', () => {
+    renderShell()
+    settle([])
+    const root = window.document.documentElement
+    const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
+
+    expect(root.hasAttribute('data-discovery-splash')).toBe(true)
+    expect(root.hasAttribute('data-discovery-place')).toBe(false)
+
+    fireEvent.focus(routines)
+    expect(root.dataset.discoveryPlace).toBe('routines')
+    // Focus leaves the rows: the place stays picked in the splash, the rail stops pointing.
+    fireEvent.blur(routines, { relatedTarget: window.document.body })
+    expect(firstTime()?.dataset.place).toBe('routines')
+    expect(root.hasAttribute('data-discovery-place')).toBe(false)
+
+    fireEvent.pointerEnter(routines.closest('ul')!)
+    expect(root.dataset.discoveryPlace).toBe('routines')
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(root.hasAttribute('data-discovery-place')).toBe(false)
+    expect(root.hasAttribute('data-discovery-splash')).toBe(false)
+  })
+
   it('hands the chat sidebar back while Chats is the place lit, and takes it again after', () => {
     renderShell()
     settle([])

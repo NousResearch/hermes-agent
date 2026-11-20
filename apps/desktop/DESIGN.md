@@ -636,9 +636,13 @@ so nested surfaces never compound a veil; covers that cannot (`--portal-surface-
 `--portal-page-background`) take the veil flattened onto the ground. With a sidebar or page nav
 docked (wide), the figure artworks move right by Figma's own amount to stay on the stage; every
 image carries bleed past every placement (Ascend repeats across), so no window size ever reaches an
-image edge. The panels carry Figma's NOISE effects as tiny tiling `feTurbulence` SVGs
-(`assets/portal-noise-*.svg`, `--artwork-panel-noise`/`--artwork-stage-noise`): the sidebar kind in
-both themes, the stage in light. Figma's
+image edge. The panels carry Figma's NOISE effects as small tiling PNGs
+(`assets/portal-noise-*.png`, `--artwork-panel-noise`/`--artwork-stage-noise`): the sidebar kind in
+both themes, the stage in light. Each is its `feTurbulence` SVG beside it rendered once at 2x: used
+directly, the filter is recomputed for every tile the compositor rasters, which made scrolling flash.
+Page-wide state a style needs goes on the root as an attribute (`useRootAttribute`), never as
+`:root:has(…)`: that selector makes Chromium re-match every `:has()` rule across the document on
+each DOM change. Figma's
 "01 · Artwork" screens are the canvas layer on its own, not an app state. The one place to choose
 the art is the first-time splash's "Make it yours" (Onboarding 18695:18059): it offers the artworks
 the current mode draws, and a choice (`$artworkChoice`, a machine-level appearance preference like

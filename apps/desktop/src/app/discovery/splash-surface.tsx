@@ -3,6 +3,7 @@ import './discovery.css'
 import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from 'react'
 
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { useRootAttribute } from '@/lib/root-attribute'
 
 import { type NavSpot, NavSpotlight } from './nav-spotlight'
 
@@ -50,6 +51,9 @@ export interface SplashSurfaceProps<Id extends string> {
  */
 export function useSplashFrame(takeFocus: boolean, onEscape: () => void): RefObject<HTMLElement | null> {
   const surfaceRef = useRef<HTMLElement>(null)
+
+  // While a splash is up the rail's own selection stands down (discovery.css).
+  useRootAttribute('data-discovery-splash', true)
 
   useEffect(() => {
     const focus = document.activeElement

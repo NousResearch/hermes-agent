@@ -104,7 +104,7 @@ import { PaneBody } from './pane-body'
 import { usePanelTitlebar } from './panel-titlebar'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
-import { zoneFrameAttrs, zoneFrameStyle } from './zone-frame'
+import { useZoneFrameAttrs, zoneFrameStyle } from './zone-frame'
 import { useZoneHeaderLayout } from './zone-header-layout'
 import { useZoneHeader } from './zone-header-provider'
 
@@ -661,7 +661,7 @@ export function TreeGroup({
     <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
-      {...zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty, portal })}
+      {...useZoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty, portal })}
       // The zone menu opens from the strip, the rail, the edit veil and the
       // body. Only the strip can name a chip, so resolve the target HERE for
       // every one of them — otherwise a right-click off the strip reused the

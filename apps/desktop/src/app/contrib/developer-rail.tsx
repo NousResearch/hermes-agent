@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { useRootAttribute } from '@/lib/root-attribute'
 import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $rightRailActiveTabId, setFileBrowserOpen } from '@/store/layout'
@@ -37,6 +38,8 @@ export function DeveloperRail() {
 function DeveloperTools() {
   const { t } = useI18n()
   const titlebarHeight = useTitlebarHeight()
+
+  useRootAttribute('data-developer-rail', true)
   const narrow = useStore($narrowViewport)
   const overlays = useStore($narrowOverlayPaneIds)
   const files = useStore($paneVisible('files'))

@@ -21,13 +21,13 @@
 
 /* A notice strip at the window's floor lifts the frame by its height; the bar rides up with the floor
    so its chips never cover the strip's message or its link, at any width. */
-:root[data-shell='portal']:has([data-slot='butterbar']) [data-slot='portal-status-bar'] {
+:root[data-shell='portal'][data-butterbar] [data-slot='portal-status-bar'] {
   inset-block-end: calc(
     var(--portal-notice-strip-height) + var(--portal-workspace-inset-bottom) + var(--portal-status-bar-corner)
   );
 }
 
-:root[data-shell='portal']:has([data-slot='butterbar']) [data-slot='portal-status-bar'][data-open] {
+:root[data-shell='portal'][data-butterbar] [data-slot='portal-status-bar'][data-open] {
   inset-block-end: calc(var(--portal-notice-strip-height) + var(--portal-status-bar-floor));
 }
 
@@ -61,8 +61,7 @@
 }
 
 /* The developer rail stands between the frame and the window's end: the bar ends with the frame. */
-:root[data-shell='portal']:has([data-slot='layout-cover'] + [data-slot='developer-rail'])
-  [data-slot='portal-status-bar'] {
+:root[data-shell='portal'][data-developer-rail] [data-slot='portal-status-bar'] {
   --portal-workspace-inset-end: calc(var(--portal-rail-width) + var(--portal-workspace-inset-start));
 }
 

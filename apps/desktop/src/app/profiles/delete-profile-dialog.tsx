@@ -1,10 +1,11 @@
-import type { ProfileScope } from '@/api/client'
+import { ambientOwnerConnectionId, type ProfileScope } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
+import { LEGACY_REMOTE_APPEARANCE_SCOPE } from '@/themes/appearance-prefs'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
 // Enter-to-confirm + busy/done/error from the shared dialog. The single choke
@@ -60,6 +61,15 @@ export function DeleteProfileDialog({
         // onDeleted refresh so our reset is the last write — a refreshActiveProfile
         // racing the (still-dying) backend can't clobber the pill back to it.
         const remote = scope !== undefined && scope !== null
+        const appearanceOwnerId = ambientOwnerConnectionId() ?? LEGACY_REMOTE_APPEARANCE_SCOPE
+
+        const route = remote
+          ? {
+              connectionId: (typeof scope === 'object' ? scope?.connectionId?.trim() : null) || appearanceOwnerId,
+              profile: (typeof scope === 'string' ? scope : scope?.profile) || profile.name,
+              targetProfile: profile.name
+            }
+          : undefined
 
         const wasActive =
           !remote && normalizeProfileKey(profile.name) === normalizeProfileKey($activeGatewayProfile.get())
@@ -70,11 +80,13 @@ export function DeleteProfileDialog({
 
         // Legacy arity when unscoped: callers and tests pin the one-arg call.
         await (remote ? deleteProfile(profile.name, scope) : deleteProfile(profile.name))
+
         // The profile is gone. Drop its persisted tiles now — a leftover
         // session/Bot tile restores on relaunch and dials the deleted
         // profile's backend, whose ensure_hermes_home() re-creates the
         // directory the delete just removed (hermes-agent#94235).
-        dropTilesForProfile(profile.name)
+        dropTilesForProfile(profile.name, route, appearanceOwnerId)
+
         await onDeleted?.()
 
         if (wasActive) {

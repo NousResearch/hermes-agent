@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { modePref, skinPref } from './context'
+import { modePref, skinPref } from './appearance-prefs'
 import { DEFAULT_SKIN_NAME } from './presets'
 
 // Skin and mode share one per-profile contract, so assert it once over both.
@@ -46,9 +46,9 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
     expect(pref.resolve('work')).toBe(fallback)
   })
 })
-// #101216: named-profile assign must seed the global fallback so a Bot Mode
-// gateway hop onto a never-themed bot does not resolve `system`.
-describe('named-profile appearance seeds the global fallback (#101216)', () => {
+// #101216: preserve last-pick inheritance for unassigned bots, now bounded to
+// the same gateway instead of mutating the ambiguous legacy global fallback.
+describe('named-profile appearance seeds its gateway fallback (#101216)', () => {
   beforeEach(() => window.localStorage.clear())
 
   it('lets a never-themed bot profile inherit Dark set on the launch profile', () => {
@@ -69,7 +69,7 @@ describe('named-profile appearance seeds the global fallback (#101216)', () => {
     expect(modePref.resolve('never-themed')).toBe('light')
   })
 
-  it('promotes a unanimous pre-existing per-profile mode into the empty global slot', () => {
+  it('reads a unanimous pre-existing per-profile mode when the global slot is empty', () => {
     window.localStorage.setItem('hermes-desktop-profile-modes-v1', JSON.stringify({ forge: 'dark' }))
     expect(modePref.resolve('atlas')).toBe('dark')
   })

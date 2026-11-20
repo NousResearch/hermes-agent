@@ -13,12 +13,14 @@
  * dialogs and the backend share the filesystem for local and pooled backends.
  */
 
+import { ambientOwnerConnectionId } from '@/api/client'
 import { isLayoutNode, normalize } from '@/components/pane-shell/tree/model'
 import { $layoutTree, markActivePreset, persistTree } from '@/components/pane-shell/tree/store'
 import { exportProfileArchive, importProfileArchive } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
-import { modePref, skinPref, type ThemeMode } from '@/themes/context'
+import { LEGACY_REMOTE_APPEARANCE_SCOPE, modePref, skinPref } from '@/themes/appearance-prefs'
+import type { ThemeMode } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 import type { DesktopTheme } from '@/themes/types'
 import { $userThemes, installUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -46,8 +48,9 @@ const OVERLAY_VERSION = 1
  */
 export function buildDesktopOverlay(profile: string): ProfileDesktopOverlay {
   const key = normalizeProfileKey(profile)
-  const skin = skinPref.resolve(key)
-  const mode = modePref.resolve(key)
+  const connectionId = ambientOwnerConnectionId() ?? LEGACY_REMOTE_APPEARANCE_SCOPE
+  const skin = skinPref.resolve(key, connectionId)
+  const mode = modePref.resolve(key, connectionId)
 
   // Bundle the full definition of any non-built-in theme the skin points at,
   // so the receiver's picker can resolve it. Built-ins resolve by name.
@@ -89,7 +92,11 @@ const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' ||
  * Every step is independent and best-effort — a malformed half never blocks
  * the rest, and a missing overlay is a plain CLI-exported archive (no-op).
  */
-export function applyDesktopOverlay(profile: string, overlay: null | ProfileDesktopOverlay | undefined): void {
+export function applyDesktopOverlay(
+  profile: string,
+  overlay: null | ProfileDesktopOverlay | undefined,
+  connectionId = ambientOwnerConnectionId() ?? LEGACY_REMOTE_APPEARANCE_SCOPE
+): void {
   if (!overlay || typeof overlay !== 'object') {
     return
   }
@@ -109,11 +116,11 @@ export function applyDesktopOverlay(profile: string, overlay: null | ProfileDesk
   // 2. Appearance assignment for the new profile. Only assign a skin that
   //    actually resolves so the pref never points at nothing.
   if (typeof overlay.skin === 'string' && resolveTheme(overlay.skin)) {
-    skinPref.assign(key, overlay.skin)
+    skinPref.assign(key, overlay.skin, connectionId)
   }
 
   if (isThemeMode(overlay.mode)) {
-    modePref.assign(key, overlay.mode)
+    modePref.assign(key, overlay.mode, connectionId)
   }
 
   // 3. Rail color.
@@ -137,11 +144,12 @@ export function applyDesktopOverlay(profile: string, overlay: null | ProfileDesk
 
 /** Import an archive, apply its desktop overlay, return the new profile name. */
 export async function importProfileBundle(archive: string, name?: string): Promise<string> {
+  const connectionId = ambientOwnerConnectionId() ?? LEGACY_REMOTE_APPEARANCE_SCOPE
   const result = await importProfileArchive(archive, name)
   // An import never lands on a live profile's name, so a folder or startup profile stored under
   // it was left by a profile deleted before delete dropped them.
   dropBrowserProfilePrefs(result.name)
-  applyDesktopOverlay(result.name, result.desktop)
+  applyDesktopOverlay(result.name, result.desktop, connectionId)
 
   return result.name
 }

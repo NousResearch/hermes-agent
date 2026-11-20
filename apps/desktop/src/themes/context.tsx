@@ -9,19 +9,28 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { ensureContrast, mix, parseColor } from '@hermes/shared/color'
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
-import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { readJson, storedString, writeJson } from '@/lib/storage'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
+import {
+  APPEARANCE_KEYS,
+  appearanceConnectionId,
+  LAST_APPEARANCE_ROUTE_KEY,
+  modePref,
+  normalizeSkin,
+  skinPref
+} from './appearance-prefs'
 import {
   $backendCustomCSS,
   $backendThemes,
@@ -32,23 +41,13 @@ import {
 import { writeBootPalette } from './boot-palette'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, normalizeHex, readableInk } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { $pendingModeApply } from './request'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
-// Legacy global skin (pre per-profile themes). Still the inheritance fallback
-// for any profile without its own assignment, so single-profile users and old
-// installs are unaffected.
-const SKIN_KEY = 'hermes-desktop-theme-v2'
-const MODE_KEY = 'hermes-desktop-mode-v1'
-// Per-profile skin + light/dark mode assignments: { [profileKey]: value }. A
-// profile inherits the global default until it's given its own appearance.
-const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
-const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
-// Last active profile, recorded so the boot-time paint can pick that profile's
-// theme before the gateway reports which profile actually launched.
+// Read-only upgrade hint; new boots remember the full gateway/profile route.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -58,92 +57,85 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-const normalizeSkin = (name: string | null): string =>
-  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
-
-/**
- * A stored mode, or `system` when there isn't one.
- *
- * A fresh profile follows the OS. Defaulting to `light` meant someone whose
- * desktop is dark got a white window on first launch and had to go find the
- * setting — and with per-appearance translucency it also handed them light's
- * much heavier tint, tuned for a bright desktop they don't have.
- */
-const normalizeMode = (value: string | null): ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
-
-// ─── Per-profile appearance persistence ─────────────────────────────────────
-// Skin and mode are each stored per profile. "default" isn't a real profile —
-// it *is* the legacy global slot, so it reads/writes the global directly. Named
-// profiles get their own entry and fall back to that global until assigned, so
-// unassigned profiles and pre-per-profile installs stay on the global value.
-// Named assigns also mirror into the global slot so a Bot Mode gateway hop onto
-// a never-themed bot inherits the look the user just picked (#101216).
-// Persists from stored (write-on-read). Idempotent. No-op when records disagree.
-const promoteUnanimousLegacy = (record: string, legacy: string): void => {
-  if (storedString(legacy) != null) {
-    return
-  }
-
-  const values = Object.values(storedStringRecord(record)).filter(Boolean)
-
-  if (values.length === 0) {
-    return
-  }
-
-  const unique = [...new Set(values)]
-
-  if (unique.length === 1) {
-    persistString(legacy, unique[0])
-  }
+// Canonical ids only: display names and tunnel endpoints are not identities.
+interface AppearanceRoute {
+  connectionId: string
+  profile: string
 }
 
-const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => {
-  const stored = (profile: string): string | null => {
-    promoteUnanimousLegacy(record, legacy)
+function readBootRoute(): AppearanceRoute {
+  // An explicitly routed peer window must not borrow the last writer's route.
+  const query = new URLSearchParams(window.location.search)
 
-    return storedStringRecord(record)[profile] ?? storedString(legacy)
+  if (query.has('connectionId') || query.has('profile')) {
+    return {
+      connectionId: query.get('connectionId')?.trim() || LOCAL_CONNECTION_ID,
+      profile: normalizeProfileKey(query.get('profile'))
+    }
+  }
+
+  const saved = readJson<Partial<AppearanceRoute>>(LAST_APPEARANCE_ROUTE_KEY)
+
+  if (typeof saved?.connectionId === 'string' && saved.connectionId.trim() && typeof saved.profile === 'string') {
+    return { connectionId: saved.connectionId.trim(), profile: normalizeProfileKey(saved.profile) }
   }
 
   return {
-    /** The pick as written, un-normalized. */
-    stored,
-    resolve: (profile: string): T => normalize(stored(profile)),
-    assign: (profile: string, value: T): void => {
-      if (profile === 'default') {
-        persistString(legacy, value)
-      } else {
-        persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
-        persistString(legacy, value)
-      }
-    }
+    connectionId: LOCAL_CONNECTION_ID,
+    profile: localDisplaySkinProfile ?? normalizeProfileKey(storedString(LAST_PROFILE_KEY))
   }
 }
 
-export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
-export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
-
-// The bridge's local skin is only a fallback for the profile this window booted
-// into. A desktop-side pick remains the source of truth, and switching to a
-// different profile cannot borrow a skin from this machine's initial profile.
-const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
-const BOOT_PROFILE_KEY = typeof window === 'undefined' ? 'default' : (localDisplaySkinProfile ?? readBootProfileKey())
+const BOOT_ROUTE =
+  typeof window === 'undefined' ? { connectionId: LOCAL_CONNECTION_ID, profile: 'default' } : readBootRoute()
 
 // Provider state keeps the raw pick so a name nothing resolves YET (a backend
 // skin the gateway hasn't seeded on this launch) isn't flattened to the default
 // for the rest of the session — it paints as soon as the registry can resolve it.
-const storedSkin = (profile: string): string =>
-  skinPref.stored(profile) ??
-  (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
+const storedSkin = (profile: string, connectionId = LOCAL_CONNECTION_ID): string =>
+  skinPref.stored(profile, connectionId) ??
+  (connectionId === LOCAL_CONNECTION_ID && profile === localDisplaySkinProfile
+    ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME)
+    : DEFAULT_SKIN_NAME)
 
-/** The live profile's committed theme: what the ThemeProvider paints without a preview. */
-export const committedTheme = (): DesktopTheme =>
-  resolveTheme(normalizeSkin(storedSkin(normalizeProfileKey($activeGatewayProfile.get())))) ?? nousTheme
+// A null descriptor is a reconnect blip, not a hop back onto local. This is
+// window-local memory; a peer's LAST route must not change this window's owner.
+let connectedRoute: AppearanceRoute | null = null
 
-/** Everything a peer window could change that this one has to repaint for. */
-const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
+const appearanceRoute = (connection: ReturnType<typeof $connection.get>, activeProfile: string): AppearanceRoute => {
+  if (!connection) {
+    return (
+      connectedRoute ?? {
+        ...BOOT_ROUTE,
+        profile: activeProfile !== 'default' ? normalizeProfileKey(activeProfile) : BOOT_ROUTE.profile
+      }
+    )
+  }
 
-const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
+  return {
+    profile: normalizeProfileKey(connection.profile ?? activeProfile),
+    connectionId: appearanceConnectionId(connection)
+  }
+}
+
+export const activeAppearanceRoute = () => appearanceRoute($connection.get(), $activeGatewayProfile.get())
+
+/** The live route's committed theme: what the ThemeProvider paints without a preview. */
+export const committedTheme = (): DesktopTheme => {
+  const { profile, connectionId } = activeAppearanceRoute()
+
+  return resolveTheme(normalizeSkin(storedSkin(profile, connectionId))) ?? nousTheme
+}
+
+const rememberActiveRoute = (route: AppearanceRoute) => {
+  if ($connection.get()) {
+    connectedRoute = route
+  }
+
+  if (route.connectionId) {
+    writeJson(LAST_APPEARANCE_ROUTE_KEY, route)
+  }
+}
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
 // mix / ensureContrast live in @hermes/shared/color (shared with the TUI);
@@ -460,10 +452,10 @@ const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
-  const profile = BOOT_PROFILE_KEY
-  const pref = modePref.resolve(profile)
+  const { profile, connectionId } = BOOT_ROUTE
+  const pref = modePref.resolve(profile, connectionId)
   const resolved = resolveMode(pref)
-  const theme = deriveTheme(normalizeSkin(storedSkin(profile)), resolved)
+  const theme = deriveTheme(normalizeSkin(storedSkin(profile, connectionId)), resolved)
   applyTheme(theme, resolved)
   syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
@@ -511,14 +503,11 @@ const ThemeContext = createContext<ThemeContextValue>({
 })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Skin + mode are assigned per profile; the active profile drives which
-  // appearance shows. Single-profile users only ever see "default", so their
-  // behavior is unchanged.
+  // Skin + mode belong to a gateway/profile pair, including explicit local/default.
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const connection = useStore($connection)
-  // Before a gateway descriptor exists, the bridge is the only authoritative
-  // profile for this window. Once one arrives, follow the live route as usual.
-  const profileKey = normalizeProfileKey(connection?.profile ?? (connection ? activeGatewayProfile : BOOT_PROFILE_KEY))
+  // Until a descriptor arrives, use this window's explicit or remembered boot route.
+  const { profile: profileKey, connectionId } = appearanceRoute(connection, activeGatewayProfile)
 
   // Built-ins + user-installed + registry-contributed themes. Reactive so an
   // import or a plugin registration shows up live in the palette, settings
@@ -541,22 +530,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [themeName, setThemeNameState] = useState(() =>
-    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : storedSkin(BOOT_PROFILE_KEY)
+    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : storedSkin(profileKey, connectionId)
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'system' : modePref.resolve(BOOT_PROFILE_KEY)
+    typeof window === 'undefined' ? 'system' : modePref.resolve(profileKey, connectionId)
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and
   // remember it for the next boot's first paint.
   useEffect(() => {
-    rememberActiveProfileKey(profileKey)
-    setThemeNameState(storedSkin(profileKey))
-    setModeState(modePref.resolve(profileKey))
-  }, [profileKey])
+    rememberActiveRoute({ profile: profileKey, connectionId })
+    setPreview(null)
+    setThemeNameState(storedSkin(profileKey, connectionId))
+    setModeState(modePref.resolve(profileKey, connectionId))
+  }, [profileKey, connectionId])
 
-  // Appearance is per-profile localStorage, and every desktop window is another
+  // Appearance is gateway/profile-local, and every desktop window is another
   // renderer on the same origin — so a switch made in the HUD (or any peer
   // window) only ever repainted the window it was made in. `storage` fires in
   // the OTHER windows, which is exactly the set that needs to catch up.
@@ -566,10 +556,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      const live = normalizeProfileKey($activeGatewayProfile.get())
+      const { profile, connectionId } = activeAppearanceRoute()
 
-      setThemeNameState(storedSkin(live))
-      setModeState(modePref.resolve(live))
+      setThemeNameState(storedSkin(profile, connectionId))
+      setModeState(modePref.resolve(profile, connectionId))
     }
 
     window.addEventListener('storage', onStorage)
@@ -635,21 +625,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
   // stay stable across profile switches).
-  const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
-
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
     recordFeatureUse('skins')
     setPreview(null)
     setThemeNameState(next)
-    skinPref.assign(liveProfile(), next)
+    const { profile, connectionId } = activeAppearanceRoute()
+    skinPref.assign(profile, next, connectionId)
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
     recordFeatureUse('skins')
     setPreview(null)
     setModeState(next)
-    modePref.assign(liveProfile(), next)
+    const { profile, connectionId } = activeAppearanceRoute()
+    modePref.assign(profile, next, connectionId)
   }, [])
 
   const previewTheme = useCallback((name: string, previewMode: 'light' | 'dark') => {

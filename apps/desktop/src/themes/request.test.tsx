@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 
+import { modePref, skinPref } from './appearance-prefs'
 import { __resetBackendSkinSync } from './backend-sync'
-import { modePref, skinPref, ThemeProvider, useTheme } from './context'
+import { ThemeProvider, useTheme } from './context'
 import { midnightTheme } from './presets'
 import { requestMode, requestTheme } from './request'
 import type { DesktopTheme } from './types'

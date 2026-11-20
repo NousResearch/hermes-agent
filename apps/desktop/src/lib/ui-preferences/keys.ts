@@ -23,6 +23,8 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   'hermes-desktop-mode-v1',
   'hermes-desktop-profile-themes-v1',
   'hermes-desktop-profile-modes-v1',
+  'hermes-desktop-profile-themes-v2',
+  'hermes-desktop-profile-modes-v2',
   'hermes-desktop-user-themes-v1',
   'hermes.desktop.backdrop.v1',
   'hermes.desktop.chat-text-scale.v1',

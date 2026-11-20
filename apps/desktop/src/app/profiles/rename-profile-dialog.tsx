@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import type { ProfileScope } from '@/api/client'
+import { ambientOwnerConnectionId, type ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,6 +19,7 @@ import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
+import { LEGACY_REMOTE_APPEARANCE_SCOPE, migrateAppearanceForProfile } from '@/themes/appearance-prefs'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -86,12 +87,19 @@ export function RenameProfileDialog({
     setStatus('saving')
     setError(null)
 
+    const appearanceOwnerId =
+      (typeof scope === 'object' ? scope?.connectionId?.trim() : null) ||
+      ambientOwnerConnectionId() ||
+      LEGACY_REMOTE_APPEARANCE_SCOPE
+
+    const localOwner = scope == null && appearanceOwnerId === 'local'
+
     try {
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
+      if (!isDefault && localOwner) {
         retireLocalProfileGateways(currentName)
       }
 
@@ -100,8 +108,10 @@ export function RenameProfileDialog({
       // The sessions moved with the directory; the tabs, cached tails and
       // remembered ids keyed by the old name must follow, or every open
       // dials a backend that no longer exists (#111868).
-      if (!isDefault && scope == null) {
+      if (!isDefault && localOwner) {
         migrateTilesForProfile(currentName, trimmed)
+      } else if (!isDefault) {
+        migrateAppearanceForProfile(currentName, trimmed, appearanceOwnerId)
       }
 
       await onRenamed?.(trimmed)

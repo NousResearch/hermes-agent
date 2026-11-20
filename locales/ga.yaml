@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… (roghnaigh {label})"
     approval_command_truncated: "… (ordú giorraithe — úsáid /logs nó /debug don téacs iomlán)"
     approval_description_truncated: "… (cur síos giorraithe)"
+    approval_schedule_truncated: "… (an post iomlán priontáilte thuas)"
     approval_title_schedule: "⏰  An bhfuil tú ag iarraidh an jab seo a sceidealú?"
     approval_schedule_once: "Ceadaigh"
     approval_schedule_session: "Ceadaigh don chomhrá seo"

@@ -24,6 +24,7 @@ TOOL = "slack.search_messages"           # <app>.<read tool>
 ARGS = {"query": "to:me is:dm", "count": 20}
 MESSAGES_KEY = "messages"                # list of messages in the tool's JSON response
 TS_KEY = "ts"                            # per-message sortable timestamp field
+BATCH = 10                               # messages handed to the agent per tick
 
 
 def fetch(tool, args):
@@ -51,8 +52,9 @@ def main() -> int:
     if not fresh:
         print(json.dumps({"wakeAgent": False}))
         return 0
-    state_file.write_text(str(fresh[-1].get(TS_KEY, "")))
-    print(json.dumps({"wakeAgent": True, "context": {"waiting": fresh[:10], "source": TOOL}}))
+    batch = fresh[:BATCH]  # the cursor stops at the last message shown, so the rest come next tick
+    state_file.write_text(str(batch[-1].get(TS_KEY, "")))
+    print(json.dumps({"wakeAgent": True, "context": {"waiting": batch, "source": TOOL}}))
     return 0
 
 

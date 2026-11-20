@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "…（选择 {label}）"
     approval_command_truncated: "…（命令已截断 — 用 /logs 或 /debug 查看全文）"
     approval_description_truncated: "…（说明已截断）"
+    approval_schedule_truncated: "…（完整任务已打印在上方）"
     approval_title_schedule: "⏰  要安排这个任务吗？"
     approval_schedule_once: "允许"
     approval_schedule_session: "在此对话中允许"

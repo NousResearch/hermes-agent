@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… ({label} wählen)"
     approval_command_truncated: "… (Befehl gekürzt — vollständiger Text über /logs oder /debug)"
     approval_description_truncated: "… (Beschreibung gekürzt)"
+    approval_schedule_truncated: "… (vollständiger Job oben ausgegeben)"
     approval_title_schedule: "⏰  Diesen Job planen?"
     approval_schedule_once: "Erlauben"
     approval_schedule_session: "Für diesen Chat erlauben"

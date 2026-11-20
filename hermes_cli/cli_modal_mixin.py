@@ -1085,6 +1085,9 @@ class CLIModalMixin:
                 "selected": 0,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
+            if card.prints_body_first(subject):
+                # The panel's row budget can cut a long job (a whole gate script); scrollback keeps all of it.
+                _cprint(f"\n{subject}\n")
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=subject)
             self._paint_now()
 

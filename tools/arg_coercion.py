@@ -74,7 +74,17 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                     value, prop_schema, root_schema=parameters
                 )
             continue
-        if not expected and not _schema_allows_null(prop_schema):
+        if not expected:
+            # No top-level `type`: the property is a union (anyOf/oneOf). Coerce
+            # against the first branch whose shape the string actually has, so a
+            # model-emitted "True" for `notify: boolean | array<string>` is the
+            # boolean the schema advertised.
+            if _schema_allows_null(prop_schema) and value.strip().lower() == "null":
+                args[key] = None
+                continue
+            coerced = _coerce_union_member(value, prop_schema)
+            if coerced is not value:
+                args[key] = coerced
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
@@ -182,6 +192,56 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     if coercer is not None:
         return coercer(value)
     return None if expected_type == "null" and value.strip().lower() == "null" else value
+
+
+def _coerce_union_member(value: str, schema: dict | None, root_schema: dict | None = None):
+    """Coerce a string against the branches of an anyOf/oneOf union.
+
+    Branch order decides: the first branch whose JSON shape the text can
+    plausibly satisfy wins (``"True"`` → boolean, ``"[\\"ERR\\"]"`` → array,
+    ``"60"`` → integer).  Container branches are only attempted when the text
+    looks like that container, and text a branch would keep as a string never
+    counts as a repair.  Returns *value* unchanged when no branch applies.
+    """
+    if not isinstance(schema, dict):
+        return value
+    if root_schema is None:
+        root_schema = schema
+    resolved = resolve_local_schema_ref(schema, root_schema)
+    if not isinstance(resolved, dict):
+        return value
+    schema = resolved
+    trimmed = value.strip()
+
+    for union_key in ("anyOf", "oneOf"):
+        branches = schema.get(union_key)
+        if not isinstance(branches, list):
+            continue
+        for branch in branches:
+            if not isinstance(branch, dict):
+                continue
+            branch = resolve_local_schema_ref(branch, root_schema)
+            if not isinstance(branch, dict):
+                continue
+            expected = branch.get("type")
+            if isinstance(expected, list):
+                coerced = _coerce_value(value, expected, schema=branch)
+            elif expected == "array":
+                if not trimmed.startswith("["):
+                    continue
+                coerced = _coerce_json(value, list)
+            elif expected == "object":
+                if not trimmed.startswith("{"):
+                    continue
+                coerced = _coerce_json(value, dict)
+            elif expected in ("boolean", "integer", "number"):
+                coerced = _coerce_value(value, expected, schema=branch)
+            else:
+                # "string", "null" or a nested union: nothing to repair here.
+                continue
+            if coerced is not value and not isinstance(coerced, str):
+                return coerced
+    return value
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

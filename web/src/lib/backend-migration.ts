@@ -266,8 +266,10 @@ export function viewOf(st: BackendMigrationStatus): PollView {
       if (st.refused) {
         const steps = st.manual_steps ?? [];
         // The CLI's own advice, true for a refused apply too: the steps may replace config.yaml and .env.
-        // Per-file notes already say what to do with each file; the general warning would then repeat them.
-        const warning = steps.length && !steps.some(isFileNote)
+        // Per-file notes already say what to do with each file; the general warning would then repeat them,
+        // unless another step still copies a backup over config.yaml or .env.
+        const copiesBack = steps.some((s) => !isFileNote(s) && /config\.yaml|\.env\b/.test(s));
+        const warning = steps.length && (!steps.some(isFileNote) || copiesBack)
           ? ["Before running these steps, save a copy of your current config.yaml and .env: the steps may "
              + "replace or remove them. To keep changes you made to those files, merge them into any backup "
              + "copy a step copies back (before you run it), or re-apply them after the last step."]

@@ -381,6 +381,80 @@ describe("readPoll", () => {
     expect(view).toEqual({ kind: "notStarted", lines: ["did not start", "hermes -p work gateway uninstall", keep] });
   });
 
+  it.each([
+    ["env.bak", ".env", "cp /h/backend_migration/config.yaml.bak /h/config.yaml"],
+    ["config.yaml.bak", "config.yaml", "cp /h/backend_migration/env.bak /h/.env && chmod 600 /h/.env"],
+  ])("keeps the save-both-files warning when %s is missing and a step still copies the other file back", (bak, name, copy) => {
+    const missing = `the backup /h/backend_migration/${bak} of ${name} is missing: recover it, or put /h/${name} back `
+      + "as it was before the migration by hand, before you start the old backend";
+    const refused = { ...run("failed"), refused: true, message: "did not start", manual_steps: [copy, missing] };
+    const view = readPoll({ kind: "status", status: refused }, asked, at(2));
+    expect(view.kind).toBe("notStarted");
+    if (view.kind !== "notStarted") return;
+    expect(view.lines[1]).toMatch(/^Before running these steps, save a copy of your current config\.yaml and \.env/);
+    expect(view.lines.slice(2)).toEqual([copy, missing]);
+  });
+
+  // The engine's own refusal records: a move to the gateway, then `restore(host, yes=True, detached=True)` on
+  // the fake host with one or both backups deleted (config.yaml or .env edited too), read back through
+  // `status_payload`. Message and steps are pasted exactly as the engine wrote them (exit 3 each time).
+  const engineRefusal = (r: { message: string; manual_steps: string[] }): BackendMigrationStatus =>
+    ({ ...run("failed"), refused: true, ...r });
+  const envBackupMissing = engineRefusal(
+    {
+      message: "the background restore did not start (exit 3): the backup of .env (/var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_env_missing_0/hermes-home/backend_migration/env.bak) cannot be read: No such file or directory; a restore would overwrite it, so nothing was written: your edits were kept and the gateway keeps serving; nothing changed",
+      manual_steps: [
+        "hermes -p default gateway stop",
+        "cp /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_env_missing_0/hermes-home/backend_migration/config.yaml.bak /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_env_missing_0/hermes-home/config.yaml",
+        "the backup /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_env_missing_0/hermes-home/backend_migration/env.bak of .env is missing: recover it, or put /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_env_missing_0/hermes-home/.env back as it was before the migration by hand, before you start the old backend",
+        "hermes -p default gateway uninstall",
+        "rm -f /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_env_missing_0/systemd-user/hermes-dashboard.service.d/hermes-migrated.conf && systemctl --user daemon-reload",
+        "systemctl --user enable hermes-dashboard.service",
+        "systemctl --user start hermes-dashboard.service",
+      ],
+    });
+  const configBackupMissing = engineRefusal(
+    {
+      message: "the background restore did not start (exit 3): the backup of config.yaml (/var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/hermes-home/backend_migration/config.yaml.bak) cannot be read: No such file or directory; a restore would overwrite it, so nothing was written: your edits were kept and the gateway keeps serving; nothing changed",
+      manual_steps: [
+        "hermes -p default gateway stop",
+        "the backup /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/hermes-home/backend_migration/config.yaml.bak of config.yaml is missing: recover it, or put /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/hermes-home/config.yaml back as it was before the migration by hand, before you start the old backend",
+        "cp /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/hermes-home/backend_migration/env.bak /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/hermes-home/.env && chmod 600 /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/hermes-home/.env",
+        "hermes -p default gateway uninstall",
+        "rm -f /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_config_missing_0/systemd-user/hermes-dashboard.service.d/hermes-migrated.conf && systemctl --user daemon-reload",
+        "systemctl --user enable hermes-dashboard.service",
+        "systemctl --user start hermes-dashboard.service",
+      ],
+    });
+  const bothBackupsMissing = engineRefusal(
+    {
+      message: "the background restore did not start (exit 3): the backup of config.yaml (/var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_both_missing_0/hermes-home/backend_migration/config.yaml.bak) cannot be read: No such file or directory; a restore would overwrite it, so nothing was written: your edits were kept and the gateway keeps serving; nothing changed",
+      manual_steps: [
+        "hermes -p default gateway stop",
+        "the backup /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_both_missing_0/hermes-home/backend_migration/config.yaml.bak of config.yaml is missing: recover it, or put /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_both_missing_0/hermes-home/config.yaml back as it was before the migration by hand, before you start the old backend",
+        "the backup /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_both_missing_0/hermes-home/backend_migration/env.bak of .env is missing: recover it, or put /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_both_missing_0/hermes-home/.env back as it was before the migration by hand, before you start the old backend",
+        "hermes -p default gateway uninstall",
+        "rm -f /var/tmp/hermes-pytest-1000/r-8vi0x5vg/pytest-of-mark/pytest-0/test_probe_both_missing_0/systemd-user/hermes-dashboard.service.d/hermes-migrated.conf && systemctl --user daemon-reload",
+        "systemctl --user enable hermes-dashboard.service",
+        "systemctl --user start hermes-dashboard.service",
+      ],
+    });
+
+  it.each([["the .env backup", envBackupMissing], ["the config.yaml backup", configBackupMissing]])(
+    "keeps the save-both-files warning on the engine's restore refusal when %s is missing", (_what, refused) => {
+      const view = readPoll({ kind: "status", status: refused }, asked, at(2));
+      expect(view.kind).toBe("notStarted");
+      if (view.kind !== "notStarted") return;
+      expect(view.lines[0]).toBe(refused.message);
+      expect(view.lines[1]).toMatch(/^Before running these steps, save a copy of your current config\.yaml and \.env/);
+      expect(view.lines.slice(2)).toEqual(refused.manual_steps);
+    });
+
+  it("leaves the warning out of the engine's restore refusal when no step copies a backup back", () => {
+    const view = readPoll({ kind: "status", status: bothBackupsMissing }, asked, at(2));
+    expect(view).toEqual({ kind: "notStarted", lines: [bothBackupsMissing.message, ...bothBackupsMissing.manual_steps!] });
+  });
+
   it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {
     expect(readPoll({ kind: "unreachable" }, asked, at(5)).kind).toBe("switching");
     expect(readPoll({ kind: "auth" }, asked, at(5)).kind).toBe("signInAgain");

@@ -321,8 +321,8 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_guarded(_FILL_JS_TEMPLATE, expected_origin).replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    return _fill_markers(_guarded(_FILL_JS_TEMPLATE, expected_origin), {
+        "__OPTION_MATCH__": _OPTION_MATCH_JS, "__FILLS__": payload, "__NONCE__": json.dumps(nonce)})
 
 
 # The opening of every script that carries a vault value or decides where one is typed. Strict mode
@@ -348,6 +348,15 @@ _ORIGIN_GUARD_JS = """  "use strict";
 def _guarded(template: str, expected_origin: str) -> str:
     return template.replace("__ORIGIN_GUARD__", _ORIGIN_GUARD_JS.replace(
         "__EXPECTED_ORIGIN__", json.dumps(expected_origin)))
+
+
+_RE_MARKER = re.compile(r"__(?:OPTION_MATCH|FILLS|NONCE|UNSTAMP|REFOCUS)__")
+
+
+def _fill_markers(template: str, values: dict[str, str]) -> str:
+    """Replace every marker in one pass. A value (the payload holds the secret) is never searched for
+    markers again, so a password that contains ``__NONCE__`` or ``__UNSTAMP__`` stays as it is."""
+    return _RE_MARKER.sub(lambda m: values[m.group(0)], template)
 
 
 # How a requested value names a <select> option: by value or visible text, trimmed and
@@ -430,9 +439,9 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, expect
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_guarded(_VERIFY_JS_TEMPLATE, expected_origin).replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
-            .replace("__UNSTAMP__", "true" if unstamp else "false"))
+    return _fill_markers(_guarded(_VERIFY_JS_TEMPLATE, expected_origin), {
+        "__OPTION_MATCH__": _OPTION_MATCH_JS, "__FILLS__": payload, "__NONCE__": json.dumps(nonce),
+        "__UNSTAMP__": "true" if unstamp else "false"})
 
 
 def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_origin: str,
@@ -461,8 +470,8 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
     )
-    return (_guarded(_FOCUS_JS_TEMPLATE, expected_origin).replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
-            .replace("__REFOCUS__", "true" if refocus else "false"))
+    return _fill_markers(_guarded(_FOCUS_JS_TEMPLATE, expected_origin), {
+        "__FILLS__": payload, "__NONCE__": json.dumps(nonce), "__REFOCUS__": "true" if refocus else "false"})
 
 
 _FOCUS_JS_TEMPLATE = """(() => {
@@ -558,8 +567,8 @@ def build_clear_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     script of a fill it acts only on ``expected_origin``.
     """
     payload = json.dumps([{"index": f["index"]} for f in fills])
-    return (_guarded(_CLEAR_JS_TEMPLATE, expected_origin).replace("__FILLS__", payload)
-            .replace("__NONCE__", json.dumps(nonce)))
+    return _fill_markers(_guarded(_CLEAR_JS_TEMPLATE, expected_origin), {
+        "__FILLS__": payload, "__NONCE__": json.dumps(nonce)})
 
 
 _VERIFY_JS_TEMPLATE = r"""(() => {

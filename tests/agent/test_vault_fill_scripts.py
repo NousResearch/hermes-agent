@@ -226,6 +226,19 @@ class TestReadBack:
         js = build_fill_verify_js([{"index": 3, "token": "country-name", "value": value}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js) == {"landed": 1, "reverted": 0, "missing": []}
 
+    @pytest.mark.parametrize("value", ["plain", "pw__NONCE__x", "abc__UNSTAMP__123", "a__FILLS__b__OPTION_MATCH__c"])
+    def test_a_secret_that_holds_a_marker_is_written_and_read_back_as_it_is(self, value):
+        """The payload holds the secret: a marker inside it is value data, not a place to fill in."""
+        setup = """
+          const pw = stamp(add(document, "input", { type: "password" }), 1);
+          Object.defineProperty(pw, "value", { get() { return this._v || ""; }, configurable: true });
+        """
+        fills = [{"index": 1, "token": "current-password", "value": value}]
+        expr = ("(() => { " + build_fill_js(fills, expected_origin=ORIGIN, nonce=NONCE)
+                + "; return " + build_fill_verify_js(fills, nonce=NONCE, expected_origin=ORIGIN, unstamp=True)
+                + "; })()")
+        assert _run(setup, expr) == {"landed": 1, "reverted": 0, "missing": []}
+
     def test_the_writer_and_the_read_back_agree_on_a_select(self):
         """Whatever option the fill script selects, the read-back accepts."""
         setup = """

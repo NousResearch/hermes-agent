@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
-import { CodeEditor } from '@/components/chat/code-editor'
+import { LazyCodeEditor as CodeEditor } from '@/components/chat/code-editor-lazy'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'

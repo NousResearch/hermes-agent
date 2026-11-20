@@ -11,15 +11,68 @@ interface TerminalOutputGateOptions {
 
 const MAX_PENDING_OUTPUT = 1024 * 1024
 
+// Attached-path coalescing: node-pty emits many small chunks under fast
+// output (`ls -R`, `cat`), and every webContents.send is a cross-process
+// post. Buffer up to one frame (or 4KB, whichever comes first) instead of
+// one IPC per chunk.
+const ATTACHED_FLUSH_MS = 16
+const ATTACHED_FLUSH_BYTES = 4096
+
 export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: TerminalOutputGateOptions) {
   let attached = false
-  let pendingData = ''
+  let disposed = false
+  // Pre-attach backlog, bounded. Chunks are kept as a list and trimmed from
+  // the front — never `${pending}${chunk}`.slice(), which re-copies the whole
+  // backlog per chunk (O(n²) under a fast pre-attach burst).
+  let pendingChunks: string[] = []
+  let pendingBytes = 0
+  let attachedData = ''
+  let attachedBytes = 0
+  let flushTimer: ReturnType<typeof setTimeout> | null = null
   let pendingExit: TerminalExitPayload | null = null
   let exited = false
 
+  const clearFlushTimer = () => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+  }
+
+  const flushAttachedData = () => {
+    clearFlushTimer()
+
+    if (attachedData) {
+      const data = attachedData
+      attachedData = ''
+      attachedBytes = 0
+      sendData(data)
+    }
+  }
+
   const flushExit = (payload: TerminalExitPayload) => {
+    // Buffered output precedes the exit, in order.
+    flushAttachedData()
     sendExit(payload)
     onExitFlushed()
+  }
+
+  const scheduleFlush = () => {
+    if (flushTimer !== null || disposed) {
+      return
+    }
+
+    flushTimer = setTimeout(() => {
+      flushTimer = null
+
+      if (!disposed) {
+        flushAttachedData()
+      }
+    }, ATTACHED_FLUSH_MS)
+
+    if (typeof flushTimer.unref === 'function') {
+      flushTimer.unref()
+    }
   }
 
   return {
@@ -30,9 +83,10 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
 
       attached = true
 
-      if (pendingData) {
-        sendData(pendingData)
-        pendingData = ''
+      if (pendingChunks.length > 0) {
+        sendData(pendingChunks.join(''))
+        pendingChunks = []
+        pendingBytes = 0
       }
 
       if (pendingExit) {
@@ -42,13 +96,35 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
       }
     },
     data(chunk: string): void {
-      if (attached) {
-        sendData(chunk)
+      if (disposed) {
+        return
+      }
+
+      if (!attached) {
+        pendingChunks.push(chunk)
+        pendingBytes += chunk.length
+
+        while (pendingBytes > MAX_PENDING_OUTPUT && pendingChunks.length > 1) {
+          pendingBytes -= pendingChunks.shift()!.length
+        }
+
+        if (pendingBytes > MAX_PENDING_OUTPUT) {
+          const keep = pendingChunks[0].slice(-MAX_PENDING_OUTPUT)
+          pendingChunks = [keep]
+          pendingBytes = keep.length
+        }
 
         return
       }
 
-      pendingData = `${pendingData}${chunk}`.slice(-MAX_PENDING_OUTPUT)
+      attachedData += chunk
+      attachedBytes += chunk.length
+
+      if (attachedBytes >= ATTACHED_FLUSH_BYTES) {
+        flushAttachedData()
+      } else {
+        scheduleFlush()
+      }
     },
     /** App quit: the renderer must not read the kill as the shell exiting,
      *  or it closes the tab and drops it from the restored layout. */
@@ -65,6 +141,10 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
 
       exited = true
 
+      if (disposed) {
+        return
+      }
+
       if (attached) {
         flushExit(payload)
 
@@ -72,6 +152,19 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
       }
 
       pendingExit = payload
+    },
+    /** Flush coalesced output now (tests; terminal teardown). */
+    flush(): void {
+      flushAttachedData()
+    },
+    dispose(): void {
+      disposed = true
+      clearFlushTimer()
+      pendingChunks = []
+      pendingBytes = 0
+      attachedData = ''
+      attachedBytes = 0
+      pendingExit = null
     }
   }
 }

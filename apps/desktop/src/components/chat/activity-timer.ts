@@ -1,15 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { useViewedInterval } from '@/hooks/use-viewed-interval'
+import { useNow } from '@/hooks/use-now'
 
 // Module-level registry so timers survive component unmount/remount (e.g.
 // when a tool row scrolls out and back). Keyed by caller-supplied timerKey;
 // anonymous timers (no key) start fresh each mount.
+//
+// Bounded (LRU, 500 entries): a day of agent use mints thousands of per-tool
+// keys, and neither map was ever evicted — a slow, unbounded leak of small
+// numbers pinned for the window's lifetime.
+const ELAPSED_REGISTRY_LIMIT = 500
 const startedAtByKey = new Map<string, number>()
 
 // Durations of things that have already finished, kept beside the origins that
 // measured them. See `useMeasuredDuration`.
 const durationByKey = new Map<string, number>()
+
+function touchRegistryLimit(registry: Map<string, number>): void {
+  while (registry.size > ELAPSED_REGISTRY_LIMIT) {
+    const oldest = registry.keys().next()
+
+    if (oldest.done) {
+      return
+    }
+
+    registry.delete(oldest.value)
+  }
+}
 
 function startedAt(key?: string): number {
   if (!key) {
@@ -24,6 +41,7 @@ function startedAt(key?: string): number {
 
   const now = Date.now()
   startedAtByKey.set(key, now)
+  touchRegistryLimit(startedAtByKey)
 
   return now
 }
@@ -48,27 +66,33 @@ export function formatElapsed(seconds: number): string {
 export function useElapsedSeconds(active = true, timerKey?: string, since?: number): number {
   const start = useRef(since ?? startedAt(timerKey))
   const lastKey = useRef(timerKey)
-  const [elapsed, setElapsed] = useState(() => Math.max(0, Math.floor((Date.now() - start.current) / 1000)))
+  // One shared 1s clock for every live row instead of one setInterval each.
+  const now = useNow(1000, active)
+  const [, setReanchored] = useState(0)
 
   if (lastKey.current !== timerKey) {
     start.current = since ?? startedAt(timerKey)
     lastKey.current = timerKey
   }
 
+  const elapsed = Math.max(0, Math.floor((now - start.current) / 1000))
+  const elapsedRef = useRef(elapsed)
+  elapsedRef.current = elapsed
+
   // eslint-disable-next-line no-restricted-syntax -- timer origin is imperative state, not an atom mirror
   useEffect(() => {
-    if (since !== undefined) {
-      start.current = since
-    } else if (timerKey) {
-      start.current = startedAt(timerKey)
-    }
+    const next = since !== undefined ? since : timerKey ? startedAt(timerKey) : start.current
 
-    if (active) {
-      setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000)))
-    }
-  }, [active, since, timerKey])
+    if (next !== start.current) {
+      start.current = next
 
-  useViewedInterval(() => setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000))), 1000, active)
+      // The re-anchor lands after render: refresh the derived value when it
+      // actually moved (same bail-out the old setElapsed had).
+      if (Math.max(0, Math.floor((Date.now() - next) / 1000)) !== elapsedRef.current) {
+        setReanchored(tick => tick + 1)
+      }
+    }
+  }, [since, timerKey])
 
   return elapsed
 }
@@ -102,6 +126,7 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
 
       setWatching(false)
       durationByKey.set(timerKey, finalElapsed)
+      touchRegistryLimit(durationByKey)
       setMeasured(finalElapsed)
     }
   }, [active, elapsed, timerKey, watching])

@@ -13,7 +13,7 @@ import { computed } from 'nanostores'
 
 import type { HermesActiveWork } from '@/global'
 import { $sessions } from '@/store/session'
-import { $workingSessionIds } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states-status-sets'
 import { $voiceStreamPaintOwners } from '@/store/voice-stream-paint'
 
 const $activeWork = computed(

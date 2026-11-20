@@ -4,7 +4,7 @@ import { setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
 import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states-status-sets'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 import type { GatewayRequester } from '../types'

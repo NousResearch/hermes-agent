@@ -62,7 +62,60 @@ export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps
   // Compact repo status (branch, ahead/behind, change counts + files) for the
   // composer coding rail. Returns null on a non-repo / remote backend so the rail
   // hides cleanly rather than erroring.
-  ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => repoStatus(repoPath, resolveGitBinary()))
+  //
+  // Per-repo throttle (2s): the rail re-requests on focus/typing, and each
+  // refresh is several git spawns plus disk reads. Concurrent callers share
+  // the in-flight probe; a caller inside the window gets the last settled
+  // result instead of queueing another refresh.
+  const repoStatusCache = new Map<string, { at: number; promise: Promise<unknown> | null; result: unknown }>()
+  const REPO_STATUS_THROTTLE_MS = 2000
+
+  ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => {
+    const key = String(repoPath || '')
+    const now = Date.now()
+    const cached = repoStatusCache.get(key)
+
+    if (cached) {
+      if (cached.promise) {
+        return cached.promise
+      }
+
+      if (now - cached.at < REPO_STATUS_THROTTLE_MS) {
+        return cached.result
+      }
+    }
+
+    if (repoStatusCache.size >= 64 && !repoStatusCache.has(key)) {
+      const oldest = repoStatusCache.keys().next()
+
+      if (!oldest.done) {
+        repoStatusCache.delete(oldest.value)
+      }
+    }
+
+    const entry = { at: now, promise: null as Promise<unknown> | null, result: cached?.result ?? null }
+    repoStatusCache.set(key, entry)
+    entry.promise = Promise.resolve()
+      .then(() => repoStatus(repoPath, resolveGitBinary()))
+      .then(
+        result => {
+          entry.promise = null
+          entry.result = result
+          entry.at = Date.now()
+
+          return result
+        },
+        error => {
+          if (repoStatusCache.get(key) === entry) {
+            repoStatusCache.delete(key)
+          }
+
+          throw error
+        }
+      )
+
+    return entry.promise
+  })
 
   // Codex-style review pane: list changed files for a scope, fetch one file's
   // unified diff, and stage / unstage / revert. Reads return empty on failure;

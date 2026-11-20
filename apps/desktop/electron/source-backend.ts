@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, memoizedProbeVerdict, mtimeOf, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
 export interface SourceBackend {
@@ -43,16 +43,30 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-  } catch {
+  // The `--version` spawn is the expensive half of every backend re-resolve
+  // (per profile dial): memoize just the verdict, keyed by launcher + mtime
+  // so a replaced binary re-probes, and always build the result object fresh
+  // — `args`/`env` differ per caller and must never go stale.
+  const key = `source-install:${root}:${launcher}:${mtimeOf(launcher)}`
+
+  const usable = await memoizedProbeVerdict(key, async () => {
+    try {
+      await execProbe(command, ['--version'], {
+        cwd: root,
+        env: { ...process.env, ...options.env, ...buildDesktopBackendEnv({ currentEnv: options.env ?? process.env }) },
+        shell,
+        stdio: 'ignore',
+        timeout: PROBE_TIMEOUT_MS,
+        windowsHide: true
+      })
+
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  if (!usable) {
     return null
   }
 

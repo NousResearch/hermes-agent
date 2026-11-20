@@ -31,13 +31,8 @@ import { $backgroundRunningSessionIds } from './composer-status'
 import { $liveWorkRoster, noteEventFed, rosterLiveIds, rosterSaysIdle } from './live-work-roster'
 import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $cronSessions, $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
-import {
-  $attentionSessionIds,
-  $draftSessionIds,
-  $sessionStates,
-  $stalledSessionIds,
-  $workingSessionIds
-} from './session-states'
+import { $sessionStates, $stalledSessionIds } from './session-states'
+import { $attentionSessionIds, $draftSessionIds, $workingSessionIds } from './session-states-status-sets'
 import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
 import { $subagentsBySession, activeSubagentCount } from './subagents'
 

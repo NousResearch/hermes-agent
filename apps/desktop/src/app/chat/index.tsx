@@ -51,7 +51,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
+import { $transcriptTailBySessionId, selectTranscriptTail } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
@@ -351,10 +351,15 @@ export function ChatRuntimeBoundary({
     storedSessionId: storedId
   })
   const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
-  // Subscribed (not read imperatively) so the "Show earlier" affordance
-  // appears/retires as tail hydrations and backfill pages record their state.
-  const transcriptTailStates = useStore($transcriptTailBySessionId)
-  const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
+
+  // Per-key selector (not a map-wide useStore): a background session's tail
+  // hydration/backfill must not re-render this foreground chat. The selected
+  // entry ref is referentially stable across unrelated writes, so Object.is
+  // bails out. Only used for the "Show earlier" affordance.
+  const tailState = useStoreSelector($transcriptTailBySessionId, map =>
+    storedId ? selectTranscriptTail(map, storedId, tailProfile) : undefined
+  )
+
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
   const expandWindow = useCallback(

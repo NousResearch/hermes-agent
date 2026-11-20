@@ -11,6 +11,8 @@
  * A runtime this launch installed is always used. Skipping it would send the
  * post-install re-resolve (and every later resolve) back to the installer.
  */
+import { invalidateBackendProbeVerdicts } from './backend-probes'
+
 export function createInstalledRuntimeGate(env: NodeJS.ProcessEnv, log: (message: string) => void) {
   let installedThisLaunch = false
 
@@ -29,6 +31,9 @@ export function createInstalledRuntimeGate(env: NodeJS.ProcessEnv, log: (message
     /** Re-resolve after a successful bootstrap; the new runtime is exempt from the flag. */
     afterInstall<T>(resolveBackend: () => Promise<T>): Promise<T> {
       installedThisLaunch = true
+      // A verdict minted seconds ago ("unusable") must not hide the runtime
+      // that just landed for the remainder of its TTL.
+      invalidateBackendProbeVerdicts()
 
       return resolveBackend()
     }

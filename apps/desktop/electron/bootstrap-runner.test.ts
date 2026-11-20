@@ -6,6 +6,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  appendBoundedStream,
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
@@ -13,6 +14,7 @@ import {
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
+  pruneRunLogs,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
   runBootstrap
@@ -319,3 +321,46 @@ test.skipIf(process.platform === 'win32')(
     assert.equal(result.error, 'install.sh --manifest failed: exit 3\n✗ manifest broke')
   }
 )
+
+test('appendBoundedStream keeps short transcripts whole and tails long ones', () => {
+  assert.equal(appendBoundedStream('abc', 'def'), 'abcdef')
+
+  const big = appendBoundedStream('x'.repeat(300 * 1024), 'y'.repeat(10))
+  assert.equal(big.length, 256 * 1024)
+  assert.ok(big.endsWith('y'.repeat(10)))
+})
+
+test('pruneRunLogs keeps the newest five run logs and ignores other files', () => {
+  const dir = mkTmpHome()
+
+  try {
+    for (let i = 0; i < 8; i += 1) {
+      fs.writeFileSync(path.join(dir, `bootstrap-2026-01-0${i}T00-00-00-000Z.log`), 'x')
+    }
+
+    fs.writeFileSync(path.join(dir, 'desktop.log'), 'keep')
+    fs.writeFileSync(path.join(dir, 'bootstrap-notes.txt'), 'keep')
+
+    pruneRunLogs(dir)
+
+    const remaining = fs.readdirSync(dir).sort()
+    assert.deepEqual(
+      remaining,
+      [
+        'bootstrap-2026-01-03T00-00-00-000Z.log',
+        'bootstrap-2026-01-04T00-00-00-000Z.log',
+        'bootstrap-2026-01-05T00-00-00-000Z.log',
+        'bootstrap-2026-01-06T00-00-00-000Z.log',
+        'bootstrap-2026-01-07T00-00-00-000Z.log',
+        'bootstrap-notes.txt',
+        'desktop.log'
+      ].sort()
+    )
+  } finally {
+    fs.rmSync(dir, { force: true, recursive: true })
+  }
+})
+
+test('pruneRunLogs tolerates a missing directory', () => {
+  pruneRunLogs(path.join(os.tmpdir(), `hermes-no-such-dir-${Date.now()}`))
+})

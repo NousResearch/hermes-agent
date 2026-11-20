@@ -46,11 +46,11 @@ import {
 } from '@/store/session'
 import {
   $sessionTiles,
-  $workingSessionIds,
   clearAllSessionStates,
   publishSessionState,
   runtimeSessionOwner
 } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states-status-sets'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'

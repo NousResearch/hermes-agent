@@ -75,8 +75,12 @@ function useDecoded(text: string): string {
     const tailIndices = chars.map((_, idx) => idx).filter(idx => scrambleable[idx])
     let resolved = 0
 
+    // ~11fps, not ~22: each tick resolves a whole character (instead of half)
+    // so the decode finishes in the same wall-clock time with half the
+    // React re-renders. This is a one-shot onboarding animation, but there is
+    // no reason to pay double for identical motion.
     const id = window.setInterval(() => {
-      resolved += 0.5
+      resolved += 1
       const settled = new Set(tailIndices.slice(0, Math.floor(resolved)))
 
       setOut(chars.map((ch, idx) => (scrambleable[idx] && !settled.has(idx) ? pickAscii() : ch)).join(''))
@@ -84,7 +88,7 @@ function useDecoded(text: string): string {
       if (Math.floor(resolved) >= tailIndices.length) {
         window.clearInterval(id)
       }
-    }, 45)
+    }, 90)
 
     return () => window.clearInterval(id)
   }, [text])
@@ -104,9 +108,11 @@ export function useScramble(text: string, active: boolean): string {
       return
     }
 
+    // Ambient noise, not a timed decode: half the tick rate is visually
+    // identical and halves the re-renders while it runs.
     const id = window.setInterval(() => {
       setOut(Array.from(text, ch => (/[a-z0-9]/i.test(ch) ? pickGlyph() : ch)).join(''))
-    }, 45)
+    }, 90)
 
     return () => window.clearInterval(id)
   }, [text, active])

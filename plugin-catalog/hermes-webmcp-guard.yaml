@@ -1,0 +1,30 @@
+name: hermes-webmcp-guard
+title: Hermes WebMCP Guard
+repo: https://github.com/NifasathA/hermes-webmcp-guard
+sha: 9f5fead8f5c30f2fe65c833944d8f18c0591c722
+description: "Permission-aware, ephemeral WebMCP capabilities with origin allowlists, schema validation, conservative risk classification, exact one-call approvals, and safe revocation. Disclosure — connects only to Chrome DevTools WebSocket endpoints you configure and calls the tools the websites on your allowed origins expose; those websites may make their own network requests and their tool output reaches your model. Calls the plugin classifies as write or sensitive ask you first, but the classification uses the website's own tool names, so a site on an allowed origin can present a state-changing tool under a read-style name that runs without a prompt; allow only origins you trust. It does not launch a browser, read credentials, execute arbitrary JavaScript, or persist website capabilities."
+maintainer: NifasathA
+tier: community
+category: web
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/NifasathA/hermes-webmcp-guard/blob/9f5fead8f5c30f2fe65c833944d8f18c0591c722/README.md
+readme: true
+platforms: []
+known_issues:
+  - Requires an operator-managed Chromium 149+ CDP endpoint started with WebMCP experimental features enabled.
+  - Regular Chromium 151+ on Linux ARM64 may hit upstream navigation issue 554752968; chromium-shell is the verified workaround.
+  - WebMCP remains experimental, and website-provided tool behavior is outside the plugin's control.
+capabilities:
+  provides_tools:
+    - webmcp_connect
+    - webmcp_list_tools
+    - webmcp_execute
+    - webmcp_disconnect
+  provides_hooks:
+    - pre_tool_call
+    - on_session_end
+    - on_session_reset
+  provides_middleware:
+    - tool_execution
+  requires_env: []

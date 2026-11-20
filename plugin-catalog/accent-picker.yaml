@@ -1,6 +1,6 @@
 name: accent-picker
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: abec9e822a23089943dd1d476a104bf746f19f86
+sha: 80025332933bf84fb3c7b68f369d9fe59a771e98
 subdir: accent-picker
 title: Accent Picker
 description: 'OKLCH accent colour picker for the Hermes Desktop status bar: drag it and the whole theme retints
@@ -10,9 +10,9 @@ description: 'OKLCH accent colour picker for the Hermes Desktop status bar: drag
 maintainer: NousResearch
 tier: official
 category: desktop
-version: "1.0.0"
+version: "1.1.0"
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/accent-picker
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/abec9e822a23089943dd1d476a104bf746f19f86/assets/accent-picker.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/80025332933bf84fb3c7b68f369d9fe59a771e98/assets/accent-picker.jpg
 platforms: []
 capabilities:
   provides_tools: []

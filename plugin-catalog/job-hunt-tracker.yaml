@@ -1,0 +1,19 @@
+name: job-hunt-tracker
+repo: https://github.com/muhadilaga/hermes-job-hunt-tracker
+sha: eb2b4ca62e110e33dbffb572bc12edc0b19c88a2
+description: Log job applications, check for duplicates before applying, and track follow-ups. A job-hunt tracker for Hermes.
+maintainer: Muhammad Adilaga
+tier: community
+category: tools
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - job_log_application
+    - job_list_applications
+    - job_check_duplicate
+    - job_update_status
+    - job_followups_due
+    - job_application_stats
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

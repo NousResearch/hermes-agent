@@ -1,0 +1,33 @@
+name: treg-jobs
+repo: https://github.com/YAN-XBT/treg-jobs
+sha: 39cd46453f660f349f196e23b9281850c30301ee
+description: "Job hunt through treg's job API: search live roles across companies, semantic fit search, the people who work there, one person's work email, real salary percentiles with the sample size behind them, roles that closed since a date, and a local pipeline with who to write to. Eight tools plus a Jobs pane (pipeline, spend, chips). Read-only towards the world: nothing is applied to, emailed or logged in to. Disclosure — calls the paid treg.to API with your TREG_TOKEN and spends from that team's prepaid balance (about $0.001–$0.01 per call, capped per call and by a local budget ledger); your search terms, job-seeker profile summary, and the names, company domains and LinkedIn URLs of people you look up are sent to treg.to and the data providers it routes to; work-email lookups return third parties' personal contact data."
+maintainer: YAN-XBT
+tier: community
+category: tools
+requires_hermes: ">=0.22"
+version: "0.4.0"
+docs_url: https://github.com/YAN-XBT/treg-jobs/blob/main/README.md
+title: Treg Jobs
+image: https://raw.githubusercontent.com/YAN-XBT/treg-jobs/39cd46453f660f349f196e23b9281850c30301ee/assets/card.jpg
+screenshots: []
+platforms: []
+known_issues:
+  - "Needs a treg team key (TREG_TOKEN) and its prepaid balance: calls are metered per hit, about $0.003 for a search and $0.01 for salary insights. jobs_tracker and jobs_doctor are free."
+  - "jobs_match takes 15-25 s and returns roles without a similarity score, so the rows have to be read rather than sorted by number."
+  - "A work email from jobs_email is the provider's best match, not a verified one — verify before sending."
+readme: true
+capabilities:
+  provides_tools:
+    - jobs_search
+    - jobs_match
+    - jobs_people
+    - jobs_email
+    - jobs_salary
+    - jobs_changes
+    - jobs_tracker
+    - jobs_doctor
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TREG_TOKEN

@@ -1,0 +1,116 @@
+"""Inline transcript images over the gateway: ``image.render`` and ``tool.complete``'s ``image_path``."""
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from tui_gateway import server
+
+PIL = pytest.importorskip("PIL.Image")
+
+
+@pytest.fixture
+def photo(tmp_path):
+    path = tmp_path / "photo.png"
+    PIL.new("RGBA", (320, 160), (0, 200, 90, 255)).save(path)
+    return str(path)
+
+
+def _render(monkeypatch, params, inline_images="auto"):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"inline_images": inline_images}})
+    response = server.handle_request({"id": "img", "method": "image.render", "params": params})
+    assert "error" not in response, response
+    return response["result"]
+
+
+def test_render_without_a_terminal_returns_half_block_cells(monkeypatch, photo):
+    result = _render(monkeypatch, {"path": photo, "cols": 20, "rows": 8})
+    assert result["mode"] == "unicode"
+    assert len(result["cells"]) == result["rows"] and len(result["cells"][0]) == result["cols"] <= 20
+    assert result["cells"][0][0] == [0, 200, 90, 255, 0, 200, 90, 255]
+
+
+def _plain_daemon_env(monkeypatch):
+    for key in ("TMUX", "STY", "TERM_PROGRAM", "WEZTERM_PANE", "KITTY_WINDOW_ID", "ITERM_SESSION_ID"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+def test_render_kitty_for_a_client_on_a_kitty_terminal(monkeypatch, photo):
+    # A shared daemon started outside kitty (Desktop, a service) still serves a kitty TUI.
+    _plain_daemon_env(monkeypatch)
+    result = _render(monkeypatch, {"path": photo, "cols": 20, "rows": 8, "graphics": True, "terminal": "kitty"})
+    assert result["mode"] == "kitty"
+    assert result["transmit"].startswith("\x1b_G") and len(result["placeholder"]) == result["rows"]
+
+
+def test_render_draws_every_image_the_cli_draws(monkeypatch, tmp_path):
+    # A .tiff/.ico attachment draws in the classic CLI; the TUI must draw it too.
+    for suffix in (".tiff", ".tif", ".ico"):
+        path = tmp_path / f"scan{suffix}"
+        PIL.new("RGBA", (64, 64), (0, 200, 90, 255)).save(path)
+        assert _render(monkeypatch, {"path": str(path), "cols": 20, "rows": 8})["mode"] == "unicode"
+
+
+def test_render_follows_the_client_terminal_not_the_daemon_env(monkeypatch, photo):
+    # A daemon started from kitty must not send placeholders to an iTerm/VS Code/dashboard client.
+    _plain_daemon_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-kitty")
+    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+    params = {"path": photo, "cols": 20, "rows": 8, "graphics": True}
+    assert _render(monkeypatch, {**params, "terminal": "unicode"})["mode"] == "unicode"
+    assert _render(monkeypatch, params)["mode"] == "unicode"  # an older client that declares nothing
+    # A pinned protocol is still the user's explicit opt-in.
+    assert _render(monkeypatch, {**params, "terminal": "unicode"}, inline_images="kitty")["mode"] == "kitty"
+
+
+def test_render_honours_off_and_refuses_non_images(monkeypatch, photo, tmp_path):
+    assert _render(monkeypatch, {"path": photo, "cols": 20, "rows": 8}, inline_images="off") == {"mode": "off"}
+    notes = tmp_path / "notes.txt"
+    notes.write_text("secret")
+    assert _render(monkeypatch, {"path": str(notes), "cols": 20, "rows": 8}) == {"mode": "off"}
+    assert _render(monkeypatch, {"path": str(tmp_path / "missing.png"), "cols": 20, "rows": 8}) == {"mode": "off"}
+
+
+def test_tool_complete_names_the_image_the_tool_looked_at(monkeypatch, photo):
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda event_type, sid, payload=None: events.append((event_type, payload)))
+    monkeypatch.setitem(server._sessions, "img-sid", {
+        "show_reasoning": True, "tool_progress_mode": "all", "tool_started_at": {}, "edit_snapshots": {},
+        "agent": SimpleNamespace(reasoning_config={"enabled": True, "effort": "high"}),
+    })
+
+    server._on_tool_complete("img-sid", "t1", "vision_analyze", {"image_url": photo}, json.dumps({"analysis": "a cat"}))
+    server._on_tool_complete("img-sid", "t2", "search_files", {"pattern": "*.png"}, json.dumps({"matches": [photo]}))
+    server._on_tool_complete("img-sid", "t3", "read_file", {"path": photo},
+                             json.dumps({"error": f"Cannot read binary file '{photo}' (.png)."}))
+
+    completes = {payload["tool_id"]: payload for event, payload in events if event == "tool.complete"}
+    assert completes["t1"]["image_path"] == photo
+    assert "image_path" not in completes["t2"]
+    assert "image_path" not in completes["t3"]  # a failed read never draws the file it refused
+
+
+def test_canonical_local_viewer_frames_carry_the_image(photo):
+    # The shared gateway's tool.complete for its local CLI/TUI viewer: same field as the sidecar's.
+    from gateway.local_viewer_events import complete_fields
+
+    turn = SimpleNamespace()
+    assert complete_fields(turn, "c1", "vision_analyze", {"image_url": photo}, '{"analysis": "a cat"}')["image_path"] == photo
+    assert complete_fields(turn, "c2", "terminal", {"command": "ls"}, '{"output": "' + photo.replace("\\", "/") + '"}')["image_path"] is None
+    assert complete_fields(turn, "c3", "vision_analyze", {"image_url": photo}, '{"success": false, "error": "x"}',
+                           is_error=True)["image_path"] is None
+
+
+def test_deeply_nested_tool_result_still_completes(monkeypatch, photo):
+    # A result too deep for the JSON decoder must not drop the whole tool.complete.
+    from gateway.local_viewer_events import complete_fields
+
+    deep = "[" * 100_000 + "]" * 100_000
+    assert complete_fields(SimpleNamespace(), "c1", "vision_analyze", {"image_url": photo}, deep)["image_path"] == photo
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda event_type, sid, payload=None: events.append((event_type, payload)))
+    monkeypatch.setitem(server._sessions, "deep-sid", {"tool_progress_mode": "all", "tool_started_at": {}, "edit_snapshots": {}})
+    server._on_tool_complete("deep-sid", "t1", "vision_analyze", {"image_url": photo}, deep)
+    assert [payload["image_path"] for event, payload in events if event == "tool.complete"] == [photo]

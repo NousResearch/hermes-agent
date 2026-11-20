@@ -78,3 +78,20 @@ async def test_uncacheable_replied_attachment_leaves_a_note(adapter, status, pay
     assert event.text.startswith("summarise this\n\n[Replied-to Telegram attachment ")
     assert note in event.text
     assert event.media_urls == [] and event.message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
+async def test_getfile_gets_a_read_budget_longer_than_the_general_timeout():
+    """A just-uploaded file's getFile can stall 90-150 s (#158107); it must not use PTB's 20 s default."""
+    from plugins.platforms.telegram.telegram_media_fetch import GETFILE_READ_TIMEOUT, fetch_telegram_file
+    seen = {}
+
+    async def _get_file(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(file_path="documents/file_1.pdf",
+                               download_as_bytearray=AsyncMock(return_value=bytearray(b"%PDF")))
+    source = SimpleNamespace(get_file=_get_file)
+    _, data = await fetch_telegram_file(source, "document")
+    assert data == b"%PDF"
+    assert seen == {"read_timeout": GETFILE_READ_TIMEOUT}
+    assert GETFILE_READ_TIMEOUT > 150

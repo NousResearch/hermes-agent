@@ -231,12 +231,13 @@ export function rolledBackReason(reason: string): string {
     .replace(/,? then re-run with --force-interrupt( \(any running turn is interrupted\))?\./, ", then try again.");
 }
 
-/** The engine's per-file manual-step notes (a file put back, kept for its edits, or whose backup is missing):
- *  words to follow, not a command to copy. */
+/** The engine's per-file manual-step notes (a file put back, kept for its edits, whose backup is missing or
+ *  unreadable, or that the migration stopped while writing): words to follow, not a command to copy. */
 export function isFileNote(step: string): boolean {
   return / was restored from its backup \(nothing to do for it\)$/.test(step)
     || /^keep \S.* as it is \(it was edited after the migration wrote it\): /.test(step)
-    || /^the backup \S.* of \S+ is missing: /.test(step);
+    || /^the backup \S.* of \S+ is missing or cannot be read: /.test(step)
+    || /^the migration stopped while writing \S.*, so it may hold the migration's changes: /.test(step);
 }
 
 /** The engine's account of an incomplete rollback (`<reason>; rollback incomplete: <detail>`), or "". */

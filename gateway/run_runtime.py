@@ -866,12 +866,13 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                            getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
-    from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
+            from gateway.session_acp_lifecycle import end_idle_acp_sessions
             end_idle_acp_sessions(authority)
         except Exception:
-            # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
+            # Best-effort bookkeeping: a store that cannot answer, or a module that no longer imports
+            # (its tree replaced under this process), must not abort the stop sequence.
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)

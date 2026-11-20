@@ -1,22 +1,22 @@
 name: session-lens
 title: Hermes Session Lens
 repo: https://github.com/abualnassr/hermes-session-lens
-sha: 1752a91718b0bbd62c1e2227955e9657961b14cf
-version: "0.55.0"
+sha: f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2
+version: "0.55.1"
 description: "Read-only observability for Hermes Desktop: what each session and turn cost and why, its full trace, recurring tool failures, every profile at a glance, provider quotas and service balances, system prompt weight and prompt-cache health, cron run history, gateway restarts, model comparison with cheaper-route evidence, and instruction-rule grading. Disclosure — reads every profile's state.db read-only plus agent logs, cron records, gateway state, skills/.usage.json, cache/prompt_cache_routes.json and config.yaml; API keys only through agent.secret_scope.get_secret (names declared under optional_env); subscription sign-ins are read only by Hermes' own agent.account_usage, never held by the plugin; calls only each configured vendor's usage or balance endpoint (hosts listed in the README) and sends no inference request; the desktop asks Hermes' model.options (cached, refresh off) for rate-limit holds; runs the local monid CLI when installed; never opens .env, auth.json or another tool's login; writes no Hermes state and sends no session content anywhere."
 maintainer: abualnassr
 tier: community
 category: desktop
 requires_hermes: ">=0.23.3"
-docs_url: https://github.com/abualnassr/hermes-session-lens/blob/1752a91718b0bbd62c1e2227955e9657961b14cf/README.md
-image: https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/catalog-banner.png
+docs_url: https://github.com/abualnassr/hermes-session-lens/blob/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/README.md
+image: https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/screenshots/why-it-cost.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/screenshots/compare.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/screenshots/fleet.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/screenshots/recurring-failures.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/screenshots/ai-usage.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/1752a91718b0bbd62c1e2227955e9657961b14cf/docs/screenshots/sessions.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/screenshots/why-it-cost.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/screenshots/compare.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/screenshots/fleet.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/screenshots/recurring-failures.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/screenshots/ai-usage.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/f9c6d779ba2ca70b444aa1d6b4e934d34a33fbd2/docs/screenshots/sessions.png
 readme: true
 platforms: []
 capabilities:

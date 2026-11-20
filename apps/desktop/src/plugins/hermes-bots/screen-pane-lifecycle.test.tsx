@@ -54,6 +54,8 @@ vi.mock('./i18n', () => ({
   useBots: () => ({
     screen: {
       title: 'Screen',
+      stop: 'Stop screen',
+      stoppedTitle: 'Screen is off',
       controlTaken: 'Another viewer took control',
       youControl: 'You control',
       handBack: 'Hand back',
@@ -185,6 +187,23 @@ it('pins the bot socket for the attach lifetime and lets go on unmount', async (
   expect(retention.held).toBe(1)
   view.unmount()
   expect(retention.held).toBe(0)
+})
+
+it('ends a bot-controlled screen session and clears the live pane', async () => {
+  const botControls = { ...status, lease: { ...status.lease, holder: 'agent' as const, viewer_hash: null } }
+  const stopped = { ...botControls, running: false, pid: null, display: null, socket: null }
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) =>
+    method === 'display.stop' ? stopped : { ...botControls, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+  )
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+
+  fireEvent.click(view.getByText('Stop screen'))
+
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.stop'))
+  await waitFor(() => expect(view.getByText('Screen is off')).toBeTruthy())
+  expect(sockets[0].closed).toBe(true)
+  view.unmount()
 })
 
 it('does not hand back while replacing a stream to reconnect the same viewer', async () => {

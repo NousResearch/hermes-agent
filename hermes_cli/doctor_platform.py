@@ -277,7 +277,7 @@ def _check_mtls_identity(issues: list[str]) -> None:
     """
     try:
         from agent.ssl_verify import MtlsConfigError, client_cert_spec, mtls_context
-    except Exception:
+    except ImportError:
         return
     try:
         spec = client_cert_spec()

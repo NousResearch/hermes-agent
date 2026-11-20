@@ -479,7 +479,7 @@ def _connection_identity(config: dict) -> tuple:
         from agent.ssl_verify import client_cert_spec
 
         global_cert = _frozen(client_cert_spec() or {})
-    except Exception:
+    except (ImportError, OSError, RuntimeError, ValueError):  # MtlsConfigError is a RuntimeError
         global_cert = _frozen({})
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),

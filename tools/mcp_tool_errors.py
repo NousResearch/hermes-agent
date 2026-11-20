@@ -263,7 +263,7 @@ def _resolve_global_client_cert(server_name: str):
     """
     try:
         from agent.ssl_verify import MtlsConfigError, client_cert_spec
-    except Exception:  # import-grade skew (older tree): behave exactly as before
+    except ImportError:  # import-grade skew (older tree): behave exactly as before
         return None
     try:
         spec = client_cert_spec()
@@ -273,7 +273,7 @@ def _resolve_global_client_cert(server_name: str):
             "WITHOUT a client certificate.", server_name, exc,
         )
         return None
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         logger.debug("MCP server '%s': agent.mtls lookup failed", server_name, exc_info=True)
         return None
     if spec is None:
@@ -282,6 +282,18 @@ def _resolve_global_client_cert(server_name: str):
     if not key:
         return cert  # combined PEM / PKCS#12-extracted single file
     return (cert, key, password) if password else (cert, key)
+
+
+def _resolve_tls(server_name: str, config: dict):
+    """``(verify, cert)`` for this server's httpx transports. httpx refuses ``verify=<path>``
+    beside ``cert=``, so with a client certificate (per-server or inherited) a CA-bundle path
+    becomes a trust context; without one the path passes through unchanged."""
+    verify, cert = _resolve_ssl_verify(server_name, config), _resolve_client_cert(server_name, config)
+    if cert is not None and isinstance(verify, str):
+        from agent.ssl_verify import _resolve_ca_path, _shared_context
+        ca_path = _resolve_ca_path(verify)
+        verify = _shared_context(ca_path) if ca_path else verify
+    return verify, cert
 
 
 def _resolve_ssl_verify(server_name: str, config: dict):
@@ -298,7 +310,8 @@ def _resolve_ssl_verify(server_name: str, config: dict):
         from agent.ssl_verify import ca_verify_for
 
         context = ca_verify_for(f"mcp:{server_name}")
-    except Exception:
+    except (ImportError, OSError, RuntimeError, ValueError):  # ssl.SSLError is an OSError
+        logger.debug("MCP server '%s': agent.mtls CA lookup failed", server_name, exc_info=True)
         return True
     return context if context is not None else True
 

@@ -467,7 +467,7 @@ def _pkcs12_pem_paths(p12_path: str, password: Optional[str]) -> tuple[str, str]
         from hermes_constants import get_hermes_home
 
         out_dir = Path(get_hermes_home()) / "cache" / "mtls"
-    except Exception:  # no HERMES_HOME resolvable: keep the pair process-local
+    except (ImportError, OSError, RuntimeError, ValueError):  # no HERMES_HOME: keep the pair process-local
         out_dir = Path(tempfile.mkdtemp(prefix="hermes-mtls-"))
     cert_out, key_out = out_dir / f"{digest}-cert.pem", out_dir / f"{digest}-key.pem"
     if cert_out.is_file() and key_out.is_file():

@@ -362,7 +362,7 @@ class TestSlashCommandCompleter:
         """Regression for #33822 / #54388: `/audit` must reach the skill `/artifact-audit`."""
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {"/artifact-audit": {"description": "Check artifacts"}},
-            plugin_commands_provider=lambda: {})
+            plugin_commands_provider=dict)
 
         hit = next(c for c in _completions(completer, "/audit") if c.text == "artifact-audit")
 
@@ -371,7 +371,7 @@ class TestSlashCommandCompleter:
     def test_builtin_substring_hit_respects_command_filter(self):
         def texts(command_filter=None):
             completer = SlashCommandCompleter(
-                command_filter=command_filter, plugin_commands_provider=lambda: {})
+                command_filter=command_filter, plugin_commands_provider=dict)
             return {c.text for c in _completions(completer, "/mcp")}
 
         assert "reload-mcp" in texts()
@@ -386,7 +386,7 @@ class TestSlashCommandCompleter:
         }
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: skills, command_filter=lambda _cmd: False,
-            plugin_commands_provider=lambda: {})
+            plugin_commands_provider=dict)
 
         assert [c.text for c in _completions(completer, "/audit")] == [
             "audit-log", "artifact-audit", "preaudited", "ledger"]

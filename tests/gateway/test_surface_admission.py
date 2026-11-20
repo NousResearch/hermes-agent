@@ -70,6 +70,98 @@ async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path
     assert (typed_text, typed_note) == ('and tomorrow?', '')
 
 
+@pytest.mark.asyncio
+async def test_canonical_voice_claim_freezes_provider_coverage_in_admission(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+
+    async def answer(_event):
+        pytest.fail('The admission is intentionally held in the FIFO')
+
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    monkeypatch.setattr(type(authority), '_schedule_admitted', lambda *_: None)
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        opened = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        assert 'result' in opened, opened
+        coverage = {'call_id': 'call:1', 'delegation_id': 'del:2', 'event_ids': ['ev2', 'ev1']}
+        params = {'session_id': 's', 'submission_id': 'voice-live:["call:1","del:2"]',
+                  'text': 'Bring tea.', 'surface': 'voice-live', 'voice_claim': coverage}
+
+        async def submit(fields):
+            return await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': fields})
+
+        first = await submit(params)
+        assert first.get('result', {}).get('status') == 'queued', first
+        assert (await submit(params))['result'] == first['result']
+        conflict = await submit({**params, 'voice_claim': {**coverage, 'event_ids': ['ev3']}})
+        assert conflict['error']['message'] == 'admission_conflict', conflict
+    finally:
+        await connection.close()
+
+    rows = authority.persistence.admissions.list(session_id='s', pending_only=False)
+    assert len(rows) == 1
+    assert rows[0].payload['voice_claim_v1'] == coverage
+
+    from gateway.session_contract import SessionRef
+
+    live = authority.sessions['s']
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    monkeypatch.setattr(type(authority), '_schedule', lambda *_: None)
+    # No attached or saved provider call: claiming must refuse without running,
+    # and the attached viewer must see exactly this admission settle.
+    claimed, _ = await authority._claim_next(SessionRef('p', 's'), live)
+    assert claimed is False
+    completions = [p for f in frames if (p := f['params'])['type'] == 'message.complete']
+    assert [(p['admission_id'], p['payload']['outcome']) for p in completions] == [(rows[0].admission_id, 'rejected')]
+    # Desktop renders a status=error completion as the turn's error, not as a
+    # generic "ended without a reply" after its silence window.
+    rejected = completions[0]['payload']
+    assert rejected['status'] == 'error' and rejected['text'] == ''
+    # Only the window that submitted this exact claim may render it.
+    assert rejected['submission_id'] == params['submission_id']
+    assert 'did not run' in rejected['error'] and 'call transcript' in rejected['error']
+    # No retry: a recorded claim must never be resubmitted as plain text.
+    assert rejected['error_surface'] == {'layer': 'gateway', 'code': 'voice_claim_unverified',
+                                         'retryable': False, 'message': rejected['error']}
+
+
+@pytest.mark.asyncio
+async def test_pending_voice_tail_is_published_before_the_next_typed_claim(tmp_path, monkeypatch):
+    from gateway.session_contract import SessionRef
+    from gateway.session_controls import AuthorityConnection
+    from persistence.conversation.live_voice import VoiceFragment
+
+    authority = await _authority(tmp_path, monkeypatch, lambda _: pytest.fail('Only claim the turn'))
+    monkeypatch.setattr(type(authority), '_schedule_admitted', lambda *_: None)
+    live = authority.sessions['s']
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    messages = authority.persistence.messages
+    call = messages.start_voice_capture('s', 'tail')
+    messages.ingest_voice_fragment(call, VoiceFragment('spoken', 'assistant', 'The last answer.', 0, 500))
+    assert authority.persistence.coordination.try_acquire_turn_lease(session_id='s', holder='previous-turn')
+    messages.finish_voice_capture(call, incomplete=False)
+    assert messages.read_transcript('s') == ()
+    # The provider close is already committed, but the capture task has not
+    # finished its final projection and removed itself from the registry.
+    monkeypatch.setitem(authority.voice_captures.tasks, call, asyncio.current_task())
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        opened = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        assert 'result' in opened, opened
+        queued = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
+            'session_id': 's', 'submission_id': 'typed', 'text': 'What did you say?'}})
+        assert queued.get('result', {}).get('status') == 'queued', queued
+        authority.persistence.coordination.release_turn_lease(session_id='s', holder='previous-turn')
+        claimed, _ = await authority._claim_next(SessionRef('p', 's'), live)
+        assert claimed['request_id'] == 'typed'
+        assert [(row.role, row.content) for row in messages.read_transcript('s')] == [('assistant', 'The last answer.')]
+        event_types = [frame['params']['type'] for frame in frames]
+        assert event_types.index('voice.live.capture') < event_types.index('message.start')
+    finally:
+        await connection.close()
+
 
 @pytest.mark.asyncio
 async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monkeypatch):

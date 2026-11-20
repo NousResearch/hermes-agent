@@ -15,6 +15,7 @@ from typing import Any, Callable, ContextManager, Iterator, Mapping, MutableMapp
 from ..core.conventions import RowVisibility
 from ..core.errors import PersistenceError
 from ..core.identity import JsonValue, MessageId, SessionId
+from .live_voice import VoiceFragment, VoiceTurn
 
 __all__ = [
     "CONTENT_JSON_PREFIX",
@@ -526,6 +527,7 @@ class ConversationRequest:
     include_lineage: bool = False
     repair_alternation: bool = False
     include_row_ids: bool = False
+    exclude_row: tuple[MessageId, str] | None = None  # exact (physical id, UID), before replay transforms
 
 
 # Replay dict keys after role, content and the born-durable marker, in emission order, with the record field each maps to.
@@ -960,6 +962,34 @@ class MessageRepository(Protocol):
 
     def append(self, session_id: SessionId, message: NewMessage, *, turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> MessageId:
         """Append one row and bump the session counters in one transaction; returns its id. With ``turn_lease_holder`` the turn lease on the session's conversation must still name that holder (an expired row that still names it is renewed for ``turn_lease_ttl_seconds``), else ``TurnLeaseLost``; ``None`` or an empty holder appends unfenced. A live compression lock never blocks an append. A session ended by compression raises ``CompressionClosed`` and a missing session row ``SessionRowMissing``."""
+        ...
+
+    def start_voice_capture(self, session_id: SessionId, call_id: str) -> str:
+        """Bind a trusted vendor call to one existing conversation in this store."""
+        ...
+
+    def ingest_voice_fragment(self, call_id: str, fragment: VoiceFragment) -> bool:
+        """Durably keep new text; return False on exact replay and refuse conflicting replay."""
+        ...
+
+    def record_voice_marker(self, call_id: str, delegation_id: str, event_id: str, offset_ms: float | None) -> bool:
+        """Record the sideband marker and last previously received fragment; False on exact replay."""
+        ...
+
+    def pending_voice_fragments(self, call_id: str) -> tuple[VoiceFragment, ...]:
+        """Return unprojected text in arrival order, including after reopen."""
+        ...
+
+    def pending_voice_calls(self, *, session_id: SessionId | None = None) -> tuple[tuple[str, bool], ...]:
+        """Calls with unprojected text, optionally scoped to the physical conversation tip."""
+        ...
+
+    def finish_voice_capture(self, call_id: str, *, incomplete: bool) -> bool:
+        """Close ingest and return the durable incomplete flag (including any earlier rewind)."""
+        ...
+
+    def publish_voice_turns(self, call_id: str, turns: tuple[VoiceTurn, ...]) -> int:
+        """Append selected pending text and consume its coverage atomically; refuse busy or retired targets."""
         ...
 
     def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *, turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None, turn_lease_ttl_seconds: float = 300.0) -> BatchAppendResult:

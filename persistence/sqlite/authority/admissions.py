@@ -47,7 +47,7 @@ def _record(row: Mapping[str, Any] | None) -> AdmissionRecord | None:
 
 def _claimed(row: Mapping[str, Any]) -> ClaimedAdmission:
     return ClaimedAdmission(**{name: row[name] for name in _RECORD_FIELDS}, transcript_mark=row["transcript_mark"],
-                            queued_owner_epoch=row["queued_owner_epoch"])
+                            queued_owner_epoch=row["queued_owner_epoch"], voice_input=row.get("voice_input"))
 
 
 class SQLiteAdmissionRepository:

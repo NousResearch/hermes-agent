@@ -191,7 +191,7 @@ async def get_voice_live_status(profile: Optional[str] = None):
 
 
 @router.post("/api/audio/voice-live/session")
-async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
+async def create_voice_live_session(payload: VoiceLiveSessionRequest, request: Request, profile: Optional[str] = None):
     """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.
 
     The project API key stays on this host; the renderer only receives the session id and the
@@ -204,13 +204,38 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     sdp = payload.sdp or ""
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="An SDP offer is required")
+    if payload.session_id:
+        from gateway.session_contract import SessionRef
+        from gateway.session_voice_capture import start_live_voice
+        from hermes_cli.web_server_sessions import _MUTATION_REFUSAL_STATUS, _native_history_transport, _session_mutation_context
+        from hermes_cli.web_voice_owner import start_via_voice_owner
+        from persistence.core.errors import AuthorityRefusal
+        from pathlib import Path
+
+        owner, actor = _session_mutation_context(request, profile)
+        if owner is None:
+            result = await start_via_voice_owner(Path(actor.profile_id), actor, payload.session_id, sdp, payload.history)
+            if result is not None:
+                return {"ok": True, **result}
+        else:
+            ref = SessionRef(owner.profile_id, payload.session_id)
+            try:
+                with _native_history_transport(request, owner, actor):
+                    result = await start_live_voice(owner, actor, ref, sdp, payload.history)
+            except AuthorityRefusal as exc:
+                status = {'voice_provider_unavailable': 502, 'voice_capture_unavailable': 503}.get(
+                    exc.reason, _MUTATION_REFUSAL_STATUS.get(exc.reason, 409),
+                )
+                raise HTTPException(status_code=status, detail=exc.reason) from None
+            return {"ok": True, **result}
+
     try:
         result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=client_error(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=client_error(exc))
-    return {"ok": True, **result}
+    return {"ok": True, **result, 'capture_status': 'unavailable'}
 
 
 def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:

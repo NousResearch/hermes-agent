@@ -252,6 +252,7 @@ class VoiceLiveSessionRequest(BaseModel):
     text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
     sdp: str
     history: Optional[list[dict[str, Any]]] = None
+    session_id: Optional[str] = None  # durable Hermes chat, not the vendor's call ID
 
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease

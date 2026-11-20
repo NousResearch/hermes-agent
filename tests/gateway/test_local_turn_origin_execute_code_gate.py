@@ -100,10 +100,13 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
 @pytest.mark.parametrize("request_id,payload,viewer", [
     ("typed", {"text": "hi", "cli_turn_v1": {"api_text": "[voice] hi"}, "finite": True}, True),
     ("typed", {"text": "hi", "local_operator_v1": {"principal_id": "op"}}, True),
+    ('voice-live:["call","delegation"]', {"text": "hi", "voice_claim_v1": {
+        "call_id": "call", "delegation_id": "delegation", "event_ids": ["input"],
+    }}, True),
     ('["plugin","desk","route","x"]', {"text": "hi", "local_automation_v1": {"identity": "x"}}, False),
     ('hosted:[{"task":1},0]', {"text": "room task"}, False),
     ("native", {"text": "hi", "native_text_v1": {"source": {}}}, False),
-], ids=["cli-submit", "operator-submit", "automation", "hosted-room-task", "messaging"])
+], ids=["cli-submit", "operator-submit", "voice-submit", "automation", "hosted-room-task", "messaging"])
 def test_viewer_input_is_only_a_session_submit_row(request_id, payload, viewer):
     from gateway.session_operator import is_viewer_input
     assert is_viewer_input({"request_id": request_id, "payload": payload}) is viewer

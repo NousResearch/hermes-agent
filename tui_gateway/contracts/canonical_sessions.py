@@ -246,6 +246,14 @@ class CanonicalModelOverride(Params):
     reasoning: str | None = None
 
 
+class CanonicalVoiceClaim(Params):
+    """Provider evidence for a delegated utterance; the owner must independently verify it."""
+
+    call_id: str
+    delegation_id: str
+    event_ids: list[str]
+
+
 class CanonicalSubmitParams(CanonicalSessionParams):
     text: str
     submission_id: str | None = None
@@ -256,6 +264,7 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     unattended: bool = False
     surface: str | None = None
     voice_context: str | None = None
+    voice_claim: CanonicalVoiceClaim | None = None
     interrupted: bool = False
     voice_turn: bool = False
     # Desktop composer presentation, committed per admission (``display_v1``): a hidden widget

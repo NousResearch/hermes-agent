@@ -109,7 +109,7 @@ def encode_frame(frame):
 
 
 def validate_bootstrap(frame):
-    if set(frame) - {'attachments_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
+    if set(frame) - {'attachments_v1', 'stored_input_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
         raise ValueError('invalid_managed_worker_bootstrap')
     scope = frame['scope']
     fields = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret', 'epoch'}
@@ -402,6 +402,12 @@ def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
+    if 'stored_input_v1' in frame:
+        # The decoder imports the turn prologue, which in turn loads runtime modules.
+        from gateway.session_stored_input import decode_stored_input
+        _, stored_text = decode_stored_input(frame['stored_input_v1'], frame['scope']['session_id'])
+        if frame['text'] != stored_text or frame['policy'].get('kanban_json') not in (None, 'null'):
+            raise ValueError('invalid_managed_worker_bootstrap')
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
     # This process serves exactly one turn of one profile: bind it as the runtime scope. The
@@ -467,7 +473,8 @@ def execute(frame, channel):
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
             channel.send('ready', pid=os.getpid())
-            history = store.get_messages_as_conversation(scope['session_id'])
+            # The facade reads the exact prefix over the owner-fenced store for a stored input.
+            history = None if 'stored_input_v1' in frame else store.get_messages_as_conversation(scope['session_id'])
             from gateway.session_kanban import run_worker_turns
             if 'attachments_v1' in frame:
                 from gateway.session_ingress_media import restore_attachments

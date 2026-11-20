@@ -5,15 +5,29 @@ refresher thread and liveness watchdog (``agent.turn_facade_lease``), relay/acco
 balanced start/finish marks. Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s
 MRO unchanged.
 """
+from __future__ import annotations
+
 import logging
 import uuid
 from contextlib import suppress
-from typing import Any, Dict, Generator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
+if TYPE_CHECKING:
+    from agent.turn_context import DurableUserInput
+
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+
+def _admitted_history(admission: Any, history: Optional[list], durable_user_input: Optional[DurableUserInput]) -> Optional[list]:
+    """The history to run with once admitted. An admission wait can reload the entire
+    transcript, including a durable turn's saved input: such a turn reloads its prefix
+    through the exact filter after acquiring the lease (None)."""
+    if durable_user_input is not None and admission.conversation_history is not history:
+        return None
+    return admission.conversation_history
 
 
 class TurnFacadeMixin:
@@ -30,6 +44,7 @@ class TurnFacadeMixin:
         relay_metadata: Optional[dict[str, Any]] = None,
         title_user_message: Optional[str]=None,
         prelude: Optional[Generator]=None,
+        *, durable_user_input: Optional[DurableUserInput]=None,
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
@@ -86,17 +101,18 @@ class TurnFacadeMixin:
                 conversation_history=conversation_history,
             )
             if admission.early_result is not None:
-                carry_unadmitted_user_message(
-                    admission.early_result, user_message, persist_user_message,
-                    timestamp=persist_user_timestamp, display_kind=persist_user_display_kind,
-                    display_metadata=persist_user_display_metadata, platform_id=persist_user_platform_id,
-                )
+                if durable_user_input is None:
+                    carry_unadmitted_user_message(
+                        admission.early_result, user_message, persist_user_message,
+                        timestamp=persist_user_timestamp, display_kind=persist_user_display_kind,
+                        display_metadata=persist_user_display_metadata, platform_id=persist_user_platform_id,
+                    )
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
                 return admission.early_result
             lease = admission.lease
-            conversation_history = admission.conversation_history
+            conversation_history = _admitted_history(admission, conversation_history, durable_user_input)
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,
@@ -157,6 +173,7 @@ class TurnFacadeMixin:
                         turn_author=turn_author,
                         title_user_message=title_user_message,
                         prelude=prelude,
+                        durable_user_input=durable_user_input,
                     )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;

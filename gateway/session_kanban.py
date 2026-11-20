@@ -271,8 +271,14 @@ def _run_worker_turns(agent, frame, history):
     if context is None:
         from gateway.session_display import worker_display_kwargs
         author = frame.get('turn_author')
+        kwargs = worker_display_kwargs()
+        if 'stored_input_v1' in frame:
+            from gateway.session_stored_input import decode_stored_input
+            kwargs['durable_user_input'], kwargs['persist_user_message'] = decode_stored_input(
+                frame['stored_input_v1'], frame['scope']['session_id'],
+            )
         with _worker_workspace(frame) as task_id:
-            return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
+            return agent.run_conversation(frame['text'], conversation_history=history, **kwargs,
                                           **({'task_id': task_id} if task_id else {}),
                                           **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code

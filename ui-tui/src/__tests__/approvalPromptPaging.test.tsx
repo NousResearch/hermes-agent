@@ -79,3 +79,57 @@ describe('ApprovalPrompt long commands', () => {
     instance.cleanup()
   })
 })
+
+describe('ApprovalPrompt schedule card', () => {
+  const render = (req: Parameters<typeof ApprovalPrompt>[0]['req']) => {
+    const stdin = new FakeInput()
+    const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 40 })
+    const frames: string[] = []
+    stdout.on('data', chunk => frames.push(chunk.toString()))
+
+    const instance = renderSync(
+      <ApprovalPrompt cols={100} onChoice={vi.fn()} onTell={vi.fn()} req={req} t={DEFAULT_THEME} />,
+      {
+        patchConsole: false,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as unknown as NodeJS.WriteStream
+      }
+    )
+
+    return { frames, instance }
+  }
+
+  it('shows the job description and schedule labels, never the synthetic command; commands keep their card', async () => {
+    const req = {
+      command: '<cronjob_manage> (schedule a new job)',
+      description: 'Schedule "water" (every 2h, first run 10:00 AM PST): remind me to drink water',
+      requestId: 'r1'
+    }
+
+    const schedule = render({ ...req, kind: 'schedule' })
+    await settle()
+    const card = stripAnsi(schedule.frames.join(''))
+    expect(card).toContain('⏰ schedule this job?')
+    expect(card).toContain('remind me to drink water')
+    expect(card).not.toContain('<cronjob_manage>')
+    expect(card).not.toContain('approval required')
+
+    for (const label of ['1. Allow', '2. Allow for this chat', '3. Always allow new jobs', '4. Deny']) {
+      expect(card).toContain(label)
+    }
+
+    schedule.instance.unmount()
+    schedule.instance.cleanup()
+
+    for (const kind of [undefined, 'something-new']) {
+      const command = render({ ...req, kind })
+      await settle()
+      const plain = stripAnsi(command.frames.join(''))
+      expect(plain).toContain('⚠ approval required')
+      expect(plain).toContain('<cronjob_manage> (schedule a new job)')
+      expect(plain).toContain('1. Allow once')
+      command.instance.unmount()
+      command.instance.cleanup()
+    }
+  })
+})

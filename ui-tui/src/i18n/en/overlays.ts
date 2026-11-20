@@ -15,7 +15,14 @@ export const overlaysEn = {
       always: 'Always allow',
       deny: 'Deny',
       tell: 'No, and tell Hermes what to do instead',
-      tellHint: 'type what Hermes should do instead · Enter deny and send · Esc back'
+      tellHint: 'type what Hermes should do instead · Enter deny and send · Esc back',
+      // The card for a new scheduled job: its body is the job description, not a command.
+      schedule: {
+        title: '⏰ schedule this job?',
+        once: 'Allow',
+        session: 'Allow for this chat',
+        always: 'Always allow new jobs'
+      }
     },
     rewind: {
       prime: 'esc again to edit previous message',

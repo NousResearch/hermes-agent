@@ -132,3 +132,32 @@ def test_an_explicit_frame_bound_is_honoured(tmp_path, monkeypatch):
 
     asyncio.run(call())
     assert seen["max_size"] == expected
+
+
+def test_resume_omits_the_stored_transcript(monkeypatch):
+    """A persisted chat past the frame cap must not be loaded on the forward path.
+
+    ``_Relay`` only reads ``session_id``. Requesting the whole transcript closed the
+    socket with ``1009 frame exceeds limit`` before ``prompt.submit``.
+    """
+    seen = {}
+
+    class _Client:
+        async def rpc(self, method, **params):
+            seen.setdefault(method, params)
+            if method == "session.resume":
+                return {"session_id": "long-chat"}
+            return {"status": "queued", "admission_id": "adm-1", "voice_stopped": True}
+
+    class _Conn:
+        async def __aenter__(self):
+            return _Client()
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr(owner_forward, "connect_owner", lambda *a, **k: _Conn())
+    relay = owner_forward._Relay("sid", {}, "long-chat", Path("."), None, "hello", None)
+    asyncio.run(relay._run())
+    assert seen["session.resume"]["omit_messages"] is True
+    assert seen["session.resume"]["session_id"] == "long-chat"

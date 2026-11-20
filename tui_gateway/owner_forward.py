@@ -141,7 +141,9 @@ class _Relay:
 
     async def _run(self) -> None:
         async with connect_owner(self.home, self.endpoint) as client:
-            attached = await client.rpc("session.resume", session_id=self.key)
+            # History is not used: only session_id. A stored transcript past the frame cap
+            # (8 MiB) closed the socket before prompt.submit (#145215, kvnloo).
+            attached = await client.rpc("session.resume", session_id=self.key, omit_messages=True)
             target = str(attached.get("session_id") or self.key)
             receipt = await self._submit(client, target)
             if receipt.get("voice_stopped") is True:

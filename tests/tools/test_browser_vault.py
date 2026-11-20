@@ -1022,6 +1022,7 @@ class TestBrowserVaultTools:
              patch.object(browser_vault_tool.time, "sleep"):
             out = browser_vault_tool._read_back("t", fills, "n", "https://example.com")
         assert out["error_type"] == "fill_reverted" and "1 of 2 field(s)" in out["error"]
+        assert "cleared" in sent[-1]
 
     def test_a_value_that_settles_after_a_mask_rewrite_is_a_fill(self, store):
         """The other half of stability: a mask that writes twice reads wrong first, then holds."""

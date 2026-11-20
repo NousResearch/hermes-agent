@@ -930,33 +930,70 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
 _MIGRATION_BACKUPS = ("env.bak", "config.yaml.bak", "launcher-env.json", "launcher-argv.json")
 
 
-def test_the_migration_backups_and_record_are_refused_like_env(forced_files_client):
+def _route_codes(client, path):
+    return [client.get(f"/api/files/{route}", params={"path": str(path)}).status_code
+            for route in ("read", "download", "stream")]
+
+
+def _names(client, folder):
+    return [e["name"] for e in client.get("/api/files", params={"path": str(folder)}).json().get("entries", [])]
+
+
+def test_the_migration_backups_and_record_are_refused_like_env(forced_files_client, monkeypatch):
     """A backend migration's backups (the copy of .env, a hand-started backend's environment and command line)
-    and its record are refused exactly as .env is: never listed, read, streamed or downloaded."""
+    and its record, directly under a Hermes home or a profile home, are refused exactly as .env is: never
+    listed, read, streamed, downloaded or written. Matched without regard to case."""
     client, root = forced_files_client
-    folder = root / "backend_migration"
-    folder.mkdir(parents=True)
-    (root / ".env").write_text("OPENAI_API_KEY=fixture-only\n", encoding="utf-8")
-    (root / "notes.txt").write_text("ordinary\n", encoding="utf-8")
-    (root / "backend_migration.json").write_text('{"state": "done"}\n', encoding="utf-8")
-    for name in _MIGRATION_BACKUPS:
-        (folder / name).write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=fixture-only\n", encoding="utf-8")
-
-    names = [e["name"] for e in client.get("/api/files", params={"path": str(root)}).json()["entries"]]
-    assert "notes.txt" in names
-    assert ".env" not in names and "backend_migration" not in names and "backend_migration.json" not in names
-    listing = client.get("/api/files", params={"path": str(folder)})
-    assert [e["name"] for e in listing.json().get("entries", [])] == []
-
-    def refused(path):
-        return [client.get(f"/api/files/{route}", params={"path": str(path)}).status_code
-                for route in ("read", "download", "stream")]
-
-    env = refused(root / ".env")
+    home = root / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    profile = home / "profiles" / "work"
+    (home / ".env").parent.mkdir(parents=True)
+    (home / ".env").write_text("OPENAI_API_KEY=fixture-only\n", encoding="utf-8")
+    (home / "notes.txt").write_text("ordinary\n", encoding="utf-8")
+    env = _route_codes(client, home / ".env")
     assert env == [403, 403, 403]
-    for path in (root / "backend_migration.json", *(folder / n for n in _MIGRATION_BACKUPS)):
-        assert refused(path) == env, path
-    assert client.get("/api/files/read", params={"path": str(root / "notes.txt")}).status_code == 200
+    for base, folder_name, record_name in ((home, "backend_migration", "backend_migration.json"),
+                                           (profile, "backend_migration", "backend_migration.json"),
+                                           (home / "profiles" / "case", "Backend_Migration", "BACKEND_MIGRATION.json")):
+        folder = base / folder_name
+        folder.mkdir(parents=True)
+        (base / record_name).write_text('{"state": "done"}\n', encoding="utf-8")
+        for name in _MIGRATION_BACKUPS:
+            (folder / name).write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=fixture-only\n", encoding="utf-8")
+
+        assert folder_name not in _names(client, base) and record_name not in _names(client, base), base
+        assert _names(client, folder) == []
+        for path in (base / record_name, *(folder / n for n in _MIGRATION_BACKUPS)):
+            assert _route_codes(client, path) == env, path
+            written = client.post("/api/fs/write-text", json={"path": str(path), "content": "x"})
+            assert written.status_code == 403, (path, written.text)
+    assert "notes.txt" in _names(client, home)
+    assert client.get("/api/files/read", params={"path": str(home / "notes.txt")}).status_code == 200
+
+
+def test_an_unrelated_projects_backend_migration_names_are_ordinary_files(forced_files_client, monkeypatch):
+    """Outside a Hermes home the two names are a project's own: listed, read, downloaded and written as any file
+    (nothing changes for a user who never migrated)."""
+    client, root = forced_files_client
+    monkeypatch.setenv("HERMES_HOME", str(root / "hermes-home"))
+    project = root / "work" / "some-project"
+    (project / "backend_migration").mkdir(parents=True)
+    readme = project / "backend_migration" / "README.md"
+    record = project / "backend_migration.json"
+    readme.write_text("# how we migrated our backend\n", encoding="utf-8")
+    record.write_text('{"steps": []}\n', encoding="utf-8")
+
+    (project / "OTHER.md").write_text("# ordinary\n", encoding="utf-8")
+    (project / "other.json").write_text("{}\n", encoding="utf-8")
+
+    assert {"backend_migration", "backend_migration.json"} <= set(_names(client, project))
+    assert _names(client, project / "backend_migration") == ["README.md"]
+    for path, ordinary in ((readme, project / "OTHER.md"), (record, project / "other.json")):
+        assert _route_codes(client, path) == _route_codes(client, ordinary), path
+        assert _route_codes(client, path)[:2] == [200, 200], path
+        written = client.post("/api/fs/write-text", json={"path": str(path), "content": "edited\n"})
+        assert written.status_code == 200, written.text
+        assert path.read_text(encoding="utf-8") == "edited\n"
 
 
 def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):

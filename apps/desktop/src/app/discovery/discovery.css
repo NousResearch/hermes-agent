@@ -1227,9 +1227,26 @@
   line-height: 1.2;
 }
 
+/* Compact (< 640, breakpoints.ts): the text 16 in; the check-in shares a phone's height with the
+   composer, so it drops its eyebrow and its suggestions' second lines, and its title steps down. */
 @media (max-width: 639.98px) {
   :root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer) {
     --discovery-welcome-inset: 1rem;
+    gap: 1rem;
+  }
+
+  :root[data-shell='portal'] .discovery-check-in > .discovery-welcome-eyebrow,
+  :root[data-shell='portal'] .discovery-check-in-row .discovery-welcome-place-line {
+    display: none;
+  }
+
+  :root[data-shell='portal'] .discovery-check-in .discovery-welcome-title {
+    font-size: var(--portal-type-display-lg-size);
+  }
+
+  :root[data-shell='portal'] .discovery-check-in-row {
+    min-block-size: var(--portal-touch-target);
+    padding-block: 0.5rem;
   }
 }
 

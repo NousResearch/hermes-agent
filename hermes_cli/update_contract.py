@@ -31,7 +31,7 @@ def is_commit_build(project_root: Path) -> bool:
 class UpdateRefusal:
     """Why an in-place update is refused, and what to run instead."""
 
-    code: str              # image-marker | image-marker-invalid | docker | nix | apt | desktop-app | <steward>
+    code: str              # image-marker | image-marker-invalid | docker | nix | apt | tarball | desktop-app | <steward>
     message: str           # full user-facing text (multi-line ok)
     update_command: str    # the one-line remediation command
 
@@ -134,11 +134,20 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
 
     # Layer 3: pre-existing filesystem heuristics, verbatim semantics.
     try:
-        from hermes_cli.config import detect_install_method, is_nix_install_method
+        from hermes_cli.config import (
+            detect_install_method,
+            format_tarball_update_message,
+            is_nix_install_method,
+        )
 
         method = detect_install_method(project_root)
         if method == "docker":
             return _refusal("docker", method)
+        if method == "tarball":
+            # A release tarball: no checkout to pull into, and no package manager to name.
+            # Refuse before ``cmd_update`` tries git, so the user gets guidance instead of
+            # "Not a git repository".
+            return _refusal("tarball", method, lambda _command: format_tarball_update_message())
         if is_nix_install_method(method) or method == "apt":
             return _refusal(method if method == "apt" else "nix", method)
     except Exception as exc:

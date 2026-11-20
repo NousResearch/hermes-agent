@@ -686,6 +686,8 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     tags, releases, run = _sequencer_fixture("0.21.5", "0.21.6", manifest_digest=None)
     for version, raw in zip(("0.21.5", "0.21.6"), manifests.values()):
         tags[f"v{version}"][2]["candidateManifestSha256"] = hashlib.sha256(raw).hexdigest()
+    # 0.21.6's advance finished: its candidate pointer names it.
+    manifests["releases/stable/release-candidates.json"] = manifests["releases/tag/rc.1-v0.21.6/release-candidates.json"]
     for row in releases:
         row.update(draft=False, published_at="2026-09-22T01:00:00Z")
     api = _Api(files=[newest_file if pending_is_latest else STORE_FILE])
@@ -711,6 +713,44 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     assert seen == ([(newest_file, "immediate")] if pending_is_latest else
                     [(newest_file, "superseded"), (STORE_FILE, "immediate")])
     assert api.mode == "Immediate" and api.commits == 1
+
+
+@pytest.mark.parametrize("pointer", [b'{"tag":"v0.21.4"}\n', None])
+def test_a_head_whose_pointer_write_failed_finishes_its_advance(monkeypatch, pointer):
+    """publish_release writes the stable pointer after the head moves. When that write fails the
+    head already names the release, so plan() skips it; the pass still repeats the advance until
+    the pointer (the source channel's update target) names the head's candidate."""
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases import channel_releases, docker, sequencer, store
+
+    archived = json.dumps({"tag": "v0.21.5", "packages": []}).encode()
+    _tags, releases, run = _sequencer_fixture("0.21.5", manifest_digest=hashlib.sha256(archived).hexdigest())
+    for row in releases:
+        row.update(draft=False, published_at="2026-09-22T01:00:00Z")
+    objects = {"releases/tag/rc.1-v0.21.5/release-candidates.json": archived}
+    if pointer is not None:
+        objects["releases/stable/release-candidates.json"] = pointer
+
+    def read_archive(key):
+        if key not in objects:
+            raise ChannelError(f"Release archive object is unavailable: {key}")
+        return objects[key]
+
+    advanced = []
+
+    def advance(_env, record, _root):
+        advanced.append(record["version"])
+        objects["releases/stable/release-candidates.json"] = archived
+
+    monkeypatch.setattr(channel_releases, "advance_stable", advance)
+    monkeypatch.setattr(docker, "promote_stable", lambda *_a: pytest.fail("pointer recovery moved the Docker aliases"))
+    monkeypatch.setattr(store, "release_from_env", lambda *_a: None)
+    env = {"GITHUB_REPOSITORY": "example/project"}
+
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == []
+    assert advanced == ["0.21.5"]
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == []
+    assert advanced == ["0.21.5"]
 
 
 def test_a_publish_that_died_before_the_retarget_is_repaired():

@@ -12,7 +12,7 @@ const RETIREMENT_DATE = new Date(2027, 0, 15);
 const WEBAPP_SETTINGS_HASH = "/#/settings";
 
 /**
- * Hermes Cloud's "your dashboard is moving" notice (Figma 18677:30165). A modal, not a banner:
+ * Hermes Cloud's "your dashboard is moving" notice. A modal, not a banner:
  * it interrupts until the user answers, so there is no backdrop or Escape dismissal, only its
  * two actions. The backend sets `webapp_url` only on a hosted agent's signed-in dashboard that
  * already serves the web app, so presence == show; a local dashboard never gets it. "Later"

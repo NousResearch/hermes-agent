@@ -1143,7 +1143,7 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Proactively schedule help for later: reminders, follow-ups and watches, once, a few times, or recurring.
+    "description": """Schedule reminders, follow-ups and checks: once, a few times, or recurring.
 
 Be proactive: when the conversation reveals a moment the user will need help at later, create a job for it without waiting to be asked, then tell the user in one line what you scheduled. Typical moments:
 - Appointments and events: a heads-up with enough lead time to get there (the day before for a morning slot, a leave-by time with the route).

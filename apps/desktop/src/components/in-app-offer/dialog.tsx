@@ -22,6 +22,7 @@ import {
   listenInAppOfferStatus,
   markInAppOfferShown,
   releaseInAppOffer,
+  reportInAppOfferEvent,
   startInAppOfferRefresh
 } from '@/store/in-app-offer'
 
@@ -66,8 +67,9 @@ export function InAppOfferDialog() {
     // dismissal (the app quit) can return tomorrow but not sooner.
     if (owned && offer) {
       markInAppOfferShown()
+      reportInAppOfferEvent(requestGateway, offer.id, 'shown')
     }
-  }, [owned, offer])
+  }, [owned, offer, requestGateway])
 
   if (!owned || !offer) {
     return null
@@ -97,6 +99,7 @@ export function InAppOfferDialog() {
           <Button
             onClick={() => {
               openExternalLink(offer.cta_url)
+              reportInAppOfferEvent(requestGateway, offer.id, 'clicked')
               dismissInAppOffer(offer.id)
             }}
             size="sm"

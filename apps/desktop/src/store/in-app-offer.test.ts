@@ -14,6 +14,7 @@ import {
   listenInAppOfferStatus,
   markInAppOfferShown,
   releaseInAppOffer,
+  reportInAppOfferEvent,
   resetInAppOfferStateForTest,
   startInAppOfferRefresh,
   syncInAppOffer
@@ -313,5 +314,39 @@ describe('startInAppOfferRefresh', () => {
     expect($freeTierStatus.get()?.in_app_offer).toEqual(OFFER)
 
     stop()
+  })
+})
+
+describe('reportInAppOfferEvent', () => {
+  it('reports each event once per offer on this install', () => {
+    const requestGateway = vi.fn().mockResolvedValue({ reported: true })
+
+    reportInAppOfferEvent(requestGateway, 'offer_1', 'shown')
+    reportInAppOfferEvent(requestGateway, 'offer_1', 'shown')
+    reportInAppOfferEvent(requestGateway, 'offer_1', 'clicked')
+    reportInAppOfferEvent(requestGateway, 'offer_2', 'shown')
+
+    expect(requestGateway.mock.calls).toEqual([
+      ['in_app_offer.report', { event: 'shown', offer_id: 'offer_1' }],
+      ['in_app_offer.report', { event: 'clicked', offer_id: 'offer_1' }],
+      ['in_app_offer.report', { event: 'shown', offer_id: 'offer_2' }]
+    ])
+  })
+
+  it('does not re-report after a renderer restart (the record is in storage)', () => {
+    const first = vi.fn().mockResolvedValue({ reported: true })
+    reportInAppOfferEvent(first, 'offer_1', 'shown')
+
+    const afterRestart = vi.fn().mockResolvedValue({ reported: true })
+    reportInAppOfferEvent(afterRestart, 'offer_1', 'shown')
+
+    expect(afterRestart).not.toHaveBeenCalled()
+  })
+
+  it('stays silent when the backend lacks the method', async () => {
+    const requestGateway = vi.fn().mockRejectedValue(new Error('method not found'))
+
+    expect(() => reportInAppOfferEvent(requestGateway, 'offer_1', 'shown')).not.toThrow()
+    await Promise.resolve()
   })
 })

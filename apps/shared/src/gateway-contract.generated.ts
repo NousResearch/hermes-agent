@@ -725,6 +725,14 @@ export interface FreeTierAckNoticeResult {
 export interface InAppOfferRefreshResult {
   in_app_offer?: InAppOfferPayload | null
 }
+export interface InAppOfferReportParams {
+  profile?: string | null
+  offer_id: string
+  event: 'shown' | 'clicked'
+}
+export interface InAppOfferReportResult {
+  reported: boolean
+}
 export interface FreeTierClaimNudgeParams {
   profile?: string | null
   kind?: 'trial' | 'connector'
@@ -6588,6 +6596,8 @@ export interface RpcMethods {
   'image.render': { params: ImageRenderParams; result: ImageRenderResult }
   /** Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account. */
   'in_app_offer.refresh': { params: ProfileParams; result: InAppOfferRefreshResult }
+  /** Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. Uses the stored token as it is (never refreshing it) and only for the offer this profile was served. */
+  'in_app_offer.report': { params: InAppOfferReportParams; result: InAppOfferReportResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -7027,6 +7037,7 @@ export const RPC_METHODS = [
   'image.generate',
   'image.render',
   'in_app_offer.refresh',
+  'in_app_offer.report',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

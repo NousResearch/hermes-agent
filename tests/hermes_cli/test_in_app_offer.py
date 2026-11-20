@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone, UTC
+
 import pytest
 
 from hermes_cli import in_app_offer
@@ -162,3 +165,96 @@ def test_refresh_keeps_the_last_answer_when_the_fetch_fails(monkeypatch):
     monkeypatch.setattr(nous_account, "stored_token_account_info", boom)
 
     assert in_app_offer.refresh_from_portal() == OFFER
+
+
+class _Resp:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def _posts(monkeypatch):
+    """Capture the report POSTs instead of sending them."""
+    sent = []
+
+    def fake_urlopen(req, timeout):
+        sent.append({"url": req.full_url, "method": req.get_method(), "body": req.data,
+                     "auth": req.get_header("Authorization"), "timeout": timeout})
+        return _Resp(204)
+
+    monkeypatch.setattr(in_app_offer.urllib.request, "urlopen", fake_urlopen)
+    return sent
+
+
+def _live_token(state, seconds=3600):
+    """The default fixture's token carries no expiry, which reads as expiring; a report needs a
+    token that outlives the 60s skew, as a real login has."""
+    expires = datetime.now(UTC) + timedelta(seconds=seconds)
+    state["nous"] = {**state["nous"], "expires_at": expires.isoformat()}
+
+
+def test_report_posts_the_served_offer_with_the_stored_token(_signed_in, _posts):
+    _live_token(_signed_in)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.report_event("offer_1", "shown") is True
+
+    assert len(_posts) == 1
+    post = _posts[0]
+    assert post["method"] == "POST"
+    assert post["url"].endswith("/api/oauth/account/in-app-offer-event")
+    assert post["auth"] == "Bearer account-token"
+    assert json.loads(post["body"]) == {"offer_id": "offer_1", "event": "shown"}
+
+
+def test_report_refuses_an_offer_this_profile_was_not_served(_signed_in, _posts):
+    """The RPC carries a client-chosen id: it must not bump an arbitrary campaign."""
+    _live_token(_signed_in)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.report_event("someone_elses_offer", "clicked") is False
+    assert _posts == []
+
+
+def test_report_refuses_an_unknown_event(_signed_in, _posts):
+    _live_token(_signed_in)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.report_event("offer_1", "viewed") is False
+    assert _posts == []
+
+
+def test_report_sends_nothing_when_signed_out(_signed_in, _posts):
+    _live_token(_signed_in)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+    _signed_in["nous"] = None
+
+    assert in_app_offer.report_event("offer_1", "shown") is False
+    assert _posts == []
+
+
+def test_report_sends_nothing_with_a_token_about_to_expire(_signed_in, _posts):
+    """Never a refresh: a token inside the 60s skew means no report, not a token write."""
+    _live_token(_signed_in, seconds=30)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    assert in_app_offer.report_event("offer_1", "shown") is False
+    assert _posts == []
+
+
+def test_report_never_raises_on_a_network_failure(_signed_in, monkeypatch):
+    _live_token(_signed_in)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+
+    def boom(req, timeout):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(in_app_offer.urllib.request, "urlopen", boom)
+
+    assert in_app_offer.report_event("offer_1", "shown") is False

@@ -277,6 +277,23 @@ method("in_app_offer.refresh", params=ProfileParams, result=InAppOfferRefreshRes
            "whose sessions never fetch the account.")
 
 
+class InAppOfferReportParams(ProfileParams):
+    offer_id: str
+    event: Literal["shown", "clicked"]
+
+
+class InAppOfferReportResult(Result):
+    # Whether the Portal took the report. False covers signed out, an offer this profile was not
+    # served, and any network failure: the count is best-effort and never an error.
+    reported: bool
+
+
+method("in_app_offer.report", params=InAppOfferReportParams, result=InAppOfferReportResult,
+       doc="Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. "
+           "Uses the stored token as it is (never refreshing it) and only for the offer this "
+           "profile was served.")
+
+
 class FreeTierClaimNudgeParams(ProfileParams):
     kind: Literal["trial", "connector"] = "trial"
 

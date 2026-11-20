@@ -91,6 +91,9 @@ describe('InAppOfferDialog on the Webapp (browser host)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Claim the offer' }))
 
     expect(openSpy).toHaveBeenCalledWith(OFFER.cta_url, '_blank', 'noopener,noreferrer')
+    // The Portal's campaign counts: shown when it opened, clicked on the CTA.
+    expect(requestGateway).toHaveBeenCalledWith('in_app_offer.report', { event: 'shown', offer_id: OFFER.id })
+    expect(requestGateway).toHaveBeenCalledWith('in_app_offer.report', { event: 'clicked', offer_id: OFFER.id })
     expect(screen.queryByText('Welcome back')).toBeNull()
     expect(localStorage.getItem('hermes.in-app-offer.dismissed-v1')).toContain(OFFER.id)
   })

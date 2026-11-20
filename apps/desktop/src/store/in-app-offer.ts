@@ -294,10 +294,41 @@ export function startInAppOfferRefresh(requestGateway: FreeTierRequester): () =>
   }
 }
 
+/** Offer events this install already reported (`<id>:shown`, `<id>:clicked`). */
+const REPORTED_KEY = 'hermes.in-app-offer.reported-v1'
+
+export type InAppOfferEvent = 'clicked' | 'shown'
+
+/**
+ * Tell the Portal the offer was shown or clicked, once per offer per event
+ * on this install (the Portal's campaign counts). The record is written
+ * before the call, so a second window or a retry never double-counts; a
+ * report that fails is not retried, since a count is not worth a second
+ * request. Silent on any failure, including an older backend without the
+ * method.
+ */
+export function reportInAppOfferEvent(
+  requestGateway: FreeTierRequester,
+  offerId: string,
+  event: InAppOfferEvent
+): void {
+  const key = `${offerId}:${event}`
+  const reported = storedStringArray(REPORTED_KEY)
+
+  if (reported.includes(key)) {
+    return
+  }
+
+  // Bounded like the dismissed list's growth: keep the newest entries.
+  persistStringArray(REPORTED_KEY, [...reported, key].slice(-100))
+  void requestGateway('in_app_offer.report', { event, offer_id: offerId }).catch(() => undefined)
+}
+
 /** Test seam: reset module state between cases. */
 export function resetInAppOfferStateForTest(): void {
   $inAppOfferDialog.set(null)
   $claim.set(null)
   $dismissedIds.set(storedStringArray(DISMISSED_KEY))
   persistString(LAST_SHOWN_KEY, null)
+  persistStringArray(REPORTED_KEY, [])
 }

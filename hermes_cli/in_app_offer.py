@@ -21,9 +21,11 @@ user has already seen. The memo only mirrors what the Portal currently serves.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
-from typing import Any, Dict, Optional
+import urllib.request
+from typing import Any, Optional
 
 from hermes_cli.anon_auth import _mint_memo_key
 
@@ -139,3 +141,48 @@ def _validated(value: Any) -> Optional[dict[str, str]]:
             return None
         checked[field_name] = text
     return checked
+
+
+#: What the client tells the Portal about an offer, for the campaign's counts.
+REPORTABLE_EVENTS = ("shown", "clicked")
+
+
+def report_event(offer_id: str, event: str) -> bool:
+    """Tell the Portal this offer was shown or clicked (``POST /api/oauth/account/in-app-offer-event``).
+
+    Best-effort and fire-once from the caller's side: the desktop records what it already
+    reported per offer, so the counts stay close to people. Uses the stored token as it is,
+    never refreshing it (the same rule as ``refresh_from_portal``), and reports nothing when
+    signed out or for an offer this profile was not served. Returns whether the Portal took it.
+    """
+    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token
+    from hermes_cli.auth import get_provider_auth_state
+    from hermes_cli.nous_account import _portal_base_url
+
+    if event not in REPORTABLE_EVENTS:
+        return False
+    served = pending_offer()
+    # Only an offer the Portal actually served this profile: the RPC carries a client-chosen
+    # id, and the counter must not become a way to bump an arbitrary campaign.
+    if served is None or served.get("id") != offer_id:
+        return False
+    state = get_provider_auth_state("nous") or {}
+    if guest_without_free_tier(state):
+        return False
+    token = held_connectors_token(state, skew_seconds=60)
+    if not token:
+        return False
+    base = (_portal_base_url(state) or "https://portal.nousresearch.com").rstrip("/")
+    req = urllib.request.Request(
+        f"{base}/api/oauth/account/in-app-offer-event",
+        data=json.dumps({"offer_id": offer_id, "event": event}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return 200 <= resp.status < 300
+    except OSError as exc:
+        # urllib's network and HTTP errors are OSErrors; a count is never worth an error.
+        logger.info("in-app offer %s report failed: %s", event, exc)
+        return False

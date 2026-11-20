@@ -146,5 +146,21 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5097, str(e))
 
 
+@method("in_app_offer.report")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Report that the in-app offer was shown or clicked, for the Portal's campaign counts.
+
+    Network I/O, so it runs on the RPC pool (``_LONG_HANDLERS``). Best-effort: a failure answers
+    ``reported: false``, never an error, since a count must never surface to the user."""
+    try:
+        from hermes_cli import in_app_offer
+        reported = in_app_offer.report_event(str(params.get("offer_id") or ""), str(params.get("event") or ""))
+        return _ok(rid, {"reported": reported})
+    except Exception:  # the RPC boundary: a count is never worth a crash
+        logger.warning("in_app_offer.report failed", exc_info=True)
+        return _ok(rid, {"reported": False})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

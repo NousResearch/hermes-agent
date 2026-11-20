@@ -1699,6 +1699,24 @@
       }
     },
     {
+      "name": "in_app_offer.report",
+      "summary": "Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. Uses the stored token as it is (never refreshing it) and only for the offer this profile was served.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InAppOfferReportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InAppOfferReportResult"
+        }
+      }
+    },
+    {
       "name": "input.detect_drop",
       "summary": "Recognise a terminal file drop pasted into the composer and turn it into an attachment.",
       "params": [
@@ -22154,6 +22172,55 @@
           }
         },
         "title": "InAppOfferRefreshResult",
+        "type": "object"
+      },
+      "InAppOfferReportParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "offer_id": {
+            "title": "Offer Id",
+            "type": "string"
+          },
+          "event": {
+            "enum": [
+              "shown",
+              "clicked"
+            ],
+            "title": "Event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "offer_id",
+          "event"
+        ],
+        "title": "InAppOfferReportParams",
+        "type": "object"
+      },
+      "InAppOfferReportResult": {
+        "additionalProperties": false,
+        "properties": {
+          "reported": {
+            "title": "Reported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reported"
+        ],
+        "title": "InAppOfferReportResult",
         "type": "object"
       },
       "InflightTurn": {

@@ -235,7 +235,9 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
 
         status = check_for_updates(passive=True)
         behind = status.get("behind")
-        if status.get("rollback"):
+        if status.get("error") == "release-relation-unknown":
+            print(f"Could not check for updates. {status['message']}")
+        elif status.get("rollback"):
             print(f"Newer than stable release v{status.get('sourceVersion')} — "
                   f"'{recommended_update_command()}' moves back to it")
         elif behind == UPDATE_AVAILABLE_NO_COUNT:

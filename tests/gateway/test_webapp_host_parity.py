@@ -161,7 +161,9 @@ def test_hermes_webapp_status_prints_what_main_prints(monkeypatch, tmp_path, cap
     assert capsys.readouterr().out == STATUS_OUTPUT[host]
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+# macOS lets a wildcard bind under SO_REUSEADDR succeed beside the 127.0.0.1 rival (as on main), so the
+# wildcard case runs where that bind is refused.
+@pytest.mark.parametrize("host", ["127.0.0.1", pytest.param("0.0.0.0", marks=pytest.mark.platforms("linux", "windows"))])
 def test_a_busy_webapp_port_leaves_the_webapp_unavailable_and_native_clients_a_listener(tmp_path, host):
     """Real sockets; the reason's wording is the OS's (pinned with a fixed error below)."""
     port = free_port()

@@ -158,6 +158,8 @@ def _validate_local_owner_session(target: dict[str, Any]) -> None:
     active = get_session_env("HERMES_SESSION_PROFILE", "")
     home = get_hermes_home() if profile == active else canonical
     path = Path(home) / "state.db"
+    if not path.exists():
+        raise ValueError("notification owner session does not exist in the selected profile")
     state = SessionDB(path, read_only=True)
     try:
         session = state.get_session(target["chat_id"])

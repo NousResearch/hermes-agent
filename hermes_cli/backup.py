@@ -119,6 +119,7 @@ _KEPT_CACHE_SUBDIRS = {
 # (recordings, asset packs) is NOT.
 _EXCLUDED_PATHS = frozenset({
     Path("work/goat_banner/models"),
+    Path("plexmedia-backup"),
 })
 
 

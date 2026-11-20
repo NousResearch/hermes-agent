@@ -820,6 +820,26 @@ def test_a_by_hand_move_blocks_on_active_or_unknown_turns_unless_force_interrupt
     assert out["plan"]["unsupported"][0]["steps"]
 
 
+def test_an_already_blocked_by_hand_plan_skips_activity_read_and_adds_no_turn_blocker(home, capsys, monkeypatch):
+    (home / "config.yaml").write_text(
+        "model:\n  default: fake-model\nsecrets:\n  vault:\n    enabled: true\n", encoding="utf-8",
+    )
+    host = ManualHost(home, host="127.0.0.1")
+    reads = []
+
+    def fail_if_called(pid, start_time):
+        reads.append((pid, start_time))
+        return 2
+
+    monkeypatch.setattr(host, "running_turns", fail_if_called)
+
+    code, out = _plan(host, capsys)
+    assert code == engine.EXIT_BLOCKED
+    assert reads == []
+    assert len(out["plan"]["blockers"]) == 1 and "external secret source is enabled" in out["plan"]["blockers"][0]
+    assert out["plan"]["unsupported"][0]["steps"] == []
+
+
 def test_a_by_hand_move_never_plans_keep_webapp_address(home, capsys):
     _webapp(home, "  enabled: true\n  host: 127.0.0.1\n  port: 9200\n")
 

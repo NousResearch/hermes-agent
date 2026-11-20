@@ -400,6 +400,7 @@ And the boss, hidden: ||![Final boss](https://example.com/boss.png)||
 
 - The photo or GIF, including one in an album, is sent with Telegram's spoiler effect, and its caption as spoiler text.
 - If the photo can't be sent, Hermes posts the "couldn't deliver" notice instead of the link, whose preview would show the image.
+- A spoilered tag whose URL doesn't look like an image stays in the text as a link hidden under spoiler text.
 - The bars must wrap the image tag alone. Images without bars are sent as before.
 
 The agent isn't told about this syntax by default. To use it, describe it in a skill or in `SOUL.md`.

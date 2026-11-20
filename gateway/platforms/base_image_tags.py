@@ -1,7 +1,8 @@
 """Image tags a reply turns into attachments (``BasePlatformAdapter.extract_images``).
 
 ``||![alt](url)||`` marks an image a spoiler: its alt comes back as a ``SpoilerAlt``, which the
-adapters that can hide an image read with ``is_spoiler``.
+adapters that can hide an image read with ``is_spoiler``. A marked tag whose URL is not an image
+stays in the text as a ``hidden_image_link``.
 """
 
 from __future__ import annotations
@@ -62,9 +63,13 @@ def find_images(content: str) -> list[tuple[str, str]]:
 
 def remove_image_tags(text: str, urls: set[str], trailing: str = "") -> str:
     """``text`` without the image tags whose URL is in ``urls``, each with what the ``trailing``
-    regex matches after it."""
+    regex matches after it. A marked tag whose URL is not in ``urls`` becomes its hidden link."""
     def replace(m: re.Match) -> str:
-        return "" if m["url"] in urls else m[0]
+        if m["url"] in urls:
+            return ""
+        if m.groupdict().get("bars"):
+            return hidden_image_link(m["url"], m["alt"].strip()) + m["trailing"]
+        return m[0]
 
     for pattern in (_md_pattern(text), HTML_IMAGE_TAG_PATTERN):
         text = re.sub(f"(?:{pattern})(?P<trailing>{trailing})", replace, text)
@@ -74,7 +79,7 @@ def remove_image_tags(text: str, urls: set[str], trailing: str = "") -> str:
 def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
     """``(find_images(content), content with those tags removed)``."""
     images = find_images(content)
-    if not images:
-        return images, content
     cleaned = remove_image_tags(content, {url for url, _ in images})
+    if not images:
+        return images, cleaned
     return images, re.sub(r'\n{3,}', '\n\n', cleaned).strip()  # leftover blank lines

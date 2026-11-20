@@ -24,10 +24,11 @@ _STREAM_FLAGS = ("[[audio_as_voice]]", "[[as_document]]")
 # after a word, closing bracket/quote or another "!"/"?"/"." streams on, because that is how prose
 # ends a sentence ("world!"), and holding it would keep every exclamation off the live draft.
 # Anything that leaves the tag's grammar (whitespace in the URL, ``<img alt``) ends the hold: that
-# text is never extracted, so it stays visible either way. Trailing ``|`` bars wait for a
-# ``||![alt](url)||`` spoiler to close: it goes as one unit.
+# text is never extracted, so it stays visible either way. Trailing ``|`` bars, and a complete tag
+# right after opening bars, wait for a ``||![alt](url)||`` spoiler to close: it goes as one unit.
 _PENDING_IMAGE_RE = re.compile(
     r"""!\[[^\]]*(?:\](?:\([^)\s]*)?)?\Z|(?<![\w)\]"'”’!?.*_~`])!\Z|\|{1,3}[ \t]*\Z"""
+    r"""|\|\|[ \t]*!\[[^\]]*\]\([^)\s]*\)[ \t]*\Z"""
     r"""|<(?:i(?:m(?:g(?:\s+(?:s(?:r(?:c(?:=["']?[^\s"'<>]*["']?\s*/?)?)?)?)?)?)?)?)?\Z"""
     r"""|</(?:i(?:m(?:g)?)?)?\Z""")
 
@@ -37,7 +38,8 @@ def strip_image_tags_for_display(text: str) -> str:
 
     Each tag goes with up to two line breaks after it, and nothing else is trimmed
     or collapsed: an interim frame must stay a prefix of the next one, so text in front of the tag
-    (already shown) is never rewritten.
+    (already shown) is never rewritten. A marked tag that stays (not an image URL) shows as the
+    hidden link the final text carries.
     """
     if "![" not in text and "<img" not in text:
         return text

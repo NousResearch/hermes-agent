@@ -57,6 +57,27 @@ def test_spaces_inside_the_bars_and_query_strings_are_allowed():
     assert cleaned == "See  below"
 
 
+@pytest.mark.parametrize("text, cleaned", [
+    ("Read ||![the twist](https://example.com/wiki/Twist)|| later",
+     "Read ||[the twist](<https://example.com/wiki/Twist>)|| later"),
+    ("|| ![](https://example.com/render?id=7) ||", "||<https://example.com/render?id=7>||"),
+    ("Read ![the twist](https://example.com/wiki/Twist) later", "Read ![the twist](https://example.com/wiki/Twist) later"),
+])
+def test_marked_tag_without_an_image_url_becomes_a_hidden_link_without_a_preview(text, cleaned):
+    """Not an attachment, so it stays text; as written, Discord would unfurl the URL (even with
+    the closing ``)||`` glued on) into a preview of the image, so it goes as ``[alt](<url>)``
+    (``<url>`` alone without alt). An unmarked tag stays as written."""
+    assert extract(text) == ([], cleaned)
+
+
+def test_hidden_link_and_extracted_spoiler_in_one_reply():
+    images, cleaned = extract(
+        "Map: ||![map](https://e.com/map.png)||\nWiki: ||![wiki](https://e.com/wiki/Map)||")
+
+    assert images == [("https://e.com/map.png", "map")] and is_spoiler(images[0][1])
+    assert cleaned == "Map: \nWiki: ||[wiki](<https://e.com/wiki/Map>)||"
+
+
 def test_bars_that_do_not_wrap_the_tag_alone_are_not_a_mark():
     """A text spoiler that merely contains a tag is not a mark: the bars must hug the tag."""
     images, cleaned = extract("||He returns ![x](https://e.com/x.png) at the end||")

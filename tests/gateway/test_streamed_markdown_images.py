@@ -253,6 +253,20 @@ async def test_streamed_spoiler_image_never_shows_a_bar_or_its_url(deltas, final
 
 
 @pytest.mark.asyncio
+async def test_streamed_spoiler_without_an_image_url_shows_only_the_hidden_link():
+    """The final text carries ``||[alt](<url>)||`` (see ``extract_images``); the stream must never
+    show the raw tag first (it would unfurl), and frames must stay prefix-stable."""
+    hidden = "||[the twist](<https://example.com/wiki/Twist>)||"
+    frames = await _stream_frames(
+        ["Read ||", "![the twist](https://exa", "mple.com/wiki/Twist)", "|", "| later."])
+
+    for frame in frames:
+        assert "![" not in frame and "](https" not in frame, frame
+    _assert_prefix_stable(frames)
+    assert frames[-1].strip() == f"Read {hidden} later."
+
+
+@pytest.mark.asyncio
 async def test_streamed_text_spoiler_still_streams():
     frames = await _stream_frames(["It was ||", "Rosebud||", " all along."])
 

@@ -753,6 +753,7 @@ And the boss, hidden: ||![Final boss](https://example.com/boss.png)||
 
 - The image is posted as a `SPOILER_` attachment, which Discord blurs, and its alt text as a spoilered caption.
 - If the image can't be downloaded, Hermes posts its link as `||<url>||` instead: hidden, with no preview.
+- A spoilered tag whose URL doesn't look like an image stays in the text as a hidden link, `||[alt](<url>)||`, with no preview.
 - The bars must wrap the image tag alone. Images without bars are posted as before.
 
 The agent isn't told about this syntax by default. To use it, describe it in a skill or in `SOUL.md`.

@@ -20,12 +20,12 @@ import logging
 import threading
 
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
 _FIELDS = frozenset({'session_id', 'profile', 'template', 'instructions', 'input', 'variables', 'task',
-                     'temperature', 'max_tokens', 'schema', 'redact'})
+                     'temperature', 'max_tokens'})
 _TEXT = ('template', 'instructions', 'input', 'task')
 # Per owner: model calls running at once, and calls admitted in all (running + queued). A call holds
 # its slot until its thread returns, even after its socket closed.
@@ -58,9 +58,9 @@ class _Pool:
         call = Future()
         with self.lock:
             if self.closed:
-                raise RuntimeStoreError('runtime_draining')
+                raise AuthorityRefusal('runtime_draining')
             if len(self.calls) >= _ADMITTED:
-                raise RuntimeStoreError('oneshot_busy', detail=f'{_ADMITTED} one-shot generations already in flight')
+                raise AuthorityRefusal('oneshot_busy', detail=f'{_ADMITTED} one-shot generations already in flight')
             self.calls.add(call)
             self.queue[call] = work
             spawn = self.threads < _WORKERS
@@ -194,22 +194,15 @@ def _validate(params):
     if (set(params) - _FIELDS or any(key in params and params[key] is not None and not isinstance(params[key], str)
                                      for key in (*_TEXT, 'session_id'))
             or not isinstance(params.get('variables') or {}, dict)
-            or not isinstance(params.get('schema') or {}, dict)
-            or not isinstance(params.get('redact') or False, bool)
             or any(key in params and params[key] is not None
                    and (isinstance(params[key], bool) or not isinstance(params[key], (int, float)))
                    for key in ('temperature', 'max_tokens'))):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     template = (params.get('template') or '').strip()
     if template and template not in PROMPT_TEMPLATES:
-        raise RuntimeStoreError('invalid_params', field='template', detail='unknown one-shot template')
+        raise AuthorityRefusal('invalid_params', field='template', detail='unknown one-shot template')
     if not template and not (params.get('instructions') or '').strip() and not (params.get('input') or '').strip():
-        raise RuntimeStoreError('invalid_params', field='input', detail='needs a template or instructions/input')
-    from agent.oneshot import client_task
-    try:
-        client_task(params.get('task'))
-    except KeyError as exc:
-        raise RuntimeStoreError('invalid_params', field='task', detail=exc.args[0]) from None
+        raise AuthorityRefusal('invalid_params', field='input', detail='needs a template or instructions/input')
 
 
 def _session_runtime(authority, ref):
@@ -247,23 +240,23 @@ async def oneshot(connection, ref, params):
         from gateway.session_authorities import require_serving
         require_serving(authority)
         if 'session:read' not in connection.actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         if params.get('profile'):
             from pathlib import Path
             from hermes_cli.profiles import profile_matches_home
             if not profile_matches_home(params['profile'], Path(authority.profile_id)):
-                raise RuntimeStoreError('profile_mismatch')
+                raise AuthorityRefusal('profile_mismatch')
         runtime = lambda: None  # the task backend
 
     def work():
-        from agent.oneshot import oneshot_reply
+        from agent.oneshot import run_oneshot
         from gateway.session_authorities import owner_scope
         with owner_scope(authority):
-            return oneshot_reply(
+            return {'text': run_oneshot(
                 instructions=params.get('instructions') or '', user_input=params.get('input') or '',
                 template=(params.get('template') or '').strip() or None, variables=params.get('variables') or {},
                 task=(params.get('task') or '').strip() or 'title_generation',
                 max_tokens=int(params.get('max_tokens') or 1024),
                 temperature=0.3 if params.get('temperature') is None else float(params['temperature']),
-                main_runtime=runtime(), schema=params.get('schema'), redact=bool(params.get('redact')))
+                main_runtime=runtime())}
     return DeferredReply(work)

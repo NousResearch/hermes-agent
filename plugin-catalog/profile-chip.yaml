@@ -1,0 +1,32 @@
+name: profile-chip
+title: Profile Chip
+repo: https://github.com/digyear/hermes-profile-chip
+sha: 1b67df9fecf5272b4f407d3d6f2404607833e647
+description: >-
+  Draft-aware profile readout for the Hermes Desktop status bar. On a
+  multi-profile or multi-gateway desktop, a fresh Ctrl+N draft shows no profile
+  anywhere until the first message creates the stored session; this chip names
+  the owner up front in the left status-bar cluster, using the core profile
+  glyph and deterministic identity color (home codicon for default, soft-tinted
+  initial tile for named profiles). Hover shows the gateway label so two
+  gateways' default profiles never read alike; click re-reads the connection
+  registry. Disclosure: reads profile, connection and focused-session state
+  through the public Desktop SDK only. No agent tools, hooks, middleware or env
+  vars; no network calls, filesystem access, shell, credentials or telemetry.
+maintainer: digyear
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/digyear/hermes-profile-chip#readme
+readme: true
+platforms: []
+known_issues:
+  - Requires Hermes Desktop; enable the Desktop component after installation.
+  - Plugin items render at the end of the left status-bar cluster; the SDK has no placement API for putting the chip directly after the connection switcher.
+  - Draft-aware ownership needs host.state.focusedSessionOwner; older builds degrade to the active gateway's profile.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

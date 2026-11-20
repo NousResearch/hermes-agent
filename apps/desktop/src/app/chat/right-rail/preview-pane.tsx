@@ -41,11 +41,15 @@ import {
   noteBrowserPage,
   popOutBrowserTab,
   type PreviewRenderMode,
+  previewTabOwnerProfile,
   type PreviewTarget,
   setPreviewRenderMode
 } from '@/store/preview'
-import { $selectedStoredSessionId } from '@/store/session'
+import { currentSessionId } from '@/store/preview-ownership'
+import { $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
+
+import { previewPartitionForProfile } from '../../../../electron/preview-guest-throttle'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
 import {
@@ -58,7 +62,7 @@ import {
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
-import { PreviewBrowserBar } from './preview-browser-bar'
+import { externalOpenerFor, PreviewBrowserBar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
 import {
@@ -68,7 +72,7 @@ import {
   isNearConsoleBottom,
   PreviewConsolePanel
 } from './preview-console'
-import { type ConsoleEntry } from './preview-console-state'
+import { type ConsoleEntry, type PreviewConsoleState } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
@@ -76,6 +80,7 @@ import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
+import { watchPreviewDocumentLifecycle } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
 type PreviewWebview = HTMLElement &
@@ -216,14 +221,16 @@ const PREVIEW_PRINT_GUARD_SCRIPT =
   'window.print=function(){console.warn("[Hermes] Printing is disabled in the in-app preview. ' +
   'Open the page in your browser to print.");};})()'
 
-function PreviewLoadError({
-  consoleHeight = 0,
+export function PreviewLoadError({
+  consoleOpen,
+  consoleState,
   error,
   onRestartServer,
   onRetry,
   restarting
 }: {
-  consoleHeight?: number
+  consoleOpen: boolean
+  consoleState: PreviewConsoleState
   error: PreviewLoadErrorState
   onRestartServer?: () => void
   onRetry: () => void
@@ -231,6 +238,11 @@ function PreviewLoadError({
 }) {
   const { t } = useI18n()
   const copy = t.preview.web
+  // Subscribed here, not in PreviewPane: the whole-pane subscription re-rendered
+  // the 1,600-line host (and every mounted preview surface) on every resize
+  // frame while dragging the console splitter. This state is only needed by the
+  // error layout.
+  const consoleHeight = useStore(consoleState.$height)
 
   return (
     <PreviewEmptyState
@@ -253,7 +265,7 @@ function PreviewLoadError({
           )}
         </>
       }
-      consoleHeight={consoleHeight}
+      consoleHeight={consoleOpen ? consoleHeight : 0}
       primaryAction={{ label: copy.tryAgain, onClick: onRetry }}
       secondaryAction={
         onRestartServer
@@ -276,6 +288,19 @@ function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
   ) : (
     <LocalFilePreview {...props} />
   )
+}
+
+/** The in-app browser cookie jar for the tab owned by `sessionId`: its owning profile's partition,
+ *  resolved through compression rotations. Per-profile so one profile's sign-ins never land in
+ *  another's jar (#150283 P1-3). Module-level so it reads the live stores at webview creation.
+ *
+ *  A session-less DRAFT tab has no row to resolve a profile from, so it falls back to the tab's own
+ *  workspace bucket (#150283 F2) — never the shared default jar, which would expose the default
+ *  profile's sign-ins to a named profile's draft workspace. */
+function previewPartitionForTab(sessionId: null | string | undefined, tabId?: null | string): string {
+  const sessionProfile = knownSessionProfile(ownerLookupSessionRows(), currentSessionId(sessionId))
+
+  return previewPartitionForProfile(sessionProfile ?? previewTabOwnerProfile(tabId))
 }
 
 export function PreviewPane({
@@ -302,7 +327,6 @@ export function PreviewPane({
   const webviewRef = useRef<PreviewWebview | null>(null)
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
   const previewServerRestart = useStore($previewServerRestart)
-  const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const [currentUrl, setCurrentUrl] = useState(target.url)
@@ -313,6 +337,8 @@ export function PreviewPane({
   // the live address through this mirror instead of a stale closure.
   const targetUrlRef = useRef(target.url)
   targetUrlRef.current = target.url
+  const ownerSessionIdRef = useRef(sessionId)  // tab owner, read by the guest effect to resolve its partition
+  ownerSessionIdRef.current = sessionId
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
   const [loading, setLoading] = useState(true)
@@ -403,7 +429,7 @@ export function PreviewPane({
       const handle = event.currentTarget
       const pointerId = event.pointerId
       const startY = event.clientY
-      const startHeight = consoleHeight
+      const startHeight = consoleState.$height.get()
       const previousCursor = document.body.style.cursor
       const previousUserSelect = document.body.style.userSelect
       let active = true
@@ -451,7 +477,7 @@ export function PreviewPane({
       window.addEventListener('blur', cleanup)
       handle.addEventListener('lostpointercapture', cleanup)
     },
-    [consoleHeight, consoleState]
+    [consoleState]
   )
 
   const reloadPreview = useCallback(() => {
@@ -838,6 +864,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -1101,7 +1128,8 @@ export function PreviewPane({
     const webview = document.createElement('webview') as PreviewWebview
     // A page with no background of its own shows white, as in a browser and the remote HTML frame below.
     webview.className = 'flex h-full w-full flex-1 bg-white'
-    webview.setAttribute('partition', 'persist:hermes-preview')
+    // Per-profile cookie jar so one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
+    webview.setAttribute('partition', previewPartitionForTab(ownerSessionIdRef.current, tabId))
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
@@ -1329,6 +1357,7 @@ export function PreviewPane({
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
     webview.addEventListener('did-fail-load', onFail)
+    const stopWatchingDocument = watchPreviewDocumentLifecycle(webview, tabId)
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
@@ -1360,6 +1389,7 @@ export function PreviewPane({
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
       webview.removeEventListener('did-fail-load', onFail)
+      stopWatchingDocument()
       webview.removeEventListener('did-navigate', onNavigate)
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
@@ -1378,7 +1408,6 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1484,11 +1513,7 @@ export function PreviewPane({
             onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
-            }
+            onOpenExternal={externalOpenerFor(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
               target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
@@ -1499,6 +1524,7 @@ export function PreviewPane({
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
+            tabId={tabId}
             url={currentUrl}
           />
         )}
@@ -1543,7 +1569,8 @@ export function PreviewPane({
           )}
           {isWebPreview && loadError && (
             <PreviewLoadError
-              consoleHeight={consoleOpen ? consoleHeight : 0}
+              consoleOpen={consoleOpen}
+              consoleState={consoleState}
               error={loadError}
               onRestartServer={target.kind === 'url' && onRestartServer ? () => void restartServer() : undefined}
               onRetry={reloadPreview}

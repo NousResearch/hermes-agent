@@ -17,6 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 class Peer:
@@ -43,14 +45,14 @@ async def capture(tmp):
     from gateway.session_controls import AuthorityConnection
 
     store = SessionStore(tmp / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
 
     async def answer(event):
         return 'answer:' + event.text
 
     ref = SessionRef('p', 'shared')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='c')
-    db.create_session('shared', source='telegram')
+    seed_session(db, 'shared', 'telegram')
     owners = {}
     try:
         for label, instance in (('epoch1', 'owner-1'), ('epoch2', 'owner-2')):
@@ -67,7 +69,7 @@ async def capture(tmp):
             frames = peer.drain('message.complete') + peer.drain('session.info')
             owners[label] = {'authority_epoch': authority.epoch, 'frames': frames}
             if label == 'epoch2':
-                revision = db.get_session('shared')['runtime_revision']
+                revision = session_row(db, 'shared')['runtime_revision']
                 response = await conn.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
                     'session_id': 'shared', 'request_id': 'rename', 'expected_revision': revision,
                     'operation': 'rename', 'payload': {'title': 'Renamed while idle'}}})

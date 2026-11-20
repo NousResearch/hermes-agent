@@ -1,6 +1,6 @@
 name: inbox-sentinel
 repo: https://github.com/eddwithers/inbox-sentinel
-sha: c7d48e9c4f688c18cc57d08179b304eaf5bad4ea
+sha: a6b1a8b4d303302c28d989a1158e557a55e759b3
 version: "0.1.0"
 title: Inbox Sentinel
 description: >-
@@ -8,7 +8,7 @@ description: >-
   IMAP mailbox over TLS, filters routine mail locally, asks your configured model
   whether the rest needs attention, and sends a notification through a configured
   `hermes send` target, with an optional reply draft for review. Never sends,
-  labels, archives or deletes mail. A deterministic pre-gate check flags
+  labels, archives or deletes mail. IS-ScamShield, a deterministic pre-gate check, flags
   password-protected-PDF and undisclosed-recipients lures as POSSIBLE SCAM
   warnings and never drafts replies to them; over-warning is intentional, so
   false positives (e.g. legitimate password-protected statements) are
@@ -22,12 +22,12 @@ description: >-
   configured model provider; alerts run `hermes send` as a child process with
   the text on argv and may be stored by the destination; sender rules and
   counters are kept in profile plugin state; no telemetry.
-image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/c7d48e9c4f688c18cc57d08179b304eaf5bad4ea/docs/media/icon.png
+image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/a6b1a8b4d303302c28d989a1158e557a55e759b3/docs/media/icon.png
 maintainer: eddwithers
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/eddwithers/inbox-sentinel/blob/c7d48e9c4f688c18cc57d08179b304eaf5bad4ea/README.md
+docs_url: https://github.com/eddwithers/inbox-sentinel/blob/a6b1a8b4d303302c28d989a1158e557a55e759b3/README.md
 platforms: []
 known_issues:
   - "Gmail needs the user's own Google Cloud Desktop OAuth client and a terminal sign-in (`hermes auth add inbox-sentinel:gmail`). In Testing mode Google expires the grant after seven days."

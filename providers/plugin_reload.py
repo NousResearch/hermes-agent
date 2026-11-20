@@ -30,6 +30,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -50,6 +51,8 @@ _REAPING_PREFIX = f".reaping-{_OWNED_PREFIX}"
 _OWNER_LOCK = "owner.lock"
 _SETUP_LOCK = ".setup.lock"
 _SETUP_WAIT_SECONDS = 30
+_SNAPSHOT_RENAME_ATTEMPTS = 3
+_SNAPSHOT_RENAME_RETRY_DELAY_SECONDS = 0.05
 # One directory per process for the frozen copies; removed on a normal exit, reclaimed later otherwise.
 _snapshot_root: Path | None = None
 _snapshot_lock = threading.Lock()
@@ -142,9 +145,12 @@ def _new_root() -> Path:
 
 
 def _snapshot(plugin_dir: Path, module_name: str) -> Path:
-    """A frozen copy of *plugin_dir* for *module_name* (per home, plugin and tree), named like the original
-    (load errors key on it). Copied into a private directory and published by one rename, so a concurrent scan
-    never imports a half-written copy; a failed copy leaves nothing behind."""
+    """Copy and atomically publish a frozen plugin tree for one module name.
+
+    @param plugin_dir: Installed plugin directory to copy.
+    @param module_name: Fingerprinted module name that owns the snapshot.
+    @returns: Published snapshot directory, named like the installed plugin.
+    """
     global _snapshot_root
     with _snapshot_lock:
         if _snapshot_root is None:
@@ -156,7 +162,16 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     private = Path(tempfile.mkdtemp(prefix=".copy-", dir=target.parent))
     try:
         shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_SNAPSHOT_IGNORE)
-        os.rename(private / plugin_dir.name, target)
+        for attempt in range(_SNAPSHOT_RENAME_ATTEMPTS):
+            try:
+                os.rename(private / plugin_dir.name, target)
+                break
+            except PermissionError:
+                if target.is_dir():  # another scan published the same copy first
+                    break
+                if os.name != "nt" or attempt + 1 == _SNAPSHOT_RENAME_ATTEMPTS:
+                    raise
+                time.sleep(_SNAPSHOT_RENAME_RETRY_DELAY_SECONDS)
     except OSError:
         if not target.is_dir():  # another scan publishing the same copy first is fine
             raise

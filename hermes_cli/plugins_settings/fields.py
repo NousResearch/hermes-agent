@@ -114,7 +114,7 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
         }
         if kind == "secret":
             env = secret_env_name(plugin_id, key, spec)
-            field.update({"env": env, "has_value": get_env_value(env) is not None})
+            field.update({"env": env, "has_value": bool(get_env_value(env))})
         else:
             choices = spec.get("choices", spec.get("enum"))
             if kind == "enum":

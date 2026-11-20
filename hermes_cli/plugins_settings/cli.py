@@ -51,7 +51,7 @@ def _env_fields(manifest: Mapping[str, Any], declared: set[str]) -> list[dict[st
         current = get_env_value(name)
         out.append({"key": name, "type": "env", "label": name, "env": name,
                     "description": str(spec.get("description") or ""), "url": str(spec.get("url") or ""),
-                    "masked": is_secret, "has_value": current is not None,
+                    "masked": is_secret, "has_value": bool(current),
                     "value": None if is_secret else current})
     return out
 

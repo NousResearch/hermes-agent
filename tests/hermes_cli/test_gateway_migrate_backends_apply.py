@@ -336,6 +336,25 @@ def test_no_secret_reaches_the_plan_from_the_argv_the_env_or_a_url(home, capsys)
     assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=<redacted>" in out and '"--port"' in out
 
 
+def test_query_string_credentials_and_inline_c_source_are_redacted_in_json_and_text(home, capsys):
+    host = FakeHost(home)
+    host.argv = ["/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--no-open", "--port", "9119",
+                 "--webhook", "https://hook.example/x?api_key=query-secret-44&mode=1",
+                 "-c", "import os; SECRET='inline-secret-55'"]
+
+    assert engine.cmd_apply(host, _args(dry_run=True)) == engine.EXIT_OK
+    text = capsys.readouterr().out
+    assert "query-secret-44" not in text and "inline-secret-55" not in text
+
+    code, out = _plan(host, capsys)
+    assert code == engine.EXIT_OK
+    rendered = json.dumps(out)
+    assert "query-secret-44" not in rendered and "inline-secret-55" not in rendered
+    argv = out["plan"]["old_backend"]["argv"]
+    assert "<inline launcher source>" in argv
+    assert any("https://hook.example/x?api_key=" in tok and "mode=1" in tok for tok in argv)
+
+
 def test_without_a_service_manager_the_steps_run_the_gateway_under_the_operators_supervisor(home, capsys,
                                                                                            monkeypatch):
     host = FakeHost(home, host="127.0.0.1")

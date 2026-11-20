@@ -278,21 +278,27 @@ _URL_USERINFO = re.compile(r"(\w+://)[^/@\s]+@")
 
 def redacted_argv(argv: list[str]) -> list[str]:
     """*argv* for printing: inline ``NAME=value`` environment assignments, the value of a flag named like
-    a credential (``--password X``, ``--token=X``) and ``user:password@`` in a URL are ``<redacted>``."""
+    a credential (``--password …``, ``--token=…``), URL credentials (userinfo and query-string secrets) and
+    inline ``-c`` launcher source are redacted."""
+    from agent.redact import redact_sensitive_text
     out: list[str] = []
-    hide_next = False
+    next_placeholder: Optional[str] = None
     for token in argv:
-        if hide_next:
-            out.append("<redacted>")
-            hide_next = False
+        if next_placeholder is not None:
+            out.append(next_placeholder)
+            next_placeholder = None
+        elif token == "-c":
+            out.append(token)
+            next_placeholder = "<inline launcher source>"
         elif _ENV_ASSIGNMENT.match(token) or (token.startswith("-") and _SECRET_NAME.search(token.split("=", 1)[0])
                                               and "=" in token):
             out.append(token.split("=", 1)[0] + "=<redacted>")
         elif token.startswith("-") and _SECRET_NAME.search(token) and not token.endswith(("-stdin", "-file")):
             out.append(token)
-            hide_next = True
+            next_placeholder = "<redacted>"
         else:
-            out.append(_URL_USERINFO.sub(r"\1<redacted>@", token))
+            out.append(redact_sensitive_text(_URL_USERINFO.sub(r"\1<redacted>@", token),
+                                             force=True, redact_url_credentials=True))
     return out
 
 

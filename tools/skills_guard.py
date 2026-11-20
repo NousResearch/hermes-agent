@@ -23,7 +23,7 @@ from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, rais
 from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v16"
+SCANNER_VERSION = "skills-guard-v17"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -168,6 +168,12 @@ _PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
     '11111111111111111111111111111111',
     'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
 )) + r')'
+# Secret-shaped word inside an http(x)/requests call. Plain arguments (no quote or nested call
+# before the first `)`) end at that `)`, so prose after the call (`timeout keyword`, `token
+# bucket`) is not read as an argument; quoted or nested arguments keep the whole-line scan
+# because a `)` inside them does not close the call.
+_HTTP_CALL_SECRET_ARG = (r'\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))'
+                         r'(?:(?=[^\n)]*[\'"(])[^\n]*|[^\n)]*)(KEY|TOKEN|SECRET|PASSWORD)')
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -181,9 +187,9 @@ THREAT_PATTERNS = [
      "env_exfil_wget", "critical", "exfiltration", "wget command interpolating secret environment variable"),
     (r'fetch\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b',
      "env_exfil_fetch", "critical", "exfiltration", "fetch() call interpolating secret environment variable"),
-    (r'httpx?\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'httpx?\.(get|post|put|patch)' + _HTTP_CALL_SECRET_ARG,
      "env_exfil_httpx", "critical", "exfiltration", "HTTP library call with secret variable"),
-    (r'requests\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'requests\.(get|post|put|patch)' + _HTTP_CALL_SECRET_ARG,
      "env_exfil_requests", "critical", "exfiltration", "requests library call with secret variable"),
     # ── Exfiltration: reading credential stores ──
     (r'base64[^\n]*env', "encoded_exfil", "high", "exfiltration", "base64 encoding combined with environment access"),

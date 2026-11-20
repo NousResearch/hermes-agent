@@ -256,10 +256,13 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))
     if request.mirror_credentials:
-        from hermes_cli.auth import _global_auth_file_path
+        # A clone's logins come from its source, like its keys; a fresh profile's from the launch profile.
+        auth_home = None if request.fresh else step(
+            "clone source", lambda: profiles._resolve_clone_source(request.clone_from))
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
-            path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels), default=())
-        if kept_root and _global_auth_file_path() is not None:
+            path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels,
+            auth_home=auth_home), default=())
+        if kept_root and not _is_root(auth_home):
             # A named launch profile's own subscription logins can't be copied (single-use refresh
             # tokens); the copy reads the default profile's for those providers instead.
             result.warnings.append(
@@ -478,18 +481,26 @@ def inherit_launch_model(path: Path) -> bool:
 
 
 
+def _is_root(home: Optional[Path]) -> bool:
+    """Whether *home* (default: the launch profile) is the default root, the auth fallback's store."""
+    from hermes_cli.auth import _same_path
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    return _same_path(home or get_hermes_home(), get_default_hermes_root())
+
+
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,
-                              clone_channels: bool = False) -> tuple[str, ...]:
+                              clone_channels: bool = False, auth_home: Optional[Path] = None) -> tuple[str, ...]:
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
     item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy when the launch
     profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
     named launch profile that fallback would pair its keys with the root's logins, so its auth is copied.
+    ``auth_home`` (a clone's source) stands in for the launch profile as the auth.json source.
     Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
-    from hermes_cli.auth import _global_auth_file_path
     from hermes_constants import get_hermes_home
     launch_home = get_hermes_home()
-    # Same test as the auth fallback that makes sharing work: share only when it reads the launch store.
-    share_auth = share_auth and _global_auth_file_path() is None
+    auth_home = auth_home or launch_home
+    # Same test as the auth fallback that makes sharing work: share only when it reads the source's store.
+    share_auth = share_auth and _is_root(auth_home)
     kept_root: tuple[str, ...] = ()
     mirrored["env"] = _try(".env copy", lambda: _mirror_secret(path, launch_home, ".env", _env_over_stub), False)
     if mirrored["env"] and not clone_channels:
@@ -499,7 +510,7 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
             strip_channel_env_file(path / ".env")
         _try("channel strip", _strip_channels, None)
     if not share_auth:  # a copied auth.json forks token state: a refresh in either store strands the other
-        mirrored["auth"] = _try("auth.json copy", lambda: _mirror_secret(path, launch_home, "auth.json",
+        mirrored["auth"] = _try("auth.json copy", lambda: _mirror_secret(path, auth_home, "auth.json",
                                                        lambda src, dst: not dst.exists()), False)
         if mirrored["auth"]:
             # Single-use OAuth grants stay in the root store; the profile reads them via the pool fallback.

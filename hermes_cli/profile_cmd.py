@@ -169,7 +169,8 @@ def _print_channel_clone_notice(name: str, made, clone_channels: bool, clone_fla
 
 
 def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
-    """What the new profile took from the launch profile (the bot page's "Share keys & accounts")."""
+    """What the new profile took from its source (the launch profile unless cloned; the bot page's
+    "Share keys & accounts")."""
     if mirrored.get("env"):
         print(f"Copied API keys from '{launch}' (bot tokens and allowlists left out).")
     if mirrored.get("auth") == "shared":
@@ -253,7 +254,7 @@ def _profile_create(args):
                 print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                 print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
                 print('    export PATH="$HOME/.local/bin:$PATH"')
-    _print_mirrored(made.mirrored, made.launch_label,
+    _print_mirrored(made.mirrored, made.source_label,
                     isolate_hint=not getattr(args, "isolated_auth", False) and not getattr(args, "no_credentials", False))
     for warning in made.warnings:
         print(f"⚠ {warning}")

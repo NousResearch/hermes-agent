@@ -1301,6 +1301,16 @@ which waits for it), and what they send is held, not sent: the chat shows their 
 local answer with the way to sign up (`held-exchange.tsx`, 18695:18570), never as a transcript, and the
 held message runs first once they are signed in.
 
+As a newcomer settles in (Figma Onboarding 03, `$landingMoment` in `store/starter-ideas.ts`), the
+heading follows: "Welcome back." after a first finished task (C4), its line asking what to work on
+once the ideas are put away (C5: two finished chats, or Hide ideas, which stays until Show ideas),
+and "Good to see you again." when their newest chat has been still for 30 days (C8: Continue a recent
+chat and Show ideas in place of the chips; the next finished task settles it). At two finished chats
+"How's Hermes going so far?" (`check-in.tsx`, C7) takes the heading's place until it is answered or
+dismissed; Dismiss puts it in the tray. Someone in Simple whose chat produced a code artifact is
+offered the developer view (`developer-view-offer.tsx`, C6: Advanced, previewed while its row is
+hovered, focused or tapped) once. Section 03 has its own 36px buttons (`.discovery-landing-action`).
+
 A sign up that comes back without signing the visitor in (`?hermes_sign_in=failed`, read once) opens
 **"Let's try signing in again"** (`sign-in-recovery.tsx`, 18732:33066 / 18695:19224) over the chat, the
 first splash in line: the welcome splash's stage, column and card, with one row per step and a status

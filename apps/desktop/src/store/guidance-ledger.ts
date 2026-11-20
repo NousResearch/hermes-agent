@@ -20,12 +20,17 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
  *    no mark they follow the finished-chat count;
  *  - the usage-stats offer's sidebar card is `deferred` (its × moved it to the tray) or `cleared`
  *    (cleared from the tray too); with no mark an unanswered offer shows as the card. Answering
- *    is the backend's, never a mark here. */
+ *    is the backend's, never a mark here;
+ *  - the check-in ("How's Hermes going so far?") is `answered` or `dismissed` (then the tray offers
+ *    it); with no mark it is due once two chats have had a task finish;
+ *  - the developer-view offer is `accepted` or `declined`; with no mark it may be offered. */
 const TOPIC_MARKS = {
   renameSplash: ['not_applicable', 'seen'],
   firstTimeSplash: ['not_applicable', 'seen'],
   starterIdeas: ['hidden', 'wanted'],
-  usageStatsOffer: ['cleared', 'deferred']
+  usageStatsOffer: ['cleared', 'deferred'],
+  checkIn: ['answered', 'dismissed'],
+  developerViewOffer: ['accepted', 'declined']
 } as const
 
 export type GuidanceTopic = keyof typeof TOPIC_MARKS

@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { SessionInfo } from '@/types/hermes'
 
 import { $apiRequestScope } from '@/api/client'
 
@@ -9,9 +11,11 @@ import {
   setDesktopMetricsGate
 } from './desktop-metrics'
 import { $guidanceLedger, GUIDANCE_LEDGER_KEY } from './guidance-ledger'
+import { $sessions } from './session'
 import { $shellChoice } from './shell-variant'
 import {
-  $newcomerGreeting,
+  $landingMoment,
+  AWAY_AFTER_MS,
   $starterIdeas,
   hideStarterIdeas,
   noteStarterIdeaPicked,
@@ -42,15 +46,17 @@ afterEach(() => resetDesktopMetricsForTests())
 describe('a newcomer’s starter ideas', () => {
   it('show until two chats have had a task finish, then leave on their own', () => {
     expect($starterIdeas.get()).toBe('ideas')
+    expect($landingMoment.get()).toBe('first')
 
     noteTaskFinished('chat-a')
     noteTaskFinished('chat-a') // the same chat finishing again is still one chat
     expect($starterIdeas.get()).toBe('ideas')
-    expect($newcomerGreeting.get()).toBe(true)
+    // C4: one task done, the landing says welcome back with the ideas still out.
+    expect($landingMoment.get()).toBe('back')
 
     noteTaskFinished('chat-b')
     expect($starterIdeas.get()).toBe('retired')
-    expect($newcomerGreeting.get()).toBe(false)
+    expect($landingMoment.get()).toBe('back')
   })
 
   it('leave sooner with Hide, come back with Show ideas, and leave again with Hide', () => {
@@ -107,5 +113,44 @@ describe('a newcomer’s starter ideas', () => {
     expect(state).toContain('ia.starter_chips.shown_again|click')
     expect(state).toContain('ia.starter_chips.hidden_user|click')
     expect(state).not.toContain('"other')
+  })
+})
+
+describe('a newcomer’s landing after a month away (C8)', () => {
+  const chat = (id: string, lastActiveMs: number, extra: Partial<SessionInfo> = {}) =>
+    ({ id, last_active: lastActiveMs / 1000, ...extra }) as SessionInfo
+
+  afterEach(() => {
+    $sessions.set([])
+    vi.useRealTimers()
+  })
+
+  it('says hello again once the newest chat has been still for thirty days, and settles when a task finishes', () => {
+    vi.useFakeTimers({ now: new Date('2026-11-19T12:00:00Z') })
+    const now = Date.now()
+    noteTaskFinished('chat-a')
+
+    $sessions.set([chat('chat-a', now - AWAY_AFTER_MS - 1000), chat('chat-b', now - AWAY_AFTER_MS - 5000)])
+    expect($landingMoment.get()).toBe('away')
+
+    // A task finishes: that chat is the newest now, and the landing is the settled one again.
+    $sessions.set([chat('chat-a', now), chat('chat-b', now - AWAY_AFTER_MS - 5000)])
+    expect($landingMoment.get()).toBe('back')
+  })
+
+  it('never counts a routine’s own runs as the person being here', () => {
+    vi.useFakeTimers({ now: new Date('2026-11-19T12:00:00Z') })
+    const now = Date.now()
+    noteTaskFinished('chat-a')
+
+    $sessions.set([chat('chat-a', now - AWAY_AFTER_MS - 1000), chat('cron-run', now, { scheduler_owned: true })])
+    expect($landingMoment.get()).toBe('away')
+  })
+
+  it('is not for someone who has not finished a task yet', () => {
+    vi.useFakeTimers({ now: new Date('2026-11-19T12:00:00Z') })
+    $sessions.set([chat('chat-a', Date.now() - AWAY_AFTER_MS * 2)])
+
+    expect($landingMoment.get()).toBe('first')
   })
 })

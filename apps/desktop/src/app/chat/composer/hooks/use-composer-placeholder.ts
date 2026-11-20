@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { usePortalShell } from '@/store/shell-variant'
-import { $starterIdeas } from '@/store/starter-ideas'
+import { $landingMoment, $starterIdeas } from '@/store/starter-ideas'
 
 import { pickPlaceholder } from '../composer-utils'
 
@@ -80,11 +80,12 @@ export function useComposerPlaceholder({
   const followUpPlaceholders = t.composer.followUpPlaceholders
   const identity = redesign ? scope : sessionId
   const ideas = useStore($starterIdeas)
+  const moment = useStore($landingMoment)
   const newcomerCopy = useFirstTimeCopy().landing
 
   const newcomerPlaceholder =
     redesign && ideas !== 'none' && !inConversation(identity, redesign)
-      ? ideas === 'ideas' && ideasBelow
+      ? moment === 'first' && ideas === 'ideas' && ideasBelow
         ? newcomerCopy.placeholderIdeas
         : newcomerCopy.placeholderRetired
       : null

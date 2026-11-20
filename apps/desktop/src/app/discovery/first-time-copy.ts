@@ -45,6 +45,7 @@ export interface FirstTimeCopy {
   tray: {
     signUp: { title: string; description: string; action: string }
     meet: { title: string; description: string; action: string }
+    checkIn: { title: string; description: string; action: string }
   }
   landing: {
     /** Over a newcomer's empty chat: Hermes' name where sign up is required (the hosted Portal), and
@@ -59,9 +60,46 @@ export interface FirstTimeCopy {
     ideas: Record<StarterIdea, string>
     hide: string
     showIdeas: string
-    /** The composer's resting text while the ideas are shown, and once they are gone. */
+    /** The composer's resting text before a first task, and after. */
     placeholderIdeas: string
     placeholderRetired: string
+    /** After a first finished task (C4, C5): the heading, and its line once the ideas are put away. */
+    back: string
+    subtitleRetired: string
+    /** Back after a long stay away (C8). */
+    awayTitle: string
+    awayLine: string
+    continueChat: string
+  }
+  /** "How's Hermes going so far?" (Onboarding C7 18677:28705) on the new chat's landing. */
+  checkIn: {
+    eyebrow: string
+    title: string
+    subtitle: string
+    /** The suggestions' list, for assistive tech. */
+    listLabel: string
+    video: string
+    videoLine: string
+    weekly: string
+    weeklyLine: string
+    tour: string
+    tourLine: string
+    try: string
+    open: string
+    goingWell: string
+    couldBeBetter: string
+    dismiss: string
+  }
+  /** "Want the developer view?" (Onboarding C6 18677:28595), offered in a chat about code. */
+  developerView: {
+    eyebrow: string
+    title: string
+    body: string
+    preview: string
+    previewLine: string
+    turnOn: string
+    notNow: string
+    settingsNote: string
   }
   /** The card at the foot of the chat sidebar while sign up is required. */
   account: { title: string; body: string }
@@ -182,6 +220,11 @@ const en: FirstTimeCopy = {
       title: 'Meet Hermes',
       description: 'See what your agent can do.',
       action: 'Open'
+    },
+    checkIn: {
+      title: 'How’s Hermes going so far?',
+      description: 'Keep going with what works, or try something new.',
+      action: 'Open'
     }
   },
   landing: {
@@ -199,7 +242,12 @@ const en: FirstTimeCopy = {
     hide: 'Hide ideas',
     showIdeas: 'Show ideas',
     placeholderIdeas: 'Give Hermes a task',
-    placeholderRetired: 'Give your agent a task'
+    placeholderRetired: 'Give your agent a task',
+    back: 'Welcome back.',
+    subtitleRetired: 'What would you like your agent to work on?',
+    awayTitle: 'Good to see you again.',
+    awayLine: 'Your chats and Library are here whenever you need them.',
+    continueChat: 'Continue a recent chat'
   },
   account: {
     title: 'Create an Account',
@@ -231,6 +279,33 @@ const en: FirstTimeCopy = {
     otherEmail: 'Use another email',
     expired: 'Email link expired?',
     requestNew: 'Request a new one.'
+  },
+  checkIn: {
+    eyebrow: 'Return visit / Check in',
+    title: 'How’s Hermes going so far?',
+    subtitle: 'Keep going with what works, or try something new.',
+    listLabel: 'Things to try',
+    video: 'Turn a video into a page',
+    videoLine: 'A useful way to save what you learn',
+    weekly: 'Keep me updated weekly',
+    weeklyLine: 'Let a routine follow a topic for you',
+    tour: 'Show me around again',
+    tourLine: 'Reopen the product introduction',
+    try: 'Try',
+    open: 'Open',
+    goingWell: 'Going well',
+    couldBeBetter: 'Could be better',
+    dismiss: 'Dismiss'
+  },
+  developerView: {
+    eyebrow: 'Contextual offer / Code detected',
+    title: 'Want the developer view?',
+    body: 'Watch your agent work: the terminal, files and diffs it uses, beside the conversation.',
+    preview: 'See the work as it happens',
+    previewLine: 'Terminal, files and diffs alongside the conversation',
+    turnOn: 'Turn on developer view',
+    notNow: 'Not now',
+    settingsNote: 'Change this anytime in Settings.'
   }
 }
 
@@ -316,6 +391,11 @@ const fr: FirstTimeCopy = {
       title: 'Découvrir Hermes',
       description: 'Voyez ce que votre agent sait faire.',
       action: 'Ouvrir'
+    },
+    checkIn: {
+      title: 'Comment se passe Hermes jusqu’ici ?',
+      description: 'Continuez ce qui marche, ou essayez autre chose.',
+      action: 'Ouvrir'
     }
   },
   landing: {
@@ -333,7 +413,12 @@ const fr: FirstTimeCopy = {
     hide: 'Masquer les idées',
     showIdeas: 'Afficher des idées',
     placeholderIdeas: 'Confiez une tâche à Hermes',
-    placeholderRetired: 'Confiez une tâche à votre agent'
+    placeholderRetired: 'Confiez une tâche à votre agent',
+    back: 'Bon retour.',
+    subtitleRetired: 'Sur quoi votre agent doit-il travailler ?',
+    awayTitle: 'Ravi de vous revoir.',
+    awayLine: 'Vos discussions et votre Bibliothèque sont là quand vous en avez besoin.',
+    continueChat: 'Reprendre une discussion récente'
   },
   account: {
     title: 'Créer un compte',
@@ -365,6 +450,33 @@ const fr: FirstTimeCopy = {
     otherEmail: 'Utiliser une autre adresse',
     expired: 'Lien e-mail expiré ?',
     requestNew: 'En demander un nouveau.'
+  },
+  checkIn: {
+    eyebrow: 'Retour / Point d’étape',
+    title: 'Comment se passe Hermes jusqu’ici ?',
+    subtitle: 'Continuez ce qui marche, ou essayez autre chose.',
+    listLabel: 'Idées à essayer',
+    video: 'Transformer une vidéo en page',
+    videoLine: 'Une façon utile de garder ce que vous apprenez',
+    weekly: 'Me tenir au courant chaque semaine',
+    weeklyLine: 'Une routine suit un sujet pour vous',
+    tour: 'Refaire la visite',
+    tourLine: 'Rouvrir la présentation du produit',
+    try: 'Essayer',
+    open: 'Ouvrir',
+    goingWell: 'Ça se passe bien',
+    couldBeBetter: 'Ça pourrait être mieux',
+    dismiss: 'Fermer'
+  },
+  developerView: {
+    eyebrow: 'Suggestion / Code détecté',
+    title: 'Voir la vue développeur ?',
+    body: 'Regardez votre agent travailler : le terminal, les fichiers et les diffs qu’il utilise, à côté de la discussion.',
+    preview: 'Voir le travail en direct',
+    previewLine: 'Terminal, fichiers et diffs à côté de la discussion',
+    turnOn: 'Activer la vue développeur',
+    notNow: 'Pas maintenant',
+    settingsNote: 'Modifiable à tout moment dans les Réglages.'
   }
 }
 
@@ -450,6 +562,11 @@ const de: FirstTimeCopy = {
       title: 'Hermes kennenlernen',
       description: 'Sieh dir an, was dein Agent kann.',
       action: 'Öffnen'
+    },
+    checkIn: {
+      title: 'Wie läuft es bisher mit Hermes?',
+      description: 'Mach weiter mit dem, was funktioniert, oder probier etwas Neues.',
+      action: 'Öffnen'
     }
   },
   landing: {
@@ -467,7 +584,12 @@ const de: FirstTimeCopy = {
     hide: 'Ideen ausblenden',
     showIdeas: 'Ideen zeigen',
     placeholderIdeas: 'Gib Hermes eine Aufgabe',
-    placeholderRetired: 'Gib deinem Agenten eine Aufgabe'
+    placeholderRetired: 'Gib deinem Agenten eine Aufgabe',
+    back: 'Willkommen zurück.',
+    subtitleRetired: 'Woran soll dein Agent arbeiten?',
+    awayTitle: 'Schön, dich wiederzusehen.',
+    awayLine: 'Deine Chats und deine Bibliothek sind da, wann immer du sie brauchst.',
+    continueChat: 'Einen letzten Chat fortsetzen'
   },
   account: {
     title: 'Konto erstellen',
@@ -500,6 +622,33 @@ const de: FirstTimeCopy = {
     otherEmail: 'Andere E-Mail verwenden',
     expired: 'E-Mail-Link abgelaufen?',
     requestNew: 'Neuen anfordern.'
+  },
+  checkIn: {
+    eyebrow: 'Wiederbesuch / Rückfrage',
+    title: 'Wie läuft es bisher mit Hermes?',
+    subtitle: 'Mach weiter mit dem, was funktioniert, oder probier etwas Neues.',
+    listLabel: 'Zum Ausprobieren',
+    video: 'Ein Video in eine Seite verwandeln',
+    videoLine: 'Eine nützliche Art, Gelerntes festzuhalten',
+    weekly: 'Halte mich wöchentlich auf dem Laufenden',
+    weeklyLine: 'Eine Routine verfolgt ein Thema für dich',
+    tour: 'Zeig mir alles noch einmal',
+    tourLine: 'Die Produkteinführung erneut öffnen',
+    try: 'Ausprobieren',
+    open: 'Öffnen',
+    goingWell: 'Läuft gut',
+    couldBeBetter: 'Könnte besser sein',
+    dismiss: 'Schließen'
+  },
+  developerView: {
+    eyebrow: 'Vorschlag / Code erkannt',
+    title: 'Entwickleransicht gefällig?',
+    body: 'Sieh deinem Agenten bei der Arbeit zu: Terminal, Dateien und Diffs neben der Unterhaltung.',
+    preview: 'Die Arbeit live sehen',
+    previewLine: 'Terminal, Dateien und Diffs neben der Unterhaltung',
+    turnOn: 'Entwickleransicht einschalten',
+    notNow: 'Nicht jetzt',
+    settingsNote: 'Jederzeit in den Einstellungen änderbar.'
   }
 }
 
@@ -585,6 +734,11 @@ const es: FirstTimeCopy = {
       title: 'Conoce Hermes',
       description: 'Mira lo que puede hacer tu agente.',
       action: 'Abrir'
+    },
+    checkIn: {
+      title: '¿Qué tal te va con Hermes?',
+      description: 'Sigue con lo que funciona o prueba algo nuevo.',
+      action: 'Abrir'
     }
   },
   landing: {
@@ -602,7 +756,12 @@ const es: FirstTimeCopy = {
     hide: 'Ocultar ideas',
     showIdeas: 'Mostrar ideas',
     placeholderIdeas: 'Dale una tarea a Hermes',
-    placeholderRetired: 'Dale una tarea a tu agente'
+    placeholderRetired: 'Dale una tarea a tu agente',
+    back: 'Hola de nuevo.',
+    subtitleRetired: '¿En qué quieres que trabaje tu agente?',
+    awayTitle: 'Qué bueno verte de nuevo.',
+    awayLine: 'Tus chats y tu Biblioteca están aquí cuando los necesites.',
+    continueChat: 'Seguir un chat reciente'
   },
   account: {
     title: 'Crear una cuenta',
@@ -634,6 +793,33 @@ const es: FirstTimeCopy = {
     otherEmail: 'Usar otro correo',
     expired: '¿Caducó el enlace del correo?',
     requestNew: 'Pide uno nuevo.'
+  },
+  checkIn: {
+    eyebrow: 'Regreso / Consulta',
+    title: '¿Qué tal te va con Hermes?',
+    subtitle: 'Sigue con lo que funciona o prueba algo nuevo.',
+    listLabel: 'Cosas para probar',
+    video: 'Convertir un vídeo en una página',
+    videoLine: 'Una forma útil de guardar lo que aprendes',
+    weekly: 'Mantenme al día cada semana',
+    weeklyLine: 'Una rutina sigue un tema por ti',
+    tour: 'Enséñame todo otra vez',
+    tourLine: 'Volver a abrir la presentación',
+    try: 'Probar',
+    open: 'Abrir',
+    goingWell: 'Va bien',
+    couldBeBetter: 'Podría ir mejor',
+    dismiss: 'Descartar'
+  },
+  developerView: {
+    eyebrow: 'Sugerencia / Código detectado',
+    title: '¿Quieres la vista de desarrollador?',
+    body: 'Mira trabajar a tu agente: la terminal, los archivos y los diffs que usa, junto a la conversación.',
+    preview: 'Ver el trabajo en directo',
+    previewLine: 'Terminal, archivos y diffs junto a la conversación',
+    turnOn: 'Activar la vista de desarrollador',
+    notNow: 'Ahora no',
+    settingsNote: 'Puedes cambiarlo cuando quieras en Ajustes.'
   }
 }
 
@@ -719,6 +905,11 @@ const ja: FirstTimeCopy = {
       title: 'Hermes について',
       description: 'エージェントにできることを見てみましょう。',
       action: '開く'
+    },
+    checkIn: {
+      title: 'Hermes の使い心地はいかがですか？',
+      description: 'うまくいっていることを続けるか、新しいことを試しましょう。',
+      action: '開く'
     }
   },
   landing: {
@@ -736,7 +927,12 @@ const ja: FirstTimeCopy = {
     hide: 'アイデアを非表示',
     showIdeas: 'アイデアを表示',
     placeholderIdeas: 'Hermes にタスクを任せる',
-    placeholderRetired: 'エージェントにタスクを任せる'
+    placeholderRetired: 'エージェントにタスクを任せる',
+    back: 'おかえりなさい。',
+    subtitleRetired: 'エージェントに何を任せますか？',
+    awayTitle: 'またお会いできてうれしいです。',
+    awayLine: 'チャットとライブラリはいつでもここにあります。',
+    continueChat: '最近のチャットを続ける'
   },
   account: {
     title: 'アカウントを作成',
@@ -768,6 +964,33 @@ const ja: FirstTimeCopy = {
     otherEmail: '別のメールアドレスを使う',
     expired: 'メールのリンクの期限が切れましたか？',
     requestNew: '新しいリンクを請求する。'
+  },
+  checkIn: {
+    eyebrow: '再訪 / チェックイン',
+    title: 'Hermes の使い心地はいかがですか？',
+    subtitle: 'うまくいっていることを続けるか、新しいことを試しましょう。',
+    listLabel: '試してみること',
+    video: '動画をページにまとめる',
+    videoLine: '学んだことを残す便利な方法',
+    weekly: '毎週最新情報を届けて',
+    weeklyLine: 'ルーティンがテーマを追いかけます',
+    tour: 'もう一度案内して',
+    tourLine: '製品紹介をもう一度開く',
+    try: '試す',
+    open: '開く',
+    goingWell: '順調です',
+    couldBeBetter: '改善の余地あり',
+    dismiss: '閉じる'
+  },
+  developerView: {
+    eyebrow: '提案 / コードを検出',
+    title: '開発者ビューを使いますか？',
+    body: 'エージェントの作業を見られます：使っているターミナル、ファイル、差分を会話の横に。',
+    preview: '作業の様子をそのまま見る',
+    previewLine: '会話の横にターミナル、ファイル、差分',
+    turnOn: '開発者ビューをオンにする',
+    notNow: '今はしない',
+    settingsNote: '設定からいつでも変更できます。'
   }
 }
 
@@ -853,6 +1076,11 @@ const zh: FirstTimeCopy = {
       title: '认识 Hermes',
       description: '看看你的智能体能做什么。',
       action: '打开'
+    },
+    checkIn: {
+      title: 'Hermes 用得怎么样？',
+      description: '继续用顺手的，或者试试新东西。',
+      action: '打开'
     }
   },
   landing: {
@@ -870,7 +1098,12 @@ const zh: FirstTimeCopy = {
     hide: '隐藏灵感',
     showIdeas: '显示灵感',
     placeholderIdeas: '给 Hermes 布置任务',
-    placeholderRetired: '给你的智能体布置任务'
+    placeholderRetired: '给你的智能体布置任务',
+    back: '欢迎回来。',
+    subtitleRetired: '你想让智能体做些什么？',
+    awayTitle: '很高兴再次见到你。',
+    awayLine: '你的聊天和资料库随时都在这里。',
+    continueChat: '继续最近的聊天'
   },
   account: {
     title: '创建账户',
@@ -902,6 +1135,33 @@ const zh: FirstTimeCopy = {
     otherEmail: '使用其他邮箱',
     expired: '邮件链接已过期？',
     requestNew: '重新获取一个。'
+  },
+  checkIn: {
+    eyebrow: '回访 / 问候',
+    title: 'Hermes 用得怎么样？',
+    subtitle: '继续用顺手的，或者试试新东西。',
+    listLabel: '可以试试',
+    video: '把视频变成一页',
+    videoLine: '保存所学的好方法',
+    weekly: '每周给我更新',
+    weeklyLine: '让例程替你追踪一个话题',
+    tour: '再带我看看',
+    tourLine: '重新打开产品介绍',
+    try: '试试',
+    open: '打开',
+    goingWell: '挺好的',
+    couldBeBetter: '还可以更好',
+    dismiss: '关闭'
+  },
+  developerView: {
+    eyebrow: '推荐 / 检测到代码',
+    title: '想要开发者视图吗？',
+    body: '看着智能体工作：它使用的终端、文件和差异就在对话旁边。',
+    preview: '实时查看工作过程',
+    previewLine: '对话旁边的终端、文件和差异',
+    turnOn: '打开开发者视图',
+    notNow: '暂不',
+    settingsNote: '随时可在设置中更改。'
   }
 }
 
@@ -987,6 +1247,11 @@ const zhHant: FirstTimeCopy = {
       title: '認識 Hermes',
       description: '看看你的代理能做什麼。',
       action: '開啟'
+    },
+    checkIn: {
+      title: 'Hermes 用得怎麼樣？',
+      description: '繼續用順手的，或者試試新東西。',
+      action: '開啟'
     }
   },
   landing: {
@@ -1004,7 +1269,12 @@ const zhHant: FirstTimeCopy = {
     hide: '隱藏靈感',
     showIdeas: '顯示靈感',
     placeholderIdeas: '交辦任務給 Hermes',
-    placeholderRetired: '交辦任務給你的代理'
+    placeholderRetired: '交辦任務給你的代理',
+    back: '歡迎回來。',
+    subtitleRetired: '你想讓代理做些什麼？',
+    awayTitle: '很高興再次見到你。',
+    awayLine: '你的聊天和資料庫隨時都在這裡。',
+    continueChat: '繼續最近的聊天'
   },
   account: {
     title: '建立帳戶',
@@ -1036,6 +1306,33 @@ const zhHant: FirstTimeCopy = {
     otherEmail: '使用其他電子郵件',
     expired: '郵件連結已過期？',
     requestNew: '重新索取一個。'
+  },
+  checkIn: {
+    eyebrow: '回訪 / 問候',
+    title: 'Hermes 用得怎麼樣？',
+    subtitle: '繼續用順手的，或者試試新東西。',
+    listLabel: '可以試試',
+    video: '把影片變成一頁',
+    videoLine: '保存所學的好方法',
+    weekly: '每週給我更新',
+    weeklyLine: '讓例行程序替你追蹤一個主題',
+    tour: '再帶我看看',
+    tourLine: '重新開啟產品介紹',
+    try: '試試',
+    open: '開啟',
+    goingWell: '挺好的',
+    couldBeBetter: '還可以更好',
+    dismiss: '關閉'
+  },
+  developerView: {
+    eyebrow: '推薦 / 偵測到程式碼',
+    title: '想要開發者檢視嗎？',
+    body: '看著代理工作：它使用的終端機、檔案和差異就在對話旁邊。',
+    preview: '即時查看工作過程',
+    previewLine: '對話旁邊的終端機、檔案和差異',
+    turnOn: '開啟開發者檢視',
+    notNow: '暫不',
+    settingsNote: '隨時可在設定中變更。'
   }
 }
 
@@ -1121,6 +1418,11 @@ const ru: FirstTimeCopy = {
       title: 'Знакомство с Hermes',
       description: 'Посмотрите, что умеет ваш агент.',
       action: 'Открыть'
+    },
+    checkIn: {
+      title: 'Как вам Hermes?',
+      description: 'Продолжайте то, что работает, или попробуйте новое.',
+      action: 'Открыть'
     }
   },
   landing: {
@@ -1138,7 +1440,12 @@ const ru: FirstTimeCopy = {
     hide: 'Скрыть идеи',
     showIdeas: 'Показать идеи',
     placeholderIdeas: 'Дайте Hermes задачу',
-    placeholderRetired: 'Дайте агенту задачу'
+    placeholderRetired: 'Дайте агенту задачу',
+    back: 'С возвращением.',
+    subtitleRetired: 'Над чем поработать вашему агенту?',
+    awayTitle: 'Рады видеть вас снова.',
+    awayLine: 'Ваши чаты и Библиотека здесь, когда понадобятся.',
+    continueChat: 'Продолжить недавний чат'
   },
   account: {
     title: 'Создать аккаунт',
@@ -1170,6 +1477,33 @@ const ru: FirstTimeCopy = {
     otherEmail: 'Другой адрес почты',
     expired: 'Ссылка из письма устарела?',
     requestNew: 'Запросите новую.'
+  },
+  checkIn: {
+    eyebrow: 'Возвращение / Как дела',
+    title: 'Как вам Hermes?',
+    subtitle: 'Продолжайте то, что работает, или попробуйте новое.',
+    listLabel: 'Что попробовать',
+    video: 'Превратить видео в страницу',
+    videoLine: 'Удобный способ сохранить узнанное',
+    weekly: 'Присылай новости раз в неделю',
+    weeklyLine: 'Регулярная задача следит за темой за вас',
+    tour: 'Покажи всё ещё раз',
+    tourLine: 'Снова открыть знакомство с продуктом',
+    try: 'Попробовать',
+    open: 'Открыть',
+    goingWell: 'Всё хорошо',
+    couldBeBetter: 'Могло быть лучше',
+    dismiss: 'Закрыть'
+  },
+  developerView: {
+    eyebrow: 'Предложение / Найден код',
+    title: 'Включить вид разработчика?',
+    body: 'Смотрите, как работает агент: терминал, файлы и изменения рядом с разговором.',
+    preview: 'Видеть работу вживую',
+    previewLine: 'Терминал, файлы и изменения рядом с разговором',
+    turnOn: 'Включить вид разработчика',
+    notNow: 'Не сейчас',
+    settingsNote: 'Это можно изменить в Настройках.'
   }
 }
 
@@ -1255,6 +1589,11 @@ const ar: FirstTimeCopy = {
       title: 'تعرّف على Hermes',
       description: 'اكتشف ما يستطيع وكيلك فعله.',
       action: 'فتح'
+    },
+    checkIn: {
+      title: 'كيف تجد Hermes حتى الآن؟',
+      description: 'واصل ما ينجح، أو جرّب شيئًا جديدًا.',
+      action: 'فتح'
     }
   },
   landing: {
@@ -1272,7 +1611,12 @@ const ar: FirstTimeCopy = {
     hide: 'إخفاء الأفكار',
     showIdeas: 'عرض الأفكار',
     placeholderIdeas: 'أعطِ Hermes مهمة',
-    placeholderRetired: 'أعطِ وكيلك مهمة'
+    placeholderRetired: 'أعطِ وكيلك مهمة',
+    back: 'مرحبًا بعودتك.',
+    subtitleRetired: 'على ماذا تريد أن يعمل وكيلك؟',
+    awayTitle: 'سعداء برؤيتك مجددًا.',
+    awayLine: 'محادثاتك ومكتبتك هنا متى احتجت إليها.',
+    continueChat: 'تابع محادثة حديثة'
   },
   account: {
     title: 'أنشئ حسابًا',
@@ -1304,6 +1648,33 @@ const ar: FirstTimeCopy = {
     otherEmail: 'استخدم بريدًا آخر',
     expired: 'انتهت صلاحية رابط البريد؟',
     requestNew: 'اطلب رابطًا جديدًا.'
+  },
+  checkIn: {
+    eyebrow: 'زيارة مجددة / اطمئنان',
+    title: 'كيف تجد Hermes حتى الآن؟',
+    subtitle: 'واصل ما ينجح، أو جرّب شيئًا جديدًا.',
+    listLabel: 'أشياء لتجربتها',
+    video: 'حوّل مقطع فيديو إلى صفحة',
+    videoLine: 'طريقة مفيدة لحفظ ما تتعلمه',
+    weekly: 'أبقني على اطلاع أسبوعيًا',
+    weeklyLine: 'دع روتينًا يتابع موضوعًا لك',
+    tour: 'أرني المكان مرة أخرى',
+    tourLine: 'أعد فتح التعريف بالمنتج',
+    try: 'جرّب',
+    open: 'فتح',
+    goingWell: 'يسير جيدًا',
+    couldBeBetter: 'يمكن أن يكون أفضل',
+    dismiss: 'إغلاق'
+  },
+  developerView: {
+    eyebrow: 'اقتراح / تم اكتشاف شيفرة',
+    title: 'هل تريد عرض المطوّر؟',
+    body: 'شاهد وكيلك يعمل: الطرفية والملفات والفروق التي يستخدمها، بجانب المحادثة.',
+    preview: 'شاهد العمل أثناء حدوثه',
+    previewLine: 'الطرفية والملفات والفروق بجانب المحادثة',
+    turnOn: 'شغّل عرض المطوّر',
+    notNow: 'ليس الآن',
+    settingsNote: 'يمكنك تغيير هذا في أي وقت من الإعدادات.'
   }
 }
 

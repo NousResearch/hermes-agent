@@ -39,7 +39,8 @@ export function useComposerLanding(
   const landing = centered && primary
 
   const around = useMemo(
-    () => (landing ? { above: <LandingGreeting />, below: <StarterIdeas target={target} /> } : undefined),
+    () =>
+      landing ? { above: <LandingGreeting target={target} />, below: <StarterIdeas target={target} /> } : undefined,
     [landing, target]
   )
 

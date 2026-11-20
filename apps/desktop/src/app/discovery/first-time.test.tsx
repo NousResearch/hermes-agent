@@ -12,6 +12,9 @@ import { $newVersionReady } from '@/store/new-version'
 import { $traySeen } from '@/store/notification-tray'
 import { $portalAccent } from '@/store/portal-accent'
 import { $renameSplash } from '@/store/rename-splash'
+import { $artifactRegistry, upsertArtifact } from '@/store/artifacts'
+import { $developerViewOfferOpen } from '@/store/developer-view-offer'
+import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 import { $signInFailed, $visitorAccess } from '@/store/visitor-access'
@@ -27,7 +30,8 @@ import { firstTimeCopy } from './first-time-copy'
 import { HeldExchange } from './held-exchange'
 import { NotificationBell } from './notification-tray'
 import { SplashCoveredRoutes } from './splash-layer'
-import { StarterIdeas } from './starter-ideas'
+import { DeveloperViewOffer } from './developer-view-offer'
+import { LandingGreeting, StarterIdeas } from './starter-ideas'
 
 const copy = firstTimeCopy('en')
 const tray = discoveryCopy('en').tray
@@ -304,9 +308,11 @@ describe('the starter ideas', () => {
     window.addEventListener('hermes:composer-submit', listener)
 
     render(
-      <div data-composer-surface-id="surface-1" data-composer-target="main">
-        <StarterIdeas target="main" />
-      </div>
+      <MemoryRouter>
+        <div data-composer-surface-id="surface-1" data-composer-target="main">
+          <StarterIdeas target="main" />
+        </div>
+      </MemoryRouter>
     )
 
     return { sent, stop: () => window.removeEventListener('hermes:composer-submit', listener) }
@@ -352,6 +358,139 @@ describe('the starter ideas', () => {
     expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
     expect(screen.queryByRole('button', { name: copy.landing.showIdeas })).toBeNull()
     stop()
+  })
+})
+
+describe('a newcomer’s landing as they settle in (Onboarding 03)', () => {
+  function renderLanding() {
+    return render(
+      <MemoryRouter>
+        <LandingGreeting target="main" />
+        <StarterIdeas target="main" />
+      </MemoryRouter>
+    )
+  }
+
+  const heading = () => screen.getByRole('heading', { level: 1 }).textContent
+
+  it('says Welcome back after a first task, with the ideas still out (C4)', () => {
+    $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a'] })
+    renderLanding()
+
+    expect(heading()).toBe(copy.landing.back)
+    expect(screen.getByText(copy.landing.subtitle)).toBeTruthy()
+    expect(screen.getByRole('button', { name: copy.landing.hide })).toBeTruthy()
+  })
+
+  it('asks what to work on once the ideas are put away, and keeps them away (C5)', () => {
+    $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a'], starterIdeas: 'hidden' })
+    renderLanding()
+
+    expect(heading()).toBe(copy.landing.back)
+    expect(screen.getByText(copy.landing.subtitleRetired)).toBeTruthy()
+    expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
+    expect(screen.getByRole('button', { name: copy.landing.showIdeas })).toBeTruthy()
+  })
+
+  it('after a month away offers the newest chat and the ideas, without the tour (C8)', () => {
+    $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a'] })
+    const longAgo = Date.now() / 1000 - 40 * 24 * 60 * 60
+    $sessions.set([{ ...chat, id: 'old', last_active: longAgo } as SessionInfo])
+    renderLanding()
+
+    expect(heading()).toBe(copy.landing.awayTitle)
+    expect(screen.getByText(copy.landing.awayLine)).toBeTruthy()
+    expect(screen.getByRole('button', { name: copy.landing.continueChat })).toBeTruthy()
+    expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
+    expect($firstTimeSplash.get()).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: copy.landing.showIdeas }))
+    expect(screen.getByRole('list', { name: copy.landing.ideasLabel })).toBeTruthy()
+  })
+
+  it('puts the check-in in the heading’s place at two finished chats, the ideas following C5 (C7)', () => {
+    $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a', 'b'] })
+    renderLanding()
+
+    expect(screen.getByRole('region', { name: copy.checkIn.title })).toBeTruthy()
+    expect(screen.getByRole('button', { name: copy.landing.showIdeas })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.checkIn.dismiss) }))
+    expect(screen.queryByRole('region', { name: copy.checkIn.title })).toBeNull()
+    expect(heading()).toBe(copy.landing.back)
+    expect($guidanceLedger.get().checkIn).toBe('dismissed')
+  })
+
+  it('sends a suggestion through the composer like a typed message, and Open reopens the tour', () => {
+    $guidanceLedger.set({ renameSplash: 'not_applicable', firstTimeSplash: 'seen', finishedTaskChats: ['a', 'b'] })
+    const sent = vi.fn()
+    const listener = (event: Event) => sent((event as CustomEvent<{ text: string }>).detail.text)
+    window.addEventListener('hermes:composer-submit', listener)
+    render(
+      <MemoryRouter>
+        <div data-composer-surface-id="surface-1" data-composer-target="main">
+          <LandingGreeting target="main" />
+        </div>
+      </MemoryRouter>
+    )
+
+    const rows = screen.getByRole('list', { name: copy.checkIn.listLabel })
+    fireEvent.click(within(rows).getByRole('button', { name: new RegExp(copy.checkIn.video) }))
+    expect(sent).toHaveBeenCalledWith(copy.checkIn.video)
+    fireEvent.click(within(rows).getByRole('button', { name: new RegExp(copy.checkIn.tour) }))
+    expect($firstTimeSplash.get()).toBe('reopened')
+    window.removeEventListener('hermes:composer-submit', listener)
+  })
+
+  it('comes back from the tray once dismissed', () => {
+    $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a', 'b'], checkIn: 'dismissed' })
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: tray.title }))
+    fireEvent.click(screen.getByRole('button', { name: copy.tray.checkIn.action }))
+    cleanup()
+
+    renderLanding()
+    expect(screen.getByRole('region', { name: copy.checkIn.title })).toBeTruthy()
+  })
+})
+
+describe('the developer-view offer in a chat about code (C6)', () => {
+  afterEach(() => {
+    $artifactRegistry.set({})
+    setInterfaceMode('advanced')
+  })
+
+  it('is offered in Simple once an answer held a code artifact, and previews the view on hover', () => {
+    setInterfaceMode('simple')
+    const { rerender } = render(<DeveloperViewOffer sessionId="chat-1" />)
+    expect(screen.queryByRole('region', { name: copy.developerView.title })).toBeNull()
+
+    act(() => {
+      upsertArtifact('chat-1', { kind: 'code', language: 'python', title: 'fix.py' }, 'print(1)')
+    })
+    rerender(<DeveloperViewOffer sessionId="chat-1" />)
+    const preview = screen.getByRole('button', { name: new RegExp(copy.developerView.preview) })
+
+    fireEvent.pointerEnter(preview)
+    expect($interfaceMode.get()).toBe('advanced')
+    fireEvent.pointerLeave(preview)
+    expect($interfaceMode.get()).toBe('simple')
+
+    fireEvent.click(screen.getByRole('button', { name: copy.developerView.notNow }))
+    expect($developerViewOfferOpen.get()).toBe(false)
+    expect(screen.queryByRole('region', { name: copy.developerView.title })).toBeNull()
+  })
+
+  it('turns the view on for good', () => {
+    setInterfaceMode('simple')
+    act(() => {
+      upsertArtifact('chat-1', { kind: 'code', language: 'python', title: 'fix.py' }, 'print(1)')
+    })
+    render(<DeveloperViewOffer sessionId="chat-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: copy.developerView.turnOn }))
+    expect($interfaceMode.get()).toBe('advanced')
+    expect($guidanceLedger.get().developerViewOffer).toBe('accepted')
   })
 })
 

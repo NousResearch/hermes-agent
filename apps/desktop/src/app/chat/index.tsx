@@ -54,6 +54,7 @@ import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
+import { DeveloperViewOffer } from '../discovery/developer-view-offer'
 import { HeldExchange, useIntroUnlessHeld } from '../discovery/held-exchange'
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -800,6 +801,7 @@ const ChatViewContent = memo(function ChatViewContent({
           />
           {classicPrimary && <IntroCopy />}
           <HeldExchange primary={isPrimary} routed={isRoutedSessionView} />
+          {isPrimary && <DeveloperViewOffer sessionId={activeSessionId} />}
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}

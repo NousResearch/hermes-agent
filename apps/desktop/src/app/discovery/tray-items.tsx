@@ -1,10 +1,12 @@
 import { computed } from 'nanostores'
 import type { ComponentType } from 'react'
+import { useNavigate } from 'react-router'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { X } from '@/lib/icons'
+import { $checkInReopenable, reopenCheckIn } from '@/store/check-in'
 import { $cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
 import { $firstTimeSplashReopenable, reopenFirstTimeSplash } from '@/store/first-time-splash'
 import { $newVersionReady } from '@/store/new-version'
@@ -20,6 +22,8 @@ import {
 } from '@/store/updates'
 import { $usageStatsOfferPlace, clearUsageStatsOffer, openUsageStatsDetails } from '@/store/usage-stats-offer'
 import { $signUpRequired, startSignUp } from '@/store/visitor-access'
+
+import { NEW_CHAT_ROUTE } from '../routes'
 
 import { useDiscoveryCopy } from './discovery-copy'
 import { useFirstTimeCopy } from './first-time-copy'
@@ -202,6 +206,28 @@ function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
   )
 }
 
+/** The check-in Dismiss put away (store/check-in.ts): Open brings it back on a new chat. */
+function CheckInCard({ close, unseen }: TrayCardProps) {
+  const copy = useFirstTimeCopy().tray.checkIn
+  const navigate = useNavigate()
+
+  return (
+    <TrayCard
+      action={{
+        label: copy.action,
+        run: () => {
+          close()
+          reopenCheckIn()
+          navigate(NEW_CHAT_ROUTE)
+        }
+      }}
+      description={copy.description}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
 /** The usage-stats question the sidebar card put away (store/usage-stats-offer.ts): listed until it
  *  is answered or cleared, news once. Review opens the short dialog, which can answer it. */
 const $usageStatsItem = computed($usageStatsOfferPlace, place => (place === 'tray' ? { news: 'v1' } : null))
@@ -253,6 +279,12 @@ export const TRAY_ITEMS: readonly TrayItemDefinition[] = [
     id: 'first-time-splash',
     $state: computed($firstTimeSplashReopenable, reopenable => (reopenable ? { news: 'v1' } : null)),
     Card: FirstTimeSplashCard
+  },
+  // The check-in Dismiss put away, until it is answered.
+  {
+    id: 'check-in',
+    $state: computed($checkInReopenable, reopenable => (reopenable ? { news: 'v1' } : null)),
+    Card: CheckInCard
   }
 ]
 

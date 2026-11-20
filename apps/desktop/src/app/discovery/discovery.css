@@ -1043,6 +1043,178 @@
   }
 }
 
+/* ── Activate & grow (Onboarding 03): the landing's later moments, the check-in, the developer view ── */
+
+/* Section 03's own buttons (Onboarding / Button 18677:32714): 36px, 12 across, 6 corners, Nous/Compact
+   SemiBold at the 14px body; the primary in the accent, the secondary ink 5 with no rim. */
+:root[data-shell='portal'] .discovery-landing-action[data-size][data-variant] {
+  min-block-size: 2.25rem;
+  padding-block: 0;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-surface);
+  box-shadow: none;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .discovery-landing-action[data-variant='default'] {
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+/* C8: Continue a recent chat and Show ideas, 10 apart, under the composer. */
+:root[data-shell='portal'] :is(.discovery-landing-actions, .discovery-check-in-answers) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+}
+
+/* C7: the check-in in the heading's place, its text 32 in from the column like the welcome splash,
+   its card the column's width; 24 between its groups and to the composer. */
+:root[data-shell='portal'] .discovery-landing-greeting:has(> .discovery-check-in) {
+  margin-block-end: 1.5rem;
+  padding-inline: 0;
+}
+
+:root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer) {
+  --discovery-welcome-inset: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1.5rem;
+  text-align: start;
+}
+
+:root[data-shell='portal']
+  :is(.discovery-check-in, .discovery-developer-offer)
+  > :is(
+    .discovery-welcome-eyebrow,
+    .discovery-landing-heading,
+    .discovery-check-in-answers,
+    .discovery-ideas-toggle,
+    .discovery-developer-note
+  ) {
+  padding-inline: var(--discovery-welcome-inset);
+}
+
+:root[data-shell='portal'] .discovery-check-in > .discovery-ideas-toggle {
+  align-self: flex-start;
+  gap: 0.25rem;
+}
+
+/* A suggestion (18677:28722): the welcome row's shape, its action in the meta voice at .8 and a
+   chevron at the end. */
+:root[data-shell='portal'] .discovery-check-in-rows > li {
+  position: relative;
+}
+
+:root[data-shell='portal'] .discovery-check-in-rows > li + li::before {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  block-size: 1px;
+  background-color: var(--portal-stroke-divider);
+  content: '';
+}
+
+:root[data-shell='portal'] :is(.discovery-check-in-row, .discovery-developer-preview) {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  inline-size: 100%;
+  min-block-size: 4rem;
+  padding: 0.75rem 0;
+  border: 0;
+  background: none;
+  color: var(--portal-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+:root[data-shell='portal'] :is(.discovery-check-in-row, .discovery-developer-preview):focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
+}
+
+:root[data-shell='portal'] .discovery-check-in-row:hover .discovery-welcome-place-name {
+  text-decoration: underline;
+  text-underline-position: from-font;
+}
+
+:root[data-shell='portal'] .discovery-check-in-action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  min-inline-size: 5.5rem;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+}
+
+:root[data-shell='portal'] .discovery-check-in-chevron {
+  flex: none;
+  font-size: var(--portal-welcome-glyph);
+}
+
+:root[data-shell='portal'] .discovery-check-in-chevron:dir(rtl) {
+  transform: scaleX(-1);
+}
+
+/* C6: floated over the conversation just above the composer, in the column, on the stage's own
+   flattened fill so the transcript under it never shows through. */
+:root[data-shell='portal'] .discovery-developer-offer {
+  position: absolute;
+  z-index: var(--portal-layer-stage-overlay);
+  inset-block-end: calc(var(--composer-measured-height) + 1rem);
+  inset-inline-start: 50%;
+  inline-size: min(var(--portal-column-conversation), 100% - 2rem);
+  padding-block: 1.5rem;
+  border-radius: var(--portal-radius-frame);
+  background-color: var(--portal-surface-stage);
+  box-shadow: var(--portal-shadow-composer);
+  translate: -50% 0;
+}
+
+:root[data-shell='portal'] .discovery-developer-offer:dir(rtl) {
+  translate: 50% 0;
+}
+
+:root[data-shell='portal'] .discovery-developer-offer .discovery-welcome-title {
+  font-size: var(--portal-type-display-xl-size);
+}
+
+/* "See the work as it happens" (18677:28636): a card row of its own, ink 2 under a hairline. */
+:root[data-shell='portal'] .discovery-developer-preview {
+  inline-size: auto;
+  min-block-size: 3.5rem;
+  margin-inline: var(--discovery-welcome-inset);
+  padding-inline: 0.75rem 1rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-card);
+}
+
+:root[data-shell='portal'] .discovery-developer-preview[aria-pressed='true'] {
+  background-color: var(--portal-surface-selected);
+}
+
+:root[data-shell='portal'] .discovery-developer-note {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.2;
+}
+
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer) {
+    --discovery-welcome-inset: 1rem;
+  }
+}
+
 /* ── A message held until sign up, and Hermes' answer (1C 462:3935) ──────────────────────────── */
 
 :root[data-shell='portal'] .discovery-held {

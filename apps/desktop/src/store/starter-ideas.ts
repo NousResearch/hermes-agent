@@ -15,8 +15,15 @@
 import { computed } from 'nanostores'
 
 import { $newcomer } from './first-time-splash'
-import { $finishedTaskChats, $guidanceLedger, FINISHED_TASK_CHATS_KEPT, markGuidance, noteFinishedTaskChat } from './guidance-ledger'
+import {
+  $finishedTaskChats,
+  $guidanceLedger,
+  FINISHED_TASK_CHATS_KEPT,
+  markGuidance,
+  noteFinishedTaskChat
+} from './guidance-ledger'
 import { recordIaAction } from './ia-metrics'
+import { $sessions } from './session'
 
 /** The ideas, by their content-free metric code, in the order they show. */
 export const STARTER_IDEAS = ['morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'] as const
@@ -42,10 +49,45 @@ export const $starterIdeas = computed(
   }
 )
 
-/** A newcomer who has not finished their first tasks yet: the empty chat greets them. */
-export const $newcomerGreeting = computed(
-  [$newcomer, $finishedTaskChats],
-  (newcomer, finished) => newcomer && finished < FINISHED_TASK_CHATS_KEPT
+/** Away this long, the empty chat says hello again (Onboarding C8 18677:28819). */
+export const AWAY_AFTER_MS = 30 * 24 * 60 * 60 * 1000
+
+/** When the person last did anything in a chat: the newest last activity among the chats the sidebar
+ *  lists (a routine's own runs and hidden or archived chats are not them). Null with no chats. */
+export const $lastChatActivityMs = computed($sessions, sessions => {
+  const times = sessions
+    .filter(row => !row.hidden && !row.archived && !row.scheduler_owned && !row.cron_execution_id)
+    .map(row => Number(row.last_active) * 1000)
+    .filter(Number.isFinite)
+
+  return times.length ? Math.max(...times) : null
+})
+
+/**
+ * What a newcomer's empty chat says above the composer (Onboarding 01 18695:18388, 03 C4–C8):
+ * - `first`: no task has finished yet: "Welcome to Hermes".
+ * - `back`: one has (C4, C5): "Welcome back.", its line following whether the ideas are out.
+ * - `away`: they have used Hermes and their newest chat has been still for {@link AWAY_AFTER_MS} (C8):
+ *   "Good to see you again." The next task they finish makes that chat the newest, so the landing
+ *   settles back to `back` on its own.
+ * - null: not a newcomer; their empty chat is the ordinary one.
+ * `now` is read when the sessions change, which is when a stay away can end or begin to show.
+ */
+export type LandingMoment = 'away' | 'back' | 'first'
+
+export const $landingMoment = computed(
+  [$newcomer, $finishedTaskChats, $lastChatActivityMs],
+  (newcomer, finished, lastActivity): LandingMoment | null => {
+    if (!newcomer) {
+      return null
+    }
+
+    if (finished === 0) {
+      return 'first'
+    }
+
+    return lastActivity !== null && Date.now() - lastActivity >= AWAY_AFTER_MS ? 'away' : 'back'
+  }
 )
 
 /** A turn finished `complete` in stored chat `chatId`. Counts while it can still change something:

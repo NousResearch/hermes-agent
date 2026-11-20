@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from tools.cronjob_job_args import _canonical_skills
+from cron.job_args import _canonical_skills
 
 
 class TestCanonicalSkillsHeals:

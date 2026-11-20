@@ -80,6 +80,7 @@ export function encodeProgramStatus(state: ProgramState, kind?: BlockedKind, msg
 const BLOCKING: readonly [keyof OverlayState, BlockedKind][] = [
   ['approval', 'permission'],
   ['clarify', 'question'],
+  ['confirm', 'question'],
   ['sudo', 'auth'],
   ['secret', 'auth'],
   ['vaultUnlock', 'auth'],
@@ -102,9 +103,13 @@ const blockedMessage = (overlay: OverlayState): string | undefined => {
     return overlay.approval.command
   }
 
-  const answered = overlay.clarify?.answers ?? {}
+  if (overlay.clarify) {
+    const answered = overlay.clarify.answers ?? {}
 
-  return overlay.clarify?.questions.find(q => !(q.qid in answered))?.question
+    return overlay.clarify.questions.find(q => !(q.qid in answered))?.question
+  }
+
+  return overlay.confirm?.title
 }
 
 export function deriveProgramStatus(

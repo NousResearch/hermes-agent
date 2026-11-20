@@ -40,11 +40,28 @@ def test_program_status_uses_st_and_encodes_safe_message():
     assert seq == "\x1b]7501;state=blocked:app=hermes:kind=permission:msg=QWxsb3cgY29tbWFuZD8geA==\x1b\\"
 
 
-def test_program_status_rejects_invalid_state_or_kind():
+def test_program_status_rejects_invalid_state_and_drops_a_stray_kind():
     with pytest.raises(ValueError):
         terminal_notify.program_status_sequence("clear")
-    with pytest.raises(ValueError):
-        terminal_notify.program_status_sequence("working", kind="permission")
+    # Same as the TUI encoder: a kind outside `blocked`, or an unknown one, is left out.
+    assert terminal_notify.program_status_sequence("working", kind="permission") == (
+        "\x1b]7501;state=working:app=hermes\x1b\\")
+    assert terminal_notify.program_status_sequence("blocked", kind="bogus") == (
+        "\x1b]7501;state=blocked:app=hermes\x1b\\")
+
+
+def test_turn_outcome_matches_the_tui():
+    """done never carries the reply; a failure that kept answer text is done, as in the TUI."""
+    from hermes_cli.cli_chat_turn_mixin import _program_outcome
+
+    assert _program_outcome(None) is None
+    assert _program_outcome({"final_response": "the whole answer"}) == ("done", "")
+    assert _program_outcome({"interrupted": True, "final_response": "half"}) == ("idle", "")
+    assert _program_outcome({"failed": True, "error": "429"}) == ("error", "429")
+    assert _program_outcome({"failed": True, "partial": True, "error": "429", "final_response": "429"}) == (
+        "error", "429")
+    assert _program_outcome({"failed": True, "partial": True, "error": "429", "final_response": "half"}) == (
+        "done", "")
 
 
 def test_program_status_follows_the_screen_through_one_owner(monkeypatch):

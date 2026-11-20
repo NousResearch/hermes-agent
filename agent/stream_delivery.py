@@ -8,8 +8,8 @@ import re
 import threading
 from typing import Any, Dict, List
 
-from agent.memory_context import fence_recalled_context, sanitize_context
-from agent.message_content import flatten_message_text
+from agent.memory_context import fence_recalled_context
+from session_rules.turns import sanitize_context, flatten_message_text
 from agent.history_commentary import COMMENTARY_WITHHELD, commentary_items, visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.

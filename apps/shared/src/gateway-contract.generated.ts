@@ -392,7 +392,7 @@ export interface MessageReactResult {
   row_id: number
   reactions: MessageReaction[]
 }
-/** One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is stamped once announced. */
+/** One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is stamped once announced. */
 export interface MessageReaction {
   emoji: string
   author: string
@@ -1971,6 +1971,27 @@ export interface BotRelayReplyParams {
   error?: string | null
   reason?: string | null
 }
+/** ``profile`` is the SENDER bot; it routes the call to that profile's connection. */
+export interface BotDeliveryListParams {
+  profile?: string | null
+}
+export interface BotDeliveryListResult {
+  sender: string
+  deliveries: BotDeliveryRow[]
+}
+/** ``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last write (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``) for ``failed`` — ``unknown_outcome`` means the target may have acted: never resend it. */
+export interface BotDeliveryRow {
+  delivery_id: string
+  target: string
+  target_handle: string
+  state: BotDeliveryState
+  since: number
+  preview: string
+  waiting_on?: string | null
+  reason?: string | null
+  error?: string | null
+}
+export type BotDeliveryState = 'queued' | 'claimed' | 'working' | 'waiting_on_you' | 'failed'
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
 }
@@ -3674,6 +3695,9 @@ export interface PromptCacheWindow {
   reason: string
   refreshed_at?: number | null
   coverage?: Record<string, number>
+  warming_off?: boolean
+  tier_pending?: boolean
+  learned?: string | null
 }
 export interface SessionCompressParams {
   session_id: string
@@ -4818,7 +4842,7 @@ export interface PromptResolveUnknownParams {
   admission_id: string
   execution_generation: number
 }
-/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy`` (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes). */
+/** ``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy`` (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes). */
 export interface SessionMutateParams {
   session_id: string
   request_id: string
@@ -4834,7 +4858,7 @@ export interface SessionMutateResult {
   revision?: number | null
   [key: string]: unknown
 }
-/** Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
+/** Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
 export interface SessionPruneParams {
   filters?: Record<string, unknown> | null
   never_active_days?: number | null
@@ -5967,7 +5991,7 @@ export interface MessageInterimPayload {
   turn_id?: string | null
   segment?: number | null
 }
-/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
+/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
   text?: string | unknown
   usage?: Usage | null
@@ -6369,6 +6393,8 @@ export interface RpcMethods {
   'billing.state': { params: ProfileParams; result: BillingStateResult }
   /** Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification. */
   'billing.step_up': { params: BillingStepUpParams; result: BillingStepUpResult }
+  /** Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first. */
+  'bot_delivery.list': { params: BotDeliveryListParams; result: BotDeliveryListResult }
   /** Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking). */
   'bot_relay.deliver': { params: BotRelayDeliverParams; result: BotRelayDeliverResult }
   /** Atomically claim every pending cross-connection envelope queued on this gateway. */
@@ -6886,6 +6912,7 @@ export const RPC_METHODS = [
   'billing.keep_going_on_credits',
   'billing.state',
   'billing.step_up',
+  'bot_delivery.list',
   'bot_relay.deliver',
   'bot_relay.outbox.drain',
   'bot_relay.reply',

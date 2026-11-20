@@ -4,13 +4,16 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from hermes_cli.source_completion import complete_source_checkout
+from hermes_cli.source_completion import complete_source_checkout, main
 from hermes_cli.source_stamp import write_source_stamp
+from hermes_cli.update_lock import UpdateLock
+from tests.waiting import wait_until
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -128,6 +131,62 @@ def test_completion_refuses_to_stack_on_a_live_update(tmp_path, monkeypatch, for
 
     with pytest.raises(RuntimeError, match="an update is still running"):
         complete_source_checkout(root, desktop=False, assume_yes=True)
+
+
+def test_installer_tail_waits_for_a_running_update_then_completes(tmp_path, monkeypatch):
+    """Regression for #157275: re-running the installer over a Desktop install failed as soon as
+    the gateway's background child (the default-plugin installer, relaunched onto the new code)
+    held the lock for the same completion, instead of waiting for it to finish."""
+    root = _repo(tmp_path)
+    (root / "hermes_cli").mkdir()
+    (root / "hermes_cli" / "source_completion.py").touch()
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+    monkeypatch.setattr("pm.environments.activate_dependencies", lambda root: None)
+    holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+    marker.write_text(f"{holder.pid}\n{int(time.time())}\n", encoding="utf-8")
+    refused = threading.Event()
+    acquire = UpdateLock.acquire
+
+    def observed_acquire(lock):
+        taken = acquire(lock)
+        if not taken:
+            refused.set()
+        return taken
+
+    monkeypatch.setattr(UpdateLock, "acquire", observed_acquire)
+    outcome: dict = {}
+
+    def install():
+        try:
+            outcome["exit"] = main(["--source", str(root), "--prepared"])
+        except BaseException as exc:  # health: allow BLE001 -- the assertion below reports it
+            outcome["error"] = repr(exc)
+
+    installer = threading.Thread(target=install)
+    installer.start()
+    try:
+        wait_until(lambda: refused.is_set() or not installer.is_alive(), timeout=60,
+                   what="the installer to meet the running update")
+    finally:
+        holder.communicate(b"")
+    installer.join(timeout=120)
+
+    assert outcome == {"exit": 0}
+    assert (root / "install-stamp.json").is_file()
+    assert not marker.exists(), "the installer must release the lock it took over"
+
+
+def test_installer_wait_is_bounded(tmp_path, monkeypatch, foreign_pid):
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    marker.write_text(f"{foreign_pid}\n{int(time.time())}\n", encoding="utf-8")
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+
+    with pytest.raises(RuntimeError, match="an update is still running"):
+        complete_source_checkout(root, desktop=False, assume_yes=True, lock_wait=0.5)
+    assert marker.read_text(encoding="utf-8").startswith(f"{foreign_pid}\n")
+    assert not (root / "install-stamp.json").exists()
 
 
 def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path):

@@ -20,7 +20,7 @@ The result preserves `session_id`, `stored_session_id`, `messages`, `message_cou
 the same stable persisted **logical** ID. Compression and reset may rotate the private
 physical transcript target without changing either client ID. Creation is lazy with respect
 to the agent, but reserves the real
-SessionDB/SessionStore identity before returning. One canonical SQLite transaction commits
+stored-session/SessionStore identity before returning. One canonical SQLite transaction commits
 the session row, route, and private `gateway.local_policy.v1:<stored-id>` creation receipt.
 Repeating the request ID for the same principal and profile reuses that identity and frozen
 policy, including after daemon death. Omit the ID for a new session; clients that need
@@ -143,7 +143,7 @@ listener keeps working.
   excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
   by listing it. Explicit resume performs adoption; the default live feed is unchanged.
   Both scopes take `workspace`: only conversations whose first row is in that folder, by
-  `hermes -c`'s rule (`hermes_state_sessions.workspace_key`): the row's git repo root equals it, or
+  `hermes -c`'s rule (`persistence.conversation.sessions.workspace_key`): the row's git repo root equals it, or
   (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
   With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
   `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current

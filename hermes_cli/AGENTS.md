@@ -106,7 +106,7 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **Every `DEFAULT_CONFIG` key has a runtime reader, and every reader a registry entry.** Both drift
   modes are silent: a registered key nothing reads (a knob that does nothing) and a reader of a key
   never registered (never shown, never migrated; new roots also go in `_KNOWN_ROOT_KEYS`). For a new
-  key: `rg -n '"<key>"' hermes_cli/config_defaults.py` AND `rg -n '<key>' --glob '!tests' .` both hit,
+  key: `search_files` for `"<key>"` in `hermes_cli/config_defaults.py` AND for `<key>` outside `tests/` both hit,
   and one invariant test sets it in a temp `config.yaml` and asserts the behaviour through the loader
   the consuming surface uses. Under multiplex the process env never overrides a profile's YAML.
 - **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to
@@ -167,7 +167,7 @@ shell, stray infrastructure dir) is never listed, served, ticked, `.env`-backfil
 files — fail closed, never rmtree). A dangling symlinked marker still counts as identity (`is_symlink()`).
 `tools/bot_mode_probe._roster` (Bot Mode teammate roster, `bot_relay.deliver` target check) applies the same
 predicate. There is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
-Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
+Enumeration is a pure read: never `mkdir` a profile home from a served path (the session store, logging,
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
 tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.

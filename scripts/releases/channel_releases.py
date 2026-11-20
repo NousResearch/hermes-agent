@@ -21,8 +21,7 @@ from scripts.releases.progress import log
 from scripts.releases.versioning import parse_attempt_ref
 
 CANARY_NEEDS = ("validate", "build-win32-x64", "build-win32-arm64",
-                "build-darwin-arm64",
-                "build-linux-x64", "build-linux-arm64", "builds-table",
+                "build-darwin-arm64", "builds-table",
                 "assemble-win32-bundle", "smoke-darwin-arm64",
                 "smoke-win32-arm64", "smoke-win32-x64",
                 "publish-win32-updater", "publish-darwin-updater")

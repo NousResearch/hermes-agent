@@ -563,10 +563,14 @@ LaunchAgent of the same name belongs to another Hermes home, when a legacy `herm
 (run `hermes gateway migrate-legacy` first), when a config backend other than the file one is selected
 (`HERMES_CONFIG_BACKEND`, for example `remote`: the backups and the undo cover `config.yaml` only), when the
 old backend requires sign-in but its `/api/auth/providers` list cannot be read (the check after the move compares
-it), when the command runs inside
+it), when an administrator's managed config (`HERMES_MANAGED_DIR` or `/etc/hermes`) sets a `webapp.*` key
+that would keep the gateway's Webapp off or elsewhere after the move (the gateway applies it last), when a
+hand-started backend was launched by a relative path, a relative Python script or `python -m` and its working
+directory cannot be read, when the old unit's `hermes-migrated.conf` drop-in (or, on macOS, the plist's
+`.disabled` name) already exists, when the command runs inside
 the gateway's own service (also for the rollback of an unfinished run), or when `backend_migration.json`
-exists but cannot be read (move it aside after checking the home by hand; the backups are in
-`backend_migration/`). While a migration is `done`, `--apply` reports nothing to migrate and never
+exists but cannot be read or holds a state the engine does not know (move it aside after checking the home by
+hand; the backups are in `backend_migration/`). While a migration is `done`, `--apply` reports nothing to migrate and never
 replaces its backups; `--restore` undoes it. `--restore` refuses (exit 3, the gateway keeps serving) when
 `config.yaml` or `.env` changed after the migration wrote it or a backup cannot be read, since putting the backups
 back would lose those edits; it checks again after you confirm, and prints the steps to restore by hand. The apply writes
@@ -590,7 +594,9 @@ there is nothing to migrate.
 Options: `--address HOST:PORT` (pick one backend when several serve this home), `--keep-webapp-address`
 (retire the old backend but keep an already enabled Webapp where it is), `--force-interrupt` (proceed
 although a turn is running on the old backend, or its turn activity cannot be read; without it either
-blocks with exit 3, and a forced move past unreadable activity says so before it starts), `--detach` (with
+blocks with exit 3, and a forced move past unreadable activity says so before it starts; a turn that starts,
+or activity that becomes unreadable, after that check and before the old backend is stopped rolls the move back
+with exit 4, the old backend never stopped), `--detach` (with
 `--apply` or `--restore`: run in the background, outside the caller's systemd unit; a background run that
 refuses to start is reported by `--status` as `failed` with the reason; where the move is manual steps
 only, such as Windows or a system unit, `--apply --detach` starts nothing and prints them with exit 6; exit 7, JSON `"outcome":

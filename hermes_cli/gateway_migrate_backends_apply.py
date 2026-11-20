@@ -1165,6 +1165,11 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
         plan.blockers.append(f"{rec['unit']} is {rec.get('unit_file_state') or 'in an unknown state'} (systemctl "
                              f"is-enabled); a rollback could not put that back exactly, so nothing is changed. "
                              f"Move it by hand with the steps in the docs.")
+    guard = host.old_unit_dropin_path(rec)
+    parked = f"{rec['unit_path']}.disabled" if rec["supervisor"] == "launchd" and rec.get("unit_path") else None
+    for target in (guard, parked):
+        if target and os.path.lexists(target):
+            plan.blockers.append(f"{target} already exists; move it aside before migrating this backend.")
     for name in ("config.yaml", ".env"):
         if (Path(host.home) / name).is_symlink():
             plan.blockers.append(f"{Path(host.home) / name} is a symbolic link: the migration would change the "

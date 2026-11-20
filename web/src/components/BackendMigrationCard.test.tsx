@@ -10,6 +10,9 @@ import { containerPlans, systemSystemdPlans } from "./BackendMigrationCard.plans
 import {
   killedWhileWritingStatus,
   lateTurnStatus,
+  refusalBlockers,
+  refusedUrlPlans,
+  relativeLauncherStatus,
   restoreRefusedStatus,
   unknownActivityBlocker,
   unknownStateStatus,
@@ -272,6 +275,36 @@ describe("BackendMigrationCard", () => {
     expect(manual.textContent).toContain(record.message);
     expect(manual.textContent).not.toContain("On this computer, run:");
     expect(manual.querySelectorAll("ol")).toHaveLength(0);
+    expect(button("Move anyway")).toBeUndefined();
+  });
+
+  // The plan route's blockers for the engine's newer preflight refusals: shown as given, Move held, and never
+  // Move anyway (none of them is cleared by --force-interrupt).
+  it.each(Object.entries(refusalBlockers))("shows the %s refusal in the engine's words, with no Move anyway", async (_what, b) => {
+    await render(planWith({ blockers: [b] }));
+    expect(container.querySelector('[data-slot="backend-migration-blocker"]')?.textContent).toBe(`• ${b}`);
+    expect(moveButton()?.disabled).toBe(true);
+    expect(button("Move anyway")).toBeUndefined();
+  });
+
+  it("never offers to show the steps of a by-hand plan held by a refused public URL", async () => {
+    const held = refusedUrlPlans.held as unknown as BackendMigrationPlanResponse;
+    const [blocker] = held.plan.blockers;
+    expect(blocker).toContain("public URL");
+    expect((refusedUrlPlans.forced as unknown as BackendMigrationPlanResponse).plan.blockers).toEqual([blocker]);
+    await render(held);
+    expect(container.querySelector('[data-slot="backend-migration-blocker"]')?.textContent).toBe(`• ${blocker}`);
+    expect(button("Show the steps anyway")).toBeUndefined();
+    expect(button("Move anyway")).toBeUndefined();
+    expect(container.textContent).not.toMatch(/show the steps anyway/i);
+  });
+
+  it("shows a background move refused for a relative launcher as not started, in the engine's words", async () => {
+    const refused = relativeLauncherStatus as unknown as BackendMigrationStatus;
+    await render(planWith({ nothing_to_do: true }, refused));
+    const shown = container.querySelector('[data-slot="backend-migration-not-started"]')?.textContent ?? "";
+    expect(shown).toContain(refused.message);
+    expect(shown).not.toContain("Before running these steps");
     expect(button("Move anyway")).toBeUndefined();
   });
 

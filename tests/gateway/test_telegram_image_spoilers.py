@@ -84,3 +84,14 @@ async def test_undelivered_spoiler_photo_never_posts_its_link(adapter, monkeypat
     sent = [call.args[1] if len(call.args) > 1 else call.kwargs["content"] for call in adapter.send.await_args_list]
     assert sent and not any(URL in text for text in sent)
     assert all(text.count("Final boss") == text.count("||Final boss||") for text in sent)  # only ever hidden
+
+
+def test_hidden_link_keeps_its_link_on_telegram():
+    """``||[alt](<url>)||`` (a marked tag whose URL is no image) is CommonMark for a link; Telegram
+    has no ``<…>`` form, so the brackets go and the link stays inside the spoiler."""
+    from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links, to_markdown_v2
+
+    hidden = "||[the twist](<https://example.com/wiki/Twist>)||"
+
+    assert to_markdown_v2(hidden) == "||[the twist](https://example.com/wiki/Twist)||"
+    assert degrade_unrenderable_links(hidden) == "||[the twist](https://example.com/wiki/Twist)||"

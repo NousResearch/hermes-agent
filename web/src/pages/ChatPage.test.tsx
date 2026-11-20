@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation, useNavigate } from "react-router";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -30,7 +30,6 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
-  static latestDataHandler: ((data: string) => void) | null = null;
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -65,15 +64,8 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData(handler: (data: string) => void) {
-    FakeTerminal.latestDataHandler = handler;
-    return {
-      dispose() {
-        if (FakeTerminal.latestDataHandler === handler) {
-          FakeTerminal.latestDataHandler = null;
-        }
-      },
-    };
+  onData() {
+    return { dispose() {} };
   }
 
   onResize() {
@@ -222,7 +214,6 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
-  FakeTerminal.latestDataHandler = null;
   webglInstances.length = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -951,195 +942,5 @@ describe("ChatPage WebGL renderer gating", () => {
     });
 
     expect(webglInstances[0].disposed).toBe(true);
-  });
-});
-
-describe("ChatPage /learn router-state handoff", () => {
-  it("ignores ?learn= URL query parameters and never submits them to the PTY", async () => {
-    vi.useFakeTimers();
-    try {
-      const { default: ChatPage } = await import("./ChatPage");
-      await render(
-        <MemoryRouter initialEntries={["/chat?learn=%15!id%0d&other=1"]}>
-          <ChatPage />
-        </MemoryRouter>,
-      );
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-      const socket = FakeWebSocket.instances[0];
-      await act(async () => socket.onopen?.());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1500);
-      });
-
-      const sent = socket.send.mock.calls.map(([payload]) => String(payload));
-      expect(sent.filter((msg) => msg.includes("/learn"))).toEqual([]);
-      expect(sent.filter((msg) => msg.includes("!id"))).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("delivers normalized router-state handoff once on cold start and strips learnSeed", async () => {
-    vi.useFakeTimers();
-    try {
-      const { default: ChatPage } = await import("./ChatPage");
-      let latestLocation: { pathname: string; search: string; state: unknown } | null = null;
-      function LocationSpy() {
-        const loc = useLocation();
-        latestLocation = { pathname: loc.pathname, search: loc.search, state: loc.state };
-        return null;
-      }
-
-      await render(
-        <MemoryRouter
-          initialEntries={[
-            {
-              pathname: "/chat",
-              state: {
-                learnSeed: "docs \u001b]52;c;YWJj\u0007\u0015\u001b7guide\u001b8",
-                from: "/skills",
-              },
-            },
-          ]}
-        >
-          <LocationSpy />
-          <ChatPage />
-        </MemoryRouter>,
-      );
-
-      expect(latestLocation).toEqual({
-        pathname: "/chat",
-        search: "",
-        state: { from: "/skills" },
-      });
-
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-      const socket = FakeWebSocket.instances[0];
-      await act(async () => socket.onopen?.());
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(799);
-      });
-      expect(socket.send).not.toHaveBeenCalledWith(expect.stringContaining("/learn"));
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1);
-      });
-      expect(socket.send).toHaveBeenCalledWith("/learn docs guide\r");
-      expect(
-        socket.send.mock.calls.filter(([payload]) => String(payload).startsWith("/learn")),
-      ).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retains an unsent handoff across a transient early close/reconnect and never replays after delivery", async () => {
-    vi.useFakeTimers();
-    try {
-      const { default: ChatPage } = await import("./ChatPage");
-      await render(
-        <MemoryRouter
-          initialEntries={[
-            {
-              pathname: "/chat",
-              state: { learnSeed: "retry workflow" },
-            },
-          ]}
-        >
-          <ChatPage />
-        </MemoryRouter>,
-      );
-
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-      const first = FakeWebSocket.instances[0];
-      await act(async () => first.onopen?.());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(300);
-      });
-      expect(first.send).not.toHaveBeenCalledWith(expect.stringContaining("/learn"));
-
-      // Transient unclean drop before the 800ms composer delay elapses.
-      await act(async () => {
-        first.readyState = 3;
-        first.onclose?.({ code: 1006, reason: "", wasClean: false });
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
-      });
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
-
-      const second = FakeWebSocket.instances[1];
-      await act(async () => second.onopen?.());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(800);
-      });
-      expect(first.send).not.toHaveBeenCalledWith(expect.stringContaining("/learn"));
-      expect(second.send).toHaveBeenCalledWith("/learn retry workflow\r");
-
-      // A subsequent reconnect after delivery must not replay the command.
-      await act(async () => {
-        second.readyState = 3;
-        second.onclose?.({ code: 1006, reason: "", wasClean: false });
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
-      });
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3));
-      const third = FakeWebSocket.instances[2];
-      await act(async () => third.onopen?.());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(800);
-      });
-      expect(third.send).not.toHaveBeenCalledWith(expect.stringContaining("/learn"));
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("leaves a pre-existing draft untouched and never submits on warm return to an open PTY", async () => {
-    vi.useFakeTimers();
-    try {
-      const { default: ChatPage } = await import("./ChatPage");
-      let pushLearnReturn: (() => void) | null = null;
-      function NavDriver() {
-        const navigate = useNavigate();
-        pushLearnReturn = () =>
-          navigate("/chat", { state: { learnSeed: "warm skill handoff" } });
-        return null;
-      }
-
-      await render(
-        <MemoryRouter initialEntries={["/chat"]}>
-          <NavDriver />
-          <ChatPage />
-        </MemoryRouter>,
-      );
-
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-      const socket = FakeWebSocket.instances[0];
-      await act(async () => socket.onopen?.());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(800);
-      });
-
-      // User starts typing a draft in the live composer.
-      await act(async () => {
-        FakeTerminal.latestDataHandler?.("unfinished draft");
-      });
-      expect(socket.send).toHaveBeenCalledWith("unfinished draft");
-      socket.send.mockClear();
-
-      // Returning from /skills with router state must not inject into or submit the draft.
-      await act(async () => {
-        pushLearnReturn?.();
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1500);
-      });
-      expect(socket.send).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

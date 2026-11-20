@@ -41,6 +41,26 @@ const LEARN_SEED_KEY = "learnSeed";
 const WS_READY_STATE_OPEN = 1;
 const DEFAULT_COMPOSER_READY_DELAY_MS = 800;
 
+// Matches terminal-generated reports/replies and mouse/focus events emitted
+// through xterm's onData (CPR/DSR, DA1/DA2/DA3, DECRPM, XTWINOPS, Kitty kbd
+// query reply, focus in/out, OSC/DCS replies, SGR/X10 mouse). User typing,
+// editing keys, and bracketed paste (\x1b[200~...) never match.
+const TERMINAL_REPLY_ONLY_RE =
+  // eslint-disable-next-line no-control-regex -- intentional terminal-reply detection for PTY input
+  /^(?:\u001b\[(?:[IO]|<\d+;\d+;\d+[Mm]|M[\s\S]{3}|[?>=][0-9;]*c|\?\d+u|\??[0-9;]+(?:[Rnt]|\$y))|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001bP[^\u001b]*\u001b\\)+$/;
+
+/**
+ * True when an xterm `onData` chunk represents user-initiated input (typing,
+ * editing keys, or bracketed paste) rather than terminal-generated replies or
+ * mouse/focus reports.
+ */
+export function isUserInitiatedTerminalInput(data: string): boolean {
+  if (!data) {
+    return false;
+  }
+  return !TERMINAL_REPLY_ONLY_RE.test(data);
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

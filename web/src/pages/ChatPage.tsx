@@ -187,7 +187,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // server could not start it at all (close 1011; the reason is in the terminal).
   const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
   const navigate = useNavigate();
-  const learnHandoff = useLearnHandoff(isActive);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -359,6 +358,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
+  const learnHandoff = useLearnHandoff(isActive, channel);
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
@@ -1380,7 +1380,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       }
       wsRef.current = null;
-      learnHandoff.onSocketClose();
+      learnHandoff.onSocketClose(ws);
       connectInFlightRef.current = false;
       clearConnectingTimer();
       if (unmounting) {
@@ -1491,6 +1491,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
         );
         ptyInputLineRef.current = normalized.nextLine;
+        if (ptyInputLineRef.current) learnHandoff.onUserInput();
         if (normalized.normalized) {
           mobileReplacementInputUntilRef.current = 0;
         }
@@ -1568,7 +1569,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
-      learnHandoff.reset();
+      learnHandoff.onTransportTeardown();
       host.removeEventListener("keydown", _imeCompositionGuard, true);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's

@@ -10,7 +10,9 @@ export interface LearnSocketLike {
 export interface LearnHandoffController {
   enqueue(seed: string | null | undefined): boolean;
   onSocketOpen(socket: LearnSocketLike): void;
-  onSocketClose(): void;
+  onSocketClose(socket: LearnSocketLike): void;
+  onTransportTeardown(): void;
+  onUserInput(): void;
   reset(): void;
 }
 
@@ -29,10 +31,10 @@ const OSC_SEQUENCE_RE = /(?:\u001b\]|\u009d)[^\u0007\u001b\u009c]*(?:\u0007|\u00
 const STRING_ESCAPE_RE = /(?:\u001b[PX^_]|[\u0090\u0098\u009e\u009f])[^\u001b\u009c]*(?:\u001b\\|\u009c)?/g;
 // eslint-disable-next-line no-control-regex -- intentional 7-bit/8-bit CSI sequence stripping for PTY-bound text
 const CSI_SEQUENCE_RE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
-// eslint-disable-next-line no-control-regex -- intentional two-byte and nF ESC sequence stripping for PTY-bound text
-const SINGLE_ESCAPE_RE = /\u001b(?:[ -/]+[@-~]|[@-Z\\-_])/g;
+// eslint-disable-next-line no-control-regex -- intentional Fp/Fe/Fs two-byte and nF ESC sequence stripping
+const SINGLE_ESCAPE_RE = /\u001b(?:[ -/]+[@-~]|[0-~])/g;
 // eslint-disable-next-line no-control-regex -- intentional C0/C1, DEL, line-separator, and BiDi cleanup
-const CONTROL_AND_BIDI_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
+const CONTROL_AND_BIDI_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
 const WHITESPACE_RE = /\s+/g;
 
 const LEARN_SEED_KEY = "learnSeed";
@@ -45,7 +47,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Collapse an in-app `/learn` seed into one printable terminal line by
- * removing terminal escape sequences, control characters, and BiDi overrides.
+ * removing terminal escape sequences, control characters, and BiDi controls.
  */
 export function normalizeLearnSeed(seed: string | null | undefined): string | null {
   if (!seed) {
@@ -111,9 +113,13 @@ export function stripLearnSeedFromState(state: unknown): Record<string, unknown>
 }
 
 /**
- * Coordinate one-shot `/learn` command delivery against the chat PTY socket
- * lifecycle so Ink's composer has mounted before initial submission, while
- * warm in-app handoffs deliver immediately and closed sockets cancel timers.
+ * Coordinate one-shot `/learn` delivery against the chat PTY socket lifecycle:
+ * - Only queues when no PTY socket is already open (avoids submitting or
+ *   corrupting an unfinished draft in an already-live composer).
+ * - Waits for Ink's composer mount delay after socket open before sending once.
+ * - Retains an unsent command across transient transport reconnects, while
+ *   ignoring stale close events from retired sockets and canceling on user
+ *   input or scope change/unmount.
  */
 export function createLearnHandoffController(
   options: LearnHandoffControllerOptions = {},
@@ -123,7 +129,6 @@ export function createLearnHandoffController(
   const clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
 
   let activeSocket: LearnSocketLike | null = null;
-  let composerReady = false;
   let pendingCommand: string | null = null;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -134,51 +139,61 @@ export function createLearnHandoffController(
     }
   };
 
-  const flush = (): void => {
-    if (!composerReady || !pendingCommand || !activeSocket) return;
-    if (activeSocket.readyState !== WS_READY_STATE_OPEN) return;
-    const cmd = pendingCommand;
-    pendingCommand = null;
-    try {
-      activeSocket.send(`${cmd}\r`);
-    } catch {
-      /* PTY not ready / closed — user can retype */
-    }
-  };
-
   return {
     enqueue(seed) {
       const cmd = formatLearnCommand(seed);
       if (!cmd) return false;
+      // Never inject into an already-open PTY session: the user may have an
+      // unfinished draft or active turn in Ink's composer.
+      if (activeSocket !== null && activeSocket.readyState === WS_READY_STATE_OPEN) {
+        return false;
+      }
       pendingCommand = cmd;
-      flush();
       return true;
     },
 
     onSocketOpen(socket) {
       cancelTimer();
       activeSocket = socket;
-      composerReady = false;
+      if (!pendingCommand) return;
       flushTimer = setTimer(() => {
         flushTimer = null;
-        if (activeSocket !== socket || socket.readyState !== WS_READY_STATE_OPEN) {
+        if (
+          activeSocket !== socket ||
+          socket.readyState !== WS_READY_STATE_OPEN ||
+          !pendingCommand
+        ) {
           return;
         }
-        composerReady = true;
-        flush();
+        const cmd = pendingCommand;
+        pendingCommand = null;
+        try {
+          socket.send(`${cmd}\r`);
+        } catch {
+          /* PTY not ready / closed — user can retype */
+        }
       }, delayMs);
     },
 
-    onSocketClose() {
+    onSocketClose(socket) {
+      if (activeSocket !== socket) return;
       cancelTimer();
       activeSocket = null;
-      composerReady = false;
+    },
+
+    onTransportTeardown() {
+      cancelTimer();
+      activeSocket = null;
+    },
+
+    onUserInput() {
+      cancelTimer();
+      pendingCommand = null;
     },
 
     reset() {
       cancelTimer();
       activeSocket = null;
-      composerReady = false;
       pendingCommand = null;
     },
   };

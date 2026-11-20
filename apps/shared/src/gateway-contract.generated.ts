@@ -722,6 +722,9 @@ export interface FreeTierProvisionResult {
 export interface FreeTierAckNoticeResult {
   acked: boolean
 }
+export interface InAppOfferRefreshResult {
+  in_app_offer?: InAppOfferPayload | null
+}
 export interface FreeTierClaimNudgeParams {
   profile?: string | null
   kind?: 'trial' | 'connector'
@@ -6583,6 +6586,8 @@ export interface RpcMethods {
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
   /** Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks). */
   'image.render': { params: ImageRenderParams; result: ImageRenderResult }
+  /** Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account. */
+  'in_app_offer.refresh': { params: ProfileParams; result: InAppOfferRefreshResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -7021,6 +7026,7 @@ export const RPC_METHODS = [
   'image.detach',
   'image.generate',
   'image.render',
+  'in_app_offer.refresh',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { useEffect, useId } from 'react'
 
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -8,39 +9,67 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
+  DialogTitle,
+  preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
 import { type I18nContextValue, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import {
   $inAppOfferDialog,
+  claimInAppOffer,
   dismissInAppOffer,
+  inAppOfferClaim,
   listenInAppOfferStatus,
-  markInAppOfferShown
+  markInAppOfferShown,
+  releaseInAppOffer,
+  startInAppOfferRefresh
 } from '@/store/in-app-offer'
 
 /**
  * The Nous Portal's in-app offer as one dismissible dialog. Copy is the
- * server's; the renderer only decides presentation. Mounted once at the
- * shell (beside the free-tier sign-in dialog), where it rides the ambient
- * free-tier status cadence.
+ * server's; the renderer only decides presentation (store/in-app-offer.ts).
+ *
+ * Mounted once per main window at the shell, beside the free-tier sign-in
+ * dialog. The first mount claims the offer; any other window's mount claims
+ * nothing and renders null, so two windows never show two dialogs.
  */
 export function InAppOfferDialog() {
+  const id = useId()
+  const claim = useStore(inAppOfferClaim())
   const offer = useStore($inAppOfferDialog)
+  const { requestGateway } = useGatewayRequest()
   const { t }: I18nContextValue = useI18n()
-
-  useEffect(() => listenInAppOfferStatus(), [])
+  const owned = claim === id
 
   useEffect(() => {
-    // The presentation itself starts the frequency cap, so any way this
-    // dialog leaves the screen without a dismissal can still let a live
-    // campaign return tomorrow.
-    if (offer) {
+    claimInAppOffer(id)
+
+    return () => releaseInAppOffer(id)
+  }, [id])
+
+  useEffect(() => {
+    if (!owned) {
+      return
+    }
+
+    const stopListening = listenInAppOfferStatus()
+    const stopRefresh = startInAppOfferRefresh(requestGateway)
+
+    return () => {
+      stopListening()
+      stopRefresh()
+    }
+  }, [owned, requestGateway])
+
+  useEffect(() => {
+    // Presenting starts the frequency cap, so an offer closed without a
+    // dismissal (the app quit) can return tomorrow but not sooner.
+    if (owned && offer) {
       markInAppOfferShown()
     }
-  }, [offer])
+  }, [owned, offer])
 
-  if (!offer) {
+  if (!owned || !offer) {
     return null
   }
 
@@ -53,18 +82,16 @@ export function InAppOfferDialog() {
       }}
       open
     >
-      <DialogContent>
+      {/* No autofocus: the dialog opens unprompted, and focusing the close
+          button would let a stray Space or Enter dismiss it unread. */}
+      <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
         <DialogHeader>
           <DialogTitle>{offer.title}</DialogTitle>
-          <DialogDescription>{t.inAppOffer.describedBy}</DialogDescription>
+          <DialogDescription className="sr-only">{t.inAppOffer.describedBy}</DialogDescription>
         </DialogHeader>
-        <p className="text-sm">{offer.body}</p>
+        <p className="text-sm whitespace-pre-line break-words">{offer.body}</p>
         <DialogFooter>
-          <Button
-            onClick={() => dismissInAppOffer(offer.id)}
-            size="sm"
-            variant="outline"
-          >
+          <Button onClick={() => dismissInAppOffer(offer.id)} size="sm" variant="outline">
             {t.inAppOffer.dismiss}
           </Button>
           <Button

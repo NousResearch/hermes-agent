@@ -1681,6 +1681,24 @@
       }
     },
     {
+      "name": "in_app_offer.refresh",
+      "summary": "Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InAppOfferRefreshResult"
+        }
+      }
+    },
+    {
       "name": "input.detect_drop",
       "summary": "Recognise a terminal file drop pasted into the composer and turn it into an attachment.",
       "params": [
@@ -22118,6 +22136,24 @@
           "cta_url"
         ],
         "title": "InAppOfferPayload",
+        "type": "object"
+      },
+      "InAppOfferRefreshResult": {
+        "additionalProperties": false,
+        "properties": {
+          "in_app_offer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InAppOfferPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "InAppOfferRefreshResult",
         "type": "object"
       },
       "InflightTurn": {

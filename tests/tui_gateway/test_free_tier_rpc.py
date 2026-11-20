@@ -179,3 +179,21 @@ def test_status_carries_the_portal_in_app_offer_and_drops_it_once_cleared(guest)
         in_app_offer.record_from_account_payload({})
 
     assert "in_app_offer" not in _call("free_tier.status")
+
+
+def test_in_app_offer_refresh_returns_the_fetched_offer_and_is_a_long_handler(guest, monkeypatch):
+    """``in_app_offer.refresh`` is the network leg (status stays a pure read): it runs on the RPC
+    pool, returns the offer the fetch recorded, and omits the key when there is none."""
+    from hermes_cli import in_app_offer
+
+    assert "in_app_offer.refresh" in srv._LONG_HANDLERS
+
+    offer = {
+        "id": "offer_1", "title": "Welcome back", "body": "Here is an offer.",
+        "cta_label": "See the offer", "cta_url": "https://portal.nousresearch.com/billing",
+    }
+    monkeypatch.setattr(in_app_offer, "refresh_from_portal", lambda: dict(offer))
+    assert _call("in_app_offer.refresh") == {"in_app_offer": offer}
+
+    monkeypatch.setattr(in_app_offer, "refresh_from_portal", lambda: None)
+    assert _call("in_app_offer.refresh") == {}

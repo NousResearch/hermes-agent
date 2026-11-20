@@ -128,5 +128,23 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"accepted": record_host_outcome(params["url"], params.get("attempt", 0), params["outcome"])})
 
 
+@method("in_app_offer.refresh")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One account fetch with the stored token (never a refresh), then the memoised offer.
+
+    The status read stays a pure local read; this is the network leg, so it runs on the RPC
+    pool (``_LONG_HANDLERS``). The desktop calls it on a slow cadence: a valid JWT answers most
+    account reads locally and the credits seed runs only for Nous sessions, so without it the
+    offer could never reach a user whose sessions never fetch the account."""
+    try:
+        from hermes_cli import in_app_offer
+        offer = in_app_offer.refresh_from_portal()
+        return _ok(rid, {"in_app_offer": offer} if offer else {})
+    except Exception as e:  # the RPC boundary: report it, never crash the dispatcher
+        logger.warning("in_app_offer.refresh failed", exc_info=True)
+        return _err(rid, 5097, str(e))
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

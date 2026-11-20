@@ -266,6 +266,17 @@ method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeRes
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
 
 
+class InAppOfferRefreshResult(Result):
+    # The offer after the fetch, or absent when the Portal serves none (or the profile is signed out).
+    in_app_offer: InAppOfferPayload | None = None
+
+
+method("in_app_offer.refresh", params=ProfileParams, result=InAppOfferRefreshResult,
+       doc="Fetch the Nous account once with the stored token (never refreshing it) and return the "
+           "Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users "
+           "whose sessions never fetch the account.")
+
+
 class FreeTierClaimNudgeParams(ProfileParams):
     kind: Literal["trial", "connector"] = "trial"
 

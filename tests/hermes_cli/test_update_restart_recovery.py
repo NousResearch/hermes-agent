@@ -496,6 +496,7 @@ def test_serve_unit_names_take_their_profile_suffix_from_the_profile_id_owner(mo
         "hermes-server.service", "hermes-serve-.service", "hermes-serve--x.service",
         "hermes-serve-Coder.service", f"hermes-serve-{longest}a.service", "hermes-serve-zz.custom.service",
         "hermes-serve-coder.service.service", "hermes-gateway-coder.service",
+        "hermes-serve-coder.service.old",
     ]
     assert listed(accepted + rejected) == accepted
     assert skipped([*accepted, *rejected, "hermes-serve-co\nder", "hermes-serve-coder\n"]) == [

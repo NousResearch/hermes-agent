@@ -114,9 +114,18 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES}
 _KEPT_CACHE_SUBDIRS = {
     "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
 
+# Regenerable bulk excluded by exact relative path, not by bare name (a nested models/ dir
+# elsewhere is user data). Model weights are re-downloadable; the surrounding work/ tree
+# (recordings, asset packs) is NOT.
+_EXCLUDED_PATHS = frozenset({
+    Path("work/goat_banner/models"),
+})
+
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
+    if any(rel_path == p or p in rel_path.parents for p in _EXCLUDED_PATHS):
+        return True
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True

@@ -32,7 +32,7 @@ from agent.redact_headers import (
     redact_header_credentials,
 )
 from agent.redact_partial_keys import _redact_partial_private_keys
-from agent.redact_hermes_home import _is_under_hermes_home
+from agent.redact_hermes_home import _is_under_hermes_home, is_hermes_credential_store
 from agent.redact_pattern_shape import _pattern_structure
 from agent.redact_secret_sources import redact_secret_source_values
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
@@ -1699,8 +1699,9 @@ def _is_secret_file_arg(arg: str) -> bool:
     """``.env``-style, shell rc or credential-store basename (``.netrc``, ``.pgpass``, ...)
     anywhere; ``credentials`` / ``config`` only under ``.aws`` (the bare names are too generic), and
     ``config.yaml`` only under a ``.hermes`` directory, ``$HERMES_HOME``, or the resolved
-    Hermes home (never arbitrary YAML). The resolved-home arm is what covers native Windows,
-    where the home directory is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
+    Hermes home (never arbitrary YAML), along with the Hermes-home credential stores (#157915).
+    The resolved-home arm covers native Windows, where the home directory is
+    ``%LOCALAPPDATA%`` + ``hermes`` and carries no ``.hermes`` segment."""
     path = arg.strip("\"'").replace("\\", "/")
     hermes_home = False
     for prefix in _HERMES_HOME_PREFIXES:
@@ -1720,6 +1721,8 @@ def _is_secret_file_arg(arg: str) -> bool:
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
         return True
     if parts[-1] in HOME_CREDENTIAL_FILES or parts[-2:] in ([".aws", "credentials"], [".aws", "config"]):
+        return True
+    if is_hermes_credential_store(path, hermes_home, parts):
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.

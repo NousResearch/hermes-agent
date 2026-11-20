@@ -274,7 +274,7 @@ def _is_standard_root(root) -> bool:
 _SECRET_NAME = re.compile(r"pass(word|wd)?|secret|token|api[-_]?key|credential", re.IGNORECASE)
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=", re.DOTALL)
 _URL_USERINFO = re.compile(r"(\w+://)[^/@\s]+@")
-_PYTHON_EXE = re.compile(r"^python(\d+(\.\d+)*)?(\.exe)?$", re.IGNORECASE)
+_PYTHON_EXE = re.compile(r"^pythonw?(\d+(\.\d+)*)?(\.exe)?$", re.IGNORECASE)
 _SHORT_C_CLUSTER = re.compile(r"^-[A-Za-z]+c$")
 
 

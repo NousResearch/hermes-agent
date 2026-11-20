@@ -230,3 +230,84 @@ def test_list_held_env_secret_in_tool_arguments_keeps_siblings():
     tool_use = line["message"]["content"][1]
     assert tool_use["input"]["safe"] == "keep"
     assert secret not in json.dumps(tool_use["input"])
+
+
+def test_converter_unwraps_single_deferred_tool_call_and_redacts_inner_args():
+    secret = "sk-abc123def456ghi789jklmno"
+    msgs = [{
+        "role": "assistant",
+        "content": "Calling deferred MCP tool.",
+        "tool_calls": [{
+            "id": "call_def_1",
+            "function": {
+                "name": "tool_call",
+                "arguments": json.dumps({
+                    "calls": [{
+                        "name": "mcp__demo__deploy_service",
+                        "arguments": {"api_key": secret, "environment": "staging"},
+                    }]
+                }),
+            },
+        }],
+    }]
+    line = json.loads(build_trace_jsonl(msgs, session_id="s1", redact=True).strip())
+    tool_use = next(b for b in line["message"]["content"] if b.get("type") == "tool_use")
+    assert tool_use["name"] == "mcp__demo__deploy_service"
+    assert tool_use["input"]["environment"] == "staging"
+    assert secret not in json.dumps(tool_use["input"])
+
+
+def test_converter_preserves_connector_batch_or_malformed_tool_call():
+    single_connector = {
+        "calls": [{"name": "connectors__gmail__list", "arguments": {}}]
+    }
+    batch_args = {
+        "calls": [
+            {"name": "connectors__gmail__search", "arguments": {"q": "invoice"}},
+            {"name": "connectors__gmail__list", "arguments": {}},
+        ]
+    }
+    legacy_single = {"name": "mcp__demo__ping", "arguments": {"host": "127.0.0.1"}}
+    msgs = [{
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "call_b0", "function": {"name": "tool_call", "arguments": json.dumps(single_connector)}},
+            {"id": "call_b1", "function": {"name": "tool_call", "arguments": json.dumps(batch_args)}},
+            {"id": "call_b2", "function": {"name": "tool_call", "arguments": "{}"}},
+            {"id": "call_b3", "function": {"name": "tool_call", "arguments": json.dumps(legacy_single)}},
+        ],
+    }]
+    line = json.loads(build_trace_jsonl(msgs, session_id="s1", redact=False).strip())
+    uses = [b for b in line["message"]["content"] if b.get("type") == "tool_use"]
+    assert uses[0]["name"] == "tool_call"
+    assert uses[1]["name"] == "tool_call"
+    assert len(uses[1]["input"]["calls"]) == 2
+    assert uses[2]["name"] == "tool_call"
+    assert uses[3]["name"] == "mcp__demo__ping"
+    assert uses[3]["input"] == {"host": "127.0.0.1"}
+
+
+def test_converter_emits_is_error_only_on_failed_tool_results():
+    untrusted_err = (
+        '<untrusted_tool_result source="mcp__demo__check">\n'
+        'The following content was retrieved from an external source.\n\n'
+        '{"error": "PRESERVATION_REFUSED: outside workspace"}\n'
+        '</untrusted_tool_result>'
+    )
+    msgs = [
+        {"role": "tool", "tool_call_id": "ok_plain", "content": "all good"},
+        {"role": "tool", "tool_call_id": "ok_json", "content": json.dumps({"output": "ok", "exit_code": 0, "error": None})},
+        {"role": "tool", "tool_call_id": "err_json", "content": json.dumps({"error": "Permission denied"})},
+        {"role": "tool", "tool_call_id": "err_mcp", "content": untrusted_err},
+        {"role": "tool", "tool_call_id": "err_timeout", "content": json.dumps({"output": "", "exit_code": 124, "error": "Command timed out", "timed_out": True})},
+        {"role": "tool", "tool_call_id": "err_flag", "is_error": True, "content": "boom"},
+    ]
+    rows = [json.loads(x)["message"]["content"][0] for x in build_trace_jsonl(msgs, session_id="s1", redact=False).strip().splitlines()]
+    by_id = {r["tool_use_id"]: r for r in rows}
+    assert "is_error" not in by_id["ok_plain"]
+    assert "is_error" not in by_id["ok_json"]
+    assert by_id["err_json"]["is_error"] is True
+    assert by_id["err_mcp"]["is_error"] is True
+    assert by_id["err_timeout"]["is_error"] is True
+    assert by_id["err_flag"]["is_error"] is True

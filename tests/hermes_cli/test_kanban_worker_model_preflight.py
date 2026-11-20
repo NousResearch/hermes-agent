@@ -74,31 +74,27 @@ def _card(**kw):
 _LAB_ENTRY = [{"name": "lab", "base_url": "https://lab.example.test/v1", "model": "entry-model"}]
 
 
-@pytest.mark.parametrize("profile_model, card, expected", [
-    ({"provider": "openrouter", "default": "profile-model"}, {"provider_override": "custom:lab"}, "entry-model"),
-    ({"provider": "custom:lab", "default": "profile-model"}, {"provider_override": "custom:lab"}, "entry-model"),
-    ("profile-model", {"provider_override": "custom:lab"}, "entry-model"),
-    ({"provider": "custom:lab"}, {"provider_override": "custom"}, "entry-model"),
-    ({"provider": "openrouter", "default": "profile-model"},
-     {"provider_override": "custom:lab", "model_override": "task-model"}, "task-model"),
-    ({"provider": "openrouter", "default": "profile-model"}, {}, "profile-model"),
-    ({"provider": "custom:lab", "default": "profile-model"}, {"provider_override": "anthropic"}, "profile-model"),
-    ({"provider": "custom:lab"}, {"provider_override": "anthropic"}, "claude-opus-4-6"),
-], ids=["other-route", "same-route-mapping", "string-profile-model", "bare-custom-held-named",
-        "task-model-wins", "no-pick", "different-route-keeps-default", "different-route-catalog"])
-def test_card_model_follows_the_launch_route_pick(profile_model, card, expected, monkeypatch):
-    from hermes_cli import models
+def test_a_cards_provider_always_comes_with_its_model(dispatch_profile):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli.kanban_worker_preflight import task_model
 
-    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: {"anthropic": "claude-opus-4-6"}.get(provider, ""))
-    assert task_model(_card(**card), {"model": profile_model, "custom_providers": _LAB_ENTRY}) == (expected, False)
+    config = {"model": {"provider": "openrouter", "default": "profile-model"}, "custom_providers": _LAB_ENTRY}
+    with connect_closing(board="work") as conn:
+        with pytest.raises(ValueError, match="provider_override requires a model_override"):
+            kb.create_task(conn, title="provider only", assignee="worker", board="work", provider_override="custom:lab")
+        task_id = kb.create_task(conn, title="paired", assignee="worker", board="work",
+                                 model_override="task-model", provider_override="custom:lab")
+        card = kb.get_task(conn, task_id)
+    assert task_model(card, config) == ("task-model", False)
 
 
 @pytest.mark.parametrize("config", [
     {"model": {"provider": "custom", "base_url": "http://127.0.0.1:9/v1"}},
+    {"model": {"provider": "openrouter", "base_url": "http://127.0.0.1:8000/v1"}},
     {"model": {"provider": "auto"}},
     {},
-], ids=["loopback", "auto", "unset"])
+], ids=["custom-loopback", "builtin-loopback", "auto", "unset"])
 def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp_path, monkeypatch):
     import socket
 
@@ -124,7 +120,7 @@ def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp
 
     monkeypatch.setattr(auth, "resolve_provider", resolve)
     assert task_model(_card(), config) == ("", False)
-    assert kanban_launch_policy(_card(reasoning_effort=None), str(tmp_path), config).model in (None, "")
+    assert kanban_launch_policy(_card(reasoning_effort=None), str(tmp_path), config).model == ""
     assert opened == []
 
 

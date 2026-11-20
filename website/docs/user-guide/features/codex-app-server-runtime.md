@@ -260,7 +260,7 @@ How the wiring stays equivalent:
 |---|---|---|
 | `_turns_since_memory` increments | per user prompt, in run_conversation pre-loop | same code path, before the early-return |
 | `_iters_since_skill` increments | per tool iteration in the chat-completions loop | by `turn.tool_iterations` after the codex turn returns |
-| Memory trigger (`_turns_since_memory >= _memory_nudge_interval`) | computed in pre-loop, fires after response | computed in pre-loop, passed through to codex helper |
+| Memory trigger (`_turns_since_memory >= _memory_nudge_interval`) | computed after the loop (turn finalization) | computed after the codex turn |
 | Skill trigger (`_iters_since_skill >= _skill_nudge_interval`) | computed after the loop | computed after the codex turn |
 | `_spawn_background_review(messages_snapshot=..., review_memory=..., review_skills=...)` | called when either trigger fires | called identically when either trigger fires |
 

@@ -555,7 +555,6 @@ class TurnContext:
     effective_task_id: str
     turn_id: str
     current_turn_user_idx: int  # index of the current user turn within ``messages``
-    should_review_memory: bool = False  # post-turn memory review should fire
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
     plugin_block_message: str = ""  # ``pre_llm_call`` veto: the turn ends with this, no inference
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
@@ -815,16 +814,16 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]])
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
 
 
-def _tick_memory_nudge(agent: Any) -> bool:
-    """Advance the turn-based memory nudge counter; ``True`` when the review should fire."""
+def _tick_memory_nudge(agent: Any) -> None:
+    """Advance the turn-based memory nudge counter for this user turn.
+
+    Evaluation and reset happen at turn finalization so a mid-turn ``memory`` call
+    suppresses duplicate background reviews and non-spawning turns keep progress.
+    """
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
             and agent._memory_store):
         agent._turns_since_memory += 1
-        if agent._turns_since_memory >= agent._memory_nudge_interval:
-            agent._turns_since_memory = 0
-            return True
-    return False
 
 
 def _emit_reaction(agent: Any, original_user_message: Any, display_kind: Optional[str] = None) -> None:
@@ -1315,7 +1314,7 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
-    should_review_memory = _tick_memory_nudge(agent)
+    _tick_memory_nudge(agent)
     _emit_reaction(agent, original_user_message, persist_user_display_kind)
 
     if not agent.quiet_mode:
@@ -1417,7 +1416,7 @@ def build_turn_context(
         user_message=user_message, original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history, active_system_prompt=active_system_prompt,
         effective_task_id=effective_task_id, turn_id=turn_id,
-        current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
+        current_turn_user_idx=current_turn_user_idx,
         plugin_user_context=plugin_user_context, plugin_block_message=plugin_block_message,
         ext_prefetch_cache=ext_prefetch_cache, preflight_compression_blocked=compaction.blocked,
     )

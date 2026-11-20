@@ -806,8 +806,8 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `tool_iterations_since_skill_review` | `int` | Agent-loop iterations since the last skill review or `skill_manage` call (the value the trigger compared; it resets after the hook when `skill_review_due`) |
-| `user_turns_since_memory_review` | `int` | User turns since the last memory review or `memory` call (already reset to `0` on a turn where `memory_review_due`) |
+| `tool_iterations_since_skill_review` | `int` | Agent-loop iterations since the last skill review or `skill_manage` call (the value the trigger compared; it resets after the hook when `skill_review_due` and a background review spawns) |
+| `user_turns_since_memory_review` | `int` | User turns since the last memory review or `memory` call (the value the trigger compared; it resets after the hook when `memory_review_due` and a background review spawns) |
 | `skill_review_due` | `bool` | The skill trigger fired this turn (`skills.creation_nudge_interval` reached and `skill_manage` available) |
 | `memory_review_due` | `bool` | The memory trigger fired this turn (`memory.nudge_interval` reached, built-in memory available) |
 | `background_review_enabled` | `bool` | A due trigger actually forks the review: `auxiliary.background_review.enabled`, not a cron run, not a subagent |

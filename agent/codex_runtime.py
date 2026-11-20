@@ -744,28 +744,47 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
 
 
 def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool, final_response: Any) -> dict[str, Any]:
+                       should_review_memory: bool | None = None, final_response: Any) -> dict[str, Any]:
     """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields.
     ``final_response`` is the reply after ``transform_llm_output``: memory keeps what the user got."""
+    from agent.review_signals import memory_review_due, skill_review_due
+
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
-    # Skill nudge check AFTER iters were incremented (same as chat_completions).
-    should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
-                            and "skill_manage" in agent.valid_tool_names)
-    if should_review_skills:
-        agent._iters_since_skill = 0
+    # Evaluate both triggers at turn end (parity with turn_finalizer.py).
+    review_memory = (
+        memory_review_due(agent) if should_review_memory is None else bool(should_review_memory)
+    )
+    review_skills = skill_review_due(agent)
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
             original_user_message=original_user_message, final_response=final_response, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
-        _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
-            messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
-        ))
+    # Reset counters strictly after spawn succeeds so interrupted, empty, skipped, or failed
+    # turns preserve progress.
+    if (
+        turn.final_text
+        and not turn.interrupted
+        and not getattr(agent, "skip_background_review", False)
+        and (review_memory or review_skills)
+    ):
+        spawn = getattr(agent, "_spawn_background_review", None)
+        if spawn is not None:
+            try:
+                spawn(
+                    messages_snapshot=list(messages), review_memory=review_memory, review_skills=review_skills,
+                )
+            except Exception:
+                logger.debug("background review spawn raised", exc_info=True)
+            else:
+                if review_memory:
+                    agent._turns_since_memory = 0
+                if review_skills:
+                    agent._iters_since_skill = 0
     return usage_result
 
 
@@ -792,7 +811,7 @@ def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
 
 
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False,
+                              effective_task_id: str, should_review_memory: bool | None = None,
                               turn_id: Any = None) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""

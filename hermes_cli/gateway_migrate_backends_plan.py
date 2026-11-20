@@ -706,14 +706,17 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
         return
     if not _manual_activity(plan, item, host):
         why += f" {_OUTSIDE_CONTAINER}"
-    if plan.running_turns:
-        why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
-                f"so let them finish first.")
-    elif plan.running_turns is None and force_interrupt:
-        why += (" Its turn activity could not be read, so turns may be running on it now: stopping it "
-                "interrupts them.")
-    plan.unsupported[0] = (item, why, steps)
+    plan.unsupported[0] = (item, why + _turns_note(plan.running_turns, force_interrupt), steps)
     _turns_blocker(plan, force_interrupt)
+
+
+def _turns_note(turns: Optional[int], force_interrupt: bool) -> str:
+    """What a by-hand recipe says above its stop steps about the old backend's running turns."""
+    if turns:
+        return f" {turns} turn(s) are running on it now: stopping it interrupts them, so let them finish first."
+    if turns is None and force_interrupt:
+        return " Its turn activity could not be read, so turns may be running on it now: stopping it interrupts them."
+    return ""
 
 
 _OUTSIDE_CONTAINER = ("Its Hermes version could not be checked from outside its container, and a Hermes older "
@@ -874,7 +877,8 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
         steps = [] if plan.blockers else manual_steps(
             plan.new_host, plan.new_port, plan.item, home=plan.home, no_service=True,
             public_url=(plan.public_url, None), keep_address=plan.keep_webapp)
-        plan.unsupported.append((None, _UNSUPPORTED["no-service"], steps))
+        plan.unsupported.append((None, _UNSUPPORTED["no-service"] + _turns_note(plan.running_turns, force_interrupt),
+                                 steps))
     if plan.blockers:  # no step, in text or JSON, while anything blocks the move
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
     return plan

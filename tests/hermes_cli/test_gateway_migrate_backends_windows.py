@@ -378,3 +378,12 @@ def test_a_refused_old_public_url_withholds_the_windows_steps(home, capsys):
     plan = json.loads(out)["plan"]
     assert plan["unsupported"][0]["steps"] == [] and "url-pw-62" not in out
     assert any("is not one the gateway accepts as webapp.public_url" in b for b in plan["blockers"])
+
+
+def test_a_forced_windows_plan_names_the_running_turns_exactly_once(home, capsys):
+    host = WindowsHost(home)
+    host.turns = 2
+
+    assert engine.cmd_apply(host, _args(dry_run=True, json=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    (entry,) = json.loads(capsys.readouterr().out)["plan"]["unsupported"]
+    assert entry["instructions"].count("2 turn(s) are running on it now: stopping it interrupts them") == 1

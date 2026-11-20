@@ -71,11 +71,7 @@ import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
-import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
-import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
-import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
-import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
-import { DashboardMovingModal } from "@/components/DashboardMovingModal";
+import { ShellNotices } from "@/components/ShellNotices";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -577,11 +573,7 @@ export default function App() {
           stacked three offsets (NS-656 review P3). One spacer, applied once. */}
       <div aria-hidden className="h-14 shrink-0 lg:hidden" />
       <PluginSlot name="header-banner" />
-      <ProfileScopeBanner />
-      <MemoryPressureBanner status={sidebarStatus} />
-      <MultiplexStandaloneBanner status={sidebarStatus} />
-      <SharedMetricsConsentBanner />
-      <DashboardMovingModal status={sidebarStatus} />
+      <ShellNotices status={sidebarStatus} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1">

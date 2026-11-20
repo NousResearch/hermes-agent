@@ -519,14 +519,11 @@ def _hosted_webapp_url() -> Optional[str]:
     ``webapp.enabled`` and ``webapp.public_url`` on the agents it has moved to the Webapp."""
     if not _default_hermes_root_is_opt_data():
         return None
-    try:
-        from gateway.webapp_listener import _public_url
-        block = load_config().get("webapp")
-        if not isinstance(block, dict) or block.get("enabled") is not True:
-            return None
-        return _public_url(block.get("public_url")) or None
-    except Exception:
+    from gateway.webapp_listener import _public_url
+    block = load_config().get("webapp")
+    if not isinstance(block, dict) or block.get("enabled") is not True:
         return None
+    return _public_url(block.get("public_url")) or None
 
 
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:

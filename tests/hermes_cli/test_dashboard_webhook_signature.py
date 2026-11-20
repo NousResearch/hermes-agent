@@ -40,6 +40,18 @@ def test_explicit_signature_is_stored(client):
     assert client.get("/api/webhooks").json()["subscriptions"][0]["signature"] == "github"
 
 
+def test_bearer_create_returns_secret_once_and_list_redacts_it(client):
+    response = client.post("/api/webhooks", json={"name": "bear", "signature": "bearer", "script": "filter.py"})
+    assert response.status_code == 200
+    secret = response.json()["secret"]
+    assert secret and _stored("bear")["secret"] == secret
+    assert _stored("bear")["signature"] == "bearer"
+    listing = client.get("/api/webhooks")
+    assert secret not in listing.text
+    assert listing.json()["subscriptions"][0]["script"] == "filter.py"
+    assert "secret" not in listing.json()["subscriptions"][0]
+
+
 def test_unknown_signature_is_rejected(client):
     r = client.post("/api/webhooks", json={"name": "bad", "signature": "v1"})
     assert r.status_code == 422

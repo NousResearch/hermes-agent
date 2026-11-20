@@ -95,9 +95,10 @@ async def test_unknown_signature_pin_fails_closed():
 # Each supported header family, correctly signed with the route secret, and the families each pin admits.
 _FAMILY_HEADERS = {
     "v2": _v2_headers, "standard": _standard_headers, "linear": lambda: {"Linear-Signature": _mac(BODY)},
-    "github": lambda: {"X-Hub-Signature-256": "sha256=" + _mac(BODY)}, "gitlab": lambda: {"X-Gitlab-Token": SECRET}}
+    "github": lambda: {"X-Hub-Signature-256": "sha256=" + _mac(BODY)}, "gitlab": lambda: {"X-Gitlab-Token": SECRET},
+    "bearer": lambda: {"Authorization": "Bearer " + SECRET}}
 _PIN_ADMITS = {"generic": {"v2", "standard"}, "github": {"github"}, "gitlab": {"gitlab", "standard"},
-               "linear": {"linear"}}
+               "linear": {"linear"}, "bearer": {"bearer"}}
 
 
 @pytest.mark.parametrize("family", sorted(_FAMILY_HEADERS))

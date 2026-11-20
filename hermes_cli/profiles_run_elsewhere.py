@@ -45,6 +45,14 @@ Hermes root and never inside a profile home, so the profile's backend cannot rem
 presence is the marker; its contents (``{"plugin": ..., "since": ...}``) only name the owner in
 messages, so a marker that cannot be read still marks the profile.
 
+Every refusal above asks by home (:func:`run_elsewhere_for_home`, or :func:`home_runs_elsewhere`
+where it is asked at every value read), and a marker covers the directory its profile's home is,
+whatever path or name leads there: a link to the home from anywhere, a second name among the
+profiles that is a link to it, and the directory's own name when the marked name is itself the
+link. A marker does not follow a home that a profile command renames or copies (``hermes profile
+rename``, ``create --clone-from``), nor a link that leads out of the Hermes root to a directory a
+process is then started in by hand: that process's root is the directory itself.
+
 The plugin keeps this folder from the backend it runs elsewhere. A process that is denied the
 folder (permission error) is therefore that backend, not the host, and refuses nothing: it keeps
 running its own profile and loads its own env files. Any other error reading the folder refuses
@@ -57,6 +65,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -176,15 +185,19 @@ def _read_entry(folder: Path, profile: str) -> RunElsewhere:
                         since if isinstance(since, str) else None)
 
 
+def _entry_in(listing: _MarkerFolder, folder: Path, profile: str) -> RunElsewhere | None:
+    """What one listing of *folder* says about *profile*: the folder's error, its marker, or None."""
+    if listing.error is not None:
+        return RunElsewhere(profile, folder / f"{profile}{_SUFFIX}", folder_error=str(listing.error))
+    return _read_entry(folder, profile) if profile in listing.names else None
+
+
 def run_elsewhere(profile: str, *, root: str | Path | None = None) -> RunElsewhere | None:
     """Why this host must not run *profile* (a canonical profile id), or None when it may."""
     if not isinstance(profile, str) or not _is_profile_id(profile):
         return None
     folder = run_elsewhere_dir(root)
-    listing = _read_folder(folder)
-    if listing.error is not None:
-        return RunElsewhere(profile, folder / f"{profile}{_SUFFIX}", folder_error=str(listing.error))
-    return _read_entry(folder, profile) if profile in listing.names else None
+    return _entry_in(_read_folder(folder), folder, profile)
 
 
 def _home_readings(home: Path) -> list[tuple[str, Path]]:
@@ -206,25 +219,71 @@ def _home_readings(home: Path) -> list[tuple[str, Path]]:
     return readings
 
 
+def _is_directory(target: tuple) -> bool:
+    """Whether *target* (:func:`_home_target`) names one directory: not an error, and not the zero
+    file id of a filesystem that has none, which every directory on it would share."""
+    return isinstance(target[0], int) and target[1] != 0
+
+
+def _marker_over(home: str, readings: list[tuple[str, Path]],
+                 target: tuple | None = None) -> tuple[RunElsewhere | None, tuple[tuple[str, tuple], ...]]:
+    """The marker that covers *home*, whose path reads as *readings*; and, for a caller that keeps
+    the answer, each other marked profile's home its directory was compared with and the directory
+    that home led to.
+
+    A marker covers the home under a name its path carries. It also covers it under any other name
+    of the same root whose home is the same directory (device and file id, *target*): with
+    ``profiles/ops`` a link to ``profiles/real`` and ``ops`` marked, the home of ``real`` is
+    covered. The backend elsewhere runs in that one directory, whatever name leads to it.
+    """
+    listings: dict[Path, tuple[Path, _MarkerFolder]] = {}
+    for profile, root in readings:
+        if root not in listings:
+            folder = run_elsewhere_dir(root)
+            listings[root] = (folder, _read_folder(folder))
+        entry = _entry_in(listings[root][1], listings[root][0], profile)
+        if entry is not None:
+            return entry, ()
+    compared: list[tuple[str, tuple]] = []
+    for root, (folder, listing) in listings.items():
+        for profile in sorted(listing.names):
+            if target is None:
+                target = _home_target(home)
+            if not _is_directory(target):
+                return None, ()  # no directory to compare: a home that appears later is asked about again
+            other = str(root) if profile == "default" else os.path.join(root, "profiles", profile)
+            led_to = _home_target(other)
+            compared.append((other, led_to))
+            if led_to == target:
+                return _read_entry(folder, profile), tuple(compared)
+    return None, tuple(compared)
+
+
 def run_elsewhere_for_home(home: str | Path) -> RunElsewhere | None:
     """:func:`run_elsewhere` for the profile whose home is *home*.
 
     *home* is read both as written and resolved, so another path to a profile home (a symlink or
     junction, a relative or ``..`` path, another letter case) reaches that profile's marker. A
-    marker under either reading refuses, so neither reading can hide the other's.
+    marker under either reading refuses, so neither reading can hide the other's. So does the
+    marker of any other profile of the same root whose home is the directory *home* is: a marked
+    name that is itself a link marks the directory it leads to, under that directory's own name too.
     """
-    for profile, root in _home_readings(Path(home).expanduser()):
-        entry = run_elsewhere(profile, root=root)
-        if entry is not None:
-            return entry
-    return None
+    home = Path(home).expanduser()
+    return _marker_over(str(home), _home_readings(home))[0]
 
 
-# home -> (the directory it led to, (marker folder, marker file) per reading of the home, their stamp, marked)
-_HOME_ANSWERS: dict[str, tuple[tuple, tuple[tuple[str, str], ...], tuple, bool]] = {}
+# home -> (the directory it led to, its readings, their (marker folder, marker file) paths, the homes
+# of the other marked profiles it was compared with, the stamp of those paths and homes, whether
+# the folders' times could be relied on when they were listed, marked)
+_HOME_ANSWERS: dict[str, tuple[tuple, list, tuple, tuple, tuple, bool, bool]] = {}
 # Room for every profile of a host, which the served list asks about at each rescan; a process
 # that asks about more homes than this starts over.
 _HOME_ANSWERS_KEPT = 4096
+# A marker for another name of the home's directory is found by listing the marker folder, and a
+# kept answer learns of a new one from the folder's time alone. Two changes can share one tick of a
+# filesystem's clock (two seconds on FAT), so a listing taken less than this long after the folder
+# changed is not relied on: the next asking lists again.
+_FOLDER_SETTLES_NS = 2_000_000_000
 
 
 def _home_target(home: str) -> tuple:
@@ -238,10 +297,13 @@ def _home_target(home: str) -> tuple:
     return (st.st_dev, st.st_ino)
 
 
-def _marker_stamp(markers: tuple[tuple[str, str], ...]) -> tuple:
-    """What a stat says about each marker's folder and file. A marker written or removed, or a
-    folder that appears, goes or stops being one, changes it."""
+def _marker_stamp(markers: tuple[tuple[str, str], ...], others: tuple[str, ...] = ()) -> tuple[tuple, int]:
+    """What a stat says about each marker's folder and file, and which directory each of *others*
+    leads to; with it, the newest time among the folders. A marker written or removed, a folder
+    that appears, goes or stops being one, or a marked profile's home pointed at another directory
+    changes the stamp."""
     stamp: list[tuple] = []
+    newest = 0
     for folder, marker in markers:
         for path in (folder, marker):
             try:
@@ -252,34 +314,46 @@ def _marker_stamp(markers: tuple[tuple[str, str], ...]) -> tuple:
                     break  # no folder, so no marker in it
             else:
                 stamp.append((st.st_mode, st.st_size, st.st_mtime_ns))
-    return tuple(stamp)
+                if path is folder:
+                    newest = max(newest, st.st_mtime_ns)
+    stamp.extend(_home_target(other) for other in others)
+    return tuple(stamp), newest
 
 
 def home_runs_elsewhere(home: str | Path) -> bool:
     """``run_elsewhere_for_home(home) is not None``, for code that asks at every value it reads
     (the ``.env`` tokenizer, the host features that start a profile's own command).
 
-    The answer is kept per process and home. Each call stats the home, its marker file and the
-    marker folder, and asks again when that differs from the stat taken before the last asking, so
-    a profile marked or cleared by any process is seen at the next call, and so is a home whose
-    path leads to another profile's directory since (a symlink or junction pointed elsewhere). A
-    marker folder that cannot be read marks every home, as for running a profile, and is asked
-    about again every time.
+    The answer is kept per process and home. Each call stats the home, its marker file, the
+    marker folder and the home of each other profile the folder marks, and asks again when that
+    differs from the stat taken before the last asking, so a profile marked or cleared by any
+    process is seen at the next call, and so is a path that leads to another directory since (the
+    home's own, or a marked profile's: a symlink or junction pointed elsewhere). An answer taken
+    less than two seconds after the marker folder changed is not relied on: the next call lists
+    the folder again, without resolving the home again. A marker folder that cannot be read marks
+    every home, as for running a profile, and is asked about again every time.
     """
     key = str(home)
     known = _HOME_ANSWERS.get(key)
     target = _home_target(key)  # before resolving: a link changed while resolving shows at the next call
-    if known is not None and target == known[0] and _marker_stamp(known[1]) == known[2]:
-        return known[3]
-    readings = _home_readings(Path(home).expanduser())
+    readings = None
+    if known is not None and target == known[0] and _marker_stamp(known[2], known[3])[0] == known[4]:
+        if known[5]:
+            return known[6]
+        readings = known[1]  # listed too soon after the folder changed: the path still leads where it led
+    if readings is None:
+        readings = _home_readings(Path(home).expanduser())
     markers = tuple((str(folder), str(folder / f"{profile}{_SUFFIX}"))
                     for profile, folder in ((profile, run_elsewhere_dir(root)) for profile, root in readings))
-    stamp = _marker_stamp(markers)  # before asking: a change made while asking shows at the next call
-    entry = next((e for e in (run_elsewhere(profile, root=root) for profile, root in readings) if e is not None), None)
+    asked = time.time_ns()
+    stamp, newest = _marker_stamp(markers)  # before asking: a change made while asking shows at the next call
+    entry, compared = _marker_over(key, readings, target)
     if len(_HOME_ANSWERS) >= _HOME_ANSWERS_KEPT:
         _HOME_ANSWERS.clear()
     if entry is None or entry.folder_error is None:
-        _HOME_ANSWERS[key] = (target, markers, stamp, entry is not None)
+        _HOME_ANSWERS[key] = (target, readings, markers, tuple(other for other, _led_to in compared),
+                              stamp + tuple(led_to for _other, led_to in compared),
+                              asked - newest >= _FOLDER_SETTLES_NS, entry is not None)
     else:
         _HOME_ANSWERS.pop(key, None)
     return entry is not None

@@ -468,3 +468,192 @@ def test_the_served_list_of_a_large_host_is_answered_from_stats(root, monkeypatc
     monkeypatch.setattr(pre, "_home_readings", lambda home: read_again.append(home) or readings(home))
     assert _names(profiles_to_serve(True)) == first
     assert read_again == []
+
+
+# ── a marked name that is itself a link: its directory under the directory's own name ──────────
+
+
+def _repoint(link: Path, target: Path) -> None:
+    """Point the existing link *link* at the folder *target*."""
+    os.rmdir(link) if os.name == "nt" else os.unlink(link)  # the link alone, not what it leads to
+    _link(link, target)
+
+
+@pytest.fixture
+def linked(root):
+    """``profiles/linked``, a link to the home of ``dev``; the tests mark ``linked``, not ``dev``."""
+    _link(root / "profiles" / "linked", root / "profiles" / "dev")
+    return root / "profiles" / "dev"
+
+
+def test_the_directory_of_a_marked_link_is_not_served_under_its_own_name(root, linked):
+    """The backend elsewhere runs in one directory. Marking a name that is a link to it takes the
+    directory's own name out of the served list as well."""
+    from hermes_cli.profiles import profiles_to_serve
+
+    assert _names(profiles_to_serve(True)) == ["default", "dev", "linked", "ops"]
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert pre.run_elsewhere("dev") is None  # no marker carries the directory's own name
+    assert _names(profiles_to_serve(True)) == ["default", "ops"]
+    assert _names(profiles_to_serve(True, include_run_elsewhere=True)) == ["default", "dev", "linked", "ops"]
+
+    pre.clear_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert _names(profiles_to_serve(True)) == ["default", "dev", "linked", "ops"]
+
+
+def test_no_agent_is_built_in_the_directory_of_a_marked_link(root, linked):
+    pre.require_home_runs_here(linked)
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert pre.run_elsewhere_for_home(linked).profile == "linked"
+    with pytest.raises(pre.ProfileRunsElsewhere, match="'linked'.*sandbox-plugin"):
+        pre.require_home_runs_here(linked)
+    pre.require_home_runs_here(root / "profiles" / "ops")
+
+
+def test_no_env_value_is_read_from_the_directory_of_a_marked_link(root, linked):
+    from agent import secret_scope
+
+    (linked / ".env").write_text("LINKED_KEY=written-by-the-backend-elsewhere\n", encoding="utf-8")
+    assert secret_scope.load_env_file(linked / ".env") == {"LINKED_KEY": "written-by-the-backend-elsewhere"}
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert secret_scope.load_env_file(linked / ".env") == {}
+    assert "LINKED_KEY" not in secret_scope.build_profile_secret_scope(linked)
+
+
+def test_dashboard_refuses_requests_scoped_to_the_directory_of_a_marked_link(root, linked):
+    from fastapi import HTTPException
+    from hermes_cli import web_server_cron
+
+    assert web_server_cron._cron_profile_home("dev")[0] == "dev"
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    with pytest.raises(HTTPException) as refused:
+        web_server_cron._cron_profile_home("dev")
+    assert refused.value.status_code == 409
+    assert "'linked'" in refused.value.detail and "sandbox-plugin" in refused.value.detail
+
+
+def test_dispatcher_never_claims_a_card_for_the_directory_of_a_marked_link(root, linked, all_assignees_spawnable):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kb.init_db()
+    assert pre.profile_exists_here("dev") is True
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert pre.profile_exists_here("dev") is False and pre.profile_exists_here("ops") is True
+    with kbc.connect() as conn:
+        card = kb.create_task(conn, title="sandboxed, under its directory's name", assignee="dev")
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert res.skipped_nonspawnable == [card] and res.spawned == []
+
+
+def test_a_marked_link_to_the_default_home_marks_the_default_profile(root):
+    _link(root / "profiles" / "linked", root)
+    assert pre.run_elsewhere_for_home(root) is None and not pre.home_runs_elsewhere(root)
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert pre.run_elsewhere_for_home(root).profile == "linked"
+    assert pre.home_runs_elsewhere(root)
+    assert not pre.home_runs_elsewhere(root / "profiles" / "ops")
+
+
+def test_a_marker_for_a_link_is_seen_at_the_next_asking_about_its_directory(root, linked):
+    """The kept answer for the directory's own name learns of a marker under another name."""
+    assert not pre.home_runs_elsewhere(linked)
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert pre.home_runs_elsewhere(linked)
+    pre.clear_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert not pre.home_runs_elsewhere(linked)
+
+
+def test_a_marked_link_pointed_at_another_directory_is_seen_at_the_next_asking(root, linked, monkeypatch):
+    """No marker is written or removed when a link is pointed elsewhere, and the marker folder's
+    time does not move: the directory each marked profile's home leads to is part of what is
+    compared. Asked long after the folder last changed, so only stats are left to tell."""
+    link, ops = root / "profiles" / "linked", root / "profiles" / "ops"
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    assert pre.home_runs_elsewhere(linked) and not pre.home_runs_elsewhere(ops)
+    later = pre.time.time_ns() + 10 * pre._FOLDER_SETTLES_NS
+    monkeypatch.setattr(pre.time, "time_ns", lambda: later)
+    assert pre.home_runs_elsewhere(linked) and not pre.home_runs_elsewhere(ops)
+
+    _repoint(link, ops)
+    assert not pre.home_runs_elsewhere(linked) and pre.home_runs_elsewhere(ops)
+    assert pre.run_elsewhere_for_home(linked) is None and pre.run_elsewhere_for_home(ops).profile == "linked"
+    _repoint(link, linked)
+    assert pre.home_runs_elsewhere(linked) and not pre.home_runs_elsewhere(ops)
+
+
+def test_a_marker_for_a_link_is_seen_when_the_folders_time_does_not_move(root, linked):
+    """Two changes of the marker folder can share one tick of the filesystem's clock, and then the
+    folder's time says nothing about the second: a folder that changed a moment ago is listed at
+    every asking."""
+    folder = pre.run_elsewhere_dir(root)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    assert not pre.home_runs_elsewhere(linked)
+    before = os.stat(folder)
+    marker = folder / "linked.json"
+    for change, expected in ((lambda: marker.write_text("{}", encoding="utf-8"), True), (marker.unlink, False)):
+        change()
+        os.utime(folder, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = os.stat(folder)
+        assert (after.st_mode, after.st_size, after.st_mtime_ns) == (before.st_mode, before.st_size, before.st_mtime_ns)
+        assert pre.home_runs_elsewhere(linked) is expected
+
+
+def test_a_listing_taken_just_after_the_folder_changed_is_taken_again_however_late(root, linked, monkeypatch):
+    """Whether the folder's time can be relied on is judged when the folder is listed. An answer
+    from a listing taken in the tick of the folder's last change is not kept as final, even when
+    nobody asks again until long after."""
+    folder = pre.run_elsewhere_dir(root)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    assert not pre.home_runs_elsewhere(linked)
+    before = os.stat(folder)
+    (folder / "linked.json").write_text("{}", encoding="utf-8")  # a second change, in the same tick
+    os.utime(folder, ns=(before.st_atime_ns, before.st_mtime_ns))
+    later = pre.time.time_ns() + 10 * pre._FOLDER_SETTLES_NS
+    monkeypatch.setattr(pre.time, "time_ns", lambda: later)
+    assert pre.home_runs_elsewhere(linked)
+
+
+def test_a_marker_folder_that_has_been_quiet_is_not_listed_again(root, linked, monkeypatch):
+    """Value reads come by the hundred: once the folder's time can be relied on, each asking costs
+    stats (the home, its marker paths, the home of each marked profile), no listing and no resolve."""
+    pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    homes = (linked, root / "profiles" / "ops", root)
+    answers = [pre.home_runs_elsewhere(home) for home in homes]
+    assert answers == [True, False, False]
+
+    listings, resolves = [], []
+    real_listdir, real_readings = os.listdir, pre._home_readings
+
+    def listdir(path):
+        if Path(path).name == pre.RUN_ELSEWHERE_DIRNAME:
+            listings.append(path)
+        return real_listdir(path)
+
+    monkeypatch.setattr(pre.os, "listdir", listdir)
+    monkeypatch.setattr(pre, "_home_readings", lambda home: resolves.append(home) or real_readings(home))
+    for _ in range(50):  # a moment after the marker was written: listed, not resolved
+        assert [pre.home_runs_elsewhere(home) for home in homes] == answers
+    assert resolves == [] and len(listings) == 150
+    later = pre.time.time_ns() + 10 * pre._FOLDER_SETTLES_NS
+    monkeypatch.setattr(pre.time, "time_ns", lambda: later)
+    assert [pre.home_runs_elsewhere(home) for home in homes] == answers  # the last listing, now kept
+    del listings[:]
+    for _ in range(50):
+        assert [pre.home_runs_elsewhere(home) for home in homes] == answers
+    assert resolves == [] and listings == []
+
+
+def test_homes_that_are_not_directories_are_never_the_same_directory(root, monkeypatch):
+    """Two homes that do not exist share an error, and on a filesystem without file ids every
+    directory shares the id zero: neither makes a home the directory of a marked profile."""
+    pre.mark_profile_run_elsewhere("gone", "sandbox-plugin")  # a marker whose profile has no directory
+    absent = root / "profiles" / "absent"
+    assert pre.run_elsewhere_for_home(absent) is None and not pre.home_runs_elsewhere(absent)
+
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    monkeypatch.setattr(pre, "_home_target", lambda home: (7, 0))
+    dev = root / "profiles" / "dev"
+    assert pre.run_elsewhere_for_home(dev) is None and not pre.home_runs_elsewhere(dev)
+    assert pre.home_runs_elsewhere(root / "profiles" / "ops")  # by its own name, as before

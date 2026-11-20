@@ -53,9 +53,19 @@ def test_edits_land_where_the_plugin_reads_them_and_secrets_never_reach_config(p
 
 def test_without_a_terminal_it_lists_settings_and_never_prints_a_secret(plugin_home, monkeypatch, capsys):
     monkeypatch.setenv("DEMO_API_KEY", "sk-demo-not-real")
+    monkeypatch.setenv("DEMO_SERVICE_TOKEN", "tok-demo-not-real")  # masked by name, like a platform's BOT_TOKEN
+    (plugin_home / "plugins" / "demo-plugin" / "plugin.yaml").write_text(
+        MANIFEST.replace("{name: DEMO_SERVICE_TOKEN, secret: true}", "{name: DEMO_SERVICE_TOKEN}"), encoding="utf-8")
     cli.cmd_config("demo-plugin")
     out = capsys.readouterr().out
 
     assert "Retries: 3" in out and "plugins.entries.demo-plugin.settings.retries" in out
     assert "Mode: fast" in out and ".env DEMO_API_KEY" in out and "DEMO_SERVICE_URL: not set" in out
-    assert "API key: set" in out and "sk-demo-not-real" not in out
+    assert "API key: set" in out and "DEMO_SERVICE_TOKEN: set" in out and "not-real" not in out
+
+
+def test_list_values_are_json_safe_and_bad_input_is_a_readable_refusal():
+    assert cli.parse_json_value("[a, 2, {k: true}]") == ["a", 2, {"k": True}]
+    for raw in ("[2026-11-20]", "[a, b", "plain text"):
+        with pytest.raises(ValueError):
+            cli.parse_json_value(raw)

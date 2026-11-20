@@ -203,6 +203,10 @@ def terminal_identity(authority, session_id):
 
 
 async def verify_admission(authority, ref):
+    """Early refusal of a prompt into a moved checkout. Only a runner that routes local adapters can
+    hold a coding policy; the turn start verifies again either way (``begin_turn`` / ``admit_managed``)."""
+    if getattr(authority.runner, '_adapter_for_source', None) is None:
+        return
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if workspace_binding(policy):

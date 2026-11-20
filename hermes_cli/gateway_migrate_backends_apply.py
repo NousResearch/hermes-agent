@@ -435,8 +435,8 @@ def apply(host, plan: BackendPlan, *, detached: bool = False, force_interrupt: b
                 Path(path).unlink(missing_ok=True)
         if (cwd := m["old_backend"].get("cwd")) and not _can_enter(cwd):
             print(f"✗ Nothing changed: {missing} (pid {plan.rec.get('pid')}), so the migration could not start it "
-                  f"again. Start the old backend from a directory that exists (or by an absolute path), then run "
-                  f"this again.")
+                  f"again (it is always started again in its working directory). Start the old backend from a "
+                  f"directory that exists, then run this again.")
         else:
             print(f"✗ Nothing changed: {missing} (pid {plan.rec.get('pid')}), so a rollback could not start it "
                   f"again as it ran. Check that this user can read the environment and working directory of pid "

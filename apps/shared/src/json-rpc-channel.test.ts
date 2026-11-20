@@ -311,6 +311,44 @@ describe('JsonRpcRequestChannel', () => {
     expect(plain.sent.map(frame => (JSON.parse(frame) as { params: unknown }).params)).toEqual([{ server_requests: true }])
   })
 
+  it('remembers client_activity from the capabilities answer for that connection only', async () => {
+    const channel = new JsonRpcRequestChannel({ requestIdPrefix: 'a' })
+
+    const ready = () =>
+      channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+
+    const first = spyTransport()
+    channel.attach(first.transport)
+    ready()
+    expect(channel.clientActivity).toBe(false)
+    channel.handleFrame(JSON.stringify({ id: first.last().id, jsonrpc: '2.0', result: { client_activity: true, server_requests: [] } }))
+    await Promise.resolve()
+    expect(channel.clientActivity).toBe(true)
+
+    // A reconnect may land on an older backend: nothing carries over until it answers.
+    const second = spyTransport()
+    channel.attach(second.transport)
+    expect(channel.clientActivity).toBe(false)
+    ready()
+    channel.handleFrame(JSON.stringify({ id: second.last().id, jsonrpc: '2.0', result: { server_requests: [] } }))
+    await Promise.resolve()
+    expect(channel.clientActivity).toBe(false)
+  })
+
+  it('forgets client_activity the moment its connection detaches', async () => {
+    const channel = new JsonRpcRequestChannel({ requestIdPrefix: 'a' })
+    const first = spyTransport()
+    channel.attach(first.transport)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+    channel.handleFrame(JSON.stringify({ id: first.last().id, jsonrpc: '2.0', result: { client_activity: true } }))
+    await Promise.resolve()
+    expect(channel.clientActivity).toBe(true)
+
+    // Between a close and the next attach nothing is known about whatever backend comes next.
+    channel.detach(new Error('closed'))
+    expect(channel.clientActivity).toBe(false)
+  })
+
   it('sends a not-shown decline only to a backend that advertised counting it', async () => {
     // An older backend settles a request on the first error frame, so a bystander window's decline
     // would beat the owner's answer (#113348): there `decline` must stay silent.

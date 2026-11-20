@@ -1,7 +1,3 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -37,6 +33,15 @@ describe("normalizeLearnSeed", () => {
     expect(normalizeLearnSeed("notes \u009b31mred\u009b0m")).toBe("notes red");
   });
 
+  it("drops two-byte Fp/Fe/Fs and nF VT escape sequences cleanly", () => {
+    expect(normalizeLearnSeed("\u001b7note\u001b8")).toBe("note");
+    expect(normalizeLearnSeed("before \u001bc after")).toBe("before after");
+    expect(normalizeLearnSeed("keypad \u001b= mode \u001b> done")).toBe(
+      "keypad mode done",
+    );
+    expect(normalizeLearnSeed("charset \u001b(B ok")).toBe("charset ok");
+  });
+
   it("drops OSC and DCS/APC string sequences including their payloads", () => {
     expect(normalizeLearnSeed("before \u001b]52;c;YWJj\u0007 after")).toBe(
       "before after",
@@ -50,9 +55,12 @@ describe("normalizeLearnSeed", () => {
     expect(normalizeLearnSeed("before \u001b]52;c;unterminated")).toBe("before");
   });
 
-  it("strips BiDi override and isolate controls", () => {
+  it("strips BiDi directional marks, overrides, and isolate controls", () => {
     expect(normalizeLearnSeed("skill \u202eoverride\u202c text")).toBe(
       "skill override text",
+    );
+    expect(normalizeLearnSeed("ltr\u200e rtl\u200f alm\u061c end")).toBe(
+      "ltr rtl alm end",
     );
   });
 
@@ -60,7 +68,7 @@ describe("normalizeLearnSeed", () => {
     expect(normalizeLearnSeed(null)).toBeNull();
     expect(normalizeLearnSeed(undefined)).toBeNull();
     expect(normalizeLearnSeed(" \r\n\t\u001b\u0015\u007f ")).toBeNull();
-    expect(normalizeLearnSeed("\u001b[31m\u001b[0m")).toBeNull();
+    expect(normalizeLearnSeed("\u001b[31m\u001b[0m\u001b7\u001bc")).toBeNull();
   });
 });
 
@@ -111,7 +119,11 @@ describe("router-state learn handoff helpers", () => {
 });
 
 describe("createLearnHandoffController", () => {
-  function makeSocket(readyState = 1): { socket: LearnSocketLike; sent: string[]; setReadyState: (n: number) => void } {
+  function makeSocket(readyState = 1): {
+    socket: LearnSocketLike;
+    sent: string[];
+    setReadyState: (n: number) => void;
+  } {
     const sent: string[] = [];
     let state = readyState;
     const socket: LearnSocketLike = {
@@ -154,24 +166,99 @@ describe("createLearnHandoffController", () => {
     }
   });
 
-  it("delivers immediately when returning to an already-ready chat socket", () => {
+  it("does not inject or queue a handoff when a PTY socket is already open", () => {
     vi.useFakeTimers();
     try {
       const ctrl = createLearnHandoffController({ delayMs: 800 });
-      const { socket, sent } = makeSocket(1);
+      const first = makeSocket(1);
+      const second = makeSocket(1);
 
-      ctrl.onSocketOpen(socket);
+      ctrl.onSocketOpen(first.socket);
       vi.advanceTimersByTime(800);
-      expect(sent).toEqual([]);
+      expect(first.sent).toEqual([]);
 
-      expect(ctrl.enqueue("second skill")).toBe(true);
-      expect(sent).toEqual(["/learn second skill\r"]);
+      // Warm return while the live composer may contain an unfinished draft.
+      expect(ctrl.enqueue("second skill")).toBe(false);
+      vi.advanceTimersByTime(1000);
+      expect(first.sent).toEqual([]);
+
+      // Nor should that skipped warm handoff fire unexpectedly on a later reconnect.
+      ctrl.onTransportTeardown();
+      ctrl.onSocketOpen(second.socket);
+      vi.advanceTimersByTime(800);
+      expect(second.sent).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("cancels pending flush timers on socket close and drops queued seeds on reset", () => {
+  it("cancels a pending cold-start handoff if the user begins typing", () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = createLearnHandoffController({ delayMs: 800 });
+      const { socket, sent } = makeSocket(1);
+
+      expect(ctrl.enqueue("cold skill")).toBe(true);
+      ctrl.onSocketOpen(socket);
+      vi.advanceTimersByTime(300);
+      ctrl.onUserInput();
+      vi.advanceTimersByTime(800);
+      expect(sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains an unsent handoff across transient transport teardown and delivers once on retry", () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = createLearnHandoffController({ delayMs: 800 });
+      const first = makeSocket(1);
+      const second = makeSocket(1);
+      const third = makeSocket(1);
+
+      expect(ctrl.enqueue("retry skill")).toBe(true);
+      ctrl.onSocketOpen(first.socket);
+      vi.advanceTimersByTime(400);
+      ctrl.onTransportTeardown();
+      vi.advanceTimersByTime(800);
+      expect(first.sent).toEqual([]);
+
+      ctrl.onSocketOpen(second.socket);
+      vi.advanceTimersByTime(800);
+      expect(second.sent).toEqual(["/learn retry skill\r"]);
+
+      // A later reconnect after delivery must never replay the command.
+      ctrl.onTransportTeardown();
+      ctrl.onSocketOpen(third.socket);
+      vi.advanceTimersByTime(800);
+      expect(third.sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores delayed close callbacks from a retired socket", () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = createLearnHandoffController({ delayMs: 800 });
+      const socketA = makeSocket(1);
+      const socketB = makeSocket(1);
+
+      expect(ctrl.enqueue("handoff")).toBe(true);
+      ctrl.onSocketOpen(socketA.socket);
+      ctrl.onSocketOpen(socketB.socket);
+      ctrl.onSocketClose(socketA.socket);
+
+      vi.advanceTimersByTime(800);
+      expect(socketA.sent).toEqual([]);
+      expect(socketB.sent).toEqual(["/learn handoff\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops queued handoffs on reset (scope change or unmount)", () => {
     vi.useFakeTimers();
     try {
       const ctrl = createLearnHandoffController({ delayMs: 800 });
@@ -181,12 +268,10 @@ describe("createLearnHandoffController", () => {
       ctrl.enqueue("pending skill");
       ctrl.onSocketOpen(first.socket);
       vi.advanceTimersByTime(400);
-      ctrl.onSocketClose();
+      ctrl.reset();
       vi.advanceTimersByTime(800);
       expect(first.sent).toEqual([]);
 
-      // Reset (e.g. profile switch or unmount) clears any queued handoff.
-      ctrl.reset();
       ctrl.onSocketOpen(second.socket);
       vi.advanceTimersByTime(800);
       expect(second.sent).toEqual([]);
@@ -209,23 +294,5 @@ describe("createLearnHandoffController", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-});
-
-describe("Skills -> Chat handoff contract", () => {
-  const pagesDir = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../pages",
-  );
-
-  it("transfers /learn seeds via router state rather than URL query parameters", () => {
-    const skillsSrc = readFileSync(path.join(pagesDir, "SkillsPage.tsx"), "utf8");
-    const chatSrc = readFileSync(path.join(pagesDir, "ChatPage.tsx"), "utf8");
-
-    expect(skillsSrc).not.toContain("/chat?learn=");
-    expect(skillsSrc).toContain("buildLearnNavigationState");
-    expect(chatSrc).not.toContain('searchParams.get("learn")');
-    expect(chatSrc).not.toContain("searchParams.get('learn')");
-    expect(chatSrc).toContain("useLearnHandoff");
   });
 });

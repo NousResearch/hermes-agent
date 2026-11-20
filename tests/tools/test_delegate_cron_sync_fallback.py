@@ -116,7 +116,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
         "api_mode": None, "command": None, "args": None,
     }
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     # spawn_background_review_thread's target resolves _run_review_in_thread
     # from module globals at call time, so this records (and wedges) the
     # review replay without touching the child's own code paths.

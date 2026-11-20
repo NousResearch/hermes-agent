@@ -180,9 +180,9 @@ def _eager_reconcile_own_session_db() -> None:
     """Bring this process's own state.db schema current at startup — read-only first.
 
     The dashboard is a view layer; the gateway owns the writer. A healthy store
-    must never see a second writable ``SessionDB`` from this process (its
-    close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
-    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    must never see a second writer from this process (its close-time checkpoint
+    and a possible FTS rebuild are the two-writer corruption vector, #107688 /
+    #100896). Access-mode semantics
     (no bootstrap of a missing store; one additive catch-up of a store that lags
     SCHEMA_SQL, only while no gateway owns it, #79531 / #140315) live in the routers' own-store opener,
     :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
@@ -190,9 +190,8 @@ def _eager_reconcile_own_session_db() -> None:
     """
     try:
         from hermes_cli.web_server_sessions import _open_session_db_for_profile
-        from hermes_state_registry import release_or_close
 
-        release_or_close(_open_session_db_for_profile(None, read_only=True))
+        _open_session_db_for_profile(None, read_only=True).close()
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
@@ -581,6 +580,11 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         except (TypeError, ValueError):
             return default
 
+    # permessage-deflate runs zlib on the event loop for every outbound frame, and the gateway sends
+    # one frame per streamed token of every running session: under load it was the largest single
+    # cost on the loop. Loopback bytes are free, so only a listener remote peers reach (a non-loopback
+    # bind, or a loopback bind behind a public URL / tunnel, which engages the auth gate) compresses.
+    per_message_deflate = auth_required or host not in _LOOPBACK_HOST_VALUES
     if ws_ping is None:
         ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
             _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
@@ -596,6 +600,7 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(dash_cfg),
         ws_ping_interval=ws_ping[0],
         ws_ping_timeout=ws_ping[1],
+        ws_per_message_deflate=per_message_deflate,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a

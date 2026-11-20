@@ -153,6 +153,7 @@ def test_sigtermed_kanban_worker_writes_the_open_sessions_summary(metrics_home, 
     assert "hermes.session.count" in _metric_names(home)
 
 
+@pytest.mark.platforms("posix")  # the legacy parent watchdog is POSIX-only
 def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
     from tui_gateway import slash_worker
 
@@ -160,10 +161,10 @@ def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, mo
     _finished_task_in_open_session()
     _wait_for(home, "hermes.task_run.finished")
     exited = threading.Event()
-    monkeypatch.setattr(slash_worker, "_is_orphaned", lambda ppid: True)
     monkeypatch.setattr(slash_worker.os, "_exit", lambda code: exited.set())
 
-    slash_worker._start_parent_death_watchdog(1)
+    # A worker a pre-update gateway launched (--parent-pid) whose parent is gone: the live ppid differs.
+    slash_worker._start_legacy_parent_watchdog(os.getppid() + 1_000_000, poll_s=0.01, grace_s=0)
 
     assert exited.wait(10)
     assert "hermes.session.count" in _metric_names(home)

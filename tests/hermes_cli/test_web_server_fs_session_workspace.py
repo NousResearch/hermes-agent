@@ -1,5 +1,7 @@
 """WA-5: a Webapp file route that names a session resolves ``/workspace`` in THAT session's
-per-workspace Docker sandbox (#143655's mapping), and refuses a session it cannot see."""
+Docker sandbox (#143655's mapping), and refuses a session it cannot see. A session has its own
+per-workspace sandbox only with ``docker_mount_cwd_to_workspace`` on; without it every session
+shares the profile sandbox, and a ``*_ws_*`` copy an older build left behind is not its own."""
 
 import shutil
 from pathlib import Path
@@ -42,7 +44,8 @@ def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
 @pytest.fixture
 def sandboxes(monkeypatch, tmp_path):
     """A persistent Docker backend with three ``/workspace`` copies: this session's, another
-    session's, and the shared profile sandbox. ``sess-ws`` belongs to the default profile,
+    session's, and the shared profile sandbox. The cwd mount is off, so the per-workspace copies
+    are leftovers until a test turns it on (:func:`_mount_cwd`). ``sess-ws`` belongs to the default profile,
     ``sess-work`` to the ``work`` profile, so the default profile's lookup cannot see it."""
     project, other = tmp_path / "project", tmp_path / "other"
     project.mkdir()
@@ -111,7 +114,18 @@ def test_each_file_route_looks_its_session_up_once(client, sandboxes, monkeypatc
 # Part 1: media streams
 
 
-def test_stream_plays_the_sessions_own_workspace_clip(client, sandboxes):
+def _mount_cwd(monkeypatch):
+    """Per-workspace sandboxes exist only with the cwd mount on. The session folders here hold no
+    files, so ``/workspace`` falls through to the sandbox copies whose ordering these tests pin;
+    Part 4 covers a real mounted folder."""
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+
+
+def test_stream_plays_the_sessions_own_workspace_clip(client, sandboxes, monkeypatch):
+    # No session keeps the shared profile sandbox, as before.
+    bare = client.get("/api/files/stream", params={"path": "/workspace/clip.mp4"})
+    assert (bare.status_code, bare.content) == (200, b"shared-clip")
+    _mount_cwd(monkeypatch)
     params = {"path": "/workspace/clip.mp4", "session_id": "sess-ws"}
 
     full = client.get("/api/files/stream", params=params)
@@ -121,12 +135,10 @@ def test_stream_plays_the_sessions_own_workspace_clip(client, sandboxes):
     assert (full.status_code, full.content) == (200, b"session-clip")
     assert (partial.status_code, partial.content) == (206, b"session")
     assert (other.status_code, other.content) == (200, b"foreign-clip")
-    # No session keeps the shared profile sandbox, as before.
-    bare = client.get("/api/files/stream", params={"path": "/workspace/clip.mp4"})
-    assert (bare.status_code, bare.content) == (200, b"shared-clip")
 
 
 def test_a_stream_ticket_for_a_session_plays_that_sessions_clip(client, sandboxes, monkeypatch):
+    _mount_cwd(monkeypatch)
     monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
     query = {"path": "/workspace/clip.mp4", "session_id": "sess-ws"}
     minted = client.post("/api/files/ticket", json={"route": "stream", **query})
@@ -159,13 +171,14 @@ def test_stream_refuses_a_clip_outside_the_sessions_workspace(client, sandboxes,
 
 
 @pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
-def test_read_text_previews_the_sessions_own_workspace_file(client, sandboxes, path):
+def test_read_text_previews_the_sessions_own_workspace_file(client, sandboxes, monkeypatch, path):
     def read(**params):
         return client.get("/api/fs/read-text", params={"path": path, **params})
 
+    bare = read()
+    _mount_cwd(monkeypatch)
     own = read(session_id="sess-ws")
     other = read(session_id="sess-other")
-    bare = read()
 
     assert own.status_code == 200, own.text
     assert own.json()["text"] == "session note"
@@ -176,6 +189,7 @@ def test_read_text_previews_the_sessions_own_workspace_file(client, sandboxes, p
 
 
 def test_a_file_url_clip_streams_from_the_sessions_sandbox(client, sandboxes, monkeypatch):
+    _mount_cwd(monkeypatch)
     query = {"path": "file:///workspace/clip.mp4", "session_id": "sess-ws"}
 
     direct = client.get("/api/files/stream", params=query)
@@ -217,7 +231,8 @@ def _notes(sandboxes):
 
 
 @pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
-def test_save_writes_the_file_the_preview_read(client, sandboxes, path):
+def test_save_writes_the_file_the_preview_read(client, sandboxes, monkeypatch, path):
+    _mount_cwd(monkeypatch)
     read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
     saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
 
@@ -227,7 +242,10 @@ def test_save_writes_the_file_the_preview_read(client, sandboxes, path):
 
 
 @pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
-def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_copy_is_gone(client, sandboxes, path):
+def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_copy_is_gone(
+    client, sandboxes, monkeypatch, path,
+):
+    _mount_cwd(monkeypatch)
     (sandboxes["shared"] / "note.txt").write_text("session note", encoding="utf-8")  # the same text
     (sandboxes["own"] / "note.txt").unlink()
 
@@ -242,7 +260,10 @@ def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_copy_is_gone
 
 
 @pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
-def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_sandbox_is_gone(client, sandboxes, path):
+def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_sandbox_is_gone(
+    client, sandboxes, monkeypatch, path,
+):
+    _mount_cwd(monkeypatch)
     read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
     assert read.json()["text"] == "session note"
     shutil.rmtree(sandboxes["own"].parent)  # the session's whole sandbox, not just its file
@@ -260,6 +281,24 @@ def test_save_without_a_session_writes_where_a_bare_read_reads(client, sandboxes
     read = client.get("/api/fs/read-text", params={"path": "/workspace/note.txt"})
     saved = client.post("/api/fs/write-text", json={"path": "/workspace/note.txt", "content": "edited"})
 
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["path"] == read.json()["path"] == str(sandboxes["shared"] / "note.txt")
+    assert _notes(sandboxes) == {"own": "session note", "foreign": "foreign note", "shared": "edited"}
+
+
+@pytest.mark.parametrize("flag", [None, "on"])  # "on" is not a value the terminal mounts on
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_without_the_cwd_mount_a_session_reads_and_saves_the_profile_sandbox(
+    client, sandboxes, monkeypatch, path, flag,
+):
+    """No cwd mount: the session's container is the profile's, so a leftover ``*_ws_*`` copy is
+    neither previewed nor counted as its own (a Save there would be refused or lost)."""
+    if flag:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", flag)
+    read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+    saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
+
+    assert (read.status_code, read.json()["text"]) == (200, "shared note"), read.text
     assert saved.status_code == 200, saved.text
     assert saved.json()["path"] == read.json()["path"] == str(sandboxes["shared"] / "note.txt")
     assert _notes(sandboxes) == {"own": "session note", "foreign": "foreign note", "shared": "edited"}

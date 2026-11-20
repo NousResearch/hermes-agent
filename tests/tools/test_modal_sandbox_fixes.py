@@ -264,6 +264,10 @@ class TestDockerHostBindApproval:
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "host_cwd": "/home/u/p",
              "docker_mount_cwd_to_workspace": True}) is True
+        # Flag on without a launch-dir host_cwd: a session workspace may still be bound.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "host_cwd": None,
+             "docker_mount_cwd_to_workspace": True}) is True
         # Windows host path -> host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True

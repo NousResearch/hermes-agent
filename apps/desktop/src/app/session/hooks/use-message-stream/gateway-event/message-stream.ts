@@ -3,7 +3,7 @@ import { type BillingBlock, mergeUsage } from '@hermes/shared'
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -13,6 +13,7 @@ import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { notify } from '@/store/notifications'
+import { continueReplyPause, endContinuedReplyPause, markReplyPaused } from '@/store/paused-replies'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
@@ -24,8 +25,10 @@ import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
+import { continueStoppedReply } from '../interrupted-reply'
 import { segmentStamp } from '../segment-identity'
 
+import { oweTurnEndReport } from './turn-end-report'
 import type { GatewayEventContext } from './types'
 
 function firstBillingLine(text: string): string {
@@ -35,11 +38,13 @@ function firstBillingLine(text: string): string {
 /**
  * A turn failed on a billing wall (out of credits / payment required). The
  * gateway forwards the structured descriptor built by `agent/billing_links.py`;
- * we cache it per-session (drives the in-chat banner) AND raise one sticky,
+ * we cache it per-session, which drives the out-of-credits banner above the
+ * composer. A wall in a session that is NOT on screen also raises one sticky,
  * billing-specific toast — never the generic "Hermes error" — with a smart CTA
- * (Nous → in-app Settings → Billing, other providers → their billing page).
+ * (Nous → in-app Settings → Billing, other providers → their billing page); on
+ * screen the banner and the turn's card carry it, so no toast repeats them.
  */
-function surfaceBillingBlock(sessionId: string, raw: unknown): void {
+function surfaceBillingBlock(sessionId: string, raw: unknown, toast: boolean): void {
   if (!raw || typeof raw !== 'object') {
     return
   }
@@ -51,6 +56,10 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
   }
 
   setBillingBlock(sessionId, block)
+
+  if (!toast) {
+    return
+  }
 
   const ctaCopy = {
     addCredits: translateNow('billingBlock.addCredits'),
@@ -127,6 +136,12 @@ function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefine
   lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
 }
 
+/** The stored chat a runtime session shows (store/paused-replies.ts is keyed by it: a backend restart changes the
+ *  runtime id between a paused turn and its continuation). */
+function chatOf(ctx: GatewayEventContext, runtimeId: string): string {
+  return ctx.deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId || runtimeId
+}
+
 /** message.start: arm the session for a new turn, unless it re-sends the current one. */
 function handleMessageStart(ctx: GatewayEventContext): boolean {
   const { deps, payload, sessionId, isActiveEvent } = ctx
@@ -159,6 +174,9 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
   }
 
   pruneFinishedSessionSubagents(sessionId)
+  // The turn a pause was waiting for (or any other) has started: the reply goes on, and a send still
+  // waits for this turn to end (store/paused-replies.ts).
+  continueReplyPause(chatOf(ctx, sessionId))
   setSessionCompacting(sessionId, false)
   compactedTurnRef.current.delete(sessionId)
   nativeSubagentSessionsRef.current.delete(sessionId)
@@ -192,8 +210,17 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
       return state
     }
 
+    // A projected queued prompt drawn before this start is this turn's
+    // prompt from here on, even while its row is still on screen. A stopped
+    // reply with nothing visible after it is the reply this turn goes on with.
+    const messages = continueStoppedReply(markQueuedPromptStarted(state.messages), payload)
+
     return {
       ...state,
+      messages,
+      // Rows on screen now are earlier turns (or this turn's prompt): an
+      // interim seal on one of them no longer means its call is running.
+      turnAnchorId: messages.at(-1)?.id ?? null,
       busy: true,
       awaitingResponse: true,
       sawAssistantPayload: false,
@@ -409,7 +436,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
-    noteTurnSettled(sessionId)
+    // This turn's end-of-turn report is still to come, and may arrive after the
+    // next turn's message.start (turn-end-report.ts).
+    deps.updateSessionState(sessionId, state => oweTurnEndReport(state))
+
+    // The view mirrors this runtime only while bound to it (settled-turns.ts).
+    noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)
     completeAssistantMessage(
       sessionId,
       finalText,
@@ -419,21 +451,30 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
-      payload?.response_reused === true
+      payload?.response_reused === true,
+      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined
     )
+
+    // The continuation a pause waited for has ended: sends held for it go now. Interrupted to be continued
+    // by its interrupter (session.interrupt `resume`, the first pause or another one): paused, not stopped.
+    endContinuedReplyPause(chatOf(ctx, sessionId))
+
+    if (payload?.status === 'interrupted' && payload.paused === true) {
+      markReplyPaused(chatOf(ctx, sessionId))
+    }
 
     if (payload?.status === 'complete') {
       noteFreeTierTurnComplete()
     }
 
     // Structured billing wall forwarded by the gateway (out of credits /
-    // payment required) — cache it + raise a billing-specific toast. A window
+    // payment required) — cache it for the banner (toast only off screen). A window
     // plan's limit is said once, by the turn's error card (its buttons are the
     // ways on); a toast and banner would only repeat it.
     const usageWindowWall = parseErrorSurface(payload?.error_surface)?.code === 'usage_window'
 
     if (payload?.billing && !usageWindowWall) {
-      surfaceBillingBlock(sessionId, payload.billing)
+      surfaceBillingBlock(sessionId, payload.billing, !isActiveEvent)
     }
 
     // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.

@@ -19,7 +19,7 @@ import uuid
 from contextlib import suppress
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, CallStopped, lost_before
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, CallStopped, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class GatewayAgent:
     platform = "cli"
     _supports_active_turn_redirect = True
 
-    def __init__(self, *, session_db=None, session_id=None, model=None, provider=None, base_url=None,
+    def __init__(self, *, session_db=None, persistence=None, session_id=None, model=None, provider=None, base_url=None,
                  api_mode=None, max_iterations=90, quiet_mode=True, tool_progress_mode="all",
                  reasoning_config=None, service_tier=None, clarify_callback=None, connection_callback=None,
                  connection_update_callback=None,
@@ -105,6 +105,7 @@ class GatewayAgent:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
         self.connection = conn
         self._session_db = session_db
+        self.persistence = persistence
         self.session_id = session_id
         self.model = model or ""
         self.provider = provider or ""
@@ -773,10 +774,7 @@ class GatewayAgent:
                 # Building the params consumes a ``/model --once`` pick (``_take_turn_route``).
                 notice = self._prepare_submit(turn)
                 if notice:
-                    # Refused before prompt.submit: nothing was admitted, so the CLI keeps the turn's
-                    # local state (no history row, the /model --once pick and notes) for the resend.
-                    return {**self._failed(history, user_message, notice, failure_reason="gateway_connection"),
-                            "messages": history, "admitted": False}
+                    return self._unadmitted(history, user_message, notice)
                 params = self._submit_params(user_message, persist_user_message, turn_author)
                 if self._stop(turn)():
                     raise CallStopped("prompt.submit")
@@ -794,6 +792,8 @@ class GatewayAgent:
                 return self._failed(history, user_message, str(exc),
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
+                if str(exc) == NOT_SENT:
+                    return self._unadmitted(history, user_message, str(exc))
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
             if (receipt or {}).get("voice_stopped") is True:
                 return self._voice_stopped(history)
@@ -1273,6 +1273,13 @@ class GatewayAgent:
         self._give_back_turn_route()  # nothing was admitted: a ``/model --once`` pick is still owed
         self._emit_print(t("cli.voice.stop_phrase_typed"))
         return {**_RESULT_DEFAULTS, "messages": list(history), "voice_stopped": True, "session_id": self.session_id}
+
+    def _unadmitted(self, history, user_message, error):
+        """A turn the owner never saw (a pre-submit notice, or a submit that was never sent): the CLI
+        keeps its local state (no history row, the ``/model --once`` pick and notes) for the resend."""
+        self._give_back_turn_route()
+        return {**self._failed(history, user_message, error, failure_reason="gateway_connection"),
+                "messages": history, "admitted": False}
 
     def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
         """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of

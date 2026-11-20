@@ -53,6 +53,33 @@ describe('composer text entry on a touch host (#145166)', () => {
     expect(editor.ownerDocument.activeElement).toBe(editor)
   })
 
+  it('a two-finger gesture that starts in the editor does not focus it', () => {
+    const editor = render(<Editor touch />).getByTestId('editor')
+    const first = point(10, 10)
+    const second = { clientX: 200, clientY: 200, identifier: 1 }
+
+    // The second finger lands outside the editor, so only the first finger's
+    // events reach it; they still list every finger on the screen.
+    fireEvent.touchStart(editor, { touches: [first], changedTouches: [first] })
+    fireEvent.touchMove(editor, { touches: [point(12, 11), second], changedTouches: [point(12, 11)] })
+    fireEvent.touchEnd(editor, { touches: [second], changedTouches: [point(12, 11)] })
+    expect(editor.ownerDocument.activeElement).not.toBe(editor)
+
+    // Lifting the first finger with the second still down, without a move.
+    fireEvent.touchStart(editor, { touches: [first], changedTouches: [first] })
+    fireEvent.touchEnd(editor, { touches: [second], changedTouches: [first] })
+    expect(editor.ownerDocument.activeElement).not.toBe(editor)
+
+    // Both fingers down during the move, the outside one lifts first: only the move cancels this.
+    fireEvent.touchStart(editor, { touches: [first], changedTouches: [first] })
+    fireEvent.touchMove(editor, { touches: [point(12, 11), second], changedTouches: [point(12, 11)] })
+    fireEvent.touchEnd(editor, { touches: [], changedTouches: [point(12, 11)] })
+    expect(editor.ownerDocument.activeElement).not.toBe(editor)
+
+    tap(editor, [10, 10])
+    expect(editor.ownerDocument.activeElement).toBe(editor)
+  })
+
   it('desktop keeps the attributes off and leaves taps to the browser', () => {
     const editor = render(<Editor touch={false} />).getByTestId('editor')
 

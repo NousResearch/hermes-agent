@@ -243,10 +243,28 @@ def _scope_values(raw_scope: Any) -> set[str]:
     return scopes
 
 
+def _nous_jwt_deadline(claims: dict[str, Any], obtained_at: Any = None) -> Optional[float]:
+    """When a JWT stops working, on THIS machine's clock (epoch seconds), or None without ``exp``.
+
+    ``exp`` is the issuer's clock. A PC clock running ahead read a fresh 15-minute token as already
+    expired and discarded every sign-in (#157720, #148580), so when the token carries ``iat`` and we
+    recorded when it arrived (``obtained_at``, local clock) the deadline is arrival + issued lifetime.
+    """
+    from hermes_cli.auth import _parse_iso_timestamp
+    exp, iat = claims.get("exp"), claims.get("iat")
+    if not isinstance(exp, (int, float)):
+        return None
+    received = _parse_iso_timestamp(obtained_at)
+    if isinstance(iat, (int, float)) and received is not None and exp > iat:
+        return received + (float(exp) - float(iat))
+    return float(exp)
+
+
 def _nous_invoke_jwt_status(
-    token: Any, *, scope: Any = None, expires_at: Any = None,
+    token: Any, *, scope: Any = None, expires_at: Any = None, obtained_at: Any = None,
     min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS) -> Optional[str]:
-    """Return None when the token can be used for inference, else a reason."""
+    """Return None when the token can be used for inference, else a reason. *obtained_at* is when
+    the token arrived (local clock), so expiry is judged by the token's lifetime, not the clock."""
     from hermes_cli.auth import _is_expiring
     claims = _decode_jwt_claims(token)
     if not claims:
@@ -255,26 +273,28 @@ def _nous_invoke_jwt_status(
               | _scope_values(claims.get("scp")))
     if NOUS_INFERENCE_INVOKE_SCOPE not in scopes:
         return "missing_inference_invoke_scope"
-    exp = claims.get("exp")
+    deadline = _nous_jwt_deadline(claims, obtained_at)
     skew = max(0, int(min_ttl_seconds))
-    if isinstance(exp, (int, float)):
-        return "invoke_jwt_expiring" if float(exp) <= (time.time() + skew) else None
+    if deadline is not None:
+        return "invoke_jwt_expiring" if deadline <= (time.time() + skew) else None
     return "invoke_jwt_expiry_unknown_or_expiring" if _is_expiring(expires_at, skew) else None
 
 
 def _nous_invoke_jwt_is_usable(
-    token: Any, *, scope: Any = None, expires_at: Any = None,
+    token: Any, *, scope: Any = None, expires_at: Any = None, obtained_at: Any = None,
     min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS) -> bool:
     from hermes_cli.auth import _nous_invoke_jwt_status
     return _nous_invoke_jwt_status(
-        token, scope=scope, expires_at=expires_at, min_ttl_seconds=min_ttl_seconds) is None
+        token, scope=scope, expires_at=expires_at, obtained_at=obtained_at,
+        min_ttl_seconds=min_ttl_seconds) is None
 
 
 def _state_invoke_jwt_status(state: dict[str, Any], token: Any) -> Optional[str]:
     """``_nous_invoke_jwt_status`` for *token* using *state*'s scope / expires_at (patchable)."""
     from hermes_cli.auth import _nous_invoke_jwt_status
     return _nous_invoke_jwt_status(
-        token, scope=state.get("scope"), expires_at=state.get("expires_at"))
+        token, scope=state.get("scope"), expires_at=state.get("expires_at"),
+        obtained_at=state.get("obtained_at"))
 
 
 def _assert_nous_inference_jwt_usable(state: dict[str, Any], *, access_token: Any = None) -> None:
@@ -293,12 +313,12 @@ def _remaining_ttl(expires_at: Any, fallback_expires_in: Any) -> int:
     return _coerce_ttl_seconds(fallback_expires_in)
 
 
-def _nous_jwt_expires_at(token: Any, fallback_expires_at: Any = None) -> Optional[str]:
-    claims = _decode_jwt_claims(token)
-    exp = claims.get("exp")
-    if isinstance(exp, (int, float)):
+def _nous_jwt_expires_at(
+    token: Any, fallback_expires_at: Any = None, obtained_at: Any = None) -> Optional[str]:
+    deadline = _nous_jwt_deadline(_decode_jwt_claims(token), obtained_at)
+    if deadline is not None:
         with suppress(Exception):
-            return datetime.fromtimestamp(float(exp), tz=UTC).isoformat()
+            return datetime.fromtimestamp(deadline, tz=UTC).isoformat()
     return fallback_expires_at if isinstance(fallback_expires_at, str) else None
 
 
@@ -311,8 +331,8 @@ def _set_nous_agent_key_from_invoke_jwt(
     existing_obtained_at = state.get("agent_key_obtained_at")
     if not obtained_at:
         reuse = state.get("agent_key") == access_token and _nonempty_str(existing_obtained_at)
-        obtained_at = existing_obtained_at if reuse else datetime.now(UTC).isoformat()
-    expires_at = _nous_jwt_expires_at(access_token, state.get("expires_at"))
+        obtained_at = existing_obtained_at if reuse else (state.get("obtained_at") or datetime.now(UTC).isoformat())
+    expires_at = _nous_jwt_expires_at(access_token, state.get("expires_at"), state.get("obtained_at"))
     expires_in = _remaining_ttl(expires_at, state.get("expires_in"))
     if expires_at:
         state["expires_at"] = expires_at
@@ -414,9 +434,35 @@ _NOUS_SHARED_STATE_KEYS = (
 _SHARED_RENEWAL_KEY = "renewal"
 
 
+def _nous_state_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
+    """1 when *a* holds the later-ISSUED token pair than *b*, -1 the earlier, 0 tied, None unstamped.
+
+    The forked-grant heal's ordering (``auth_oauth_grants.oauth_pair_order``): JWT ``iat``, then
+    ``obtained_at`` (which also breaks an equal whole-second ``iat``); expiry only orders states
+    lacking an issue stamp, since a later rotation can carry a shorter TTL.
+    A side stamped only by expiry against one stamped only by issue time is a tie (no adopt, no
+    push); JWT states carry both claims, so they always order.
+    """
+    from hermes_cli.auth_oauth_grants import oauth_pair_order
+    return oauth_pair_order(a, b)
+
+
+def _same_known_nous_identity(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when *a* and *b* are provably the same identity. An account whose access token carries no
+    JWT ``sub`` is UNKNOWN, never "the same" as another unknown one."""
+    identity = _nous_identity(a)
+    return identity[1] not in (None, "") and identity == _nous_identity(b)
+
+
 def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
-    """Copy fresher shared OAuth tokens into a profile-local Nous state."""
-    from hermes_cli.auth import _nonempty_str, _parse_iso_timestamp, _read_shared_nous_state
+    """Adopt the shared store's OAuth tokens into a profile-local Nous state when they are NEWER.
+
+    An older shared copy (a failed shared write after this profile refreshed) never overwrites the
+    profile: its refresh token is already redeemed, and replaying it trips the Portal's reuse
+    detection (forced re-login). When the profile is the newer one it is pushed to the shared
+    store instead, so sibling profiles stop reading the stale copy. Caller holds the shared lock.
+    """
+    from hermes_cli.auth import _nonempty_str, _read_shared_nous_state
     shared = _read_shared_nous_state() or {}
     renewed = shared.get(_SHARED_RENEWAL_KEY)
     if isinstance(renewed, dict) and _nous_identity(renewed) == _nous_identity(state):
@@ -424,10 +470,21 @@ def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
     shared_refresh = shared.get("refresh_token")
     if not _nonempty_str(shared_refresh):
         return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
-    shared_access_exp = _parse_iso_timestamp(shared.get("expires_at")) or 0.0
-    local_access_exp = _parse_iso_timestamp(state.get("expires_at")) or 0.0
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
-    if not refresh_changed and not shared_access_exp > local_access_exp:
+    order = _nous_state_order(shared, state)
+    # A quarantined profile has no access token, so its identity reads as unknown: it must still
+    # recover from a sibling's re-login (ca6513542d5), so an empty profile adopts on order alone.
+    known_same = _same_known_nous_identity(shared, state)
+    same = known_same or not _nonempty_str(state.get("access_token"))
+    # Unstamped on both sides: no evidence either way, keep the legacy "a different token wins".
+    # Never across identities: a profile signed in as one account keeps it (profiles are islands).
+    if not (same and (order == 1 or (order is None and refresh_changed))):
+        if order == -1 and refresh_changed and known_same:
+            _oauth_trace(
+                "nous_shared_store_older_than_profile",
+                shared_refresh_token_fp=_token_fingerprint(shared_refresh),
+                refresh_token_fp=_token_fingerprint(state.get("refresh_token")))
+            _write_shared_nous_state(state, renewal=True)
         return False
     for key in _NOUS_SHARED_STATE_KEYS:
         value = shared.get(key)
@@ -463,6 +520,18 @@ def _nous_identity(state: dict[str, Any]) -> tuple[str, Any]:
     return "account", _decode_jwt_claims(state.get("access_token")).get("sub")
 
 
+def _shared_copy_is_newer(held: Optional[dict[str, Any]], state: dict[str, Any], *, same: bool) -> bool:
+    """True when the shared store already holds a NEWER copy of *state*'s account (a renewal never
+    rolls it back to an older, possibly already-redeemed refresh token)."""
+    from hermes_cli.anon_auth import is_guest_state
+    if held is None or is_guest_state(state):
+        return False
+    copy = held if same else held.get(_SHARED_RENEWAL_KEY)
+    if not isinstance(copy, dict) or not _same_known_nous_identity(copy, state):
+        return False
+    return _nous_state_order(copy, state) == 1
+
+
 def _write_shared_nous_state(state: dict[str, Any], *, renewal: bool) -> None:
     """Persist a minimal copy of the Nous OAuth state to the shared store.
 
@@ -487,6 +556,11 @@ def _write_shared_nous_state(state: dict[str, Any], *, renewal: bool) -> None:
             path = _nous_shared_store_path()
             held = _read_shared_nous_state()
             same = held is not None and _nous_identity(held) == _nous_identity(state)
+            if renewal and _shared_copy_is_newer(held, state, same=same):
+                _oauth_trace(
+                    "nous_shared_store_write_skipped_older", path=str(path),
+                    refresh_token_fp=_token_fingerprint(refresh_token))
+                return
             if renewal and held is not None and not same:
                 shared = {**held, _SHARED_RENEWAL_KEY: _nous_shared_shape(state)}
             else:
@@ -808,7 +882,7 @@ def _agent_key_is_usable(state: dict[str, Any], min_ttl_seconds: int) -> bool:
     key = state.get("agent_key")
     return _nonempty_str(key) and _nous_invoke_jwt_is_usable(
         key, scope=state.get("scope"), expires_at=state.get("agent_key_expires_at"),
-        min_ttl_seconds=max(0, int(min_ttl_seconds)))
+        obtained_at=state.get("agent_key_obtained_at"), min_ttl_seconds=max(0, int(min_ttl_seconds)))
 
 
 def refresh_nous_oauth_pure(
@@ -1454,7 +1528,8 @@ def _nous_device_code_login(
     now = datetime.now(UTC)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     resolved_inference_url = (
-        _optional_base_url(token_data.get("inference_base_url")) or requested_inference_url)
+        _validate_nous_inference_url_from_network(_optional_base_url(token_data.get("inference_base_url")))
+        or requested_inference_url)
     if resolved_inference_url != requested_inference_url:
         print(f"Using portal-provided inference URL: {resolved_inference_url}")
     auth_state = {

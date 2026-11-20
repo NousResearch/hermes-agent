@@ -3,14 +3,14 @@
 // envelope. Every mode stops at the artifact; CI stages it for native smoke
 // before the separate release Python publisher can write an App Installer feed.
 // Usage: node scripts/stage-msixbundle.mjs --tag vX.Y.Z --candidate
-//        node scripts/stage-msixbundle.mjs --tag vX.Y.Z+canary.YYYYMMDDTHHMMSSZ
+//        node scripts/stage-msixbundle.mjs --tag canary.YYYYMMDDTHHMMSSZ-vX.Y.Z
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { appIdentity, channelBuildRequest } from './msix-shared.mjs'
+import { appIdentity, CANARY_TAG_RE, channelBuildRequest } from './msix-shared.mjs'
 import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 
@@ -81,7 +81,7 @@ if (process.platform !== 'win32') {
   process.exit(1)
 }
 
-const canary = /\+canary\.20\d{6}T\d{6}Z$/.test(tag)
+const canary = CANARY_TAG_RE.test(tag || '')
 if (!commitBuild && !channelRequest && !canary && !candidate) throw new Error('Stable bundles must use the staged stable-release workflow')
 
 const desktop = path.join(REPO_ROOT, 'apps', 'desktop')

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ReactElement, useEffect, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
+import { formatElapsed, useElapsedSeconds } from '@/components/chat/activity-timer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -13,8 +14,10 @@ import {
   stopWebAccess,
   type WebAccessChange,
   type WebAccessMode,
+  type WebAccessStartProgress,
   type WebAccessStatus
 } from '@/hermes'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { useI18n } from '@/i18n'
 import type { WebAccessTranslations } from '@/i18n/types_gateway_host'
 import { ExternalLink } from '@/lib/external-link'
@@ -32,6 +35,8 @@ const RESTART_TIMEOUT_MS = 90_000
 // back: re-read it when the window regains focus or comes back into view, and on a slow poll while
 // it is visible (react-query pauses the interval in the background).
 const STATUS_POLL_MS = 10_000
+// While a Start builds and registers, the status names its step: read it often enough to follow.
+const START_PROGRESS_POLL_MS = 1000
 
 /**
  * The config says what the gateway serves from its next start; the gateway says what it serves now.
@@ -40,6 +45,18 @@ const STATUS_POLL_MS = 10_000
 type Phase = 'off' | 'pendingOff' | 'pendingOn' | 'serving' | 'unavailable'
 
 type Busy = 'restart' | 'start' | 'stop' | null
+
+/** The change this pane runs: which, when it began (ms), and whether it now waits for the
+ *  restarted gateway. */
+interface Running {
+  kind: NonNullable<Busy>
+  restarting: boolean
+  since: number
+}
+
+/** What a Start in flight is doing: the backend's step, `preparing` until it names one (or on a
+ *  backend too old to), `restarting` once the pane waits for the restarted gateway. */
+type StartStage = WebAccessStartProgress['step']
 
 /** The gateway serves the configured web app: it applied this config, not an earlier one's port. */
 function servesConfig(status: WebAccessStatus): boolean {
@@ -122,7 +139,7 @@ export function WebAccessSettings(): ReactElement | null {
   // backend nor shows anything.
   const available = useWebAccessAvailable()
 
-  const { data: status, error, refetch } = useQuery({
+  const { data: status, dataUpdatedAt, error, refetch } = useQuery({
     enabled: available,
     queryFn: getWebAccessStatus,
     queryKey: key,
@@ -154,10 +171,11 @@ export function WebAccessSettings(): ReactElement | null {
     return error ? <SettingsContent>{w.failed}</SettingsContent> : <SettingsSkeleton sections={[{ rows: 2 }]} />
   }
 
-  return <WebAccessForm queryKey={key} status={status} w={w} />
+  return <WebAccessForm queryKey={key} readAt={dataUpdatedAt} status={status} w={w} />
 }
 
-type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: WebAccessTranslations }
+/** `readAt`: when the backend last answered `status` (ms). */
+type FormProps = { queryKey: readonly unknown[]; readAt: number; status: WebAccessStatus; w: WebAccessTranslations }
 
 /** Where a start would serve the web app, as the saved config says: LAN unless it names a public URL. */
 function draftModeOf(status: WebAccessStatus): WebAccessMode {
@@ -202,9 +220,51 @@ function notifyRestartHeld(result: WebAccessChange, w: WebAccessTranslations): v
   notify({ kind: 'warning', message: result.restart_busy ? w.restartBusy : w.restartFailed, title: w.restartNeeded })
 }
 
-function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
+/** Whether `ms` have passed since `since` (epoch ms); re-renders once when they do. */
+function usePassed(since: number, ms: number): boolean {
+  const [passedSince, setPassedSince] = useState<null | number>(null)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setPassedSince(since), since + ms - Date.now())
+
+    return () => clearTimeout(timer)
+  }, [since, ms])
+
+  return passedSince === since
+}
+
+/** The Start in flight: this pane's, or one the backend reports and this pane did not send
+ *  (another window's, or this pane's from before it was reopened), which holds the controls as this
+ *  pane's own would. Until the request returns the status names its step, so the hook re-reads it;
+ *  the restart wait polls on its own, and a backend older than that report sends no `start_progress`.
+ *  A report the backend has not repeated for as long as a restart wait (its reads fail: it is the
+ *  gateway being restarted, and no replacement answers) no longer holds the controls. */
+function useStartInFlight(
+  status: WebAccessStatus,
+  running: null | Running,
+  queryKey: readonly unknown[],
+  readAt: number
+) {
   const queryClient = useQueryClient()
-  const [busy, setBusy] = useState<Busy>(null)
+  const reported = usePassed(readAt, RESTART_TIMEOUT_MS) ? null : (status.start_progress ?? null)
+  const busy: Busy = running?.kind ?? (reported ? 'start' : null)
+  const stage: null | StartStage = busy === 'start' ? startStage(running, reported) : null
+  const elapsed = useElapsedSeconds(stage !== null, undefined, running?.since ?? startedAtMs(reported))
+  const follow = stage !== null && !running?.restarting && status.start_progress !== undefined
+
+  useViewedInterval(
+    () => void queryClient.refetchQueries({ queryKey }, { cancelRefetch: false }),
+    START_PROGRESS_POLL_MS,
+    follow
+  )
+
+  return { busy, elapsed, stage }
+}
+
+function WebAccessForm({ queryKey, readAt, status, w }: FormProps): ReactElement {
+  const queryClient = useQueryClient()
+  const [running, setRunning] = useState<null | Running>(null)
+  const { busy, elapsed, stage } = useStartInFlight(status, running, queryKey, readAt)
   const [mode, setMode] = useState<WebAccessMode>(draftModeOf(status))
   const [publicUrl, setPublicUrl] = useState(status.public_url)
   // The choice follows the saved config when it changes underneath the pane (a CLI edit picked up
@@ -229,7 +289,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
 
   // Saved either way; a refused restart (a chat is running) applies when the gateway next restarts.
   const run = async (kind: NonNullable<Busy>, change: () => Promise<WebAccessChange>) => {
-    setBusy(kind)
+    setRunning({ kind, restarting: false, since: Date.now() })
 
     try {
       const result = await change()
@@ -241,11 +301,12 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
         return
       }
 
+      setRunning(current => current && { ...current, restarting: true })
       apply(await waitForRestart(result.restart_pid).catch(err => Promise.reject(restartError(err, result, w))))
     } catch (err) {
       notifyError(err, w.failed)
     } finally {
-      setBusy(null)
+      setRunning(null)
       void queryClient.invalidateQueries({ queryKey })
     }
   }
@@ -285,11 +346,32 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
               {phase === 'off' ? w.start : phase.startsWith('pending') ? w.restartGateway : w.stop}
             </Button>
           }
-          description={describe(phase, status, w)}
+          description={stage ? <StartProgress elapsed={elapsed} stage={stage} w={w} /> : describe(phase, status, w)}
           title={phase === 'serving' ? <ExternalLink href={url} native showExternalIcon>{url}</ExternalLink> : url || w.title}
         />
       </SettingsSection>
     </SettingsContent>
+  )
+}
+
+function startStage(running: null | Running, reported: null | WebAccessStartProgress): StartStage {
+  return running?.restarting ? 'restarting' : (reported?.step ?? 'preparing')
+}
+
+function startedAtMs(reported: null | WebAccessStartProgress): number | undefined {
+  return reported ? reported.started_at * 1000 : undefined
+}
+
+type StartProgressProps = { elapsed: number; stage: StartStage; w: WebAccessTranslations }
+
+/** Building the bundle can take minutes: the step says what Start is doing, the clock that it is
+ *  still doing it. Only the step is announced, not every second. */
+function StartProgress({ elapsed, stage, w }: StartProgressProps): ReactElement {
+  return (
+    <>
+      <span aria-live="polite">{w.startStages[stage]}</span>
+      <span className="block tabular-nums">{w.startElapsed(formatElapsed(elapsed))}</span>
+    </>
   )
 }
 

@@ -1,0 +1,17 @@
+name: chatgpt-style
+repo: https://github.com/amitamit10/hermes-chatgpt-style
+sha: 51555f5656690b4b46a921f4dc3054199f76e3ea
+title: ChatGPT Style
+description: "Unofficial ChatGPT / Codex-inspired theme for Hermes Desktop: light and dark palettes, a centred reading column, compact blue user bubbles, a rounded composer card with a blue send button, Codex-style model and effort pickers, a floating Files/Review card and a quieter sidebar and footer. Not affiliated with, endorsed by, or sponsored by OpenAI. Disclosure — registered through THEMES_AREA; its customCSS restyles native Desktop surfaces (sidebar rows, composer, user bubbles, menus, model picker, file panel, status bar) by selecting the app's data-slot / data-sidebar / data-tree-group hooks; no script DOM access, no network calls, no storage; no agent tools, hooks, middleware or env vars."
+maintainer: amitamit10
+tier: community
+category: desktop
+requires_hermes: ">=0.23"
+version: "1.0.0"
+docs_url: https://github.com/amitamit10/hermes-chatgpt-style
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

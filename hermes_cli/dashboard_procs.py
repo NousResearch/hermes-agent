@@ -496,8 +496,8 @@ def _is_detached_session_leader(pid: int, tty: str) -> bool:
     Known gap: the turn-isolation ``tui_gateway.compute_host`` and ``slash_worker`` children are
     launched the same way (``start_new_session=True``, no tty; ``compute_host`` also holds
     ``state.db``), so a wedged WAL holder of that class is spared here too. Their exit relies on
-    their own ppid watchdogs (``compute_host._parent_guard_loop``,
-    ``slash_worker._start_parent_death_watchdog``), not on this sweep. Discriminating by WAL-holder
+    ``compute_host._parent_guard_loop`` and on the gateway's owner-death supervisor
+    (``process_identity.spawn_owned``) respectively, not on this sweep. Discriminating by WAL-holder
     identity (``iter_deleted_sqlite_sidecar_holders``) was deliberately not done in this change.
     """
     if tty not in _NO_TTY:
@@ -790,8 +790,8 @@ def _detect_concurrent_hermes_instances(
     PM stages a fresh generation instead of replacing a mapped hermes.exe.
     Returning an empty list would let old callers continue into that mutation.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.dashboard_procs._detect_concurrent_hermes_instances")
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:

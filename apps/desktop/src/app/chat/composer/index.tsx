@@ -6,7 +6,6 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef
 } from 'react'
@@ -15,7 +14,7 @@ import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
-import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
+import { composerFloatingStrip, composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -35,6 +34,7 @@ import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
+import { useReplyPaused } from '@/store/paused-replies'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -47,6 +47,7 @@ import { useTheme } from '@/themes'
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { ComposerTopSlot } from './composer-top-slot'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -89,6 +90,7 @@ import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { enterLocked, pausedReplyControls } from './paused-reply'
 import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
@@ -193,9 +195,8 @@ export function ChatBar({
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
-  const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
-  const statusDrawerId = useId()
-  const codingDrawerId = useId()
+  const statusDrawer = useStatusDrawer(activeQueueSessionKey)
+  const { codingDrawerId, collapsed: statusDrawerCollapsed, statusDrawerId, toggle: toggleStatusDrawer } = statusDrawer
 
   const requestBusyConfig = useCallback<GatewayRequester>(
     (method, params) => (gateway ? gateway.request(method, params) : Promise.reject(new Error('Gateway unavailable'))),
@@ -414,6 +415,7 @@ export function ChatBar({
 
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
     attachmentCount: attachments.length,
@@ -635,7 +637,8 @@ export function ChatBar({
     // The instruction the user types stays in the input; the pasted source
     // material rides along as a file. Falls back to inline insertion if the
     // attachment can't be created (missing bridge, write failure) so the
-    // paste is never lost.
+    // paste is never lost; a paste rejected as too large is dropped after the
+    // error toast rather than flooding the editor.
     if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
       const editor = event.currentTarget
 
@@ -1002,7 +1005,7 @@ export function ChatBar({
       const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
-      if (disabled) {
+      if (enterLocked(disabled, replyPaused)) {
         return
       }
 
@@ -1130,7 +1133,7 @@ export function ChatBar({
     <ComposerControls
       autoSpeak={autoSpeak}
       busy={busy}
-      busyAction={busyAction}
+      {...pausedReplyControls(replyPaused, busyAction, canSteer ? () => steerDraft('steer') : undefined)}
       canSubmit={canSubmit}
       cardWaiting={cardWaiting}
       compactModelPill={poppedOut || compactPill}
@@ -1155,7 +1158,6 @@ export function ChatBar({
         closeTrigger()
         queueDraft()
       }}
-      onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
@@ -1456,7 +1458,7 @@ export function ChatBar({
                   // track past the surface — and every `w-full` child (the fade,
                   // the input/controls row) laid out against that phantom width
                   // and got clipped by overflow-hidden, send button first.
-                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit]', composerSurfaceRing,
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1495,7 +1497,7 @@ export function ChatBar({
                   {/* Contribution seams: banners above, a row below, inline
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
-                  <ContribSlot area={COMPOSER_AREAS.top} />
+                  <ComposerTopSlot sessionId={sessionId} />
                   <RestoredDraftNotice
                     freshDraft={activeQueueSessionKey === null}
                     onUndone={clearDraft}
@@ -1557,7 +1559,7 @@ export function ChatBarFallback() {
       )}
       data-slot="composer-root"
     >
-      <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]">
+      <div className={cn('composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit]', composerSurfaceRing)}>
         <div aria-hidden className={composerInputBacking} />
       </div>
     </div>

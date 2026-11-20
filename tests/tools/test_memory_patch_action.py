@@ -153,3 +153,32 @@ class TestPatchBatch:
         ops = destructive_ops({"action": "batch", "operations": [
             {"action": "patch", "old_text": "item B", "new_text": "x"}]})
         assert [op["action"] for op in ops] == ["patch"]
+
+
+@pytest.mark.parametrize("prefix", ["§\n", "## ", "§\n## "])
+@pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+def test_display_prefix_pasted_from_memory_matches_only_whole_entry(
+    tmp_path, monkeypatch, prefix, batched,
+):
+    """#154784: decoration in the prompt must not become part of old_text."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    store = MemoryStore()  # production memory budget, not a reduced test-only limit
+    entry = "Termux gateway relay fix: keep the bridge alive while changing displays."
+    sibling = "Evolve stack (VPS): NeMo Guardrails :8010 is a separate entry."
+    assert store.add("memory", entry)["success"]
+    assert store.add("memory", sibling)["success"]
+
+    if batched:
+        result = store.apply_batch("memory", [
+            {"action": "patch", "old_text": prefix + entry, "content": "Bridge fixed."},
+        ])
+    else:
+        result = store.patch("memory", prefix + entry, "Bridge fixed.")
+    assert result["success"], result
+    assert store._entries_for("memory") == ["Bridge fixed.", sibling]
+
+    # An entry boundary inside old_text must NEVER consolidate two entries.
+    joined = "§\nBridge fixed.\n§\n" + sibling
+    refused = store.patch("memory", joined, "must not land")
+    assert refused["success"] is False
+    assert store._entries_for("memory") == ["Bridge fixed.", sibling]

@@ -95,10 +95,6 @@ async def _relay_reply(clarify_id, session_key):
 async def test_native_callbacks_deliver_only_for_the_retained_session(reply, monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
     monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
-    with cm._lock:
-        cm._entries.clear()
-        cm._session_index.clear()
-        cm._notify_cbs.clear()
     try:
         for index, profile in enumerate(("alpha", "beta", "alpha")):
             session_key = f"agent:{profile}:telegram:dm:42"
@@ -113,7 +109,7 @@ async def test_native_callbacks_deliver_only_for_the_retained_session(reply, mon
             assert owner.event.is_set() and owner.response == "B"
             assert cm.wait_for_response(clarify_id, timeout=0) == "B"
     finally:
-        with cm._lock:
-            cm._entries.clear()
-            cm._session_index.clear()
-            cm._notify_cbs.clear()
+        cm.clear_session("other-owner")
+        cm.clear_session("foreign-session")
+        cm.clear_session("agent:alpha:telegram:dm:42")
+        cm.clear_session("agent:beta:telegram:dm:42")

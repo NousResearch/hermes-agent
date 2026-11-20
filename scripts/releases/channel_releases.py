@@ -441,9 +441,6 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     # canary's names the live canary, whose objects the R2 pruner keeps however old.
     channel = "canary" if policy == "canary-release" else "stable"
     pointer = f"releases/{channel}/release-candidates.json"
-    log(f"Writing {pointer} and promoting the {channel} feeds")
-    # The head already names the previous release after the first bundled one: replace it
-    # under its current ETag, since a create-only write refuses an existing object.
     # A rejected older canary must not replace the pointer protecting the live
     # canary's archive from pruning. Feed/head monotonicity checks run too late.
     if policy == "canary-release":
@@ -456,14 +453,23 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
                 candidate = published_canary_timestamp(payload_tag)
                 if previous is None or candidate is None or candidate <= previous:
                     raise ChannelError("Refusing a stale canary publication: it cannot overwrite the live retention pointer")
-    head = publisher.store.get(pointer)
-    publisher._write(pointer, accepted, head[1] if head else None)
-    if publisher.reader.read_bytes(pointer) != canonical_json(accepted):
-        raise ChannelError(f"{channel.capitalize()} candidate pointer read-back differs")
+    log(f"Promoting the {channel} feeds")
     promote_stable_feeds(accepted, root, publisher.public_base)
     log(f"Promoting build {request['buildId']} to the {name} head")
     result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
     log(f"Channel {name} head is build {request['buildId']}")
+    # Write the candidate retention pointer only after the head actually advances:
+    # a failed feed promotion or head CAS must leave the still-live release protected.
+    # The head already names the previous release after the first bundled one: replace it
+    # under its current ETag, since a create-only write refuses an existing object.
+    # Retrying the same promoted build converges here because promote_protected is idempotent.
+    expected_pointer = canonical_json(accepted)
+    head = publisher.store.get(pointer)
+    if head is None or head[0] != expected_pointer:
+        log(f"Writing {pointer}")
+        publisher._write(pointer, accepted, head[1] if head else None)
+        if publisher.reader.read_bytes(pointer) != expected_pointer:
+            raise ChannelError(f"{channel.capitalize()} candidate pointer read-back differs")
     return result
 
 

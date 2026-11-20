@@ -70,7 +70,11 @@ class CompressionTelemetryMixin:
         if isinstance(telemetry, dict):
             telemetry["protected_head_tokens"] = estimate_messages_tokens_rough(head_messages)
             telemetry["middle_window_tokens"] = estimate_messages_tokens_rough(middle_messages)
-            telemetry["protected_tail_tokens"] = estimate_messages_tokens_rough(tail_messages)
+            tail_tokens = estimate_messages_tokens_rough(tail_messages)
+            telemetry["protected_tail_tokens"] = tail_tokens
+            # Kept for the anti-thrash verdict's log: it sizes the tail the cut could not shrink
+            # (see _prompt_breakdown_tokens).
+            self._last_compaction_tail_tokens = tail_tokens
 
     def _record_aux_compression_call(
         self, *, prompt_messages: list[dict[str, Any]], max_tokens: int | None, duration_ms: int,

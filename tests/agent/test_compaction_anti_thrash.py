@@ -163,6 +163,35 @@ class TestFutilityGuard:
             "tokenizer skew must not be mistaken for an incompressible floor"
         )
 
+    def test_ineffective_log_names_the_fixed_prompt_and_kept_tail(self, caplog):
+        """The verdict correctly fires here, so the log has to carry the numbers that explain it.
+
+        Measured on a 50+ tool profile (2026-11-20): the prompt was 76,266 real tokens against a
+        70,000 threshold, of which ~39.5K was system prompt + tool schemas and ~34.5K the tail the
+        cut had to keep. The remedy is compression.threshold_tokens (or protect_last_n), not /new,
+        and an operator should not have to reconstruct that from telemetry.
+        """
+        import logging
+
+        cc = _compressor(threshold_tokens=70_000)
+        cc.quiet_mode = False
+        msgs = _messages(40, size=1200)
+        cc.compress(msgs, current_tokens=76_266)
+        cc._last_compaction_tail_tokens = 34_559
+        cc.last_compression_rough_tokens = 36_777  # rough messages-only estimate of the same request
+        cc._verify_compaction_cleared_threshold = True
+
+        with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+            cc.update_from_response({"prompt_tokens": 76_266})
+
+        assert cc._ineffective_compression_count >= 1, "an over-threshold pass still strikes"
+        text = caplog.text
+        assert "39489" in text, "the fixed prompt (real minus rough) must be named"
+        assert "34559" in text, "the tail the cut kept must be named"
+        assert "compression.threshold_tokens" in text and "protect_last_n" in text, (
+            "the log must name the knob instead of implying /new"
+        )
+
     def test_model_switch_resets_and_persists_fallback_streak(self, tmp_path):
         db = storage_handle(tmp_path)
         seed_session(db, "s1", "cli")

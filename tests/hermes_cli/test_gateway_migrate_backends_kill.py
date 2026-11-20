@@ -77,3 +77,33 @@ def test_a_run_killed_right_after_a_rename_never_recovers_as_rolled_back_with_th
     (step,) = [s for s in engine.status_payload_from(None, manifest)["manual_steps"] if f"{home}/{name}" in s]
     assert "stopped while writing" in step and "edited" not in step, step  # no edit was made: say what happened
     assert step in out
+
+
+_LAUNCHD = {"supervisor": "launchd", "scope": "gui/501", "unit": "local.hermes-dashboard",
+            "unit_path": "/Users/u/Library/LaunchAgents/local.hermes-dashboard.plist"}
+
+
+@pytest.mark.parametrize("supervisor", ["systemd", "launchd"])
+def test_the_steps_after_a_kill_before_the_stop_leave_the_running_old_backend_alone(scratch, supervisor):
+    """Killed while writing config.yaml (before the old backend was stopped): the recovery ends incomplete, says
+    the old backend was not stopped, and its steps neither re-enable, start nor bootstrap it (it never stopped).
+    The file steps stay. Checked on the journal of the real killed run, for the systemd and launchd builders."""
+    home, race_dir, env = scratch
+    _killed_after_publishing(env, race_dir, "config.yaml")
+    killed = engine.read_manifest(home)
+    assert "stop_old_backend" not in killed["entered"], killed["entered"]
+
+    recovery = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                              text=True, timeout=120, check=False)
+    out = recovery.stdout + recovery.stderr
+    assert recovery.returncode == engine.EXIT_ROLLBACK_INCOMPLETE, out
+    assert "the old backend was not stopped" in out, out
+    manifest = engine.read_manifest(home)
+    if supervisor == "launchd":
+        manifest["old_backend"].update(_LAUNCHD)
+    steps = engine.status_payload_from(None, manifest)["manual_steps"]
+
+    unit = manifest["old_backend"]["unit"]
+    assert [s for s in steps if unit in s] == [], steps  # no enable / start / mv .disabled / bootstrap
+    assert any("stopped while writing" in s and f"{home}/config.yaml" in s for s in steps), steps
+    assert any(f"{home}/.env" in s for s in steps), steps

@@ -849,6 +849,11 @@ def _verify_old(host, m: dict) -> Optional[str]:
     return None if _wait(host, ROLLBACK_VERIFY_SECONDS, ok) else why[0]
 
 
+def _old_never_stopped(m: dict) -> bool:
+    """Whether the journal shows the apply never reached the old backend's stop (and so never disabled it)."""
+    return m.get("kind") == "apply" and not _entered(m, "stop_old_backend")
+
+
 def _manual_rollback_steps(m: dict) -> list[str]:
     """The numbered-by-the-caller steps that finish a rollback by hand, from the recorded state. Every
     ``hermes`` command names this run's profile (``hermes -p NAME``), so it acts on this home."""
@@ -863,6 +868,8 @@ def _manual_rollback_steps(m: dict) -> list[str]:
         steps.append(f"{hermes} gateway start")
     if m.get("old_unit_dropin"):
         steps.append(f"rm -f {m['old_unit_dropin']} && systemctl --user daemon-reload")
+    if _old_never_stopped(m):  # it ran all along: nothing of it to enable, start or bootstrap again
+        return steps
     if rec["supervisor"] == "systemd":
         systemctl = "systemctl --user" if rec["scope"] == "user" else "systemctl"
         enable = {"enabled": f"{systemctl} enable {rec['unit']}",
@@ -914,6 +921,8 @@ def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -
     why = _verify_old(host, m)
     if errors or why:
         detail = "; ".join(errors + ([f"old backend not verified: {why}"] if why else []))
+        if _old_never_stopped(m):
+            detail += "; the old backend was not stopped" + ("" if why else " and is still running")
         run.finish("failed", f"{reason}; rollback incomplete: {detail}")
         print(f"\n✗ Rollback incomplete ({detail}). Do this by hand:")
         print("\n".join(f"  {n}. {s}" for n, s in enumerate(_manual_rollback_steps(m), 1)))

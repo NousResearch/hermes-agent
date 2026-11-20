@@ -582,7 +582,8 @@ there is nothing to migrate.
 
 Options: `--address HOST:PORT` (pick one backend when several serve this home), `--keep-webapp-address`
 (retire the old backend but keep an already enabled Webapp where it is), `--force-interrupt` (proceed
-although a turn is running on the old backend; without it a running turn blocks), `--detach` (with
+although a turn is running on the old backend, or its turn activity cannot be read; without it either
+blocks with exit 3, and a forced move past unreadable activity says so before it starts), `--detach` (with
 `--apply` or `--restore`: run in the background, outside the caller's systemd unit; a background run that
 refuses to start is reported by `--status` as `failed` with the reason; where the move is manual steps
 only, such as Windows or a system unit, `--apply --detach` starts nothing and prints them with exit 6; exit 7, JSON `"outcome":

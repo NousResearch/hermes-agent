@@ -1195,6 +1195,10 @@ def cmd_apply(host, args) -> int:
         if detached and code != EXIT_OK:
             _refuse_detached(host, plan, code)
         return code
+    if plan.running_turns is None and getattr(args, "force_interrupt", False) and not as_json:
+        # Forced past unknown activity: said before the prompt, never read as idle (JSON has running_turns null).
+        print("⚠ The old backend's turn activity could not be read; with --force-interrupt the move goes ahead "
+              "and any turn running on it is interrupted.")
     if not _confirm("Migrate this home to the gateway now?", bool(getattr(args, "yes", False))):
         print("Aborted; nothing changed.")
         return EXIT_OK

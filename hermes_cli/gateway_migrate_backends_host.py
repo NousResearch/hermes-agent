@@ -498,21 +498,15 @@ class SystemHost:
         )
         merged = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), self.read_config())
         return _merge_managed_overlay(_expand_env_vars(_canonicalize_config(merged)))[0]
-    def set_config(self, values: dict, *, expect: object = False) -> Optional[bytes]:
-        """Set *values* in ``config.yaml``; returns the exact bytes published (None on a non-file config
-        backend, which keeps its own write path). With *expect* (the sha256 of the backup the migration took,
-        None: there was no file) the file is copied to a private file beside it and compared with it first,
-        the change is made on that copy, and the copy is renamed over ``config.yaml``: an edit made since
-        the backup is never folded in (``FileChangedSinceBackup``)."""
+    def set_config(self, values: dict, *, expect: Optional[str]) -> bytes:
+        """Set *values* in ``config.yaml`` (the file config backend: the apply refuses any other); returns
+        the exact bytes published. *expect* is the sha256 of the backup the migration took (None: there was
+        no file): the file is copied to a private file beside it and compared with it first, the change is
+        made on that copy, and the copy is renamed over ``config.yaml``: an edit made since the backup is
+        never folded in (``FileChangedSinceBackup``)."""
         from hermes_cli.config import _set_nested, _write_user_config, require_readable_config_before_write
-        from hermes_cli.config_backend import _FILE_BACKEND, drop_other_access, get_config_backend
+        from hermes_cli.config_backend import drop_other_access
         path = self.home / "config.yaml"
-        if expect is False or get_config_backend() is not _FILE_BACKEND:
-            cfg = require_readable_config_before_write(path)
-            for key, value in values.items():
-                _set_nested(cfg, key, value)
-            _write_user_config(path, cfg)
-            return None
         with _staged_copy(path, expect) as staged:
             cfg = require_readable_config_before_write(staged)
             for key, value in values.items():

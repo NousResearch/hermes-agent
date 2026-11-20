@@ -1,5 +1,7 @@
 """Canary E2E is manual-only now that Stable Release runs the canary suites directly;
-install-e2e-red.yml tracks Canary release completions of Stable Release.
+Stable Release's own track-canary-red job updates the install-e2e-red tracker on every
+canary completion (avoiding GitHub Actions' workflow_run suppression on GITHUB_TOKEN
+dispatches), while install-e2e-red.yml remains manual-only for preview/replay.
 
 The real workflow files are evaluated with the repo's Actions-expression evaluator
 for each way a run starts, and the commit step is replayed in Bash.
@@ -9,6 +11,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
+from scripts.releases import lanes as lane_set
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
 
@@ -34,12 +37,15 @@ def resolved_commit(ctx: dict) -> str:
     return workflow_steps.outputs(step, ctx)["commit"]
 
 
-def test_canary_e2e_is_manual_only_and_red_tracker_watches_stable_release():
+def test_canary_e2e_and_red_tracker_replay_are_manual_only():
     canary_e2e = load("canary-e2e.yml")
     # Daily canaries run ci, install-e2e, and windows-live inside Stable Release;
     # keeping workflow_run on canary-e2e.yml would run the ~1,400-minute set twice.
     assert set(canary_e2e["on"]) == {"workflow_dispatch"}
-    assert load("install-e2e-red.yml")["on"]["workflow_run"]["workflows"] == [load("stable-release.yml")["name"]]
+    # Canary Release dispatches Stable Release with GITHUB_TOKEN, so GitHub Actions
+    # suppresses downstream workflow_run events; Stable Release runs track-canary-red
+    # directly and install-e2e-red.yml stays manual-only for dry-run preview/replay.
+    assert set(load("install-e2e-red.yml")["on"]) == {"workflow_dispatch"}
 
 
 @pytest.mark.parametrize(("ctx", "commit"), [
@@ -115,28 +121,32 @@ def test_artifacts_are_named_for_the_commit_under_test():
         assert MAIN_TIP not in str(gha.render(name, ctx)), f"{rel}: {name}"
 
 
-@pytest.mark.parametrize(("overrides", "tracks"), [
-    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "conclusion": "failure"}, True),
-    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "conclusion": "success"}, True),
-    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "conclusion": "skipped"}, False),
-    ({"display_title": "Stable release rc.1-v0.23.3", "conclusion": "failure"}, False),
-    ({"display_title": "Stable release rc.1-v0.23.3", "conclusion": "success"}, False),
-    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3", "event": "push"}, False),
-    ({"display_title": "Canary release canary.20261120T064100Z-v0.23.3",
-      "head_repository": {"full_name": "fork/hermes-agent"}}, False),
+@pytest.mark.parametrize(("admit_result", "policy", "cancelled", "tracks"), [
+    ("success", "canary", False, True),
+    ("success", "stable", False, False),
+    ("failure", "canary", False, False),
+    ("skipped", "canary", False, False),
+    ("success", "canary", True, False),
 ])
-def test_the_tracker_follows_only_canary_runs_of_stable_release(overrides, tracks):
-    workflow_run = {
-        "event": "workflow_dispatch",
-        "conclusion": "failure",
-        "head_repository": {"full_name": UPSTREAM},
-        **overrides,
+def test_stable_release_tracks_only_completed_admitted_canary_runs(admit_result, policy, cancelled, tracks):
+    stable = load("stable-release.yml")
+    job = stable["jobs"]["track-canary-red"]
+    assert job["needs"] == ["admit", "complete"]
+    assert str(job.get("continue-on-error")).lower() == "true"
+    assert job["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
+    ctx = {
+        "needs": {
+            "admit": {"result": admit_result, "outputs": {"policy": policy}},
+            "complete": {"result": "failure"},
+        },
+        "__status__": {
+            "always": True,
+            "cancelled": cancelled,
+            "success": not cancelled and admit_result in {"success", "skipped"},
+            "failure": not cancelled and admit_result == "failure",
+        },
     }
-    ctx = {"github": {"event_name": "workflow_run", "repository": UPSTREAM, "run_id": RUN_ID,
-                      "event": {"workflow_run": workflow_run}},
-           "inputs": {}}
-    workflow = load("install-e2e-red.yml")
-    assert gha.condition(workflow["jobs"]["track"]["if"], ctx) is tracks
-    # Only runs that track share the queue, so stable or skipped runs can't replace a queued result.
-    group = gha.render(workflow["concurrency"]["group"], ctx)
-    assert group == ("install-e2e-red-tracker-auto" if tracks else f"install-e2e-red-tracker-{RUN_ID}")
+    assert gha.condition(job["if"], ctx) is tracks
+    # Diagnostic calls must keep the "Build diagnostic " prefix so red-tracker.mjs ignores them.
+    for call in lane_set.DIAGNOSTIC_CALLS:
+        assert stable["jobs"][call]["name"].startswith("Build diagnostic "), call

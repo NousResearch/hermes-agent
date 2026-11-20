@@ -803,3 +803,30 @@ jobs:
           MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
           # Repository variable; 'true' commits the draft held for Publish now.
           MS_STORE_HOLD: ${{ vars.MS_STORE_HOLD }}
+
+  track-canary-red:
+    name: Update the install-e2e-red tracker
+    # Runs inside Stable Release rather than via workflow_run: canary-release.yml
+    # dispatches stable-release.yml with GITHUB_TOKEN, and GitHub Actions suppresses
+    # downstream workflow_run events from GITHUB_TOKEN-dispatched runs.
+    needs: [admit, complete]
+    if: always() && !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.policy == 'canary'
+    continue-on-error: true
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: tests/install/e2e-assets/red-tracker.mjs
+          sparse-checkout-cone-mode: false
+      - name: Open, update or close the tracker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          COMPLETE_RESULT: ${{ needs.complete.result }}
+        run: node tests/install/e2e-assets/red-tracker.mjs --run-id "$RUN_ID" --conclusion "$COMPLETE_RESULT"

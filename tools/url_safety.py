@@ -150,7 +150,10 @@ def _resolve_allow_private_urls() -> bool:
     if env_val in {"false", "0", "no"}:
         return False  # explicit false does not fall through to config
     try:
-        cfg = _policy_config()
+        # The profile's own keys, not the managed scope laid over them: it pinned neither spelling
+        # (decided above), and a null there, which pins nothing, would erase the profile's value.
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
         for section in ("security", "browser"):  # preferred, then legacy
             block = cfg.get(section, {})
             if isinstance(block, dict) and is_truthy_value(block.get("allow_private_urls"), default=False):

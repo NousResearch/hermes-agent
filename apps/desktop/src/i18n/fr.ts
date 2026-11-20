@@ -4482,6 +4482,10 @@ export const frOverrides = {
       retrying: 'Nouvelle tentative…'
     }
   },
+  inAppOffer: {
+    dismiss: 'Peut-être plus tard',
+    describedBy: "Un message de l'équipe Nous."
+  },
   modelPicker: {
     title: 'Changer de modèle',
     current: 'actuel :',

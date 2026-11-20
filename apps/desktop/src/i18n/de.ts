@@ -4473,6 +4473,10 @@ export const deOverrides = {
       retrying: 'Wird erneut versucht…'
     }
   },
+  inAppOffer: {
+    dismiss: 'Vielleicht später',
+    describedBy: 'Eine Nachricht vom Nous-Team.'
+  },
   modelPicker: {
     title: 'Modell wechseln',
     current: 'aktuell:',

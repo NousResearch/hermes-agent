@@ -4463,6 +4463,10 @@ export const esOverrides = {
       retrying: 'Reintentando…'
     }
   },
+  inAppOffer: {
+    dismiss: 'Quizá más tarde',
+    describedBy: 'Un mensaje del equipo de Nous.'
+  },
   modelPicker: {
     title: 'Cambiar modelo',
     current: 'actual:',

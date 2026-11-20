@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… (اختر {label})"
     approval_command_truncated: "… (الأمر مقتطع — استخدم /logs أو /debug للنص الكامل)"
     approval_description_truncated: "… (الوصف مقتطع)"
+    approval_schedule_truncated: "… (المهمة كاملة مطبوعة أعلاه)"
     approval_title_schedule: "⏰  جدولة هذه المهمة؟"
     approval_schedule_once: "سماح"
     approval_schedule_session: "السماح لهذه المحادثة"

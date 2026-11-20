@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… ({label} seçin)"
     approval_command_truncated: "… (komut kısaltıldı — tam metin için /logs veya /debug kullanın)"
     approval_description_truncated: "… (açıklama kısaltıldı)"
+    approval_schedule_truncated: "… (görevin tamamı yukarıda yazdırıldı)"
     approval_title_schedule: "⏰  Bu görev zamanlansın mı?"
     approval_schedule_once: "İzin ver"
     approval_schedule_session: "Bu sohbet için izin ver"

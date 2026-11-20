@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… (escolha {label})"
     approval_command_truncated: "… (comando truncado — use /logs ou /debug para o texto completo)"
     approval_description_truncated: "… (descrição truncada)"
+    approval_schedule_truncated: "… (tarefa completa impressa acima)"
     approval_title_schedule: "⏰  Agendar esta tarefa?"
     approval_schedule_once: "Permitir"
     approval_schedule_session: "Permitir nesta conversa"

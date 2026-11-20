@@ -1132,6 +1132,9 @@ def _with_staged_script(a: dict[str, Any], job: Optional[dict[str, Any]], run) -
         return run()
     from cron.script_content import derived_script_name, stage_script_content
     own = str(job.get("script") or "").strip() or None if job else None
+    if own and any(other.get("id") != job.get("id") and str(other.get("script") or "").strip() == own
+                   for other in list_jobs(include_disabled=True)):
+        own = None  # another job runs this file too: an edit must not change what that job runs
     name = str(a["script"] or "").strip() or own or derived_script_name(a["name"] or (job or {}).get("name"))
     staged = stage_script_content(content, name, own_script=own)
     if staged.error:
@@ -1142,7 +1145,9 @@ def _with_staged_script(a: dict[str, Any], job: Optional[dict[str, Any]], run) -
     except Exception:
         staged.discard()
         raise
-    if not json.loads(result).get("success"):
+    outcome = json.loads(result)
+    # A saved job keeps its script even when a later step (scheduler registration) failed.
+    if not outcome.get("success") and not outcome.get("job_saved"):
         staged.discard()
     return result
 

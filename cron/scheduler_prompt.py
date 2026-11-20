@@ -54,7 +54,9 @@ def parse_wake_gate(script_output: Optional[str]) -> WakeGate:
         return WakeGate(True, None, output)
     if not isinstance(gate, dict):
         return WakeGate(True, None, output)
-    context = _render_gate_context(gate.get("context"))
+    # ``context`` replaces the output only on a real gate line: an ordinary JSON result that happens to
+    # carry a ``context`` field keeps every field.
+    context = _render_gate_context(gate.get("context")) if "wakeAgent" in gate else None
     if context is not None:
         data = context
     elif "wakeAgent" in gate and set(gate) <= _GATE_KEYS:

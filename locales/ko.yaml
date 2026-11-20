@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… ({label} 선택)"
     approval_command_truncated: "… (명령이 잘렸어요 — 전체 내용은 /logs 또는 /debug로 확인하세요)"
     approval_description_truncated: "… (설명이 잘렸어요)"
+    approval_schedule_truncated: "… (전체 작업이 위에 출력됨)"
     approval_title_schedule: "⏰  이 작업을 예약할까요?"
     approval_schedule_once: "허용"
     approval_schedule_session: "이 채팅에서 허용"

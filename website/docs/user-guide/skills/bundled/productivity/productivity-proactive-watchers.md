@@ -52,6 +52,14 @@ due). This skill plans the jobs; it never sends, books or submits anything on it
   time-based reminders instead.
 - Templates in `templates/`: `moments_gate.py` (time-anchored plans), `unanswered_gate.py` (owed replies).
 
+## How to Run
+
+Load this skill, then call `cronjob_manage(action="create", ...)` with the job. For a gate, read the
+template with `skill_view(name="proactive-watchers", file_path="templates/moments_gate.py")` (or
+`unanswered_gate.py`), fill its constants, and pass the whole text as `script_content`. To check a
+gate before creating the job, save it with `write_file` and run it once with `terminal`
+(`python3 gate.py`): the last line must be the gate JSON.
+
 ## Quick Reference
 
 | Situation | Job shape | Gate |

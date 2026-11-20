@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… ({label} を選択)"
     approval_command_truncated: "… (コマンドを切り詰めました — 全文は /logs または /debug で確認してください)"
     approval_description_truncated: "… (説明を切り詰めました)"
+    approval_schedule_truncated: "…（ジョブ全文は上に表示）"
     approval_title_schedule: "⏰  このジョブをスケジュールしますか？"
     approval_schedule_once: "許可"
     approval_schedule_session: "このチャットで許可"

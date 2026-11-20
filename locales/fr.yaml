@@ -2410,6 +2410,7 @@ cli:
     approval_choose_full: "… (choisir {label})"
     approval_command_truncated: "… (commande tronquée — utilisez /logs ou /debug pour le texte complet)"
     approval_description_truncated: "… (description tronquée)"
+    approval_schedule_truncated: "… (tâche complète affichée au-dessus)"
     approval_title_schedule: "⏰  Planifier cette tâche ?"
     approval_schedule_once: "Autoriser"
     approval_schedule_session: "Autoriser pour cette conversation"

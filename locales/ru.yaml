@@ -2161,6 +2161,7 @@ cli:
     approval_choose_full: "… (выберите {label})"
     approval_command_truncated: "… (команда обрезана — полный текст в /logs или /debug)"
     approval_description_truncated: "… (описание обрезано)"
+    approval_schedule_truncated: "… (полное задание выведено выше)"
     approval_title_schedule: "⏰  Запланировать это задание?"
     approval_schedule_once: "Разрешить"
     approval_schedule_session: "Разрешить в этом чате"

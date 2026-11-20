@@ -46,6 +46,12 @@ class ApprovalCard:
         """``(body, footnote)``: the text the panel must always show, and the text it may trim."""
         return (description, "") if self.body_is_description else (command, description)
 
+    def prints_body_first(self, body: str) -> bool:
+        """True when the whole body goes to scrollback before the panel: a description body (a job and
+        its gate script) longer than a few lines may not fit the panel, and the user must be able to
+        read all of it before allowing it."""
+        return self.body_is_description and (body.count("\n") >= 4 or len(body) > 400)
+
     def choices(self, choices: list[str]) -> list[str]:
         """The offered choices this card shows: a description body has no "show full command"."""
         return [c for c in choices if c != "view"] if self.body_is_description else choices
@@ -82,7 +88,7 @@ _CARDS = {
             "always": "cli.tui.approval_schedule_always"}),
         outcome_keys=MappingProxyType({**_COMMAND_OUTCOME_KEYS, "deny": "cli.approval.schedule_outcome_deny"}),
         body_is_description=True,
-        truncated_key="cli.tui.approval_description_truncated"),
+        truncated_key="cli.tui.approval_schedule_truncated"),
 }
 
 

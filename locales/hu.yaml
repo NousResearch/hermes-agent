@@ -2178,6 +2178,7 @@ cli:
     approval_choose_full: "… (válaszd: {label})"
     approval_command_truncated: "… (a parancs csonkolva — a teljes szöveghez használd a /logs vagy /debug parancsot)"
     approval_description_truncated: "… (a leírás csonkolva)"
+    approval_schedule_truncated: "… (a teljes feladat fent kiírva)"
     approval_title_schedule: "⏰  Ütemezed ezt a feladatot?"
     approval_schedule_once: "Engedélyezés"
     approval_schedule_session: "Engedélyezés ebben a csevegésben"

@@ -762,6 +762,7 @@ def cmd_install(
         # (its MCP servers stay absent from every session) and nothing tells the user to restart.
         from hermes_cli.plugins_activation import report_activation
         report_activation(console, installed_name)
+    _pc()._settings_cli().offer_settings_after_install(console, installed_name, target, brief=brief)
     console.print()
 
 

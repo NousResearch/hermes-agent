@@ -387,7 +387,8 @@ async def host_header_middleware(request: Request, call_next):
     # app.state.bound_host is set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
+        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset()),
+        bool(getattr(app.state, "loopback_companion", None)),
     ):
         return JSONResponse(
             status_code=400,
@@ -1476,6 +1477,8 @@ def _start_server_runtime(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # Only the gateway's Webapp listener binds a loopback socket beside a specific address.
+    app.state.loopback_companion = None
     # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
     # launcher's preselected profile instead of silently running in the launch scope (#73085).
     app.state.initial_profile = str(initial_profile or "")

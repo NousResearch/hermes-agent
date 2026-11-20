@@ -586,7 +586,8 @@ async def recover_bot_mailbox(authority):
 async def start_gateway_runtime_api(runner):
     from gateway import run_api
     from gateway.webapp_listener import (
-        STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
+        STARTING, BrowserCredentialError, bind_origin, browser_session_token, dial_origin, listener_plan,
+        register_control_verbs,
     )
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
@@ -616,8 +617,17 @@ async def start_gateway_runtime_api(runner):
         elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
             reason = f"could not use {exc.filename} ({exc.strerror or exc})"
         else:
+            import errno
+            from gateway.webapp_listener import loopback_companion
             cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
-            reason = f"could not listen on {host}:{port} ({cause})"
+            # Only the specific address itself; a loopback socket that cannot bind (``::1`` with IPv6
+            # loopback off) keeps the OS's words.
+            if (loopback_companion(host) and isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL
+                    and not isinstance(exc, run_api.ListenerAddressError)):
+                cause = "the address is not assigned to any network interface on this machine"
+            # A specific address's loopback socket names its own address (run_api.ListenerAddressError).
+            address = getattr(exc, "address", None) or f"{host}:{port}"
+            reason = f"could not listen on {address} ({cause})"
         logger.error("Webapp unavailable: %s", reason)
         runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
         # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
@@ -631,6 +641,8 @@ async def start_gateway_runtime_api(runner):
     else:
         if webapp is not None:
             runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
+            if own := bind_origin(host, port):  # a specific address: the one a browser opens
+                runner.webapp_status["address"] = own
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
     for authority in _authorities(runner):
         await _recover_profile_bot_mailbox(runner, authority)

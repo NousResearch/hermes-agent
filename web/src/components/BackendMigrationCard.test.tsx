@@ -259,7 +259,7 @@ describe("readPoll", () => {
     });
   });
 
-  it("warns to preserve post-move config edits before showing manual steps on a refused restore", () => {
+  it("warns to save config.yaml and .env and keep edits before showing manual steps on a refused run", () => {
     const step = "cp /h/backend_migration/config.yaml.bak /h/config.yaml";
     const refused = {
       ...run("failed"),
@@ -272,7 +272,12 @@ describe("readPoll", () => {
     if (view.kind !== "notStarted") return;
     expect(view.lines).toHaveLength(3);
     expect(view.lines[0]).toBe(refused.message);
-    expect(view.lines[1]).toMatch(/edits.*since the move/i);
+    // As the CLI says: save both files first, then merge into the backups before, or re-apply after.
+    const warning = view.lines[1];
+    expect(warning).toMatch(/^Before running these steps, save a copy of your current config\.yaml and \.env/);
+    expect(warning).toMatch(/merge them into any backup copy a step copies back \(before you run it\), or re-apply them after the last step/);
+    // Also shown for a refused apply, where nothing was moved.
+    expect(warning).not.toMatch(/since the move/i);
     expect(view.lines[2]).toBe(step);
   });
 

@@ -241,6 +241,44 @@ async def test_network_recovery_downtime_does_not_count_as_conflict_quiet_period
 
 
 @pytest.mark.asyncio
+async def test_frequent_network_recoveries_still_let_the_conflict_episode_end(monkeypatch):
+    """Network recoveries closer together than the quiet window must not keep a conflict episode open
+    forever (#151829): healthy polling across generations still adds up, so isolated 409s hours apart
+    each restart the ladder at 1/5 instead of accumulating into the final fatal."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._app = SimpleNamespace(updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True))
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    try:
+        await adapter._handle_polling_conflict(conflict)
+        for _ in range(3):  # 3 x 60s of healthy polling, each generation ended by a network blip
+            for _ in range(7):
+                adapter._record_polling_progress(adapter._polling_generation)
+                clock["now"] += 10
+            await adapter._handle_polling_network_error(OSError("network interruption"))
+            clock["now"] += 5
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == 0
+
+        # The opposite side: a 409 still empties the window, so a live storm keeps climbing.
+        await adapter._handle_polling_conflict(conflict)
+        adapter._record_polling_progress(adapter._polling_generation)
+        clock["now"] += 30
+        await adapter._handle_polling_conflict(conflict)
+        assert adapter._polling_conflict_count == 2
+    finally:
+        verifier = adapter._polling_progress_verifier_task
+        if verifier is not None:
+            verifier.cancel()
+            await asyncio.gather(verifier, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
     """First getUpdates progress after a conflict retry is not durable recovery.
 
@@ -370,6 +408,12 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         f"count={adapter._polling_conflict_count}"
     )
     assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_retryable is True, (
+        "A 409 getUpdates conflict is transient single-writer contention, not a permanent config "
+        "error: the runner must re-queue it for background reconnection. Non-retryable here drops "
+        "the platform with no recovery path (not queued, and the stranded-platform net is also "
+        "gated on retryable), leaving telegram dead until a manual gateway restart."
+    )
     fatal_handler.assert_awaited_once()
     await _cancel_heartbeat(adapter)
 
@@ -632,6 +676,21 @@ def _build_polling_app(monkeypatch, adapter):
     )
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
     return captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra, expected", [({}, False), ({"drop_pending_on_cold_boot": True}, True)])
+async def test_cold_connect_answers_offline_backlog_unless_configured(monkeypatch, extra, expected):
+    """#143123: a cold boot hands PTB start_polling drop_pending_updates=False by default, so
+    messages sent while the gateway was off are answered; an explicit true still drops them."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
+    captured = _build_polling_app(monkeypatch, adapter)
+
+    ok = await adapter.connect()  # cold boot
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is expected
+    await _cancel_heartbeat(adapter)
 
 
 @pytest.mark.asyncio

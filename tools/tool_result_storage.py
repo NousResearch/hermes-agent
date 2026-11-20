@@ -12,18 +12,19 @@ import math
 import os
 import re
 import shlex
-import sqlite3
 import tempfile
 import threading
 import time
+from typing import Any
 
+from session_rules.media import PRUNED_SUBDIR, SPILLOVER_SUBDIR, archive_refs_in_text
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
-SPILLOVER_SUBDIR = "cache/spillover"
+_ARCHIVE_SUBDIRS = (SPILLOVER_SUBDIR, PRUNED_SUBDIR)
 # Fallback spillover age only (unreadable config); the real default is the session
 # retention window — see _spillover_retention_hours().
 SPILLOVER_MAX_AGE_HOURS = 24
@@ -66,17 +67,11 @@ def _spillover_retention_hours() -> int:
     return max(SPILLOVER_MAX_AGE_HOURS, int(days * 24))
 
 
-# How a spill archive is named inside transcript text: every pointer form — the host path,
-# the ``~``-relative translation, the in-container mounted path — carries the ``spillover/<name>``
-# segment. Sandbox-fallback pointers (``…/hermes-results/<name>``) do not, so their host-side
-# original stays unreferenced and is reclaimed by the orphan sweep, never by ownership.
-# Either separator: Windows host paths are backslashed (JSON-escaped as ``\\`` inside structured content).
-_SPILLOVER_NAME_RE = re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)")
-# instr(), not LIKE: structured content is stored behind a NUL sentinel and LIKE stops at NUL.
-SPILLOVER_SQL_FILTER = "(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0)"
+# How an archive is named inside transcript text, and the set the transcript holds: session_rules.media
+# (the store reads the same rules when a delete retires a session's archives).
 
 
-_ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results)[/\\][^/\\]+$")
+_ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results|pruned)[/\\][^/\\]+$")
 
 
 def expired_archive_fields(path: str) -> dict:
@@ -91,45 +86,40 @@ def expired_archive_fields(path: str) -> dict:
             "may already have taken effect.")}
 
 
-def spillover_names_in_text(*texts) -> set:
-    """Spillover archive basenames referenced by transcript message text (empty set on none)."""
-    names: set = set()
-    for text in texts:
-        if isinstance(text, str) and "spillover" in text:
-            names.update(_SPILLOVER_NAME_RE.findall(text))
-    return names
-
-
 def referenced_spillover_names(spill_dir) -> set | None:
-    """Basenames under *spill_dir* still referenced by any message in the home's ``state.db``.
+    """Basenames under *spill_dir* (``cache/spillover`` or ``cache/pruned``) still referenced by any
+    message in the home's ``state.db``; ``None`` when the reference set is unknown (see
+    :func:`referenced_archive_refs`)."""
+    refs = referenced_archive_refs(spill_dir.parent.parent)
+    prefix = f"cache/{spill_dir.name}/"
+    return None if refs is None else {ref[len(prefix):] for ref in refs if ref.startswith(prefix)}
+
+
+def referenced_archive_refs(home) -> set | None:
+    """``cache/<dir>/<name>`` archive references held by any message in *home*'s ``state.db``.
 
     ``set()`` when no database exists (no sessions → nothing references anything), ``None``
-    when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
-    and keep the files; a plain read-only connection is enough, the write path owns the locks."""
-    db_path = spill_dir.parent.parent / "state.db"
+    when the reference set is UNKNOWN (unreadable database/query) so callers fail closed
+    and keep the files; a read-only handle is enough, the write path owns the locks."""
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
+
+    db_path = home / "state.db"
     if not db_path.exists():
         return set()
     try:
-        # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
-        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
-        try:
-            rows = conn.execute(
-                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
-            ).fetchall()
-        finally:
-            conn.close()
-    except (sqlite3.Error, OSError):
+        refs: set = set()
+        with open_persistence_reader(db_path) as store:
+            for content, api_content in store.messages.spillover_reference_rows():
+                refs.update(archive_refs_in_text(content, api_content))
+    except (OSError, *STORE_FAILURES):
         return None
-    if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
-        return None
-    names: set = set()
-    for content, api_content in rows:
-        names |= spillover_names_in_text(content, api_content)
-    return names
+    return refs
 
 
 def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
-    """Delete spillover files older than *max_age_hours*; returns count removed (same
+    """Delete archive files (``cache/spillover`` and the prune originals in ``cache/pruned``) older
+    than *max_age_hours*; returns count removed (same
     contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly).
     A ``None`` age means the session retention window, not a cache TTL — an explicit
     ``max_age_hours`` (tests, legacy callers) still wins. An expired file is deleted only
@@ -139,9 +129,16 @@ def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
     unlink SessionDB delete/prune performs, not with the age sweep."""
     age_hours = _spillover_retention_hours() if max_age_hours is None else max_age_hours
     cutoff = time.time() - (age_hours * 3600)
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    return sum(_sweep_archive_dir(home / subdir, cutoff) for subdir in _ARCHIVE_SUBDIRS)
+
+
+def _sweep_archive_dir(archive_dir, cutoff: float) -> int:
+    """Unlink files in *archive_dir* older than *cutoff* that no state.db message references."""
     expired = []
     try:
-        entries = list(get_spillover_dir().iterdir())
+        entries = list(archive_dir.iterdir())
     except OSError:
         return 0
     for f in entries:
@@ -152,7 +149,7 @@ def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
             pass
     if not expired:
         return 0
-    referenced = referenced_spillover_names(get_spillover_dir())
+    referenced = referenced_spillover_names(archive_dir)
     removed = 0
     for f in expired:
         if referenced is None or f.name in referenced:  # unknown set: fail closed, keep
@@ -192,27 +189,38 @@ def _is_host_side_env(env) -> bool:
     return env_uses_host_filesystem(env)
 
 
-def _write_to_spillover(content: str, filename: str):
-    """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None.
+def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUBDIR, exclusive: bool = False):
+    """Write host-side to $HERMES_HOME/<subdir> (default cache/spillover); returns path str or None.
 
-    The write is size-verified before the caller tells the model "Full output saved":
-    a partially-flushed file (quota, ENOSPC race) fails closed to the bounded inline
-    truncation instead of referencing an archive that silently lost bytes.
+    The write is read back and compared byte-for-byte before the caller tells the model "Full
+    output saved": a partially-flushed or corrupted file (quota, ENOSPC race) fails closed to the
+    bounded inline truncation instead of referencing an archive that silently lost bytes.
     """
     data = content.encode("utf-8", errors="replace")
+    created = False
     try:
-        spill_dir = get_spillover_dir()
+        from hermes_constants import get_hermes_home
+        spill_dir = get_hermes_home() / subdir
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
-        path.write_bytes(data)
+        with open(path, "xb" if exclusive else "wb") as fh:  # exclusive: never overwrite another original
+            created = True
+            fh.write(data)
         persisted_size = os.stat(path).st_size
+        # Size first (cheap), then the bytes: the content is already in memory.
+        exact = persisted_size == len(data) and path.read_bytes() == data
     except OSError as exc:
-        logger.warning("Spillover write failed for %s: %s", filename, exc)
+        if exclusive and created:
+            try:
+                path.unlink()
+            except OSError as cleanup_error:
+                logger.warning("Partial archive cleanup failed for %s: %s", path, cleanup_error)
+        logger.warning("Archive write to %s failed for %s: %s", subdir, filename, exc)
         return None
-    if persisted_size != len(data):
+    if not exact:
         logger.warning(
             "Spillover write for %s is not lossless (%d bytes on disk, "
-            "expected %d) — discarding archive",
+            "expected %d, or the bytes differ) — discarding archive",
             filename, persisted_size, len(data),
         )
         try:
@@ -260,7 +268,7 @@ def _resolve_storage_dir(env) -> str:
     return f"{temp_dir.rstrip('/') or '/'}/hermes-results" if temp_dir else STORAGE_DIR
 
 
-def _safe_result_filename(tool_use_id: str) -> str:
+def _safe_result_filename(tool_use_id: str, ext: str = "txt") -> str:
     """Return a single safe filename for a tool result id."""
     raw_id = str(tool_use_id or "tool_result")
     safe_stem = _UNSAFE_RESULT_FILENAME_CHARS.sub("_", raw_id).strip("._-")
@@ -270,7 +278,240 @@ def _safe_result_filename(tool_use_id: str) -> str:
         digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:12]
         safe_stem = safe_stem[:_MAX_RESULT_FILENAME_STEM].rstrip("._-") or "tool_result"
         safe_stem = f"{safe_stem}_{digest}"
-    return f"{safe_stem}.txt"
+    return f"{safe_stem}.{ext}"
+
+
+# Built-in backends that publish ``cache/pruned`` (``tools.credential_files._CACHE_DIRS``): docker bind-mounts
+# it, modal/ssh/daytona/vercel_sandbox file-sync it, at the path ``to_agent_visible_cache_path`` names.
+_ARCHIVE_PUBLISHING_BACKENDS = frozenset({"docker", "modal", "ssh", "daytona", "vercel_sandbox"})
+
+
+def _archive_backend() -> str | None:
+    """The active terminal backend when ``read_file`` there can open a ``cache/pruned`` archive: ``"local"``
+    (host paths) or a backend that publishes the folder. None keeps every result whole: a plugin or unknown
+    backend (nothing says it mounts the folder), a hosted scope (its own sandbox, no host cache), or an
+    unresolvable policy (refusal scope). Decided on the backend: the prune holds no environment to probe."""
+    from tools.environments.sandbox_scope import hosted_scope
+    from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
+
+    if hosted_scope() is not None:
+        return None
+    try:
+        backend = terminal_env("TERMINAL_ENV", "local").strip().lower() or "local"
+    except TerminalPolicyUnavailable:
+        return None
+    return backend if backend == "local" or backend in _ARCHIVE_PUBLISHING_BACKENDS else None
+
+
+def _backend_reads_host_files() -> bool:
+    """True only on the ``local`` backend (outside a hosted scope): the one place a host path is the model's."""
+    return _archive_backend() == "local"
+
+
+def _archive_stub_path(host_path: str) -> str:
+    """Where the model's ``read_file`` finds the archive at *host_path*: the ``~/``-relative display path on
+    the local backend, else the mounted/synced path (``/root/.hermes/...`` or ``~/.hermes/...``). Always
+    ``/``-separated, so the reference scan finds ``cache/pruned/<name>`` in either form."""
+    from pathlib import Path, PurePath
+
+    from hermes_constants import display_hermes_home, get_hermes_home
+
+    if _archive_backend() != "local":
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return to_agent_visible_cache_path(host_path)
+    rel = Path(host_path).relative_to(get_hermes_home())
+    return f"{PurePath(display_hermes_home()).as_posix()}/{rel.as_posix()}"
+
+
+def write_pruned_original(content: str, session_id: str, tool_name: str, tool_call_id: str) -> tuple[str, str] | None:
+    """Archive one tool result's full original before the proactive prune shortens it.
+
+    Writes ``$HERMES_HOME/cache/pruned/<session>_<UTC stamp>_<tool>_<short id>.<json|txt>`` (``.json``
+    when the body parses as JSON), read back and compared byte-for-byte like a spill. Returns
+    ``(host path, stub path)``; the stub path is the ``~/``-relative display path, always ``/``-separated so
+    the reference scan finds ``cache/pruned/<name>``; on a sandboxed backend it is the path the sandbox reads
+    (:func:`_archive_stub_path`). None when the backend cannot open the archive or the write failed: the
+    caller then must keep that result unpruned.
+    """
+    try:
+        json.loads(content)
+        ext = "json"
+    except ValueError:
+        ext = "txt"
+    from hermes_constants import get_hermes_home
+    if _archive_backend() is None:
+        return None
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    short_id = hashlib.sha256(str(tool_call_id or "").encode("utf-8")).hexdigest()[:8]
+    archive_dir = get_hermes_home() / PRUNED_SUBDIR
+    # Resumed histories can repeat a tool_call_id: suffix until the name is free, then create exclusively.
+    filename = next(
+        name for n in range(1_000)
+        if not (archive_dir / (name := _safe_result_filename(
+            f"{session_id}_{stamp}_{tool_name}_{short_id}" + (f"_{n}" if n else ""), ext))).exists())
+    host_path = str(archive_dir / filename)
+    if _write_to_spillover(content, filename, PRUNED_SUBDIR, exclusive=True) is None:
+        return None
+    return host_path, _archive_stub_path(host_path)
+
+
+# ── Archive-before-stub: compaction / proactive-prune originals under cache/pruned/ ──
+# Every tool result a prune or compaction is about to shorten is first written, byte-verified, to
+# ``$HERMES_HOME/cache/pruned/`` and its stub names that file, so ``read_file`` gets the exact output
+# back. A result whose write fails keeps its full body; the files share the spillover sweeper above.
+
+ARCHIVE_POINTER_SEP = " — full result: "
+_ARCHIVE_POINTER_RE = re.compile(r" — full result: \S*cache/pruned/[A-Za-z0-9_.-]+")
+_ARCHIVE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")  # the names the writer makes and the sweeper finds
+
+
+def has_archive_pointer(content: str) -> bool:
+    """True for a prune stub that names its archived original: already shortened, never re-summarized
+    (the pointer is the only way back to the body)."""
+    return len(content) < 2_000 and ARCHIVE_POINTER_SEP in content and _ARCHIVE_POINTER_RE.search(content) is not None
+
+
+def _with_pointer(content: Any, display_path: str) -> Any:
+    """Stub *content* with the archive pointer, kept before an attached Skill Safety Rule."""
+    pointer = f"{ARCHIVE_POINTER_SEP}{display_path}"
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": pointer.strip(" —")}]
+    from agent.context_compressor_tail import _SKILL_SAFETY_SUFFIX
+
+    head, sep, rule = str(content).partition(_SKILL_SAFETY_SUFFIX)
+    return f"{head}{pointer}{sep}{rule}"
+
+
+def _readback_archive_path(tool_name: str, tool_args: str) -> str | None:
+    """The stub path of the archive a ``read_file`` call read back, or None.
+
+    Only when the call's ``path`` is absolute (after ``~``) and names an existing file directly inside
+    this home's ``cache/pruned``, on a backend that reads host files: that result's original is already
+    archived, so the prune points at it again instead of writing a copy of the rendering. Anything else
+    (a look-alike elsewhere, a missing file, a relative path, a sandboxed backend) takes the usual path."""
+    if tool_name != "read_file":
+        return None
+    from pathlib import Path, PurePath
+
+    from agent.context_compressor import _json_dict
+    from hermes_constants import display_hermes_home, get_hermes_home
+
+    path = _json_dict(tool_args).get("path")
+    if not isinstance(path, str) or not path or not _backend_reads_host_files():
+        return None
+    try:
+        candidate = Path(os.path.expanduser(path))
+        if not candidate.is_absolute():
+            return None
+        candidate = candidate.resolve()
+        if (candidate.parent != (get_hermes_home() / PRUNED_SUBDIR).resolve() or not candidate.is_file()
+                or not _ARCHIVE_NAME_RE.fullmatch(candidate.name)):
+            return None
+    except (OSError, ValueError, RuntimeError):  # unreadable path, embedded NUL, symlink loop
+        return None
+    return f"{PurePath(display_hermes_home()).as_posix()}/{PRUNED_SUBDIR}/{candidate.name}"
+
+
+def _calls_for_rows(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """``(tool_name, raw_arguments)`` of the call each row answers, by row index: the nearest PRECEDING assistant
+    call with that id. A resumed history can repeat an id, and a whole-transcript map would hand an older result a
+    later call's arguments (a later archive read-back would then skip saving that result's own original)."""
+    from agent.context_compressor import _tc_get
+
+    seen: dict[str, tuple[str, str]] = {}
+    out: list[tuple[str, str]] = []
+    for msg in messages:
+        out.append(seen.get(str(msg.get("tool_call_id") or ""), ("unknown", "")) if isinstance(msg, dict) else ("unknown", ""))
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                fn = _tc_get(tc, "function", {})
+                seen[_tc_get(tc, "id") or ""] = (_tc_get(fn, "name", "unknown"), _tc_get(fn, "arguments"))
+    return out
+
+
+def archive_pruned_originals(
+    messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """Write the original of every tool row *pruned* changed; returns ``(rows, written host paths, reverted)``.
+
+    A changed row whose archive write fails is put back to its original (``reverted`` counts them),
+    so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
+    that already names its archive is left as the prune made it: its original is on disk.
+    """
+    call_at = _calls_for_rows(messages)
+    rows, written, reverted = list(pruned), [], 0
+    for i, (original, replacement) in enumerate(zip(messages, pruned)):
+        if (not isinstance(original, dict) or original.get("role") != "tool"
+                or not isinstance(replacement, dict) or replacement.get("content") == original.get("content")):
+            continue
+        body = original.get("content")
+        if isinstance(body, str) and has_archive_pointer(body):
+            continue
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        call_id = str(original.get("tool_call_id") or "")
+        tool_name, tool_args = call_at[i]
+        if (read_back := _readback_archive_path(tool_name, tool_args)) is not None:
+            rows[i] = {**replacement, "content": _with_pointer(replacement.get("content"), read_back)}
+            continue
+        archived = write_pruned_original(text, session_id or "session", tool_name, call_id)
+        if archived is None:
+            rows[i], reverted = dict(original), reverted + 1
+            continue
+        written.append(archived[0])
+        rows[i] = {**replacement, "content": _with_pointer(replacement.get("content"), archived[1])}
+    return rows, written, reverted
+
+
+def archive_compaction_drops(
+    messages: list[dict[str, Any]], dropped: list[dict[str, Any]], session_id: str,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """:func:`archive_pruned_originals` for a compaction's tool-result drops (window prune, lean tail).
+
+    A compaction must still reclaim where ``read_file`` cannot open an archive (plugin backends, a hosted
+    scope), so there the plain stubs stand and nothing is written; elsewhere a result whose write fails
+    keeps its original, and the compaction proceeds with the rest.
+    """
+    if _archive_backend() is None:
+        return dropped, [], 0
+    return archive_pruned_originals(messages, dropped, session_id)
+
+
+ARCHIVE_LIST_HEADING = "Archived tool output (exact originals; read_file a path to recover one):"
+
+
+def _row_text(row: Any) -> str:
+    content = row.get("content") if isinstance(row, dict) else None
+    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+
+
+def pruned_archive_refs(rows: Any) -> set[str]:
+    """``cache/pruned/<name>`` archives the message *rows* point at."""
+    return {ref for ref in archive_refs_in_text(*map(_row_text, rows)) if ref.startswith(PRUNED_SUBDIR + "/")}
+
+
+def archive_list_for_summary(named: set[str], kept: list[dict[str, Any]]) -> str:
+    """The *named* archives no row of *kept* (the committed transcript, summary included) points at, as a
+    deterministic list to append to the committed summary; ``""`` when none. The generated summary may drop
+    a pointer: this list keeps the model's recovery path, and the reference the retention sweep reads,
+    whatever the summarizer wrote."""
+    from hermes_constants import get_hermes_home
+
+    missing = named - pruned_archive_refs(kept)
+    if not missing:
+        return ""
+    home = get_hermes_home()
+    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(
+        f"\n- {_archive_stub_path(str(home / ref))}" for ref in sorted(missing))
+
+
+def discard_archives(paths: list[str]) -> None:
+    """Unlink archives written for a prune that did not commit (nothing points at them)."""
+    for path in paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass  # unreferenced: the retention sweep reclaims it
 
 
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
@@ -345,6 +586,42 @@ def _pageable_text(content: str) -> str:
     except (TypeError, ValueError):
         return text
     return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+
+
+_PRUNED_ARCHIVE_RE = re.compile(r"(?:^|[/\\])cache[/\\]pruned[/\\][^/\\]+\.(?:json|txt)$")
+
+
+def is_pruned_archive(path: str) -> bool:
+    """True for a prune archive (``cache/pruned/<name>.json|.txt``): ``read_file`` pages its text."""
+    return isinstance(path, str) and _PRUNED_ARCHIVE_RE.search(path) is not None
+
+
+def _json_archive_text(raw: str) -> str:
+    """A JSON archive pages by the text it wraps; a top-level array is printed one item per line."""
+    if raw.lstrip().startswith("["):
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, list):
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+    return _pageable_text(raw)
+
+
+def pageable_archive_text(raw: str, path: str, max_line_length: int) -> tuple[str, bool]:
+    """The pageable rendering of a prune archive, nothing dropped, and whether long lines were wrapped.
+
+    A JSON archive pages by the text it wraps (the spill files' own rendering). Any line still longer than
+    *max_line_length* is split into consecutive lines of that width, so ``offset``/``limit`` reach every
+    character: the per-line cap otherwise cut a one-line 300K-char archive at its first 2,000."""
+    text = _json_archive_text(raw) if path.endswith(".json") else raw
+    width = max(1, max_line_length)
+    lines = text.split("\n")
+    if all(len(line) <= width for line in lines):
+        return text, False
+    return "\n".join(
+        chunk for line in lines for chunk in ([line[i:i + width] for i in range(0, len(line), width)] or [""])
+    ), True
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -440,6 +717,8 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
                     tool_name, tool_use_id, len(persisted_content), path, host_suffix)
         return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
+    if (hosted_path := _persist_hosted(persisted_content, tool_use_id, env)) is not None:
+        return _persisted(hosted_path) if hosted_path else _inline_truncated(preview, tool_name, content)
     # Always persist host-side first: cache/spillover is the single canonical home.
     host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
@@ -457,10 +736,41 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
                 return _persisted(remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+    return _inline_truncated(preview, tool_name, content)
+
+
+def _inline_truncated(preview: str, tool_name: str, content: str) -> str:
     logger.info("Inline-truncating large tool result: %s (%d chars, no sandbox write)",
                 tool_name, len(content))
     return (f"{preview}\n\n[Truncated: tool response was {len(content):,} chars. "
             "Full output could not be saved to sandbox.]")
+
+
+def _persist_hosted(content: str, tool_use_id: str, env) -> str | None:
+    """In a hosted scope, write the result straight into the bound agent's own sandbox and return
+    its path there (``""`` when that is impossible: no sandbox yet, another agent's environment, or a
+    failed write — the caller truncates inline). Nothing is written on this host, and the file name
+    carries the sandbox identity, so two agents' equal tool-use ids never share a file. ``None``
+    outside a hosted scope: the caller keeps the host spillover."""
+    from tools.environments.sandbox_scope import (
+        CrossAgentHandleRefused, admit_env, current_sandbox_key)
+    sandbox_key = current_sandbox_key()
+    if not sandbox_key:
+        return None
+    try:
+        env = admit_env(env)
+    except CrossAgentHandleRefused:
+        logger.warning("Refused to persist %s into another agent's sandbox", tool_use_id)
+        return ""
+    if env is None:
+        return ""
+    stem = hashlib.sha256(sandbox_key.encode("utf-8")).hexdigest()[:16]
+    remote_path = f"{_resolve_storage_dir(env)}/{stem}-{_safe_result_filename(tool_use_id)}"
+    try:
+        return remote_path if _write_to_sandbox(content, remote_path, env) else ""
+    except Exception:  # health: allow BLE001 -- a backend's failure falls back to inline truncation, logged with its traceback
+        logger.warning("Sandbox write failed for %s", tool_use_id, exc_info=True)
+        return ""
 
 
 def _content_text_size(content) -> int:

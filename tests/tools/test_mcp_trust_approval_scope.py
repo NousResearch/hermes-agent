@@ -70,6 +70,24 @@ def test_session_and_always_answers_stop_the_next_prompt_for_that_tool_only(choi
         assert "mcp:srv/write" in allowlist
 
 
+def test_handler_rechecks_gate_when_rediscovery_drops_read_only_hint(monkeypatch):
+    hints = iter([True, False])
+    asked = []
+    monkeypatch.setattr(handlers, "_tool_is_read_only", lambda _s, _t: next(hints))
+    monkeypatch.setattr(handlers, "_trust_gate_check", lambda *_a, **_kw: None)
+    monkeypatch.setattr(handlers, "_check_circuit_breaker", lambda _s: None)
+    monkeypatch.setattr(handlers, "_acquire_call_server", lambda _s, _t: (object(), None))
+    monkeypatch.setattr(
+        handlers, "_ask_for_call",
+        lambda server, tool, _charge, _booked, **_kw: asked.append((server, tool)) or "blocked-by-recheck")
+    monkeypatch.setattr(handlers, "_dispatch", lambda *_a, **_kw: pytest.fail("must not dispatch"))
+
+    handler = handlers._make_tool_handler("srv", "write", 10.0)
+
+    assert handler({}) == "blocked-by-recheck"
+    assert asked == [("srv", "write")]
+
+
 def test_consent_without_an_identity_offers_and_records_only_once(monkeypatch):
     """Elicitation-style consent: the card offers Once / Deny, the CLI panel is asked for once/deny,
     and a stale broader answer approves this call without remembering anything."""

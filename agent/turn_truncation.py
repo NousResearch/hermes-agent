@@ -284,7 +284,8 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         force=True, diagnostic=True,
     )
     agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
-    if agent._try_activate_fallback():
+    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+        logger.warning("%sContent filter terminated the stream — switched to fallback", agent.log_prefix)
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
         if st.truncated_response_parts:
@@ -554,6 +555,21 @@ _CODEX_REPLAY_KEYS = (
     "codex_reasoning_items", "codex_message_items",
 )
 
+
+def _position_continuation_after_prior(prior: dict, incoming: dict) -> dict:
+    """A merged partial can keep a checkpoint from a different response's index space."""
+    fields = ("codex_reasoning_items", "codex_message_items")
+    last = max((i["_codex_output_index"] for key in fields for i in prior.get(key) or []
+                if isinstance(i, dict) and type(i.get("_codex_output_index")) is int), default=-1)
+    if last < 0:
+        return incoming
+    rebased = incoming.copy()
+    for key in fields:
+        if items := incoming.get(key):
+            rebased[key] = [dict(i, _codex_output_index=i["_codex_output_index"] + last + 1)
+                            if isinstance(i, dict) and type(i.get("_codex_output_index")) is int else i for i in items]
+    return rebased
+
 # Third return value of ``continue_codex_incomplete``: the reasoning-only stall was handed to a
 # fallback provider — the caller re-syncs the system prompt identity and continues the turn.
 CODEX_FALLBACK_ACTIVATED = "codex_fallback_activated"
@@ -622,12 +638,16 @@ def continue_codex_incomplete(
             and same_visible_output
         ):
             # Duplicate: refresh replay state in place, no re-emitted commentary.
+            interim_msg = _position_continuation_after_prior(last_msg, interim_msg)
             for _key in _CODEX_REPLAY_KEYS:
                 if _key not in interim_msg:
                     continue
                 if _key == "codex_reasoning_items":
                     from agent.native_compaction import merge_interim_reasoning_items
                     last_msg[_key] = merge_interim_reasoning_items(last_msg.get(_key), interim_msg[_key])
+                    # The refreshed items are this response's: so is their replay price.
+                    from agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
+                    stamp_reasoning_tokens(last_msg, stamped_reasoning_tokens(interim_msg))
                 else:
                     last_msg[_key] = interim_msg[_key]
         else:
@@ -636,6 +656,7 @@ def continue_codex_incomplete(
 
     if reasoning_only and streak >= 3:
         if agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+            logger.warning("%sCodex reasoning-only stall after %d attempts — switched to fallback", agent.log_prefix, streak)
             # The trigger may have consumed the turn budget; without a grace call the loop
             # exits before the fallback is ever asked.
             if api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0:
@@ -748,23 +769,27 @@ def handle_content_policy_refusal(
     )
     stop_thinking_spinner(agent, thinking_spinner)
 
-    if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
-    if agent._try_activate_fallback():
-        active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-        return RefusalVerdict("break", None, active_system_prompt)
-
-    agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
     # native_stop_reason tells an Anthropic classifier refusal (``refusal``) from a Bedrock guardrail
-    # block (``end_turn``); both arrive here as content_filter.
+    # block (``end_turn``); both arrive here as content_filter. Logged before the fallback try so a
+    # refusal the fallback answers still leaves its cause in agent.log (#124874).
     logger.warning(
         "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s "
         "native_stop_reason=%s stop_details=%s refusal=%s",
         agent.log_prefix, agent.model, agent.provider,
-        getattr(response, "stop_reason", None) or "n/a", _stop_details or "n/a",
+        getattr(response, "stop_reason", None) or "n/a", str(_stop_details or "n/a")[:500],
         _refusal_log or "(no text)",
     )
+    if agent._has_pending_fallback():
+        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+    # Name the cause: without a reason the switch notice reads "unavailable (provider failure)",
+    # while the same refusal raised as an HTTP 400 (DeepSeek's "Content Exists Risk") says
+    # "content policy blocked the request" (#124874). Not a rate-limit reason, so no cooldown is armed.
+    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+        active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+        return RefusalVerdict("break", None, active_system_prompt)
+
+    agent._flush_status_buffer()
     agent._emit_diagnostic_status("⚠️ The model declined to respond to this request (safety refusal).")
     _refusal_response = "⚠️ " + content_policy_copy(
         label=provider_label_for(agent.provider),
@@ -784,8 +809,13 @@ def handle_content_policy_refusal(
     # dropped.
     _db = getattr(agent, "_session_db", None)
     if _db is not None:
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
         with suppress(Exception):
-            _db.flush_token_counts()
+            if _store is not None:
+                _store.usage.flush_usage()
+            else:
+                _db.flush_token_counts()
     # Hand back the CLEAN pre-refusal history, not the loop's ``conversation_history``: an in-place
     # compaction this turn rewrote that baseline into ``list(messages)`` — the whole poisoned working
     # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory

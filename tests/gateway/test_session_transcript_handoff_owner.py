@@ -9,8 +9,12 @@ from collections import Counter
 
 import pytest
 
-from tests.gateway.test_session_stored_reads import _call, _compact_carrying_tail, _summary
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_read import conversation
+from tests.gateway.test_session_stored_reads import _append, _call, _compact, _compact_carrying_tail, _summary
 from tests.gateway.test_session_stored_reads_bounds import _session
+from tests.gateway.test_session_stored_reads_consistency import _write
 from tests.gateway.test_session_transcript_snapshot import _every_page, _two_handoffs_on_one_carrier
 
 
@@ -23,8 +27,8 @@ def _merged(text, goal):
 
 
 def _drop_uid_of_newest(db, segment):
-    db._write_sql('UPDATE messages SET message_uid = NULL WHERE id = (SELECT MAX(id) FROM messages WHERE session_id = ?)',
-                  (segment,))
+    _write(db, 'UPDATE messages SET message_uid = NULL WHERE id = (SELECT MAX(id) FROM messages WHERE session_id = ?)',
+           (segment,))
 
 
 def _seeded_transcript(db, segment, seed):
@@ -34,32 +38,28 @@ def _seeded_transcript(db, segment, seed):
     rotations = 0
     for step in range(rng.randint(6, 10)):
         op = rng.choice(['say', 'carrier', 'carrier', 'compact', 'rewrap', 'rotate'])
-        live = db.get_messages_as_conversation(segment)
+        live = conversation(db, segment)
         if op == 'say' or len(live) < 3:
-            db.append_message(segment, 'user', f'question {step}', message_uid=f'q{seed}-{step}')
-            db.append_message(segment, 'assistant', f'answer {step}')
+            _append(db, segment, 'user', f'question {step}', message_uid=f'q{seed}-{step}')
+            _append(db, segment, 'assistant', f'answer {step}')
         elif op == 'carrier':
-            db.append_message(segment, rng.choice(['user', 'assistant']), _merged('wrapped', rng.choice('ab')),
-                              _compressed_summary=True)
+            _append(db, segment, rng.choice(['user', 'assistant']), _merged('wrapped', rng.choice('ab')),
+                    _compressed_summary=True)
             if rng.random() < 0.6:
                 _drop_uid_of_newest(db, segment)
         elif op == 'compact':
             _compact_carrying_tail(db, segment, _summary(f'## Goal\n{rng.choice("ab")}', len(live)), tail_rows=2)
         elif op == 'rewrap' and live[-2].get('message_uid'):
             carrier = {**live[-2], '_compressed_summary': True, 'content': _merged(live[-2].get('content'), rng.choice('ab'))}
-            db.archive_and_compact(segment, [carrier, live[-1]], watermark=db.get_active_message_watermark(segment),
-                                   tail_count=2)
+            _compact(db, segment, [carrier, live[-1]], 2)
         elif op == 'rotate':
             child = f'{segment}-r{step}'
-            assert db.try_acquire_compression_lock(segment, 'fixture')
-            try:
-                db.publish_compression_child(
-                    parent_session_id=segment, child_session_id=child, source=db.get_session(segment)['source'],
-                    model='m', compression_lock_holder='fixture', messages=[
-                        {'role': 'user', 'content': _merged('carried', rng.choice('ab')), '_compressed_summary': True},
-                        {'role': 'assistant', 'content': f'rotated {step}'}])
-            finally:
-                db.release_compression_lock(segment, 'fixture')
+            db.lineage.publish_compression_child(
+                segment, CompressionChild(session_id=child, source=db.sessions.get(segment).source, model='m'),
+                [NewMessage.from_live({'role': 'user', 'content': _merged('carried', rng.choice('ab')),
+                                       '_compressed_summary': True}),
+                 NewMessage.from_live({'role': 'assistant', 'content': f'rotated {step}'})],
+                require_compression_lease=False)
             segment, rotations = child, rotations + 1
     return rotations, segment
 
@@ -75,15 +75,14 @@ def _inner(content):
 def _rewrap_newest(db, segment, rng):
     """An in-place compaction that re-wraps the newest carrier-able row (the one before the last): one more
     handoff on it, added next to the row (stored id order), the way a re-wrap lands between two pages."""
-    live = db.get_messages_as_conversation(segment)
+    live = conversation(db, segment)
     if len(live) < 2 or not live[-2].get('message_uid'):
-        db.append_message(segment, 'user', 'question late', message_uid=f'late-{rng.random()}')
-        db.append_message(segment, 'assistant', 'answer late')
-        live = db.get_messages_as_conversation(segment)
+        _append(db, segment, 'user', 'question late', message_uid=f'late-{rng.random()}')
+        _append(db, segment, 'assistant', 'answer late')
+        live = conversation(db, segment)
     carrier = {**live[-2], '_compressed_summary': True,
                'content': _merged(_inner(live[-2].get('content')), rng.choice(['a', 'b', 'c']))}
-    db.archive_and_compact(segment, [carrier, live[-1]], watermark=db.get_active_message_watermark(segment),
-                           tail_count=2)
+    _compact(db, segment, [carrier, live[-1]], 2)
 
 
 async def _walk_across(owner, session_id, limit, order, at, change):
@@ -160,8 +159,8 @@ async def test_identical_uidless_handoffs_on_two_carriers_are_one_row(tmp_path, 
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         try:
             for role in ('user', 'assistant'):
-                db.append_message(target, role, _merged('wrapped text', 'same'), _compressed_summary=True)
-            db._write_sql('UPDATE messages SET message_uid = NULL WHERE session_id = ?', (target,))
+                _append(db, target, role, _merged('wrapped text', 'same'), _compressed_summary=True)
+            _write(db, 'UPDATE messages SET message_uid = NULL WHERE session_id = ?', (target,))
             whole = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=100))['result']['rows']
             assert [row['row_kind'] for row in whole] == ['compaction', 'message', 'message'], whole
             assert await _every_page(owner, ref.session_id, limit, order) == whole
@@ -201,8 +200,8 @@ async def test_two_uidless_carriers_of_one_handoff_show_it_once_whatever_their_c
             text = _merged('wrapped text', 'same')
             content = [{'type': 'text', 'text': text}] if blocks else text
             for role in ('user', 'assistant'):
-                db.append_message(target, role, content, _compressed_summary=True)
-            db._write_sql('UPDATE messages SET message_uid = NULL WHERE session_id = ?', (target,))
+                _append(db, target, role, content, _compressed_summary=True)
+            _write(db, 'UPDATE messages SET message_uid = NULL WHERE session_id = ?', (target,))
             whole = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=100,
                                  order=order))['result']['rows']
             assert Counter(row['row_kind'] for row in whole) == {'compaction': 1, 'message': 2}

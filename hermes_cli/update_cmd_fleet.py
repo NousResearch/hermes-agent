@@ -715,24 +715,33 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
     and leaves the unit alone; it is not a failed restart.
     """
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, home_in_update_scope, systemd_unit_foreign_checkout, systemd_unit_hermes_home,
+    )
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
-    if home is not None and home_in_update_scope(home):
+    checkout = systemd_unit_foreign_checkout(scope_cmd, svc_name) if home is not None else None
+    if home is not None and checkout is None and home_in_update_scope(home):
         return True
-    announce_skipped_runtime("systemd unit", svc_name, home)
+    announce_skipped_runtime("systemd unit", svc_name, home, checkout=checkout)
     return False
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
     """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
     install's profile PID files); every other gateway process is named and left running."""
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, partition_gateway_pids_by_scope
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, gateway_pid_foreign_checkout, partition_gateway_pids_by_scope,
+    )
     keep = set(keep)
     owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
+    # Same home is not same install: a gateway running another checkout is not this update's.
+    other_checkout = {pid: root for pid in [*keep, *owned] if (root := gateway_pid_foreign_checkout(pid))}
     if not quiet:
         for pid, home in foreign:
             announce_skipped_runtime("gateway process", f"PID {pid}", home)
-    return [pid for pid in pids if pid in keep or pid in owned]
+        for pid, root in other_checkout.items():
+            announce_skipped_runtime("gateway process", f"PID {pid}", None, checkout=root)
+    return [pid for pid in pids if (pid in keep or pid in owned) and pid not in other_checkout]
 
 
 def _is_serve_or_dashboard_unit(unit: str) -> bool:
@@ -853,12 +862,23 @@ def _restart_launchd_gateway_after_update(
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        # The label is account-global and the plist path follows the REAL account home, so a
+        # scratch HERMES_HOME shaped like the native default derives the live install's label.
+        # Same ownership rule as the sibling loop (#93349): never refresh or restart another
+        # home's job.
+        from hermes_cli.update_fleet_scope import launchd_label_skip_notice
+        if (notice := launchd_label_skip_notice(current_label)) is not None:
+            print(notice)
+            return [], []
         # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
         # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
         # and verification-only — the restart itself is never gated on `launchctl list` (#74973).
         old_pid = _launchctl_supervised_pid(current_label) if supervision_verify else None
         try:
-            launchd_restart()
+            if (pending_pid := launchd_restart()) is not None:
+                if self_restart_pending is not None:
+                    self_restart_pending.add(pending_pid)  # the fleet matrix: restart pending, not stale
+                return [], []
         except subprocess.CalledProcessError as e:
             stderr = (getattr(e, "stderr", "") or "").strip()
             print(
@@ -930,7 +950,7 @@ def _restart_macos_launchd_gateways(
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
-    from hermes_cli.update_cmd_posix_pause import already_restarted
+    from hermes_cli.update_cmd_posix_pause import already_restarted, is_left_pending
     current_label = get_launchd_label()
     resumed = already_restarted()["labels"]  # paused for the update, restarted on the new code
     _restarted, _failed = ([], []) if current_label in resumed else _restart_launchd_gateway_after_update(
@@ -946,14 +966,15 @@ def _restart_macos_launchd_gateways(
     legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
     if legacy_labels:
         print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
+    from hermes_cli.update_fleet_scope import launchd_label_skip_notice
     for label in derived_labels + legacy_labels:
         if label == current_label or label in resumed:
             continue
         # Labels are account-global: root B's default profile derives the same bare label root A
-        # installed. A plist pinning a foreign HERMES_HOME is another install's job (#93349).
-        if (foreign_home := launchd_label_foreign_home(label)) is not None:
-            print(describe_skipped_runtime("launchd job", label, foreign_home))
+        # installed. A plist pinning a foreign HERMES_HOME, or launching another checkout, is another
+        # install's job (#93349).
+        if (notice := launchd_label_skip_notice(label)) is not None:
+            print(notice)
             continue
         try:
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
@@ -964,7 +985,8 @@ def _restart_macos_launchd_gateways(
                     failed_or_stale_units.append(label)
                 continue  # A profile without an installed job has no restart target.
             graceful_ok = False
-            if old_pid is not None and old_pid > 0:
+            born = _signalled_identity(old_pid) if old_pid else None
+            if old_pid is not None and old_pid > 0 and not is_left_pending(old_pid):
                 print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
@@ -973,6 +995,8 @@ def _restart_macos_launchd_gateways(
             if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)
+                continue
+            if not graceful_ok and old_pid and _restart_left_pending(old_pid, label, self_restart_pending, born):
                 continue
             try:
                 _launchd_kickstart(label, domain)
@@ -1128,6 +1152,12 @@ def _drain_or_signal_gateway_for_update(
         GATEWAY_LOOP_WEDGED, _escalate_wedged_gateway, _graceful_restart_via_sigusr1,
         _is_pid_ancestor_of_current_process, _request_gateway_self_restart, probe_gateway_loop_liveness,
     )
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, gateway_pid_foreign_checkout
+    if (checkout := gateway_pid_foreign_checkout(pid)) is not None:
+        # Every caller funnels here, the ancestor case included: an update from a worktree whose shell
+        # descends from the live gateway used to SIGUSR1 a gateway serving another checkout.
+        announce_skipped_runtime("gateway process", label, None, checkout=checkout)
+        return False
     if _is_pid_ancestor_of_current_process(pid):
         print(
             f"  → {label}: update is running inside this gateway's "
@@ -1142,11 +1172,34 @@ def _drain_or_signal_gateway_for_update(
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         _escalate_wedged_gateway(pid)
         return True
+    from hermes_cli.update_cmd_posix_pause import is_left_pending
+    if is_left_pending(pid):
+        return False  # the pre-swap pause already waited it out; its restart is pending (caller reports it)
     print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
     return _graceful_restart_via_sigusr1(
         pid, drain_timeout=drain_budget,
         on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
+
+
+def _signalled_identity(pid: int):
+    """Start time of the gateway about to be signalled: what :func:`_restart_left_pending` compares
+    after the wait (a PID recycled during it is not the gateway that holds the restart)."""
+    from gateway.status import get_process_start_time
+    return get_process_start_time(pid)
+
+
+def _restart_left_pending(pid: int, label: str, pending: set | None, born, *, supervised: bool = True) -> bool:
+    """The drain wait ran out on gateway ``(pid, born)`` still doing live work: leave it running (it
+    holds the restart and takes it at its first idle moment) and count it restart-pending for the
+    fleet matrix and the runtime reconciliation. False when it is gone, replaced, unsignalled or
+    wedged: the caller's escalation stands."""
+    from hermes_cli.update_cmd_drain_report import leave_restart_pending
+    if not leave_restart_pending(pid, label, _gateway_home_for_pid(pid), start_time=born, supervised=supervised):
+        return False
+    if pending is not None:
+        pending.add(pid)
+    return True
 
 
 def _gateway_home_for_pid(pid: int):
@@ -1266,8 +1319,11 @@ def _restart_one_systemd_gateway_unit(
             _main_pid = 0
 
     # Three-way triage (ancestor / wedged / graceful drain).
+    _born = _signalled_identity(_main_pid) if _main_pid > 0 else None
     _graceful_ok = _main_pid > 0 and _drain_or_signal_gateway_for_update(
         _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
+    if not _graceful_ok and _main_pid > 0 and _restart_left_pending(_main_pid, svc_name, self_restart_pending, _born):
+        return
 
     if _graceful_ok:
         from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, service_restart_sec, systemd_restart_timeout
@@ -1518,6 +1574,8 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     # ``all_profiles`` is host-wide: a sibling install's gateway matches too. Only this update's
     # homes are stopped; the profile-mapped PIDs come from this install's own PID files (#93349).
     manual_pids = _scoped_manual_gateway_pids(manual_pids, keep=profile_processes)
+    # A profile-mapped PID running another checkout was dropped above: never arm or stop it.
+    profile_processes = {pid: proc for pid, proc in profile_processes.items() if pid in manual_pids}
     # Profile gateways we couldn't arm a relaunch for must NOT keep running stale:
     # the unmapped sweep below stops them and lists them under "Restart manually".
     # These must NOT be left running: their modules are the pre-update ones and every lazy import from here
@@ -1539,8 +1597,12 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         # SIGUSR1 drain first, SIGTERM fallback if unsupported/over budget — the watcher
         # relaunches either way. The helper announces its choice first because a silent
         # full-budget wait reads as a hung update.
+        born = _signalled_identity(pid)
         if not _drain_or_signal_gateway_for_update(
                 pid, _drain_budget, proc.profile, self_restart_pending=out.self_restart_pending_pids):
+            if _restart_left_pending(pid, proc.profile, out.self_restart_pending_pids, born,
+                                     supervised=restart_mode == "external-supervisor"):
+                continue
             with suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, _signal.SIGTERM)
         # Wait ≤5s for exit: Telegram keeps the old getUpdates session ~30s; a new gateway

@@ -258,7 +258,9 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.is_dir():
         return []
-    candidates = ops._prune_candidates(worktrees_dir, max_age_hours, now)
+    from tools.delegate_tool_resumable import pin_reason
+    pins = ops.resumable_pins()
+    candidates = ops._prune_candidates(worktrees_dir, max_age_hours, now, pins=pins)
     doomed_names = {entry.name for entry, _m, _f in candidates}
     decisions: list[Decision] = []
     for entry in sorted(worktrees_dir.iterdir()):
@@ -269,8 +271,10 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
         except OSError:
             continue
         kanban = re.match(r"^t_[0-9a-f]+$", entry.name)
-        decisions.append(Decision(entry.name, str(entry), "skip-kanban" if kanban else "skip-young",
-                                  "owned by kanban gc" if kanban else "younger than its age tier", round(age, 1)))
+        pinned = None if kanban else pin_reason(str(entry), pins)
+        action, reason = (("skip-kanban", "owned by kanban gc") if kanban else ("skip-resumable", pinned) if pinned
+                          else ("skip-young", "younger than its age tier"))
+        decisions.append(Decision(entry.name, str(entry), action, reason, round(age, 1)))
     verdicts = ops._classify_prune_candidates(repo_root, candidates) if candidates else []
     # archive_dirty: false is the classic pruner verbatim (I6), which has no process check.
     live = {} if classic_mode(settings) else live_process_pids([str(v[0]) for v in verdicts])
@@ -349,7 +353,7 @@ def _index_moved(path: str, captured: str) -> Optional[str]:
 
 def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked_mb: float,
                         unlock: bool, remote_heads_fn=None, keep_branch: bool = False,
-                        exclude_pids=(),
+                        exclude_pids=(), unattended: bool = False,
                         ) -> tuple[str, Optional[str], bool, Optional[str]]:
     """Snapshot *path*, then remove it -> ``(archive_ref, kept_branch, removed, why_kept)``.
 
@@ -359,7 +363,8 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     the archive does not hold (``worktree_retention.removal_blocker``: a file the snapshot skipped
     for size, an embedded repository, a per-worktree ref, a submodule) keep the tree (``removed`` False, *why_kept* says why; the archive stays). The branch
     survives when it is protected or published on a remote (an open PR may still need it);
-    otherwise the archive ref anchors its commits and the local branch is deleted.
+    otherwise the archive ref anchors its commits and the local branch is deleted. *unattended* (the sweep)
+    also keeps a tree a resumable subagent pinned while the snapshot ran (``pinned_now``).
     """
     from hermes_cli.worktree_archive import snapshot_worktree
     from hermes_cli.worktree_ops import _git, _git_quiet, release_lsp_clients
@@ -369,7 +374,7 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     arc = snapshot_worktree(repo_root, path, reason=reason, max_untracked_mb=max_untracked_mb)
     blocked = removal_blocker(path, skipped=arc.meta.get("skipped_untracked"), gitlinks=True)
     busy = (_in_use_since(path, started, exclude=exclude_pids) or _index_moved(path, arc.staged)
-            or (blocked and blocked[1]))
+            or (blocked and blocked[1]) or (unattended and pinned_now(path)))
     if busy:
         logger.warning("Archived %s to %s but keeping it: %s", path, arc.ref, busy)
         return arc.ref, None, False, busy
@@ -394,6 +399,14 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     return arc.ref, None, True, None
 
 
+def pinned_now(path: str) -> Optional[str]:
+    """Why a resumable subagent pins *path* at this moment (re-read, never the plan's copy), else None. A continue
+    can claim a record and pin its tree between the sweep's plan and its removal; only the unattended sweep asks."""
+    from hermes_cli import worktree_ops as ops
+    from tools.delegate_tool_resumable import pin_reason
+    return pin_reason(path, ops.resumable_pins())
+
+
 def _recheck(repo_root: str, d: Decision) -> tuple[Optional[str], Optional[str]]:
     """Fresh gate for ONE planned tree, run immediately before it is touched -> (why_keep,
     lock_state). Earlier trees in the batch can take minutes to archive; a user may have entered
@@ -401,6 +414,8 @@ def _recheck(repo_root: str, d: Decision) -> tuple[Optional[str], Optional[str]]
     from hermes_cli import worktree_ops as ops
     if not os.path.isdir(d.path):
         return "gone", None
+    if pinned := pinned_now(d.path):
+        return pinned, None
     lock_state = ops._worktree_lock_is_live(repo_root, d.path, timeout=5)
     if lock_state == "live":
         return "lock owner still running", lock_state
@@ -445,7 +460,7 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict
         try:
             ref, kept, removed, why = archive_then_remove(
                 repo_root, d.path, reason=f"sweep: {d.reason}", max_untracked_mb=settings["archive_max_file_mb"],
-                unlock=lock_state == "dead", remote_heads_fn=remote_heads)
+                unlock=lock_state == "dead", remote_heads_fn=remote_heads, unattended=True)
         except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
             logger.warning("Keeping worktree %s: archive failed (%s)", d.name, exc)
             preserved.append(f"{d.name} (archive failed)")

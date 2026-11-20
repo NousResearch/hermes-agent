@@ -1,6 +1,7 @@
 """Independent effect/cancellation and shell-semantic probes."""
 import json,shlex
 import pytest
+from tests.computer_use_fakes import NoopBackend
 
 from tests.tools.target_selection_fixtures import lease_selection
 from tests.tools.test_core_routing_review import shell_route,dispatch
@@ -13,7 +14,7 @@ def test_cua_cancelled_start_cleans_fence_before_fresh_call(monkeypatch):
     execution.register_session_execution_context('review-cancel',execution.SessionExecutionContext(
         computer_use=execution.ComputerUseLaunchContext(private_daemon=True,access_epoch=lambda:epoch[0])))
     lease=execution.resolve_session_execution_context(session_id='review-cancel')
-    class Backend(tool._NoopBackend):
+    class Backend(NoopBackend):
         def __init__(self,mode,*,execution_context=None):
             super().__init__(); self.execution_context=execution_context
         def start(self):

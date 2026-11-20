@@ -24,7 +24,6 @@ logger = logging.getLogger("tools.computer_use.cua_backend")
 
 # The only bundle identity the private daemon may launch through, and the teams that sign official
 # releases. Exact matches only: a suffixed identifier or other team is an impostor.
-_CUA_DRIVER_BUNDLE_ID = CUA_DRIVER_BUNDLE_ID
 _CUA_DRIVER_TEAM_IDS = ("4YEC26S9KF", "YCK386LBJ7")
 _QUIET_ERRORS = (OSError, subprocess.SubprocessError)
 
@@ -59,8 +58,8 @@ def _validate_cua_driver_app_signature(app_path: str) -> None:
     parts = [line.partition("=") for line in (proc.stderr or "").splitlines()]  # codesign -dv reports on stderr
     fields = {k.strip(): v.strip() for k, sep, v in reversed(parts) if sep}  # first occurrence of a key wins
     identifier, team = fields.get("Identifier", ""), fields.get("TeamIdentifier", "")
-    if identifier != _CUA_DRIVER_BUNDLE_ID:
-        raise RuntimeError(f"CuaDriver.app at {app_path} has identifier {identifier!r}, expected {_CUA_DRIVER_BUNDLE_ID!r}; "
+    if identifier != CUA_DRIVER_BUNDLE_ID:
+        raise RuntimeError(f"CuaDriver.app at {app_path} has identifier {identifier!r}, expected {CUA_DRIVER_BUNDLE_ID!r}; "
                            "refusing to launch it.")
     if team in _CUA_DRIVER_TEAM_IDS or (team in ("", "not set") and _cb()._computer_use_cfg().get("allow_unsigned_driver") is True):
         return

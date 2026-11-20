@@ -1,6 +1,7 @@
 """Compatibility and nested operation authority at real dispatch seams."""
 import json
 import pytest
+from tests.computer_use_fakes import NoopBackend
 from tests.tools.target_selection_fixtures import lease_selection
 
 @pytest.mark.parametrize('tool_name',['computer_use','terminal'])
@@ -39,7 +40,7 @@ def test_explicit_mutable_cua_selection_rejects_changed_mapping(monkeypatch,chan
         execution.register_session_execution_context('review-'+name,execution.SessionExecutionContext())
         leases.append(execution.resolve_session_execution_context(session_id='review-'+name))
     selected=[leases[0]]; effects=[]
-    class Backend(tool._NoopBackend):
+    class Backend(NoopBackend):
         def __init__(self,mode,*,execution_context=None):
             super().__init__(); self.execution_context=execution_context
         def click(self,**kw):

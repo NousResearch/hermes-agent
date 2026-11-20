@@ -1,0 +1,15 @@
+name: "backup-sentinel"
+repo: "https://github.com/Brianmacu-BMS/hermes-backup-sentinel"
+sha: "d6c37dc2cb0b16233435936ae7d7561b3e60adc6"
+description: "Offline local tar.gz backup integrity, freshness, required-file and archived SQLite auditing; never restores or repairs. Disclosure — reads explicitly selected archive bytes, materializes only permitted SQLite members in private scratch, and invokes a fixed local Python auditor through Hermes's terminal policy; paths/results can reach the conversation model. No cloud, telemetry, credentials, model calls or background jobs."
+maintainer: "Brianmacu-BMS"
+tier: "community"
+category: "tools"
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+platforms: ["linux"]
+capabilities:
+  provides_tools: ["backup_sentinel_audit"]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

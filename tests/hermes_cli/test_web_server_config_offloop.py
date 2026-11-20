@@ -188,7 +188,7 @@ class TestConfigMutationLock:
     """Off-loop read-modify-write handlers must not lose concurrent updates.
 
     config.py's _CONFIG_LOCK covers each load/save individually; the span
-    between them is serialized by web_server._CONFIG_MUTATION_LOCK. Two
+    between them is serialized by config_backend.CONFIG_MUTATION_LOCK. Two
     concurrent writers touching DIFFERENT keys must both survive."""
 
     @pytest.fixture(autouse=True)
@@ -209,7 +209,7 @@ class TestConfigMutationLock:
         # Race the two handlers' load→mutate→save spans. This is probabilistic,
         # not deterministically gated: the slow save_config below widens the
         # unserialized race window to ~150ms so a lost update is near-certain
-        # without _CONFIG_MUTATION_LOCK, while remaining impossible with it.
+        # without CONFIG_MUTATION_LOCK, while remaining impossible with it.
         results = []
 
         def _put_theme():
@@ -258,7 +258,7 @@ class TestConfigMutationLock:
     def test_plugin_providers_put_serialized_against_other_writers(self):
         """PUT /api/dashboard/plugin-providers does config RMW through
         plugins_cmd._save_context_engine — it must hold the same
-        _CONFIG_MUTATION_LOCK as every other config writer, or a concurrent
+        CONFIG_MUTATION_LOCK as every other config writer, or a concurrent
         locked writer's update gets erased by its stale save."""
         try:
             from starlette.testclient import TestClient
@@ -316,5 +316,5 @@ class TestConfigMutationLock:
         assert (cfg.get("dashboard") or {}).get("theme") == "midnight", (
             "theme write lost to a concurrent plugin-providers write — "
             "PUT /api/dashboard/plugin-providers is not holding "
-            "_CONFIG_MUTATION_LOCK around its read-modify-write span"
+            "CONFIG_MUTATION_LOCK around its read-modify-write span"
         )

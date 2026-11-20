@@ -461,11 +461,12 @@ def test_target_authority_reaches_actual_launch(isolated_terminal, monkeypatch, 
         cached = dict(tt._active_environments)
         with monkeypatch.context() as late:
             if mode == "foreground":
-                recover = LocalEnvironment._recover_cwd
+                spawn_cwd = LocalEnvironment._spawn_cwd
                 def scheduled(self):
-                    recover(self)
+                    cwd = spawn_cwd(self)
                     change()
-                late.setattr(LocalEnvironment, "_recover_cwd", scheduled)
+                    return cwd
+                late.setattr(LocalEnvironment, "_spawn_cwd", scheduled)
             else:
                 spawn_env = process_registry._spawn_env
                 def scheduled(*args, **kw):

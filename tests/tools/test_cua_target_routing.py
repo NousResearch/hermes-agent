@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from tests.computer_use_fakes import NoopBackend, reset_backend
 from tests.tools.target_selection_fixtures import lease_selection
 
 from hermes_cli import session_execution as execution
@@ -21,7 +22,7 @@ def hermes_home_scope(home):
         reset_hermes_home_override(token)
 
 
-class RecordingBackend(tool._NoopBackend):
+class RecordingBackend(NoopBackend):
     def __init__(self, permission_mode, *, execution_context=None):
         super().__init__()
         self.execution_context = execution_context
@@ -301,9 +302,9 @@ def test_registry_approvals_and_yolo_retire_all_caller_targets(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clean_backends():
-    tool.reset_backend_for_tests()
+    reset_backend()
     yield
-    tool.reset_backend_for_tests()
+    reset_backend()
 
 
 def test_resolver_is_profile_scoped_and_never_turns_denial_into_unbound(tmp_path):

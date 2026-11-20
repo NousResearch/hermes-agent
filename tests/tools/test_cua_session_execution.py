@@ -442,8 +442,8 @@ def _select_inert_provider(monkeypatch):
         name = "inert-fixture"
 
         def create_backend(self, *, permission_mode):
-            from tools.computer_use.tool import _NoopBackend
-            return _NoopBackend()
+            from tests.computer_use_fakes import NoopBackend
+            return NoopBackend()
 
     monkeypatch.setattr("plugins.computer_use.get_active_provider", lambda: InertProvider())
 
@@ -458,7 +458,8 @@ def test_registry_task_alias_denies_before_backend_start(monkeypatch, session_id
     # Even the fallback is inert: a broken lookup cannot touch a desktop.
     _select_inert_provider(monkeypatch)
     starts = []
-    monkeypatch.setattr(tool._NoopBackend, 'start', lambda self: starts.append(self))
+    from tests.computer_use_fakes import NoopBackend
+    monkeypatch.setattr(NoopBackend, 'start', lambda self: starts.append(self))
     valid = [True]
     register_session_execution_context('task-owner', SessionExecutionContext(validate=lambda: valid[0]),
                                        task_ids=('actual-task',))

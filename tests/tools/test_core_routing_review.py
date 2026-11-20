@@ -118,6 +118,9 @@ def test_cua_approval_wait_keeps_original_control_epoch(tmp_path, monkeypatch, t
         driver_command=sys.executable, desktop_attestor=lambda: ("inert-review",), access_epoch=access)))
     lease = execution.resolve_session_execution_context(session_id="review-cua")
     class InertWire:
+        def supports_input_property(self, tool, prop):
+            return False
+
         def call_tool(self, name, args, **kw):
             check_desktop_call(lease, name, args)
             if name == "click":

@@ -158,14 +158,14 @@ def test_resumed_sessions_keep_owner_through_tools_compression_and_finalization(
     monkeypatch.setattr(server, "_wire_session_agent", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    def make_agent(sid, key, session_db=None, **kwargs):
+    def make_agent(sid, key, session_db=None, persistence=None, **kwargs):
         # Only external model/tool discovery is stubbed; construction, persistence,
         # hook discovery, callback dispatch, and session registration are real.
         with patch("model_tools.get_tool_definitions", return_value=[]), patch("model_tools.check_toolset_requirements", return_value={}):
             return AIAgent(model="test-model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
                            provider="custom", enabled_toolsets=[], quiet_mode=True,
                            skip_context_files=True, skip_memory=True, skip_background_review=True,
-                           session_db=session_db, session_id=key, platform="desktop")
+                           session_db=session_db, persistence=persistence, session_id=key, platform="desktop")
 
     monkeypatch.setattr(server, "_make_agent_in_context", make_agent)
     owners = []
@@ -214,10 +214,14 @@ def test_resumed_sessions_keep_owner_through_tools_compression_and_finalization(
             # A real stored compression edge and the production recovery/adoption path.
             from agent.conversation_compression import recover_rotated_compression_session
             child = key + "-compressed"
-            agent._session_db.publish_compression_child(
-                parent_session_id=key, child_session_id=child, source="desktop", model=agent.model,
-                model_config={}, system_prompt="compressed", require_compression_lease=False,
-                messages=[{"role": "user", "content": "Compressed handoff"}])
+            from agent.agent_init_session import agent_interface
+            from persistence.conversation.lineage import CompressionChild
+            from persistence.conversation.messages import NewMessage
+            agent_interface(agent).lineage.publish_compression_child(
+                key, CompressionChild(session_id=child, source="desktop", model=agent.model,
+                                      model_config={}, system_prompt="compressed"),
+                [NewMessage.from_live({"role": "user", "content": "Compressed handoff"})],
+                require_compression_lease=False)
             assert recover_rotated_compression_session(agent)
             assert agent.session_id == child
             _pre_tool_block(agent, _ToolCallRef("terminal", {}, task, "call-2", []))

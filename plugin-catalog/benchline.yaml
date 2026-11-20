@@ -1,0 +1,24 @@
+name: benchline
+repo: https://github.com/ShalyX/hermes-benchline
+sha: 2e28dc33fe98c1f8d023471036a3500505de46ae
+subdir: ""
+description: "Read-only preflight for a selected numeric-result CSV: checks structure, duplicate keys, numeric formatting, and exact analyte/unit-map matches. No clinical interpretation; the selected path, unit-map inputs, profile-source label, and bounded QC report are exposed to the configured model/provider."
+maintainer: ShalyX
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+version: "0.1.0"
+docs_url: https://github.com/ShalyX/hermes-benchline#readme
+readme: true
+platforms: [linux]
+title: Benchline
+known_issues:
+  - "Tool arguments include the selected path, unit map, and profile-source label; these are visible to the configured model/provider."
+  - "The bounded row-based QC report is also returned to the configured model/provider; it is not local-only."
+  - "Numeric-result CSV only; no clinical interpretation or release authorization."
+capabilities:
+  provides_tools:
+    - benchline_validate_csv
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -95,10 +95,10 @@ checkpoints:
   max_file_size_mb: 10        # skip any single file larger than this
 
   # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ in the
-  # background — the CLI on a helper thread right after launch, the gateway
-  # on its housekeeping tick — and delete project entries whose last_touch is
+  # background on the gateway's housekeeping tick (the CLI never runs it)
+  # and delete project entries whose last_touch is
   # older than retention_days. Runs at most once per min_interval_hours,
-  # tracked via a .last_prune marker. It never blocks the prompt or gateway
+  # tracked via a .last_prune marker. It never blocks gateway
   # startup: the `git gc` that reclaims space can take tens of seconds on a
   # large store. This sweep never deletes "orphan" entries (working directory
   # not found) — a missing workdir is ambiguous (deleted project vs. an

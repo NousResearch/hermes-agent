@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from tests.computer_use_fakes import NoopBackend, reset_backend
+
 
 @pytest.mark.parametrize("choice", ["deny", "once"])
 def test_gateway_input_uses_caller_approval_before_backend(monkeypatch, choice):
@@ -17,14 +19,14 @@ def test_gateway_input_uses_caller_approval_before_backend(monkeypatch, choice):
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(approval.approval_context, "_get_approval_mode", lambda: "manual")
     tool.set_approval_callback(None)
-    backend = tool._NoopBackend()
+    backend = NoopBackend()
     resolved = []
     def new_backend(permission_mode, **kwargs):
         resolved.append(kwargs)
         return backend
     # Fake only the spawn: the real cache admits the backend, so dispatch runs
     # under the same call-lock/revalidation path as production.
-    tool.reset_backend_for_tests()
+    reset_backend()
     monkeypatch.setattr(tool, "_new_backend", new_backend)
     caller = "approval-owner"
     observability_id = "different-conversation-id"
@@ -56,7 +58,7 @@ def test_gateway_input_uses_caller_approval_before_backend(monkeypatch, choice):
             assert [name for name, _ in backend.calls] == ["click"]
     finally:
         reset_current_session_key(token)
-        tool.reset_backend_for_tests()
+        reset_backend()
         for key in (caller, observability_id):
             approval.unregister_gateway_notify(key)
             approval.clear_session(key)
@@ -75,8 +77,8 @@ def test_gateway_input_preserves_approval_boundaries(monkeypatch, case):
     monkeypatch.setattr(approval.approval_context, "_get_approval_mode", lambda: "off" if case == "off" else "manual")
     monkeypatch.setattr(approval.approval_context, "_get_approval_timeout", lambda: 0 if case == "timeout" else 2)
     tool.set_approval_callback(None)
-    backend = tool._NoopBackend()
-    tool.reset_backend_for_tests()
+    backend = NoopBackend()
+    reset_backend()
     monkeypatch.setattr(tool, "_new_backend", lambda permission_mode, **kwargs: backend)
     owner, peer = "input-owner", "input-peer"
     prompted = []
@@ -125,7 +127,7 @@ def test_gateway_input_preserves_approval_boundaries(monkeypatch, case):
                 else:
                     assert len(prompted) == 1
     finally:
-        tool.reset_backend_for_tests()
+        reset_backend()
         for key in (owner, peer):
             approval.unregister_gateway_notify(key)
             approval.clear_session(key)

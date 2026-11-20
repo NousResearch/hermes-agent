@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from tests.computer_use_fakes import NoopBackend
+
 
 @pytest.mark.parametrize("kind", ["cua", "terminal"])
 @pytest.mark.parametrize("direct", [False, True])
@@ -19,7 +21,7 @@ def test_missing_selector_refuses_without_resolver_or_compute(monkeypatch, kind,
     def allocating(**kw):
         calls.append(kw)
         return lease
-    monkeypatch.setattr(tool, "_new_backend", lambda *a, **kw: tool._NoopBackend())
+    monkeypatch.setattr(tool, "_new_backend", lambda *a, **kw: NoopBackend())
     monkeypatch.setattr(tool, "_request_approval", lambda *_: None)
     monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *a, **kw: {"approved": True})
     register = targets.register_target_resolver if kind == "cua" else terminal_targets.register_terminal_target_resolver

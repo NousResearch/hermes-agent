@@ -58,7 +58,11 @@ def _exercise_spawn(monkeypatch, worker_owner, *, routed, policy, yaml, outer, c
     ref = SimpleNamespace(session_id='sid')
     row = {'generation': 1, 'payload': {'text': 'plain recovery message'}}
     def capture(argv, **kwargs):
-        captured.append((argv, kwargs))
+        # Popen(env=None) inherits the process environment. Capture that effective
+        # transport input too, rather than mistaking a valid legacy API form for
+        # a TypeError regression on the release control.
+        effective_env = dict(os.environ) if kwargs['env'] is None else dict(kwargs['env'])
+        captured.append((argv, {**kwargs, 'env': effective_env}))
         raise SpawnCaptured('transport reached')
 
     monkeypatch.setattr(smw.subprocess, 'Popen', capture)
@@ -119,7 +123,7 @@ def test_bypass_parent_env_reaches_transport(tmp_path, monkeypatch, worker_owner
     assert child['HERMES_HOME'] == str(target)
     assert child['HERMES_REAL_HOME'] == str(real)
     for key in ('TMPDIR', 'TMP', 'TEMP'):
-        assert child[key] == str(target / 'cache' / 'scratch')
+        assert child.get(key) == str(target / 'cache' / 'scratch')
     assert 'AUXILIARY_VISION_API_KEY' not in child
     assert child['OPENAI_API_KEY'] == ('target-provider' if routed else 'launch-provider')
     if routed:

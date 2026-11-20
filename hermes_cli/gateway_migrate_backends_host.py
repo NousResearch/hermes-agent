@@ -84,6 +84,34 @@ _HOME_KEYS = ("HERMES_HOME", "HOME", "HERMES_DATA_DIR_SUFFIX")  # the variables 
 _HOME_LINE = re.compile(r"^\s*(export\s+)?(" + "|".join(_HOME_KEYS) + r")\s*=(.*)$")
 
 
+def _alive_markers(path, pid: int) -> Optional[int]:
+    """Live turn markers *pid* wrote in the marker file *path* (0 when it does not exist), or None when
+    that cannot be told: the file cannot be read or parsed, is not a JSON object, or one of the markers
+    it could be from has no writer whose state can be checked."""
+    from tui_gateway import turn_marker
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    count = 0
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            return None
+        writer_pid = entry.get("writer_pid")
+        if isinstance(writer_pid, int) and not isinstance(writer_pid, bool) and writer_pid > 0 and writer_pid != pid:
+            continue
+        state = turn_marker.marker_writer_state(entry)
+        if state == "unknown":
+            return None
+        count += state == "alive"
+    return count
+
+
 def _unit_file_syntax(path: str) -> Optional[str]:
     """Why *path* cannot be read the way systemd reads it, or None. systemd's EnvironmentFile= rules
     (systemd.exec(5)) differ from a Hermes ``.env`` for continuation lines, backslashes, quotes and a
@@ -231,43 +259,37 @@ class SystemHost:
     def running_turns(self, pid: int, start_time) -> Optional[int]:
         """Turns the old backend *pid* is running now: its live turn markers in this home, or None when
         activity cannot be determined (an existing marker file cannot be read or parsed, is not a JSON
-        object, or a marker's writer state is unknown).
+        object, or a marker's writer state is unknown; :meth:`unknown_turn_files` names those files).
 
         The old backend writes a durable marker at every turn start and clears it on any conclusion
         (``tui_gateway.turn_marker``), stamped with its own pid and start time, so a marker whose
         writer is that process and still alive is a turn in flight. No sign-in, no socket."""
+        return self._turn_activity(pid)[0]
+
+    def unknown_turn_files(self, pid: int, start_time) -> list[str]:
+        """The marker files that make :meth:`running_turns` unknown for *pid*, sorted: each one that cannot
+        be read or parsed, or holds a marker without a writer whose state can be checked. Paths only:
+        a marker holds the turn's prompt."""
+        return self._turn_activity(pid)[1]
+
+    def _turn_activity(self, pid: int) -> tuple[Optional[int], list[str]]:
         from tui_gateway import turn_marker
         from hermes_cli.profiles import profiles_to_serve
         from hermes_constants import hermes_home_key
         try:
             profiles = profiles_to_serve(True, include_standalone=True, include_parked=True)
         except OSError:
-            return None
+            return None, []
         homes = {hermes_home_key(self.home), *(hermes_home_key(h) for _, h in profiles)}
-        count = 0
+        count, unknown = 0, []
         for h in homes:
             path = turn_marker._marker_path(h)
-            try:
-                with open(path, encoding="utf-8-sig") as fh:
-                    data = json.load(fh)
-            except FileNotFoundError:
-                continue
-            except (OSError, ValueError):
-                return None
-            if not isinstance(data, dict):
-                return None
-            for entry in data.values():
-                if not isinstance(entry, dict):
-                    return None
-                writer_pid = entry.get("writer_pid")
-                if isinstance(writer_pid, int) and not isinstance(writer_pid, bool) and writer_pid > 0 and writer_pid != pid:
-                    continue
-                state = turn_marker.marker_writer_state(entry)
-                if state == "unknown":
-                    return None
-                if state == "alive":
-                    count += 1
-        return count
+            alive = _alive_markers(path, pid)
+            if alive is None:
+                unknown.append(str(path))
+            else:
+                count += alive
+        return (None if unknown else count), sorted(unknown)
 
     # ------------------------------------------------------------------ config / env
 

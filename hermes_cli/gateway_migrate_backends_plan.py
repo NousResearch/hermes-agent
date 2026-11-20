@@ -79,6 +79,7 @@ class BackendPlan:
     linger: Optional[bool] = None
     bundle_missing: Optional[str] = None
     running_turns: Optional[int] = None  # None: the old backend's activity has not been read or cannot be read
+    turns_unknown: str = ""  # why running_turns is None, for the blocker text (not in the JSON)
     blockers: list[str] = field(default_factory=list)
     unsupported: list[tuple[Optional[BackendItem], str, list[str]]] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
@@ -686,7 +687,7 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if item is None or not item.running:
         plan.running_turns = 0
         return
-    plan.running_turns = _manual_activity(item, host)
+    _manual_activity(plan, item, host)
     if plan.running_turns:
         why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
                 f"so let them finish first.")
@@ -697,17 +698,31 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     _turns_blocker(plan, force_interrupt)
 
 
-def _manual_activity(item: BackendItem, host) -> Optional[int]:
+def _manual_activity(plan: BackendPlan, item: BackendItem, host) -> None:
     """Turns running on a by-hand backend, read the way the automatic plan reads them: a backend with no
     GET /api/health (older than v2026.7.30) writes no turn markers, so finding none there is unknown."""
-    if not item.pid:
-        return None
-    start = host.start_time(item.pid)
-    address = _address_of(item, host)
+    start = host.start_time(item.pid) if item.pid else None
+    address = _address_of(item, host) if item.pid else None
     status = host.http_status(probe_host(address[0]), address[1]) if address else None
-    if status is not None and status.get("health") == "missing":
-        return _turns_before_restart(host, item.pid, start)
-    return host.running_turns(item.pid, start)
+    old = status is not None and status.get("health") == "missing"
+    plan.running_turns = _turns_before_restart(host, item.pid, start) if old else \
+        host.running_turns(item.pid, start) if item.pid else None
+    if plan.running_turns is None:
+        plan.turns_unknown = _turns_unknown(host, item.pid, start, old=old)
+
+
+def _turns_unknown(host, pid: Optional[int], start_time, *, old: bool = False) -> str:
+    """Why the turns of the old backend *pid* cannot be told: each marker file at fault (path only:
+    a marker holds the turn's prompt), a Hermes that writes none, or no pid."""
+    if not pid:
+        return "its process id is not known"
+    why = ("it runs a Hermes older than v2026.7.30, which has no GET /api/health and writes no turn markers, "
+           "so finding none does not mean it is idle") if old else ""
+    if files := host.unknown_turn_files(pid, start_time):
+        found = (f"these turn-marker files cannot be read, or hold a marker whose writer cannot be checked: "
+                 f"{', '.join(files)}")
+        why = f"{why}; {found}" if why else found
+    return why or "its turn activity could not be read"
 
 
 def _manual_target(plan: BackendPlan, host, keep_webapp: bool) -> None:
@@ -771,9 +786,10 @@ def _turns_blocker(plan: BackendPlan, force_interrupt: bool) -> None:
     if force_interrupt:
         return
     if plan.running_turns is None:
-        plan.blockers.append("Cannot tell whether turns are running on the old backend (its turn activity could "
-                             "not be read). Confirm it is idle, or re-run with --force-interrupt (any running "
-                             "turn is interrupted).")
+        why = plan.turns_unknown or "its turn activity could not be read"
+        plan.blockers.append(f"Cannot tell whether turns are running on the old backend: {why}. To move it, "
+                             f"confirm it is idle, then re-run with --force-interrupt (any running turn is "
+                             f"interrupted).")
     elif plan.running_turns > 0:
         plan.blockers.append(f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to "
                              f"finish, or re-run with --force-interrupt (they are interrupted).")
@@ -807,10 +823,10 @@ def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
         providers = status.get("auth_providers")
         plan.auth_before = {"auth_required": bool(status.get("auth_required")),
                             "providers": provider_names(providers) if isinstance(providers, list) else None}
-    if plan.item and plan.item.pid:
-        plan.running_turns = host.running_turns(plan.item.pid, plan.rec.get("start_time"))
-    else:
-        plan.running_turns = None
+    pid, start = (plan.item.pid if plan.item else None), plan.rec.get("start_time")
+    plan.running_turns = host.running_turns(pid, start) if pid else None
+    if plan.running_turns is None:
+        plan.turns_unknown = _turns_unknown(host, pid, start)
     _turns_blocker(plan, force_interrupt)
 
 

@@ -94,7 +94,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
-    "cron", "webapp",  # webapp/: the source gateway's sign-in state (credential, native grants, Portal callback)
+    "cron", "webapp", "backend_migration", "backend_migration.json",  # webapp/: its sign-in; backend_migration*: its migration
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -185,7 +185,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "proxy",                        # iron-proxy CA key + proxy tokens
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
-    "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
+    "backups", "state-snapshots", "backend_migration", "backend_migration.json",  # update/migration store copies
     *_GATEWAY_CONNECTION_STORES,    # saved gateways' session tokens + OAuth sign-ins (sidecars: _STORE_COPY_RE)
     *_OS_CREDENTIAL_STORES,
 })

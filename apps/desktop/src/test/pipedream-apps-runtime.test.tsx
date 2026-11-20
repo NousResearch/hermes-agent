@@ -20,6 +20,27 @@ function toastSpy() {
   return { success: vi.fn(), warning: vi.fn() }
 }
 
+function pipedreamFrame() {
+  return window.document.querySelector('iframe[title="Pipedream Connect"]') as HTMLIFrameElement | null
+}
+
+function dispatchPipedreamMessage(
+  frame: HTMLIFrameElement,
+  data: unknown,
+  options: { origin?: string; source?: unknown } = {}
+) {
+  const event = new MessageEvent('message', {
+    data,
+    origin: options.origin ?? 'https://pipedream.com'
+  })
+
+  Object.defineProperty(event, 'source', {
+    configurable: true,
+    value: 'source' in options ? options.source : frame.contentWindow
+  })
+  window.dispatchEvent(event)
+}
+
 afterEach(() => {
   cleanup()
   queryClient.clear()
@@ -334,5 +355,202 @@ describe('pipedream apps runtime plugin', () => {
     )
     expect(api.mcpEnable).not.toHaveBeenCalled()
     expect(toast.success).toHaveBeenCalled()
+  })
+
+  it('opens Pipedream in the page and only trusts a validated success message', async () => {
+    const api = {
+      config: vi.fn().mockResolvedValue({
+        configured: true,
+        environment: 'production',
+        mcpBaseUrl: 'https://app.example/api/pipedream/mcp'
+      }),
+      categories: vi.fn().mockResolvedValue({ categories: [] }),
+      apps: vi.fn().mockResolvedValue({
+        apps: [{ name_slug: 'slack', name: 'Slack' }],
+        nextCursor: null,
+        prevCursor: null,
+        totalCount: 1
+      }),
+      accounts: vi.fn().mockResolvedValue([]),
+      connect: vi.fn().mockResolvedValue({
+        token: 'ctok_1',
+        connectLinkUrl: 'https://pipedream.com/connect?token=ctok_1'
+      }),
+      disconnect: vi.fn(),
+      mcpEnable: vi.fn().mockResolvedValue({ ok: true })
+    }
+
+    const toast = toastSpy()
+    const openExternal = vi.fn().mockResolvedValue(true)
+
+    renderWithQuery(
+      <plugin.PipedreamAppsTab
+        api={api}
+        browser
+        copyText={vi.fn()}
+        fallbackExternalUserId="user-1"
+        openExternal={openExternal}
+        toast={toast}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+
+    await waitFor(() => expect(pipedreamFrame()).toBeTruthy())
+
+    const frame = pipedreamFrame() as HTMLIFrameElement
+
+    expect(frame.src).toContain('/_static/connect.html?token=ctok_1&app=slack')
+    expect(openExternal).not.toHaveBeenCalled()
+
+    // Wrong origin, wrong source, and malformed success payloads are ignored.
+    dispatchPipedreamMessage(frame, { type: 'success', authProvisionId: 'apn_1' }, { origin: 'https://evil.example' })
+    dispatchPipedreamMessage(frame, { type: 'success', authProvisionId: 'apn_1' }, { source: window })
+    dispatchPipedreamMessage(frame, { type: 'success' })
+    dispatchPipedreamMessage(frame, null)
+
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(pipedreamFrame()).toBeTruthy()
+
+    dispatchPipedreamMessage(frame, { type: 'success', authProvisionId: 'apn_1' })
+
+    await waitFor(() => expect(pipedreamFrame()).toBeNull())
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(api.mcpEnable).toHaveBeenCalledWith({ externalUserId: 'user-1', appSlug: 'slack' })
+    )
+  })
+
+  it('waits for the final account check before reporting a close as cancelled', async () => {
+    let connected = false
+
+    const api = {
+      config: vi.fn().mockResolvedValue({ configured: true, environment: 'production', mcpBaseUrl: null }),
+      categories: vi.fn().mockResolvedValue({ categories: [] }),
+      apps: vi.fn().mockResolvedValue({
+        apps: [{ name_slug: 'slack', name: 'Slack' }],
+        nextCursor: null,
+        prevCursor: null,
+        totalCount: 1
+      }),
+      accounts: vi.fn(async () =>
+        connected ? [{ id: 'apn_1', app: { name_slug: 'slack', name: 'Slack' } }] : []
+      ),
+      connect: vi.fn().mockResolvedValue({
+        token: 'ctok_1',
+        connectLinkUrl: 'https://pipedream.com/connect?token=ctok_1'
+      }),
+      disconnect: vi.fn(),
+      mcpEnable: vi.fn()
+    }
+
+    const toast = toastSpy()
+
+    renderWithQuery(
+      <plugin.PipedreamAppsTab
+        api={api}
+        browser
+        copyText={vi.fn()}
+        fallbackExternalUserId="user-1"
+        openExternal={vi.fn()}
+        toast={toast}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(pipedreamFrame()).toBeTruthy())
+
+    connected = true
+    dispatchPipedreamMessage(pipedreamFrame() as HTMLIFrameElement, { type: 'close' })
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    expect(pipedreamFrame()).toBeNull()
+    expect(screen.queryByText('The connection was not completed. You can try again.')).toBeNull()
+  })
+
+  it('reports a cancellation only when the close and final account check find nothing', async () => {
+    const api = {
+      config: vi.fn().mockResolvedValue({ configured: true, environment: 'production', mcpBaseUrl: null }),
+      categories: vi.fn().mockResolvedValue({ categories: [] }),
+      apps: vi.fn().mockResolvedValue({
+        apps: [{ name_slug: 'slack', name: 'Slack' }],
+        nextCursor: null,
+        prevCursor: null,
+        totalCount: 1
+      }),
+      accounts: vi.fn().mockResolvedValue([]),
+      connect: vi.fn().mockResolvedValue({
+        token: 'ctok_1',
+        connectLinkUrl: 'https://pipedream.com/connect?token=ctok_1'
+      }),
+      disconnect: vi.fn(),
+      mcpEnable: vi.fn()
+    }
+
+    const toast = toastSpy()
+
+    renderWithQuery(
+      <plugin.PipedreamAppsTab
+        api={api}
+        browser
+        copyText={vi.fn()}
+        fallbackExternalUserId="user-1"
+        openExternal={vi.fn()}
+        toast={toast}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(pipedreamFrame()).toBeTruthy())
+
+    dispatchPipedreamMessage(pipedreamFrame() as HTMLIFrameElement, { type: 'close' })
+
+    await waitFor(
+      () => expect(screen.getByText('The connection was not completed. You can try again.')).toBeTruthy(),
+      { timeout: 4_000 }
+    )
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('does not report success when Pipedream posts an error', async () => {
+    const api = {
+      config: vi.fn().mockResolvedValue({ configured: true, environment: 'production', mcpBaseUrl: null }),
+      categories: vi.fn().mockResolvedValue({ categories: [] }),
+      apps: vi.fn().mockResolvedValue({
+        apps: [{ name_slug: 'slack', name: 'Slack' }],
+        nextCursor: null,
+        prevCursor: null,
+        totalCount: 1
+      }),
+      accounts: vi.fn().mockResolvedValue([]),
+      connect: vi.fn().mockResolvedValue({
+        token: 'ctok_1',
+        connectLinkUrl: 'https://pipedream.com/connect?token=ctok_1'
+      }),
+      disconnect: vi.fn(),
+      mcpEnable: vi.fn()
+    }
+
+    const toast = toastSpy()
+
+    renderWithQuery(
+      <plugin.PipedreamAppsTab
+        api={api}
+        browser
+        copyText={vi.fn()}
+        fallbackExternalUserId="user-1"
+        openExternal={vi.fn()}
+        toast={toast}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(pipedreamFrame()).toBeTruthy())
+
+    dispatchPipedreamMessage(pipedreamFrame() as HTMLIFrameElement, { type: 'error', message: 'access denied' })
+
+    await waitFor(() => expect(screen.getByText('access denied')).toBeTruthy())
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(pipedreamFrame()).toBeNull()
   })
 })

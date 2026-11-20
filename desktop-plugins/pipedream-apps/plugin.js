@@ -30,7 +30,7 @@ import {
   useQueryClient,
   useValue
 } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 export const ID = 'pipedream-apps'
@@ -80,6 +80,7 @@ export const LOCALES = {
     appConnected: 'Connector connected',
     appConnectedMessage: () => 'Connected successfully. Tools will be available in a new chat.',
     connectFailedTitle: name => `Could not connect ${name}`,
+    connectCancelled: 'The connection was not completed. You can try again.',
     missingApp: 'This connector is missing a name slug.',
     disconnectTitle: name => `Disconnect ${name}?`,
     disconnectBody: 'The agent will lose access to this account. You can reconnect it later.',
@@ -198,6 +199,37 @@ export function errorMessage(error) {
   if (typeof error === 'string') return error
   if (error && typeof error === 'object' && typeof error.message === 'string') return error.message
   return 'Something went wrong.'
+}
+
+const PIPEDREAM_ORIGINS = new Set(['https://pipedream.com', 'https://www.pipedream.com'])
+const PIPEDREAM_CLOSE_CONFIRM_MS = 1500
+
+export function pipedreamEmbedUrl(slug, result) {
+  if (typeof result?.token === 'string' && result.token) {
+    return `https://pipedream.com/_static/connect.html?token=${encodeURIComponent(result.token)}&app=${encodeURIComponent(slug)}`
+  }
+  return typeof result?.connectLinkUrl === 'string' ? result.connectLinkUrl : ''
+}
+
+export function pipedreamMessage(event, frame) {
+  if (!PIPEDREAM_ORIGINS.has(event.origin)) return null
+  if (!frame || event.source !== frame.contentWindow) return null
+
+  const data = event.data
+  if (!data || typeof data !== 'object' || typeof data.type !== 'string') return null
+
+  if (data.type === 'success') {
+    return typeof data.authProvisionId === 'string' && data.authProvisionId
+      ? { type: 'success', authProvisionId: data.authProvisionId }
+      : null
+  }
+
+  if (data.type === 'error') {
+    return { type: 'error', message: typeof data.message === 'string' ? data.message : '' }
+  }
+
+  if (data.type === 'close') return { type: 'close' }
+  return null
 }
 
 export function appsTabHashFor(hash) {
@@ -761,7 +793,7 @@ export function AppDetailsDialog({ app, connected, onClose, onConnect }) {
   })
 }
 
-export function ConnectDialog({ app, api, externalUserId, openExternal, copyText, onClose, onConnected }) {
+export function ConnectDialog({ app, api, externalUserId, openExternal, browser, copyText, onClose, onConnected }) {
   const t = usePluginI18n(ID)
   const slug = appSlugOf(app)
   const name = appNameOf(app)
@@ -773,6 +805,24 @@ export function ConnectDialog({ app, api, externalUserId, openExternal, copyText
   const [refreshing, setRefreshing] = useState(false)
   const [copied, setCopied] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const [embedUrl, setEmbedUrl] = useState('')
+  const iframeRef = useRef(null)
+  const mountedRef = useRef(true)
+  const settledRef = useRef(false)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const succeed = useCallback(() => {
+    if (settledRef.current) return false
+    settledRef.current = true
+    onConnected(slug, name)
+    return true
+  }, [name, onConnected, slug])
 
   useEffect(() => {
     if (!slug) {
@@ -784,10 +834,12 @@ export function ConnectDialog({ app, api, externalUserId, openExternal, copyText
 
     let disposed = false
 
+    settledRef.current = false
     setStatus('starting')
     setFailureKind('connect')
     setError('')
     setLink('')
+    setEmbedUrl('')
     setDeadline(0)
 
     void (async () => {
@@ -797,7 +849,11 @@ export function ConnectDialog({ app, api, externalUserId, openExternal, copyText
         setLink(result.connectLinkUrl)
         setDeadline(Date.now() + CONNECT_TIMEOUT_MS)
         setStatus('waiting')
-        void openExternal(result.connectLinkUrl)
+        if (browser) {
+          setEmbedUrl(pipedreamEmbedUrl(slug, result))
+        } else {
+          void openExternal(result.connectLinkUrl)
+        }
       } catch (nextError) {
         if (disposed) return
         setFailureKind('connect')
@@ -809,21 +865,21 @@ export function ConnectDialog({ app, api, externalUserId, openExternal, copyText
     return () => {
       disposed = true
     }
-  }, [api, attempt, externalUserId, openExternal, slug, t])
+  }, [api, attempt, browser, externalUserId, openExternal, slug, t])
 
   const checkAccounts = useCallback(async () => {
     try {
       const accounts = await api.accounts(externalUserId)
       const match = accounts.find(account => accountSlugOf(account) === slug)
       if (match) {
-        onConnected(slug, name)
+        succeed()
         return true
       }
       return false
     } catch {
       return false
     }
-  }, [api, externalUserId, name, onConnected, slug])
+  }, [api, externalUserId, succeed, slug])
 
   useEffect(() => {
     if (status !== 'waiting' || !deadline) return undefined
@@ -850,6 +906,60 @@ export function ConnectDialog({ app, api, externalUserId, openExternal, copyText
       window.clearInterval(timer)
     }
   }, [checkAccounts, deadline, status, t])
+
+  useEffect(() => {
+    if (!embedUrl) return undefined
+
+    const iframe = document.createElement('iframe')
+    iframe.src = embedUrl
+    iframe.title = 'Pipedream Connect'
+    iframe.style.cssText =
+      'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483647;background:#fff'
+    iframeRef.current = iframe
+    document.body.append(iframe)
+
+    const onMessage = event => {
+      const message = pipedreamMessage(event, iframe)
+      if (!message) return
+
+      if (message.type === 'success') {
+        setEmbedUrl('')
+        succeed()
+        return
+      }
+
+      if (message.type === 'error') {
+        setEmbedUrl('')
+        setFailureKind('connect')
+        setError(message.message || t('connectFailedTitle', name))
+        setStatus('error')
+        return
+      }
+
+      // The Pipedream page was closed. The account may have been created just
+      // before the close message, so wait for the account list before calling
+      // this a cancellation.
+      setEmbedUrl('')
+      void (async () => {
+        if (await checkAccounts()) return
+        await new Promise(resolve => window.setTimeout(resolve, PIPEDREAM_CLOSE_CONFIRM_MS))
+        if (!mountedRef.current || settledRef.current) return
+        if (await checkAccounts()) return
+        if (!mountedRef.current || settledRef.current) return
+        setFailureKind('connect')
+        setError(t('connectCancelled'))
+        setStatus('error')
+      })()
+    }
+
+    window.addEventListener('message', onMessage)
+
+    return () => {
+      window.removeEventListener('message', onMessage)
+      iframe.remove()
+      if (iframeRef.current === iframe) iframeRef.current = null
+    }
+  }, [checkAccounts, embedUrl, name, succeed, t])
 
   useEffect(() => {
     if (!copied) return undefined
@@ -982,7 +1092,7 @@ export function ConnectDialog({ app, api, externalUserId, openExternal, copyText
   })
 }
 
-export function PipedreamAppsTab({ api, fallbackExternalUserId, openExternal, copyText, toast }) {
+export function PipedreamAppsTab({ api, fallbackExternalUserId, openExternal, browser, copyText, toast }) {
   const t = usePluginI18n(ID)
   const externalUserId = useExternalUserId(fallbackExternalUserId)
   const queryClient = useQueryClient()
@@ -1113,6 +1223,7 @@ export function PipedreamAppsTab({ api, fallbackExternalUserId, openExternal, co
         ? jsx(ConnectDialog, {
             api,
             app: connectTarget,
+            browser,
             copyText,
             externalUserId,
             onClose: () => setConnectTarget(null),
@@ -1167,6 +1278,7 @@ export default {
     if (!hasStored) ctx.storage.set('externalUserId', fallbackExternalUserId)
 
     const api = createPipedreamApi(ctx.rest)
+    const browser = window.hermesDesktop?.platform === 'browser'
     const toast = {
       success: (title, message) => host.notify({ kind: 'success', message, title }),
       warning: (title, message) => host.notify({ kind: 'warning', message, title })
@@ -1179,6 +1291,7 @@ export default {
       render: () =>
         jsx(PipedreamAppsTab, {
           api,
+          browser,
           copyText: text => ctx.os.writeClipboard(text),
           fallbackExternalUserId,
           openExternal: url => ctx.os.openExternal(url),

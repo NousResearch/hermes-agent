@@ -33,6 +33,35 @@
 
 set -euo pipefail
 
+# ── Refuse to operate on a live Hermes home ──────────────────────────────────
+# A HERMES_HOME inherited from a gateway- or agent-launched shell points at the
+# OPERATOR'S live home. The pytest children are sandboxed twice (tests/conftest.py
+# redirects the home before any test-module import, and tests/home_io_guard.py
+# blocks writes into the real root), but everything this runner does BEFORE and
+# AROUND pytest — pm provisioning, scratch/env setup, helper scripts, log-based
+# monitors tailing the home — resolves the inherited home directly. A fixture
+# route logged by any of those lands in the live agent.log and pages whoever
+# watches it. Production homes are therefore never honored here: unset and let
+# the run get a faked home, loudly.
+_runner_live_home() {
+  local account h
+  account="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  # The operator's account home, not (necessarily) $HOME: the runner may fake
+  # HOME itself, and a profile home (<root>/profiles/<name>) is live too.
+  for h in "${HOME:-}/.hermes" "${account:+$account/.hermes}"; do
+    [ -n "$h" ] && [ "$h" != "/.hermes" ] || continue
+    case "${HERMES_HOME%/}" in
+      "$h" | "$h"/*) printf '%s\n' "$h"; return 0 ;;
+    esac
+  done
+  return 1
+}
+if [ -n "${HERMES_HOME:-}" ] && _runner_live_home >/dev/null; then
+  echo "refusing HERMES_HOME=$HERMES_HOME: it resolves inside a live Hermes home ($(_runner_live_home))." >&2
+  echo "Unsetting it for this run — pytest gets a faked home and nothing here can touch live state." >&2
+  unset HERMES_HOME
+fi
+
 # ── Locate repo root ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

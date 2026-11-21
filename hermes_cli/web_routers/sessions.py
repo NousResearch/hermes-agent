@@ -31,7 +31,7 @@ from hermes_cli.web_routers._common import (
 )
 from persistence.conversation.messages import TranscriptRead, TranscriptView
 from persistence.conversation.sessions import SessionCountQuery, SessionOrder, SessionQuery, SessionWindow
-from persistence.core.errors import CorruptStoreError, PersistenceError, SearchIndexCorrupt, StoreReplaced
+from persistence.core.errors import AuthorityRefusal, CorruptStoreError, PersistenceError, SearchIndexCorrupt, StoreReplaced
 from persistence.core.health import StorageState
 from persistence.housekeeping.maintenance import PruneCriteria
 from persistence_assembly import profile_scope, storage_health, store_location
@@ -800,6 +800,25 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     return project_history_commentary(projected_messages, home=home)
 
 
+def _bound_local_target(store, sid: str) -> Optional[str]:
+    """The validated physical transcript a bound local owner reads, else None.
+
+    Reset ends the logical row, so the generic resume resolver does not follow it.
+    An invalid creation receipt must never fall back to that parent's old history.
+    """
+    try:
+        if not store.bindings.binding_marks(sid).policy:
+            return None
+        receipt = store.bindings.receipt(sid)
+        if receipt.session_id != sid:
+            raise AuthorityRefusal("storage_unavailable")
+        target = store.bindings.validate_lineage(receipt)
+    except (AuthorityRefusal, ValueError, KeyError, TypeError) as exc:
+        _log.warning("invalid local-owner receipt for session %s: %s", sid, exc)
+        raise HTTPException(status_code=503, detail="storage_unavailable") from exc
+    return target if target != sid else None
+
+
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
@@ -812,7 +831,10 @@ async def get_session_messages(
         sid = _resolve_session_id(store, session_id)
         if not sid:
             return None
-        sid = store.lineage.resolve_resume_target(sid)
+        # Keep the logical owner in responses while reading its current transcript.
+        read_sid = _bound_local_target(store, sid)
+        if read_sid is None:
+            sid = read_sid = store.lineage.resolve_resume_target(sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -824,7 +846,7 @@ async def get_session_messages(
         # prefetch only shows the child continuation's messages after a
         # compression rotation, hiding the pre-compaction transcript
         # (#51058).
-        rows = store.messages.read_transcript(sid, TranscriptRead(
+        rows = store.messages.read_transcript(read_sid, TranscriptRead(
             view=TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE, limit=_limit,
             offset=offset, latest=latest_page, include_lineage=True))
         return sid, _limit, [row.as_wire_row() for row in rows]
@@ -848,7 +870,8 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
-def _timeline_session_id(store, session_id: str, owner: str) -> str:
+def _timeline_session_id(store, session_id: str, owner: str) -> tuple[str, str]:
+    """``(id to report, id to read)``; they differ for a bound local owner."""
     # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
     # legacy owner belongs to this profile's store, just like /messages pages.
     def owned(sid):
@@ -857,10 +880,15 @@ def _timeline_session_id(store, session_id: str, owner: str) -> str:
 
     if not owned(session_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    target = _bound_local_target(store, session_id)
+    if target is not None:
+        if not owned(target):
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        return session_id, target
     sid = store.lineage.resolve_resume_target(session_id)
     if not owned(sid):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    return sid
+    return sid, sid
 
 
 @manage_router.get("/api/sessions/{session_id}/timeline")
@@ -876,8 +904,8 @@ async def get_session_timeline(
     owner = _serving_profile(profile)
 
     def _read(store):
-        sid = _timeline_session_id(store, session_id, owner)
-        timeline = store.messages.read_session_timeline(sid, limit=limit, after_row_id=after_row_id)
+        sid, read_sid = _timeline_session_id(store, session_id, owner)
+        timeline = store.messages.read_session_timeline(read_sid, limit=limit, after_row_id=after_row_id)
         return {"session_id": sid, "profile": owner,
                 "entries": [{"row_id": e.row_id, "preview": e.preview, "timestamp": e.timestamp}
                             for e in timeline.entries],
@@ -897,8 +925,8 @@ async def get_session_messages_around(
     owner = _serving_profile(profile)
 
     def _read(store):
-        sid = _timeline_session_id(store, session_id, owner)
-        page = store.messages.read_prompt_page(sid, row_id, limit=limit)
+        sid, read_sid = _timeline_session_id(store, session_id, owner)
+        page = store.messages.read_prompt_page(read_sid, row_id, limit=limit)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
         return {"session_id": sid, "profile": owner,

@@ -177,7 +177,8 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
     monkeypatch.setattr(
         sessions, "_with_db", lambda profile, fn, read_only: fn(_FakeStore(row))
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: sid)
+    monkeypatch.setattr(sessions, "_bound_local_target", lambda store, sid: None)
+    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: (sid, sid))
 
     async def exercise():
         for profile, expected in (
@@ -225,7 +226,8 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     monkeypatch.setattr(
         sessions, "_with_db", lambda profile, fn, read_only: fn(_FakeStore(row))
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: sid)
+    monkeypatch.setattr(sessions, "_bound_local_target", lambda store, sid: None)
+    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: (sid, sid))
 
     async def exercise():
         page = await sessions.get_session_messages(

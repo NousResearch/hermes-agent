@@ -69,11 +69,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-# Import Thread from the mocked module, not discord directly, so isinstance
-# checks in the adapter match the class our fixtures instantiate.
-_DiscordThread = sys.modules["discord"].Thread
-
 from plugins.platforms.discord.adapter import DiscordAdapter
+from tests.gateway._discord_sdk_fixtures import make_thread
 
 
 def _adapter() -> DiscordAdapter:
@@ -88,9 +85,7 @@ def _adapter() -> DiscordAdapter:
 
 def _channel(chan_id=555, thread=False):
     if thread:
-        chan = _DiscordThread()
-        chan.id = chan_id
-        return chan
+        return make_thread(channel_id=chan_id, parent_id=555)
     return SimpleNamespace(id=chan_id)
 
 
@@ -114,13 +109,11 @@ def _message(
 
 
 def _thread_obj(*, thread_id=321, name="my thread", owner_id=777, parent_id=555):
-    t = _DiscordThread()
-    t.id = thread_id
-    t.name = name
-    t.owner_id = owner_id
-    t.parent_id = parent_id
-    t.guild = SimpleNamespace(id=999)
-    return t
+    thread = make_thread(channel_id=thread_id, name=name, owner_id=owner_id or 0, parent_id=parent_id)
+    if owner_id is None:
+        return SimpleNamespace(id=thread.id, name=thread.name, owner_id=None,
+                               parent_id=thread.parent_id, guild=thread.guild)
+    return thread
 
 
 @pytest.fixture(autouse=True)

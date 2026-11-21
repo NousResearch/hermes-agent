@@ -66,3 +66,16 @@ def test_bounded_output_collector_truncation():
 @pytest.mark.parametrize("size", [0, 999, 1000])
 def test_text_within_budget_passes_through_untouched(size):
     assert truncate_head_tail(TEXT[:size], 1000) == TEXT[:size]
+
+
+@pytest.mark.parametrize("max_chars", [0, -10])
+def test_zero_or_negative_budget_does_not_leak_full_tail_slice(max_chars):
+    """Python ``text[-0:]`` evaluates to ``text[0:]`` (the entire string); ensure a zero or
+    negative budget keeps 0 payload characters rather than appending the full untruncated input."""
+    rendered = truncate_head_tail(TEXT, max_chars)
+    notices = list(_NOTICE.finditer(rendered))
+    assert len(notices) == 1
+    m = notices[0]
+    assert rendered[:m.start()] == ""
+    assert rendered[m.end():] == ""
+    assert int(m["omitted"].replace(",", "")) == len(TEXT)

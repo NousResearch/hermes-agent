@@ -8,9 +8,10 @@ import { afterEach, test, vi } from 'vitest'
 const html = fs.readFileSync(new URL('../../../scripts/desktop-update/ui.html', import.meta.url), 'utf8')
 const windows = []
 
-function openPage(fetch) {
+function openPage(fetch, copy) {
   vi.useFakeTimers()
-  const dom = new JSDOM(html, {
+  const page = copy ? html.replace('<!-- windows-update-ui-copy -->', JSON.stringify(copy)) : html
+  const dom = new JSDOM(page, {
     url: 'http://127.0.0.1:12345/',
     runScripts: 'dangerously',
     beforeParse(window) {
@@ -93,4 +94,19 @@ test('continues displaying a healthy long update while progress remains reachabl
   await vi.advanceTimersByTimeAsync(60_000)
   assert.equal(document.body.className, '')
   assert.equal(document.getElementById('line').textContent, 'Building Desktop')
+})
+
+test('uses the Windows hand-off copy for the heading and duration', async () => {
+  const translations = JSON.parse(
+    fs.readFileSync(new URL('../../../scripts/desktop-update/windows-ui.json', import.meta.url), 'utf8')
+  ).ru
+  const message = translations.stages['Building the desktop app']
+  const fetch = vi.fn(async () => ({ ok: true, json: async () => ({
+    status: 'running', message, elapsed_seconds: 659
+  }) }))
+  const document = openPage(fetch, { locale: 'ru', labels: translations.labels })
+  await vi.advanceTimersByTimeAsync(0)
+  assert.equal(document.documentElement.lang, 'ru')
+  assert.equal(document.getElementById('title').textContent, 'Обновление Hermes')
+  assert.equal(document.getElementById('line').textContent, `${message}\nПрошло 10 мин 59 с`)
 })

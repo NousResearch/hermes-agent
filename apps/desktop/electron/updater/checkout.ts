@@ -38,6 +38,7 @@ import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, Updat
  * impure edges only — all update logic lives here.
  */
 export interface CheckoutStrategyDeps {
+  uiLocale?: string
   resolveUpdateRoot: () => string
   readSourceUpdate: (
     root: string,
@@ -610,6 +611,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
 
       if (plan.runId) {
         wrappedArgs.push('-HandoffRun', plan.runId)
+      }
+
+      if (plan.protocol >= 3 && deps.uiLocale && /^[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,3}$/i.test(deps.uiLocale)) {
+        wrappedArgs.push('-UiLocale', deps.uiLocale)
       }
 
       const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, wrappedArgs)

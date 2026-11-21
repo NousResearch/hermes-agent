@@ -14,6 +14,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.sandbox_egress import egress_for_backend, modal_create_kwargs, refuse_unenforceable
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from tools.terminal_tool_config import _get_plugin_env_provider
@@ -164,7 +165,7 @@ def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
     return docker_env_obj
 
 
-def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
+def _build_modal_env(*, image, cwd, timeout, cc, task_id, egress=None, **_):
     res = _resources(cc)
     sandbox_kwargs = {k: res[k] for k in ("cpu", "memory") if res[k] > 0}
     if res["disk"] > 0:
@@ -178,6 +179,11 @@ def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
     selected = modal_state["selected_backend"]
     if selected not in ("managed", "direct"):
         raise ValueError(_modal_unavailable_reason(modal_state)[1])
+    if egress is not None:
+        if selected == "managed":
+            refuse_unenforceable("managed Modal", "the tool gateway's create API takes no network policy; "
+                                 "set terminal.modal_mode: direct")
+        sandbox_kwargs.update(modal_create_kwargs(egress))
     cls = _ManagedModalEnvironment if selected == "managed" else _ModalEnvironment
     return cls(image=image, cwd=cwd, timeout=timeout, modal_sandbox_kwargs=sandbox_kwargs,
                persistent_filesystem=res["persistent_filesystem"], task_id=task_id)
@@ -194,10 +200,10 @@ _SANDBOX_ROWS = {
 }
 
 
-def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
+def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, egress=None, **_):
     cls, with_image, extra = _SANDBOX_ROWS[env_type]
     kwargs = dict(cwd=cwd, timeout=timeout, task_id=task_id, **_resources(cc),
-                  **({"image": image} if with_image else {}))
+                  **({"image": image} if with_image else {}), **({"egress": egress} if egress else {}))
     kwargs.update(extra(cc, kwargs))
     return cls()(**kwargs)
 
@@ -307,9 +313,11 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Inside a hosted scope the environment is always the bound agent's sandbox (:func:`_build_hosted_env`)."""
     from tools.environments.sandbox_scope import hosted_scope
     builder = _ENV_BUILDERS.get(env_type)
+    hosted = hosted_scope() is not None
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
-                  ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
-    if hosted_scope() is not None:
+                  ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only,
+                  egress=egress_for_backend(env_type, hosted=hosted))
+    if hosted:
         env = _build_hosted_env(env_type=env_type, **kwargs)
     elif builder is not None:
         env = builder(**kwargs)

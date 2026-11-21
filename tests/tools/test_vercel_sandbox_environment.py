@@ -562,6 +562,24 @@ class TestSnapshotPersistence:
         }
         assert vercel_module._load_snapshots() == {"task-123": "snap_saved"}
 
+    def test_egress_policy_reaches_fresh_create_and_snapshot_restore(
+        self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
+    ):
+        """terminal.egress rides on every Sandbox.create, a snapshot restore included."""
+        from tools.environments.sandbox_egress import SandboxEgress
+
+        policies = []
+        monkeypatch.setattr(vercel_module, "vercel_network_policy", lambda egress: policies.append(egress) or "POLICY")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        egress = SandboxEgress(("api.github.com",), ())
+        make_env(egress=egress)
+        vercel_module._store_snapshot("task-123", "snap_saved")
+        make_env(egress=egress)
+
+        assert policies == [egress, egress]
+        assert [kw.get("network_policy") for kw in vercel_sdk.create_kwargs] == ["POLICY", "POLICY"]
+        assert "source" in vercel_sdk.create_kwargs[1]
+
     def test_restore_failure_prunes_snapshot_and_falls_back_to_fresh_sandbox(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
     ):

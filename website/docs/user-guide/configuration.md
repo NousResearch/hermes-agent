@@ -275,6 +275,7 @@ terminal:
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
+  egress: {}        # Cloud sandbox outbound allowlist {domains, cidrs}; see "Cloud sandbox egress allowlist"
   modal_image: "nousresearch/hermes-sandbox:desktop"                 # Container image for Modal backend
   daytona_image: "nousresearch/hermes-sandbox:desktop"               # Container image for Daytona backend
 ```
@@ -607,6 +608,41 @@ terminal:
 **Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
+
+### Cloud sandbox egress allowlist
+
+By default a Modal, Daytona or Vercel sandbox can reach any host on the internet. `terminal.egress`
+limits it to the hosts you list. The sandbox provider enforces the list in its own network layer,
+outside the sandbox, so a command inside it cannot lift it:
+
+```yaml
+terminal:
+  backend: modal          # modal (direct) | daytona | vercel_sandbox
+  egress:
+    domains: [api.github.com, "*.pypi.org", files.pythonhosted.org]
+    cidrs: [203.0.113.7, 10.0.0.0/8]   # IP addresses or ranges, any port
+```
+
+- **Absent or `{}`:** open network (the default).
+- **Both lists empty** (`egress: {domains: [], cidrs: []}`): no outbound network at all.
+- **Entries:** up to 64 per list. Domains are hostnames only (no scheme, port, path or IP address);
+  `*.example.com` matches subdomains. Whether it also matches `example.com` itself depends on the
+  provider, so list the apex as well when you need it. A bare IP gets `/32` (`/128` for IPv6).
+- **Your model provider is not added for you.** Commands in the sandbox only reach the hosts you list.
+  Hermes itself talks to the model from the host, so the agent keeps working.
+
+How each backend maps it:
+
+| Backend | Native setting | Notes |
+|---|---|---|
+| `modal` (direct) | `outbound_domain_allowlist`, `outbound_cidr_allowlist`, `block_network` | Domains are matched on TLS SNI, port 443 only. CIDRs allow any port. |
+| `daytona` | `domain_allow_list` or `network_allow_list`, `network_block_all` | One list per sandbox, so set **either** domains **or** cidrs. IPv4 ranges only. A resumed sandbox gets the current list before its first command. |
+| `vercel_sandbox` | `NetworkPolicy` (domain `allow`, `subnets.allow`) | |
+
+Every other backend **refuses to start** while `terminal.egress` is set, so a configured allowlist is
+never silently ignored. That covers `local`, `docker`, `ssh`, managed Modal (`modal_mode: managed` or
+`auto` resolving to managed) and plugin backends. Local `execute_code` refuses too. For Docker, use the
+[egress proxy](./egress/iron-proxy.md) or `docker_network: false`.
 
 ### Vercel Sandbox Backend
 

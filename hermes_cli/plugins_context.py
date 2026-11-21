@@ -579,8 +579,66 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             return
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)
+        handle.value = provider
         _facade().logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
                               registry_name, provider.display_name)
+        return handle
+
+    @_serialized_replacement
+    def register_dashboard_token_route(
+        self, path: str, *, provider: str, required_scopes=(),
+    ) -> Optional[PluginRegistration]:
+        """Bind an exact path under this plugin's dashboard mount to a token provider and scopes.
+        Launch-scope only; like auth providers, bindings survive routine unload-all."""
+        from hermes_cli.dashboard_auth.token_auth import TokenRoutePolicy, bind_token_route, restore_token_route
+        launch_scope = _facade().hermes_home_key(_facade().get_process_hermes_home())
+        if self._manager.scope_key != launch_scope:
+            _facade().logger.warning(
+                "Plugin '%s' tried to register dashboard token route %r from profile scope %s; "
+                "ignoring it because dashboard auth is owned by launch scope %s.",
+                self.manifest.name, path, self._manager.scope_key, launch_scope,
+            )
+            return None
+        try:
+            if self.manifest.source == "entrypoint" or not self.manifest.path:
+                raise ValueError("token routes require a discovered dashboard plugin directory")
+            directory = _facade().Path(self.manifest.path)
+            if not directory.is_dir():
+                raise ValueError("plugin path must be a directory")
+            directory = directory.resolve()
+            owner = next((p for p in self._manager._dashboard_token_plugins
+                          if _facade().Path(p["_dir"]).parent.resolve() == directory), None)
+            if owner is None:
+                raise ValueError("plugin does not own a discovered dashboard mount")
+            prefix = f"/api/plugins/{owner['name']}/"
+            if (not isinstance(path, str) or not path.startswith(prefix)
+                    or any(c in path for c in "?#{}*\\")
+                    or any(part in {".", ".."} for part in path.split("/"))):
+                raise ValueError(f"path must be exact and under {prefix}")
+            if not isinstance(provider, str) or not provider or isinstance(required_scopes, (str, bytes)):
+                raise ValueError("provider and required scopes must be non-empty strings")
+            scopes = frozenset(required_scopes)
+            if any(not isinstance(scope, str) or not scope for scope in scopes):
+                raise ValueError("required scopes must be non-empty strings")
+            registration = next((r for r in reversed(self._manager._ownership_ledger.get(self.plugin_id, ()))
+                                 if r.active and r.kind == "dashboard_auth_provider" and r.key == provider), None)
+            if registration is None:
+                raise ValueError("token routes require this plugin's own registered dashboard-auth provider")
+            policy = TokenRoutePolicy(registration, scopes, launch_scope)
+            parked = next((r.value for r in reversed(self._manager._persistent_carryover)
+                           if r.active and r.plugin_key == self.plugin_id
+                           and r.kind == "dashboard_token_route" and r.key == path), None)
+            bind_token_route(path, policy, previous=parked)
+        except (OSError, TypeError, ValueError) as exc:
+            _facade().logger.warning("Plugin '%s' rejected dashboard token route %r: %s",
+                                     self.manifest.name, path, exc)
+            return None
+        # Persistent carryover drops superseded handles without disposal: never lease a predecessor
+        # that a later release could resurrect. Each new policy has its own identity, even when equal.
+        handle = self._track(
+            "dashboard_token_route", path, lambda: restore_token_route(path, policy), persistent=True,
+        )
+        handle.value = policy
         return handle
 
     @_serialized_replacement

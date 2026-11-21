@@ -44,7 +44,7 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
-from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
+from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _is_unseeded_effort_key, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_credential_values import (
     _check_non_ascii_credential, refuse_redacted_config_credentials, refuse_redacted_env_value)
@@ -2953,7 +2953,7 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
         return value
     stripped = value.strip()
     lower = stripped.lower()
-    if lower in _SCALAR_WORDS:
+    if lower in _SCALAR_WORDS and not (lower == "none" and _is_unseeded_effort_key(key)):
         return _SCALAR_WORDS[lower]
     quoted = _quoted_bool(stripped) if isinstance(_default_value_for_key(key), bool) else None
     if quoted is not None:

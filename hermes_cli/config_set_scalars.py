@@ -41,3 +41,15 @@ def _quoted_bool(stripped: str) -> Optional[bool]:
         return None
     word = _SCALAR_WORDS.get(stripped[1:-1].strip().lower())
     return word if isinstance(word, bool) else None
+
+
+def _is_unseeded_effort_key(key: str) -> bool:
+    """A reasoning-effort slot with no ``DEFAULT_CONFIG`` leaf (``agent.reasoning_effort``,
+    ``agent.reasoning_overrides.<model>``, MoA slots). There ``none`` is the level that turns
+    thinking off, while null means "use the default effort"; a leaf the schema declares nullable
+    keeps the null reading."""
+    from hermes_cli.config import _MISSING, DEFAULT_CONFIG, _split_key_path, cfg_get
+
+    parts = _split_key_path(key)
+    is_effort = parts[-1] == "reasoning_effort" or (len(parts) > 1 and parts[-2] == "reasoning_overrides")
+    return is_effort and cfg_get(DEFAULT_CONFIG, *parts, default=_MISSING) is _MISSING

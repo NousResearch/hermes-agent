@@ -1730,8 +1730,12 @@ class TestImageMimeTypePropagation:
     """Surface 7 (NousResearch/hermes-agent#47072): trycua/cua#1961 made
     `mimeType` part of every MCP image-part response, so the wrapper no
     longer has to sniff PNG vs JPEG by inspecting the first base64 bytes
-    (`/9j/` for JPEG / `iVBOR` for PNG). The sniff is preserved as a
-    fallback for older cua-driver builds.
+    (`/9j/` for JPEG / `iVBOR` for PNG). #157848 refined the contract:
+    sniffable bytes WIN over a declared type that disagrees with them,
+    because a mislabeled capture ships as a contradicting data URL and
+    Anthropic rejects it with a non-retryable 400; the declared type is
+    still honored when the bytes carry no recognizable magic (formats
+    outside the sniff table, or pre-mimeType driver builds).
     """
 
     def test_extract_tool_result_captures_mime_alongside_image(self):
@@ -1770,7 +1774,119 @@ class TestImageMimeTypePropagation:
         url = next(p["image_url"]["url"] for p in resp["content"]
                    if p.get("type") == "image_url")
         assert url.startswith("data:image/jpeg;base64,"), (
-            f"explicit mime=image/jpeg should win over sniff; got {url[:32]}"
+            f"declared mime=image/jpeg should be honored when the bytes carry no recognizable magic; got {url[:32]}"
+        )
+
+    def test_capture_response_sniffed_bytes_win_over_mislabel(self):
+        """#157848: a JPEG frame tagged image/png must ship as image/jpeg.
+
+        Anthropic validates the payload against the declared media type and
+        rejects a mismatch with a non-retryable HTTP 400; since the capture
+        is already in history, the mismatch re-fires every turn and wedges
+        the session. Bytes are ground truth.
+        """
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(
+            mode="vision",
+            width=100, height=100,
+            # Minimal JPEG SOI/EOI frame: base64 starts with the /9j/ magic.
+            png_b64="/9j/4AAQSkZJRg==",
+            image_mime_type="image/png",
+            png_bytes_len=10,
+        )
+        with patch("tools.computer_use.tool._should_route_through_aux_vision",
+                   return_value=False):
+            resp = _capture_response(cap)
+        assert isinstance(resp, dict) and resp.get("_multimodal")
+        url = next(p["image_url"]["url"] for p in resp["content"]
+                   if p.get("type") == "image_url")
+        assert url.startswith("data:image/jpeg;base64,"), (
+            f"sniffed JPEG bytes must win over a mislabeling image/png declaration; got {url[:32]}"
+        )
+
+
+class TestResolveImageMime:
+    """Unit contract for `resolve_image_mime`, the single MIME-resolution
+    point for capture payloads (#157848).
+    """
+
+    @pytest.mark.parametrize(
+        ("prefix", "expected"),
+        [
+            ("iVBORw0KGgo", "image/png"),
+            ("/9j/4AAQSkZJRg", "image/jpeg"),
+            ("R0lGODlhAQAB", "image/gif"),
+            ("UklGRhYAAABX", "image/webp"),
+            ("Qk3q0CwAAAAA", "image/bmp"),
+        ],
+    )
+    def test_recognized_magic_wins_regardless_of_declaration(self, prefix: str, expected: str):
+        from tools.computer_use.backend import resolve_image_mime
+
+        assert resolve_image_mime(prefix, "image/png" if expected != "image/png" else "image/jpeg") == expected
+
+    def test_declared_type_honored_when_bytes_unrecognized(self):
+        from tools.computer_use.backend import resolve_image_mime
+
+        # AVIF/HEIC-style payload outside the sniff table: the driver's
+        # explicit label is the best information available.
+        assert resolve_image_mime("AAAAAAxxx", "image/avif") == "image/avif"
+
+    def test_declared_type_matched_case_insensitively(self):
+        from tools.computer_use.backend import resolve_image_mime
+
+        assert resolve_image_mime("AAAAAAxxx", "IMAGE/JPEG") == "image/jpeg"
+
+    def test_defaults_to_png_when_nothing_known(self):
+        from tools.computer_use.backend import resolve_image_mime
+
+        assert resolve_image_mime("", None) == "image/png"
+        assert resolve_image_mime("AAAAAAxxx", "") == "image/png"
+
+    def test_cli_refetch_sniffs_bytes_when_driver_omits_mime_list(self):
+        """The cua `call` CLI fallback may return images without a parallel
+        `image_mime_types` entry; the re-fetch path must sniff the bytes
+        instead of hardcoding image/png (#157848 was filed against exactly
+        that hardcode)."""
+        from typing import Any, cast
+
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [{
+            "app_name": "Finder", "pid": 1208, "window_id": 1500,
+            "is_on_screen": True, "z_index": 0, "title": "Desktop",
+        }]
+        jpeg_b64 = base64.b64encode(bytes.fromhex(
+            "ffd8ffe000104a46494600010100000100010000ffd9"
+        )).decode("ascii")
+
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            if name == "get_window_state":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": None}
+            return {"data": "", "images": [], "isError": False, "structuredContent": None}
+        sess.call_tool.side_effect = mcp_call
+
+        def cli_call(name, args, timeout):
+            # Older CLI surface: images WITHOUT the parallel mime list.
+            return {"data": "ok", "images": [jpeg_b64],
+                    "structuredContent": None, "isError": False}
+        sess._call_tool_via_cli.side_effect = cli_call
+
+        backend._session = cast(Any, sess)
+        cap = backend.capture(mode="som", app="Finder")
+
+        assert cap.png_b64 == jpeg_b64
+        assert cap.image_mime_type == "image/jpeg", (
+            f"CLI fallback must sniff JPEG bytes, not hardcode image/png; got {cap.image_mime_type!r}"
         )
 
 class TestMcpInvocationResolution:

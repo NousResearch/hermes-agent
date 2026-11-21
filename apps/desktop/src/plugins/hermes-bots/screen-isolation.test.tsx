@@ -6,12 +6,13 @@ import type { RosterRow } from './types'
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
   const { onGatewayEvent } = await import('../../contrib/events')
+  const { desktopSettings } = await import('../../sdk/settings')
 
   return {
     Codicon: () => null,
     useValue: useStore,
     resolveSiblingWsUrl: vi.fn(),
-    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn() }
+    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn(), settings: desktopSettings }
   }
 })
 vi.mock('./data', async () => {

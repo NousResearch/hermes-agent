@@ -46,6 +46,39 @@ describe('provider wait visibility', () => {
     }
   )
 
+  it('surfaces the queue frame and counts-bearing prefill frames', () => {
+    emit('thinking.delta', { text: '⏳ waiting for a free slot — the local server is busy with another request' })
+    expect($providerWaitSessions.get()).toEqual({
+      [SID]: '⏳ waiting for a free slot — the local server is busy with another request'
+    })
+
+    emit('thinking.delta', { text: '⚙ processing prompt — 46,500 / 80,000 tokens (58%)' })
+    expect($providerWaitSessions.get()).toEqual({
+      [SID]: '⚙ processing prompt — 46,500 / 80,000 tokens (58%)'
+    })
+  })
+
+  it('clears a prefill wait when a new call starts (message.start), with no stale percent', () => {
+    emit('thinking.delta', { text: '⚙ processing prompt — 46,500 / 80,000 tokens (58%)' })
+    expect($providerWaitSessions.get()).toEqual({
+      [SID]: '⚙ processing prompt — 46,500 / 80,000 tokens (58%)'
+    })
+
+    emit('message.start', {})
+    expect($providerWaitSessions.get()).toEqual({})
+  })
+
+  it('replaces the old prefill percent when a new call reports progress after a tool', () => {
+    emit('thinking.delta', { text: '⚙ processing prompt — 31%' })
+    emit('tool.start', { name: 'terminal', tool_id: 'tool-1' })
+    expect($providerWaitSessions.get()).toEqual({})
+
+    emit('thinking.delta', { text: '⚙ processing prompt — 12,288 / ~39,551 tokens (31%)' })
+    expect($providerWaitSessions.get()).toEqual({
+      [SID]: '⚙ processing prompt — 12,288 / ~39,551 tokens (31%)'
+    })
+  })
+
   it('clears the wait when its runtime session is dropped', () => {
     emit('thinking.delta', { text: '⏳ waiting on local-model — 30s with no output yet' })
 

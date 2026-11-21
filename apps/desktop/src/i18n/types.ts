@@ -3935,6 +3935,12 @@ export interface Translations extends NoticeTranslations {
       loadingResponse: string
       loadingLocalModel: (model: string) => string
       processingPrompt: string
+      processingPromptWithCounts: (processed: string, total: string, estimated: boolean) => string
+      processingPromptTokensRead: (processed: string) => string
+      waitingForFreeSlot: string
+      waitingForFirstResponse: (model: string) => string
+      waitingForProvider: (model: string) => string
+      waitingNoProgress: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       thought: string

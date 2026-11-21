@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseModelLoadWait, providerWaitText } from './provider-wait'
+import { parseGenericWait, parseModelLoadWait, providerWaitText } from './provider-wait'
 
 // The load-notice string is minted by the backend
 // (agent/chat_completion_helpers._managed_local_load_notice) and parsed
@@ -55,15 +55,61 @@ describe('parseModelLoadWait', () => {
     expect(parseModelLoadWait('⚙ processing prompt — 31%')).toEqual({
       kind: 'prefill',
       model: '',
-      percent: 31
+      percent: 31,
+      processed: null,
+      total: null,
+      totalEstimated: false
     })
   })
 
-  it('parses a percentless prefill frame with a null percent (no fake bar)', () => {
+  it('extracts counts and percent from a prefill frame with a real total', () => {
+    expect(parseModelLoadWait('⚙ processing prompt — 46,500 / 80,000 tokens (58%)')).toEqual({
+      kind: 'prefill',
+      model: '',
+      percent: 58,
+      processed: 46500,
+      total: 80000,
+      totalEstimated: false
+    })
+  })
+
+  it('marks an estimated total with totalEstimated', () => {
+    expect(parseModelLoadWait('⚙ processing prompt — 12,288 / ~39,551 tokens (31%)')).toEqual({
+      kind: 'prefill',
+      model: '',
+      percent: 31,
+      processed: 12288,
+      total: 39551,
+      totalEstimated: true
+    })
+  })
+
+  it('extracts the processed count from a tokens-read prefill frame (no fake percent)', () => {
+    expect(parseModelLoadWait('⚙ processing prompt — 12,288 tokens read')).toEqual({
+      kind: 'prefill',
+      model: '',
+      percent: null,
+      processed: 12288,
+      total: null,
+      totalEstimated: false
+    })
+  })
+
+  it('parses a percentless prefill frame with nulls throughout (no fake bar)', () => {
     expect(parseModelLoadWait('⚙ processing prompt')).toEqual({
       kind: 'prefill',
       model: '',
-      percent: null
+      percent: null,
+      processed: null,
+      total: null,
+      totalEstimated: false
+    })
+  })
+
+  it('parses the queue frame', () => {
+    expect(parseModelLoadWait('⏳ waiting for a free slot — the local server is busy with another request')).toEqual({
+      kind: 'queued',
+      model: ''
     })
   })
 
@@ -74,7 +120,11 @@ describe('parseModelLoadWait', () => {
   })
 
   it('clamps out-of-range percents', () => {
-    expect(parseModelLoadWait('⏳ loading m into memory — 999%')?.percent).toBe(100)
+    expect(parseModelLoadWait('⏳ loading m into memory — 999%')).toEqual({
+      kind: 'load',
+      model: 'm',
+      percent: 100
+    })
   })
 })
 
@@ -83,5 +133,73 @@ describe('providerWaitText accepts prefill frames', () => {
     const frame = '⚙ processing prompt — 31%'
 
     expect(providerWaitText(frame)).toBe(frame)
+  })
+
+  it('passes counts-bearing prefill frames through', () => {
+    expect(providerWaitText('⚙ processing prompt — 46,500 / 80,000 tokens (58%)')).not.toBe('')
+    expect(providerWaitText('⚙ processing prompt — 12,288 tokens read')).not.toBe('')
+  })
+
+  it('passes the queue frame through', () => {
+    const frame = '⏳ waiting for a free slot — the local server is busy with another request'
+
+    expect(providerWaitText(frame)).toBe(frame)
+  })
+})
+
+describe('parseGenericWait', () => {
+  it('parses the first-chunk wait without its frozen seconds', () => {
+    expect(parseGenericWait('⏳ waiting on qwen — 60s waiting for the first stream chunk')).toEqual({
+      kind: 'waiting',
+      model: 'qwen',
+      phase: 'first-chunk',
+      watchdog: null
+    })
+  })
+
+  it('parses the near-deadline first-event wait and keeps only the watchdog label', () => {
+    expect(
+      parseGenericWait(
+        '⏳ still waiting on gpt-5.5 — 290s waiting for the first provider event (auto-reconnect: TTFB watchdog in 10s)'
+      )
+    ).toEqual({
+      kind: 'waiting',
+      model: 'gpt-5.5',
+      phase: 'first-event',
+      watchdog: 'TTFB watchdog'
+    })
+  })
+
+  it('parses the post-chunk and pre-progress phases', () => {
+    expect(parseGenericWait('⏳ waiting on qwen — 90s stream open; 90s without stream output')).toEqual({
+      kind: 'waiting',
+      model: 'qwen',
+      phase: 'post-chunk',
+      watchdog: null
+    })
+    expect(
+      parseGenericWait('⏳ waiting on qwen — 90s provider stream open; 90s without substantive model progress')
+    ).toEqual({ kind: 'waiting', model: 'qwen', phase: 'pre-progress', watchdog: null })
+    expect(parseGenericWait('⏳ waiting on qwen — 90s provider stream active; 90s without stream events')).toEqual({
+      kind: 'waiting',
+      model: 'qwen',
+      phase: 'post-event',
+      watchdog: null
+    })
+  })
+
+  it('parses the reconnect diagnostic as a model-less wait', () => {
+    expect(parseGenericWait('⚠ no output from provider for 900s — reconnecting...')).toEqual({
+      kind: 'waiting',
+      model: '',
+      phase: 'reconnect',
+      watchdog: null
+    })
+  })
+
+  it('returns null for unrecognised frames (they render verbatim as before)', () => {
+    expect(parseGenericWait('⏳ waiting on local-model — 30s with no output yet')).toBeNull()
+    expect(parseGenericWait('⏳ rate limited — resets in 2m, retrying in 30s (attempt 2/3)')).toBeNull()
+    expect(parseGenericWait('')).toBeNull()
   })
 })

@@ -12,13 +12,13 @@ import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
 import { getLocalModelsStatus } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { sessionBackgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
-import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
+import { parseGenericWait, parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { $showReasoning } from '@/store/reasoning-disclosure'
 import { $currentModel, $currentProvider } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
@@ -119,6 +119,64 @@ function useLocalModelLoad(active: boolean): (LocalModelLoadProgress & { model: 
   return progress
 }
 
+/** Locale-grouped token count: "46,500" in en, "46.500" where the locale groups that way. */
+const formatCount = (count: number): string => count.toLocaleString()
+
+/** One mapping from a raw wait frame to what the row shows, shared by the
+ *  visible hint and the row's accessible label so the two never disagree.
+ *  `null` = an unrecognised frame, which renders verbatim as before. */
+type WaitDisplay = { kind: 'bar'; label: string; percent: number } | { kind: 'text'; label: string }
+
+function waitDisplay(hint: string, t: Translations['assistant']['thread']): WaitDisplay | null {
+  const load = parseModelLoadWait(hint)
+
+  if (load?.kind === 'queued') {
+    return { kind: 'text', label: t.waitingForFreeSlot }
+  }
+
+  if (load?.kind === 'prefill') {
+    if (load.percent !== null && load.processed !== null && load.total !== null) {
+      return {
+        kind: 'bar',
+        label: t.processingPromptWithCounts(formatCount(load.processed), formatCount(load.total), load.totalEstimated),
+        percent: load.percent
+      }
+    }
+
+    if (load.processed !== null) {
+      return { kind: 'text', label: t.processingPromptTokensRead(formatCount(load.processed)) }
+    }
+
+    if (load.percent !== null) {
+      return { kind: 'bar', label: t.processingPrompt, percent: load.percent }
+    }
+
+    return { kind: 'text', label: t.processingPrompt }
+  }
+
+  if (load) {
+    return { kind: 'bar', label: t.loadingLocalModel(load.model), percent: load.percent }
+  }
+
+  // A generic wait names the stage honestly instead of repeating the frame's
+  // frozen "Ns": the live timer beside the label carries the duration.
+  const generic = parseGenericWait(hint)
+
+  if (generic) {
+    if (generic.phase === 'first-chunk' || generic.phase === 'first-event') {
+      return { kind: 'text', label: t.waitingForFirstResponse(generic.model) }
+    }
+
+    if (generic.phase === 'reconnect' || !generic.model) {
+      return { kind: 'text', label: t.waitingNoProgress }
+    }
+
+    return { kind: 'text', label: t.waitingForProvider(generic.model) }
+  }
+
+  return null
+}
+
 /** Wait hint with a real progress bar for managed-local model loads and
  * prompt processing. The percents come from llama-server itself (per-tensor
  * load callback / live prefill counter, via the gateway's wait frames), so a
@@ -126,16 +184,17 @@ function useLocalModelLoad(active: boolean): (LocalModelLoadProgress & { model: 
  * visible progress instead of an alarming stall. */
 const WaitHint: FC<{ hint: string }> = ({ hint }) => {
   const { t } = useI18n()
-  const load = parseModelLoadWait(hint)
+  const display = waitDisplay(hint, t.assistant.thread)
 
-  if (!load) {
+  if (!display) {
     return <HintText>{hint}</HintText>
   }
 
-  const label =
-    load.kind === 'load' ? t.assistant.thread.loadingLocalModel(load.model) : t.assistant.thread.processingPrompt
-
-  return <ProgressHint label={label} percent={load.percent} />
+  return display.kind === 'bar' ? (
+    <ProgressHint label={display.label} percent={display.percent} />
+  ) : (
+    <HintText>{display.label}</HintText>
+  )
 }
 
 const ProgressHint: FC<{ label: string; percent: null | number }> = ({ label, percent }) => (
@@ -255,9 +314,12 @@ export const ResponseLoadingIndicator: FC = () => {
   // can't narrate (gateway still initializing, or an auxiliary call — not
   // the main request — triggered the autoload). A real wait frame wins.
   const localLoad = useLocalModelLoad(!hint)
+  // The accessible label names the stage the same way the visible hint does
+  // (a generic wait's frozen "Ns" is not spoken as if it were live).
+  const display = waitDisplay(hint, t.assistant.thread)
 
   return (
-    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
+    <StatusRow data-slot="aui_response-loading" label={(display?.label ?? hint) || t.assistant.thread.loadingResponse}>
       <StatusPulse
         aria-hidden="true"
         className="dither inline-block size-3 rounded-[2px] text-midground/80"
@@ -324,13 +386,16 @@ interface TurnActivityRowProps {
 
 const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, localLoad }) => {
   const { t } = useI18n()
+  // Same rule as the pre-first-token row: the accessible label names the
+  // stage, not the frame's frozen "Ns".
+  const display = waitDisplay(hint, t.assistant.thread)
 
   return (
     <StatusRow
       className={cn(!active && 'sr-only')}
       data-slot="aui_turn-activity"
       data-state={active ? 'active' : 'idle'}
-      label={active ? hint || 'Hermes is working' : ''}
+      label={active ? (display?.label ?? hint) || 'Hermes is working' : ''}
     >
       {active && (
         <>

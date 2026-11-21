@@ -75,6 +75,41 @@ def prompt_progress_percent(progress: dict) -> Optional[int]:
     return max(0, min(100, round(processed / total * 100)))
 
 
+def prompt_progress_counts(progress: dict) -> Optional[dict]:
+    """{"processed": tokens read, "total": tokens to read or None} from a
+    prompt-progress payload, or None when the server reports no usable
+    processed count. ``total`` is None when the server reports no usable
+    total — callers must then show the processed count without a percent,
+    never invent a denominator."""
+    if not isinstance(progress, dict):
+        return None
+    processed = _count(progress, "processed")
+    if processed is None:
+        return None
+    total = _count(progress, "total")
+    return {"processed": processed, "total": total if total and total > 0 else None}
+
+
+def format_prompt_progress_notice(processed: Optional[int], total: Optional[int], *,
+                                 total_estimated: bool = False) -> str:
+    """One wait-notice line for prompt reading, with real counts and no fake percent.
+
+    ``total`` is the server's own total (stream progress chunks) or the
+    request-token estimate (the /slots fallback, marked ``~``). Without a
+    usable total the line carries the processed count alone; with neither
+    count it is label-only. A total the counter has already passed is not
+    an honest denominator, so it also falls back to the count alone.
+    """
+    if processed is None or processed < 0:
+        return "⚙ processing prompt"
+    done = f"{processed:,}"
+    if not total or total <= 0 or total < processed:
+        return f"⚙ processing prompt — {done} tokens read"
+    percent = max(0, min(100, round(processed / total * 100)))
+    mark = "~" if total_estimated else ""
+    return f"⚙ processing prompt — {done} / {mark}{total:,} tokens ({percent}%)"
+
+
 @contextlib.contextmanager
 def prompt_reading_hook(hook: Optional[Callable[[float], None]]):
     """Install ``hook(seconds)`` for this thread; it hears each stretch of prompt reading."""

@@ -123,6 +123,27 @@ def _jsonrpc_result(message_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "result": result}
 
 
+_RPC_ERROR_DATA_MAX_CHARS = 1000
+
+
+def _rpc_error_text(err: Any) -> str:
+    """An agent's JSON-RPC error as one line: ``message`` plus its ``data`` when that adds anything.
+    Agents commonly answer a generic ``Internal error`` and put the real cause (usage limit, bad
+    key, model refused) only in ``data``; dropping it left the user unable to act. Bounded so a
+    backtrace or a whole upstream response cannot flood the error."""
+    if not isinstance(err, dict):
+        return str(err)
+    message = str(err.get("message") or "").strip()
+    data = err.get("data")
+    detail = (data.strip() if isinstance(data, str) else json.dumps(data, ensure_ascii=False, default=str)) \
+        if data is not None else ""
+    if not detail or detail == message:
+        return message or json.dumps(err, ensure_ascii=False, default=str)
+    if len(detail) > _RPC_ERROR_DATA_MAX_CHARS:
+        detail = detail[:_RPC_ERROR_DATA_MAX_CHARS] + "…"
+    return f"{message}: {detail}" if message else detail
+
+
 def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
 
@@ -316,7 +337,7 @@ class ACPClient:
         return shlex.split(override) or list(self.default_args)
 
     def _request_error(self, method: str, err: Any) -> str:
-        text = f"{self.label} {method} failed: {(err.get('message') if isinstance(err, dict) else None) or err}"
+        text = f"{self.label} {method} failed: {_rpc_error_text(err)}"
         auth_required = isinstance(err, dict) and err.get("code") == _ACP_AUTH_REQUIRED
         return f"{text} {self.auth_required_hint}" if auth_required and self.auth_required_hint else text
 

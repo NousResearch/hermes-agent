@@ -306,6 +306,31 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
             pass
 
 
+_ERROR_DATA_ACP_CLI = """import json, sys
+msg = json.loads(sys.stdin.readline())
+err = {"code": -32603, "message": "Internal error", "data": json.loads(sys.argv[1])}
+print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "error": err}), flush=True)
+sys.stdin.readline()
+"""
+
+
+@pytest.mark.parametrize("data, expected", [
+    ({"errorInfo": "usageLimitExceeded"}, 'Internal error: {"errorInfo": "usageLimitExceeded"}'),
+    ("Internal error", "Internal error"),  # data repeating the message adds nothing
+    ("x" * 5000, "Internal error: " + "x" * 1000 + "…"),  # bounded
+], ids=["object-data", "data-repeats-message", "oversized-data"])
+def test_agent_error_data_reaches_the_raised_error(tmp_path, data, expected):
+    """Agents answer a generic ``Internal error`` and carry the real cause in ``error.data``; the
+    client dropped it, so a usage limit read exactly like a crash."""
+    server = tmp_path / "error_data_acp.py"
+    server.write_text(_ERROR_DATA_ACP_CLI, encoding="utf-8")
+    client = _AcmeClient(command=sys.executable, args=[str(server), json.dumps(data)], acp_cwd=str(tmp_path))
+    with pytest.raises(RuntimeError) as excinfo:
+        with client._session(30):
+            pass
+    assert str(excinfo.value) == f"Acme ACP initialize failed: {expected}"
+
+
 _STDIN_CLOSING_ACP_CLI = """import os, sys, time
 os.close(0)  # stops reading: the client's first write hits a closed pipe
 open(sys.argv[1], "w").close()

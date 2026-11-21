@@ -743,8 +743,10 @@ def _handle_list(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_complete")
 def _handle_complete(args: dict, **kw) -> str:
-    """Mark the current task done with a structured handoff."""
+    """Finish the current attempt as done or requeue it for continuation."""
     tid = _worker_guard("kanban_complete", args)
+    disposition = args.get("disposition", "done")
+    _check(disposition in ("done", "continue"), "disposition must be one of: done, continue")
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
@@ -759,6 +761,17 @@ def _handle_complete(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
+        if disposition == "continue":
+            _check(not (created_cards or artifacts),
+                   "created_cards and artifacts are final-completion fields; "
+                   "use kanban_attach for interim files with disposition='continue'")
+            from hermes_cli.kanban_lifecycle import continue_task
+            ok = continue_task(
+                conn, tid, summary=summary or result, metadata=metadata,
+                expected_run_id=_worker_run_id(tid))
+            _check(ok, f"could not continue {tid} (unknown id, stale/unowned run, "
+                   "unsatisfied parents, or task is not running)")
+            return _ok_landed(kb, conn, tid, "ready", disposition="continue")
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.

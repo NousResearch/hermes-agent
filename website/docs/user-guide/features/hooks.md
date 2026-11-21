@@ -483,7 +483,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
-| `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow, unless a callback registered with `fail_closed=True` (a [required gate](#required-gate)) decided: then any `skip` drops and only a required gate's `rewrite` applies. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). A command the classic CLI, TUI or Desktop sends to the gateway through `slash.exec` or `command.dispatch` fires it once, in the gateway, with `surface` and `platform` both `"cli"` as before (Ink and Desktop fired it through the CLI slash worker) and `session_key` the session id. A recognized command the classic CLI runs itself is reported to the gateway (`command.observe`) once it has run, and so are these TUI commands: `/help`, `/history`, `/clear`, `/new`, `/tools` (not `enable`/`disable`), `/usage` and `/reasoning` (a level once the gateway accepts it). The gateway fires it there after replying, so neither client loads plugin code; a command either client refuses fires nothing. This is a deliberate change from the classic CLI before the unified gateway, which fired it for every recognized command just before dispatch: now a command fires it only if it runs, so one that is refused or that the client has no handler for (`/handoff` in a gateway session, `/start`) fires nothing. A TUI change the gateway applies, such as `/reasoning high`, fires it once the gateway accepts the change, so after the change has taken effect. A gateway older than the client fires no hook for those commands (the classic CLI prints a one-time notice). Known gap: Desktop's own pickers, actions and dedicated RPCs (commands it answers without `slash.exec`) fire nothing yet, and neither do the other commands the TUI answers itself or through a dedicated gateway call, such as `/title`, `/undo`, `/retry`, `/model`, `/compress`, `/branch`, `/save`, `/copy`, `/queue`, `/steer`, `/bg`, `/btw`, `/skin`, `/yolo`, `/busy`, `/fast`, `/verbose`, `/rollback`, `/reload-mcp`, `/quit` and `/reasoning --global`. During a local session's turn every command that still runs fires it except `/stop`, `/approve` and `/deny`; a command that is refused (rejected while busy, or named as unavailable on the gateway) fires nothing. Each callback is timeout-bounded (`plugins.hook_callback_timeout`); each delivery waits on a thread of its own, never a worker shared with other sessions or the event loop's executor. One session's commands reach it in order, and a callback still running for that session (hung) is skipped for its later commands instead of running out of order, without holding up other sessions. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
@@ -1400,7 +1400,7 @@ def my_callback(event, gateway, session_store, **kwargs):
 | Local CLI, TUI, Desktop and API-server turns | Never. |
 | A queued admission when it executes (first run or restart replay) | Never: the message already passed the hook at ingress, so a `skip` can't drop admitted input. |
 
-**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
+**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored, unless a callback was registered as a [required gate](#required-gate), whose decision binds. Exceptions in plugin callbacks are caught and logged; the gateway falls through to normal dispatch on error, unless the callback is a required gate.
 
 Callbacks may be `async def`: they are awaited on the gateway's own event loop, so awaiting loop-bound work (an `asyncio.Event`, an aiohttp session, `asyncio.to_thread`) makes progress and other inbound messages keep flowing while the callback runs. The hook is intentionally not bounded by `plugins.hook_callback_timeout` — dropping or passing a message on timeout are both wrong for a policy gate — so a callback that never returns holds up dispatch of that message.
 
@@ -1443,6 +1443,55 @@ def buffer_or_rewrite(event, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
 ```
+
+#### Required gates (`fail_closed=True`) {#required-gate}
+
+An ordinary callback fails open, which is right for buffering, routing and observing, but not for a callback that enforces an access rule: a bug in it would admit every message. Register such a callback as required:
+
+```python
+def admit(event, **kwargs):
+    if _member_may_talk(event.source):
+        return {"action": "allow"}
+    return {"action": "skip", "reason": "not-admitted"}
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", admit, fail_closed=True)
+```
+
+A required callback must return a decision for every message: `{"action": "skip"}`, `{"action": "rewrite", "text": "..."}` with a non-empty text, or `{"action": "allow"}`. The message is **not processed** (as with `skip`) when the callback:
+
+- raises, including an `async def` callback whose own wait raises `TimeoutError`;
+- returns anything else, `None` and an empty rewrite included;
+- cannot run because the hook invocation itself failed.
+
+For each refusal the gateway logs one new WARNING (`Required 'pre_gateway_dispatch' callback <module.qualname> …`) that names the hook, the function behind the callback and the reason, with the exception's type only: never the message text, the exception text or a `functools.partial`'s bound arguments. Then the usual `pre_gateway_dispatch skip` line follows. A callback that raises is in addition reported by the existing hook-failure WARNING that every hook has (except a raised `TimeoutError`, which gets only the new line), and that line includes the exception text: a gate that puts message text into its exceptions puts it into the log.
+
+**A required decision binds.** Every callback is called with the event as it arrived, and a `rewrite` is applied only after all of them returned, so a required gate never sees another plugin's rewritten text. While at least one required callback decided on the event:
+
+- any `skip`, from any plugin, drops the message (the way a `pre_tool_call` block outranks an approve);
+- otherwise the first `rewrite` of a required callback is applied;
+- a `rewrite` of an ordinary plugin is not applied, and the message is processed as the required gates saw it.
+
+So the gateway processes only text every required gate saw and allowed. Without a required callback, results keep their order rule. A plugin that changes the event object in place, instead of returning a `rewrite`, is outside this rule: it is code in the gateway process.
+
+There is no host deadline on this hook. A required callback that never returns holds its message, which is then not processed either; a sync callback that blocks also blocks the gateway loop, so do slow work in an `async def` callback.
+
+`fail_closed` applies to `pre_gateway_dispatch`. `pre_tool_call` already fails closed for every callback, so the flag is accepted there and changes nothing; on any other hook it is ignored with a warning. It also means more than fail-closed on `pre_tool_call` (Python callbacks, or the shell hooks' `fail_closed` setting): there a failure blocks, but no answer (`None`, or a command that exits 0 without printing a directive) lets the tool run, while a required `pre_gateway_dispatch` callback that returns nothing refuses the message.
+
+The flag belongs to the registration: the same function registered again without it, or by another plugin, stays an ordinary callback. Each event is decided by the callbacks registered when its dispatch started: a gate that goes live during a dispatch decides from the next event on, and one unloaded during it still decides that event.
+
+**What it covers.** The gate decides wherever `pre_gateway_dispatch` runs (the table under **Fires** above): messages from platform adapters, slash commands, skill commands and replies to pending prompts (they pass the hook before they are dispatched), commands typed while a session is busy (`/stop`, `/status`, `/approve`, …), busy follow-ups under the shared session runtime, follow-ups the adapter held while the session was busy (dispatched through `_handle_message` when the session frees up), messages buffered during startup restore (decided when they are replayed), and webhook and relay deliveries. Internal events (background completions, startup auto-resume) are created by Hermes and never reach it.
+
+**What it does not cover:**
+
+- A follow-up that arrives while a session is busy and is handled by the runner's in-process busy path (steer, interrupt, busy acknowledgement, a bare "yes"/"no" to a pending approval, a mid-run skill) does not run `pre_gateway_dispatch` today, required or not. A follow-up the runner queued there runs as the next turn straight from the runner's own queue, so it does not meet the gate either.
+- Button and card interactions (approval buttons, clarify choices; Telegram inline keyboards, Discord views, Slack actions and the other adapters' equivalents) go to their resolver directly and never pass `pre_gateway_dispatch`.
+- The gate exists only while the plugin's registration is loaded. A plugin that is disabled, removed, or whose `register()` fails holds no gate, and messages are then dispatched as without it; the same holds for the moment a plugin reload has unloaded it and not yet registered it again. Hermes does not record that a gate is expected, so it cannot refuse messages for a gate that never registered.
+- Under `plugins.isolation: host`, a crashed plugin host leaves a gap. Until the restart begins, the gate's calls fail and messages are refused. The restart then unloads the plugin and loads it into the new host, and until the new host has run `register()` the gate is not registered and messages are processed. In a probe that was roughly the tenth of a second starting half a second after the crash; the delay grows with each crash (at most three restarts within 600 s, after which the host is not restarted and the dead gate keeps refusing). A gate plugin that fails to load in the new host, or killed the host while loading, stays out, and there is no gate after that. A gate a memory provider registered is not reloaded after a crash at all: its dead entry refuses messages until the memory provider is loaded again. If the gap is not acceptable, run the profile's plugins in the gateway process (`plugins.isolation: in_process`, the default); the setting applies to the whole profile.
+- On a Hermes release without this flag, `register_hook(..., fail_closed=True)` raises `TypeError` in `register()`, so the plugin does not load and holds no gate. Declare the first release that has the flag in the plugin's manifest (`requires_hermes: ">=X.Y.Z"`): an older Hermes then refuses the plugin before importing it and shows why in `hermes plugins list`.
+- If the hook invocation fails and the plugin registry cannot be read either, the gateway cannot tell that a gate was required and dispatches as before.
+
+A required gate is plugin code in the gateway process: like any plugin (SECURITY.md §2.5), a broken or hostile one can refuse every message and so silence the gateway. That is the point of the flag, not a side effect: review the plugin before you install it.
 
 ---
 

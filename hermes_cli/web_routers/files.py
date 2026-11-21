@@ -44,14 +44,14 @@ from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
     SANDBOX_NOT_FOUND, _agent_fs_path, _agent_path_scope, _file_url_path, _fs_path, _hosted_fs_read_guard,
-    _is_unmapped_container_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _is_link, _is_unmapped_container_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
     _session_workspace,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
     ManagedFileUpload,
 )
-from utils import atomic_write_bytes, atomic_write_text
+from utils import atomic_write_text, default_new_file_mode, preserve_file_mode
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -990,9 +990,12 @@ async def stream_managed_file(
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
     _refuse_sensitive_write(target, path, policy.locked_root)
-    if target.exists() and target.is_dir():
+    # is_dir()/exists() follow a link: a link to a directory is still a
+    # replaceable entry, and a dangling one is still present.
+    is_link = _is_link(target)
+    if not is_link and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
-    if target.exists() and not overwrite:
+    if (is_link or target.exists()) and not overwrite:
         raise HTTPException(status_code=409, detail="File already exists")
     return policy, target, display_path
 
@@ -1012,12 +1015,51 @@ def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        owner = target.stat() if os.name == "posix" and target.exists() else None
-        atomic_write_bytes(target, data)
+        # An overwritten file keeps its mode and owner; a replaced link is a new entry.
+        replaced = None if _is_link(target) else target
+        mode = preserve_file_mode(replaced) if replaced is not None else None
+        owner = replaced.stat() if os.name == "posix" and replaced is not None and replaced.exists() else None
+        out, tmp_path = _open_upload_stage(target)
+        try:
+            with out:
+                out.write(data)
+                out.flush()
+                os.fsync(out.fileno())
+            mode = mode if mode is not None else default_new_file_mode()
+            if mode is not None:  # mkstemp creates 0600
+                os.chmod(tmp_path, mode)
+            _publish_upload(tmp_path, target, overwrite=payload.overwrite)
+        finally:
+            tmp_path.unlink(missing_ok=True)
         if owner is not None:  # os.replace swaps in our uid; keep an overwritten file's owner/group
             with contextlib.suppress(OSError):
                 os.chown(target, owner.st_uid, owner.st_gid, follow_symlinks=False)  # a swapped-in link: never chown its target
     return _managed_write_result(policy, target, display_path)
+
+
+def _open_upload_stage(target: Path):
+    """A sibling temp file for an upload: ``(open binary file, its path)``. The
+    caller removes the path on every exit; ``_publish_upload`` publishes it."""
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
+    return os.fdopen(tmp_fd, "wb"), Path(tmp_name)
+
+
+def _publish_upload(tmp_path: Path, target: Path, *, overwrite: bool) -> None:
+    """Publish a complete staged upload at ``target``, so a failed or aborted
+    upload leaves the existing entry as it was.
+
+    Publication acts on the entry itself (a link there is replaced, never
+    written through), and create-only publication is atomic: ``os.link``
+    refuses any entry present at that moment, a dangling link or a file
+    another writer created after admission included.
+    """
+    try:
+        if overwrite:
+            os.replace(tmp_path, target)
+        else:
+            os.link(tmp_path, target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="File already exists")
 
 
 async def stream_upload_to_path(
@@ -1027,39 +1069,34 @@ async def stream_upload_to_path(
     too_large: str,
     not_writable: str,
     write_failed: str,
+    overwrite: bool = True,
 ) -> int:
     """Stream a multipart upload to ``target`` in chunks; returns bytes written.
 
-    Writes a sibling temp file first so a partial/aborted upload never clobbers
-    an existing file, enforces ``_MANAGED_FILE_MAX_BYTES`` as it goes (413
-    ``too_large``), then atomically renames into place. The temp file is
-    removed on EVERY non-success exit — including asyncio.CancelledError when a
-    browser aborts a large upload mid-stream.
+    Staged beside the target and published by ``_publish_upload``, so a partial,
+    aborted (including asyncio.CancelledError when a browser aborts mid-stream)
+    or refused upload never clobbers the existing entry. Enforces
+    ``_MANAGED_FILE_MAX_BYTES`` as it goes (413 ``too_large``).
     """
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES, _UPLOAD_CHUNK_BYTES
-    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
-    tmp_path = Path(tmp_name)
     total = 0
-    renamed = False
+    tmp_path = None
     try:
-        with os.fdopen(tmp_fd, "wb") as out:
-            while True:
-                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > _MANAGED_FILE_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail=too_large)
-                # Only the read stays on the event loop, so an abort still reaches the cleanup below.
-                await asyncio.to_thread(out.write, chunk)
-        await asyncio.to_thread(os.replace, tmp_path, target)
-        renamed = True
-    except PermissionError:
-        raise HTTPException(status_code=403, detail=not_writable)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"{write_failed}: {exc}")
+        with _io_errors(not_writable, write_failed):
+            out, tmp_path = _open_upload_stage(target)
+            with out:
+                while True:
+                    chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MANAGED_FILE_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail=too_large)
+                    # Only the read stays on the event loop, so an abort still reaches the cleanup below.
+                    await asyncio.to_thread(out.write, chunk)
+            await asyncio.to_thread(_publish_upload, tmp_path, target, overwrite=overwrite)
     finally:
-        if not renamed:
+        if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         await file.close()
     return total
@@ -1082,6 +1119,7 @@ async def upload_managed_file_stream(
         too_large="File is too large",
         not_writable="File is not writable",
         write_failed="Could not write file",
+        overwrite=overwrite,
     )
     return _managed_write_result(policy, target, display_path)
 
@@ -1099,17 +1137,22 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
-    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
-    if not target.exists():
+    # exists() follows the link, so a dangling link must still count as present.
+    is_link = _is_link(target)
+    if not (is_link or target.exists()):
         raise HTTPException(status_code=404, detail="Path not found")
 
+    # A link is unlinked AS the link: is_dir() would chase a link to a directory
+    # and rmtree() would take the referent's whole tree with it.
+    is_dir = not is_link and target.is_dir()
     try:
-        if target.is_dir():
+        if is_dir:
             if payload.recursive:
                 shutil.rmtree(target)
             else:
@@ -1117,7 +1160,7 @@ def delete_managed_file(payload: ManagedFileDelete, request: Request):
         else:
             target.unlink()
     except OSError as exc:
-        status_code = 409 if target.is_dir() and not payload.recursive else 500
+        status_code = 409 if is_dir and not payload.recursive else 500
         raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 

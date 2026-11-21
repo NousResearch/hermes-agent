@@ -42,3 +42,50 @@ class TestPastEofNote:
         p.write_text("\n".join(f"l{i}" for i in range(1, 300)) + "\n")
         result = json.loads(read_file_tool(str(p), offset=1, limit=100))
         assert "offset=101" in (result.get("hint") or "")
+
+
+    def test_noisy_size_probe_preserves_successful_read(self, tmp_path, monkeypatch):
+        from tools import file_tools
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        path = tmp_path / "real.txt"
+        path.write_text("real content\n", encoding="utf-8")
+        ops = file_tools._get_file_ops("default")
+        original = ops._exec
+        probes = []
+
+        def noisy_exec(command, **kwargs):
+            result = original(command, **kwargs)
+            if "wc -c <" in command:
+                probes.append(command)
+                result.stdout = "profile junk\n" + result.stdout
+            return result
+
+        monkeypatch.setattr(ops, "_exec", noisy_exec)
+        result = ops._read_file_sequential(str(path), 1, 10)
+        assert probes
+        assert "real content" in result.content
+        assert "empty" not in (result.hint or "").lower()
+
+    def test_uncertain_line_count_preserves_page(self, tmp_path, monkeypatch):
+        from tools import file_tools
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        path = tmp_path / "real.txt"
+        path.write_text("first\nlast", encoding="utf-8")
+        ops = file_tools._get_file_ops("default")
+        original = ops._exec
+        probes = []
+
+        def failed_tail(command, **kwargs):
+            result = original(command, **kwargs)
+            if "tail -c 1" in command:
+                probes.append(command)
+                result.exit_code = 1
+            return result
+
+        monkeypatch.setattr(ops, "_exec", failed_tail)
+        result = ops._read_file_sequential(str(path), 2, 10)
+        assert probes
+        assert "last" in result.content
+        assert "beyond" not in (result.hint or "")

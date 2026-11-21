@@ -296,8 +296,8 @@ def _(rid, params: dict) -> dict:
 @method("profiles.create")
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
-    ``clone_from`` (omitted = fresh + bundled skills, or with ``clone_all`` a full copy of the active profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
-    source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
+    ``clone_from`` (omitted = fresh + empty, or with ``clone_all`` a full copy of the active profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
+    source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills`` (deprecated no-op), ``with_skills``, ``soul``,
     ``model`` + ``provider``, ``no_alias``, ``share_auth`` / ``mirror_credentials`` (both default true, the
     bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless).
     ``hermes profile create`` also sends ``clone_config`` (``--clone``: copy the caller's profile),
@@ -316,12 +316,23 @@ def _(rid, params: dict) -> dict:
     clone_from = str(params.get("clone_from") or "").strip() or None
     clone_all = is_truthy_value(params.get("clone_all", False))
     clone_config = is_truthy_value(params.get("clone_config", False)) or (bool(clone_from) and not clone_all)
+    # Fresh profiles are born empty (D2): no_skills defaults True when omitted, and
+    # with_skills opts back into bundled seeding (it wins when both are given).
+    # An explicit no_skills + clone is refused here, where the explicitness is visible.
+    no_skills_raw = params.get("no_skills")
+    with_skills = is_truthy_value(params.get("with_skills", False))
+    if no_skills_raw is not None and is_truthy_value(no_skills_raw) and (clone_from or clone_all or clone_config):
+        message, data = refusal(ValueError(
+            "--no-skills cannot be combined with --clone / --clone-from / --clone-all "
+            "(a clone copies the source's skills); create without cloning instead."))
+        return _err(rid, 4062, message, data=data)
+    no_skills = (is_truthy_value(no_skills_raw) if no_skills_raw is not None else True) and not with_skills
     soul = params.get("soul")
     soul = soul if isinstance(soul, str) and soul.strip() else None
     model, provider = _model_provider_params(params)
     request = ProfileCreateRequest(
         name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
-        no_skills=is_truthy_value(params.get("no_skills", False)),
+        no_skills=no_skills,
         description=str(params.get("description") or "").strip() or None,
         clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
         sync_imports=is_truthy_value(params.get("sync_imports", False)),

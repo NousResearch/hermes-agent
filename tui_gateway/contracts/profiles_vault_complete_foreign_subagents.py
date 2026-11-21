@@ -188,7 +188,7 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
 
 
 class ProfilesCreateParams(ProfileParams):
-    """``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the
+    """``clone_from`` omitted = fresh profile + empty (with ``clone_all``: a full copy of the
     active profile, no bundled skills); ``mirror_credentials`` and
     ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider."""
 
@@ -198,6 +198,7 @@ class ProfilesCreateParams(ProfileParams):
     clone_all: bool | str | None = None
     clone_channels: bool | str | None = None
     no_skills: bool | str | None = None
+    with_skills: bool | str | None = None
     no_alias: bool | str | None = None
     soul: str | None = None
     model: str | None = None

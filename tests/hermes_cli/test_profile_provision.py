@@ -103,10 +103,23 @@ def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     assert result.mirrored["auth"] == "shared"
 
 
-def test_only_a_fresh_profile_gets_bundled_skills(launch):
+def test_only_a_fresh_profile_runs_the_skill_sync(launch):
     cloned = provision_profile(ProfileCreateRequest(name="a", clone_from="default", clone_config=True))
     full = provision_profile(ProfileCreateRequest(name="b", clone_all=True))
     assert (cloned.skills_seeded, full.skills_seeded) == (None, None)
+
+
+def test_fresh_profile_is_born_empty_by_default(launch):
+    """D2: the request default is no_skills=True, so a fresh provision writes the marker."""
+    assert ProfileCreateRequest(name="work").no_skills is True
+    result = provision_profile(ProfileCreateRequest(name="work"))
+    assert (result.path / ".no-bundled-skills").exists()
+
+
+def test_clone_gets_no_opt_out_marker(launch):
+    """D2: no_skills is fresh-only — a clone copies the source's skills, never the marker."""
+    result = provision_profile(ProfileCreateRequest(name="work", clone_all=True))
+    assert not (result.path / ".no-bundled-skills").exists()
 
 
 def test_a_rejected_model_pick_is_reported_and_the_create_still_succeeds(launch, monkeypatch):

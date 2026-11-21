@@ -469,7 +469,8 @@ class ProfileCreate(BaseModel):
     # Opt-in: also copy the source's messaging channels (bot tokens, allowlists, platform sections).
     # Default False — a copied bot credential makes two profiles collide over one bot.
     clone_channels: bool = False
-    no_skills: bool = False
+    no_skills: Optional[bool] = None  # None = default empty (fresh profiles are born empty)
+    with_skills: bool = False  # opt back into bundled seeding; wins when both are given
     description: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None

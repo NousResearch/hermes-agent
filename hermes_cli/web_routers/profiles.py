@@ -777,15 +777,24 @@ async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli.profile_provision import CREATE_REFUSALS, ProfileCreateRequest, provision_profile
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
+    # Fresh profiles are born empty (D2): no_skills defaults True when omitted, and
+    # with_skills opts back into bundled seeding (it wins when both are given).
+    no_skills = (body.no_skills if body.no_skills is not None else True) and not body.with_skills
     request = ProfileCreateRequest(
         name=body.name, clone_from=clone_from, clone_all=body.clone_all, clone_config=clone_config,
-        no_skills=body.no_skills, description=body.description, clone_channels=body.clone_channels,
+        no_skills=no_skills, description=body.description, clone_channels=body.clone_channels,
         soul=body.soul,
         model=model, provider=provider, model_validate_in=get_process_hermes_home(),
         mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills),
         mirror_credentials=body.mirror_credentials, share_auth=body.share_auth)
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=CREATE_REFUSALS):
+        # An explicit no_skills + clone is refused here (400 via CREATE_REFUSALS),
+        # where the explicitness is visible; create_profile() itself treats
+        # no_skills as fresh-only and never refuses a clone.
+        if body.no_skills is True and (clone_from is not None or body.clone_all or clone_config):
+            raise ValueError("--no-skills cannot be combined with --clone / --clone-from / --clone-all "
+                             "(a clone copies the source's skills); create without cloning instead.")
         # Off the loop: creation asks a live multiplexer to serve the profile now over its control
         # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
         result = await asyncio.to_thread(provision_profile, request)

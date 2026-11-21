@@ -75,7 +75,9 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
     if no_skills:
         _seed_file_if_missing(
             profile_dir / NO_BUNDLED_SKILLS_MARKER,
-            "This profile opted out of bundled-skill seeding (`hermes profile create --no-skills`).\n"
+            "This profile was created empty (fresh profiles are born empty by default).\n"
+            "`hermes profile create --with-skills` seeds the bundled skills; the old\n"
+            "`--no-skills` flag is a deprecated no-op.\n"
             "Delete this file to re-enable sync on the next `hermes update`.\n",
         )
 

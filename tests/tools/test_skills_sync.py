@@ -751,6 +751,11 @@ class TestNoBundledSkillsOptOut:
         skill = bundled / "category" / "new-skill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\nname: new-skill\n---\nbody\n")
+        # hermes-agent is the skill the old marker behaviour still seeded; a marker
+        # profile must not get it (or any other bundled skill) now.
+        essential = bundled / "autonomous-ai-agents" / "hermes-agent"
+        essential.mkdir(parents=True)
+        (essential / "SKILL.md").write_text("---\nname: hermes-agent\n---\nbody\n")
 
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
@@ -778,6 +783,8 @@ class TestNoBundledSkillsOptOut:
         assert opted_out["copied"] == []
         assert opted_out["total_bundled"] == 0
         assert not (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+        assert not (skills_dir / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
+        assert not manifest_file.exists()
 
         marker.unlink()
         with _patches():

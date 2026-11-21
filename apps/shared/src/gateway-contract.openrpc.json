@@ -17314,6 +17314,194 @@
         "title": "DelegationStatusResult",
         "type": "object"
       },
+      "DeliverySourceMap": {
+        "additionalProperties": false,
+        "description": "Which source feeds each number. A count is fed by its source even when it is zero.",
+        "properties": {
+          "pending": {
+            "title": "Pending",
+            "type": "string"
+          },
+          "delivered_recent": {
+            "title": "Delivered Recent",
+            "type": "string"
+          },
+          "dead_letter": {
+            "title": "Dead Letter",
+            "type": "string"
+          },
+          "last_delivery_at": {
+            "title": "Last Delivery At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pending",
+          "delivered_recent",
+          "dead_letter",
+          "last_delivery_at"
+        ],
+        "title": "DeliverySourceMap",
+        "type": "object"
+      },
+      "DeliveryStatusParams": {
+        "additionalProperties": false,
+        "description": "One session (``session_id``) or every visible session (``scope=\"all\"``); exactly one of\nthe two. Neither is a default to \"everything\": without one the call is refused\n(fail-closed), so a bare poll never leaks another session's deliveries.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "all",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "window_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window Seconds"
+          }
+        },
+        "title": "DeliveryStatusParams",
+        "type": "object"
+      },
+      "DeliveryStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryStatusRow"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "session",
+              "all"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "window_seconds": {
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "scope",
+          "window_seconds"
+        ],
+        "title": "DeliveryStatusResult",
+        "type": "object"
+      },
+      "DeliveryStatusRow": {
+        "additionalProperties": false,
+        "description": "One session's delivery state.\n\n``pending`` counts detached deliveries recorded after the session's last assistant row \u2014\nthe documented approximation of \"recorded and not yet consumed by a turn\": the core keeps\nno \"seen\" column on ``messages``, so a delivery the user already saw through another\nchannel still counts until the next turn runs. ``oldest_pending_age_seconds`` is null when\nnothing is pending. ``delivered_recent`` counts detached deliveries plus settled relay\nreceipts inside ``window_seconds``. ``dead_letter`` counts failed relay receipts (the\ntranscript has no dead-letter state). ``last_delivery_at`` is the newest delivery\ntimestamp across both sources, or null when the session has none.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "oldest_pending_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending Age Seconds"
+          },
+          "delivered_recent": {
+            "title": "Delivered Recent",
+            "type": "integer"
+          },
+          "dead_letter": {
+            "title": "Dead Letter",
+            "type": "integer"
+          },
+          "last_delivery_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery At"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DeliverySourceMap"
+          }
+        },
+        "required": [
+          "session_id",
+          "pending",
+          "oldest_pending_age_seconds",
+          "delivered_recent",
+          "dead_letter",
+          "last_delivery_at",
+          "source"
+        ],
+        "title": "DeliveryStatusRow",
+        "type": "object"
+      },
       "DiagnosticsShareNousParams": {
         "additionalProperties": false,
         "properties": {
@@ -22422,6 +22610,183 @@
         ],
         "title": "InterruptStatus",
         "type": "string"
+      },
+      "KanbanCancelAllParams": {
+        "additionalProperties": false,
+        "properties": {
+          "origin_session_id": {
+            "title": "Origin Session Id",
+            "type": "string"
+          },
+          "board": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Board"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "cancelled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cancelled By"
+          }
+        },
+        "required": [
+          "origin_session_id"
+        ],
+        "title": "KanbanCancelAllParams",
+        "type": "object"
+      },
+      "KanbanCancelAllResult": {
+        "additionalProperties": false,
+        "properties": {
+          "origin_session_id": {
+            "title": "Origin Session Id",
+            "type": "string"
+          },
+          "cancelled_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "origin_session_id",
+          "cancelled_ids"
+        ],
+        "title": "KanbanCancelAllResult",
+        "type": "object"
+      },
+      "KanbanCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "board": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Board"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "cancelled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cancelled By"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "KanbanCancelParams",
+        "type": "object"
+      },
+      "KanbanCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "cancelled_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled Ids",
+            "type": "array"
+          },
+          "workers_terminated": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workers Terminated",
+            "type": "array"
+          },
+          "workers_survived": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workers Survived",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task_id",
+          "cancelled",
+          "status",
+          "cancelled_ids",
+          "workers_terminated",
+          "workers_survived"
+        ],
+        "title": "KanbanCancelResult",
+        "type": "object"
       },
       "KanbanRunParams": {
         "additionalProperties": false,
@@ -50777,6 +51142,24 @@
       }
     },
     {
+      "name": "delivery.status",
+      "summary": "Read-only delivery state for one session or every visible session: pending detached deliveries (recorded after the last assistant row \u2014 a documented approximation, the core keeps no 'seen' column), deliveries in the window, failed relay receipts (dead-letter) and the newest delivery time. Sources: the transcript's detached-result rows plus the bot relay receipts; the plugin outbox is NOT covered. Requires ``session:read``; a session of another profile answers ``permission_denied`` / ``profile_mismatch`` with no data. Writes nothing, touches no turn, lease or cache, and answers during the restart drain.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DeliveryStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeliveryStatusResult"
+        }
+      }
+    },
+    {
       "name": "groups.approve",
       "summary": "",
       "params": [
@@ -50953,6 +51336,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalAttachedImageResult"
+        }
+      }
+    },
+    {
+      "name": "kanban.cancel",
+      "summary": "Cancel one kanban task and its non-terminal descendants; a running worker is signalled first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/KanbanCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KanbanCancelResult"
+        }
+      }
+    },
+    {
+      "name": "kanban.cancel_all",
+      "summary": "Cancel every non-terminal kanban task created by one session (stop-all).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/KanbanCancelAllParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KanbanCancelAllResult"
         }
       }
     },

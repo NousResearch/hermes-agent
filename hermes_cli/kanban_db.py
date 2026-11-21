@@ -634,6 +634,7 @@ class Task:
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
     session_id: Optional[str] = None         # originating HERMES_SESSION_ID; NULL from CLI/dashboard
+    cancelled_by: Optional[str] = None       # who cancelled the card; NULL = never cancelled
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
@@ -670,6 +671,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "cancelled_by",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -862,6 +864,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- profile's state.db (kanban_create verifies before stamping). Indexed
     -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
+    -- Who cancelled the card (CLI ``--by`` / RPC ``cancelled_by``); NULL =
+    -- never cancelled, or cancelled before the column existed. Audit only:
+    -- nothing routes on it.
+    cancelled_by         TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -3831,6 +3837,180 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True
+
+
+# Statuses a cancellation may leave. Terminal (done, archived, failed,
+# cancelled) is refused: cancelling a finished card would rewrite history,
+# and a card already in ``cancelled`` is what the caller wants.
+_CANCELLABLE_STATUSES = ("triage", "todo", "scheduled", "ready", "running", "blocked", "review")
+
+
+@dataclass
+class CancelOutcome:
+    """Result of :func:`cancel_task`.
+
+    ``cancelled`` says the named root card transitioned (False when it was
+    already terminal or unknown); ``status`` is the root card's status after the
+    call (``None`` when the id does not exist). ``cancelled_ids`` lists every
+    card the call transitioned, root first, descendants after.
+    ``workers_terminated`` names the cards whose live worker was confirmed dead;
+    ``workers_survived`` names the cards whose worker could not be signalled
+    (unverified fingerprint: the PID is never trusted) and keeps running until
+    it exits — its result is still discarded, because :func:`complete_task`
+    refuses a ``cancelled`` card, and the terminal-worker reaper ends it once
+    its run closes.
+    """
+
+    task_id: str
+    cancelled: bool
+    status: Optional[str]
+    cancelled_ids: list[str]
+    workers_terminated: list[str]
+    workers_survived: list[str]
+
+
+def cancel_task(
+    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
+    cancelled_by: Optional[str] = None, signal_fn=None,
+) -> CancelOutcome:
+    """Cancel one card and its non-terminal descendants (``-> cancelled``).
+
+    ``cancelled`` is terminal: the card's work is abandoned on purpose, never
+    retried, and no kernel transition accepts it as a source — a worker whose
+    result lands after the cancel finds :func:`complete_task` refusing it, so
+    the card never re-opens. A human may still drag it back to the board
+    (``can_move("cancelled", "todo")``) to restore it. A card already terminal
+    is an idempotent no-op (no event, no error); an unknown id reports
+    ``status=None``.
+
+    Order follows :func:`archive_task`, not kill-then-mark: the status flip is
+    CAS'd inside the write txn (pid + claim snapshotted there, so the kill is
+    contingent on THIS caller winning the transition), and the worker is
+    signalled after commit — ``_poll_worker_exit`` can wait ~5 s and must not
+    hold the write lock. The flip-then-kill order is safe here for the same
+    reason it is in ``archive_task``: ``cancelled`` is terminal, so no
+    dispatcher can spawn a duplicate worker off the released claim, and every
+    write the still-running worker attempts meanwhile (heartbeat, completion)
+    is refused by its own status guard. A crash between flip and kill leaves
+    the worker to the terminal-worker reaper, which keys on the closed run
+    row's retained pid + fingerprint.
+
+    Cancellation is NOT a failure: ``consecutive_failures`` is untouched, so it
+    never trips the circuit breaker. The workspace is kept (partial work stays
+    inspectable) and nothing already persisted is rewritten — a detached
+    result recorded before the cancel stays history; only future work stops.
+    No lifecycle hook is fired: cancellation is observed through
+    ``list_tasks(status="cancelled")`` (``state.read`` exposes it), and a hook
+    with no registered consumer is not invented.
+    """
+    now = int(time.time())
+    placeholders = ", ".join("?" * len(_CANCELLABLE_STATUSES))
+    cancelled_ids: list[str] = []
+    terminated: list[str] = []
+    survived: list[str] = []
+    visited: set[str] = set()
+    queue = [task_id]
+    index = 0
+    root_cancelled = False
+    root_status: Optional[str] = None
+    while index < len(queue):
+        current = queue[index]
+        index += 1
+        if current in visited:
+            continue
+        visited.add(current)
+        run_id: Optional[int] = None
+        prev_pid: Optional[int] = None
+        prev_lock: Optional[str] = None
+        prev_started: Any = None
+        was_running = False
+        with write_txn(conn):
+            row = conn.execute(
+                "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+                (current,),
+            ).fetchone()
+            if row is None:
+                continue
+            prior_status = row["status"]
+            if current == task_id:
+                root_status = prior_status
+            if prior_status not in _CANCELLABLE_STATUSES:
+                continue
+            was_running = prior_status == "running"
+            prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+            cur = conn.execute(
+                f"""
+                UPDATE tasks
+                   SET status            = 'cancelled',
+                       completed_at      = ?,
+                       claim_lock        = NULL,
+                       claim_expires     = NULL,
+                       worker_pid        = NULL,
+                       worker_started_at = NULL,
+                       cancelled_by      = ?
+                 WHERE id = ?
+                   AND status IN ({placeholders})
+                """,
+                (now, cancelled_by, current, *_CANCELLABLE_STATUSES),
+            )
+            if cur.rowcount != 1:
+                continue  # lost a race with another terminal transition
+            run_id = _end_or_synthesize_run(
+                conn, current, outcome="cancelled", status="cancelled",
+                summary=reason, synthesize=bool(reason),
+            )
+            _append_event(
+                conn, current, "cancelled",
+                {"reason": reason, "cancelled_by": cancelled_by, "prior_status": prior_status},
+                run_id=run_id,
+            )
+        if current == task_id:
+            root_cancelled = True
+            root_status = "cancelled"
+        cancelled_ids.append(current)
+        # The work the children gate on is gone: cancel the subtree with the
+        # parent. Terminal children are skipped by the guard above when visited;
+        # siblings are never touched.
+        queue.extend(child_ids(conn, current))
+        if was_running:
+            termination = _terminate_reclaimed_worker(
+                prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started,
+            )
+            (terminated if termination.get("terminated") else survived).append(current)
+            with write_txn(conn):
+                _append_event(conn, current, "cancel_worker_termination", termination, run_id=run_id)
+    return CancelOutcome(
+        task_id=task_id, cancelled=root_cancelled, status=root_status,
+        cancelled_ids=cancelled_ids, workers_terminated=terminated, workers_survived=survived,
+    )
+
+
+def cancel_tasks_for_session(
+    conn: sqlite3.Connection, origin_session_id: str, *, reason: Optional[str] = None,
+    cancelled_by: Optional[str] = None, signal_fn=None,
+) -> list[str]:
+    """Cancel every non-terminal card whose ``session_id`` is ``origin_session_id``.
+
+    Stop-all per session: the session that asked for the work stops it all.
+    Cards with no session (``NULL`` — CLI/dashboard creations, legacy rows) are
+    never touched, and neither is anything already delivered or persisted.
+    A card reached twice (shared descendant of two session cards) is cancelled
+    once — :func:`cancel_task` is idempotent. Returns the ids that
+    transitioned, in creation order.
+    """
+    placeholders = ", ".join("?" * len(_CANCELLABLE_STATUSES))
+    rows = conn.execute(
+        f"SELECT id FROM tasks WHERE session_id = ? AND status IN ({placeholders}) "
+        "ORDER BY created_at, id",
+        (origin_session_id, *_CANCELLABLE_STATUSES),
+    ).fetchall()
+    cancelled: list[str] = []
+    for row in rows:
+        outcome = cancel_task(
+            conn, row["id"], reason=reason, cancelled_by=cancelled_by, signal_fn=signal_fn,
+        )
+        cancelled.extend(outcome.cancelled_ids)
+    return cancelled
 
 
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:

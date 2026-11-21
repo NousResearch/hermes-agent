@@ -510,6 +510,10 @@ Known capability ids: `tools.override`, `llm.provider_override`,
 a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
 `llm.session_fork` (run a bounded background copy of the session's agent, see
 [Plugin LLM Access](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)),
+`state.detached_result` (record a durable result into a session's
+transcript, see [Record a durable detached result](#record-a-durable-detached-result)),
+`state.read` (read sessions, transcripts and kanban tasks of this profile,
+read-only, see [Read session and kanban state](#read-session-and-kanban-state)),
 `gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
@@ -1302,6 +1306,138 @@ prefixed keys become a sentinel such as `«redacted:sk-…»` with no key charac
 left, and assignments like `API_KEY=…` are masked. Patterns registered with
 `ctx.register_redaction_patterns()` apply too. Without `force`, a user who set
 `security.redact_secrets: false` gets the text back unchanged.
+
+### Record a durable detached result
+
+Some work finishes while no turn is live — a kanban worker, a cron job, a
+detached delegation. A result left in a side channel is one the turn loop
+never reads, so the session that asked for the work never sees it. A
+*detached result* is a row written between turns into that session's
+transcript: the core records it once, it survives compaction through the
+compression lineage, and the destination session's next turn reloads it as
+an ordinary `user` row.
+
+Reach for it when a producer finishes outside a turn and the result belongs
+to a session, not to the producer. For anything the current turn already
+sees, write to the transcript through the turn itself — a detached result
+is for the turns that haven't happened yet.
+
+```python
+def _deliver_result(ctx, session_id, result_text, delegation_id):
+    if not ctx.has_capability("state.detached_result"):
+        return  # fail closed: degrade gracefully, record nothing
+    ctx.record_delegation_delivery(
+        session_id, result_text, delegation_id=delegation_id)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user must
+grant it:
+
+```yaml
+capabilities:
+  - state.detached_result
+```
+
+**Detached-result contract**
+
+* `ctx.record_delegation_delivery(session_id, content, *, delegation_id, delivery_notice="", metadata=None)` records a delegation delivery;
+  `ctx.record_completion_note(session_id, content, *, admission_id=None, display_kind="internal_notification", metadata=None)` records a
+  completion note. Both return the message id of the recorded row, or
+  `None` when the capability is not granted (nothing is written, the
+  denial is logged once).
+* **Idempotent by stable id.** A retry with the same `delegation_id` (plus
+  `delivery_notice`) or the same `admission_id` returns the id of the
+  already-recorded row instead of writing a second one, so a producer that
+  is unsure whether its first write landed can simply retry.
+* **`admission_id=None` is a real null.** It is stored as JSON `null`, never
+  the string `"None"`. A null has no key to match, so each call records its
+  own row; pass a stable id whenever a retry is possible. An empty or
+  non-string `admission_id` raises `ValueError`.
+* **Reserved metadata keys.** `metadata` is yours, but `delegation_id` and
+  `delivery_notice` (deliveries) and `completion_admission` (notes) belong
+  to the core: they are always written from the dedicated arguments and a
+  same-named key in `metadata` is dropped (with a warning), so `metadata`
+  can never redirect or defeat the recorded-once guarantee.
+* The destination is resolved to its live continuation tip first: a parent
+  closed by compression never receives rows.
+* **Errors are raised, never swallowed.** A destination with a live turn
+  raises `SessionTurnLeaseLostError` — nothing is recorded, retry after
+  the turn ends. A compression-closed parent raises
+  `CompressionSessionClosedError` — the session is gone, do not retry the
+  same id. An empty `session_id`, `content`, `delegation_id` or
+  `display_kind` raises `ValueError`.
+* `display_kind` selects how a completion note presents; prefer the
+  default unless the core documents a kind for your producer.
+  `delivery_notice` is a short notice recorded alongside a delivery.
+
+### Read session and kanban state
+
+Plugins used to read `state.db` and `kanban.db` with raw SQL against
+hand-resolved paths: coupled to internal schema names, able to open
+`kanban.db` in read-write mode (creating or migrating a board from an
+observer), and reading `state.db` outside the owning profile's home. That
+import is not a contract. These calls replace it with a versioned,
+read-only facade that returns plain JSON dicts:
+
+```python
+def register(ctx):
+    def on_session_start(session_id, **kwargs):
+        if not ctx.has_capability("state.read"):
+            return  # fail closed: degrade gracefully, read nothing
+        session = ctx.read_session(session_id)
+        blocked = ctx.list_kanban_tasks(status="blocked", limit=10)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user must
+grant it:
+
+```yaml
+capabilities:
+  - state.read
+```
+
+**State-read contract**
+
+* `ctx.read_session(session_id)` — a closed-field DTO, resolved to the live
+  continuation tip: `api_version`, `id`, `source`, `title`, `model`,
+  `parent_session_id`, `session_key`, `chat_id`, `chat_type`, `thread_id`,
+  `started_at`, `ended_at`, `end_reason`, `last_activity_at`,
+  `message_count`, `tool_call_count`, `input_tokens`, `output_tokens`,
+  `archived` (a bool). A field the session has no value for is `None`.
+  Prompts, model/route config, billing, working directory, user ids and the
+  runtime/compression columns are **not** part of the contract, so a core
+  migration cannot change what you see. `None` when unknown or not granted.
+* `ctx.resolve_session(session_id)` — the session id resolved to its live
+  continuation tip (compression-aware). Without the capability it returns
+  the id unchanged: the caller learns nothing new.
+* `ctx.read_session_messages(session_id, *, limit=50, after_id=None, include_compacted=False)` — `{"schema_version", "session_id", "messages", "next_after_id"}`,
+  keyset-paged; `limit` is clamped to 1..100, and `after_id` cannot be
+  combined with `include_compacted`. Each message is a closed-field DTO:
+  `id`, `session_id`, `role`, `content`, `tool_call_id`, `tool_calls`,
+  `tool_name`, `timestamp`, `display_kind`, `display_metadata`.
+* `ctx.read_kanban_task(task_id, *, board=None)` — one task as a
+  closed-field DTO (`id`, `title`, `status`, `assignee`, `priority`,
+  `session_id`, `created_at`, `started_at`, `completed_at`, `result`,
+  `block_kind`, `block_recurrences`, `completion_contract`,
+  `current_step_key`, `board`); `None` when unknown, when the board is
+  absent, or when not granted.
+* `ctx.list_kanban_tasks(*, status=None, assignee=None, session_id=None, limit=50, board=None)` — `{"api_version", "tasks"}`, newest-first; an
+  unknown `status` raises `ValueError`.
+* `ctx.read_kanban_task_summary(task_id, *, board=None)` — the newest
+  non-empty run summary, or `None` when there is none.
+* **Additive evolution.** New DTO fields may be added without a version
+  change; removing or renaming one bumps the version (`api_version` on
+  sessions and kanban, `schema_version` on the message page).
+* **Read-only by construction.** `kanban.db` is opened `mode=ro` and is
+  never created, initialized or migrated: a missing board or schema is a
+  clean `None` / empty result, never a created file.
+* **Without the capability, reads return nothing.** `read_session`,
+  `read_kanban_task` and `read_kanban_task_summary` return `None`;
+  `read_session_messages` returns an empty page; `list_kanban_tasks`
+  returns an empty task list. The denial is logged once and nothing is
+  read.
+* Reads are profile-wide, not limited to the session that fired the hook —
+  the consent description says so.
 
 ### Bundle skills
 

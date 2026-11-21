@@ -517,6 +517,42 @@ canonical_method("kanban.run", params=KanbanRunParams, result=KanbanRunResult,
                  doc="Native-owner only: admit the dispatcher's current claim on a kanban task.")
 
 
+class KanbanCancelParams(Params):
+    task_id: str
+    board: str | None = None
+    reason: str | None = None
+    cancelled_by: str | None = None
+
+
+class KanbanCancelResult(Result):
+    task_id: str
+    cancelled: bool
+    status: str | None
+    cancelled_ids: list[str]
+    workers_terminated: list[str]
+    workers_survived: list[str]
+
+
+canonical_method("kanban.cancel", params=KanbanCancelParams, result=KanbanCancelResult,
+                 doc="Cancel one kanban task and its non-terminal descendants; a running worker is signalled first.")
+
+
+class KanbanCancelAllParams(Params):
+    origin_session_id: str
+    board: str | None = None
+    reason: str | None = None
+    cancelled_by: str | None = None
+
+
+class KanbanCancelAllResult(Result):
+    origin_session_id: str
+    cancelled_ids: list[str]
+
+
+canonical_method("kanban.cancel_all", params=KanbanCancelAllParams, result=KanbanCancelAllResult,
+                 doc="Cancel every non-terminal kanban task created by one session (stop-all).")
+
+
 class A2aForwardParams(Params):
     agent: str
     tenant: str
@@ -695,4 +731,4 @@ canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParam
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections, canonical_stored_reads
+from . import canonical_delivery, canonical_sessions, canonical_projections, canonical_stored_reads

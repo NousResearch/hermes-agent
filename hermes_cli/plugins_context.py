@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_detached_ctx import PluginDetachedCtxMixin
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
 from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginRegistration
@@ -22,6 +23,7 @@ from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
 from hermes_cli.plugins_state import PluginState
+from hermes_cli.plugins_state_read_ctx import PluginStateReadCtxMixin
 
 if TYPE_CHECKING:
     from hermes_cli.plugins import PluginManager
@@ -35,7 +37,9 @@ def _facade():
     return facade
 
 
-class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
+class PluginContext(
+    PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin, PluginDetachedCtxMixin, PluginStateReadCtxMixin
+):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):

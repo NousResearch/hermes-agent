@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: corsair
+connector_slug: corsair
+description: Your apps through Corsair (Gmail, Slack, Linear, its own PM and CRM), with search and automations.
+source: https://docs.corsair.dev/cloud/mcp
+
+# Corsair's hosted remote MCP (URL-only; Hermes never spawns a local process
+# for this entry). Native OAuth 2.1 + Dynamic Client Registration, verified
+# live: the 401 names RFC 9728 metadata at
+# /.well-known/oauth-protected-resource/mcp, whose authorization server
+# (hub.corsair.dev/mcp-auth) lists a registration_endpoint, PKCE S256 and
+# public clients. Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh. At sign-in the user picks which Corsair
+# link (set of connected apps) the token opens.
+transport:
+  type: http
+  url: https://mcp.corsair.dev/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - corsair
+  hosts:
+    - corsair.dev
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Corsair
+  (or run `hermes mcp login corsair`). Pick the link to connect and
+  approve, then restart the session so tools load.
+
+  Corsair's skills come in the corsair plugin:
+    hermes plugins install corsair

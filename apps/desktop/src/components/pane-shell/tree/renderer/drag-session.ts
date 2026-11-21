@@ -229,6 +229,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   const restoreCursor = document.body.style.cursor
   const restoreSelect = document.body.style.userSelect
   let engaged = false
+  let done = false
   let releaseEscapeLayer: (() => void) | null = null
   let releaseGuests: (() => void) | null = null
   let ghost: DragGhost | null = null
@@ -315,11 +316,30 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   }
 
   const onMove = (ev: PointerEvent) => {
+    if (ev.pointerId !== pointerId) {
+      return
+    }
+
+    // A release outside the renderer may never deliver pointerup. Hover is
+    // evidence the press ended, not permission to revive its pending drag.
+    if ((ev.buttons & 1) === 0) {
+      finish(false)
+
+      return
+    }
+
     pending = { shift: ev.shiftKey, x: ev.clientX, y: ev.clientY }
     raf ||= requestAnimationFrame(flushMove)
   }
 
-  const finish = (commit: boolean) => {
+  const finish = (commit: boolean, swallowClick = commit) => {
+    // Releasing pointer capture can synchronously re-enter cancellation.
+    if (done) {
+      return
+    }
+
+    done = true
+
     if (raf) {
       cancelAnimationFrame(raf)
       raf = 0
@@ -351,9 +371,15 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     window.removeEventListener('pointerup', onUp, true)
     window.removeEventListener('pointercancel', onCancel, true)
     window.removeEventListener('keydown', onKey, true)
+    window.removeEventListener('blur', onBlur)
+    handle.removeEventListener('lostpointercapture', onLostCapture)
 
     if (engaged) {
-      suppressDragClick(commit)
+      // Only a drop or an Esc-aborted held press has a click to swallow.
+      // A lost gesture must not leave a trap for the next unrelated click.
+      if (swallowClick) {
+        suppressDragClick(commit)
+      }
 
       if (commit) {
         spec.onCommit($dropHint.get())
@@ -367,8 +393,27 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     $treeDragging.set(null)
   }
 
-  const onUp = () => finish(true)
-  const onCancel = () => finish(false)
+  const onUp = (ev: PointerEvent) => {
+    if (ev.pointerId === pointerId) {
+      finish(true)
+    }
+  }
+
+  const onCancel = (ev: PointerEvent) => {
+    if (ev.pointerId === pointerId) {
+      finish(false)
+    }
+  }
+
+  const onBlur = () => finish(false)
+
+  const onLostCapture = (ev: PointerEvent) => {
+    // Pen/touch can transfer implicit capture from a child to this handle.
+    // The child's bubbling capture-loss event does not mean OUR capture ended.
+    if (ev.target === handle) {
+      onCancel(ev)
+    }
+  }
 
   // Esc aborts the drag — the target selection vanishes and nothing moves,
   // the universal "never mind" for an in-flight drag. Capture-phase + stop so
@@ -378,7 +423,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     if (ev.key === 'Escape') {
       ev.preventDefault()
       ev.stopPropagation()
-      finish(false)
+      finish(false, true)
     }
   }
 
@@ -386,6 +431,8 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   window.addEventListener('pointerup', onUp, true)
   window.addEventListener('pointercancel', onCancel, true)
   window.addEventListener('keydown', onKey, true)
+  window.addEventListener('blur', onBlur)
+  handle.addEventListener('lostpointercapture', onLostCapture)
 }
 
 // ---------------------------------------------------------------------------

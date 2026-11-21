@@ -306,6 +306,33 @@ _GIT_CONFIG_OVERRIDES = {
     "core.sshCommand": "ssh -o BatchMode=yes",
 }
 
+# PuTTY-family clients take ``-batch``, not ``-o BatchMode``; Git's own plink detection uses these names.
+_PLINK_NAME_RE = re.compile(r"^(?:tortoise(?:git)?)?plink(?:\.exe)?$", re.IGNORECASE)
+_SSH_EXECUTABLE_RE = re.compile(r"""^\s*(?:"([^"]+)"|'([^']+)'|(\S+))""")
+# Any explicit batch choice (``BatchMode=no`` included) is the user's call and is left alone.
+_SSH_BATCH_CHOICE_RE = re.compile(r"(?:^|\s)-batch(?:\s|$)|batchmode", re.IGNORECASE)
+
+
+def _with_batch_flag(command: str) -> str:
+    """*command* with its client's no-prompt flag inserted right after the executable."""
+    match = _SSH_EXECUTABLE_RE.match(command)
+    if not match or _SSH_BATCH_CHOICE_RE.search(command):
+        return command
+    name = re.split(r"[/\\]", next(g for g in match.groups() if g))[-1]
+    flag = "-batch" if _PLINK_NAME_RE.match(name) else "-o BatchMode=yes"
+    return f"{command[:match.end()]} {flag}{command[match.end():]}"
+
+
+def _internal_ssh_command(env: Mapping[str, str]) -> str:
+    """``core.sshCommand`` for internal git: the user's ``GIT_SSH`` client when set (the config
+    pin outranks ``GIT_SSH``, so pinning plain ssh would silently swap out e.g. TortoiseGitPlink
+    and its Pageant keys), else OpenSSH, either way in batch mode."""
+    git_ssh = (env.get("GIT_SSH") or "").strip()
+    if not git_ssh:
+        return _GIT_CONFIG_OVERRIDES["core.sshCommand"]
+    quoted = git_ssh if git_ssh[0] in "\"'" or " " not in git_ssh else f'"{git_ssh}"'
+    return _with_batch_flag(quoted)
+
 
 def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
     """Everything that decides which files ``git config --system/--global`` reads, plus the
@@ -479,7 +506,11 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-    overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    # An explicit GIT_SSH_COMMAND outranks core.sshCommand, so it gets the batch flag itself
+    # (a custom identity like ``ssh -i key`` otherwise prompts for an unknown host key on /dev/tty).
+    if env.get("GIT_SSH_COMMAND"):
+        env["GIT_SSH_COMMAND"] = _with_batch_flag(env["GIT_SSH_COMMAND"])
+    overrides = list({**_GIT_CONFIG_OVERRIDES, "core.sshCommand": _internal_ssh_command(env)}.items())
     # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
     # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
     # re-injection every internal git call fails "detected dubious ownership" on any repo whose

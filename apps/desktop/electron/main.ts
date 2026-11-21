@@ -6204,7 +6204,6 @@ function registerPowerResumeListeners() {
   powerResumeRegistered = true
 
   try {
-    attachPresenceSource({ app, ipc: ipcMain, monitor: powerMonitor, windows: BrowserWindow.getAllWindows() })
     // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
@@ -6226,6 +6225,12 @@ function registerPowerResumeListeners() {
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
+  }
+
+  try {
+    attachPresenceSource({ app, ipc: ipcMain, monitor: powerMonitor, windows: BrowserWindow.getAllWindows() })
+  } catch (error) {
+    rememberLog(`[presence] attach failed, power listeners kept: ${error instanceof Error ? error.message : error}`)
   }
 }
 

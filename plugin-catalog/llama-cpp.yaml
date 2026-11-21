@@ -1,0 +1,40 @@
+name: llama-cpp
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: 3469f2ba20d9604148efc60e87e8fda54501da3d
+subdir: plugins/llama-cpp
+title: llama.cpp GPU Manager
+description: >-
+  Desktop page + FastAPI backend for the Hermes-managed llama.cpp runtime. It
+  detects the GPU by model and vendor (NVIDIA compute capability included) and
+  offers the matching official ggml-org build (Vulkan, CUDA sm_75+, ROCm/HIP
+  for AMD); lists local GGUF models with size and state; edits and applies
+  per-model presets (context window, n-gpu-layers, KV cache type/quant, flash
+  attention, batch, sampling); loads/unloads the active model; and benchmarks
+  generation and prefill tok/s with a leaderboard that records the preset and
+  the llama.cpp build used for each test. It also registers the
+  llama_server_status agent tool. Server lifecycle and build installs are
+  delegated to the public /api/local-models routes (server, runtime/install,
+  jobs); the installed-builds panel is read-only pending a public select/remove
+  route (issue #157878). Disclosure — it reads and writes inside $HERMES_HOME
+  (runtimes/llamacpp: server state, presets, bench history); POST /apply with
+  set_active sets model.default in config.yaml through Hermes's own save_config
+  (no raw-YAML fallback); stop uses the core's durable off switch. Benchmarks
+  call only the local server. Update checks fetch public GitHub release
+  metadata (ggml-org/llama.cpp) and use a GitHub token only if the user already
+  set GH_TOKEN/GITHUB_TOKEN — never gh auth token, never environment writes.
+  Local endpoint discovery probes /models without credentials; no api_key is
+  read from config.yaml. Downloading a build is an explicit user action
+  executed by the core package manager and never fetches or replaces the
+  plugin's own files. No telemetry, no credentials in the UI.
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/llama-cpp
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: [llama_server_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -838,6 +838,27 @@ def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, mo
     assert "base_url: https://openrouter.ai/api/v1" in config_text
 
 
+@pytest.mark.parametrize(("typed", "provider"), [("OpenAI-Codex", "openai-codex"), ("grok-oauth", "xai-oauth")])
+def test_auth_logout_clears_the_provider_auth_add_accepts_under_that_name(tmp_path, monkeypatch, typed, provider):
+    """`hermes auth logout` takes the same spellings as `auth add`/`status` and clears the login it names."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {
+        "version": 1, "active_provider": provider,
+        "providers": {provider: {"tokens": {"access_token": "a", "refresh_token": "r"}}}})
+    (hermes_home / "config.yaml").write_text(f"model:\n  provider: {provider}\n")
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import _load_auth_store
+    from hermes_cli.auth_commands import auth_logout_command
+
+    auth_logout_command(SimpleNamespace(provider=typed))
+
+    store = _load_auth_store()
+    assert provider not in store.get("providers", {})
+    assert store.get("active_provider") is None
+
+
 def test_unsuppress_credential_source_clears_marker(tmp_path, monkeypatch):
     """unsuppress_credential_source() removes a previously-set marker."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

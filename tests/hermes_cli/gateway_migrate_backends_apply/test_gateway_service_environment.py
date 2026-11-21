@@ -144,3 +144,68 @@ def test_an_installed_gateway_unit_is_still_read_from_systemd(home, monkeypatch,
     env, why = SystemHost(home).gateway_environment()
 
     assert why is None and env == {"SOMEVAR": "same", "X": "1"}
+
+
+def test_a_units_unset_environment_is_applied_last(home, monkeypatch):
+    """systemd.exec(5): the list is applied last; NAME drops the variable, NAME=VALUE only that exact assignment."""
+    fake = FakeSystemctl("MGR=m\n", {"x.service": "Environment=SOMEVAR=same KEEP=1 EXACT=2\nEnvironmentFiles=\n"
+                                                  "UnsetEnvironment=SOMEVAR KEEP=other EXACT=2 MGR\n"})
+    monkeypatch.setattr(backends_host, "_systemctl", fake)
+
+    assert SystemHost(home).unit_environment("x.service", "user") == ({"KEEP": "1"}, None)
+
+
+class RealUnitsHost(FirstMoveHost):
+    """Both units are read for real through *systemctl*; the gateway unit is installed."""
+
+    def unit_environment(self, unit, scope):
+        return SystemHost.unit_environment(self, unit, scope)
+
+    def unit_launcher_env(self, unit, scope):
+        return SystemHost.unit_launcher_env(self, unit, scope)
+
+    def backends(self):
+        from hermes_cli.gateway_migrate_backends import BackendItem
+        return [BackendItem(supervisor="systemd", running=False, unit="hermes-dashboard.service", scope="user",
+                            state="enabled", argv=list(self.argv))]
+
+
+@pytest.fixture
+def gateway_unit(tmp_path, monkeypatch):
+    unit = tmp_path / "gw.service"
+    unit.write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit)
+    return gw.get_service_name()
+
+
+def _show(env, unset=""):
+    return f"Environment={env}\nEnvironmentFiles=\nUnsetEnvironment={unset}\n"
+
+
+@pytest.mark.parametrize(("old", "gateway", "refused"), [
+    (_show("HOME_PIN SOMEVAR=same"), _show("SOMEVAR=same", "SOMEVAR"), True),  # the gateway unit unsets it
+    (_show("HOME_PIN SOMEVAR=same", "SOMEVAR"), _show("SOMEVAR=same"), True),  # the old unit unsets it
+    (_show("HOME_PIN SOMEVAR=same", "SOMEVAR=other"), _show("SOMEVAR=same"), False),  # not that assignment
+    (_show("HOME_PIN SOMEVAR=same"), _show("SOMEVAR=same"), False),  # control: nothing unset
+])
+def test_unset_environment_is_applied_on_both_sides_before_comparing(home, capsys, monkeypatch, gateway_unit,
+                                                                     old, gateway, refused):
+    _dotenv(home, _TEMPLATE)
+    old = old.replace("HOME_PIN", f"HERMES_HOME={_installed(home)}")
+    monkeypatch.setattr(backends_host, "_systemctl",
+                        FakeSystemctl("", {"hermes-dashboard.service": old, gateway_unit: gateway}))
+
+    code, out = _plan(RealUnitsHost(home, {}), capsys)
+
+    assert (code, bool(_template_blockers(out))) == ((engine.EXIT_BLOCKED, True) if refused else (engine.EXIT_OK, False))
+
+
+def test_a_unit_that_unsets_its_hermes_home_is_not_this_homes(home, capsys, monkeypatch, gateway_unit, tmp_path):
+    """``Environment=HERMES_HOME=<this home>`` with ``UnsetEnvironment=HERMES_HOME`` runs the account's default home."""
+    old = _show(f"HERMES_HOME={_installed(home)} HOME={tmp_path / 'acct'}", "HERMES_HOME")
+    monkeypatch.setattr(backends_host, "_systemctl",
+                        FakeSystemctl("", {"hermes-dashboard.service": old, gateway_unit: _show("")}))
+
+    code, out = _plan(RealUnitsHost(home, {}), capsys)
+
+    assert (code, out["plan"]["blockers"], out["steps"]) == (engine.EXIT_OK, [], [])

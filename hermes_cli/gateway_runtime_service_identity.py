@@ -183,6 +183,16 @@ def environment_pairs(value: str) -> dict[str, str]:
     return result
 
 
+def apply_unset_environment(env: dict[str, str], value: str) -> dict[str, str]:
+    """systemd's ``UnsetEnvironment=`` *value* (as ``systemctl show`` prints it), applied last to *env*: a
+    ``NAME`` drops the variable, a ``NAME=VALUE`` only that exact assignment (systemd.exec(5))."""
+    for item in shlex.split(value):
+        key, sep, val = item.partition("=")
+        if not sep or env.get(key) == val:
+            env.pop(key, None)
+    return env
+
+
 def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, system: bool) -> None:
     import pwd
 
@@ -212,10 +222,7 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     inherited = environment_pairs(manager_env)
     env = inherited if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
     env.update(environment_pairs(props["Environment"]))
-    for item in shlex.split(props["UnsetEnvironment"]):
-        key, sep, value = item.partition("=")
-        if not sep or env.get(key) == value:
-            env.pop(key, None)
+    apply_unset_environment(env, props["UnsetEnvironment"])
     configured = env.get("HERMES_HOME", "").strip()
     if not configured:
         configured = str(_absolute(env.get("HOME") or pwd.getpwuid(uid).pw_dir) / ".hermes")

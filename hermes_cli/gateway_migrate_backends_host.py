@@ -403,10 +403,12 @@ class SystemHost:
 
     def unit_environment(self, unit: str, scope: str) -> tuple[dict[str, str], Optional[str]]:
         """The environment systemd gives *unit*, and why it is incomplete (None when complete). systemd
-        applies ``Environment=`` first, then every ``EnvironmentFile=`` in order, a later value winning
-        (systemd.exec(5)); ``systemctl show`` prints one ``EnvironmentFiles=`` line per file. A required
-        file that is missing, or any file this user cannot read, makes the environment unknown."""
-        res = _systemctl(scope, ["show", unit, "--no-pager", "--property=Environment", "--property=EnvironmentFiles"])
+        applies ``Environment=`` first, then every ``EnvironmentFile=`` in order, a later value winning, and
+        ``UnsetEnvironment=`` last (systemd.exec(5)); ``systemctl show`` prints one ``EnvironmentFiles=`` line
+        per file. A required file that is missing, or any file this user cannot read, makes the environment
+        unknown."""
+        res = _systemctl(scope, ["show", unit, "--no-pager", "--property=Environment", "--property=EnvironmentFiles",
+                                 "--property=UnsetEnvironment"])
         if res.returncode != 0:
             return {}, f"systemctl show {unit} failed"
         env: dict[str, str] = {}
@@ -414,10 +416,13 @@ class SystemHost:
         if manager.returncode == 0:
             env.update(_env_tokens(" ".join(shlex.quote(line) for line in (manager.stdout or "").splitlines())))
         files: list[tuple[str, bool]] = []
+        unset: list[str] = []
         for line in (res.stdout or "").splitlines():
             key, _, value = line.partition("=")
             if key == "Environment":
                 env.update(_env_tokens(value))
+            elif key == "UnsetEnvironment":
+                unset.append(value)
             elif key == "EnvironmentFiles":
                 files += [(path, flag == "yes") for path, flag in _ENV_FILE_ENTRY.findall(value)]
         for path, optional in files:
@@ -434,7 +439,11 @@ class SystemHost:
             if unreadable := _unit_file_syntax(path):
                 return env, f"its EnvironmentFile={path} {unreadable}"
             env.update(_dotenv_file(path))
-        return env, None
+        from hermes_cli.gateway_runtime_service_identity import apply_unset_environment
+        try:
+            return apply_unset_environment(env, " ".join(unset)), None
+        except ValueError:
+            return env, "its UnsetEnvironment= cannot be read"
 
     def unit_launcher_env(self, unit: str, scope: str) -> dict[str, str]:
         """:meth:`unit_environment` without the reason (values stay in memory)."""

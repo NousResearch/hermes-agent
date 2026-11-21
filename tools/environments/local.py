@@ -260,13 +260,15 @@ def _inject_session_context_env(env: dict) -> None:
     Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
         from gateway.session_context import (
-            _UNSET, _VAR_MAP, _bound_session_value, session_context_engaged)
+            _UNSET, _VAR_MAP, CONTEXT_ONLY_VAR_NAMES, _bound_session_value, session_context_engaged)
     except Exception:
         return
     _engaged = session_context_engaged()
     for var_name in _VAR_MAP:
         value = _bound_session_value(var_name)
-        if value is not _UNSET:
+        if var_name in CONTEXT_ONLY_VAR_NAMES and (value is _UNSET or not value):
+            env.pop(var_name, None)  # never inherited or overlaid; unknown ("") is absent, not empty
+        elif value is not _UNSET:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             env.pop(var_name, None)

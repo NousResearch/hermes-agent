@@ -12,7 +12,12 @@ full credential environment. Two tiers:
 """
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tools.environments.local import hermes_subprocess_env
 from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
@@ -135,6 +140,35 @@ class TestTierInvariants:
         # Credentialed CLIs (claude/codex) must not be able to mint dashboard sessions.
         assert {"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
                 "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET"} <= _ALWAYS_STRIP_KEYS
+
+
+_DASHBOARD_LOGIN = {
+    "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "admin",
+    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "fake-password",
+    "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "fake-signing-secret-0123456789abcdef",
+}
+_BASIC_AUTH_PROBE = """
+from plugins.dashboard_auth._shared import SkipRegistration
+from plugins.dashboard_auth.basic import _settings
+try:
+    _settings()
+except SkipRegistration as skip:
+    print(skip.level)
+"""
+
+
+@pytest.mark.parametrize("inherit_credentials", [False, True], ids=["scrubbed", "inherit-credentials"])
+def test_child_loading_basic_auth_plugin_sees_no_half_configured_login(tmp_path, inherit_credentials):
+    """Regression for #156922: the child got the dashboard username without its password, so every
+    plugin-loading child warned of a half-configured login the dashboard itself did not have."""
+    parent = {**_SAFE_SAMPLE, "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path / "hermes"),
+              **_DASHBOARD_LOGIN}
+    with patch.dict(os.environ, parent, clear=True):
+        env = hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    result = subprocess.run([sys.executable, "-c", _BASIC_AUTH_PROBE], env=env,
+                            cwd=Path(__file__).resolve().parents[2], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, check=True, timeout=60)
+    assert result.stdout.strip() == "debug"
 
 
 class TestBrowserPassthroughPattern:

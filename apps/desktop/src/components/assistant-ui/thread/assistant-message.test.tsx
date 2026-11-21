@@ -15,6 +15,7 @@ import { $touchPointer } from '@/lib/touch-interaction'
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { $activeSessionId } from '@/store/session'
 import { type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
+import { $trajectoryCollapsedByDefault } from '@/store/trajectory-disclosure'
 
 import { stubThreadEnvironment } from '../test-utils'
 
@@ -53,6 +54,8 @@ vi.mock('@/store/onboarding', async importOriginal => ({
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
+// This suite verifies timestamp rendering rather than the trajectory preference.
+$trajectoryCollapsedByDefault.set(false)
 
 // Resolve error-card copy from the catalog so wording edits don't break the behavior assertions.
 const copy = (value: ErrorCardCopy['title'], provider = '') =>

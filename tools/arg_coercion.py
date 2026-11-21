@@ -53,18 +53,19 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
-                    args[key] = coerced
+                    args[key] = _normalize_container_value(coerced, prop_schema, parameters)
                     continue
                 if value.strip().startswith("["):
                     logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "
                                    "but could not be parsed — model may have emitted a "
                                    "JSON-encoded string instead of a native array. "
                                    "Falling back to single-element list.", tool_name, key)
-                args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
-                continue
-            args[key] = [value]
-            logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
+            else:
+                logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
+            args[key] = _normalize_json_strings_for_schema(
+                [value], prop_schema, root_schema=parameters
+            )
             continue
 
         if not isinstance(value, str):
@@ -78,13 +79,16 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
-            args[key] = coerced
-            if isinstance(coerced, (list, tuple, dict)):
-                args[key] = _normalize_json_strings_for_schema(
-                    coerced, prop_schema, root_schema=parameters
-                )
+            args[key] = _normalize_container_value(coerced, prop_schema, parameters)
 
     return args
+
+
+def _normalize_container_value(value: Any, prop_schema: dict[str, Any], root_schema: dict[str, Any]) -> Any:
+    """Run JSON-string normalization when *value* is a container."""
+    if isinstance(value, (list, tuple, dict)):
+        return _normalize_json_strings_for_schema(value, prop_schema, root_schema=root_schema)
+    return value
 
 
 def _schema_accepts_kind(

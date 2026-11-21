@@ -394,3 +394,33 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+    def test_json_object_string_wrapped_and_parsed_for_array_of_objects(self):
+        schema = self._array_of_objects_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"items": '{"id": "1", "content": "x"}'})
+            assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_json_object_string_preserved_for_array_of_strings(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {"items": {"type": "array", "items": {"type": "string"}}},
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"items": '{"id": "1"}'})
+            assert result["items"] == ['{"id": "1"}']
+
+    def test_delegate_task_single_object_and_nested_json_strings_coerced(self):
+        import json as _json
+
+        for raw_tasks in (
+            _json.dumps({"goal": "Audit auth", "images": _json.dumps(["shot.png"])}),
+            {"goal": "Audit auth", "images": _json.dumps(["shot.png"])},
+            _json.dumps([{"goal": "Audit auth", "images": _json.dumps(["shot.png"])}]),
+        ):
+            result = coerce_tool_args("delegate_task", {"tasks": raw_tasks})
+            assert result["tasks"] == [{"goal": "Audit auth", "images": ["shot.png"]}]

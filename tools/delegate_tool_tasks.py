@@ -19,7 +19,7 @@ _TEMPLATE_MARKER_RE = re.compile(
 _MIN_BATCH_GOAL_LEN = 10
 
 def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
-    """``(parsed_list, None)`` for a JSON-array string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""
+    """``(parsed_list, None)`` for a JSON-array or single-object string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""
     if not isinstance(tasks, str):
         return None, None
     raw = tasks.strip()
@@ -29,9 +29,25 @@ def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[list[dict[str,
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         return None, f"tasks must be a JSON array of task objects; received a string that could not be parsed as JSON ({exc.msg})."
+    if isinstance(parsed, dict):
+        return [parsed], None
     if not isinstance(parsed, list):
         return None, f"tasks must be a JSON array of task objects; parsed {type(parsed).__name__} instead."
     return parsed, None
+
+
+def coerce_display_task_list(tasks: Any) -> Optional[list[Any]]:
+    """Best-effort normalization of ``tasks`` (list, dict, or JSON string) for UI previews; None when empty/invalid."""
+    if isinstance(tasks, str):
+        parsed, err = _recover_tasks_from_json_string(tasks)
+        if err is not None or parsed is None:
+            return None
+        tasks = parsed
+    if isinstance(tasks, dict):
+        return [tasks]
+    if isinstance(tasks, list) and tasks:
+        return tasks
+    return None
 
 def _validate_batch_tasks(task_list: list[dict[str, Any]]) -> Optional[str]:
     """Batch-only quality gate beyond per-task goal presence; actionable error or None. No minimum count: a one-entry
@@ -73,6 +89,8 @@ def _normalize_task_list(
         return None, tasks_error
     if recovered_tasks is not None:
         tasks = recovered_tasks
+    elif isinstance(tasks, dict):
+        tasks = [tasks]
     # Small models emit tasks=[] alongside a single goal: treat as "no batch".
     if isinstance(tasks, list) and not tasks:
         tasks = None

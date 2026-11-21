@@ -1,4 +1,5 @@
-"""Cron job edit door of the API server: ``PATCH /api/jobs/{job_id}`` and the shared job response.
+"""Cron job create/edit doors of the API server: ``POST /api/jobs``, ``PATCH /api/jobs/{job_id}`` and the
+shared job response.
 
 Split out of ``gateway/platforms/api_server.py``. Store callables and helpers are read from the
 facade at call time, so ``patch("gateway.platforms.api_server._cron_update")`` keeps intercepting.
@@ -8,6 +9,13 @@ import logging
 from aiohttp import web
 
 logger = logging.getLogger("gateway.platforms.api_server")
+
+# Keyed creation outcomes of POST /api/jobs (``Idempotency-Key``) -> (status, message).
+_IDEMPOTENCY_ERRORS = {
+    "cron_idempotency_invalid_key": (400, "Idempotency-Key must be 1-124 characters of A-Z a-z 0-9 . _ : -"),
+    "cron_idempotency_conflict": (422, "Idempotency-Key was already used for a different job"),
+    "cron_idempotency_lock_unavailable": (503, "Job store lock unavailable; retry with the same Idempotency-Key"),
+}
 
 
 def job_response(adapter, fn, job_id: str, *, notify: bool, invalid_input=()) -> web.Response:
@@ -60,3 +68,65 @@ async def handle_update_job(adapter, request: web.Request) -> web.Response:
     # The store's ValueError is a rejected value (zone, schedule, repeat): 400 like POST.
     return job_response(adapter, lambda jid: facade._cron_update(jid, sanitized), job_id, notify=True,
                         invalid_input=ValueError)
+
+
+def _create_kwargs(adapter, request: web.Request, body: dict):
+    """(create_job kwargs, None) for a valid POST body, else (None, the 400 response)."""
+    name = (body.get("name") or "").strip()
+    schedule = (body.get("schedule") or "").strip()
+    prompt = body.get("prompt", "")
+    skills = body.get("skills")
+    repeat = body.get("repeat")
+    if not name:
+        return None, web.json_response({"error": "Name is required"}, status=400)
+    if len(name) > adapter._MAX_NAME_LENGTH:
+        return None, web.json_response({"error": f"Name must be ≤ {adapter._MAX_NAME_LENGTH} characters"}, status=400)
+    if not schedule:
+        return None, web.json_response({"error": "Schedule is required"}, status=400)
+    prompt_err = adapter._validate_cron_prompt(prompt)
+    if prompt_err:
+        return None, prompt_err
+    if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
+        return None, web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+    kwargs = {
+        "prompt": prompt, "schedule": schedule, "name": name,
+        "deliver": body.get("deliver", "local"),
+        "origin": adapter._cron_origin_from_request(request)}
+    for key in ("paused", "paused_reason", "timezone"):
+        if key in body:
+            kwargs[key] = body[key]
+    if skills:
+        kwargs["skills"] = skills
+    if repeat is not None:
+        kwargs["repeat"] = repeat
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key is not None:
+        # Namespaced so an HTTP client's key can never match an in-process caller's.
+        kwargs["external_idempotency_key"] = "api:" + idempotency_key
+    return kwargs, None
+
+
+async def handle_create_job(adapter, request: web.Request) -> web.Response:
+    """POST /api/jobs. With ``Idempotency-Key`` a retry of the same request returns the first job."""
+    from gateway.platforms import api_server as facade
+    _, err = adapter._cron_request_guard(request)
+    if err:
+        return err
+    try:
+        kwargs, invalid = _create_kwargs(adapter, request, await request.json())
+        if invalid is not None:
+            return invalid
+        return web.json_response({"job": facade._cron_create(**kwargs)})
+    except facade._CronSchedulerRegistrationError as e:
+        return web.json_response(e.to_dict(), status=424)
+    except (ValueError, RuntimeError) as e:
+        status, message = _IDEMPOTENCY_ERRORS.get(str(e), (None, None))
+        if status is not None:
+            return web.json_response({"error": message, "code": str(e)}, status=status)
+        if isinstance(e, ValueError):
+            return web.json_response({"error": str(e)}, status=400)
+        logger.warning("Cron jobs API create failed", exc_info=True)
+        return adapter._cron_error_response(e)
+    except Exception as e:  # the HTTP boundary: a redacted 500, the traceback stays in the log
+        logger.warning("Cron jobs API create failed", exc_info=True)
+        return adapter._cron_error_response(e)

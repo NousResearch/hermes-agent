@@ -688,6 +688,8 @@ List all scheduled jobs.
 
 Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
 
+Send an `Idempotency-Key` header (1–124 characters of `A-Z a-z 0-9 . _ : -`) to make retries safe: a repeat of the same request with the same key returns the job the first request created instead of creating a second one. The key is bound to the request body; reusing it for a different job returns `422`. If the job store's cross-process lock is unavailable, keyed creation returns `503` rather than risk a duplicate — retry with the same key. Deleting the job releases its key.
+
 ### GET /api/jobs/\{job_id\}
 
 Fetch a single job's definition and last-run state.

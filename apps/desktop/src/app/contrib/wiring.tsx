@@ -146,7 +146,7 @@ import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
-import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
+import { useWindowControlsOverlayWidth, windowControlsFallback } from '../shell/hooks/use-window-controls-overlay-width'
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
@@ -1210,12 +1210,26 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
-  const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+  // Native window controls can sit on either side on Linux (GNOME/GTK's
+  // button-layout): prefer the live WCO measurement, fall back to the counts
+  // main detected. Windows/macOS/WSLg keep their existing reservations.
+  const measuredWindowControls = useWindowControlsOverlayWidth()
+
+  const windowControls =
+    measuredWindowControls ??
+    windowControlsFallback(connection?.linuxWindowButtons, connection?.nativeOverlayWidth ?? 0)
+
+  // Left-side native buttons exist only on plain Linux; Windows/macOS keep
+  // their existing left insets even if Chromium reports a stray x offset.
+  const nativeLeftReservation = connection?.linuxWindowButtons ? windowControls.left : 0
+
+  const controlsPos = titlebarControlsPosition(
+    connection?.windowButtonPosition,
+    Boolean(connection?.isFullscreen),
+    nativeLeftReservation
+  )
+
   const controlsVars = useTitlebarControlsVars(controlsPos)
-  // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
-  // prefer the live WCO measurement, fall back to the static reservation).
-  const measuredOverlayWidth = useWindowControlsOverlayWidth()
-  const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
 
   const titlebarChrome = {
     darwinMajor: connection?.darwinMajor ?? 0,
@@ -1223,7 +1237,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     windowButtonPosition: connection?.windowButtonPosition
   }
 
-  const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
+  const titlebarToolsRight = titlebarToolsRightCss(windowControls.right, titlebarChrome)
   // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
   // renderer paints its own min/max/close (main decides via customWindowControls).
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false

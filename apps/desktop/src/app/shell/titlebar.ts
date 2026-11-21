@@ -25,8 +25,9 @@ export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 12
 // Preserve other platforms' first paint until native window state arrives.
 const TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
-// Windows/Linux (native overlay is on the right) and macOS fullscreen
-// (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
+// Windows and right-side-button Linux (native overlay is on the right) and
+// macOS fullscreen (traffic lights are hidden). Matches the right-cluster's
+// 0.75rem padding.
 export const TITLEBAR_EDGE_INSET = 14
 
 // macOS Tahoe = Darwin 25+. Keep in sync with electron/titlebar-overlay-width.ts.
@@ -55,13 +56,13 @@ export function titlebarControlsYNudge({
   return TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE
 }
 
-/** Right-cluster inset — WCO width when present; macOS fullscreen matches left edge inset. */
+/** Right-cluster inset — native control reservation when present; macOS fullscreen matches left edge inset. */
 export function titlebarToolsRightCss(
-  nativeOverlayWidth: number,
+  rightReservation: number,
   { darwinMajor = 0, isFullscreen = false }: Pick<TitlebarChromeContext, 'darwinMajor' | 'isFullscreen'> = {}
 ): string {
-  if (nativeOverlayWidth > 0) {
-    return `${nativeOverlayWidth}px`
+  if (rightReservation > 0) {
+    return `${rightReservation}px`
   }
 
   if (isFullscreen && darwinMajor > 0) {
@@ -97,23 +98,38 @@ export const titlebarHeaderShadowClass =
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
-  isFullscreen = false
+  isFullscreen = false,
+  nativeLeftWidth = 0
 ) {
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
+  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
 
-  // No left-side native controls to dodge:
-  //   - Windows/Linux: native min/max/close render on the right via titleBarOverlay.
-  //   - macOS fullscreen: traffic lights are hidden.
-  // In both cases, pin the cluster to the edge with a small inset.
-  if (windowButtonPosition === null || isFullscreen) {
+  // Fullscreen hides every native control, so nothing needs dodging.
+  if (isFullscreen) {
     return { left: TITLEBAR_EDGE_INSET, top }
   }
 
-  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+  // Plain Linux: GNOME/GTK can put the native buttons on the left. Reserve the
+  // measured cluster plus the same edge breathing room the no-controls case
+  // uses (mirrors macOS's traffic-light offset below). macOS keeps using its
+  // traffic-light position even if a WCO measurement leaks through.
+  if (!isMac && nativeLeftWidth > 0) {
+    return { left: nativeLeftWidth + TITLEBAR_EDGE_INSET, top }
+  }
+
+  // No left-side native controls to dodge:
+  //   - Windows/Linux: native min/max/close render on the right via titleBarOverlay.
+  //   - macOS fullscreen: handled above.
+  // Pin the cluster to the edge with a small inset.
+  if (windowButtonPosition === null) {
+    return { left: TITLEBAR_EDGE_INSET, top }
+  }
+
+  const pos = windowButtonPosition
   const fallbackX = isMac ? TITLEBAR_FALLBACK_WINDOW_BUTTON_X : TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X
 
   return {
-    left: (windowButtonPosition?.x ?? fallbackX) + TITLEBAR_CONTROL_OFFSET_X,
+    left: (pos?.x ?? fallbackX) + TITLEBAR_CONTROL_OFFSET_X,
     top
   }
 }

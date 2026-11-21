@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: terminalup-odds
+description: Best sports prices, ladders and liquidity across sportsbooks, betting exchanges and prediction markets.
+source: https://github.com/alexwooter/terminal-agent-tools/tree/main/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously and answers with sandbox markets, labelled
+# as such). A TerminalUp key sent as a Bearer header switches the same
+# tools to live markets. All tools are read-only.
+
+transport:
+  type: http
+  url: https://mcp.terminalup.com/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - terminalup
+    - sports odds
+    - best price
+    - prediction market
+    - betting exchange
+  hosts:
+    - terminalup.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts, on sandbox data.
+
+  For live prices request a key at https://terminalup.com/contact and add
+  it as a Bearer header via mcp_servers.terminalup-odds.headers in
+  config.yaml, then restart the session.

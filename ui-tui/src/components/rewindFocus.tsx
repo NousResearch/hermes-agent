@@ -12,29 +12,49 @@ import type { Msg } from '../types.js'
  *  returns to it, any other exit leaves the scroll where it is (sticky-bottom resumes on the next send). */
 export function RewindFocusScroller({ messages, offsets, scrollRef }: RewindFocusScrollerProps) {
   const focus = useStore($rewindFocus)
-  const index = rewindFocusIndex(messages, focus)
-  const top = index >= 0 ? offsets[index] : undefined
+
+  return (
+    <FocusRowScroller
+      active={Boolean(focus)}
+      offsets={offsets}
+      restore={takeRewindRestore}
+      row={rewindFocusIndex(messages, focus)}
+      scrollRef={scrollRef}
+    />
+  )
+}
+
+const takeRewindRestore = () => {
+  const restore = $rewindScrollRestore.get()
+
+  $rewindScrollRestore.set(false)
+
+  return restore
+}
+
+/** Scroll so transcript `row` sits a few lines below the viewport top while `active`; the position
+ *  from when it became active is remembered and returned to on close when `restore()` says so. */
+export function FocusRowScroller({ active, offsets, restore, row, scrollRef }: FocusRowScrollerProps) {
+  const top = row >= 0 ? offsets[row] : undefined
   const origin = useRef<null | { sticky: boolean; top: number }>(null)
 
   useEffect(() => {
     const scroll = scrollRef.current
 
-    if (focus && !origin.current && scroll) {
+    if (active && !origin.current && scroll) {
       origin.current = { sticky: scroll.isSticky(), top: scroll.getScrollTop() }
     }
 
-    if (!focus && origin.current) {
+    if (!active && origin.current) {
       const back = origin.current
 
       origin.current = null
 
-      if ($rewindScrollRestore.get()) {
+      if (restore()) {
         back.sticky ? scroll?.scrollToBottom() : scroll?.scrollTo(back.top)
       }
-
-      $rewindScrollRestore.set(false)
     }
-  }, [focus, scrollRef])
+  }, [active, restore, scrollRef])
 
   useEffect(() => {
     if (top !== undefined) {
@@ -62,6 +82,14 @@ export function useBacktrackHint(): null | string {
   }
 
   return pending ? R.pending(String(pending.target.turn)) : null
+}
+
+interface FocusRowScrollerProps {
+  active: boolean
+  offsets: ArrayLike<number>
+  restore: () => boolean
+  row: number
+  scrollRef: RefObject<null | ScrollBoxHandle>
 }
 
 interface RewindFocusScrollerProps {

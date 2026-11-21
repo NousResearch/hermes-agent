@@ -271,6 +271,32 @@ export const browseScrollRow = (
   key: { ctrl: boolean; downArrow: boolean; meta: boolean; shift: boolean; upArrow: boolean }
 ) => (key.ctrl || key.meta || key.shift ? 0 : key.upArrow || ch === 'k' ? -1 : key.downArrow || ch === 'j' ? 1 : 0)
 
+/** Overlays that own the keyboard but let scroll keys reach the transcript behind them. */
+const PROMPT_OVERLAYS: (keyof OverlayState)[] = [
+  'approval',
+  'billing',
+  'clarify',
+  'confirm',
+  'connection',
+  'find',
+  'rewind',
+  'subscription'
+]
+
+/** Overlays Ctrl+C simply closes, in precedence order, with the value that closes each. */
+const CTRL_C_CLOSES: [keyof OverlayState, false | null][] = [
+  ['modelPicker', false],
+  ['petPicker', false],
+  ['billing', null],
+  ['subscription', null],
+  ['skillsHub', false],
+  ['pluginsHub', false],
+  ['connectors', false],
+  ['sessions', false],
+  ['agents', false],
+  ['journey', false]
+]
+
 export function shouldFallThroughForScroll(key: {
   downArrow: boolean
   pageDown: boolean
@@ -473,8 +499,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.cancelClarify()
     }
 
-    if (overlay.rewind) {
-      return patchOverlayState({ rewind: null })
+    if (overlay.rewind || overlay.find) {
+      return patchOverlayState({ find: null, rewind: null })
     }
 
     if (overlay.approval) {
@@ -524,44 +550,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
-    if (overlay.modelPicker) {
-      return patchOverlayState({ modelPicker: false })
-    }
+    const closable = CTRL_C_CLOSES.find(([key]) => overlay[key])
 
-    if (overlay.petPicker) {
-      return patchOverlayState({ petPicker: false })
-    }
-
-    if (overlay.billing) {
-      return patchOverlayState({ billing: null })
-    }
-
-    if (overlay.subscription) {
-      return patchOverlayState({ subscription: null })
-    }
-
-    if (overlay.skillsHub) {
-      return patchOverlayState({ skillsHub: false })
-    }
-
-    if (overlay.pluginsHub) {
-      return patchOverlayState({ pluginsHub: false })
-    }
-
-    if (overlay.connectors) {
-      return patchOverlayState({ connectors: false })
-    }
-
-    if (overlay.sessions) {
-      return patchOverlayState({ sessions: false })
-    }
-
-    if (overlay.agents) {
-      return patchOverlayState({ agents: false })
-    }
-
-    if (overlay.journey) {
-      return patchOverlayState({ journey: false })
+    if (closable) {
+      return patchOverlayState({ [closable[0]]: closable[1] })
     }
 
     if (overlay.widget) {
@@ -730,14 +722,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay =
-        overlay.approval ||
-        overlay.billing ||
-        overlay.clarify ||
-        overlay.confirm ||
-        overlay.connection ||
-        overlay.rewind ||
-        overlay.subscription
+      const promptOverlay = PROMPT_OVERLAYS.some(name => overlay[name])
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 

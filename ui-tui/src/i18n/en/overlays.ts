@@ -22,6 +22,12 @@ export const overlaysEn = {
       browse: 'Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back',
       pending: (turn: string) => `↺ Editing prompt ${turn} — Enter rewinds here and sends · Esc Esc cancels`
     },
+    find: {
+      label: 'find:',
+      hint: '↑↓ older/newer match · ↵ stay here · esc back',
+      count: (cur: string, total: string) => `${cur}/${total}`,
+      none: 'no matches'
+    },
     clarify: {
       other: 'Other (type your answer)',
       skipped: '(skipped)',

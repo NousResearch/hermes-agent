@@ -1,4 +1,5 @@
-"""Guard ``hermes config set`` against a single-segment key overwriting a whole config section.
+"""Guards for ``hermes config set``/``unset``: a single-segment key overwriting a whole config
+section, and a write to a key the managed layer or Remote Config pins.
 
 Split out of :mod:`hermes_cli.config` (code-health size ratchet); ``set_config_value`` late-imports it.
 """
@@ -7,6 +8,24 @@ from __future__ import annotations
 
 import sys
 from typing import Any, Dict
+
+
+def _exit_if_key_managed(key: str, action: str) -> None:
+    """A key pinned by the managed layer cannot be set/unset (the next load would reinstate it):
+    hard-reject and name the source. Distinct from ``is_managed()``; env-shaped keys route to the
+    .env writers, which carry their own guard. Callers that rewrite the key before writing
+    (``display.platforms`` redirect, bare ``model``) call it again with the key that is written."""
+    from hermes_cli.config import _managed_source, get_config_backend, get_config_path, managed_scope
+    if managed_scope.is_key_managed(key):
+        print(
+            f"Cannot {action} '{key}': it is managed by your administrator ({_managed_source('config.yaml')}) "
+            f"and cannot be changed. Contact your administrator to modify it.", file=sys.stderr)
+        sys.exit(1)
+    level = get_config_backend().locked(get_config_path().parent, key)  # remote locks, prefix-aware (D7)
+    if level:
+        print(f"Cannot {action} '{key}': it is locked by the {level} level of Remote Config and cannot be "
+              "changed from this agent.", file=sys.stderr)
+        sys.exit(1)
 
 
 def _guard_section_overwrite(key: str, value: Any, user_config: dict[str, Any], force: bool) -> str:
@@ -38,6 +57,7 @@ def _guard_section_overwrite(key: str, value: Any, user_config: dict[str, Any], 
                 f"⚠ Replacing entire 'model' section with {what} "
                 f"(discarding {len(existing)} existing sub-key(s))")
             return key
+        _exit_if_key_managed("model.default", "set")
         print(
             f"✓ Redirecting bare 'model' to 'model.default' "
             f"(preserving {len(existing)} existing model sub-key(s))")

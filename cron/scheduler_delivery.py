@@ -730,85 +730,194 @@ def bot_chat_message(job: dict, content: str) -> str:
     )
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
-                         for_failure: bool = False) -> Optional[str]:
-    """Admit job output to the target profile's authority as a real inbound Bot Chat turn.
-
-    None means the target's durable receipt is settled (or a failure notice was recorded as
-    ``suppressed`` — a durable disposition, never a send — and flagged on the job); anything
-    else is an explicit unverified status string so Optional[str] callers cannot misreport
-    admission as delivery. ``profile`` is ``""`` for the job's own profile. There is no
-    second-writer fallback: a target whose authority is not ready gets the payload parked under
-    the same delivery id (``cron.bot_chat_legacy.defer``) and admitted by a later tick.
-    """
+def _bot_chat_delivery_key(job, source_home, home):
     import hashlib
     import json
     import uuid
+    run_id = job.get("execution_id") or job.setdefault("_bot_chat_run_id", uuid.uuid4().hex)
+    return hashlib.sha256(json.dumps(
+        [str(source_home), job.get("id", "?"), str(run_id), str(home)],
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _bot_chat_envelope(job, content, profile, *, for_failure=False):
     from hermes_constants import get_hermes_home
     from hermes_cli.profiles import get_profile_dir
-    from tools.bot_live_delivery import (
-        deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
-    )
+    source = get_hermes_home().resolve()
+    home = (get_profile_dir(profile) if profile else source).resolve()
+    minimal = {k: job[k] for k in ("id", "execution_id", "_failure_incident_id") if k in job}
+    minimal["name"] = _redact_cron_payload(job.get("name", job.get("id", "?")), "job name")
+    minimal.update(_bot_chat_pending=str(source), _bot_chat_destination=str(home),
+                   _bot_chat_profile=profile, _bot_chat_category="diagnostic" if for_failure else "result",
+                   _bot_chat_delivery_id=_bot_chat_delivery_key(job, source, home))
+    return minimal, _redact_cron_payload(content, "bot-chat payload")
 
-    job_id = job.get("id", "?")
-    profile_label = profile or "(own)"
-    message = bot_chat_message(job, content)
+
+def _prepare_bot_chat_queue(job, content, *, for_failure=False):
+    """Minimize only a single resolved Bot Chat route; other routes retain their fields."""
+    targets = _sched._resolve_delivery_targets(job, for_failure=for_failure)
+    if len(targets) == 1 and targets[0]["platform"] == BOT_CHAT_PLATFORM:
+        return _bot_chat_envelope(job, content, targets[0]["chat_id"], for_failure=for_failure)
+    return job, content
+
+
+def _dispatch_queued_delivery(job, content, for_failure, *, adapters, loop):
+    """Recognize old pinned envelopes before generic routing can swallow them."""
+    if "_bot_chat_pending" not in job:
+        error = _sched._deliver_result(job, content, adapters=adapters, loop=loop,
+                                      for_failure=for_failure)
+        if any(r.get("status") in ("queued", "claimed")
+               for r in job.get("_bot_chat_delivery_receipts", {}).values()):
+            job["_bot_chat_handoff"] = True
+        return error
+    from hermes_constants import get_hermes_home
+    from cron.delivery_queue import KnownNotAdmitted
+    if job["_bot_chat_pending"] != str(get_hermes_home().resolve()):
+        return KnownNotAdmitted("Bot Chat pending delivery profile mismatch; not sent")
+    job.pop("_bot_chat_delivery_receipts", None)
+    error = _deliver_to_bot_chat(job, content, job.get("_bot_chat_profile", ""),
+                                 for_failure=for_failure, _pending_dispatch=True)
+    receipts = job.get("_bot_chat_delivery_receipts", {})
+    if any(r.get("status") in ("queued", "claimed") for r in receipts.values()):
+        job["_bot_chat_handoff"] = True
+        return None  # Transport handoff, NOT inference completion.
+    return error
+
+
+def _bot_chat_pre_admission_refusal(exc):
+    from tools.bot_live_delivery import PreDialError
+    from hermes_cli.gateway_client import GatewayRPCError
+    # Reviewed v0.23 dispatch guard: session_controls.dispatch returns before
+    # routing/invoking a method. Writer-held admitted=False is only a hint, NOT
+    # sufficient proof (session_bot._held_by_another_writer); do not retry it.
+    return isinstance(exc, PreDialError) or (
+        isinstance(exc, GatewayRPCError) and exc.code == 4001
+        and str(exc) == "runtime_draining" and exc.data.get("reason") == "runtime_draining")
+
+
+def _bot_chat_owner_result(job, profile, key, status, error=None):
+    target = f"bot-chat:{profile or '(own)'}"
+    job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": status, "delivery_id": key}
+    if status == "suppressed":
+        job["_notification_all_targets_suppressed"] = True
+    if status in ("settled", "suppressed"):
+        return None
+    return f"{target} {status} (receipt {key}): {error or 'completion unverified; do not resend'}"
+
+
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
+                         for_failure: bool = False, _pending_dispatch: bool = False) -> Optional[str]:
+    """Reserve one cron owner before the authority call; never hold a DB lock over RPC."""
+    from pathlib import Path
+    from cron import bot_chat_legacy as legacy, delivery_queue as queue
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import get_profile_dir
+    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from gateway.warning_notifications import warning_notifications_enabled
+    from hermes_cli.config_effective import load_user_config_effective
+
+    content = _redact_cron_payload(content, "bot-chat payload")
+    persisted_job = {k: job[k] for k in ("id", "execution_id") if k in job}
+    persisted_job["name"] = _redact_cron_payload(job.get("name", job.get("id", "?")), "job name")
+    message = bot_chat_message(persisted_job, content)
+    direct_claim = None
+    try:
+        cfg = _sched.load_config() or {}
+    except Exception:
+        cfg = {}  # Disable only new SQL admission, never existing ownership.
+    durable = (not _pending_dispatch and not profile and not job.get("_delivery_queue_id")
+               and cfg.get("cron", {}).get("bot_chat_durable_pending") is True)
+    if durable and not job.get("execution_id"):
+        return "durable Bot Chat delivery requires an execution_id; not sent"
     try:
         source_home = get_hermes_home().resolve()
-        home = (get_profile_dir(profile) if profile else source_home).resolve()
-        from gateway.warning_notifications import warning_notifications_enabled
-        from hermes_cli.config_effective import load_user_config_effective
-        suppress_notification = for_failure and not warning_notifications_enabled(
+        home = (Path(job.get("_bot_chat_destination") or job["_bot_chat_pending"]) if _pending_dispatch
+                else get_profile_dir(profile) if profile else source_home).resolve()
+        key = (job.get("_bot_chat_delivery_id") or job["_delivery_queue_id"]) if _pending_dispatch else _bot_chat_delivery_key(job, source_home, home)
+        key = legacy._require_key(key)
+        digest = queue.canonical_payload_hash(message, home, "diagnostic" if for_failure else "result")
+        suppress = for_failure and not warning_notifications_enabled(
             BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))
-        # run_one_job/claim_fire attach the durable execution id before delivery. The
-        # transient fallback supports direct helper callers, never deduping recurring
-        # runs by their (potentially identical) output or previous last_run timestamp.
-        run_id = job.get("execution_id")
-        if not run_id:
-            run_id = job.setdefault("_bot_chat_run_id", uuid.uuid4().hex)
-        key = hashlib.sha256(json.dumps(
-            [str(source_home), job_id, str(run_id), str(home)],
-            ensure_ascii=False, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
-        # Read BEFORE discovery: the previous owner may have exited after accepting.
         receipt = read_delivery_result(home, key)
-        target = f"bot-chat:{profile_label}"
-        if receipt is None and suppress_notification:
-            # Suppression is a durable disposition, not a send: the failure notice is booked
-            # against the job and never handed to the owner (the target profile hides
-            # warning notifications).
-            job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
-                "status": "suppressed", "delivery_id": key}
-            job["_notification_all_targets_suppressed"] = True
-            return None
+        with legacy.ownership_arbitration(key, origin_home=source_home) as conn:
+            decision = legacy.arbitrate(key, digest, origin_home=source_home, conn=conn,
+                                        execution_id=job.get("execution_id"))
+            if decision["owned"]:
+                record = decision["record"]
+                own_sql = (_pending_dispatch and decision["owner"] == "sql"
+                           and record.get("execution_id") == job.get("_delivery_queue_id")
+                           and record.get("status") == "delivering")
+                if not own_sql:
+                    if suppress and decision["owner"] == "legacy" and record.get("status") == "queued":
+                        record = legacy.defer(key, persisted_job, content, home, for_failure=for_failure,
+                                              origin_home=source_home, conn=conn, suppressed=True)
+                    if not (receipt is not None and record.get("status") == "transferred"):
+                        if decision["owner"] == "legacy" and record.get("status") == "suppressed":
+                            queue._record_bot_chat_suppression(conn, job.get("_delivery_queue_id"), key)
+                        return _bot_chat_owner_result(job, profile, key, record["status"], record.get("error"))
+            if receipt is None and durable:
+                envelope, safe_content = _bot_chat_envelope(job, content, profile, for_failure=for_failure)
+                row = queue.enqueue(key, envelope, safe_content, for_failure=for_failure,
+                                    payload_hash=digest, origin_home=source_home, conn=conn)
+                return _bot_chat_owner_result(job, profile, key,
+                    "queued" if row["status"] == "pending" else row["status"], row.get("error"))
+            if receipt is None and suppress:
+                if not _pending_dispatch:
+                    legacy.defer(key, persisted_job, content, home, for_failure=for_failure,
+                                 origin_home=source_home, conn=conn, suppressed=True)
+                queue._record_bot_chat_suppression(conn, job.get("_delivery_queue_id"), key)
+                return _bot_chat_owner_result(job, profile, key, "suppressed")
+            if receipt is None and not _pending_dispatch:
+                # A visible claim survives uncertainty; no other producer can launch a writer.
+                observed, created = legacy.publish(
+                    key, persisted_job, content, home, for_failure=for_failure,
+                    origin_home=source_home, conn=conn, claimed=True)
+                if not created:
+                    return _bot_chat_owner_result(job, profile, key, observed["status"], observed.get("error"))
+                direct_claim = observed
         if receipt is None:
             try:
                 owner = find_canonical_live_owner(home)
-            except ValueError:  # the target's gateway is down or starting: not a disposition
-                from cron.bot_chat_legacy import defer
-                defer(key, job, content, home, for_failure=for_failure)
-                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
-                return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
+            except ValueError as exc:
+                if direct_claim is not None:
+                    with legacy.ownership_arbitration(key, origin_home=source_home):
+                        direct_claim["status"] = "queued"
+                        legacy.atomic_json_write(legacy._receipt_path(legacy._root(source_home), key), direct_claim,
+                                                 fsync_dir=True, mode=0o600)
+                    return _bot_chat_owner_result(job, profile, key, "queued",
+                                                  "target profile not running; admitted once it is")
+                # Discovery happens before any authority RPC; attach structural proof
+                # here, never infer retryability from the exception's message.
+                from tools.bot_live_delivery import PreDialError
+                raise PreDialError(str(exc)) from exc
             if owner is None:
-                return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
-            # A failure notice rides as ``diagnostic`` so the target's reply stays muted.
+                raise ValueError("no canonical Bot Chat")
             receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
                 **({"notification_category": "diagnostic"} if for_failure else {}))
-        if (receipt["message"] != message
-                or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
+        if (receipt["message"] != message or receipt.get("notification_category", "result")
+                != ("diagnostic" if for_failure else "result")):
             raise ValueError("delivery id already belongs to a different payload")
-        status = receipt["status"]
-        receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-        receipts[target] = {"status": status, "delivery_id": key}
-        logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
-                    job_id, profile_label, key, status)
-        if status == "settled":
-            return None
-        detail = ("completion unverified; do not resend" if status in ("queued", "claimed")
-                  else receipt.get("error") or receipt.get("reason") or "not completed")
-        return f"{target} {status} (receipt {key}): {detail}"
+        if direct_claim is not None:
+            with legacy.ownership_arbitration(key, origin_home=source_home):
+                direct_claim.update(status="settled" if receipt["status"] == "settled" else "transferred",
+                                    receipt_status=receipt["status"], error=None)
+                legacy._terminalize_unlocked(legacy._receipt_path(legacy._root(source_home), key), direct_claim)
+        return _bot_chat_owner_result(job, profile, key, receipt["status"], receipt.get("error"))
     except Exception as exc:
-        return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
+        refused = _bot_chat_pre_admission_refusal(exc)
+        if direct_claim is not None:
+            with legacy.ownership_arbitration(key, origin_home=source_home):
+                direct_claim.update(status="queued" if refused else "ambiguous",
+                                    error=_redact_cron_payload(str(exc), "delivery error"))
+                path = legacy._receipt_path(legacy._root(source_home), key)
+                if refused:
+                    legacy.atomic_json_write(path, direct_claim, fsync_dir=True, mode=0o600)
+                else:
+                    legacy._terminalize_unlocked(path, direct_claim)
+        if refused:
+            return queue.KnownNotAdmitted(str(exc))
+        return f"bot-chat delivery to profile '{profile or '(own)'}' unverified: {exc}; do not resend"
 
 
 def _normalize_deliver_value(deliver) -> str:

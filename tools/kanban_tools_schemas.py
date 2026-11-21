@@ -534,6 +534,23 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ["task_id"],
 )
 
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    (
+        "Archive a task — the model-callable equivalent of "
+        "``hermes kanban archive``. Any non-archived status transitions to "
+        "``archived``; a running task's worker is terminated (the active run "
+        "is closed as reclaimed), archived parents stop gating children, and "
+        "the workspace is reaped. Terminal state: unknown or already-archived "
+        "ids error. Available to any profile holding the kanban toolset, "
+        "including dispatcher-spawned workers archiving their own card."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+    },
+    ["task_id"],
+)
+
 KANBAN_LINK_SCHEMA = _schema(
     "kanban_link",
     (

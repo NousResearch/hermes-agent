@@ -127,6 +127,28 @@ with or without the `openrouter/` prefix). The override follows the model the ag
 own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
 reads as path separators.
 
+### Provider pinning via model-slug suffix
+
+OpenRouter itself accepts a **provider-pin suffix** on the model id: `z-ai/glm-5.3-flash:wafer`
+routes that model to the `wafer` endpoint only, `...:deepinfra/fp4` to that endpoint plus
+quantization variant, and `...:nitro` / `...:floor` are throughput / price modifiers. These ids
+never appear in OpenRouter's `/models` listing, so Hermes validates the suffix against the
+model's public `/models/{id}/endpoints` response: a valid pin is accepted verbatim (the full
+suffixed id goes to the wire), an unknown suffix is rejected with the available provider pins.
+
+Because a pinned id is just a model id, it works **everywhere** a model id works — no extra
+config on any surface:
+
+- `hermes model` / `/model z-ai/glm-5.3-flash:wafer` (CLI and every messaging platform)
+- `model.default` in `config.yaml`
+- `auxiliary.<task>.model` (per-task routing pins)
+- cron job `model` overrides and delegation model overrides
+- the dashboard model picker (offers a "use verbatim" entry for ids that are not in the catalog)
+
+Prefer `provider_routing` (above) when you want request-level preferences (`sort`, `order`,
+`only`, `ignore`, `require_parameters`) that still allow fallbacks; use the slug suffix when you
+want a hard per-model pin you can switch on the fly.
+
 ## Practical Examples
 
 ### Optimize for Cost

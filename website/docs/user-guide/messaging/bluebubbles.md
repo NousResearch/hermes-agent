@@ -159,6 +159,7 @@ Two details worth knowing:
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
+| `BLUEBUBBLES_PLAIN_TEXT_STYLE` | No | `strip` | How replies keep formatting: `plain`, `caps`, `unicode`, `emoji`, combinable (`caps,emoji`) or `all`. Also `plain_text_style` under `platforms.bluebubbles.extra` |
 | `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
 
 Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.

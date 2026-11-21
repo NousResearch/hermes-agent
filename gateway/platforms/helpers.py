@@ -352,12 +352,19 @@ def _keep_link_target(match: re.Match[str]) -> str:
     return target if label == target else f"{label}\n{target}"
 
 
-def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
+def strip_markdown(text: str, *, keep_link_targets: bool = False, style: Any = None) -> str:
     r"""Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.).
 
     ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
     instead of discarding the URL; pass it on platforms that auto-link bare URLs.
+    ``style`` (``plain``, ``caps``, ``unicode``, ``emoji``, combinable, or ``all``)
+    renders through ``plain_text_style.render_plain_text`` instead, keeping emphasis
+    and structure visible; unset or ``strip`` keeps this function's behaviour.
     """
+    from gateway.platforms.plain_text_style import parse_plain_text_style, render_plain_text
+
+    if (styles := parse_plain_text_style(style)) is not None:
+        return render_plain_text(text, styles, keep_link_targets=keep_link_targets)
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
     text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)

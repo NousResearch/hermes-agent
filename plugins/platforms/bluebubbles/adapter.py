@@ -142,6 +142,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
         self.webhook_path = path if path.startswith("/") else f"/{path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        # strip (default) | plain | caps | unicode | emoji, combinable: see plain_text_style.py.
+        self.plain_text_style = extra.get("plain_text_style") or _get_scoped_secret("BLUEBUBBLES_PLAIN_TEXT_STYLE", "")
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
@@ -491,7 +493,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return strip_markdown(content, keep_link_targets=True)  # iMessage auto-links bare URLs only
+        return strip_markdown(  # iMessage auto-links bare URLs only
+            content, keep_link_targets=True, style=getattr(self, "plain_text_style", None))
 
     # --- Inbound attachment downloading ---
 

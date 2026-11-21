@@ -111,6 +111,22 @@ class TestImageTooLargeClassification:
         "String value length (28049408) exceeds the maximum allowed (28000000, from "
         "`StreamReadConstraints.getMaxStringLength()`)"
     )
+    # Ollama Cloud's body cap: the connection is dropped mid-upload and the client reports a
+    # bare 400 whose wording names nothing about size (#124833).
+    _OLLAMA_400 = "Error code: 400 - {'error': {'message': 'failed to read request body (ref: b5f14320)', 'type': 'invalid_request_error', 'param': None, 'code': None}}"
+
+    def test_ollama_failed_to_read_request_body_is_image_too_large(self):
+        """A body-cap 400 with no size vocabulary still reaches the shrink recovery (#124833).
+
+        Control: an unrelated 400 keeps format_error, so the broad phrase cannot swallow
+        ordinary validation failures."""
+        err = _FakeApiError(400, self._OLLAMA_400)
+        result = classify_api_error(err, provider="ollama-cloud", model="deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+        control = _FakeApiError(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")
+        assert classify_api_error(control, provider="ollama-cloud", model="deepseek-v4.1-flash").reason == FailoverReason.format_error
 
     @staticmethod
     def _pydantic_400(loc, url):

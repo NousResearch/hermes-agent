@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
+from gateway.platforms.base_chunking import is_partial_delivery, with_partial_send
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
@@ -3620,13 +3621,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
 
-    @staticmethod
-    def _is_partial_delivery(result: SendResult) -> bool:
-        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
-        head must never be sent again."""
-        raw = getattr(result, "raw_response", None)
-        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+    _is_partial_delivery = staticmethod(is_partial_delivery)
+    _with_partial_send = staticmethod(with_partial_send)
 
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Any) -> Optional[SendResult]:

@@ -1331,6 +1331,21 @@ class TestSenderAuthentication(unittest.TestCase):
         addr = _extract_email_address(from_addr)
         return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
 
+    def test_rfc2047_encoded_authentication_results_are_decoded(self):
+        """Encoded auth headers must expose the pinned authserv-id and verdict before parsing."""
+        encoded = "=?utf-8?Q?mx.ourserver.com=3B_dmarc=3Dpass_header.from=3Dexample.com?="
+        ok, reason = self._verify("owner@example.com", [encoded])
+        self.assertTrue(ok, reason)
+
+    def test_embedded_rfc2047_authentication_results_stay_opaque(self):
+        """Do not decode sender-controlled encoded-words inside an otherwise plain trusted header."""
+        header = (
+            "mx.ourserver.com; spf=fail smtp.mailfrom=x@evil.test "
+            "(=?utf-8?Q?x=29=3B_dmarc=3Dpass_header.from=3Dexample.com_=28?=)"
+        )
+        ok, reason = self._verify("owner@example.com", [header])
+        self.assertFalse(ok, reason)
+
     def test_auth_results_verdicts(self):
         ok, reason = self._verify(
             "Admin <admin@example.com>",

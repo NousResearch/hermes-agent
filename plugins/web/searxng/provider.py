@@ -34,7 +34,7 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         raw_results = data.get("results", [])
         # SearXNG may return a score field; sort descending and cap to limit.
         sorted_results = sorted(raw_results, key=lambda r: float(r.get("score", 0)), reverse=True)[:limit]
-        web_results = titled_rows(sorted_results, "content")
+        web_results = titled_rows(sorted_results, "content", date_keys={"published_date": "publishedDate"})
         logger.info("SearXNG search '%s': %d results (from %d raw, limit %d)", query, len(web_results), len(raw_results), limit)
         return search_ok(web_results)
 

@@ -214,7 +214,7 @@ def parallel_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
         text = mcp_call(PARALLEL_MCP_URL, "web_search", {"objective": query, "search_queries": [query], "session_id": _SESSION_ID})
         results = json.loads(text).get("results") or []
         return [
-            _row(r.get("url") or "", r.get("title") or "", " ".join(r.get("excerpts") or []), i + 1)
+            _row(r.get("url") or "", r.get("title") or "", " ".join(r.get("excerpts") or []), i + 1, published_date=r.get("publish_date"))
             for i, r in enumerate(results[:max(limit, 0)] if limit else results)
         ]
 
@@ -253,7 +253,7 @@ def _parse_exa_search_text(text: str, limit: int) -> list[dict[str, Any]]:
     """Parse Exa's ``---``-separated ``Title:/URL:/Published:/Author:/Highlights:`` blocks."""
     results: list[dict[str, Any]] = []
     for block in text.split("\n---\n"):
-        title = url = ""
+        title = url = published = ""
         highlight_lines: list[str] = []
         in_highlights = False
         for stripped in map(str.strip, block.splitlines()):
@@ -261,13 +261,17 @@ def _parse_exa_search_text(text: str, limit: int) -> list[dict[str, Any]]:
                 title = _after(stripped, "Title:")
             elif stripped.startswith("URL:"):
                 url = _after(stripped, "URL:")
+            elif stripped.startswith("Published:") and not in_highlights:
+                published = _after(stripped, "Published:")
             elif in_highlights and stripped and not stripped.startswith(_EXA_LABELS):
                 highlight_lines.append(stripped)
             # Highlights run until the next labelled field.
             if stripped.startswith(_EXA_LABELS):
                 in_highlights = stripped.startswith("Highlights:")
         if url:
-            results.append(_row(url, title, " ".join(highlight_lines), len(results) + 1))
+            # Exa writes ``Published: N/A`` for pages it could not date.
+            published_date = "" if published == "N/A" else published
+            results.append(_row(url, title, " ".join(highlight_lines), len(results) + 1, published_date=published_date))
         if limit and len(results) >= limit:
             break
     return results
@@ -337,7 +341,10 @@ def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     def _rows() -> list[dict[str, Any]]:
         data = _keenable_request("post", "/v1/search/public", json={"query": query, "max_results": max(1, int(limit))})
         return [
-            _row(r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1)
+            _row(
+                r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1,
+                published_date=r.get("published_at"), crawl_date=r.get("acquired_at"),
+            )
             for i, r in enumerate(data.get("results") or [])
         ]
 

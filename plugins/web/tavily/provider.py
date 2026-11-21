@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 _CLIENT_NAME = "hermes-agent"
 
-_SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
+# Tavily omits ``published_date`` from results unless asked for it.
+_SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False, "include_published_date": True}
 
 
 def _tavily_headers(api_key: str) -> dict[str, str]:
@@ -52,7 +53,7 @@ def _tavily_request(endpoint: str, payload: dict[str, Any], *, api_key: Optional
 
 def _normalize_tavily_search_results(response: dict[str, Any]) -> dict[str, Any]:
     return search_ok([
-        title_hit(r.get("title", ""), r.get("url", ""), r.get("content", ""), i + 1)
+        title_hit(r.get("title", ""), r.get("url", ""), r.get("content", ""), i + 1, published_date=r.get("published_date"))
         for i, r in enumerate(response.get("results", []))
     ])
 

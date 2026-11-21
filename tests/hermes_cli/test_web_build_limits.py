@@ -92,6 +92,91 @@ class TestWebBuildLimits:
         assert env["RAYON_NUM_THREADS"] == "1"
 
 
+class TestOwnCgroupLimit:
+    """The cap must come from the cgroup *this process* runs in (#63338).
+
+    A systemd unit's ``MemoryHigh=``/``MemoryMax=`` lands on the unit's own cgroup and
+    the root ``memory.max`` reads ``max``, so a root-only read calls a 2 GiB service
+    unconstrained and hands Node the 4096 MB ceiling — then the cgroup OOM-kills it.
+    """
+
+    @staticmethod
+    def _tree(root, files):
+        """Write a fake ``/sys/fs/cgroup`` tree from ``{relative path: value}``."""
+        for relative, value in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{value}\n", encoding="utf-8")
+
+    def test_own_cgroup_limit_beats_unconstrained_root(self, tmp_path, monkeypatch):
+        own = "/user.slice/user-1000.slice/hermes.service"
+        self._tree(
+            tmp_path,
+            {
+                "memory.max": "max",
+                f"{own.lstrip('/')}/memory.max": str(2 * 1024**3),
+            },
+        )
+        monkeypatch.setattr("hermes_cli.web_build_limits._CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr("hermes_cli.web_build_limits._own_cgroup_path", lambda: own)
+
+        env = web_build_limits({})
+        # 75% of the 2 GiB the service actually has, not the 4096 MB ceiling.
+        assert "--max-old-space-size=1536" in env["NODE_OPTIONS"]
+
+    def test_own_memory_high_wins_over_own_memory_max(self, tmp_path, monkeypatch):
+        own = "/user.slice/hermes.service"
+        self._tree(
+            tmp_path,
+            {
+                f"{own.lstrip('/')}/memory.high": str(3 * 1024**3),
+                f"{own.lstrip('/')}/memory.max": str(8 * 1024**3),
+            },
+        )
+        monkeypatch.setattr("hermes_cli.web_build_limits._CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr("hermes_cli.web_build_limits._own_cgroup_path", lambda: own)
+
+        env = web_build_limits({})
+        # 75% of the 3 GiB throttle point, not the 8 GiB max.
+        assert "--max-old-space-size=2304" in env["NODE_OPTIONS"]
+
+    def test_root_limit_still_used_when_process_is_at_root(self, tmp_path, monkeypatch):
+        self._tree(tmp_path, {"memory.max": str(2 * 1024**3)})
+        monkeypatch.setattr("hermes_cli.web_build_limits._CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr("hermes_cli.web_build_limits._own_cgroup_path", lambda: "/")
+
+        env = web_build_limits({})
+        assert "--max-old-space-size=1536" in env["NODE_OPTIONS"]
+
+    def test_cgroup_v1_fallback(self, tmp_path, monkeypatch):
+        self._tree(tmp_path, {"memory/memory.limit_in_bytes": str(4 * 1024**3)})
+        monkeypatch.setattr("hermes_cli.web_build_limits._CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr("hermes_cli.web_build_limits._own_cgroup_path", lambda: None)
+
+        env = web_build_limits({})
+        assert "--max-old-space-size=3072" in env["NODE_OPTIONS"]
+
+    def test_unreadable_hierarchy_is_unconstrained(self, tmp_path, monkeypatch):
+        from hermes_cli import web_build_limits as module
+
+        monkeypatch.setattr(module, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(module, "_own_cgroup_path", lambda: None)
+
+        assert module._cgroup_memory_limit_mb() is None
+        env = web_build_limits({})
+        assert f"--max-old-space-size={module._MAX_WEB_BUILD_HEAP_MB}" in env["NODE_OPTIONS"]
+
+    def test_missing_proc_cgroup_does_not_break_root_read(self, tmp_path, monkeypatch):
+        """No /proc/self/cgroup (macOS, odd chroots) must not lose the root read."""
+        from hermes_cli import web_build_limits as module
+
+        self._tree(tmp_path, {"memory.max": str(2 * 1024**3)})
+        monkeypatch.setattr(module, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(module, "_own_cgroup_path", lambda: None)
+
+        assert module._cgroup_memory_limit_mb() == 2048
+
+
 class TestBuildSourceWebPropagatesLimits:
     """The install/update/``hermes dashboard`` build path must apply the caps."""
 

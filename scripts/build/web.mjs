@@ -39,16 +39,42 @@ function boundedThreads() {
   return Math.max(1, Math.min(MAX_THREADS, Math.ceil(availableCores() / 2)))
 }
 
-// cgroup v2/v1 memory limit in MB, or null when unconstrained.
-function readCgroupLimitMb() {
-  for (const cgroupPath of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
-    try {
-      const raw = String(readFileSync(cgroupPath, 'utf-8')).trim()
-      if (raw === 'max' || !/^\d+$/.test(raw)) continue
-      const value = Number(raw)
-      if (value <= 0 || value >= 2 ** 50) return null // the v1 "unlimited" sentinel
-      return Math.floor(value / (1024 * 1024))
-    } catch { /* unconstrained or unsupported */ }
+// cgroup v2 path this process runs in, from /proc/self/cgroup's `0::` line.
+function ownCgroupPath(procCgroup = '/proc/self/cgroup') {
+  try {
+    const match = /^0::(.+)$/m.exec(String(readFileSync(procCgroup, 'utf-8')))
+    return match ? match[1].trim() : null
+  } catch {
+    return null
+  }
+}
+
+// A cgroup memory limit file in MB, or null when it is unreadable, empty, `max`,
+// or the v1 "unlimited" sentinel (all mean no cap).
+function readLimitMb(file) {
+  try {
+    const raw = String(readFileSync(file, 'utf-8')).trim()
+    if (raw === 'max' || !/^\d+$/.test(raw)) return null
+    const value = Number(raw)
+    return value > 0 && value < 2 ** 50 ? Math.floor(value / (1024 * 1024)) : null
+  } catch {
+    return null
+  }
+}
+
+// The memory limit this process runs under, in MB, or null when unconstrained.
+// Own cgroup first: a systemd unit's MemoryHigh=/MemoryMax= lands on the unit's own
+// cgroup and the root reads `max` there, so a root-only read calls a capped service
+// unconstrained and hands Node a heap far above the cap. Root next (container-style
+// limits), then cgroup v1.
+export function cgroupMemoryLimitMb({ cgroupRoot = '/sys/fs/cgroup', procCgroup = '/proc/self/cgroup' } = {}) {
+  const own = ownCgroupPath(procCgroup)
+  const roots = own && own !== '/' ? [`${cgroupRoot}${own}`, cgroupRoot] : [cgroupRoot]
+  const candidates = roots.flatMap(root => [`${root}/memory.high`, `${root}/memory.max`])
+  candidates.push(`${cgroupRoot}/memory/memory.limit_in_bytes`)
+  for (const candidate of candidates) {
+    const limit = readLimitMb(candidate)
+    if (limit) return limit
   }
   return null
 }
@@ -56,7 +82,7 @@ function readCgroupLimitMb() {
 // 75% of the cgroup limit when constrained (mirrors the TUI launcher's heap
 // sizing), else the conservative ceiling. Never below the GC-thrash floor.
 function boundedHeapMb() {
-  const limitMb = readCgroupLimitMb()
+  const limitMb = cgroupMemoryLimitMb()
   const sized = limitMb ? Math.floor(limitMb * 0.75) : MAX_HEAP_MB
   return Math.max(MIN_HEAP_MB, Math.min(MAX_HEAP_MB, sized))
 }

@@ -37,11 +37,9 @@ Use this skill when the user:
 
 **Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`).
 
-If unset, defaults to `~/wiki`.
-
-```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
-```
+`read_file` and `search_files` expand `~`, not `$WIKI` or `$WIKI_PATH`. Use
+`~/wiki` by default; if `WIKI_PATH` is set, resolve it to an absolute path once
+and substitute it in the calls below.
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
@@ -77,12 +75,20 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ② **Read `index.md`** — learn what pages exist and their summaries.
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
-```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
-# Orientation reads at session start
-read_file "$WIKI/SCHEMA.md"
-read_file "$WIKI/index.md"
-read_file "$WIKI/log.md" offset=<last 30 lines>
+Use these Hermes tool calls with the resolved wiki root:
+
+```text
+read_file(path="~/wiki/SCHEMA.md")
+read_file(path="~/wiki/index.md")
+read_file(path="~/wiki/log.md", offset=1, limit=1)
+```
+
+Use the log result's `total_lines` to calculate `max(1, total_lines - 29)`.
+Pass the computed integer as `offset` with `limit=30` to read the last 30 lines.
+For example, a 500-line log needs:
+
+```text
+read_file(path="~/wiki/log.md", offset=471, limit=30)
 ```
 
 Only after orientation should you ingest, query, or lint. This prevents:
@@ -369,18 +375,22 @@ wiki = "<WIKI_PATH>"
 
 ### Searching
 
-```bash
+These are Hermes tool calls, not shell commands. For recent activity, read the
+log's `total_lines` as above and calculate `max(1, total_lines - 19)` for its last
+20 lines. The example below assumes a 500-line log.
+
+```text
 # Find pages by content
-search_files "transformer" path="$WIKI" file_glob="*.md"
+search_files(pattern="transformer", path="~/wiki", file_glob="*.md")
 
 # Find pages by filename
-search_files "*.md" target="files" path="$WIKI"
+search_files(pattern="*.md", target="files", path="~/wiki")
 
 # Find pages by tag
-search_files "tags:.*alignment" path="$WIKI" file_glob="*.md"
+search_files(pattern="tags:.*alignment", path="~/wiki", file_glob="*.md")
 
 # Recent activity
-read_file "$WIKI/log.md" offset=<last 20 lines>
+read_file(path="~/wiki/log.md", offset=481, limit=20)
 ```
 
 ### Bulk Ingest

@@ -120,12 +120,12 @@ class TestMemoryFileLockPermissions:
         finally:
             os.umask(previous_umask)
 
-        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path = MemoryStore._lock_path_for(memory_path)
         assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
     def test_existing_loose_lock_file_is_tightened(self, tmp_path):
         memory_path = tmp_path / "MEMORY.md"
-        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path = MemoryStore._lock_path_for(memory_path)
         lock_path.write_text("", encoding="utf-8")
         lock_path.chmod(0o664)
 
@@ -139,7 +139,7 @@ class TestMemoryFileLockPermissions:
         memory_path = tmp_path / "MEMORY.md"
         outside = tmp_path / "outside"
         outside.write_text("do not touch", encoding="utf-8")
-        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path = MemoryStore._lock_path_for(memory_path)
         lock_path.symlink_to(outside)
 
         with pytest.raises(OSError):

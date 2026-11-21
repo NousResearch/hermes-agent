@@ -7,7 +7,7 @@ it some other way. Both are high on a skill. Plugins run in-process and read the
 scans without these rules. Leaf module: nothing here imports ``tools.skills_guard``."""
 
 import io
-import re
+import hermes_re as re
 import tokenize
 
 # The Hermes name must sit inside the load_dotenv / dotenv_values call's own arguments, not in a trailing

@@ -2,7 +2,7 @@
 the assembled prompt (with skill bodies) gets only prose-proof directives."""
 
 import logging
-import re
+import hermes_re as re
 
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.

@@ -530,6 +530,18 @@ A delegation the stall monitor has flagged shows as
 children show their quiet time so you can tell "slow" from "stuck" at a
 glance.
 
+In Discord, `/agents` links active agents, background delegations, and running
+processes to their owning conversation. Select the channel or thread mention
+to open it. The link uses the cached conversation's thread, pending auto-thread,
+or channel, in that order. Background work can retain its link after the
+originating agent finishes its turn. Processes started by delegated children
+use the conversation key carried into the child, when available.
+
+If the gateway no longer has matching conversation metadata, the row shows
+the raw session key instead. Work without a session key has no conversation
+label. Delegation and process IDs remain visible for inspection and control.
+Other messaging platforms keep their existing text output.
+
 ## Steering a Running Subagent
 
 Interrupting a child throws away its in-flight work; often you just want to redirect it.

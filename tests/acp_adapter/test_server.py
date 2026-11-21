@@ -1,6 +1,7 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -29,6 +30,7 @@ from acp_adapter.server import (
     HermesACPAgent,
 )
 from acp_adapter.session import SessionManager
+from tests.waiting import async_wait_until
 
 
 @pytest.fixture()
@@ -437,6 +439,49 @@ class TestPrompt:
             await agent.prompt(prompt=[TextContentBlock(type="text", text="first")], session_id=resp.session_id)
 
         monkeypatch.setattr(mock_manager, "save_session", MagicMock())
+        second = await agent.prompt(prompt=[TextContentBlock(type="text", text="second")], session_id=resp.session_id)
+
+        assert second.stop_reason == "end_turn"
+        assert state.queued_prompts == []
+        assert state.agent.run_conversation.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_prompt_stops_the_turn_and_releases_the_session(self, agent, mock_manager):
+        """Cancelling the ``prompt()`` task (connection shutdown) stops the running agent and,
+        once its worker returns, frees the session: the next prompt runs instead of queueing
+        forever behind a turn nobody is awaiting."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model, state.agent.provider = "test-model", "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+        started, interrupted, worker_may_return = threading.Event(), threading.Event(), threading.Event()
+
+        def _run(*args, **kwargs):
+            if not started.is_set():
+                started.set()
+                worker_may_return.wait(timeout=10)
+                return {"final_response": None, "interrupted": True, "messages": []}
+            return {"final_response": "second", "messages": []}
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        state.agent.interrupt = lambda *a, **k: interrupted.set()
+        first = asyncio.create_task(
+            agent.prompt(prompt=[TextContentBlock(type="text", text="first")], session_id=resp.session_id)
+        )
+        try:
+            await asyncio.to_thread(started.wait, 10)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+
+            assert interrupted.is_set()
+            assert state.is_running is True  # the worker still owns the agent
+        finally:
+            worker_may_return.set()
+        await async_wait_until(lambda: not state.is_running, what="session released after the worker returned")
+
         second = await agent.prompt(prompt=[TextContentBlock(type="text", text="second")], session_id=resp.session_id)
 
         assert second.stop_reason == "end_turn"

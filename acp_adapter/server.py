@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Deque, Optional
 
@@ -922,7 +922,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             pre_turn_hermes_id = getattr(state.agent, "session_id", None)
             # Fresh context copy: concurrent sessions on the shared executor must not share ContextVars.
             ctx = contextvars.copy_context()
-            result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+            turn = _executor.submit(ctx.run, _run_agent)
+            result = await asyncio.wrap_future(turn)
+        except asyncio.CancelledError:
+            self._abandon_turn(state, session_id, turn)
+            raise
         except Exception:
             logger.exception("Executor error for session %s", session_id)
             with state.runtime_lock:
@@ -931,6 +935,27 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return PromptResponse(stop_reason="end_turn")
 
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+
+    @staticmethod
+    def _abandon_turn(state: SessionState, session_id: str, turn: Future) -> None:
+        """Release a session whose ``prompt()`` task was cancelled (e.g. connection shutdown).
+
+        Task cancellation does not stop the worker thread, so stop the agent and go idle only
+        once the worker has returned. Releasing earlier would let the next prompt run the same
+        agent concurrently; never releasing queues every later prompt behind a dead turn."""
+        def _release(_turn: Future) -> None:
+            with state.runtime_lock:
+                state.is_running = False
+                state.current_prompt_text = ""
+
+        with state.runtime_lock:
+            if state.cancel_event:
+                state.cancel_event.set()
+            try:
+                request_hard_interrupt(state.agent)
+            except Exception:
+                logger.debug("Failed to interrupt abandoned ACP turn %s", session_id, exc_info=True)
+        turn.add_done_callback(_release)
 
     def _flush_turn_tool_calls(
         self, cbs: _TurnCallbacks, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop

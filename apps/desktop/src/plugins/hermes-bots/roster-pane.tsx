@@ -61,7 +61,7 @@ import {
   backfillBotSectionNames,
   type SectionDialogState
 } from './user-sections'
-import { useEscapeCancelsBotDrag } from './user-sections-ui'
+import { useBotDragUnderway, useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
 
@@ -250,6 +250,7 @@ export function BotsPane() {
   const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
   const userSections = useValue($botSections)
   const dragging = useValue($draggingBot)
+  const dragUnderway = useBotDragUnderway()
   useEscapeCancelsBotDrag()
 
   // The one name dialog serves both New section (optionally filing the bot
@@ -469,21 +470,28 @@ export function BotsPane() {
     />
   )
 
-  const { renderUserSections, renderGatewaySection, renderGroupChatSection, renderHiddenGatewaySection } =
-    rosterSectionRenderers({
-      b,
-      userSections,
-      roster,
-      allMeta,
-      groupRooms,
-      dragging,
-      rosterSectionCollapsed,
-      toggleRosterSection,
-      setSectionDialog,
-      renderBotRow,
-      renderGroupRow,
-      sortedGroupRows
-    })
+  const {
+    renderUserSections,
+    renderEmptyUserSections,
+    renderGatewaySection,
+    renderGroupChatSection,
+    renderHiddenGatewaySection
+  } = rosterSectionRenderers({
+    b,
+    userSections,
+    roster,
+    allMeta,
+    groupRooms,
+    dragging,
+    dragUnderway,
+    rosterSectionCollapsed,
+    toggleRosterSection,
+    setSectionDialog,
+    renderBotRow,
+    renderGroupRow,
+    sortedGroupRows,
+    rosterRows
+  })
 
   return (
     <div className="flex h-full flex-col">
@@ -537,6 +545,7 @@ export function BotsPane() {
         renderGroupChatSection,
         renderGatewaySection,
         renderUserSections,
+        renderEmptyUserSections,
         renderHiddenGatewaySection
       })}
       {renderRosterDialogs({

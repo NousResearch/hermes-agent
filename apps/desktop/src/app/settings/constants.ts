@@ -484,6 +484,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
       voice: 'GPT-Live Voice',
+      greeting: 'Greeting message',
       instructions: 'GPT-Live Persona'
     }
   },
@@ -674,6 +675,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
+      greeting: 'Said as soon as a live call connects. Leave empty for no greeting.',
       instructions:
         'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
     }
@@ -797,6 +799,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'voice.voice_chat_mode',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
+      'voice.gpt_live.greeting',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',

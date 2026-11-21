@@ -1859,3 +1859,59 @@ def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monke
     assert blocks[0]["source"] == {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
     assert "image/svg+xml" in blocks[1]["text"]
     assert blocks[2]["source"]["media_type"] == "image/jpeg"
+
+
+def test_inline_image_media_type_follows_the_bytes_for_anthropic():
+    """Anthropic checks ``media_type`` against the payload's magic bytes, so a JPEG screenshot embedded
+    as ``data:image/png`` (a caller's mime hint passed through unchanged) 400s the request on every
+    replay. The block is labeled by what the bytes are, even over an unsupported label; bytes Anthropic
+    cannot take become the same text placeholder as an unsupported label; unrecognised or non-base64
+    payloads keep their label without failing the conversion."""
+    import base64
+    jpeg, png, bmp = (base64.b64encode(magic + bytes(16)).decode()
+                      for magic in (b"\xff\xd8\xff\xe0", b"\x89PNG\r\n\x1a\n", b"BM"))
+    messages = [
+        {"role": "user", "content": "screenshot please"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "browser_exec", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": [
+            {"type": "text", "text": "The screenshot from this call is attached."},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{jpeg}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{png}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/bmp;base64,{png}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{bmp}"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,éAAA"}},
+        ]},
+    ]
+    _, result = convert_messages_to_anthropic(messages)
+    tool_result = next(b for m in result if isinstance(m["content"], list)
+                       for b in m["content"] if b.get("type") == "tool_result")
+    blocks = tool_result["content"][1:]
+    assert [b["type"] for b in blocks] == ["image", "image", "image", "text", "image", "image"]
+    assert blocks[0]["source"] == {"type": "base64", "media_type": "image/jpeg", "data": jpeg}
+    assert blocks[1]["source"]["media_type"] == blocks[2]["source"]["media_type"] == "image/png"
+    assert "image/bmp" in blocks[3]["text"]
+    assert blocks[4]["source"]["media_type"] == blocks[5]["source"]["media_type"] == "image/png"
+
+
+def test_tool_result_whose_only_image_is_rejected_keeps_the_placeholder_for_anthropic():
+    """When conversion rejects a tool result's only image, the tool_result carries the placeholder. Falling
+    back to the source parts dumped as JSON resends the whole base64 payload as text on every request."""
+    import base64
+    bmp = base64.b64encode(b"BM" + bytes(64)).decode()
+    messages = [
+        {"role": "user", "content": "screenshot please"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "browser_exec", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": [
+            {"type": "text", "text": "The screenshot from this call is attached."},
+            {"type": "image_url", "image_url": {"url": f"data:image/bmp;base64,{bmp}"}},
+        ]},
+    ]
+    _, result = convert_messages_to_anthropic(messages)
+    tool_result = next(b for m in result if isinstance(m["content"], list)
+                       for b in m["content"] if b.get("type") == "tool_result")
+    assert [b["type"] for b in tool_result["content"]] == ["text", "text"]
+    assert "image/bmp" in tool_result["content"][1]["text"]
+    assert bmp not in json.dumps(tool_result)

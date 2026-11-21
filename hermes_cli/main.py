@@ -2751,6 +2751,7 @@ def _guard_noninteractive_user_config(args) -> None:
 
     is_noninteractive = (
         bool(getattr(args, "oneshot", None))
+        or bool(getattr(args, "oneshot_query_file", None))
         or bool(getattr(args, "query", None))
     )
     if not is_noninteractive:
@@ -2903,10 +2904,14 @@ def _try_fast_chat_launch() -> bool:
     _enable_cpu_profile(args)
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-    _prepare_agent_startup(args)
 
-    if getattr(args, "oneshot", None):
+    if getattr(args, "oneshot", None) or getattr(args, "oneshot_query_file", None):
+        from hermes_cli.main_query_file import resolve_oneshot_args_or_exit
+        resolve_oneshot_args_or_exit(args)
+        _prepare_agent_startup(args)
         _run_oneshot_from_args(args)
+
+    _prepare_agent_startup(args)
 
     _promote_top_level_resume(args)
     _set_chat_arg_defaults(args)
@@ -2933,7 +2938,8 @@ def _try_termux_fast_cli_launch() -> bool:
 
     first = _first_positional_argv()
     has_oneshot = any(
-        arg == "-z" or arg == "--oneshot" or arg.startswith("--oneshot=")
+        arg in {"-z", "--oneshot", "-Q", "--query-file", "--prompt-file"}
+        or arg.startswith(("--oneshot=", "--query-file=", "--prompt-file="))
         for arg in argv
     )
     if not has_oneshot and first not in {None, "chat"}:
@@ -2947,7 +2953,9 @@ def _try_termux_fast_cli_launch() -> bool:
         _print_version_info(check_updates=True)
         return True
 
-    if getattr(args, "oneshot", None):
+    if getattr(args, "oneshot", None) or getattr(args, "oneshot_query_file", None):
+        from hermes_cli.main_query_file import resolve_oneshot_args_or_exit
+        resolve_oneshot_args_or_exit(args)
         _prepare_agent_startup(args)
         _run_oneshot_from_args(args)
 
@@ -2993,7 +3001,7 @@ def _try_termux_fast_tui_launch() -> bool:
     args = parser.parse_args(_coalesce_session_name_args(sys.argv[1:]))
 
     # Preserve top-level behaviours whose semantics are not "launch chat/TUI".
-    if getattr(args, "version", False) or getattr(args, "oneshot", None):
+    if getattr(args, "version", False) or getattr(args, "oneshot", None) or getattr(args, "oneshot_query_file", None):
         return False
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
@@ -3314,13 +3322,16 @@ def main():
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    if getattr(args, "oneshot", None) or getattr(args, "oneshot_query_file", None):
+        from hermes_cli.main_query_file import resolve_oneshot_args_or_exit
+        resolve_oneshot_args_or_exit(args)
+        _prepare_agent_startup(args)
+        _run_oneshot_from_args(args)
+
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and
     # trigger no consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
-
-    if getattr(args, "oneshot", None):
-        _run_oneshot_from_args(args)
 
     from hermes_cli.observability.shared_metrics_disabled import set_process_surface
     set_process_surface(args.command)

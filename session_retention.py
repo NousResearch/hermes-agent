@@ -124,7 +124,7 @@ def after_sessions_removed(store, store_home, removed_ids: Sequence[str], *, rea
 def archive_sessions(store, store_home, older_than_days: Optional[float] = None, source: Optional[str] = None, *,
                      criteria: PruneCriteria = PruneCriteria()) -> int:
     """Bulk soft-hide with the prune filter surface, archiving each match's lineage as a unit; idempotent. Returns the matches. Unarchived rows only unless ``criteria.archived`` says otherwise. A lineage is matched through its TIP only: an old compression ancestor never qualifies on its own age, or the fan-out would hide an open, recently active continuation."""
-    criteria = replace(criteria, archived=False if criteria.archived is None else criteria.archived, lineage_tips_only=True)
+    criteria = replace(criteria, archived=False if criteria.archived is None else criteria.archived, lineage_tips_only=True, active_messages_only=True)
     rows = store.maintenance.list_prune_candidates(older_than_days, source, criteria=criteria)
     for row in rows:
         change = store.sessions.set_archived(row.session_id, True)

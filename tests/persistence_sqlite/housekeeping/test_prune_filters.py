@@ -5,6 +5,7 @@ import time
 import pytest
 
 from persistence.housekeeping.maintenance import PruneCriteria
+from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session, end_session, get_session
 
 
@@ -106,11 +107,13 @@ class TestPruneSessionFilters:
     def _mk(db, sid, *, source="cli", age_seconds=0, title=None,
             end_reason="done", message_count=0, cwd=None):
         create_session(db, session_id=sid, source=source, cwd=cwd)
+        for i in range(message_count):
+            append_message(db, sid, "user", f"message {i}")
         end_session(db, sid, end_reason=end_reason)
         db._conn.execute(
-            "UPDATE sessions SET started_at = ?, message_count = ?, title = ? "
+            "UPDATE sessions SET started_at = ?, title = ? "
             "WHERE id = ?",
-            (time.time() - age_seconds, message_count, title, sid),
+            (time.time() - age_seconds, title, sid),
         )
         db._conn.commit()
 

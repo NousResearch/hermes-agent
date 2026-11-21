@@ -108,6 +108,8 @@ class PruneCriteria:
     include_pinned: bool = False
     lineage_tips_only: bool = False
     include_open: bool = False
+    # Reversible bulk operations filter on the visible transcript. Prune counts every row it deletes.
+    active_messages_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

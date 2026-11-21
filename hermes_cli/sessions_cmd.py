@@ -76,12 +76,12 @@ def _not_found(session_id) -> int:
     return 1
 
 
-def _prune_args(filters) -> tuple[dict, PruneCriteria]:
+def _prune_args(filters, *, active_messages_only: bool = True) -> tuple[dict, PruneCriteria]:
     """``build_prune_filters`` output as the maintenance verbs take it: the age and source bounds, then the
     criteria."""
     criteria = dict(filters)
     bounds = {key: criteria.pop(key) for key in ("older_than_days", "source") if key in criteria}
-    return bounds, PruneCriteria(**criteria)
+    return bounds, PruneCriteria(**criteria, active_messages_only=active_messages_only)
 
 
 def _media_root() -> str:
@@ -798,7 +798,7 @@ def _note_pinned_skipped(store, filters, action):
     `prune --include-pinned` opts in, archive always spares them)."""
     # Count matching pinned rows only: neither the unpinned ancestors a pinned tip spares nor the
     # unpinned continuations a pinned segment protects carry the pin.
-    bounds, criteria = _prune_args(filters)
+    bounds, criteria = _prune_args(filters, active_messages_only=action != "prune")
     skipped = int(store.maintenance.count_prune_matches(**bounds, criteria=criteria, pinned_only=True))
     if not skipped:
         return
@@ -845,7 +845,7 @@ def _cmd_prune_or_archive(args, action, *, persistence=None):
         filters["include_open"] = True
     if not filters["include_pinned"]:
         _note_pinned_skipped(persistence, filters, action)
-    bounds, criteria = _prune_args(filters)
+    bounds, criteria = _prune_args(filters, active_messages_only=not prune)
     # Prune deletes a compression lineage only as a unit; the preview must list the rows it deletes.
     candidates = persistence.maintenance.list_prune_candidates(**bounds, criteria=criteria, whole_lineages=prune)
     # Archive expands each matched tip to its compression lineage, so a direct-open count would

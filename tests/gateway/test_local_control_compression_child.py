@@ -67,5 +67,7 @@ async def test_a_segment_rewind_keeps_the_owner_busy_gate(tmp_path, monkeypatch,
             'payload': {'target_message_id': target}}})
     finally:
         await connection.close()
-    assert reply.get('error', {}).get('message') in {'session_busy', 'storage_unavailable'}, reply
+    # A segment id never has a receipt of its own, so retrying cannot succeed: its refusal is the terminal
+    # ``not_found`` (the owner id answers ``session_busy``). Either way nothing was rewound.
+    assert reply.get('error', {}).get('message') in {'session_busy', 'storage_unavailable', 'not_found'}, reply
     assert [m['content'] for m in db.get_messages('child-2')][-2:] == ['LIVE_Q', 'LIVE_A']

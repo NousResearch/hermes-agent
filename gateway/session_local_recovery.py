@@ -109,6 +109,24 @@ def _checked_entry(authority, receipt, source, route):
     return entry
 
 
+def _is_compression_segment(db, sid):
+    """True when *sid* is a non-root compression segment whose lineage root holds the receipt.
+
+    The receipt lives on the root (the id ``session.resume`` returns as ``stored_session_id``), so a
+    client holding the segment id would poll ``storage_unavailable`` forever. A segment never gets a
+    receipt of its own, so the refusal is terminal. A live session whose receipt is merely absent
+    stays transient."""
+    lineage = db.get_compression_lineage(sid)
+    root = lineage[0] if lineage else sid
+    if root == sid:
+        return False
+    try:
+        local_receipt(db, root)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
 def owned_receipt(authority, sid):
     """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's.
 
@@ -116,7 +134,12 @@ def owned_receipt(authority, sid):
     hashes it (``local_identity``; a legacy-adopted receipt is bound by its route alone), so a
     store that moved with its profile (another machine, a moved home) still owns its rows. Its
     owner is this store; the route namespace binds the profile."""
-    receipt = local_receipt(authority.db, sid)
+    try:
+        receipt = local_receipt(authority.db, sid)
+    except RuntimeStoreError as exc:
+        if exc.reason == 'storage_unavailable' and _is_compression_segment(authority.db, sid):
+            raise RuntimeStoreError('not_found') from exc
+        raise
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:

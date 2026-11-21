@@ -35,6 +35,9 @@ def _refusal_data(exc: AuthorityRefusal) -> dict:
         # Nothing of this request was admitted: bot_relay.deliver's sender may finalize with
         # ``bot_relay.settle``; groups.send's words may come back for editing.
         data['admitted'] = False
+    # Flat keys: the client keeps only scalar ``error.data`` values (``gateway_client._bounded_error_data``).
+    for key, value in (getattr(exc, 'holder', None) or {}).items():
+        data[f'holder_{key}'] = value
     return data
 
 

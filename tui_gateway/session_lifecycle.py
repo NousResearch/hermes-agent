@@ -61,9 +61,12 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 
 
 def _lease_metadata(live_session_id: str) -> dict:
-    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
-    admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
-    return {"live_session_id": live_session_id}
+    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. The authority marker
+    says this host re-checks the canonical ledger every turn (``_canonical_ledger_refusal``), so the session
+    authority may adopt a legacy Bot Chat it holds (gateway/session_local_migration) instead of refusing
+    every delivery while the pane stays open. Every claim and transfer writes it through here."""
+    from hermes_cli.active_sessions import AUTHORITY_LEASE_KEY
+    return {"live_session_id": live_session_id, AUTHORITY_LEASE_KEY: 1}
 
 
 def _claim_active_session_slot(

@@ -585,6 +585,12 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 continue  # attached after the config read; the next pass judges it
             server = _core._servers.get(key)
             config = judged[name]
+            if (server is None and key in _core._lazy_server_configs
+                    and config is not None and mcp_server_enabled(config)):
+                # A lazy server has no connection until its first call. Judged as a dead shared
+                # connection it loses its tools here while the lazy ledgers still list it as
+                # registered, so no later pass offers them again.
+                continue
             cross_profile = _key_scope(key) != scope
             if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None

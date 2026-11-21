@@ -18,7 +18,7 @@ import { $gateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
-import { continueReplyPause, endReplyPause, markReplyPaused } from '@/store/paused-replies'
+import { continueReplyPause, endContinuedReplyPause, endReplyPause, isReplyPaused, markReplyPaused } from '@/store/paused-replies'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -27,12 +27,13 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
-import { $activeSessionId, $connection, $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, $sessions, setSessionsLoading } from '@/store/session'
 import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
 
 import { type ComposerTarget, requestComposerSubmit, requestNativeComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
+import { useComposerQueue } from './use-composer-queue'
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
@@ -848,8 +849,96 @@ describe('useComposerSubmit while the reply is paused for an automatic continuat
   afterEach(() => {
     cleanup()
     endReplyPause('stored-session')
+    endReplyPause('runtime-session')
     clearQueuedPrompts('stored-session')
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    $connection.set(null)
+    setSessionsLoading(true)
     vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['stored-session', false],
+    ['runtime-session', false],
+    ['stored-session', true],
+    ['runtime-session', true]
+  ] as const)('holds SDK confirmed text in FIFO until continuation completes (pause %s, after render %s)', async (pauseId, afterRender) => {
+    $activeSessionId.set('runtime-session')
+    $selectedStoredSessionId.set('stored-session')
+    $sessions.set([{ id: 'stored-session', connection_id: 'local', profile: 'default' } as never])
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
+    setSessionsLoading(false)
+
+    if (!afterRender) {
+      markReplyPaused(pauseId)
+    }
+
+    const attachments: ComposerAttachment[] = [{ id: 'draft-file', kind: 'file', path: '/draft.txt', label: 'draft.txt' }]
+    const h = renderSubmitHook({ attachments, text: 'unfinished draft' })
+
+    const queue = renderHook(() => useComposerQueue({
+      activeQueueSessionKey: 'stored-session',
+      attachments,
+      busy: false,
+      clearDraft: h.clearDraft,
+      draftRef: { current: 'unfinished draft' },
+      focusInput: h.focusInput,
+      loadIntoComposer: h.loadIntoComposer,
+      onCancel: h.onCancel,
+      onSteer: h.onSteer,
+      onSubmit: h.onSubmit,
+      queueEditRef: { current: null },
+      queueSessionKey: 'stored-session',
+      sessionId: 'runtime-session'
+    }))
+
+    let receipt!: ReturnType<typeof host.submitPrompt>
+
+    act(() => {
+      if (afterRender) {
+        // The event arrives in the same stack, before React can render the pause.
+        markReplyPaused(pauseId)
+      }
+
+      receipt = host.submitPrompt({
+        connectionId: 'local', profile: 'default', sessionId: 'runtime-session', text: 'confirmed follow-up'
+      })
+      expect(isReplyPaused('stored-session', 'runtime-session')).toBe(true)
+      expect(h.onSubmit).not.toHaveBeenCalled()
+    })
+
+    const [entry] = getQueuedPrompts('stored-session')
+    expect(entry).toMatchObject({ text: 'confirmed follow-up', attachments: [], confirmedExternal: true })
+    expect(await receipt).toEqual({ status: 'queued', queueId: entry.id })
+    expect(h.onSubmit).not.toHaveBeenCalled()
+
+    act(() => continueReplyPause(pauseId))
+    await act(async () => {
+      expect(await queue.result.current.drainNextQueued()).toBe(false)
+    })
+    expect(isReplyPaused('stored-session', 'runtime-session')).toBe(true)
+    expect(getQueuedPrompts('stored-session')).toEqual([entry])
+    expect(h.onSubmit).not.toHaveBeenCalled()
+
+    act(() => endContinuedReplyPause(pauseId))
+    await waitFor(() => expect(getQueuedPrompts('stored-session')).toEqual([]))
+    expect(h.onSubmit).toHaveBeenCalledExactlyOnceWith('confirmed follow-up', expect.objectContaining({
+      attachments: [], confirmedExternal: true, fromQueue: true,
+      sessionId: 'runtime-session', storedSessionId: 'stored-session', submission_id: entry.id
+    }))
+    queue.rerender()
+    await act(async () => { await queue.result.current.drainNextQueued() })
+    expect(h.onSubmit).toHaveBeenCalledTimes(1)
+    expect(h.onSteer).not.toHaveBeenCalled()
+    expect(h.onSteerHidden).not.toHaveBeenCalled()
+    expect(h.onCancel).not.toHaveBeenCalled()
+    expect(h.clearDraft).not.toHaveBeenCalled()
+    expect(h.loadIntoComposer).not.toHaveBeenCalled()
+    expect(h.stashAt).not.toHaveBeenCalled()
+    expect(h.editor.textContent).toBe('unfinished draft')
+    expect(attachments).toEqual([{ id: 'draft-file', kind: 'file', path: '/draft.txt', label: 'draft.txt' }])
   })
 
   // A host plugin stopped the turn to apply a grant and continues it by itself

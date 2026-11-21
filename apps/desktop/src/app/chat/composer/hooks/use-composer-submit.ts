@@ -249,8 +249,10 @@ export function useComposerSubmit({
               return
             }
 
+            // Ask the store on receipt: a pause can start before React renders it.
+            // Confirmed text waits in the same FIFO through the automatic continuation.
             submitConfirmedText({
-              busy,
+              busy: busy || isReplyPaused(activeQueueSessionKeyRef.current, sessionId),
               key: activeQueueSessionKeyRef.current,
               native,
               onSubmit,

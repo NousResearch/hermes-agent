@@ -162,6 +162,21 @@ def test_loop_guards_count_once_per_turn_per_signal_and_detector(direct_runtime,
     ])
 
 
+@pytest.mark.usefixtures("direct_runtime")
+def test_repetition_cut_recovery_and_exhaustion_are_loop_guard_rows(tmp_path):
+    agent = _agent()
+    harness.record_guardrail_decision(agent, "block", "circling_reasoning_cut")
+    harness.record_guardrail_decision(agent, "retry", "repetition_recovery")
+    harness.record_guardrail_decision(agent, "block", "circling_reasoning_cut")  # cut again: same turn, one row
+    harness.record_guardrail_decision(agent, "halt", "repetition_recovery_exhausted")
+
+    assert _rows(tmp_path, contract.LOOP_GUARD_METRIC, "signal", "detector") == sorted([
+        ("loop_detected", "circling_reasoning", 1),
+        ("loop_detected", "repetition_recovery", 1),
+        ("recovery_retry", "repetition_recovery", 1),
+    ])
+
+
 def test_real_guardrail_halt_reaches_the_metric(direct_runtime, tmp_path):
     from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
     from run_agent import AIAgent

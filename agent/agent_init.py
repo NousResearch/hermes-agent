@@ -40,9 +40,8 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
 from agent.agent_init_session import _publish_session_id, stand_in_interface
 from agent.think_scrubber import StreamingThinkScrubber
-from agent.tool_guardrails import (
-    ToolCallGuardrailConfig, ToolCallGuardrailController
-)
+from agent.circling_guard import apply_repetition_guard_config
+from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
@@ -1125,12 +1124,10 @@ def _apply_display_config(agent, _agent_cfg, platform):
         )
     agent._stream_5xx_probe_ts = None  # monotonic time of the last streaming-5xx unmask probe
 
+    apply_repetition_guard_config(agent, _agent_cfg.get("repetition_guard"))
     try:
-        agent._tool_guardrails = ToolCallGuardrailController(
-            ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {}), platform=platform,
-            )
-        )
+        agent._tool_guardrails = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping(
+            _agent_cfg.get("tool_loop_guardrails", {}), platform=platform))
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 

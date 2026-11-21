@@ -58,6 +58,8 @@ _CELL_SPILL_READ_CAP = 4 * _RUNNER_SPILL_CHARS + 4096
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
 RUNNER_CELL_SOURCE = '''\
+import ast
+
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
 
 
@@ -102,6 +104,39 @@ def _scan_edited_modules(report):
         return []
 
 
+def _run_cell_code(source):
+    """REPL-mode exec: plain exec, except a trailing bare expression is echoed via repr.
+
+    Split the cell so state persists: exec the head, eval the tail, print its repr
+    unless it is None (same rule as the interactive REPL). Both halves compile before
+    either runs, so a cell that fails to compile (e.g. a bare yield/await at the end)
+    runs nothing, as a plain exec would. Syntax errors fall back to a plain exec so
+    the original traceback path is preserved.
+    """
+    try:
+        tree = ast.parse(source, "<cell>", "exec")
+    except SyntaxError:
+        exec(compile(source, "<cell>", "exec"), GLOBALS)
+        return
+    if not tree.body or not isinstance(tree.body[-1], ast.Expr):
+        exec(compile(tree, "<cell>", "exec"), GLOBALS)
+        return
+    head, tail = tree.body[:-1], tree.body[-1].value
+    head_code = None
+    if head:
+        head_mod = ast.Module(body=head, type_ignores=[])
+        ast.fix_missing_locations(head_mod)
+        head_code = compile(head_mod, "<cell>", "exec")
+    tail_exp = ast.Expression(tail)
+    ast.fix_missing_locations(tail_exp)
+    tail_code = compile(tail_exp, "<cell>", "eval")
+    if head_code is not None:
+        exec(head_code, GLOBALS)
+    value = eval(tail_code, GLOBALS)
+    if value is not None:
+        print(repr(value))
+
+
 def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
@@ -111,7 +146,7 @@ def run_cell(request, execution_count):
     stale_modules = _scan_edited_modules(True)
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
+            _run_cell_code(request["code"])
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:

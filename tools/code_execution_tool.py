@@ -729,7 +729,9 @@ def execute_code(
     conversation_id: Optional[str] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
-    with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
+    with RPC access to a subset of Hermes tools; returns the JSON result string. In persistent
+    kernels a final bare expression is echoed via repr (None prints nothing); print() keeps its
+    format. The per-call fallback on remote hosts without a kernel has no echo, use print(). "Sandbox" means
     the security envelope (env scrubbing, tool whitelist + call budget, output redaction), not an
     isolation jail: default `project` mode runs in the session's cwd with the project venv.
     ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first."""
@@ -897,6 +899,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "Calls run in a persistent session kernel: variables, imports, and "
         "loaded data survive across execute_code calls, so build on earlier "
         "work instead of re-loading it. A timed-out or interrupted call loses that state.\n\n"
+        "In persistent session kernels (local and remote), a final bare expression is echoed via repr "
+        "(None prints nothing); print() output keeps its format. The per-call fallback path on remote "
+        "hosts that cannot spawn a kernel has no echo — use print(...) there.\n\n"
         "Available via `from hermes_tools import ...` (each returns a dict):\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
@@ -914,7 +919,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
             "type": "object",
             "properties": {
                 "code": {"type": "string",
-                         "description": "Python code to execute; print your final result to stdout."},
+                         "description": "Python code to execute; in persistent kernels a final expression is echoed via repr (None prints nothing), otherwise print your final result to stdout (required on the per-call fallback)."},
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
             },

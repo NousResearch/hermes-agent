@@ -1,3 +1,5 @@
+import pytest
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from tools.tts_text_normalize import prepare_spoken_text
@@ -81,3 +83,24 @@ def test_prepare_spoken_text_closes_colon_on_single_line():
     assert prepare_spoken_text("Here is the list:") == "Here is the list."
     # ...but a digit-preceded colon is a ratio and must stay intact.
     assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"
+
+
+@pytest.mark.parametrize("raw,spoken", [
+    ("The startup raised $5M last year.", "5 million dollars"),
+    ("A $1.5 billion round.", "1.5 billion dollars"),
+    ("A €2bn deal.", "2 billion euros"),
+    ("A US$300k salary.", "300 thousand US dollars"),
+])
+def test_money_magnitude_is_spoken_before_the_currency_and_never_as_metres(raw, spoken):
+    """A magnitude belongs to the amount ("$5M" is five million dollars); an uppercase M is a
+    magnitude, never metres, while a lowercase length still expands."""
+    assert spoken in prepare_spoken_text(raw)
+    assert "metres" not in prepare_spoken_text(raw + " We hit 10M users.")
+    assert "5 metres" in prepare_spoken_text(raw + " The pool is 5 m deep.")
+
+
+def test_tilde_is_about_only_before_an_amount():
+    """"~5 km" is "about 5 km", but the "~" of a home path is part of the path (silenced like
+    any path), never the spoken word "about"."""
+    assert prepare_spoken_text("It is ~5 km away, roughly ~$20.") == "It is about 5 km away, roughly about 20 dollars."
+    assert "about" not in prepare_spoken_text("Saved to ~/notes/todo.md for later.")

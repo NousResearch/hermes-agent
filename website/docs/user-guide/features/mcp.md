@@ -345,6 +345,8 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+A server with `headers` and no `auth: oauth` authenticates with those headers only: an OAuth authorization for it (asked of the agent, or from the Desktop/dashboard *Authorize* button) is refused and its entry is left as it is. If an older Hermes left such an entry with `auth: oauth` (the gateway then logs `non-interactive environment and no cached tokens found` at every start), delete that line and the server connects with its headers again.
+
 HTTP and SSE servers honor the standard proxy settings: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (a `socks://` alias is normalized to `socks5://`), then the OS proxy (Windows registry, macOS system settings), with `NO_PROXY` hosts — including CIDR ranges and `*.example.com` patterns — connecting directly.
 
 ### OAuth-authenticated HTTP servers

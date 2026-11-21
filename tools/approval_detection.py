@@ -1468,6 +1468,61 @@ def _mark_command_starts(command: str, marker: str = "\n", skip=()) -> str:
     return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
 
 
+def _unquote_literal_spans(command: str, start: int = 0, end: int | None = None) -> str:
+    """Drop the quotes around every quoted span that holds only plain literal characters.
+
+    The shell removes those quotes before the command sees its argv, so ``rm '-rf' /`` runs as
+    ``rm -rf /`` while the patterns, which anchor flags and paths on whitespace, see a quote. Only
+    spans whose content is in ``_SIMPLE_SHELL_LITERAL_RE``'s class are unquoted: no whitespace,
+    glob, ``$``, backslash or separator, so the result has exactly the words and meaning of the
+    original, and quoted prose (which has spaces) stays quoted. ``$'...'`` with such a body is
+    the same literal. Substitutions inside double quotes are executable and recursed into."""
+    out: list[str] = []
+    opened, literal = 0, False
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="q", comments=True):
+        if kind == "quote" and quote is None:
+            ansi_c = command[i] == "'" and i > start and command[i - 1] == "$" and out and out[-1] == "$"
+            if ansi_c:
+                out.pop()
+            opened, literal = len(out), True
+            out.append(("$" if ansi_c else "") + command[i])
+            continue
+        if kind == "quote":
+            if literal and len(out) > opened + 1:
+                out[opened] = ""
+            else:
+                out.append(command[i])
+            continue
+        if kind == "subst":
+            body_start = i + (2 if command.startswith("$(", i) else 1)
+            out.extend((command[i:body_start], _unquote_literal_spans(command, body_start, j - 1), command[j - 1:j]))
+        else:
+            out.append(command[i:j])
+        if quote and (kind != "char" or not _SIMPLE_SHELL_LITERAL_RE.fullmatch(command[i])):
+            literal = False
+    return "".join(out)
+
+
+def _unquoted_literal_variant(command: str) -> str:
+    """Quoted literal arguments (`rm '-rf' /`, `kill -9 '-1'`, `git reset "--hard"`) as the command
+    receives them, or "" when nothing unquotes. Unquoted on the RAW quote state, after grep PCRE operands
+    are masked, so the quoted-data guards keep holding. Every command word is already deobfuscated by its
+    own pass; this covers the argument words that pass deliberately leaves alone."""
+    from tools.approval_wrappers import literal_heredoc_bodies
+    grep_raw, _ = _grep_safe_detection_variant(_mask_quoted_newlines(command))
+    # A quoted-delimiter heredoc fed to a non-shell is literal data: its quotes stay, and no command
+    # starts are marked inside it.
+    pieces, cursor = [], 0
+    for body_start, body_end in literal_heredoc_bodies(grep_raw):
+        pieces += [_unquote_literal_spans(grep_raw[cursor:body_start]), grep_raw[body_start:body_end]]
+        cursor = body_end
+    unquoted = "".join(pieces) + _unquote_literal_spans(grep_raw[cursor:])
+    if unquoted == grep_raw:
+        return ""
+    return _normalize_command_for_detection(
+        _mark_command_starts(unquoted, marker=" \n", skip=literal_heredoc_bodies(unquoted)))
+
+
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     from tools.approval_wrappers import _is_query_option
@@ -1691,6 +1746,8 @@ def _single_command_detection_variants(
     # The same holds for an escaped space or quote inside an option value (`git -C my\\ repo push -f`).
     joined = _join_escaped_word_chars(command)
     if joined != command and fresh(variant := _normalize_command_for_detection(_mask_quoted_newlines(joined))):
+        yield variant
+    if fresh(variant := _unquoted_literal_variant(command)):
         yield variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.

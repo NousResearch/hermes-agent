@@ -126,3 +126,18 @@ def test_scan_leaves_a_healthy_prompt_stored_before_the_skill_guidance_rewording
 
     assert _apply_json(db, monkeypatch, capsys)["cleared"] == []
     assert session_row(db, healthy)["system_prompt"] == legacy
+
+
+def test_explicit_id_of_a_compressed_conversation_clears_its_live_tip(db, monkeypatch, capsys):
+    # With compression.in_place: false the conversation continues on a child with its own prompt.
+    seed_session(db, "chat-root", "telegram", system_prompt=DEGRADED, end_reason="compression")
+    seed_session(db, "chat-tip", "telegram", system_prompt=DEGRADED, parent_session_id="chat-root")
+    monkeypatch.setattr(
+        sessions_cmd, "_confirm_prompt",
+        lambda _prompt: pytest.fail("--apply --json must not prompt"),
+    )
+
+    assert _repair_prompts(db, _args("chat-root", apply=True, json_out=True)) == 0
+
+    assert json.loads(capsys.readouterr().out)["cleared"] == ["chat-tip"]
+    assert session_row(db, "chat-tip")["system_prompt"] is None

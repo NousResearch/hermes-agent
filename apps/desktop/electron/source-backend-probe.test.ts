@@ -6,14 +6,15 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import { resolveSourceInstallationBackend } from './source-backend'
+import { chooseUpdaterArgs } from './windows-hermes-path'
 
 /**
  * A staged launcher that counts its invocations and answers per mode:
- *   slow-then-fast - the first two invocations stall, later ones answer cleanly
- *   fail           - exits non-zero (a definitive "this install is broken")
- *   hang           - never answers
+ *   hang - never answers before the probe budget
+ *   fail - exits non-zero (a definitive "this install is broken")
+ *   ok   - answers cleanly
  */
-function makeFixture(mode: 'slow-then-fast' | 'fail' | 'hang'): {
+function makeFixture(mode: 'hang' | 'fail' | 'ok'): {
   root: string
   invocations: () => number
 } {
@@ -35,20 +36,16 @@ function makeFixture(mode: 'slow-then-fast' | 'fail' | 'hang'): {
       'count=$((count + 1))',
       `echo "$count" > "${counter}"`,
       `case "${mode}" in`,
-      '  slow-then-fast)',
-      '    if [ "$count" -le 2 ]; then',
-      // Longer than the default probe budget (15s), so the default path really
-      // times out instead of merely being slow.
-      `      ${sleep} 20`,
-      '    fi',
-      `    echo "Install directory: ${root}"`,
+      '  hang)',
+      // Longer than the probe budget under test, so the probe really times out.
+      `    ${sleep} 30`,
       '    exit 0',
       '    ;;',
       '  fail)',
       '    exit 3',
       '    ;;',
-      '  hang)',
-      `    ${sleep} 30`,
+      '  ok)',
+      `    echo "Install directory: ${root}"`,
       '    exit 0',
       '    ;;',
       'esac',
@@ -64,47 +61,79 @@ function makeFixture(mode: 'slow-then-fast' | 'fail' | 'hang'): {
   }
 }
 
-test('a launcher that stalls is retried and accepted instead of being called a missing install', { timeout: 90_000 }, async (): Promise<void> => {
-  const fixture = makeFixture('slow-then-fast')
-
-  const backend = await resolveSourceInstallationBackend(fixture.root, [], {
-    probeTimeoutMs: 150,
-    probeAttempts: 3,
-    probeBackoffMs: 1
-  })
-
-  assert.notEqual(backend, null, 'a stalled launcher must not be reported as an unusable install')
-  assert.ok(
-    fixture.invocations() >= 3,
-    `expected the probe to be retried after stalling, saw ${fixture.invocations()} invocation(s)`
-  )
-})
-
-test('a launcher that exits non-zero fails fast without retries', { timeout: 90_000 }, async (): Promise<void> => {
-  const fixture = makeFixture('fail')
-
-  const backend = await resolveSourceInstallationBackend(fixture.root, [], {
-    probeTimeoutMs: 150,
-    probeAttempts: 3,
-    probeBackoffMs: 1
-  })
-
-  assert.equal(backend, null, 'a broken launcher must still be reported as unusable')
-  assert.equal(fixture.invocations(), 1, 'a definitive failure must not be retried')
-})
-
-test('a launcher that never answers is rejected after the attempts are exhausted', { timeout: 90_000 }, async (): Promise<void> => {
+test('boot accepts an install whose probe never answers instead of calling it missing', { timeout: 90_000 }, async (): Promise<void> => {
   const fixture = makeFixture('hang')
 
   const backend = await resolveSourceInstallationBackend(fixture.root, [], {
     probeTimeoutMs: 150,
-    probeAttempts: 2,
-    probeBackoffMs: 1
+    onProbeTimeout: 'accept'
   })
 
-  assert.equal(backend, null)
-  assert.ok(
-    fixture.invocations() <= 4,
-    `retries must stay bounded, saw ${fixture.invocations()} invocation(s)`
+  // The install is demonstrably there (`hermes_cli/main.py` and a resolvable launcher), so a
+  // probe that never answers cannot be evidence that it is gone. Returning null here reaches
+  // `bootstrap-needed`, which latches the first-run setup card over a working checkout (#79087).
+  assert.notEqual(backend, null, 'a stalled machine must never be reported as a missing install')
+  assert.equal(backend?.root, fixture.root)
+  assert.equal(backend?.bootstrap, false)
+})
+
+test('the default stays strict so an unproven runtime cannot be called runnable', { timeout: 90_000 }, async (): Promise<void> => {
+  const fixture = makeFixture('hang')
+
+  const backend = await resolveSourceInstallationBackend(fixture.root, [], { probeTimeoutMs: 150 })
+
+  // isSourceRuntimeUsable() relies on this to feed chooseUpdaterArgs(). Reporting an
+  // unproven pair as runnable would pick --update for a runtime that may need --repair;
+  // windows-hermes-path.ts documents that only a runnable pair may use --update.
+  assert.equal(backend, null, 'the strict default must not treat a timeout as runnable')
+  assert.deepEqual(
+    chooseUpdaterArgs({ runtimeUsable: backend !== null }, 'release/1.2'),
+    ['--repair', '--branch', 'release/1.2'],
+    'an unproven runtime must still be handed to the updater as --repair'
+  )
+})
+
+test('a launcher that exits non-zero fails without being treated as a timeout', { timeout: 90_000 }, async (): Promise<void> => {
+  const fixture = makeFixture('fail')
+
+  // Even the boot rung must reject this: a non-zero exit is a definitive answer that the
+  // install cannot run, unlike a timeout which is merely no answer at all.
+  const backend = await resolveSourceInstallationBackend(fixture.root, [], {
+    probeTimeoutMs: 150,
+    onProbeTimeout: 'accept'
+  })
+
+  assert.equal(backend, null, 'a broken launcher must still be reported as unusable')
+})
+
+test('a healthy launcher is accepted in both modes', { timeout: 90_000 }, async (): Promise<void> => {
+  for (const onProbeTimeout of ['reject', 'accept'] as const) {
+    const fixture = makeFixture('ok')
+
+    const backend = await resolveSourceInstallationBackend(fixture.root, ['serve'], {
+      probeTimeoutMs: 5_000,
+      onProbeTimeout
+    })
+
+    assert.notEqual(backend, null, `a healthy launcher must be accepted (${onProbeTimeout})`)
+    assert.deepEqual(backend?.args, ['serve'], 'the caller keeps ownership of the backend args')
+    assert.equal(fixture.invocations(), 1, 'a healthy launcher must be probed exactly once')
+  }
+})
+
+test('a stalling launcher costs one retry budget, not a multiplied one', { timeout: 90_000 }, async (): Promise<void> => {
+  const fixture = makeFixture('hang')
+
+  await resolveSourceInstallationBackend(fixture.root, [], {
+    probeTimeoutMs: 150,
+    onProbeTimeout: 'accept'
+  })
+
+  // execProbe already retries a timeout once internally. A caller-side loop on top of that
+  // multiplied the budget (#157543 review): six invocations and ~92s at the default budget.
+  assert.equal(
+    fixture.invocations(),
+    2,
+    `expected exactly one retry from execProbe, saw ${fixture.invocations()} invocation(s)`
   )
 })

@@ -5,21 +5,6 @@ import { buildDesktopBackendEnv } from './backend-env'
 import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
-/**
- * Attempts for the usability probe. A stalled machine must not be mistaken for a
- * missing install: a timeout means "unknown", and only a definitive failure
- * (ENOENT, non-zero exit) proves the install is gone.
- */
-const PROBE_ATTEMPTS = 3
-const PROBE_RETRY_BACKOFF_MS = 1_000
-
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve): void => {
-    setTimeout((): void => {
-      resolve()
-    }, ms)
-  })
-
 export interface SourceBackend {
   kind: 'command' | 'python'
   label: string
@@ -37,10 +22,22 @@ interface SourceOptions {
   env?: NodeJS.ProcessEnv
   /** Per-attempt probe budget (ms). Defaults to PROBE_TIMEOUT_MS. */
   probeTimeoutMs?: number
-  /** How many times a timed-out probe is re-attempted. Defaults to PROBE_ATTEMPTS. */
-  probeAttempts?: number
-  /** Delay between timed-out attempts (ms). Defaults to PROBE_RETRY_BACKOFF_MS. */
-  probeBackoffMs?: number
+  /**
+   * What a probe that times out on every attempt means.
+   *
+   * A timeout is "unknown", not "broken": the launcher answered slowly, it did not
+   * say the install is gone. The two callers need opposite answers, so the policy is
+   * explicit rather than a widened default.
+   *
+   *  - 'reject' (default) — an unproven runtime is not runnable. Keeps
+   *    `isSourceRuntimeUsable()` strict so `chooseUpdaterArgs()` picks `--repair`
+   *    for unproven pairs (`windows-hermes-path.ts`: only a runnable pair may
+   *    use `--update`).
+   *  - 'accept' — the boot rung, where the only alternative is the first-run setup
+   *    card. Presence beats a probe that never ran, so a stalled machine must not be
+   *    reported as a missing install (#79087).
+   */
+  onProbeTimeout?: 'reject' | 'accept'
 }
 
 /** Keep the validated command. PM owns interpreter and generation selection. */
@@ -64,47 +61,39 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  const timeoutMs: number = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
-  const attempts: number = Math.max(1, options.probeAttempts ?? PROBE_ATTEMPTS)
-  const backoffMs: number = options.probeBackoffMs ?? PROBE_RETRY_BACKOFF_MS
-
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      await execProbe(command, ['--version'], {
-        cwd: root,
-        env: { ...process.env, ...options.env, ...env },
-        shell,
-        stdio: 'ignore',
-        timeout: timeoutMs,
-        windowsHide: true
-      })
-
-      return {
-        kind: 'command',
-        label: `Hermes at ${root}`,
-        command,
-        args: [...args],
-        env,
-        root,
-        bootstrap: false,
-        shell,
-        local: 'installed'
-      }
-    } catch (err) {
-      // A timeout means "unknown", not "broken": a stalled machine must never be
-      // reported as a missing install. Only a definitive failure (ENOENT,
-      // non-zero exit) fails fast.
-      if (!isTimeoutError(err)) {
-        return null
-      }
-
-      if (attempt < attempts - 1) {
-        await delay(backoffMs)
-      }
-    }
+  const backend: SourceBackend = {
+    kind: 'command',
+    label: `Hermes at ${root}`,
+    command,
+    args: [...args],
+    env,
+    root,
+    bootstrap: false,
+    shell,
+    local: 'installed'
   }
 
-  return null
+  try {
+    // execProbe already retries a timeout once internally, so this is the whole
+    // budget: two invocations, not a loop that multiplies that retry (#157543 review).
+    await execProbe(command, ['--version'], {
+      cwd: root,
+      env: { ...process.env, ...options.env, ...env },
+      shell,
+      stdio: 'ignore',
+      timeout: options.probeTimeoutMs ?? PROBE_TIMEOUT_MS,
+      windowsHide: true
+    })
+
+    return backend
+  } catch (err) {
+    // A definitive failure (ENOENT, non-zero exit) proves the install is gone.
+    if (!isTimeoutError(err)) {
+      return null
+    }
+
+    return (options.onProbeTimeout ?? 'reject') === 'accept' ? backend : null
+  }
 }
 
 /** Developer overrides retain their interpreter, even outside the checkout. */

@@ -83,7 +83,7 @@ async def resolve_image_source(
     host_target = _permitted_host_read_target(p, ctx)
     # Local backend only: under a sandbox a miss must still reach the in-container read, so the
     # confinement boundary in this module's docstring holds.
-    if host_target is not None and not host_target.is_file() and _is_local_terminal_backend():
+    if host_target is not None and not host_target.is_file() and _is_host_readable_backend(ctx):
         alt = _on_disk_spelling(p)
         if alt is not None:
             host_target = _permitted_host_read_target(alt, ctx)
@@ -94,7 +94,9 @@ async def resolve_image_source(
         cap = _MAX_HOST_READ_BYTES if "image" in permitted else _MAX_INGEST_BYTES
         data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s, cap)
         return _finalize(data, "", "file", s, permitted)
-    if _is_local_terminal_backend():
+    # Under a sandbox a miss must still reach the in-container read (confinement boundary in the
+    # module docstring); a host-reading backend's miss is a genuinely absent file.
+    if _is_host_readable_backend(ctx):
         # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
@@ -241,14 +243,17 @@ def _media_cache_roots() -> list:
 def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     """Host path to read, or ``None`` (caller exec-reads inside the sandbox instead).
 
-    Local backend: any path. Non-local: only paths inside a media cache root (a
-    container-visible cache path is first translated back to its host mount). Hosted scope: none —
-    the profile's media caches are not the agent's, so every path is read inside its sandbox.
+    Local backend: any path. A non-local backend whose active environment declares
+    ``uses_host_filesystem`` (host-local plugin backends — the same declaration the
+    file tools trust): same as local. Other non-local backends: only paths inside a
+    media cache root (a container-visible cache path is first translated back to its
+    host mount). Hosted scope: none — the profile's media caches are not the agent's,
+    so every path is read inside its sandbox.
     """
     from tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return None
-    if _is_local_terminal_backend():
+    if _is_host_readable_backend(ctx):
         try:
             return p.resolve()
         except Exception:
@@ -263,6 +268,14 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     return None
 
 
+def _is_host_readable_backend(ctx: ResolveContext) -> bool:
+    """True when the session's backend reads host paths directly — a local backend, or a
+    plugin backend whose env declares ``uses_host_filesystem`` (#158000). One predicate for
+    all three host-read gates: spelling recovery, the miss verdict, and
+    ``_permitted_host_read_target`` (review probe by @xytxg on PR #158144)."""
+    return _is_local_terminal_backend() or _env_declares_host_filesystem(ctx)
+
+
 def _get_active_env(task_id: Optional[str]):
     if not task_id:
         return None
@@ -271,6 +284,14 @@ def _get_active_env(task_id: Optional[str]):
         return get_active_env(task_id)
     except Exception:
         return None
+
+
+def _env_declares_host_filesystem(ctx: ResolveContext) -> bool:
+    """True when the session's active environment declares ``uses_host_filesystem``
+    (e.g. a host-local plugin backend). Strict ``is True`` — a backend without the
+    declaration (or no env at all) is never trusted with host reads (#158000)."""
+    from tools.environments.base import env_uses_host_filesystem
+    return env_uses_host_filesystem(_get_active_env(ctx.task_id))
 
 
 def _ensure_container_env(task_id: Optional[str]) -> None:

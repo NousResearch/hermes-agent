@@ -716,3 +716,86 @@ class TestHeicDetection:
         path, _mime, err = vt._normalize_to_supported_image(broken, "image/avif")
         assert path is None
         assert "AV1" in err or "Pillow" in err
+
+
+class TestHostLocalPluginBackend:
+    """A non-local plugin backend whose env declares ``uses_host_filesystem`` reads
+    host paths like a local backend (#158000); without the declaration the
+    sandbox confinement is unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_declaring_backend_reads_non_cache_host_path(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")  # host-local plugin backend, not "local"
+        img = tmp_path / "outside" / "pic.png"
+        img.parent.mkdir(parents=True)
+        img.write_bytes(PNG)
+        env = SimpleNamespace(uses_host_filesystem=True)
+        with patch("tools.image_source._get_active_env", return_value=env):
+            res = await isrc.resolve_image_source(str(img), isrc.ResolveContext(task_id="t1"))
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_backend_without_declaration_stays_sandboxed(self, tmp_path, monkeypatch):
+        """No ``uses_host_filesystem`` declaration -> the non-cache host path still
+        routes to the sandbox exec-read, never a host read."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")
+        img = tmp_path / "outside" / "pic.png"
+        img.parent.mkdir(parents=True)
+        img.write_bytes(PNG)
+        env = SimpleNamespace(uses_host_filesystem=False, execute=lambda *a, **k: {"returncode": 1, "output": ""})
+        with patch("tools.image_source._get_active_env", return_value=env):
+            with pytest.raises(Exception):
+                await isrc.resolve_image_source(str(img), isrc.ResolveContext(task_id="t1"))
+
+    @pytest.mark.asyncio
+    async def test_no_active_env_fails_closed(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")
+        img = tmp_path / "outside" / "pic.png"
+        img.parent.mkdir(parents=True)
+        img.write_bytes(PNG)
+        with patch("tools.image_source._get_active_env", return_value=None):
+            with pytest.raises(isrc.SourceNotFound):
+                await isrc.resolve_image_source(str(img), isrc.ResolveContext(task_id="t1"))
+
+
+class TestHostLocalPluginBackendOtherGates:
+    """The declaring-backend host read must hold at the OTHER two gates too — spelling
+    recovery and the miss verdict (probe by @xytxg on PR #158144)."""
+
+    @pytest.mark.asyncio
+    async def test_declaring_backend_spelling_recovery_never_touches_sandbox(self, tmp_path, monkeypatch):
+        """A macOS-screenshot-style U+202F name passed with a plain space resolves through
+        the HOST read with zero sandbox exec calls."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")
+        on_disk = tmp_path / "outside" / "Screenshot 9.23.58 AM.png"
+        on_disk.parent.mkdir(parents=True)
+        on_disk.write_bytes(PNG)
+
+        def _no_exec(*a, **k):
+            raise AssertionError("a declaring host backend must not exec-read inside a sandbox")
+
+        env = SimpleNamespace(uses_host_filesystem=True, execute=_no_exec)
+        with patch("tools.image_source._get_active_env", return_value=env):
+            res = await isrc.resolve_image_source(
+                str(tmp_path / "outside" / "Screenshot 9.23.58 AM.png"),  # plain space
+                isrc.ResolveContext(task_id="t1"))
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_declaring_backend_missing_path_is_sourcenotfound_origin_file(self, tmp_path, monkeypatch):
+        """A genuinely missing host path on a declaring backend reports SourceNotFound with
+        origin=file, with no sandbox attempt (no 'different same-named file' confusion)."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "pilot")
+        env = SimpleNamespace(uses_host_filesystem=True, execute=lambda *a, **k: {"returncode": 0, "output": ""})
+        with patch("tools.image_source._get_active_env", return_value=env):
+            with pytest.raises(isrc.SourceNotFound) as ei:
+                await isrc.resolve_image_source(
+                    str(tmp_path / "outside" / "missing.png"), isrc.ResolveContext(task_id="t1"))
+        assert ei.value.origin == "file"

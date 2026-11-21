@@ -96,3 +96,35 @@ async def test_session_chat_terminal_result_is_not_success(flag, status):
     finally:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stream', [False, True])
+async def test_chat_vetoed_turn_is_stop_not_cancelled(stream):
+    """A pre_llm_call veto answers with the block message and completed=False; "cancelled" is
+    reserved for user interrupts, and a broker reading it discards the block message (#154234)."""
+    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._run_agent = AsyncMock(return_value=(
+        {'final_response': 'Blocked by policy.', 'completed': False, 'failed': False, 'messages': [],
+         'turn_exit_reason': PRE_LLM_BLOCK_EXIT_REASON}, {}))
+    app = web.Application()
+    app.router.add_post('/v1/chat/completions', adapter._handle_chat_completions)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post('/v1/chat/completions', json={
+                'model': 'hermes', 'stream': stream, 'messages': [{'role': 'user', 'content': 'hi'}]})
+            assert response.status == 200
+            if stream:
+                chunks = [json.loads(line[6:]) for line in (await response.text()).splitlines()
+                          if line.startswith('data: {')]
+                final = chunks[-1]
+                content = ''.join(c['choices'][0]['delta'].get('content') or '' for c in chunks)
+            else:
+                final = await response.json()
+                content = final['choices'][0]['message']['content']
+            assert content == 'Blocked by policy.'
+            assert final['choices'][0]['finish_reason'] == 'stop'
+    finally:
+        adapter._response_store.close()
+        adapter._run_idempotency_store.close()

@@ -6,6 +6,7 @@ Registered onto every assembled ``InMemoryBackend`` as the ``messages`` attribut
 from __future__ import annotations
 
 from ..backend import register_repository
+from .messages_caller_history import MessageCallerHistoryMixin
 from .messages_compact import MessageCompactMixin
 from .messages_reads import MessageReadsMixin
 from .messages_turns import MessageTurnsMixin
@@ -15,7 +16,7 @@ from .stored_reads import StoredReadsMixin
 __all__ = ["InMemoryMessageRepository"]
 
 
-class InMemoryMessageRepository(MessageWritesMixin, MessageCompactMixin, MessageReadsMixin, MessageTurnsMixin, StoredReadsMixin):
+class InMemoryMessageRepository(MessageWritesMixin, MessageCallerHistoryMixin, MessageCompactMixin, MessageReadsMixin, MessageTurnsMixin, StoredReadsMixin):
     """See the ``persistence.conversation.messages`` protocol for the contract each method implements."""
 
 

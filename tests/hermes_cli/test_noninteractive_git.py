@@ -40,6 +40,7 @@ class TestNoninteractiveGitEnv:
     def test_sets_prompt_kill_switches(self):
         env = noninteractive_git_env({})
         assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["GIT_OPTIONAL_LOCKS"] == "0"
         assert env["GCM_INTERACTIVE"] == "Never"
 
     def test_defaults_to_process_environ_copy(self, monkeypatch):

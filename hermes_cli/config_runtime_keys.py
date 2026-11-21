@@ -31,6 +31,17 @@ logger = logging.getLogger(__name__)
 CORE_RUNTIME_KEYS: dict[str, str] = {
     "computer_use.backend": "plugins/computer_use/__init__.py configured_backend_name() (unset = cua)",
     "dashboard.kanban": "plugins/kanban/dashboard/plugin_api.py (bundled dashboard tab preferences)",
+    # Per-backend cwds are written on first use and bridged to TERMINAL_<BACKEND>_CWD.
+    # They are not DEFAULT_CONFIG leaves: an empty default would clobber a real cwd.
+    "terminal.wsl_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.local_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.docker_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.ssh_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.singularity_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.modal_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.daytona_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.vercel_sandbox_cwd": "tools/terminal_tool.py _resolve_config_cwd",
+    "terminal.managed_modal_cwd": "tools/terminal_tool.py _resolve_config_cwd",
 }
 
 

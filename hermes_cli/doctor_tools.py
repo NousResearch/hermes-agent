@@ -184,7 +184,7 @@ def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
 
 
-_BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh"}
+_BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh", "wsl"}
 
 
 def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
@@ -287,7 +287,23 @@ def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
         _require(ok, (label, detail), (label, detail), detail.strip("()"), issues)
 
 
-_BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend, "vercel_sandbox": _check_vercel_backend}
+def _check_wsl_backend(issues: list[str]) -> None:
+    if sys.platform != "win32":
+        _fail_and_issue("WSL2 backend selected", "this host is not Windows",
+                        "Pick local, docker, ssh, or another backend with `hermes setup terminal`.", issues)
+        return
+    try:
+        from tools.environments.wsl import _find_wsl
+        _find_wsl()
+    except Exception as exc:
+        _fail_and_issue("wsl.exe not found", str(exc),
+                        "Install WSL2, or run `hermes setup terminal` and pick another backend.", issues)
+        return
+    check_ok(("wsl.exe", "WSL2 backend"))
+
+
+_BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend,
+                   "vercel_sandbox": _check_vercel_backend, "wsl": _check_wsl_backend}
 
 
 @doctor_check()

@@ -92,6 +92,8 @@ _TERMINAL_ENV_MAPPINGS = {
         "docker_snap_compat",
         "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
         "sandbox_dir", "persistent_shell",
+        "wsl_distro", "wsl_cwd", "local_cwd", "docker_cwd", "ssh_cwd", "singularity_cwd",
+        "modal_cwd", "daytona_cwd", "vercel_sandbox_cwd", "managed_modal_cwd",
     )
 }
 

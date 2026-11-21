@@ -17,6 +17,7 @@ from tools.terminal_tool_backends import (
     _container_config_from_config,
     _local_config_from_config,
     _ssh_config_from_config,
+    _wsl_config_from_config,
 )
 from tools.terminal_tool_config import _quiet
 
@@ -39,6 +40,7 @@ def _create_configured_env(
             _container_config_from_config(config) if _is_container_backend(env_type) else None
         ),
         local_config=_local_config_from_config(config) if env_type == "local" else None,
+        wsl_config=_wsl_config_from_config(config) if env_type == "wsl" else None,
         task_id=task_id, host_cwd=host_cwd,
     )
 

@@ -21,6 +21,7 @@ export interface NotificationSettingsTranslations {
     disconnected: string
     watchingComputer: (time: string) => string
     watchingWindow: (time: string) => string
+    watchingWindowNoInput: string
   }
   test: string
   testTitle: string

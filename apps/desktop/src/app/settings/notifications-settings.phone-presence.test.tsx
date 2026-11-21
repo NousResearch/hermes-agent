@@ -88,11 +88,12 @@ it('with the OS idle clock, says Hermes is told when you last used this computer
 it('with page input only, says Hermes is told when you last used this window', async () => {
   const row = await renderRow({})
 
-  // No input seen yet: the age counts from when the reporter started listening.
+  // No input seen yet: the row never invents one.
   act(() => void vi.advanceTimersByTime(10_000))
   expect(row()).toContain(
-    'While a conversation is open in this window, Hermes is told when you last used this window. Last input 10 sec ago.'
+    'While a conversation is open in this window, Hermes is told when you last used this window. No input seen yet.'
   )
+  expect(row()).not.toContain('Last input')
 
   window.document.dispatchEvent(new Event('pointerdown'))
   act(() => void vi.advanceTimersByTime(120_000))

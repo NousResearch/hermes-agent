@@ -101,6 +101,11 @@ function presenceDescription(readout: PresenceReadout, copy: NotificationSetting
     return readout.kind === 'disconnected' ? copy.disconnected : copy.unsupported
   }
 
+  // Only page input can be missing: the OS idle clock always has an age.
+  if (readout.idleSeconds === null) {
+    return copy.watchingWindowNoInput
+  }
+
   return (readout.basis === 'system' ? copy.watchingComputer : copy.watchingWindow)(formatElapsed(readout.idleSeconds, locale))
 }
 

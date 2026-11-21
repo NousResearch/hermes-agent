@@ -4174,6 +4174,7 @@
     "settings.notifications.phonePresence.unsupported",
     "settings.notifications.phonePresence.watchingComputer",
     "settings.notifications.phonePresence.watchingWindow",
+    "settings.notifications.phonePresence.watchingWindowNoInput",
     "settings.notifications.test",
     "settings.notifications.testBody",
     "settings.notifications.testSent",

@@ -20,8 +20,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+
+UTC = timezone.utc  # noqa: UP017 -- datetime.UTC requires Python 3.11
 
 USER_AGENT = "hermes-agent/1.0 (rss-feeds skill; +https://github.com/NousResearch/hermes-agent)"
 TIMEOUT = 20

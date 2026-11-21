@@ -1,5 +1,6 @@
 """Tests for optional-skills/research/rss-feeds/scripts/feed.py — parsing and discovery contracts."""
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -44,6 +45,31 @@ def test_all_three_formats_normalise_to_the_same_entry_shape_and_utc_dates():
     assert jf["entries"][0]["author"] == "Cy"
     newest = feed.filter_entries(rss["entries"], limit=1, since="2026-09-02")
     assert [e["title"] for e in newest] == ["Newer"]
+
+
+def test_import_and_dates_without_datetime_utc():
+    """Regression for #138264: the standalone script runs without datetime.UTC."""
+    code = """
+import datetime
+import runpy
+import sys
+
+if hasattr(datetime, 'UTC'):
+    del datetime.UTC
+sys.argv = [sys.argv[1], '--help']
+try:
+    runpy.run_path(sys.argv[0], run_name='__main__')
+except SystemExit as exc:
+    assert exc.code == 0
+module = runpy.run_path(sys.argv[0])
+parse_date = module['parse_date']
+assert parse_date('2026-09-04T08:30:00+02:00') == '2026-09-04T06:30:00+00:00'
+assert parse_date('2026-09-04T08:30:00') == '2026-09-04T08:30:00+00:00'
+entries = [{'published': parse_date('2026-09-04T08:30:00+02:00')}]
+assert module['filter_entries'](entries, 1, '2026-09-04') == entries
+assert module['filter_entries'](entries, 1, '2026-09-04T07:00:00') == []
+"""
+    subprocess.run([sys.executable, "-c", code, str(SCRIPTS_DIR / "feed.py")], check=True, capture_output=True, text=True)
 
 
 def test_page_url_discovers_advertised_feed_then_reads_it():

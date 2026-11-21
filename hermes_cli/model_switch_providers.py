@@ -1481,3 +1481,35 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
         return {}
     from hermes_cli.config import normalize_extra_headers
     return normalize_extra_headers(entry.get("extra_headers"))
+
+
+def alias_credential_on_disk(raw_cfg: Any, result: Any) -> dict[str, str]:
+    """``{"api_key": ...}`` or ``{"key_env": ...}`` from the picked user alias's on-disk entry.
+
+    A URL-bearing alias session authenticates with the alias's own credential; persisting the route
+    without it makes the next launch resolve that endpoint with no key. Only when the persisted
+    ``base_url`` IS the alias's endpoint: an alias without one keeps the session's original host,
+    and its secret must never be persisted against that foreign endpoint. Read from the raw file,
+    never from the loaded alias, whose ``api_key: "${VAR}"`` is already expanded — persisting that
+    would write the secret itself. Same lookup and precedence as ``model_switch._load_direct_aliases`` /
+    ``direct_alias_api_key``. ``raw_cfg`` None reads the active profile's raw file."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.model_switch import _clean
+    from hermes_cli.route_identity import normalize_route_base_url
+    raw_cfg = read_user_config_raw() if raw_cfg is None else raw_cfg
+    name = _clean(getattr(result, "resolved_via_alias", "")).lower()
+    if not name or not isinstance(raw_cfg, dict):
+        return {}
+    model_cfg = raw_cfg.get("model")
+    sections = [raw_cfg.get("model_aliases"), model_cfg.get("aliases") if isinstance(model_cfg, dict) else None]
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        entry = next((v for k, v in section.items() if str(k).strip().lower() == name), None)
+        if isinstance(entry, dict) and _clean(entry.get("model")):
+            alias_url = normalize_route_base_url(_clean(entry.get("base_url")))
+            if not alias_url or alias_url != normalize_route_base_url(result.base_url):
+                return {}
+            field = next((f for f in ("api_key", "key_env") if _clean(entry.get(f))), None)
+            return {field: _clean(entry[field])} if field else {}
+    return {}

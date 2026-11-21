@@ -569,9 +569,11 @@ def _apply_timeout(result: dict[str, Any], timeout_msg: str) -> None:
 
 
 def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
-                                 timeout: int, exec_start: float, env: Any = None) -> str:
+                                 timeout: int, exec_start: float, env: Any = None,
+                                 fence_stripped: bool = False) -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
     mirrors the local kernel contract (kernel killed, state lost, next call fresh)."""
+    from tools.code_kernel import FENCE_STRIPPED_WARNING
     stdout_text = kernel_result.get("stdout", "") or ""
     stderr_text = kernel_result.get("stderr", "") or ""
     traceback_text = kernel_result.get("traceback", "") or ""
@@ -582,6 +584,8 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
                             kernel=kernel_result.get("kernel", {"remote": True}), env=env)
+    if fence_stripped or kernel_result.get("fence_stripped"):
+        result["warning"] = " ".join(filter(None, [result.get("warning"), FENCE_STRIPPED_WARNING]))
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
@@ -609,6 +613,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
+    from tools.code_kernel import FENCE_STRIPPED_WARNING, strip_code_fences
+    code, fence_stripped = strip_code_fences(code)
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
     tool_call_counter, tool_call_log, stop_event, rpc_thread = [0], [], threading.Event(), None
@@ -654,6 +660,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
                             {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]}, env=env)
+    if fence_stripped:
+        result["warning"] = " ".join(filter(None, [result.get("warning"), FENCE_STRIPPED_WARNING]))
     tool_errors = tool_errors_since(tool_call_log)
     if tool_errors:
         result["tool_errors"] = tool_errors
@@ -675,6 +683,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
+    from tools.code_kernel import strip_code_fences
     from tools.terminal_tool import _resolve_container_task_id
     from tools.terminal_tool_lifecycle import _call_in_flight
     _cfg = _load_config()
@@ -707,7 +716,10 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
                 kernel_result = None
             if kernel_result is not None:
-                return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start, env=env)
+                return _finish_remote_kernel_result(
+                    kernel_result, timeout=timeout, exec_start=exec_start, env=env,
+                    fence_stripped=strip_code_fences(code)[1],
+                )
             logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
         except Exception as exc:
             return _remote_failure(exc, exec_start, 0)
@@ -742,7 +754,9 @@ def execute_code(
     except Exception as refusal:
         return tool_error(f"execute_code refused: {refusal} "
                           "(profile terminal policy unresolved; fix the profile's config.yaml / .env and retry)")
-    if not code or not code.strip():
+    from tools.code_kernel import strip_code_fences
+    stripped_code = strip_code_fences(code)[0] if isinstance(code, str) else ""
+    if not stripped_code or not stripped_code.strip():
         return tool_error("No code provided. execute_code requires a non-empty 'code' "
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
     # Gated on PID-file ownership, not the inherited env marker.
@@ -766,7 +780,7 @@ def execute_code(
         )
     if _probe.value:
         from tools.code_execution_lifecycle import lifecycle_guard_rejection
-        if (_rejection := lifecycle_guard_rejection(code)) is not None:
+        if (_rejection := lifecycle_guard_rejection(stripped_code)) is not None:
             return tool_error(_rejection)
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
@@ -776,7 +790,7 @@ def execute_code(
     # the session context. A Docker sandbox with host bind mounts gets no container fast-path.
     # See #30882.
     from tools.approval import check_execute_code_guard
-    _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
+    _guard = check_execute_code_guard(stripped_code, env_type, has_host_access=_docker_has_host_access(_env_config))
     if not _guard.get("approved", False):
         return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
                              user_summary=_guard.get("user_summary"))

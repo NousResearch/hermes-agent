@@ -95,7 +95,7 @@ Cron 任务让 Hermes Agent 按计划执行任务——每日摘要、定期检�
 
 ### "我想训练模型"
 
-使用强化学习（RL）通过 Hermes Agent 内置的 RL 训练流水线对模型行为进行微调。
+使用强化学习（RL）通过由 [Atropos](https://github.com/NousResearch/atropos) 提供支持的 Hermes Agent RL 训练流水线对模型行为进行微调。
 
 1. [快速入门](./quickstart.md)
 2. [配置](../user-guide/configuration.md)

@@ -317,9 +317,9 @@ When it suspends its own machine under scale-to-zero, it starts one more
   that runs one gateway per profile sends one stream of reports.
 - **Not passed on.** The URL, like `GATEWAY_RELAY_SLEEP_URL`, is removed from
   the environment of the processes the gateway starts for the agent (the
-  terminal tool, agent and delivery workers, credentialed helpers). A gateway it
-  starts or restarts keeps both, and so does `hermes update`, which restarts
-  gateways. A profile's own `GATEWAY_RELAY_SLEEP_URL` still wins for that
+  terminal tool, agent and delivery workers). A gateway it starts or restarts
+  inherits the ones it was launched with, and so does `hermes update`, which
+  restarts gateways. A profile's own `GATEWAY_RELAY_SLEEP_URL` still wins for that
   profile's gateway. A gateway started by hand from the terminal tool does not
   inherit either; it still loads a sleep URL set in its profile's `.env`.
 - **Interval.** Two minutes with 10% jitter, unless the receiver sets another.

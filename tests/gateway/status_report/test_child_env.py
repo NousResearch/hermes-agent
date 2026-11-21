@@ -108,7 +108,7 @@ def test_a_dashboard_gateway_action_for_another_profile_keeps_them_and_other_act
     assert _stamps(_profile_action_environment(["-p", "other", "skills", "install", "x", "--yes"])) == dict.fromkeys(STAMPS)
 
 
-def test_a_child_built_from_the_process_env_never_sees_them(stamped, child_env):
+def test_a_served_child_built_from_the_process_env_drops_them(stamped, child_env):
     """An explicit base (the bot relay's delivery child passes os.environ) is scrubbed too."""
     from tools.bot_relay import delivery_env
 

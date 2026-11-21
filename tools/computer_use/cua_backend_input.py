@@ -3,12 +3,20 @@ value-setter methods (mixed into ``CuaDriverBackend``)."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+import sys
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_parse import _parse_key_combo
 
 _NO_TARGET_MSG = "No active window — call capture() first."
+_WINDOWS = sys.platform == "win32"
+_IL_NAMES = {0x0000: "Untrusted", 0x1000: "Low", 0x2000: "Medium", 0x3000: "High", 0x4000: "System",
+             0x5000: "Protected"}
+_IL_BLOCKED_PREFIX = "Target window's process is unreachable by synthetic input on Windows: "
+_IL_BLOCKED_SUFFIX = (" Windows UIPI would silently discard the input while the driver still reports an "
+                      "unverifiable success. No input was sent; capture still works, but input cannot "
+                      "reach this window.")
 _BTF_UNSUPPORTED_MSG = "The connected cua-driver does not advertise the standalone bring_to_front tool."
 _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not accept delivery_mode, so foreground "
                                "delivery is unavailable. Use another verified rung without assuming the reported "
@@ -19,6 +27,130 @@ _Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
+
+
+class _IntegrityRids(NamedTuple):
+    """Outcome of the read-only integrity probe, with the ambiguity made explicit."""
+    own: Optional[int]      # mandatory label of this process, None when unreadable
+    target: Optional[int]   # mandatory label of the target, None when unreadable
+    probed: bool            # False when the target process could not be opened at all
+
+
+def _il_name(rid: int) -> str:
+    return f"0x{rid:x} ({_IL_NAMES.get(rid, 'unknown')})"
+
+
+def _il_decision(own_rid: int | None, target_rid: int | None) -> str | None:
+    """Refusal reason when the integrity comparison proves synthetic input cannot reach the target,
+    else ``None``. A readable target RID is a determinate comparison — a caller holding
+    ``SeDebugPrivilege`` can open even a System token, so token readability alone is not the verdict.
+    A target token that cannot be opened while ours can stays a conservative block; an unreadable own
+    token means the probe itself is permission-blind and must not refuse
+    (NousResearch/hermes-agent#142661)."""
+    if own_rid is None:
+        return None
+    if target_rid is None:
+        return "the target's process token cannot be opened by this process (protected or a different " \
+               "security context)"
+    if target_rid > own_rid:
+        return f"the target process runs at integrity {_il_name(target_rid)}, above this process at " \
+               f"{_il_name(own_rid)}"
+    return None
+
+
+def _win_integrity_rids(pid: int) -> "_IntegrityRids":
+    """Read ``(own RID, target RID)`` for the integrity comparison. Read-only; never raises.
+
+    Split out from :func:`_win_input_blocked_by_integrity` so a test can assert the probe really parses
+    a RID. A probe that silently answers ``None`` for both sides makes every verdict "not blocked", and
+    the wiring tests — which stub this level — cannot see that.
+    """
+    if not _WINDOWS:
+        return _IntegrityRids(None, None, False)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        TOKEN_QUERY, TokenIntegrityLevel, PROCESS_QUERY_LIMITED_INFORMATION = 0x0008, 25, 0x1000
+        # Handles are pointer-sized: without an explicit restype they truncate to c_int, and a
+        # handle with the high bit set turns negative — a false "denied" verdict.
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        advapi32.OpenProcessToken.restype = wintypes.BOOL
+        advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                              ctypes.POINTER(wintypes.HANDLE)]
+        advapi32.GetTokenInformation.restype = wintypes.BOOL
+        advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_uint, ctypes.c_void_p,
+                                                 wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+        advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+        advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+        advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+
+        class _TokenLabel(ctypes.Structure):
+            # TOKEN_MANDATORY_LABEL: SID_AND_ATTRIBUTES {PSID Sid; DWORD Attributes;} comes first.
+            _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
+
+        def _il_rid(process) -> int | None:
+            """``TokenIntegrityLevel`` RID — 0x1000 Low / 0x2000 Medium / 0x3000 High / 0x4000 System —
+            or ``None`` when the token cannot be opened or parsed."""
+            token = wintypes.HANDLE()
+            if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
+                return None  # ACCESS_DENIED here is the higher-integrity / protected signal
+            try:
+                needed = wintypes.DWORD()
+                # The sizing call always fails with ERROR_INSUFFICIENT_BUFFER and puts the required length
+                # in `needed` — checking its return value here makes the probe answer None for every
+                # caller, which silently disables the gate.
+                advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0, ctypes.byref(needed))
+                if not needed.value:
+                    return None
+                buf = ctypes.create_string_buffer(needed.value)
+                if not advapi32.GetTokenInformation(token, TokenIntegrityLevel, buf, needed.value,
+                                                    ctypes.byref(needed)):
+                    return None
+                label = ctypes.cast(buf, ctypes.POINTER(_TokenLabel)).contents
+                if not label.sid:
+                    return None
+                count = advapi32.GetSidSubAuthorityCount(label.sid)[0]
+                if not count:
+                    return None
+                return advapi32.GetSidSubAuthority(label.sid, count - 1)[0]
+            finally:
+                kernel32.CloseHandle(token)
+
+        own = _il_rid(kernel32.GetCurrentProcess())
+        proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not proc:
+            # ERROR_INVALID_PARAMETER means the pid is gone: nothing to compare, let the driver report it.
+            # Access denied means the process is unreachable even for a query handle, which is as
+            # determinate as an unreadable token.
+            denied = ctypes.get_last_error() == 5
+            return _IntegrityRids(own, None, denied)
+        try:
+            return _IntegrityRids(own, _il_rid(proc), True)
+        finally:
+            kernel32.CloseHandle(proc)
+    except Exception:
+        return _IntegrityRids(None, None, False)
+
+
+def _win_input_blocked_by_integrity(pid: int) -> str | None:
+    """Refusal reason when *pid* is provably unreachable by synthetic input on Windows, else ``None``.
+    Compares ``TokenIntegrityLevel`` RIDs of the target process and this process (determinate even
+    under ``SeDebugPrivilege``, where token readability stops discriminating); a target token that
+    cannot be opened while ours can stays a conservative block. Read-only probes; never raises. On
+    any ctypes failure or non-Windows host returns ``None`` so callers keep today's ``unverifiable``
+    behavior (NousResearch/hermes-agent#142661)."""
+    rids = _win_integrity_rids(pid)
+    if not rids.probed:
+        return None  # process gone or unopenable for an unrelated reason: not determinate
+    return _il_decision(rids.own, rids.target)
 
 
 class _InputMixin:
@@ -61,11 +193,37 @@ class _InputMixin:
         args["delivery_mode"] = "foreground"
         return None
 
+    def _integrity_refusal(self, action: str) -> Optional[ActionResult]:
+        """Windows UIPI pre-check: before injecting into the sticky target, refuse determinately when the
+        target's process sits above this process on the integrity ladder — Windows silently discards the
+        synthetic input while the verdict reads as an unverifiable success, so the verify → escalate ladder
+        never terminates (NousResearch/hermes-agent#142661). Probe results are cached per pid; when the probe
+        is inconclusive we proceed and keep today's semantics. ``set_value`` deliberately stays outside this
+        gate (it goes through the driver's UIA path, not synthetic input) — but UIA value-sets cross UIPI
+        too, so a blocked target will fail there as well, silently, just with a different result shape."""
+        pid = self._active_pid
+        if pid is None or not _WINDOWS:
+            return None
+        cache = getattr(self, "_il_probe_cache", None)
+        if cache is None:
+            cache = self._il_probe_cache = {}
+        if pid not in cache:
+            cache[pid] = _win_input_blocked_by_integrity(pid)
+        reason = cache[pid]
+        if reason:
+            # No `escalation`: this rung has no next step, the ladder must stop here.
+            return _refuse(action, _IL_BLOCKED_PREFIX + reason + "." + _IL_BLOCKED_SUFFIX,
+                           code="input_blocked_il", effect="suspected_noop", verified=False)
+        return None
+
     def _run_input_action(self, action: str, args: dict[str, Any], delivery_mode: Optional[str],
                           bring_to_front: bool) -> ActionResult:
         """Apply one delivery rung, optionally focusing via its own tool. ``bring_to_front`` is never an
         input-action property: when requested, the separately approved standalone focus action runs first,
         then the original foreground input runs unchanged."""
+        refusal = self._integrity_refusal(action)
+        if refusal is not None:
+            return refusal
         refusal = self._apply_delivery(action, args, delivery_mode)
         if refusal is not None:
             return refusal

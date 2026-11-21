@@ -42,11 +42,36 @@ COMMANDS: dict[str, tuple[str, str | None]] = {
 }
 
 
+def _skill_command_entries() -> dict[str, str]:
+    """Installed skills as {name: description} for /<skill-name> autocomplete.
+    Local patch: CLI/gateway expose installed skills as dynamic /<name> commands;
+    the gateway editor path historically advertised only COMMANDS. Empty on any
+    API mismatch so the gateway path never breaks."""
+    try:
+        from agent.skill_commands import get_interactive_skill_commands
+        commands = get_interactive_skill_commands()
+    except Exception:
+        logger.debug("Could not enumerate skill commands for gateway ACP", exc_info=True)
+        return {}
+    taken = set(COMMANDS)  # built-ins win, same rule as CLI/gateway
+    entries: dict[str, str] = {}
+    for key, meta in (commands or {}).items():
+        name = (key or "").lstrip("/").strip()
+        if not name or name in taken or name in entries:
+            continue
+        desc = " ".join(str((meta or {}).get("description") or f"Invoke the {name} skill").split())
+        entries[name] = desc[:117] + "..." if len(desc) > 120 else desc
+    return entries
+
+
 def available_commands_update() -> AvailableCommandsUpdate:
-    return AvailableCommandsUpdate(session_update="available_commands_update", available_commands=[
+    commands = [
         AvailableCommand(name=name, description=description,
                          input=UnstructuredCommandInput(hint=hint) if hint else None)
-        for name, (description, hint) in COMMANDS.items()])
+        for name, (description, hint) in COMMANDS.items()]
+    commands.extend(AvailableCommand(name=name, description=desc)
+                    for name, desc in _skill_command_entries().items())
+    return AvailableCommandsUpdate(session_update="available_commands_update", available_commands=commands)
 
 
 def help_text() -> str:

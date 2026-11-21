@@ -205,7 +205,7 @@ def _record_owed_user_action(request: dict) -> bool:
 
     notice = _owed_user_action(request)
     if notice:
-        record_user_action("local_changes", notice)
+        record_user_action("local_changes", notice, checkout=str(request.get("source") or ""))
     return notice is None
 
 

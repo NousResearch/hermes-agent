@@ -542,6 +542,7 @@ gateway:
     finished: "✅ Nuashonrú Hermes críochnaithe."
     timed_out: "❌ Chuaigh nuashonrú Hermes thar am tar éis 30 nóiméad."
     finished_success: "✅ Críochnaíodh nuashonrú Hermes go rathúil."
+    local_changes_parked: "⚠️ D'fhág an nuashonrú is déanaí ar Hermes athruithe áitiúla ar an gcód foinse i git stash. Seiceáil cad atá sa checkout cheana sula gcuirfidh tú i bhfeidhm arís iad.\n\n{notice}"
     last_lines: "{msg}\n\nLínte deiridh:\n```\n{tail}\n```"
     managed_action: "Hermes Agent a nuashonrú"
     not_applicable: "✗ Ní bhaineann `hermes update` leis an suiteáil seo ({method}).\nNuashonraigh le: {command}"

@@ -602,6 +602,74 @@ def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
     assert handler.unloaded == []
 
 
+def test_idle_sweep_custom_timeout(tmp_path, monkeypatch, stub_server):
+    """LlamaServerSupervisor respects a custom idle_timeout_s passed at init."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "fast-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.requests_processing = 0
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port, idle_timeout_s=60)
+    assert sup.idle_timeout_s == 60.0
+    assert sup.IDLE_UNLOAD_S == 60.0
+
+    t0 = 2000.0
+    assert sup.sweep_idle(now=t0) == []
+    assert sup.sweep_idle(now=t0 + 59) == []
+    assert sup.sweep_idle(now=t0 + 61) == ["fast-m"]
+    assert handler.unloaded == ["fast-m"]
+
+
+def test_idle_sweep_disabled_when_zero_or_negative(tmp_path, monkeypatch, stub_server):
+    """An idle_timeout_s <= 0 disables auto-unload entirely."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "keep-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.requests_processing = 0
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port, idle_timeout_s=0)
+    assert sup.idle_timeout_s == 0.0
+
+    t0 = 3000.0
+    assert sup.sweep_idle(now=t0) == []
+    assert sup.sweep_idle(now=t0 + 99999) == []
+    assert handler.unloaded == []
+
+
+def test_idle_sweep_blocks_when_agent_busy(tmp_path, monkeypatch, stub_server):
+    """A busy agent prevents idle unload even when llama-server slots are idle."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "busy-agent-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.requests_processing = 0
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    is_busy = True
+    sup = LlamaServerSupervisor(
+        tmp_path / "i", tmp_path / "m", port=port, idle_timeout_s=100, is_busy_fn=lambda: is_busy
+    )
+
+    t0 = 4000.0
+    assert sup.sweep_idle(now=t0) == []  # agent is busy, idle clock doesn't advance
+    assert sup.sweep_idle(now=t0 + 200) == []
+    assert handler.unloaded == []
+
+    # Agent becomes idle: clock now starts
+    is_busy = False
+    assert sup.sweep_idle(now=t0 + 210) == []
+    assert sup.sweep_idle(now=t0 + 250) == []
+    assert sup.sweep_idle(now=t0 + 320) == ["busy-agent-m"]
+    assert handler.unloaded == ["busy-agent-m"]
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read
@@ -897,6 +965,42 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.installed_engine", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_ensure_local_runtime_passes_idle_timeout_from_config(tmp_path, monkeypatch):
+    """ensure_local_runtime forwards configured idle_timeout_seconds to LlamaServerSupervisor."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.local_runtime.binaries import Engine
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.installed_engine",
+        lambda *a: Engine(binary=tmp_path / "bin" / "llama-server", backend="cpu", tag="b1000"),
+    )
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: None)
+    models = bootstrap.models_dir()
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "test.gguf").touch()
+
+    captured_kwargs = {}
+
+    class MockSupervisor:
+        def __init__(self, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.base_url = "http://127.0.0.1:18434/v1"
+            self.idle_timeout_s = kwargs.get("idle_timeout_s")
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", MockSupervisor)
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap._start_idle_sweeper", lambda *a: None)
+
+    config = {"local_runtime": {"enabled": True, "idle_timeout_seconds": 180}}
+    sup = bootstrap.ensure_local_runtime(config, force=True)
+    assert sup is not None
+    assert captured_kwargs.get("idle_timeout_s") == 180.0
 
 
 def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):

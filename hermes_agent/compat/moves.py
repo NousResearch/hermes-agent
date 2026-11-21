@@ -9,6 +9,7 @@ target by the first key that names it, so the oldest one is listed first.
 """
 
 MOVES: dict[str, str] = {
+    "tools.checkpoint_manager": "agent.checkpoints.manager",
     "tools.plugin_guard": "hermes_cli.plugins_install_scan",
     # Folded into session_rules.turns by the storage interface (#149567); the OpenViking and hermes-council pins import it.
     "agent.message_content": "session_rules.turns",

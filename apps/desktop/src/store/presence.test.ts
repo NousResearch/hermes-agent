@@ -301,6 +301,88 @@ describe('createPresenceReporter', () => {
   })
 })
 
+/** A connection whose every `client.activity` answer the test settles by hand. */
+function heldChannel() {
+  const pending: { params: Record<string, unknown>; reject: (error: Error) => void; resolve: () => void }[] = []
+
+  const channel = {
+    ...fakeChannel(),
+    request: vi.fn(
+      (_method: string, params: Record<string, unknown>) =>
+        new Promise<never>((resolve, reject) => pending.push({ params, reject, resolve: () => resolve({} as never) }))
+    )
+  }
+
+  return { channel, pending, sent: () => pending.map(call => call.params) }
+}
+
+describe('a report counts as told only once the connection accepted it', () => {
+  it('a rejected withdrawal keeps the old claim and is sent again on the next evaluation', async () => {
+    const { channel, pending, sent } = heldChannel()
+    const system = fakeSystem({ system: true, idleSeconds: 1, locked: false, suspended: false })
+    const { reporter, settle, view } = harness({ channel: channel as never, system })
+
+    await settle()
+    pending[0].resolve()
+    view.sessionId = null
+    reporter.refresh()
+    await settle()
+    pending[1].reject(new Error('timed out'))
+    await settle()
+    reporter.refresh()
+    await settle()
+    pending[2]?.resolve()
+    await settle()
+    reporter.refresh()
+    await settle()
+
+    expect(sent().map(call => call.sessions)).toEqual([['s1'], [], []])
+  })
+
+  it('a rejected away is sent again while the screen stays locked', async () => {
+    const { channel, pending, sent } = heldChannel()
+    const system = fakeSystem({ system: true, idleSeconds: 1, locked: false, suspended: false })
+    const { reporter, settle } = harness({ channel: channel as never, system })
+
+    await settle()
+    pending[0].resolve()
+    system.push({ locked: true })
+    await settle()
+    pending[1].reject(new Error('timed out'))
+    await settle()
+    reporter.refresh()
+    await settle()
+    pending[2]?.resolve()
+    await settle()
+    reporter.refresh()
+    await settle()
+
+    expect(sent().map(call => [call.sessions, call.away])).toEqual([
+      [['s1'], undefined],
+      [[], true],
+      [[], true]
+    ])
+  })
+
+  it('an older report rejected after a newer one was accepted changes nothing', async () => {
+    const { channel, pending, sent } = heldChannel()
+    const system = fakeSystem({ system: true, idleSeconds: 1, locked: false, suspended: false })
+    const { reporter, settle, view } = harness({ channel: channel as never, system })
+
+    await settle()
+    view.sessionId = 's2'
+    reporter.refresh()
+    await settle()
+    pending[1].resolve()
+    pending[0].reject(new Error('timed out'))
+    await settle()
+    reporter.refresh()
+    await settle()
+
+    expect(sent().map(call => call.sessions)).toEqual([['s1'], ['s2']])
+  })
+})
+
 describe('can_alert from this window', () => {
   const cases = [
     // [host, focused, turn-done notification on, browser permission, can_alert]

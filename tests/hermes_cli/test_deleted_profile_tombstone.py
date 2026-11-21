@@ -155,20 +155,21 @@ class TestDeletedProfileTombstone:
         assert "worker" in _named_homes(profile_env)
 
     def test_delete_releases_this_process_session_db(self, profile_env):
-        import hermes_state_registry as registry
+        from persistence_assembly import close_all_stores, open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
 
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
-        held = registry.acquire(profile_dir / "state.db")
-        assert held._conn is not None
         try:
-            _delete("worker")
-            assert held._conn is None
+            with open_persistence(profile_scope(home=profile_dir)) as store:
+                held = raw_holder(store)
+                assert held._conn is not None
+                _delete("worker")
+                assert held._conn is None
             recreated = create_profile("worker", no_alias=True, no_skills=True)
-            again = registry.acquire(recreated / "state.db")
-            assert again._conn is not None
-            registry.release(again)
+            with open_persistence(profile_scope(home=recreated)) as store:
+                assert raw_holder(store)._conn is not None
         finally:
-            registry.close_all()
+            close_all_stores()
 
     def test_profile_exists_is_false_for_tombstoned_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
@@ -317,3 +318,229 @@ class TestNamedProfileHome:
         (profiles_dir / ".deleted").mkdir(parents=True)
         worker = profiles_dir / "worker"
         assert named_profile_home(worker / "logs") == worker
+
+
+class TestMkdirBoundaryNeverRecreatesNamedHome:
+    @staticmethod
+    def _after_liveness_check(monkeypatch, action, site=None):
+        """Run *action* right after the first liveness check, or the first one *site* makes."""
+        import sys
+
+        import hermes_constants
+
+        real = hermes_constants.assert_named_profile_home_live
+        fired = []
+
+        def check_then_act(path):
+            home = real(path)
+            if not fired and site in (None, sys._getframe(1).f_code.co_name):
+                fired.append((path, home))
+                action()
+            return home
+
+        monkeypatch.setattr(hermes_constants, "assert_named_profile_home_live", check_then_act)
+        return fired
+
+    def test_config_save_after_a_rename_leaves_no_duplicate_under_the_old_name(self, profile_env, monkeypatch):
+        from hermes_cli.profiles import rename_profile
+        from hermes_constants import named_profile_is_live
+        from utils.files import atomic_roundtrip_yaml_save
+
+        old = create_profile("before", no_alias=True, no_skills=True)
+        for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service", "_stop_bot_desktop",
+                     "_maybe_register_gateway_service"):
+            monkeypatch.setattr(f"hermes_cli.profiles.{name}", lambda *_a, **_k: None)
+        monkeypatch.setattr("hermes_cli.profiles.check_alias_collision", lambda _name: "skip")
+        fired = self._after_liveness_check(monkeypatch, lambda: rename_profile("before", "after"))
+
+        with pytest.raises(FileNotFoundError):
+            atomic_roundtrip_yaml_save(old / "config.yaml", {"model": {"default": "late-writer"}})
+
+        assert fired and not old.exists() and not named_profile_is_live(old)
+        assert _named_homes(profile_env) == ["after"]
+
+    def test_nested_write_after_a_delete_does_not_recreate_the_home(self, profile_env, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        fired = self._after_liveness_check(monkeypatch, lambda: _delete("worker"))
+
+        with pytest.raises(FileNotFoundError):
+            mkdir_under_hermes_home(profile_dir / "cache" / "deep")
+
+        assert fired and not profile_dir.exists()
+        assert "worker" not in _named_homes(profile_env)
+
+    @pytest.mark.parametrize("move", ("rename", "delete"))
+    @pytest.mark.parametrize("site", (
+        pytest.param(None, id="first-check"),
+        # The move lands after mkdir_under_hermes_home classified the home as live, so only its own
+        # missing-home branch keeps the old name from coming back with a SOUL.md.
+        pytest.param("mkdir_under_hermes_home", id="boundary-check"),
+    ))
+    def test_home_initialization_after_a_move_does_not_recreate_the_home(self, profile_env, monkeypatch, site, move):
+        from hermes_cli import config
+        from hermes_cli.config_home import HomeInitializationError
+        from hermes_cli.profiles import rename_profile
+        from hermes_constants import named_profile_is_live
+
+        old = create_profile("before", no_alias=True, no_skills=True)
+        for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service", "_stop_bot_desktop",
+                     "_maybe_register_gateway_service"):
+            monkeypatch.setattr(f"hermes_cli.profiles.{name}", lambda *_a, **_k: None)
+        monkeypatch.setattr("hermes_cli.profiles.check_alias_collision", lambda _name: "skip")
+        monkeypatch.setattr(config, "get_hermes_home", lambda: old)
+        config._HERMES_HOME_ENSURED.difference_update({str(old), str(old.resolve())})
+        action = (lambda: rename_profile("before", "after")) if move == "rename" else (lambda: _delete("before"))
+        fired = self._after_liveness_check(monkeypatch, action, site=site)
+
+        with pytest.raises(HomeInitializationError):
+            config.ensure_hermes_home()
+
+        assert fired == [(old, old)]
+        assert not old.exists() and not named_profile_is_live(old)
+        assert _named_homes(profile_env) == (["after"] if move == "rename" else [])
+        if move == "rename":
+            assert named_profile_is_live(old.with_name("after"))
+
+    def test_custom_root_losing_its_marker_mid_call_does_not_recreate_the_home(self, tmp_path, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        root = tmp_path / "custom"
+        home = root / "profiles" / "worker"
+        home.mkdir(parents=True)
+        (root / "config.yaml").write_text("x", encoding="utf-8")
+
+        def delete_marker_and_home():
+            (root / "config.yaml").unlink()
+            home.rmdir()
+
+        fired = self._after_liveness_check(monkeypatch, delete_marker_and_home)
+        with pytest.raises(FileNotFoundError):
+            mkdir_under_hermes_home(home / "logs")
+        assert fired and not home.exists()
+
+    def test_regular_file_at_named_home_is_not_a_successful_mkdir(self, profile_env):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        home.rename(home.with_name("moved"))
+        home.write_text("not a directory", encoding="utf-8")
+        with pytest.raises(FileExistsError):
+            mkdir_under_hermes_home(home)
+        assert home.read_text(encoding="utf-8") == "not a directory"
+
+    def test_live_named_home_creates_only_below_it(self, profile_env, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        before = sorted(p.name for p in profile_dir.iterdir())
+        assert mkdir_under_hermes_home(profile_dir) == profile_dir
+        assert sorted(p.name for p in profile_dir.iterdir()) == before
+
+        deep = profile_dir / "a" / "b" / "c"
+        assert mkdir_under_hermes_home(deep) == deep and deep.is_dir()
+
+        monkeypatch.chdir(profile_env / ".hermes")
+        relative = Path("profiles") / "worker" / "rel" / "d"
+        assert mkdir_under_hermes_home(relative) == relative and (profile_dir / "rel" / "d").is_dir()
+
+    def test_default_home_still_creates_missing_parents(self, profile_env):
+        from hermes_constants import mkdir_under_hermes_home
+
+        nested = profile_env / ".hermes" / "x" / "y"
+        assert mkdir_under_hermes_home(nested) == nested and nested.is_dir()
+
+
+class TestMkdirBoundaryElevatedGrantSelection:
+    @pytest.fixture()
+    def granted(self, monkeypatch):
+        import hermes_dir_acl
+
+        calls = []
+        monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+        monkeypatch.setattr(hermes_dir_acl, "_granted", set())
+        monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: calls.append(Path(p)) or True)
+        return calls
+
+    @staticmethod
+    def _forget_creation(granted):
+        import hermes_dir_acl
+
+        granted.clear()
+        hermes_dir_acl._granted.clear()
+
+    def test_the_home_as_target_is_repaired_once_and_never_created(self, profile_env, granted, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        self._forget_creation(granted)
+        assert mkdir_under_hermes_home(home) == home and mkdir_under_hermes_home(home) == home
+        assert granted == [home]
+
+        fired = TestMkdirBoundaryNeverRecreatesNamedHome._after_liveness_check(monkeypatch, lambda: _delete("worker"))
+        mkdir_under_hermes_home(home)
+        assert fired and not home.exists() and granted == [home]
+
+    def test_existing_ancestors_are_not_granted_on_the_way_to_the_leaf(self, profile_env, granted):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        (home / "cache" / "media").mkdir(parents=True)
+        self._forget_creation(granted)
+
+        mkdir_under_hermes_home(home / "cache" / "media" / "new" / "leaf")
+        assert granted == [home / "cache" / "media" / "new", home / "cache" / "media" / "new" / "leaf"]
+        mkdir_under_hermes_home(home / "cache" / "media")
+        mkdir_under_hermes_home(home / "cache" / "media")
+        assert granted[2:] == [home / "cache" / "media"]
+
+    def test_dotdot_through_a_missing_dir_never_repairs_the_home_tree(self, profile_env, granted):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        self._forget_creation(granted)
+
+        target = home / "missing" / ".." / "dest"
+        assert mkdir_under_hermes_home(target).is_dir()
+        assert granted == [home / "missing", target]
+
+    @pytest.mark.parametrize("racer", ["dir", "file"])
+    def test_a_leaf_created_after_its_parent_still_goes_through_mkdir(self, profile_env, granted, monkeypatch, racer):
+        import hermes_constants
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        self._forget_creation(granted)
+        leaf = home / "new" / "leaf"
+        real = hermes_constants._mkdir_below_home
+
+        def parent_then_race(h, path):
+            real(h, path)
+            if path == leaf.parent:
+                leaf.mkdir() if racer == "dir" else leaf.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(hermes_constants, "_mkdir_below_home", parent_then_race)
+        if racer == "file":
+            with pytest.raises(FileExistsError):
+                mkdir_under_hermes_home(leaf)
+        else:
+            mkdir_under_hermes_home(leaf)
+            assert granted == [leaf.parent, leaf]
+
+    def test_dotdot_after_a_symlink_follows_the_link_like_mkdir(self, profile_env):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        (profile_env / "outside" / "inner").mkdir(parents=True)
+        (home / "link").symlink_to(profile_env / "outside" / "inner", target_is_directory=True)
+        target = home / "link" / ".." / "dest"
+        assert mkdir_under_hermes_home(target).is_dir()
+        assert (profile_env / "outside" / "dest").is_dir() and not (home / "dest").exists()
+
+    def test_default_home_grant_selection_is_unchanged(self, profile_env, granted):
+        from hermes_constants import mkdir_under_hermes_home
+
+        root = profile_env / ".hermes"
+        mkdir_under_hermes_home(root / "x" / "y")
+        assert granted == [root / "x", root / "x" / "y"]

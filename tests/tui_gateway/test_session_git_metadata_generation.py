@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import types
+
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway import server
-from hermes_state import SessionDB
 
 
 class _ImmediateThread:
@@ -17,12 +22,12 @@ class _ImmediateThread:
 def test_cwd_claim_precedes_probe_and_generation_reaches_publish(monkeypatch):
     events = []
 
-    class DB:
-        def update_session_cwd(self, session_id, cwd):
+    class Sessions:
+        def update_cwd(self, session_id, cwd):
             events.append(("claim", session_id, cwd))
             return 17
 
-        def publish_session_git_metadata(
+        def publish_git_metadata(
             self, session_id, cwd, generation, branch, root
         ):
             events.append(
@@ -30,7 +35,9 @@ def test_cwd_claim_precedes_probe_and_generation_reaches_publish(monkeypatch):
             )
             return True
 
-    monkeypatch.setattr(server, "_get_db", lambda: DB())
+    persistence = types.SimpleNamespace(sessions=Sessions())
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(persistence))
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(
         server.git_probe,
@@ -81,11 +88,11 @@ def test_persisted_row_missing_git_metadata_is_enriched_on_hydration(monkeypatch
     that stamped only the cwd. The row is built directly rather than through
     ``_ensure_session_db_row`` so the two paths stay independently covered.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     repo = tmp_path / "repo"
     repo.mkdir()
     key = "desktop-session"
-    db.create_session(key, source="desktop", model="test-model", cwd=str(repo))
+    seed_session(db, key, "desktop", model="test-model", cwd=str(repo))
     session = {
         "session_key": key,
         "source": "desktop",
@@ -100,11 +107,11 @@ def test_persisted_row_missing_git_metadata_is_enriched_on_hydration(monkeypatch
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: str(repo))
     server._sessions[sid] = session
     try:
-        assert db.get_session(key)["git_branch"] is None
+        assert session_row(db, key)["git_branch"] is None
 
         server._hydrate_session_cwd(sid, key, db, None)
 
-        row = db.get_session(key)
+        row = session_row(db, key)
         assert row["cwd"] == str(repo)
         assert row["git_branch"] == "feature/session-metadata"
         assert row["git_repo_root"] == str(repo)

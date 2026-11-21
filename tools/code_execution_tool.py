@@ -36,9 +36,6 @@ from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
 
-# Loopback TCP replaces AF_UNIX on Windows, so execute_code runs on every platform Hermes does.
-SANDBOX_AVAILABLE = True
-
 # Tools allowed inside the sandbox; ∩ the session's enabled tools decides which stubs are generated.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
@@ -113,8 +110,6 @@ def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
 
 def check_sandbox_requirements() -> bool:
     """check_fn: available unless the vercel_sandbox backend fails its own checks."""
-    if not SANDBOX_AVAILABLE:
-        return False
     try:
         from tools.terminal_tool import _get_env_config
         from tools.terminal_tool_backends import _check_vercel_sandbox_requirements
@@ -466,15 +461,6 @@ def _get_or_create_env(task_id: str):
         return env, env_type
 
 
-def _ship_file_to_remote(env, remote_path: str, content: str, *, atomic: bool = False) -> None:
-    """Write *content* owner-only to *remote_path*; the payload rides
-    ``stdin_data``, never an ``echo`` argv (see _remote_write). Raises on write
-    failure: the caller ships secrets and code into dirs it believes are locked
-    down, so a silent failure would run the next step against a missing or
-    half-written file."""
-    _remote_write(env, remote_path, content, atomic=atomic, check=True)
-
-
 def _ship_env_file_and_launch(env, remote_dir: str, env_name: str, launch: str, *,
                               rpc_dir: str, rpc_token: str, **extra_env: str) -> str:
     """Ship the sandbox env (RPC dir + token, PYTHONDONTWRITEBYTECODE, the routed
@@ -487,17 +473,20 @@ def _ship_env_file_and_launch(env, remote_dir: str, env_name: str, launch: str, 
     snapshot after each command. A plain ``set -a; . file`` in the outer shell
     would export HERMES_RPC_TOKEN/PYTHONPATH/TZ into that snapshot and re-export
     them into every later command on the backend (the #71296 snapshot-leak
-    class). The token also stays off the remote shell's argv, which co-tenant
-    users can read via ps for the command's lifetime."""
+    class). The ``cd`` stays in it too: in the outer shell the wrapper's cwd
+    marker would make *remote_dir* the session cwd, and the per-call path then
+    deletes that dir, so every later file tool fails at ``cd``. The token also
+    stays off the remote shell's argv, which co-tenant users can read via ps
+    for the command's lifetime."""
     env_map = {"HERMES_RPC_DIR": rpc_dir, "HERMES_RPC_TOKEN": rpc_token,
                "PYTHONDONTWRITEBYTECODE": "1", **extra_env}
     tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
     if tz:
         env_map["TZ"] = tz
     lines = "".join(f"{k}={shlex.quote(v)}\n" for k, v in env_map.items())
-    _ship_file_to_remote(env, f"{remote_dir}/{env_name}", lines)
-    return (f"cd {shlex.quote(remote_dir)} && "
-            f"( set -a && . ./{env_name} && set +a && {launch} )")
+    _remote_write(env, f"{remote_dir}/{env_name}", lines, check=True)
+    return (f"( cd {shlex.quote(remote_dir)} && "
+            f"set -a && . ./{env_name} && set +a && {launch} )")
 
 
 def _env_temp_dir(env: Any) -> str:
@@ -630,9 +619,9 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         _execute_checked(env, _private_dirs_cmd(sandbox_dir, f"{sandbox_dir}/rpc"),
                          "remote sandbox setup", timeout=10)
         rpc_token = secrets.token_urlsafe(32)
-        _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
-        _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
+        _remote_write(env, f"{sandbox_dir}/hermes_tools.py",
+                      generate_hermes_tools_module(list(sandbox_tools), transport="file"), check=True)
+        _remote_write(env, f"{sandbox_dir}/script.py", code, check=True)
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
         # See #30882.
@@ -744,9 +733,6 @@ def execute_code(
     the security envelope (env scrubbing, tool whitelist + call budget, output redaction), not an
     isolation jail: default `project` mode runs in the session's cwd with the project venv.
     ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first."""
-    if not SANDBOX_AVAILABLE:
-        return tool_error("execute_code sandbox is unavailable in this environment. "
-                          "Use normal tool calls (terminal, read_file, write_file, ...) instead.")
     # Fail closed under a terminal-policy refusal scope: the routed profile's terminal
     # policy is unresolved, so refuse rather than inherit the launch process's ambient policy.
     try:
@@ -759,8 +745,6 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided. execute_code requires a non-empty 'code' "
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
-    # Hard-block gateway-lifecycle commands (mirrors the terminal_tool guard — otherwise
-    # `os.system("launchctl bootout ...")` here bypasses it and SIGTERMs the gateway mid-task).
     # Gated on PID-file ownership, not the inherited env marker.
     # Hard-block gateway-lifecycle commands, mirroring the terminal_tool guard (#68289): without this,
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
@@ -823,29 +807,6 @@ def execute_code(
         reset=bool(reset), is_interrupted=_is_interrupted,
         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
     ))
-
-
-def _kill_process_group(proc, escalate: bool = False):
-    """Kill the child and its whole process tree via agent.deadline.kill_process_tree: SIGTERM
-    (killpg + psutil descendant sweep; ``taskkill /T /F`` on Windows, where sig is ignored); with
-    ``escalate=True`` wait 5s then SIGKILL survivors. Never raises — falls back to ``proc.kill()``."""
-    import signal as _signal
-    def _tree_signal(sig) -> None:
-        try:
-            from agent.deadline import kill_process_tree
-            kill_process_tree(proc.pid, sig=sig)
-        except Exception as e:
-            logger.debug("Could not terminate process tree: %s", e, exc_info=True)
-            try:
-                proc.kill()
-            except Exception as e2:
-                logger.debug("Could not kill process: %s", e2, exc_info=True)
-    _tree_signal(getattr(_signal, "SIGTERM", None))
-    if escalate:
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _tree_signal(getattr(_signal, "SIGKILL", None))
 
 
 def _load_config() -> dict:

@@ -47,9 +47,8 @@ class CLIBacktrackMixin:
         predicate /undo counts turns with, so an ordinal here is the ordinal it rewinds. An image
         prompt gives what the user typed: the vision note or attach hint the model got is dropped,
         and the image is not re-attached (an armed edit sends text only)."""
-        from agent.context_compressor import user_originated_turn_view
+        from session_rules.turns import user_originated_turn_view, typed_prompt_content
         from agent.image_routing import split_image_notes
-        from agent.message_metadata import typed_prompt_content
         from hermes_cli.cli_session_mixin import _user_turn_indices
         history = self.conversation_history or []
         prompts = []

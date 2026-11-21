@@ -13,8 +13,10 @@ import logging
 import os
 import re
 import shlex
+import signal
 import stat
 import sys
+from itertools import pairwise
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -71,8 +73,10 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # `taskkill /F /IM python.exe`, `pkill -9 python3` or `killall python` carry no hermes/gateway token
 # yet terminate it (#113667). Token-aware rather than a line regex: option VALUES are never read as
 # targets (`pkill -u <user> chrome`), `-f` cmdline patterns are judged as patterns, and other image
-# names (`taskkill /F /IM chrome.exe`) stay available. Numeric-PID kills are out of scope:
-# the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to.
+# names (`taskkill /F /IM chrome.exe`) stay available. Numeric-PID kills of OTHER processes stay
+# allowed (the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to); a
+# literal PID equal to the gateway's own is refused only when the caller passes ``gateway_pid``
+# (same PID namespace by construction, see `_targets_gateway_pid`).
 _INTERPRETER_IMAGE_RE = re.compile(r"^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$")
 _HOST_INTERPRETER_NAME = Path(sys.executable).name.lower() if sys.executable else ""
 _KILLER_VALUE_OPTIONS = {
@@ -798,6 +802,240 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
 
 
+# Shell syntax words that may precede the executed command in a `;`/`&&`-split segment
+# (`if true; then kill N; fi`). Peeled only for the PID check; shlex has already dropped quotes, so a
+# quoted `'then' kill N` peels too — a harmless over-block of a command that sends nothing.
+_PID_SCAN_SYNTAX_PREFIXES = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
+# A redirection operator, longest first: a partial `<<` match on `<<<` would leave the here-string
+# word (`kill <<< -0 N`) to be read as an argument. Operator-only tokens also consume the next word.
+_REDIRECT_OPERATOR_RE = re.compile(r"\d*(?:<<<|<<-|<<|<>|>>|>\||<|>)")
+_KILL_LISTING_OPTIONS = frozenset({"-l", "-L", "--list", "--table"})
+_KILL_SIGNAL_VALUE_OPTIONS = frozenset({"-s", "-n", "--signal"})
+# Signals that leave the gateway running: 0 sends nothing, and SIGUSR2 is the documented
+# faulthandler stack dump (registered with chain=False in gateway/run_startup.py).
+_NONLETHAL_KILL_SIGNALS = frozenset({"0"} | ({"USR2", str(int(signal.SIGUSR2))} if hasattr(signal, "SIGUSR2") else set()))
+
+
+def _is_nonlethal_signal(spec: str) -> bool:
+    return spec.upper().removeprefix("SIG") in _NONLETHAL_KILL_SIGNALS
+
+
+def _is_nonlethal_signal_option(arg: str) -> bool:
+    """``-0`` / ``-s0`` / ``--signal=0``, ``-USR2`` / ``-SIGUSR2`` / ``-sUSR2`` / ``-12`` (Linux numbering)."""
+    return arg[:1] == "-" and (
+        _is_nonlethal_signal(arg.removeprefix("--signal=").lstrip("-"))
+        or (arg[:2] in ("-s", "-n") and _is_nonlethal_signal(arg[2:]))
+    )
+
+
+def _is_pid_operand(token: str, pid: int, *, group: bool = False) -> bool:
+    """*token* names *pid*: ``N``, ``+N``, or (when *group*) the process-group target ``-N`` — the
+    supervised gateway leads its own process group, so a group kill reaches it too."""
+    if token[:1] == "+" or (group and token[:1] == "-"):
+        token = token[1:]
+    # Text compare: int() raises past 4300 digits, which would abort the whole walk.
+    return token.isascii() and token.isdecimal() and token.lstrip("0") == str(pid)
+
+
+def _kill_targets_pid(args: list[str], pid: int) -> bool:
+    """Whether POSIX/procps ``kill`` with *args* signals literal *pid* (listings and signal-0 probes
+    send nothing). A ``-N`` is a signal number until a signal or ``--`` was given; after that it is
+    a process-group target."""
+    position = 0
+    signal_given = False
+    while position < len(args):
+        arg = args[position]
+        if arg == "--":
+            return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
+        # Only before a signal was given: after one, `-0` / `-12` are process-group targets.
+        if arg in _KILL_LISTING_OPTIONS or (not signal_given and _is_nonlethal_signal_option(arg)):
+            return False
+        if arg in _KILL_SIGNAL_VALUE_OPTIONS:
+            if _is_nonlethal_signal(args[position + 1] if position + 1 < len(args) else ""):
+                return False
+            signal_given = True
+            position += 2
+            continue
+        if _is_pid_operand(arg, pid, group=signal_given):
+            return True
+        if redirect := _REDIRECT_OPERATOR_RE.match(arg):  # `kill 2>/dev/null -0 N`: not an operand
+            position += 2 if redirect.end() == len(arg) else 1
+            continue
+        if not arg.startswith("-"):
+            # The first operand ends option parsing: every later word is a target, so in
+            # `kill 99 -N` the `-N` is a process group and `kill 99 -s 0 N` still signals N.
+            return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
+        signal_given = True
+        position += 1
+    return False
+
+
+_STOP_PROCESS_VALUE_PARAMS = frozenset({"-id", "-name", "-n", "-processname", "-inputobject"})
+_WHATIF_SWITCHES = frozenset({"-whatif", "-wi", "-whatif:$true", "-wi:$true"})
+# Stop-Process parameters that take no argument: a `-WhatIf` right after one of these (or after a
+# colon-bound `-X:v`) is a switch; after any other `-X` it may be X's value (`-ErrorVariable -WhatIf`).
+_STOP_PROCESS_SWITCHES = _WHATIF_SWITCHES | frozenset(
+    {"-force", "-passthru", "-confirm", "-cf", "-verbose", "-vb", "-debug", "-db"}
+)
+_WHATIF_PREVIEW_COMMANDS = frozenset({"stop-process", "spps", "kill"})
+# Fail-closed: any of these ANYWHERE in the raw command, quoted or not, turns the preview exemption
+# off. Line breaks other than space/tab (CR, LF, NEL, U+2028/U+2029, NBSP, ...), statement and pipeline
+# separators, call/background `&`, blocks, (sub)expressions, splats, backtick escapes, comments,
+# redirections, `--`/`--%`, Unicode dashes/quotes, and a nested powershell/pwsh (-c / -EncodedCommand).
+_WHATIF_PREVIEW_DISQUALIFIER_RE = re.compile(r"(?i)[^\S \t]|[;|&{}()@$#`,%\\<>\u2010-\u201f]|--|powershell|pwsh")
+# A colon-bound WhatIf (or a prefix of it): only `:$true` is a preview, `:$false` / `:0` run the stop.
+_WHATIF_BOUND_RE = re.compile(r"(?i)-(?:wh[a-z]*|wi):")
+
+
+def _preview_words(command: str) -> Optional[list[tuple[str, bool]]]:
+    """Space/tab-separated words of *command*, each with whether it contains a quote; None when a
+    quote is unbalanced."""
+    words: list[tuple[str, bool]] = []
+    current: list[str] = []
+    quote, quoted = "", False
+    for ch in command:
+        if quote or ch not in " \t":
+            if not quote and ch in "'\"":
+                quote, quoted = ch, True
+            elif ch == quote:
+                quote = ""
+            current.append(ch)
+        elif current:
+            words.append(("".join(current), quoted))
+            current, quoted = [], False
+    if quote:
+        return None
+    if current:
+        words.append(("".join(current), quoted))
+    return words
+
+
+def _is_stop_process_whatif_preview(command: str) -> bool:
+    """Whether the WHOLE raw *command* is one ``Stop-Process … -WhatIf`` statement, i.e. a preview that
+    signals nothing. Exempt only when: no disqualifier (``_WHATIF_PREVIEW_DISQUALIFIER_RE``) appears
+    anywhere; the first word is Stop-Process/spps/kill; every colon-bound WhatIf is ``:$true``; and
+    ``-WhatIf`` / ``-wi`` (optionally ``:$true``) is an unquoted word that does not follow a
+    parameter which takes a value. ``$`` is a disqualifier too, so ``-WhatIf:$true`` is the only word
+    that may carry one."""
+    words = _preview_words(command)
+    if not words or words[0][1] or words[0][0].lower() not in _WHATIF_PREVIEW_COMMANDS:
+        return False
+    # Words split on space/tab only, so every other separator stays inside a word and is seen here.
+    others = [word for word, _ in words if word.lower() not in _WHATIF_SWITCHES]
+    if any(_WHATIF_BOUND_RE.search(word) or _WHATIF_PREVIEW_DISQUALIFIER_RE.search(word) for word in others):
+        return False
+    for (previous, _), (word, quoted) in pairwise(words):
+        previous = previous.lower()
+        # `-X: v` binds the NEXT word to X even when it looks like a parameter (`-ErrorVariable: -WhatIf`).
+        after_value_param = previous[:1] == "-" and (
+            previous.endswith(":") or ":" not in previous and previous not in _STOP_PROCESS_SWITCHES
+        )
+        if not quoted and word.lower() in _WHATIF_SWITCHES and not after_value_param:
+            return True
+    return False
+
+
+def _windows_killer_targets_pid(name: str, args: list[str], pid: int, *, whatif_preview: bool = False) -> bool:
+    """``taskkill /PID n`` (local only: ``/S`` names another host) or ``Stop-Process -Id n`` —
+    also ``/PID:n`` / ``-Id:n``, comma lists split across spaces, and Stop-Process's positional Id.
+    *whatif_preview*: the whole command is a ``-WhatIf`` preview (``_is_stop_process_whatif_preview``)."""
+    # `-Id 1, 2` tokenizes as `1,` `2`: rejoin comma lists before reading values.
+    args = re.sub(r"\s*,\s*", ",", " ".join(args)).split()
+    lowered = [arg.lower() for arg in args]
+    # PowerShell's WhatIf switch previews Stop-Process without signaling the target. Decided on the
+    # raw command, not these shlex args: shlex drops quotes and `{`/`}`/CR boundaries, so a -WhatIf
+    # bound to a scriptblock, a later CR statement or a -ErrorVariable value would look like a switch.
+    if name == "stop-process" and whatif_preview:
+        return False
+    if name == "taskkill" and "/s" in lowered:
+        return False
+    flags = ("/pid", "-pid") if name == "taskkill" else ("-id",)
+    values: list[str] = []
+    position = 0
+    while position < len(args):
+        flag, colon, inline = lowered[position].partition(":")
+        if flag in flags:
+            values.append(inline if colon else (args[position + 1] if position + 1 < len(args) else ""))
+        elif name == "stop-process" and not lowered[position].startswith("-"):
+            # The positional operand binds to -Id. A bare token after an unlisted option
+            # (`-ErrorAction Stop -Id N`) may be that option's value, so keep scanning.
+            values.append(args[position])
+        if name == "stop-process" and flag in _STOP_PROCESS_VALUE_PARAMS and not colon:
+            position += 1
+        position += 1
+    return any(_is_pid_operand(part, pid) for value in values for part in value.split(","))
+
+
+# Wrappers whose payload is a command STRING run in the same PID namespace; their joined operands
+# are re-scanned for the literal-PID check.
+_PID_SCAN_STRING_RUNNERS = {"eval": None, "powershell": ("-c", "-command"), "pwsh": ("-c", "-command"),
+                            "cmd": ("/c", "/k")}
+
+
+def _string_runner_payload(name: str, args: list[str]) -> Optional[str]:
+    """Command text ``eval …`` / ``powershell -c …`` / ``cmd /c …`` hands to a parser, else None."""
+    flags = _PID_SCAN_STRING_RUNNERS[name]
+    if flags is None:
+        return " ".join(args)
+    lowered = [arg.lower() for arg in args]
+    return next((" ".join(args[i + 1:]) for i, flag in enumerate(lowered) if flag in flags), None)
+
+
+# Command-substitution bodies (backtick and `$(…)`, including inside double quotes) run as commands.
+# Matched on raw text, so a single-quoted literal over-blocks — harmless for a gateway-PID kill.
+_PID_SCAN_SUBSTITUTION_RE = re.compile(r"`([^`]*)`|\$\(([^()]*)\)")
+
+
+def _targets_gateway_pid(
+    command: str, gateway_pid: int, *, depth: int = 0, rescan: Optional[Callable[[str], bool]] = None,
+) -> bool:
+    """An executed ``kill`` / ``taskkill`` / ``Stop-Process`` whose LITERAL PID operand is the gateway's
+    own (#149944). Dynamic PIDs (``$(pgrep …)``, ``$PPID``) are not resolved. ``sh -c`` payloads and
+    referenced scripts reach this through the recursive walk; ``eval`` / ``powershell -c`` / ``cmd /c``
+    payloads go to *rescan* (the walk passes its own ``recurse``, so they open ``sh -c`` payloads and
+    scripts too). Command substitutions are matched on raw text, quotes included, so they are re-scanned
+    by this check alone: the full walk would fail closed on an inert ``'$(bash /dev/null)'``."""
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    rescan = rescan or (lambda text: _targets_gateway_pid(text, gateway_pid, depth=depth + 1))
+    # Only the top-level command can be a preview: a nested payload / script / substitution never is.
+    whatif_preview = depth == 0 and _is_stop_process_whatif_preview(command)
+    command = strip_inert_heredoc_bodies(command)
+    if depth < _MAX_REFERENCED_SCRIPT_DEPTH:
+        for match in _PID_SCAN_SUBSTITUTION_RE.finditer(command):
+            body = match.group(1) if match.group(1) is not None else match.group(2)
+            if _targets_gateway_pid(body, gateway_pid, depth=depth + 1):
+                return True
+    for segment in _iter_command_segments(command):
+        offset = 0
+        while offset < len(segment):
+            token = segment[offset]
+            if token in _PID_SCAN_SYNTAX_PREFIXES:
+                offset += 2 if token == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
+            elif redirect := _REDIRECT_OPERATOR_RE.match(token):  # `>/dev/null kill N`
+                offset += 2 if redirect.end() == len(token) else 1  # `> f kill` vs `>f kill`
+            else:
+                break
+        segment = segment[offset:]
+        index = _executed_command_index(segment)
+        if index is None:
+            continue
+        name = _executable_name(segment[index]).lower().removesuffix(".exe")
+        name = "stop-process" if name == "spps" else name  # PowerShell's built-in Stop-Process alias
+        args = segment[index + 1:]
+        if name == "kill" and _kill_targets_pid(args, gateway_pid):
+            return True
+        if name in ("taskkill", "stop-process") and _windows_killer_targets_pid(
+            name, args, gateway_pid, whatif_preview=whatif_preview,
+        ):
+            return True
+        if name in _PID_SCAN_STRING_RUNNERS and depth < _MAX_REFERENCED_SCRIPT_DEPTH:
+            payload = _string_runner_payload(name, args)
+            if payload and rescan(payload):
+                return True
+    return False
+
+
 def _direct_lifecycle_scan(command: str) -> bool:
     """Pure-string direct scans: lifecycle regex (data-exempted) + submit."""
     return (
@@ -1194,6 +1432,7 @@ def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
     written: Optional[dict[Path, list[str]]] = None, charge: bool = True,
+    gateway_pid: Optional[int] = None,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1206,18 +1445,23 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command, written_body=not charge):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command):
-        return True
-    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
-        return executed
+    # Before the PID check: a kill payload it rescans (`sh -c 'bash P'`) resolves P to its written body.
     written = _collect_heredoc_written_scripts(command, cwd, written)
 
     def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed, written=written,
-            charge=charge,
+            charge=charge, gateway_pid=gateway_pid,
         )
+
+    if _direct_lifecycle_scan(command) or (
+        executed and gateway_pid is not None
+        and _targets_gateway_pid(command, gateway_pid, depth=depth, rescan=lambda text: recurse(text, cwd, True))
+    ):
+        return True
+    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
+        return executed
 
     # The walks below keep the lenient masked view — NOT the stricter one `_direct_lifecycle_scan`
     # now uses (#127698): the mask boundary is what separates "executed" from "mentioned" path
@@ -1294,10 +1538,12 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    gateway_pid: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
-    real lifecycle command or the command is allowed.
+    real lifecycle command or the command is allowed. *gateway_pid* additionally refuses executed
+    literal-PID kills of that process; pass it only when the command runs in this PID namespace.
 
     Total by construction: never raises. Direct scans are pure string ops; the referenced-script
     walk (filesystem, remote backends, shlex on decoded bytes) is best-effort defense-in-depth — an
@@ -1312,7 +1558,7 @@ def scan_gateway_lifecycle(
     try:
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, gateway_pid=gateway_pid,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:
@@ -1322,7 +1568,9 @@ def scan_gateway_lifecycle(
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command), None
+            return _direct_lifecycle_scan(command) or (
+                gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
+            ), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
             return (contains_gateway_lifecycle_command(command)

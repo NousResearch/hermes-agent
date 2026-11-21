@@ -208,7 +208,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     """
     if not _scan_on_install_enabled():
         return None
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
+    from hermes_cli.plugins_install_scan import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
     if allowed is None and reviewed_pin:
@@ -1102,6 +1102,11 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _settings_cli():
+    from hermes_cli.plugins_settings import cli
+    return cli
+
+
 def _action_update(args):
     if args.name:
         if getattr(args, "yes", False):
@@ -1175,6 +1180,7 @@ _PLUGIN_ACTIONS = {
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
+    **dict.fromkeys(("config", "configure", "settings"), lambda args: _settings_cli().cmd_config(args.name)),
     None: lambda args: cmd_toggle(),
 }
 

@@ -1,9 +1,9 @@
-"""Shared threat-pattern library (prompt injection / promptware / exfiltration) for
-``agent/prompt_builder.py``, ``tools/memory_tool.py`` and ``agent/tool_dispatch_helpers.py``.
+"""Shared threat-pattern library (prompt injection / promptware / exfiltration).
 Each pattern is ``(regex, pattern_id, scope)``; scope is cumulative: ``"all"`` everywhere,
 ``"context"`` adds promptware / C2 / role hijack for context files, memory and tool results
 (warn-level: that content is not user-authored), ``"strict"`` adds aggressive checks only for
-user-mediated writes (memory, skill installs) where a block is resolvable. New patterns must
+memory writes, where a block is resolvable. Skill installs are scanned by ``skills_guard``,
+not here. New patterns must
 anchor on C2 vocabulary or unambiguous attack behavior, NOT bossy English ("you must" is common
 in legitimate AGENTS.md); filler between tokens is the bounded ``_FILLER``."""
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List, Optional, Tuple
+from typing import Optional
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
 # The whole input is still scanned — just in bounded chunks of this size — so a
@@ -27,6 +27,41 @@ _CHUNK_OVERLAP = 4096
 _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py and cron/prompt_scan.py.
+# The word before `forget` is consumed rather than looked behind so a "don't / never / do not forget" exclusion holds
+# across any run of spaces or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent`
+# negate). `_` (Markdown emphasis) counts as punctuation, not as part of the neighbouring word.
+_NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
+            r"|cannot|not|never)")
+# FORGET_RULES_RAW_RE is the unbounded rule for the raw-line scanners (tools/skills_guard.py,
+# cron/prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
+FORGET_RULES_RAW_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’'])+[ \t]+"
+                       r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]*)"
+                       r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
+                       r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)(?![^\W_])")
+# FORGET_RULES_RE is the same rule bounded for the chunked scan_for_threats (width under _CHUNK_OVERLAP). The
+# `{64}` lookbehind anchors on the tail of a word longer than 64 chars, which the first branch cannot start in; it
+# only runs at a space or tab, so a long word costs O(1) per char instead of 64.
+FORGET_RULES_RE = (rf"(?:(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’']){{1,64}}|(?=[ \t])(?<=(?:[^\W_]|[’']){{64}}))"
+                   r"[ \t]{1,64}"
+                   r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]{0,64})"
+                   r"forget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
+                   r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)(?![^\W_])")
+# A negator hard-wrapped onto the line above (`Do not⏎forget …`), emphasised (`**Don't** forget`) or followed by
+# `ever` still negates: callers blank that `forget` before matching FORGET_RULES_RE. One line break at most, so a
+# heading separated from the payload by a blank line cannot suppress it; the break may be CRLF (tool results,
+# memory entries and cron prompts are not newline-normalised). Same length and newlines, so offsets hold.
+# The run after the negator is possessive (`*+`): two plain `[*_]*` with only optional tokens between them backtrack
+# quadratically.
+_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*+[ \t]*(?:\r?\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
+                             r"forget(?![^\W_])", re.IGNORECASE)
+
+
+def mask_negated_forget(text: str) -> str:
+    """``text`` with every negated ``forget`` blanked; the input for FORGET_RULES_RE."""
+    return _NEGATED_FORGET.sub(lambda m: m[1] + " " * 6, text)
+
+
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s{1,64}to)\s{1,64}[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
@@ -35,6 +70,9 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (rf'ignore\s{{1,64}}{_FILLER}(previous|all|above|prior)\s{{1,64}}{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s{1,64}prompt\s{1,64}override', "sys_prompt_override", "all"),
     (rf'disregard\s{{1,64}}{_FILLER}(your|all|any)\s{{1,64}}{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
+    # The determiner must follow `forget` directly and the filler is short, so docs like "don't forget to
+    # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
+    (FORGET_RULES_RE, "forget_rules", "all"),
     (rf'act\s{{1,64}}as\s{{1,64}}(if|though)\s{{1,64}}{_FILLER}you\s{{1,64}}{_FILLER}(have\s{{1,64}}no|don\'t\s{{1,64}}have)\s{{1,64}}{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
     (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s{0,64}div\s{1,64}style\s{0,64}=\s{0,64}["\'][^>]{0,2048}display\s{0,64}:\s{0,64}none', "hidden_div", "all"),
@@ -178,13 +216,17 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     # ``а``) — that needs a TR#39 database.  Each whitespace run then collapses to
     # one char (newline-preserving, for the ``[^\n]`` spans) so the bounded ``\s``
     # quantifiers still see arbitrarily long whitespace as a single separator.
-    normalised = _WS_RUN.sub(_collapse_ws, unicodedata.normalize("NFKC", content))
+    folded = unicodedata.normalize("NFKC", content)
+    normalised = _WS_RUN.sub(_collapse_ws, folded)
+    # Masked before the collapse: a blank line between a negator and `forget` must still break the negation.
+    masked = _WS_RUN.sub(_collapse_ws, mask_negated_forget(folded))
     found_ids: set[str] = set()
     step = MAX_SCAN_CHARS - _CHUNK_OVERLAP
-    for start in range(0, len(normalised), step):
+    for start in range(0, max(len(normalised), len(masked)), step):
         end = start + MAX_SCAN_CHARS
         for compiled, pid in patterns:
-            if pid not in found_ids and _window_has_match(compiled, normalised, start, end):
+            text = masked if pid == "forget_rules" else normalised
+            if pid not in found_ids and _window_has_match(compiled, text, start, end):
                 found_ids.add(pid)
                 findings.append(pid)
     return findings

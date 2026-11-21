@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "uso según el proveedor + estimación de mensajes nuevos"
     source_line: "Fuente: {source}; los recuentos por categoría son estimaciones locales."
     hint_all: "Usa /context all para ver los costos por skill y por conjunto de herramientas."
+    cache_warm: "Caché del prompt: activa hasta las {until} (quedan {remaining}; {ttl}, {confidence})."
+    cache_expired: "Caché del prompt: caducó hace {ago} ({ttl}, {confidence}); el próximo mensaje vuelve a procesar el prompt completo."
+    cache_maybe_warm: "Caché del prompt: puede seguir activa hasta {until} (como máximo {remaining} más; {ttl}, {confidence})."
+    cache_unknown_moved: "Caché del prompt: desconocida (la ruta, la sesión o el contexto cambiaron desde la última solicitud en caché)."
+    cache_unknown_route: "Caché del prompt: desconocida (este proveedor no publica su retención de caché)."
+    cache_unknown_runtime: "Caché del prompt: desconocida (este entorno fija sus propias opciones de caché, que Hermes no puede observar)."
+    cache_unknown_storage: "Caché del prompt: desconocida (no se pudo leer el almacén de la sesión)."
+    cache_warming_off: "Keep-alives: desactivados (fallaron dos veces)."
+    cache_tier_pending: "Nivel: 5m hasta la primera pausa de más de 5 minutos, luego 1h."
+    cache_learned: "Aprendido: {rule}."
+    cache_confidence:
+      proven: "comprobado"
+      declared: "declarado"
+      assumed: "supuesto"
   status:
     header: "📊 **Estado de Hermes Gateway**"
     matrix_scope_header: "**Ámbito de Matrix:**"
@@ -4010,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Modelo grande: alcanzaste tu límite {name} ({resets}), así que no se ejecutará hasta entonces."
   large_notice_percent: "Modelo grande: usa más del uso de tu plan por mensaje. Límite mensual de modelos grandes: {percent} usado."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Archivos cambiados en los turnos deshechos: {files}. Ejecuta /rollback para listar los checkpoints y restaurar uno."
     more: "+{count} más"

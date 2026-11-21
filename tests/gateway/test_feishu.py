@@ -1205,19 +1205,9 @@ class TestAdapterBehavior(unittest.TestCase):
             connect_attempts.append((host, port))
             raise httpcore.ConnectError("stop before network")
 
-        proxy_vars = {
-            name: ""
-            for name in (
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "http_proxy",
-                "https_proxy",
-                "all_proxy",
-            )
-        }
         with (
-            patch.dict(os.environ, proxy_vars, clear=False),
+            # Force direct transport even when macOS supplies a system proxy.
+            patch("httpx._utils.getproxies", return_value={}),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
             patch.object(AutoBackend, "connect_tcp", new=fake_connect_tcp),
             self.assertRaises(SSRFConnectionBlocked),

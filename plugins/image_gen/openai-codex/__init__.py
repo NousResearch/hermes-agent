@@ -64,15 +64,22 @@ def _resolve_model() -> tuple[str, dict[str, Any]]:
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
-def _read_codex_credential() -> tuple[Optional[str], Optional[str]]:
+def _read_codex_credential(model: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
     the image request goes to the host the token's credential routes to (pool row /
     ``model.base_url`` / profile override), never a default it does not belong to (#121486).
-    ``(None, None)`` without a usable token."""
+    ``(None, None)`` without a usable token.
+
+    ``model`` scopes pool selection to the model the request will post. An unscoped select skips a
+    key with ANY active model cooldown (``model_cooldown_until`` stays conservative when it is given
+    no model), and these images never touch a chat model — so a chat model's year-long entitlement
+    bench (``gpt-4o`` / ``codex-mini-latest``, #71970) would otherwise report "no credentials" here
+    and drop the provider out of ``is_available()`` while the very same key is usable (#146385).
+    """
     try:
         from agent.auxiliary_client import _resolve_codex_credential_and_base
 
-        token, base_url = _resolve_codex_credential_and_base()
+        token, base_url = _resolve_codex_credential_and_base(model=model)
         if isinstance(token, str) and token.strip():
             return token.strip(), base_url
         return None, None
@@ -242,7 +249,9 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     price = "varies"
 
     def is_available(self) -> bool:
-        return bool(_read_codex_credential()[0]) and _httpx_available()
+        # Scoped to the image model: an unscoped select is blocked by ANY active per-model cooldown,
+        # which would hide the provider for a year behind a chat model's entitlement bench (#146385).
+        return bool(_read_codex_credential(model=API_MODEL)[0]) and _httpx_available()
 
     def get_setup_schema(self) -> dict[str, Any]:
         return {
@@ -270,7 +279,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token, base_url = _read_codex_credential()
+        token, base_url = _read_codex_credential(model=API_MODEL)
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():

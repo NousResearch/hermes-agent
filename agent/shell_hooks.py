@@ -147,6 +147,9 @@ class ShellHookSpec(_ToolMatcherMixin):
     timeout: int = DEFAULT_TIMEOUT_SECONDS
     fail_closed: bool = False
     compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
+    # stdin ``hook_event_name`` when set (an imported script switching on its own agent's event names);
+    # never part of identity or consent, which key on the Hermes event + command.
+    event_name: Optional[str] = None
 
 
 # --- Public API ---
@@ -447,7 +450,12 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
         warn(".fail_closed=true will be ignored at runtime — fail_closed only applies to blocking-capable "
              "events (%s).  The hook will fail open on %s like any other hook.", ", ".join(sorted(_BLOCKING_EVENTS)), event)
         fail_closed = False
-    return ShellHookSpec(event=event, command=command.strip(), matcher=matcher, timeout=timeout, fail_closed=fail_closed)
+    event_name = raw.get("event_name")
+    if event_name is not None and (not isinstance(event_name, str) or not event_name.strip()):
+        warn(".event_name must be a non-empty string (got %r); sending %r", event_name, event)
+        event_name = None
+    return ShellHookSpec(event=event, command=command.strip(), matcher=matcher, timeout=timeout,
+                         fail_closed=fail_closed, event_name=event_name.strip() if event_name else None)
 
 
 # --- Subprocess callback ---
@@ -552,7 +560,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
-        return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
+        return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event_name or spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
     return _callback
@@ -858,6 +866,6 @@ def script_is_executable(command: str) -> bool:
 
 def run_once(spec: ShellHookSpec, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path."""
-    result = _spawn(spec, _serialize_payload(spec.event, kwargs))
+    result = _spawn(spec, _serialize_payload(spec.event_name or spec.event, kwargs))
     result["parsed"] = _evaluate_result(spec, result)
     return result

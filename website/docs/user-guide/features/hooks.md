@@ -2002,11 +2002,14 @@ hooks:
       timeout: <seconds>         # Optional; default 60, capped at 300
       fail_closed: <bool>        # Optional; default false. pre_tool_call only.
                                  # `failClosed` also accepted (Cursor/Claude Code compat)
+      event_name: "<name>"       # Optional; the stdin `hook_event_name` the script sees
 
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
 Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
+
+`event_name` changes only the `hook_event_name` value written to the script's stdin. Use it when a script written for another agent branches on that agent's event names: with `event_name: PreToolUse` under `pre_tool_call`, a Claude Code script's `if hook_event_name == "PreToolUse"` branch runs instead of falling through. When the event fires, which reply shapes are read, and the consent record all still follow the Hermes event the entry sits under.
 
 On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
 

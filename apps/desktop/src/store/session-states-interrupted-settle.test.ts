@@ -70,7 +70,8 @@ describe('settling a deliberately interrupted live turn', () => {
     // delete stamping the doomed runtime — marking interrupted=true while the
     // turn is still settling. When the backend then confirms the turn ended,
     // that confirmation must not repaint the deliberate interruption as a
-    // retryable connection failure (#131205).
+    // retryable connection failure (#131205). It MUST still show a non-retryable
+    // stop notice so the chat is not blank.
     publishSessionState('rt-stop', liveTurn({ storedSessionId: 's-stop', messages: [] }))
     noteSessionEvent('rt-stop')
     publishSessionState('rt-stop', {
@@ -86,7 +87,10 @@ describe('settling a deliberately interrupted live turn', () => {
     expect(settled?.interrupted).toBe(true)
     expect(settled?.busy).toBe(false)
     expect(settled?.turnLive).toBe(false)
-    expect(card('rt-stop')).toBeUndefined()
+    const notice = card('rt-stop')
+    expect(notice).toBeDefined()
+    expect(notice?.errorSurface?.code).toBe('interrupted')
+    expect(errorRecoveryPlan(notice?.errorSurface).retry).toBe(false)
   })
 
   it('still offers the retry card when an uninterrupted turn ends with no reply', async () => {

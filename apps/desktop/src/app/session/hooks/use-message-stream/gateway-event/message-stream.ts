@@ -434,7 +434,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     playCompletionSound(sessionId)
     lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
 
-    const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+    const finalText =
+      coerceGatewayText(payload?.text) ||
+      coerceGatewayText(payload?.rendered) ||
+      // Interrupted completes may put the stop reason only on `error` (host fill path).
+      (payload?.status === 'interrupted' ? coerceGatewayText(payload?.error) : '')
 
     // This turn's end-of-turn report is still to come, and may arrive after the
     // next turn's message.start (turn-end-report.ts).

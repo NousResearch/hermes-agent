@@ -39,7 +39,7 @@ def _per_token(rate: Optional[Decimal]) -> float:
 
 def evaluate_economics(
     pricing: Any, cached_tokens: int, uncached_tokens: int = 0, *,
-    spent_usd: float = 0.0, observed_warm_usd: float = 0.0, output_tokens: int = 1,
+    spent_usd: float = 0.0, observed_warm_usd: float = 0.0, output_tokens: int = 1, marked: bool = True,
 ) -> CacheWarmingDecision:
     """Price one refresh against the miss it prevents using a ``PricingEntry``-shaped object
     (``input/output/cache_read/cache_write_cost_per_million``).
@@ -49,7 +49,8 @@ def evaluate_economics(
     way, so it adds to the refresh's cost and nothing to the miss it prevents. A refresh is
     reserved at no less than ``observed_warm_usd`` (what the last one was actually billed), and
     ``spent_usd`` (what the run's refreshes were billed so far) plus that reservation may not
-    exceed the miss: past it, warming is dearer than letting the entry expire once. There is no
+    exceed the miss: past it, warming is dearer than letting the entry expire once. ``marked`` False (an
+    automatic, unmarked cache) prices that miss at the input rate, as it is billed. There is no
     absolute dollar floor: a cheap route warms whenever the read is cheaper than the rewrite; a prefix
     below :data:`MIN_CACHEABLE_PREFIX_TOKENS` has no entry to keep."""
     read = _per_token(getattr(pricing, "cache_read_cost_per_million", None))
@@ -59,7 +60,8 @@ def evaluate_economics(
     fee = float(getattr(pricing, "request_cost", None) or 0)  # a per-request fee the refresh pays on top
     tail_cost = uncached_tokens * inp
     hit_cost = cached_tokens * read
-    miss_full = cached_tokens * (write if write > 0 else inp)
+    # A marked (cache_control) miss re-writes the prefix; an unmarked automatic cache bills it as input.
+    miss_full = cached_tokens * (write if marked and write > 0 else inp)
     warm_cost = max(hit_cost + tail_cost + output_tokens * out + fee, observed_warm_usd)
     miss_cost = max(0.0, miss_full - hit_cost)
     economics_available = cached_tokens > 0 and (hit_cost > 0 or miss_full > 0)

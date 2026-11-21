@@ -61,9 +61,11 @@ describe('migrateTilesForProfile', () => {
     const { migrateTilesForProfile } = await import('@/store/session-states')
     const released = Promise.withResolvers<void>()
 
-    vi.stubGlobal('navigator', { locks: {
-      request: (_key: string, run: () => unknown) => released.promise.then(run)
-    } })
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: (_key: string, run: () => unknown) => released.promise.then(run)
+      }
+    })
 
     try {
       const migrating = migrateTilesForProfile('webdesign_bhp', 'hutnik-projectmanager')
@@ -123,74 +125,91 @@ describe('migrateTilesForProfile', () => {
     expect(storage.readJson<unknown[]>('hermes.desktop.sessionOwnerHints.v1')).toContainEqual(['s-9', remote])
   })
 
-  it.each(['rename', 'delete'] as const)('%s keeps frame journals scoped and revokes the old profile', async operation => {
-    // Fresh module instances are intentional: these tests exercise persisted profile ownership.
-    const metrics = await import('@/store/desktop-metrics')
-    const profiles = await import('@/store/session-states')
-    const minute = 60_000
-    const noon = Date.UTC(2026, 8, 27, 12)
+  it.each(['rename', 'delete'] as const)(
+    '%s keeps frame journals scoped and revokes the old profile',
+    async operation => {
+      // Fresh module instances are intentional: these tests exercise persisted profile ownership.
+      const metrics = await import('@/store/desktop-metrics')
+      const profiles = await import('@/store/session-states')
+      const minute = 60_000
+      const noon = Date.UTC(2026, 8, 27, 12)
 
-    vi.useFakeTimers({ toFake: ['Date'] })
-    immediateMetricsLocks()
-    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
-    vi.setSystemTime(noon)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      immediateMetricsLocks()
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+      vi.setSystemTime(noon)
 
-    try {
-      metrics.bindDesktopMetrics(null, 'local|alpha')
-      await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
-      metrics.trackDesktopVisibleTime(11 * minute)
-      metrics.recordLongFrames([120])
-      vi.setSystemTime(noon + minute)
-      metrics.tickDesktopMetrics()
-      metrics.bindDesktopMetrics(null, 'remote-1|alpha')
-      await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
-      metrics.recordLongFrames([70, 70])
-      vi.setSystemTime(noon + 2 * minute)
-      metrics.tickDesktopMetrics()
+      try {
+        metrics.bindDesktopMetrics(null, 'local|alpha')
+        await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
+        metrics.trackDesktopVisibleTime(11 * minute)
+        metrics.recordLongFrames([120])
+        vi.setSystemTime(noon + minute)
+        metrics.tickDesktopMetrics()
+        metrics.bindDesktopMetrics(null, 'remote-1|alpha')
+        await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
+        metrics.recordLongFrames([70, 70])
+        vi.setSystemTime(noon + 2 * minute)
+        metrics.tickDesktopMetrics()
 
-      if (operation === 'rename') {
-        await profiles.migrateTilesForProfile('alpha', 'renamed')
-      } else {
-        profiles.dropTilesForProfile('alpha', { connectionId: 'local', profile: 'alpha' })
-      }
-
-      const reports: [string, Record<string, unknown>][] = []
-
-      const requester = (owner: string) => async (method: string, params: Record<string, unknown> = {}) => {
-        if (method === 'shared_metrics.desktop_long_frames') {
-          reports.push([owner, params])
+        if (operation === 'rename') {
+          await profiles.migrateTilesForProfile('alpha', 'renamed')
+        } else {
+          profiles.dropTilesForProfile('alpha', { connectionId: 'local', profile: 'alpha' })
         }
 
-        return { recorded: true } as never
-      }
+        const reports: [string, Record<string, unknown>][] = []
 
-      vi.setSystemTime(noon + 24 * 60 * minute)
-      metrics.bindDesktopMetrics(requester('local'), `local|${operation === 'rename' ? 'renamed' : 'alpha'}`)
-      await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
+        const requester =
+          (owner: string) =>
+          async (method: string, params: Record<string, unknown> = {}) => {
+            if (method === 'shared_metrics.desktop_long_frames') {
+              reports.push([owner, params])
+            }
 
-      if (operation === 'rename') {
-        await vi.waitFor(() => expect(reports).toHaveLength(1))
-        expect(reports[0]).toEqual(['local', {
-          day: '2026-09-27', visible_ms: minute, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-        }])
-        metrics.bindDesktopMetrics(requester('old-name'), 'local|alpha')
+            return { recorded: true } as never
+          }
+
+        vi.setSystemTime(noon + 24 * 60 * minute)
+        metrics.bindDesktopMetrics(requester('local'), `local|${operation === 'rename' ? 'renamed' : 'alpha'}`)
         await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
-      }
 
-      metrics.bindDesktopMetrics(requester('remote'), 'remote-1|alpha')
-      await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
-      await vi.waitFor(() => expect(reports.some(([owner]) => owner === 'remote')).toBe(true))
-      expect(reports.filter(([owner]) => owner !== 'local')).toEqual([['remote', {
-        day: '2026-09-27', visible_ms: minute, frames: [{ bucket: '50ms_to_100ms', count: 2 }]
-      }]])
-      expect(reports).toHaveLength(operation === 'rename' ? 2 : 1)
-    } finally {
-      metrics.resetDesktopMetricsForTests()
-      vi.restoreAllMocks()
-      vi.unstubAllGlobals()
-      vi.useRealTimers()
+        if (operation === 'rename') {
+          await vi.waitFor(() => expect(reports).toHaveLength(1))
+          expect(reports[0]).toEqual([
+            'local',
+            {
+              day: '2026-09-27',
+              visible_ms: minute,
+              frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+            }
+          ])
+          metrics.bindDesktopMetrics(requester('old-name'), 'local|alpha')
+          await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
+        }
+
+        metrics.bindDesktopMetrics(requester('remote'), 'remote-1|alpha')
+        await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
+        await vi.waitFor(() => expect(reports.some(([owner]) => owner === 'remote')).toBe(true))
+        expect(reports.filter(([owner]) => owner !== 'local')).toEqual([
+          [
+            'remote',
+            {
+              day: '2026-09-27',
+              visible_ms: minute,
+              frames: [{ bucket: '50ms_to_100ms', count: 2 }]
+            }
+          ]
+        ])
+        expect(reports).toHaveLength(operation === 'rename' ? 2 : 1)
+      } finally {
+        metrics.resetDesktopMetricsForTests()
+        vi.restoreAllMocks()
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+      }
     }
-  })
+  )
 
   it('does not turn a successful profile rename into a failure when telemetry storage is unavailable', async () => {
     // Keep the actual rename seam, after module loading has initialized its stores.
@@ -199,7 +218,9 @@ describe('migrateTilesForProfile', () => {
 
     Object.defineProperty(window, 'localStorage', {
       configurable: true,
-      get() { throw new DOMException('storage disabled', 'SecurityError') }
+      get() {
+        throw new DOMException('storage disabled', 'SecurityError')
+      }
     })
 
     try {

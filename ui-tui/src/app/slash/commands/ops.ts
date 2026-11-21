@@ -337,7 +337,8 @@ export const opsCommands: SlashCommand[] = [
 
             // What a safe whole-tree restore left alone, as main's CLI lists it: the first five paths.
             const summarize = (paths: string[]) =>
-              paths.slice(0, 5).join(', ') + (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
+              paths.slice(0, 5).join(', ') +
+              (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
 
             for (const [key, paths] of [
               ['keptUserEdits', r.skipped_user_edits],

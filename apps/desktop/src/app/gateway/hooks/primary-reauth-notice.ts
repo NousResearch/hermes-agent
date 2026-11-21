@@ -13,7 +13,9 @@ import { notify, RECOVERY_ACTIONS } from '@/store/notifications'
 export function notifyPrimaryReauth(detail: string, currentError: () => string): void {
   const foreground = isActivePrimary()
 
-  if (foreground && detail === WEBAPP_LAUNCH_REQUIRED) {return}
+  if (foreground && detail === WEBAPP_LAUNCH_REQUIRED) {
+    return
+  }
 
   notify({
     kind: 'error',

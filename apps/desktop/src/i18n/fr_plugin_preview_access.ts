@@ -5,8 +5,10 @@ export const frPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptPromptTitle: (plugin: string) => `Autoriser ${plugin} à exécuter des scripts sur cette page ?`,
   previewScriptPromptBody: (plugin: string, origin: string) =>
     `${plugin} veut exécuter du JavaScript dans le navigateur d’aperçu sur ${origin}.`,
-  previewScriptPromptRisk: 'Les scripts peuvent lire et modifier tout ce qui se trouve sur ce site, y compris les pages des comptes auxquels vous y êtes connecté.',
-  previewScriptPromptRevokeHint: 'S’applique à ce site uniquement. Vous pouvez révoquer l’accès dans Capacités ▸ Plugins.',
+  previewScriptPromptRisk:
+    'Les scripts peuvent lire et modifier tout ce qui se trouve sur ce site, y compris les pages des comptes auxquels vous y êtes connecté.',
+  previewScriptPromptRevokeHint:
+    'S’applique à ce site uniquement. Vous pouvez révoquer l’accès dans Capacités ▸ Plugins.',
   previewScriptAllow: 'Autoriser sur ce site',
   previewScriptDeny: 'Ne pas autoriser',
   previewScriptAccessLabel: 'Scripts de page',

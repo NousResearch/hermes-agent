@@ -112,7 +112,13 @@ describe('MaintenancePanel debug share', () => {
   // logs of the profile the user confirmed for, not whichever is active later.
   it('uploads the profile that was active when the confirmation opened', async () => {
     const actual = await vi.importActual<typeof HermesApi>('@/hermes')
-    const api = vi.fn(async (_request: { connectionId?: string; path: string; profile?: string }) => ({ auto_delete_seconds: 21600, failures: [], ok: true, redacted: true, urls: {} }))
+    const api = vi.fn(async (_request: { connectionId?: string; path: string; profile?: string }) => ({
+      auto_delete_seconds: 21600,
+      failures: [],
+      ok: true,
+      redacted: true,
+      urls: {}
+    }))
     vi.stubGlobal('hermesDesktop', { api })
     vi.mocked(runDebugShare).mockImplementationOnce(actual.runDebugShare)
     setApiRequestConnection('gw-a')
@@ -127,7 +133,11 @@ describe('MaintenancePanel debug share', () => {
       await act(async () => settleConfirm(true))
 
       expect(api).toHaveBeenCalledTimes(1)
-      expect(api.mock.calls[0][0]).toMatchObject({ connectionId: 'gw-a', path: '/api/ops/debug-share', profile: 'alpha' })
+      expect(api.mock.calls[0][0]).toMatchObject({
+        connectionId: 'gw-a',
+        path: '/api/ops/debug-share',
+        profile: 'alpha'
+      })
     } finally {
       setApiRequestConnection(null)
       setApiRequestProfile(null)

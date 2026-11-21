@@ -164,7 +164,6 @@ export function useDesktopMetrics({
     }
   }, [connectionId, enabled, gatewayOpen, profileKey, request])
 
-
   useEffect(() => {
     const area = enabled
       ? routeArea(

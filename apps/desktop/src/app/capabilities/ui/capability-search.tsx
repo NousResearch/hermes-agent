@@ -25,7 +25,11 @@ export function CapabilitySearch({
     <SearchField
       containerClassName="h-10 w-full min-w-0 rounded-2xl bg-(--dt-card) py-0"
       hints={hints}
-      leadingContent={<Badge size="xs" variant="muted">{scope}</Badge>}
+      leadingContent={
+        <Badge size="xs" variant="muted">
+          {scope}
+        </Badge>
+      }
       onChange={onChange}
       placeholder={placeholder}
       trailingAction={

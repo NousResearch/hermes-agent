@@ -616,7 +616,12 @@ describe('/steer', () => {
   it('seals the live reply at the steer notice, keeping its running tool live', async () => {
     const requestGateway = gateway(method => (method === 'session.steer' ? { status: 'queued' } : undefined))
     const tool = { type: 'tool-call', toolCallId: 't1', toolName: 'terminal', args: {}, argsText: '{}', timestamp: 2 }
-    const live = { id: 'stream-1', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'before', timestamp: 1 }, tool] }
+    const live = {
+      id: 'stream-1',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: 'before', timestamp: 1 }, tool]
+    }
     let handle: HarnessHandle | null = null
     await actRender(
       <Harness

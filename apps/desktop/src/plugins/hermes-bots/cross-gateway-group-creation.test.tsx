@@ -29,7 +29,11 @@ import type { RosterRow } from './types'
 // created only when this gateway can seat the other computers' bots; otherwise
 // the dialog says what is missing, and no Desktop-driven room is ever made.
 
-const { request, notify, openWorkspace } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn() }))
+const { request, notify, openWorkspace } = vi.hoisted(() => ({
+  request: vi.fn(),
+  notify: vi.fn(),
+  openWorkspace: vi.fn()
+}))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
@@ -39,7 +43,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     gatewayActivationEpoch: () => 1,
     useGatewayActivationEpoch: () => 1,
     host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
+      ...sdk.host,
+      requestProfile: request,
+      notify,
+      openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
       connections: vi.fn(async () => []),
       state: {
@@ -56,10 +63,13 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 vi.mock('./group-chat', async importOriginal => {
   const actual = await importOriginal<typeof GroupChatModule>()
 
-  return { ...actual, updateGroupChat: vi.fn((group, mutate) => actual.updateGroupChat(group, mutate, { sync: false })) }
+  return {
+    ...actual,
+    updateGroupChat: vi.fn((group, mutate) => actual.updateGroupChat(group, mutate, { sync: false }))
+  }
 })
 vi.mock('./group-chat-parts', async importOriginal => ({
-  ...await importOriginal<typeof GroupChatParts>(),
+  ...(await importOriginal<typeof GroupChatParts>()),
   GroupImageControls: () => null
 }))
 
@@ -67,7 +77,12 @@ const connectionId = host.state.connectionId as WritableAtom<string | null>
 
 const alpha: RosterRow = { name: 'alpha', connectionId: 'local', connectionLabel: 'This device' }
 const beta: RosterRow = { name: 'beta', connectionId: 'local', connectionLabel: 'This device' }
-const remote: RosterRow = { name: 'remote', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true }
+const remote: RosterRow = {
+  name: 'remote',
+  connectionId: 'other-box',
+  connectionLabel: 'Other box',
+  remoteSource: true
+}
 const scout: RosterRow = { name: 'scout', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true }
 const unreachable: RosterRow = { ...remote, name: 'offline', sourceReachable: false }
 
@@ -78,13 +93,21 @@ beforeEach(() => {
   $groupChatWorkspace.set(null)
   $botMeta.set({})
   request.mockReset().mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta'] }}
+    if (method === 'groups.capabilities') {
+      return { driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta'] }
+    }
 
-    if (method === 'groups.create') {return { room: { room_id: params.room_id, name: params.name, members: params.members } }}
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
 
-    if (method === 'groups.list') {return { rooms: [], next_offset: null }}
+    if (method === 'groups.list') {
+      return { rooms: [], next_offset: null }
+    }
 
-    if (method === 'profiles.configure') {return {}}
+    if (method === 'profiles.configure') {
+      return {}
+    }
 
     return {}
   })
@@ -135,7 +158,9 @@ it('a selection spanning two connections never becomes a Desktop-driven room: it
   expect(screen.getByRole('note').textContent).toBe(CROSS_GATEWAY_GROUP_LOCALES.en.ownerCannotSeatPeers('This device'))
   const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
   expect(submit.disabled).toBe(true)
-  await act(async () => { fireEvent.click(submit) })
+  await act(async () => {
+    fireEvent.click(submit)
+  })
 
   expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
@@ -147,7 +172,9 @@ it('a selection on this connection alone still creates the gateway-owned room (c
   const { onCreated } = await pick([alpha, beta, remote], ['alpha', 'beta'])
 
   expect(screen.queryByRole('note')).toBeNull()
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' })) })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' }))
+  })
 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
   expect(onCreated.mock.calls[0][1]).toBe('key')
@@ -155,40 +182,60 @@ it('a selection on this connection alone still creates the gateway-owned room (c
 })
 
 it.each(['unchanged', 'reopened after disband', 'disbanded', 'renamed', 'disbanded, named refusal'])(
-  'keeps an uncertain create only for its open dialog and live identity: %s', async scenario => {
+  'keeps an uncertain create only for its open dialog and live identity: %s',
+  async scenario => {
     const stored = new Map<string, { room_id: string; name: string; members: unknown; ended?: boolean }>()
     const normal = request.getMockImplementation()!
     let loseReply = true
     request.mockImplementation(async (route, method, params) => {
-      if (method !== 'groups.create') {return normal(route, method, params)}
+      if (method !== 'groups.create') {
+        return normal(route, method, params)
+      }
       const previous = stored.get(params.room_id)
 
-      const reason = previous?.ended ? 'room_id belongs to a disbanded room'
-        : previous && (previous.name !== params.name || JSON.stringify(previous.members) !== JSON.stringify(params.members))
-          ? 'room_id already exists with different state' : null
+      const reason = previous?.ended
+        ? 'room_id belongs to a disbanded room'
+        : previous &&
+            (previous.name !== params.name || JSON.stringify(previous.members) !== JSON.stringify(params.members))
+          ? 'room_id already exists with different state'
+          : null
 
       // A canonical gateway only says invalid_params; a standalone one names the conflict.
-      if (reason && scenario.includes('named')) {throw Object.assign(new Error(reason), { code: 4110 })}
+      if (reason && scenario.includes('named')) {
+        throw Object.assign(new Error(reason), { code: 4110 })
+      }
 
-      if (reason) {throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })}
+      if (reason) {
+        throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
+      }
       const room = previous ?? { room_id: params.room_id, name: params.name, members: params.members }
       stored.set(params.room_id, room)
 
-      if (loseReply) {loseReply = false; throw new Error('request timed out')}
+      if (loseReply) {
+        loseReply = false
+        throw new Error('request timed out')
+      }
 
       return { room }
     })
     let { view, onCreated } = await pick([alpha, beta], ['alpha', 'beta'])
-    const submit = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' })) })
+    const submit = () =>
+      act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' }))
+      })
     await submit()
     expect(onCreated).not.toHaveBeenCalled()
     screen.getByText(CANONICAL_GROUP_LOCALES.en.createUncertain)
     expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
     const first = [...stored.values()][0]
 
-    if (scenario.includes('disband')) {first.ended = true}
+    if (scenario.includes('disband')) {
+      first.ended = true
+    }
 
-    if (scenario === 'renamed') {first.name = 'Changed elsewhere'}
+    if (scenario === 'renamed') {
+      first.name = 'Changed elsewhere'
+    }
 
     if (scenario === 'reopened after disband') {
       ;({ view, onCreated } = await pick([alpha, beta], ['alpha', 'beta'], view))
@@ -218,17 +265,29 @@ it.each(['unchanged', 'reopened after disband', 'disbanded', 'renamed', 'disband
 it.each(['reopened', 'edited'])('a late answer says nothing about the current draft: %s', async change => {
   const normal = request.getMockImplementation()!
   let fail: (error: Error) => void = () => undefined
-  request.mockImplementation(async (route, method, params) => method === 'groups.create'
-    ? new Promise((_, reject) => { fail = reject })
-    : normal(route, method, params))
+  request.mockImplementation(async (route, method, params) =>
+    method === 'groups.create'
+      ? new Promise((_, reject) => {
+          fail = reject
+        })
+      : normal(route, method, params)
+  )
   const { view } = await pick([alpha, beta], ['alpha', 'beta'])
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' })) })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' }))
+  })
 
-  if (change === 'reopened') {await pick([alpha, beta], ['alpha', 'beta'], view)} else {
-    fireEvent.change(screen.getByRole('textbox', { name: translateBots('group.nameLabel') }), { target: { value: 'Other' } })
+  if (change === 'reopened') {
+    await pick([alpha, beta], ['alpha', 'beta'], view)
+  } else {
+    fireEvent.change(screen.getByRole('textbox', { name: translateBots('group.nameLabel') }), {
+      target: { value: 'Other' }
+    })
   }
 
-  await act(async () => { fail(new Error('request timed out')) })
+  await act(async () => {
+    fail(new Error('request timed out'))
+  })
   expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.createUncertain)).toBeNull()
 })
 
@@ -242,7 +301,9 @@ it('a selection wholly on another connection is not offered for creation from he
 it('a room whose members span connections opens in the Desktop-driven view on a gateway-owned install', async () => {
   // An unmarked record an older build saved; a name with no record is a new group chat.
   updateGroupChat('Mixed', room => ({ ...room, members: [alpha, remote] }))
-  await act(async () => { render(<GroupChatWorkspace group="Mixed" members={[alpha, remote]} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Mixed" members={[alpha, remote]} />)
+  })
 
   expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
   expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
@@ -252,19 +313,29 @@ it('a room whose members span connections opens in the Desktop-driven view on a 
 it('an existing Desktop-driven room stays Desktop-driven after its remote member is removed', async () => {
   // Saved by an older build: no new room is ever made this way, but this one keeps working.
   updateGroupChat('Mixed', room => ({ ...room, engine: 'desktop', members: [alpha, beta, remote], roomId: 'old-room' }))
-  await act(async () => { await setGroupChatMembers('Mixed', [alpha, beta]) })
+  await act(async () => {
+    await setGroupChatMembers('Mixed', [alpha, beta])
+  })
 
   expect($groupChats.get().Mixed.engine).toBe('desktop')
 
   // Manage groups removed the remote bot: every remaining member is on this connection.
-  await act(async () => { render(<GroupChatWorkspace group="Mixed" members={[alpha, beta]} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Mixed" members={[alpha, beta]} />)
+  })
 
   expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
   expect(request.mock.calls.filter(call => call[1] === 'groups.list')).toHaveLength(0)
 })
 
 it("a room's Desktop engine rides room sync, so another Desktop keeps driving it too", () => {
-  const room = { engine: 'desktop' as const, log: [{ at: 1, from: { kind: 'user' as const, name: 'You' }, id: 'm1', text: 'hi' }], members: [alpha, beta], roomId: 'r1', watermarks: {} }
+  const room = {
+    engine: 'desktop' as const,
+    log: [{ at: 1, from: { kind: 'user' as const, name: 'You' }, id: 'm1', text: 'hi' }],
+    members: [alpha, beta],
+    roomId: 'r1',
+    watermarks: {}
+  }
   const published = groupChatSyncSnapshot({ Mixed: room })
   const merged = mergeGroupChatSyncSnapshots({ version: 3, rooms: {} }, published)
 

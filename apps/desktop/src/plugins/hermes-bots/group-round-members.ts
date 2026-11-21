@@ -160,8 +160,10 @@ function memberOwesAnswer(
   log: GroupMessage[],
   seesNewUserEntry: boolean
 ): boolean {
-  return Boolean(context.addressedKeys?.has(groupMemberKey(member))) &&
+  return (
+    Boolean(context.addressedKeys?.has(groupMemberKey(member))) &&
     (seesNewUserEntry || !answeredSinceLastUser(log, member, context.thread))
+  )
 }
 
 /** True when `member` has a room entry in `thread` after the latest user entry there. */

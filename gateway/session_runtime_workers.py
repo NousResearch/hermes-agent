@@ -5,10 +5,12 @@ from gateway.session_authorities import all_authorities
 
 
 def executing_sessions(authority):
-    for sid, live in getattr(authority, 'sessions', {}).items():
+    # `executing` clears before settlement; a drain still owns work until its task ends.
+    for task, (sid, live) in tuple(getattr(authority, '_drain_tasks', {}).items()):
+        if authority.sessions.get(sid) is not live or live.task is not task:
+            continue
         execution = getattr(getattr(live, 'event_stream', None), 'execution', None) or {}
-        task = live.task
-        if execution.get('execution_generation') is not None and task is not None and not task.done():
+        if execution.get('execution_generation') is not None and not task.done():
             yield sid, live, execution['execution_generation']
 
 

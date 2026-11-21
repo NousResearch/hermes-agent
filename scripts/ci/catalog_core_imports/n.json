@@ -8,7 +8,7 @@
   "netease-cloud": {"sha":"2e6a5a192e0021ec976a2bd060a2836dd6eb39f2","choices":[[[["hermes_constants","get_hermes_home","dashboard/plugin_api.py:147"]],[]]]},
   "netmind-provider": {"sha":"00ab432e251fc04b983382a7b339f54d96e4b29d","imports":[["providers.base","ProviderProfile","__init__.py:3"],["providers","register_provider","__init__.py:5"]]},
   "netplane": {"sha":"8a1dc6afbe744f1bf19903de27a2efed8d677d5c","imports":[["agent.secret_scope","get_secret","hsclient.py:55"],["hermes_cli.config","require_env_writable","setup_flow.py:51"],["hermes_cli.config","save_env_value_secure","setup_flow.py:51"]]},
-  "netscope": {"sha":"bd720baeb4c5fde2b39f6d869e7fa4d284442d3d","error":"remote: Repository not found.\nfatal: repository 'https://github.com/Mxhi-04/Hermes-netscope/' not found"},
+  "netscope": {"sha":"bd720baeb4c5fde2b39f6d869e7fa4d284442d3d","error":"fatal: could not read Username for 'https://github.com': terminal prompts disabled"},
   "network-xray": {"sha":"4c28b7be6116e150b41ce2e62571c63bfc0968ae","imports":[["plugins.plugin_storage","plugin_data_dir","service.py:18"]]},
   "neural-mesh": {"sha":"281b7b381b6869327c2dd77f36335836d127b959","choices":[[[["agent.memory_provider","MemoryProvider","__init__.py:40"],["agent.memory_provider","RecallStatus","__init__.py:40"],{"try":[[["agent.memory_provider","is_trivial_prompt","__init__.py:43"]],[]]}],[]]]},
   "neuralmind": {"sha":"e66f5010e3a2f5fcf9e18663e353a6cbf87a966d","subdir":"neuralmind/hermes_plugin"},

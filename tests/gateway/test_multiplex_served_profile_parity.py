@@ -150,7 +150,7 @@ def test_served_profile_process_checkpoint_is_recovered_at_startup(served, monke
     import os
     entry = {"session_id": "proc_alpha01", "pid": os.getpid(), "pid_scope": "host", "command": "sleep 1",
              "started_at": 1.0, "watcher_interval": 5, "notify_on_complete": True,
-             "session_key": "agent:alpha:telegram:dm:1001"}
+             "session_key": "agent:alpha:telegram:dm:1001", "owner_pid": 999999999}
     (served.alpha / "processes.json").write_text(json.dumps([entry]))
     registry = ProcessRegistry()
     monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: True)

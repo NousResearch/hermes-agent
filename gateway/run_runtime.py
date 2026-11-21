@@ -35,6 +35,22 @@ def reserved_profile_homes(runner):
     return homes
 
 
+def _drop_reserved_slot(registry, home):
+    """Release the slot a failed build reserved, best effort: the failure being handled is what the
+    caller must see. A second error raised here replaced it: the registry refuses to remove the
+    launch slot, so a ``database is locked`` at boot surfaced as ``RuntimeError('the launch session
+    authority cannot be removed')`` and read as a code bug. The launch slot is never removable (the
+    process exits with the real error), so it is not asked.
+    """
+    from hermes_constants import hermes_home_key
+    if hermes_home_key(home) == registry.launch_key:
+        return
+    try:
+        registry.remove(home)
+    except Exception:
+        logger.debug('could not drop the reserved authority slot for %s', home, exc_info=True)
+
+
 async def _build_profile_authority(runner, name, home, *, register):
     """One profile's authority against its own ``state.db``; raises when that store is unusable."""
     from gateway.run import _profile_runtime_scope
@@ -64,7 +80,7 @@ async def _build_profile_authority(runner, name, home, *, register):
                 register=register)
         except BaseException:
             reference.close()
-            registry.remove(home)
+            _drop_reserved_slot(registry, home)
             raise
         authority.store_reference = reference
     registry.replace(home, authority)

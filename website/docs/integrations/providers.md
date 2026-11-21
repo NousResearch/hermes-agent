@@ -286,7 +286,7 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requires: GMI_API_KEY in ~/.hermes/.env
 
 # Nebius Token Factory
-hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
+hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro-0813
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
 ```
 

@@ -9,6 +9,7 @@ export type SettingsView =
   | 'backup'
   | 'billing'
   | 'connections'
+  | 'federation'
   | 'gateway'
   | 'keybinds'
   | 'keys'

@@ -8,6 +8,14 @@ export function transcriptRowIds(message: ChatMessage): number[] {
   return message.rowId === undefined ? ids : [message.rowId, ...ids]
 }
 
+/** The uid counterpart of transcriptRowIds over the same source rows: a
+ *  compaction rewrite renumbers row ids but keeps each row's message_uid. */
+export function transcriptUids(message: ChatMessage): string[] {
+  const uids = message.parts.flatMap(part => (part.sourceUid !== undefined ? [part.sourceUid] : []))
+
+  return message.messageUid === undefined ? uids : [message.messageUid, ...uids]
+}
+
 /** Unknown identity is not a match, but remains eligible for legacy live projection. */
 export function conflictingTranscriptIdentity(local: ChatMessage, authoritative: ChatMessage): boolean {
   const localIds = transcriptRowIds(local)

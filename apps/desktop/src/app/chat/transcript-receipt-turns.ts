@@ -24,7 +24,7 @@
 import type { PersistedTurn } from '@hermes/shared'
 
 import { isRowId, isTurnUserBubble, receiptUserRowIds } from '@/app/session/hooks/use-message-stream/receipt-user-rows'
-import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
+import { transcriptRowIds, transcriptUids } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { type ChatMessage, isLocalSystemNotice } from '@/lib/chat-messages'
 
 /** Index of the turn's prompt in the window, by the receipt's own identity. */
@@ -270,6 +270,10 @@ export function dropPageRowsOfStoppedTurns(window: ChatMessage[], page: ChatMess
  * fold whose stored rows the window's fold all carries, while the window's
  * fold also carries rows older than the page, is that turn cut by the page
  * boundary: the window's whole fold stays and the page's partial copy goes.
+ * A compaction rewrite renumbers the page's stored rows but keeps each row's
+ * message_uid, so the same cut is decided by uid when the ids no longer pair
+ * (#123294) — still only when the window's fold carries a row the page does
+ * not, so a page that already holds the whole renumbered turn keeps its copy.
  */
 export function dropPageFoldsCutByTheBoundary(window: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
   const pageRows = page.flatMap(transcriptRowIds)
@@ -279,15 +283,27 @@ export function dropPageFoldsCutByTheBoundary(window: ChatMessage[], page: ChatM
   }
 
   const pageFirst = Math.min(...pageRows)
+  const pageUids = new Set(page.flatMap(transcriptUids))
 
   const wholeFolds = window
-    .map(message => new Set(transcriptRowIds(message)))
-    .filter(rows => [...rows].some(id => id < pageFirst))
+    .map(message => ({ rows: new Set(transcriptRowIds(message)), uids: new Set(transcriptUids(message)) }))
+    .filter(fold => [...fold.rows].some(id => id < pageFirst))
 
   const cut = (message: ChatMessage) => {
     const rows = transcriptRowIds(message)
+    const uids = transcriptUids(message)
 
-    return rows.length > 0 && wholeFolds.some(whole => rows.every(id => whole.has(id)))
+    return (
+      (rows.length > 0 && wholeFolds.some(whole => rows.every(id => whole.rows.has(id)))) ||
+      // The renumbered partial copy: its uids still name rows the window's
+      // whole fold carries, so the same suffix-cut test pairs it by uid — but
+      // only when that fold still carries a row the page does not, so a page
+      // that already holds the whole turn keeps its renumbered copy.
+      (uids.length > 0 &&
+        wholeFolds.some(
+          whole => uids.every(uid => whole.uids.has(uid)) && [...whole.uids].some(uid => !pageUids.has(uid))
+        ))
+    )
   }
 
   return page.some(cut) ? page.filter(message => !cut(message)) : page

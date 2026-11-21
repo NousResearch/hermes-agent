@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 from .method_ctx import bind_module
+from agent.message_metadata import MESSAGE_UID
 from agent.prompt_builder import STEER_DISPLAY_KIND
 
 # Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
@@ -340,7 +341,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
                              # Edit cards and settled clarify cards need the original result; other
                              # tool outputs remain omitted from this compact display projection.
                              **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage", "clarify"} else {}),
-                             **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
+                             **{key: m[key] for key in (MESSAGE_UID, "tool_call_id", "timestamp", "display_metadata")
                                 if m.get(key) is not None},
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
@@ -357,6 +358,10 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         # Durable row identity (_rows_to_conversation); reactions etc. address persisted messages by it.
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
+        # Identity a compaction rewrite keeps while renumbering row ids: the
+        # desktop graft matches a rewritten page against the cached window by it (#123294).
+        if m.get(MESSAGE_UID) is not None:
+            msg[MESSAGE_UID] = m[MESSAGE_UID]
         # A user turn shows its skill invocation, never the expanded body (rewind re-sends by ordinal).
         invocation = _skill_scaffold_projection(content_text) if role == "user" else ""
         if invocation:

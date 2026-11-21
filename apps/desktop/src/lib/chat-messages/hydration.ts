@@ -616,6 +616,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    const messageUid = typeof message.message_uid === 'string' && message.message_uid ? message.message_uid : undefined
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
@@ -665,6 +666,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       for (const part of parts) {
         if (part.type === 'text') {
           part.sourceRowId = rowId
+
+          if (messageUid !== undefined) {
+            part.sourceUid = messageUid
+          }
         }
       }
     }
@@ -763,6 +768,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...promptSubmission(message),
+      ...(messageUid !== undefined ? { messageUid } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),

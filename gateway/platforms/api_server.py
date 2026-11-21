@@ -2478,8 +2478,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _message_response(message: dict[str, Any]) -> dict[str, Any]:
         message = _project_client_message(message)
+        # `message_uid`: durable identity a compaction rewrite keeps while renumbering
+        # row ids; the desktop graft matches a rewritten page against the cached
+        # window by it (#123294). Next to `id`/`timestamp`, same per-row scope.
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
+            "message_uid",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
             "display_kind")
         return {key: message.get(key) for key in safe_keys if key in message}

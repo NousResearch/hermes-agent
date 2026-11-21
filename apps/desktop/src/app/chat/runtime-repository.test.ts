@@ -39,6 +39,161 @@ describe('useRuntimeMessageRepository', () => {
     expect(ids).toEqual(['user-1', 'assistant-1'])
   })
 
+  it('collapses settled messages that repeat with different ids after compression (#101938)', () => {
+    // The streaming copy (no rowId) and the rehydrated copy (rowId set) of the
+    // same logical message arrive with different ids but identical settled
+    // content and timestamp — only the first may render.
+    const settled = (id: string, role: ChatMessage['role'], body: string): ChatMessage => ({
+      ...text(id, role, body),
+      timestamp: 1_771_500_000
+    })
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        settled('user-1', 'user', 'hi'),
+        settled('assistant-stream-1', 'assistant', 'the answer'),
+        settled('assistant-rehydrated-1', 'assistant', 'the answer'),
+        settled('user-2', 'user', 'next')
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['user-1', 'assistant-stream-1', 'user-2'])
+  })
+
+  it('elects the durable row and keeps its id, status and row metadata (review #123294)', () => {
+    // review #123294: "This gate keeps the live ID, drops the durable row's
+    // rowId and reactions, and leaves the runtime message in the running
+    // state." The durable copy must win the election and render INSTEAD of
+    // the streaming residue, at the first occurrence's position.
+    const streamingResidue: ChatMessage = {
+      ...text('assistant-live-1', 'assistant', 'the answer'),
+      timestamp: 1_771_500_010,
+      pending: true
+    }
+    const durable: ChatMessage = {
+      ...text('assistant-durable-1', 'assistant', 'the answer'),
+      timestamp: 1_771_500_010,
+      rowId: 49,
+      reactions: [{ author: 'user', emoji: '👍', at: 1_771_500_010 }]
+    }
+
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        text('user-1', 'user', 'hi'),
+        streamingResidue,
+        durable,
+        text('user-2', 'user', 'next')
+      ])
+    )
+
+    const emitted = result.current.messages
+    expect(emitted.map(item => item.message.id)).toEqual(['user-1', 'assistant-durable-1', 'user-2'])
+
+    const kept = emitted.find(item => item.message.id === 'assistant-durable-1')!
+    // Complete, not running: the durable copy won, the pending residue is gone.
+    expect(kept.message.status?.type).toBe('complete')
+    // Row metadata rides metadata.custom (see toRuntimeMessage's reactionMeta).
+    const custom = (kept.message.metadata as { custom?: { rowId?: number; reactions?: unknown[] } }).custom
+    expect(custom?.rowId).toBe(49)
+    expect(custom?.reactions).toEqual([{ author: 'user', emoji: '👍', at: 1_771_500_010 }])
+  })
+
+  it('never collapses a lone pending message with a timestamp (review #123294)', () => {
+    // A live stream row carries timestamp AND pending — it must still render
+    // on its own while it streams (no durable twin has arrived yet).
+    const live: ChatMessage = {
+      ...text('assistant-live-only', 'assistant', 'streaming…'),
+      timestamp: 1_771_500_020,
+      pending: true
+    }
+
+    const { result } = renderHook(() => useRuntimeMessageRepository([text('user-1', 'user', 'hi'), live]))
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['user-1', 'assistant-live-only'])
+  })
+
+  it('keeps distinct tool messages with a reused first call id distinct (review #123294)', () => {
+    // review #123294: providers reuse per-response call ids ("terminal_0"
+    // every turn); the old key collapsed turns whose args differ. The full
+    // content key includes every call's args and name.
+    const turn = (n: number, args: object): ChatMessage => ({
+      ...text(`assistant-${n}`, 'assistant', 'ok'),
+      timestamp: 1_771_500_030 + n,
+      parts: [
+        { type: 'text', text: 'ok' },
+        { type: 'tool-call', toolCallId: 'terminal_0', toolName: 'terminal', args, argsText: JSON.stringify(args) }
+      ] as ChatMessage['parts']
+    })
+
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        text('user-1', 'user', 'go'),
+        turn(1, { command: 'ls' }),
+        text('user-2', 'user', 'again'),
+        turn(2, { command: 'pwd' })
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual([
+      'user-1',
+      'assistant-1',
+      'user-2',
+      'assistant-2'
+    ])
+  })
+
+  it('collapses a pruned carried-forward assistant copy with its durable original via stable call ids (#117750 twin)', () => {
+    // The backend's _stable_tool_key: an assistant row whose calls ALL have
+    // ids keys on the id SET (args are pruned/rewritten across compaction
+    // generations, so they must not defeat the collapse). The frontend twin
+    // must collapse the same pair the backend does.
+    const original: ChatMessage = {
+      ...text('assistant-original', 'assistant', ''),
+      timestamp: 1_771_500_040,
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call_stable_1',
+          toolName: 'terminal',
+          args: { command: 'ls -la /very/long/path/that/a/prune/will/rewrite' },
+          argsText: ''
+        }
+      ] as ChatMessage['parts']
+    }
+    const pruned: ChatMessage = {
+      ...text('assistant-pruned', 'assistant', ''),
+      timestamp: 1_771_500_040,
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call_stable_1',
+          toolName: 'terminal',
+          args: { command: 'ls …' },
+          argsText: ''
+        }
+      ] as ChatMessage['parts']
+    }
+
+    const { result } = renderHook(() => useRuntimeMessageRepository([text('user-1', 'user', 'go'), original, pruned]))
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['user-1', 'assistant-original'])
+  })
+
+  it('keeps two settled messages whose text differs only in whitespace distinct', () => {
+    const settled = (id: string, body: string): ChatMessage => ({
+      ...text(id, 'assistant', body),
+      timestamp: 1_771_500_001
+    })
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        settled('a-1', 'same words'),
+        settled('a-2', 'same\n  words'),
+        settled('a-3', 'same words, but longer')
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['a-1', 'a-2', 'a-3'])
+  })
+
   it('builds a repository the runtime can link without throwing', () => {
     const { result } = renderHook(() =>
       useRuntimeMessageRepository([

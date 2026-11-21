@@ -142,6 +142,10 @@ export interface ConnectorCardModel {
   reason?: ConnectorReason
   residency: ConnectorResidency
   slug: string
+  /** Original title when `name` shows a catalog-content translation. */
+  originalName?: string
+  /** Extra lower-cased search text (translated name/description/keywords). */
+  search?: string
   state: ConnectorState
   stateWord: ConnectorStateWord
   verb?: ConnectorVerb

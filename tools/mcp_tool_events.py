@@ -311,6 +311,12 @@ async def run_refresh_loop(server) -> None:
 
 
 def start_refresh_task(server) -> Optional[asyncio.Task]:
+    # A per-project clone copies the baseline config, so events_enabled alone would start a loop
+    # per project: each clone force-resubscribes every webhook route for the server name (the
+    # same event delivered several times, several unattended runs) and a clone child's terminal
+    # refusal deletes the shared route for every project. Only the baseline runs the loop.
+    if getattr(server, "_scoped_cwd", ""):
+        return None
     return asyncio.create_task(run_refresh_loop(server)) if events_enabled(server._config) else None
 
 
@@ -450,7 +456,9 @@ def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, n
         def _handler(args: dict, **kwargs) -> str:
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             from tools import mcp_tool_handlers as _handlers
-            server = _discovery._get_connected_server_for_call(server_name)
+            # The routes are keyed by server NAME and shared by every project's clone, so these
+            # RPCs go to the baseline, never the caller's clone (port review finding 2).
+            server = _discovery._get_connected_server_for_call(server_name, scoped=False)
             if not server or not server.session:
                 return tool_error(f"MCP server '{server_name}' is not connected")
             if needs_name and not isinstance(args.get("name"), str):
@@ -471,7 +479,8 @@ def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, n
                 server_name, server, op, _call, tool_timeout,
                 (_handlers._handle_auth_error_and_retry, _handlers._handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, label, exc))
-        return _handler
+        from tools.mcp_tool_project_scope import leased_handler
+        return leased_handler(_handler)
     return _factory
 
 

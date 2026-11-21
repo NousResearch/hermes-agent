@@ -177,6 +177,10 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         if names is not None:
             selected = [key for key in selected if _key_name(key) in names]
         servers_snapshot = [_core._servers[key] for key in selected]
+        # A baseline's per-project clones own real children: they go down with it, or every
+        # /reload-mcp and config prune would leak one process per project the user visited.
+        from tools.mcp_tool_project_scope import pop_clones
+        servers_snapshot += pop_clones(None if wildcard else set(selected))
         if names is not None:
             selected_status = set(selected)
         elif wildcard:
@@ -201,6 +205,14 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             _core._server_connect_errors.pop(key, None)
             _core._server_scope_keys.pop(key, None)
             _core._server_tool_scopes.pop(key, None)
+        # The tombstones die with the status: in ``_shutdown`` this runs right after the deferred
+        # ``_servers.pop`` — clear and pop are atomic under the lock, so a post-clear insert
+        # fails the ``is baseline`` check. The final sweep's call clears nothing when a shutdown
+        # was scheduled (``_shutdown`` owns the clear); its real job is the never-scheduled path
+        # (loop gone), which only has tombstones when ``servers_snapshot`` was empty — i.e. none.
+        # A re-registered same-named server must be able to grow clones again (review finding 1).
+        from tools.mcp_tool_project_scope import _torn_down_baselines
+        _torn_down_baselines.difference_update(selected)
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),

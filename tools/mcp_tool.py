@@ -402,6 +402,15 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 
     def __init__(self, name: str):
         self.name = name
+        # Non-empty on a per-project clone (``tools.mcp_tool_project_scope``): the project dir it
+        # serves. A clone never registers tools; the baseline in ``_servers`` owns them.
+        self._scoped_cwd: str = ""
+        # Handlers currently holding this clone (its evictability), counted on the object: a
+        # multiplex flip rekeys the clone ledgers mid-call, and a count keyed by the old key
+        # would strand here — the release could never find it (#151827 port, review finding 3).
+        self._scoped_leases: int = 0
+        # Dir the current stdio child was spawned in ("" until the first stdio spawn).
+        self._spawn_cwd: str = ""
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
         self._task: Optional[asyncio.Task] = None
@@ -584,12 +593,30 @@ _server_cost_policies: dict[Any, Any] = {}
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
 
+def _breaker_key(server_name: str) -> Any:
+    """The connection key breaker bookkeeping lands on for a call from THIS thread: the caller's
+    project clone's sidecar key when the call resolves to a clone, else the baseline's connection
+    key (design PR63759-PORT-DESIGN.md section 4.0 — clones carry their own breaker key, so one
+    project's failing server never opens the baseline's breaker in every other project). The
+    session cwd that picked the call's transport picks this key (same thread), and a clone connect
+    that FAILED also keys here: the sidecar key is derived, not read off an installed clone."""
+    from tools.mcp_tool_scope import _resolve_server_key
+    with _lock:
+        key = _resolve_server_key(server_name)
+        baseline = _servers.get(key)
+    if baseline is None:
+        return key
+    from tools.mcp_tool_project_scope import _clone_cwd
+    cwd = _clone_cwd(baseline)
+    return (key, cwd) if cwd else key
+
+
 def _bump_server_error(server_name: str, *, application: bool = False) -> None:
     """Count a failure; at the threshold (re)stamp the breaker-open time. Keyed by the calling
-    scope's connection so one profile's failing server never opens another profile's breaker.
+    scope's connection (and by the caller's project clone, :func:`_breaker_key`) so one profile's
+    or one project's failing server never opens another's breaker.
     *application*: the call completed and the payload was an error (transport is fine)."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    key = _resolve_server_key(server_name)
+    key = _breaker_key(server_name)
     n = _server_error_counts.get(key, 0) + 1
     _server_error_counts[key] = n
     _server_errors_all_application[key] = application and (n == 1 or _server_errors_all_application.get(key, False))
@@ -599,8 +626,7 @@ def _bump_server_error(server_name: str, *, application: bool = False) -> None:
 
 def _reset_server_error(server_name: str) -> None:
     """Close the breaker on any unambiguous success signal."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    key = _resolve_server_key(server_name)
+    key = _breaker_key(server_name)
     _server_error_counts[key] = 0
     _server_breaker_opened_at.pop(key, None)
     _server_errors_all_application.pop(key, None)

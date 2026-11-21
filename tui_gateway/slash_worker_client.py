@@ -46,7 +46,9 @@ class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str, profile_home: str | None = None,
-                 provider: str | None = None, base_url: str | None = None):
+                 provider: str | None = None, base_url: str | None = None, cwd: str | None = None):
+        """*cwd*: the session's host project dir (``_local_session_process_cwd``); None off the local
+        backend, where the worker keeps the gateway's cwd and inherited ``TERMINAL_CWD``."""
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -58,7 +60,8 @@ class _SlashWorker:
         argv = [sys.executable, "-P", "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else []) \
-            + (["--base-url", base_url] if base_url else [])
+            + (["--base-url", base_url] if base_url else []) \
+            + (["--session-cwd", cwd] if cwd else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -82,6 +85,11 @@ class _SlashWorker:
         env["PYTHONPATH"] = os.pathsep.join(
             part for part in (module_root, env.get("PYTHONPATH", "")) if part
         )
+        if cwd:
+            # The worker parents the session's stdio MCP children, which read their project from
+            # its cwd (Hindsight: ${PWD}). Popen(cwd=) alone is not enough: the worker resolves its
+            # agent cwd through TERMINAL_CWD first, so pin both to the session's project (#151827).
+            env["TERMINAL_CWD"] = cwd
         # spawn_owned: the worker leads its own process group (otherwise it inherits the gateway's
         # pgid and mcp_tool's orphan sweep, racing the spawn, killpg()s the TUI parent itself), and
         # that group dies with this process however it dies: SIGKILL/OOM of the gateway used to leave
@@ -94,7 +102,7 @@ class _SlashWorker:
         self.proc = spawn_owned(
             argv, purpose="slash-worker", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-            cwd=os.getcwd(), env=env, creationflags=windows_hide_flags())
+            cwd=cwd or os.getcwd(), env=env, creationflags=windows_hide_flags())
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 

@@ -518,7 +518,8 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
     identity header and the default cwd resolve per profile, so the adopter's resolution
     (*resolved_identity*, computed by the caller outside the registry lock; None refuses) must hash
     to what the owner connected with. Within one profile the connection is the profile's: its
-    default cwd resolves in the connection task's own context, never per session."""
+    default cwd resolves in the connection task's own context. A session in another project gets a
+    per-project clone of the connection at call time (``tools.mcp_tool_project_scope``), never here."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
     if not cross_profile:

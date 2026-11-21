@@ -297,6 +297,32 @@ class TestRefresh:
         assert session.sent[1]["params"]["delivery"] == {"url": session.sent[0]["params"]["delivery"]["url"]}
         assert _routes(home) == {}
 
+    def test_a_per_project_clone_never_runs_the_refresh_loop(self):
+        """A clone copies the baseline config, so events_enabled would start the loop for every
+        project: each clone force-resubscribes every webhook route for the server name (duplicate
+        events, several unattended runs) and a clone child's terminal refusal deletes the shared
+        route for every project. Only the baseline runs the loop (port review finding 2)."""
+        clone = _server(FakeSession())
+        clone._scoped_cwd = "/tmp/other-project"
+
+        async def scenario():
+            assert events.start_refresh_task(clone) is None
+
+        asyncio.run(scenario())
+
+    def test_an_events_enabled_baseline_still_runs_the_refresh_loop(self):
+        server = _server(FakeSession())
+        server._scoped_cwd = ""
+
+        async def scenario():
+            task = events.start_refresh_task(server)
+            assert task is not None, "the clone gate must not reach the baseline"
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+
     def test_a_new_subscription_wakes_the_refresh_loop(self, home, monkeypatch):
         passes = []
 

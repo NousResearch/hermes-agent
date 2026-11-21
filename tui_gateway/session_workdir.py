@@ -437,6 +437,33 @@ def _display_session_cwd(session: dict | None) -> str:
     return healed
 
 
+def _local_session_process_cwd(session: dict | None) -> str | None:
+    """Host dir to spawn this session's child processes (the slash worker, and under it the stdio MCP
+    servers) in, or None to keep the gateway's: a remote backend's cwd names a path in the target
+    environment, and a cwd that no longer exists would make ``Popen`` raise."""
+    if not _session_is_local_backend(session):
+        return None
+    cwd = _display_session_cwd(session)
+    return cwd if cwd and os.path.isdir(cwd) else None
+
+
+def _move_session_cwd(sid: str, session: dict, cwd: str) -> str:
+    """``_set_session_cwd``, then respawn a live slash worker right away when the project actually
+    moved: the worker and its stdio MCP children snapshotted the old project at spawn. A session with
+    no worker yet gets one on the new cwd at first use; a path that only normalised changes nothing.
+    The move decision compares the RAW stored cwds — the healing display getter persists a dead
+    cwd's fallback, and reading it here would write the DB once more than the move itself
+    (review finding 8a). A remote-backend session's worker was never cwd-pinned (its spawn cwd is
+    None), so its move restarts nothing — the pre-8a compare pinned both sides to None here and the
+    raw compare would have restarted it for nothing (review finding 8c residual)."""
+    before = session.get("cwd")
+    resolved = _set_session_cwd(session, cwd)
+    if (session.get("slash_worker") is not None and session.get("cwd") != before
+            and _session_is_local_backend(session)):
+        _restart_slash_worker(sid, session)
+    return resolved
+
+
 def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
     a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary

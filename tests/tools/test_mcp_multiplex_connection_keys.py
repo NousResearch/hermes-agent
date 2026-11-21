@@ -426,3 +426,62 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]
+
+
+def test_same_stdio_server_in_another_project_cwd_is_not_adopted(two_profiles, tmp_path):
+    """Design §4.3/§6 (adopter digest under differing cwd): the stdio digest includes the session
+    cwd the child would launch with, so a profile whose session sits in ANOTHER project never
+    adopts the first profile's child — the digest itself separates the projects, so even a future
+    relaxation of the home pinning would still refuse a different-cwd adopter. Cross-profile, even
+    the SAME cwd does not share a stdio child: each profile's child env pins its own HERMES_HOME
+    (#111151, #18594), so no stdio connection is ever adopted across profiles — the design's
+    "same cwd adopts" premise holds for HTTP connections only (covered by
+    ``test_owner_reload_reregisters_profiles_that_adopted_its_connection``)."""
+    import sys
+
+    import tools.mcp_tool as core
+    from agent.runtime_cwd import clear_session_cwd, set_session_cwd
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+
+    proj_a, proj_b = tmp_path / "pa", tmp_path / "pb"
+    proj_a.mkdir()
+    proj_b.mkdir()
+    cfg = {"command": sys.executable, "args": ["-c", "pass"]}
+
+    two_profiles("a")
+    set_session_cwd(str(proj_a))
+    try:
+        with disc._owner_secret_scope():  # the connecting task records its digest in the owner's scope
+            srv_a = _server("s", cfg)
+        assert srv_a._resolved_identity is not None
+        disc._adopt_server("s", srv_a)
+        srv_a._registered_tool_names = reg._register_server_tools("s", srv_a, cfg)
+        # The cwd is IN this profile's own digest: same home, other project, other digest.
+        set_session_cwd(str(proj_b))
+        try:
+            other_project = reg._adopter_identity_digest("s", dict(cfg))
+        finally:
+            set_session_cwd(str(proj_a))
+        assert other_project not in (None, srv_a._resolved_identity), \
+            "the adopter digest ignored the session project cwd"
+    finally:
+        clear_session_cwd()
+
+    # Cross-profile, the digest differs from the owner's even in the SAME project (the child env
+    # pins each profile's own HERMES_HOME), so B is routed to connect its own child — in any cwd.
+    two_profiles("b")
+    set_session_cwd(str(proj_a))
+    try:
+        assert reg.register_connected_into_current_scope({"s": dict(cfg)}) == 0, \
+            "a stdio connection was adopted across profiles"
+        assert "s" in disc._select_new_servers({"s": dict(cfg)}), \
+            "the refused adopter was not sent to connect its own child"
+    finally:
+        clear_session_cwd()
+    set_session_cwd(str(proj_b))
+    try:
+        assert reg._adopter_identity_digest("s", dict(cfg)) not in (None, srv_a._resolved_identity), \
+            "a different-cwd profile's digest matched the owner's connection"
+    finally:
+        clear_session_cwd()

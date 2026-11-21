@@ -987,7 +987,7 @@ def _(rid, params: dict, session: dict) -> dict:
     if not (raw := _str_param(params, "cwd")):
         return _err(rid, 4016, "cwd required")
     try:
-        cwd = _set_session_cwd(session, raw)
+        cwd = _move_session_cwd(params.get("session_id", ""), session, raw)
     except ValueError as e:
         return _err(rid, 4017, str(e))
     info = _cwd_info(session, cwd)
@@ -1030,7 +1030,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 5007, f"move failed: {e}")
     if live is not None:
         try:
-            _set_session_cwd(live, target_cwd)
+            _move_session_cwd(live_sid, live, target_cwd)
         except ValueError as e:
             return _err(rid, 4017, str(e))
         _emit("session.info", live_sid, _cwd_info(live, target_cwd, branch=branch))

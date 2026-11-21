@@ -131,7 +131,8 @@ def _stdio_launch(config: dict) -> tuple:
     # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
     # paths against the daemon's launch dir, not the session workspace. Explicit config always
     # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
-    # The resolved default is fixed for the connection's lifetime.
+    # The resolved default is fixed for the connection's lifetime; a session in another project gets
+    # its own clone with ``cwd`` set explicitly (tools.mcp_tool_project_scope).
     cwd = config.get("cwd")
     if cwd is None:
         cwd = _runtime_cwd.resolve_context_cwd() or None
@@ -388,6 +389,7 @@ class MCPServerTransportMixin:
         # Hash the inputs this attempt spawns with, never a second resolution of them.
         self._resolved_identity = _registration._identity_digest(inputs)
         command, safe_env, stdio_cwd = inputs
+        self._spawn_cwd = str(stdio_cwd or os.getcwd())
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
         server_params = _core.StdioServerParameters(
@@ -713,6 +715,8 @@ class MCPServerTransportMixin:
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
+        if self._scoped_cwd:
+            return  # a per-project clone: the baseline owns the tool schemas and trust metadata
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
         if self._registered_tool_names:

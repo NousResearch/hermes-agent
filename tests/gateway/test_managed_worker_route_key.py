@@ -101,6 +101,52 @@ def test_keyless_worker_reads_its_own_profile_home_not_the_default(tmp_path, mon
     assert built['api_key'] == own
 
 
+def _anthropic_oauth_frame(tmp_path, monkeypatch):
+    """A key-less worker frame whose route is native Anthropic on a pooled OAuth credential."""
+    import time
+    from hermes_constants import get_hermes_home
+    for name in ('ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'):
+        monkeypatch.delenv(name, raising=False)
+    token = 'sk-ant-oat01-fake-' + secrets.token_hex(16)
+    row = {'id': 'oauth1', 'label': 'anthropic-oauth-1', 'auth_type': 'oauth', 'priority': 0,
+           'source': 'manual:hermes_pkce', 'access_token': token, 'refresh_token': 'fake-rt-' + secrets.token_hex(8),
+           'expires_at_ms': int(time.time() * 1000) + 30 * 60_000, 'base_url': 'https://api.anthropic.com'}
+    (get_hermes_home() / 'auth.json').write_text(json.dumps(
+        {'version': 1, 'providers': {}, 'credential_pool': {'anthropic': [row]}}))
+    frame, _ = assignment(tmp_path, monkeypatch)
+    config = json.loads(frame['policy']['config_json'])
+    config['model'] = {'default': 'claude-haiku-4-5', 'provider': 'anthropic'}
+    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
+    policy = {**frame['policy'], 'model': 'claude-haiku-4-5', 'config_json': json.dumps(config),
+              'request_json': json.dumps(request)}
+    return {**frame, 'policy': policy, 'api_key': None}, token
+
+
+def test_keyless_worker_refreshes_its_routes_expired_oauth_token_on_a_401(tmp_path, monkeypatch):
+    """The worker's agent gets the route's credential pool with the key, as the in-process turn's
+    does: an OAuth access token that expires mid-run is refreshed on the 401 and the request
+    retried, instead of the run ending non-retryable (Kanban exit 78)."""
+    import time
+    from agent.agent_runtime_helpers import recover_with_credential_pool
+    from agent.error_classifier import FailoverReason
+    frame, token = _anthropic_oauth_frame(tmp_path, monkeypatch)
+    built = _execute(frame, monkeypatch)
+    assert built['api_key'] == token
+    fresh = 'sk-ant-oat01-fresh-' + secrets.token_hex(16)
+    monkeypatch.setattr('agent.anthropic_credentials.refresh_anthropic_oauth_pure', lambda refresh_token, **kw: {
+        'access_token': fresh, 'refresh_token': 'fake-rt-next', 'expires_at_ms': int(time.time() * 1000) + 8 * 3600_000})
+    swapped = []
+    agent = SimpleNamespace(
+        _credential_pool=built.get('credential_pool'), provider='anthropic', base_url='https://api.anthropic.com',
+        api_key=built['api_key'], _credential_pool_entry_id=None, model='claude-haiku-4-5',
+        _auth_pool_refresh_counts=None, _credential_pool_revert_id=None,
+        _swap_credential=lambda entry: swapped.append(entry) or True,
+        _is_entitlement_failure=lambda context, status: False)
+    recovered, _ = recover_with_credential_pool(agent, status_code=401, has_retried_429=False,
+                                                classified_reason=FailoverReason.auth, error_context={})
+    assert recovered and [entry.access_token for entry in swapped] == [fresh]
+
+
 def test_bound_launch_key_wins_over_the_route_key(tmp_path, monkeypatch):
     launch = 'fake-launch-' + secrets.token_hex(8)
     monkeypatch.setenv(KEY_ENV, 'fake-route-' + secrets.token_hex(8))

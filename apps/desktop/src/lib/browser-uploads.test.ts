@@ -160,3 +160,66 @@ describe('browser file stage size', () => {
     expect(warning?.message).toContain(limitMessage)
   })
 })
+
+describe('browser file picker multiple', () => {
+  // The Electron picker has always treated `multiple` as opt-out
+  // (select-paths-dialog.ts: `options.multiple !== false`), while the browser input treated it
+  // as opt-in. Identical renderer code therefore produced a multi-select dialog in Desktop and
+  // a single-file input in the Webapp, so Attach → Images could only ever hold one file.
+  async function installBrowser() {
+    seedWebappSession('served-token')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 200 })))
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    $connection.set(await window.hermesDesktop!.getConnection('owner'))
+  }
+
+  let picked: HTMLInputElement[] = []
+
+  // `cancel` resolves the pick with no files, which every case here wants.
+  const cancelOnClick = () =>
+    vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
+      picked.push(this)
+      this.dispatchEvent(new Event('cancel'))
+    })
+
+  afterEach(() => {
+    picked = []
+  })
+
+  it('lets a pick choose several files when multiple is not stated', async () => {
+    await installBrowser()
+    cancelOnClick()
+
+    await window.hermesDesktop!.selectPaths({ title: 'Add files' })
+
+    expect(picked).toHaveLength(1)
+    expect(picked[0].multiple).toBe(true)
+  })
+
+  it('keeps a pick single when the caller asks for one file', async () => {
+    await installBrowser()
+    cancelOnClick()
+
+    await window.hermesDesktop!.selectPaths({ multiple: false, title: 'Add a file' })
+
+    expect(picked).toHaveLength(1)
+    expect(picked[0].multiple).toBe(false)
+  })
+
+  it('gives Attach → Images a multi-select picker', async () => {
+    await installBrowser()
+    cancelOnClick()
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.pickImages()
+    })
+
+    expect(picked).toHaveLength(1)
+    expect(picked[0].multiple).toBe(true)
+  })
+})

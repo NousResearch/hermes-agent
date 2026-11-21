@@ -90,8 +90,12 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda i: namespace["terminal"](f"tag-{i}", 3, "/tmp"), range(8)))
         assert [r["args"]["command"] for r in results] == [f"tag-{i}" for i in range(8)]
-        assert "not available" in namespace["_call"]("unauthorized-tool", {})["error"]
-        assert "limit reached" in namespace["terminal"]("over-budget")["error"]
+        with pytest.raises(namespace["ToolCallError"]) as unavailable:
+            namespace["_call"]("unauthorized-tool", {})
+        assert "not available" in str(unavailable.value)
+        with pytest.raises(namespace["ToolCallError"]) as over_budget:
+            namespace["terminal"]("over-budget")
+        assert "limit reached" in str(over_budget.value)
         assert counter == [budget] and len(seen) == len(log) == budget
     finally:
         stop.set()

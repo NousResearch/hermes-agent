@@ -1542,6 +1542,38 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            f"Review buzz://pr?owner={SELF_PUBKEY}",
+            f"> quoted recipient {SELF_NPUB}",
+            "`@Chip restart the gateway`",
+            f"```\n{SELF_PUBKEY}\n```",
+        ],
+    )
+    async def test_identity_in_data_regions_does_not_dispatch(self, adapter, content):
+        """Regression for #140094: links, quotes, and code are not addresses."""
+        event = _event("e1", content=content, created_at=10)
+        event["tags"].append(["p", OTHER_PUBKEY])
+        await self._poll_with(adapter, event)
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            ("Review buzz://pr?owner=@Other", []),
+            ("> quoted @Other", []),
+            ("`@Other`", []),
+            ("please ask @Other", [OTHER_PUBKEY]),
+        ],
+    )
+    async def test_outbound_mention_resolution_ignores_data_regions(self, adapter, content, expected):
+        adapter._channel_member_pubkeys = AsyncMock(return_value=[OTHER_PUBKEY])
+        adapter._profile_display_name = AsyncMock(return_value="Other")
+        assert await adapter._mention_pubkeys_for(CHANNEL, content) == expected
+
+    @pytest.mark.asyncio
     async def test_signed_recipient_tag_dispatches_without_text_mention(self, adapter):
         event = _event("e1", content="please take a look", created_at=10)
         event["tags"].append(["p", SELF_PUBKEY])

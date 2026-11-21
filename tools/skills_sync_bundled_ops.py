@@ -32,14 +32,15 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     if not in_manifest and not is_bundled:
         return _fail("not_in_manifest", f"'{name}' is not a tracked bundled skill. Nothing to reset. "
                      f"(Hub-installed skills use `hermes skills uninstall`.)")
+    if restore and not is_bundled:
+        return _fail("bundled_missing", f"'{name}' has no bundled source. Manifest entry preserved "
+                     f"but cannot restore from bundled (skill was removed upstream).")
+    source = bundled_by_name.get(name)
+    dest = ss._compute_relative_dest(source, bundled_dir) if source is not None else None
     # Step 1 (optional): delete the user's copy so next sync re-copies bundled. Must happen BEFORE manifest
     # deletion so that a failed rmtree does not leave the skill in a manifest-less limbo state (see #34972).
     deleted_user_copy = False
-    if restore:  # delete the user's copy BEFORE the manifest so a failed rmtree can't strand it
-        if not is_bundled:
-            return _fail("bundled_missing", f"'{name}' has no bundled source — manifest entry preserved "
-                         f"but cannot restore from bundled (skill was removed upstream).")
-        dest = ss._compute_relative_dest(bundled_by_name[name], bundled_dir)
+    if restore and dest is not None:
         if deleted_user_copy := dest.exists():
             try:
                 ss._rmtree_writable(dest)
@@ -54,6 +55,20 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         action, message = "manifest_cleared", (f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
                                                f"will re-baseline against your current copy and accept upstream changes.")
     else:
+        from tools.skills_sync_merge import archive_pending, safe_destination
+
+        if source is None or dest is None:
+            return _fail("not_reset", f"No bundled source to restore for '{name}'.")
+        bundled_hash = ss.dir_hash(source)
+        if (not safe_destination(ss._skills_dir(), dest)
+                or not (dest / "SKILL.md").is_file()
+                or ss._read_manifest().get(name) != bundled_hash
+                or ss.dir_hash(dest) != bundled_hash):
+            return _fail("not_reset", f"Could not verify stock restore for '{name}'; pending review preserved.")
+        try:
+            archive_pending(ss._hermes_home(), name)
+        except (OSError, ValueError) as exc:
+            return _fail("not_reset", f"Restored '{name}', but could not archive the pending review: {exc}")
         action = "restored"
         message = (f"Restored '{name}' from bundled source." if deleted_user_copy
                    else f"Restored '{name}' (no prior user copy, re-copied from bundled).")

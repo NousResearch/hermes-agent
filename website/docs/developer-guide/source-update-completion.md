@@ -16,6 +16,15 @@ serialized runtime plan, open receipt identity/data and paused-Windows token. It
 contains data, never callables or pickles. stdin stays inherited for interactive
 configuration prompts; gateway mode retains its non-interactive behavior. Child
 output stays visible and is mirrored by the parent's update output stream.
+On native Windows, a completion launched from a terminal inherits that console;
+`CREATE_NO_WINDOW` is reserved for non-terminal completion. A hidden console child
+can report TTY stdin while waiting on a different console input queue, making
+review prompts appear frozen in PowerShell/Windows Terminal. During completion
+the parent drains output, not stdin. Skill review uses the normal numbered
+fallback; Enter or choosing Leave pending preserves the review without accepting
+an update. If local content or its baseline changed during review, run
+`hermes skills resolve NAME --refresh` to archive the old review (including edited
+drafts) and reconcile current content before reviewing again.
 
 ## New-code owner
 

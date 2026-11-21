@@ -6,6 +6,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
+from tools.ansi_strip import sanitize_for_tty
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,7 @@ class GatewayChatView:
             from agent.display import build_tool_preview, get_tool_emoji
             name = payload.get("tool_name") or payload.get("name") or "tool"
             preview = build_tool_preview(name, payload.get("args") or {}, max_len=0)
-            print(f"{get_tool_emoji(name)} {name}{f': {preview}' if preview else ''}", flush=True)
+            print(sanitize_for_tty(f"{get_tool_emoji(name)} {name}{f': {preview}' if preview else ''}"), flush=True)
 
     def _tool_complete(self, admission, payload):
         if self.emitter is not None:
@@ -300,7 +301,7 @@ class GatewayChatView:
             # No flush: under the live composer, patch_stdout line-buffers this so a redraw
             # (a resize mid-stream) never interleaves with a half-written line. Complete lines
             # still appear as they stream; the last one lands with `_complete`.
-            print(text, end="")
+            print(sanitize_for_tty(text), end="")
 
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
@@ -310,19 +311,19 @@ class GatewayChatView:
             from hermes_cli.gateway_replay_gap import owed_reply
             payload = {**payload, "replay_gap": True}
             if not self.quiet and text:
-                print(owed_reply(cut, text), flush=True)
+                print(sanitize_for_tty(owed_reply(cut, text)), flush=True)
         elif not self.quiet:
             # The final's deltas carry the agent's segment break (leading blank lines after a
             # tool call) that the settled text has trimmed; a match modulo that edge whitespace
             # is the same reply already on screen.
             if not streamed:
-                print(text, flush=True)
+                print(sanitize_for_tty(text), flush=True)
             elif text.startswith(streamed):
-                print(text[len(streamed):], flush=True)
+                print(sanitize_for_tty(text[len(streamed):]), flush=True)
             elif text.strip() == streamed.strip():
                 print(flush=True)
             else:
-                print("\n" + text, flush=True)
+                print("\n" + sanitize_for_tty(text), flush=True)
         # A turn the owner's restart/stop interrupted names that cause (#134889 F1); other
         # message.complete warnings stay Ink/Desktop-only as before.
         warning = payload.get("warning")
@@ -587,7 +588,7 @@ class GatewayChatView:
                                                      "replay_gap": bool(terminal.get("replay_gap"))},
                                                     session_id=self.session_id, exit_code=exit_code)
                 self._report_silent_interrupt(text, result)
-                print(text, flush=True)
+                print(sanitize_for_tty(text), flush=True)
                 self._report_no_reply(exit_code)
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have

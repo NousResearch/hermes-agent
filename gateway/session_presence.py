@@ -29,6 +29,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 
 MAX_SESSIONS = 16
+# The longest session id presence keeps: a report or an input naming a longer one is no evidence.
+MAX_SESSION_ID_CHARS = 256
 # Requests that are the user's own hand on this connection for ``params['session_id']``.
 # ``session.resume`` / attach is not: opening a window is not being at it. ``clarify.lock`` would
 # be, but it names a request id, not a session, so ``touch`` cannot place it.
@@ -106,7 +108,7 @@ class ClientPresence:
 def touch(connection, method, params):
     """Record the owner-seen input *method* is for its session on *connection*'s transport."""
     session_id = params.get('session_id')
-    if method in INPUT_METHODS and isinstance(session_id, str) and session_id:
+    if method in INPUT_METHODS and _session_id(session_id):
         seen(connection, session_id)
 
 
@@ -118,6 +120,10 @@ def seen(connection, session_id):
     if presence is not None:
         profile_id = getattr(getattr(connection, 'authority', None), 'profile_id', None)
         presence.seen(profile_id, session_id, time.monotonic())
+
+
+def _session_id(value):
+    return isinstance(value, str) and 0 < len(value) <= MAX_SESSION_ID_CHARS
 
 
 def _idle_problem(idle):
@@ -133,8 +139,9 @@ def activity_problem(params) -> str | None:
     """Why *params* is not a ``client.activity`` report (None when it is one)."""
     sessions = params.get('sessions')
     if (not isinstance(sessions, list) or len(sessions) > MAX_SESSIONS
-            or not all(isinstance(sid, str) and sid for sid in sessions)):
-        return f'sessions must be a list of at most {MAX_SESSIONS} session ids'
+            or not all(_session_id(sid) for sid in sessions)):
+        return (f'sessions must be a list of at most {MAX_SESSIONS} session ids '
+                f'of at most {MAX_SESSION_ID_CHARS} characters')
     if _idle_problem(params.get('idle_seconds')):
         return 'idle_seconds must be a number >= 0'
     if params.get('basis') not in _BASES:

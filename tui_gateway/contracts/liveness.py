@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -74,8 +74,8 @@ method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapa
 class ClientActivityParams(Params):
     #: Every session this client has in view right now: the connection's whole statement. The owner
     #: drops this connection's records of any session not listed, input it saw itself included, so
-    #: an empty list withdraws them all.
-    sessions: list[str] = Field(max_length=16)
+    #: an empty list withdraws them all. At most 16 ids, each at most 256 characters.
+    sessions: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(max_length=16)
     #: How long ago the user's last input was, by the client's clock source.
     idle_seconds: float = Field(ge=0)
     #: ``system``: the OS idle clock (input in any app counts). ``page``: input inside the Hermes window only.

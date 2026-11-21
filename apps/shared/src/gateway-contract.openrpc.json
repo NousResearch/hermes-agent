@@ -12669,6 +12669,8 @@
         "properties": {
           "sessions": {
             "items": {
+              "maxLength": 256,
+              "minLength": 1,
               "type": "string"
             },
             "maxItems": 16,

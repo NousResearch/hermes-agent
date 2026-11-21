@@ -487,3 +487,36 @@ async def test_a_failing_presence_still_settles_the_answered_request(tmp_path, m
     finally:
         await client.connection.close()
         await conn.connection.close()
+
+
+MAX_ID = 256
+
+
+@pytest.mark.asyncio
+async def test_a_report_naming_an_overlong_session_id_is_refused(tmp_path, monkeypatch, clock):
+    conn = await _connect(tmp_path, monkeypatch)
+    client = _Client(conn)
+    try:
+        sid = await _session(client, 'a')
+        await _attach(client, sid)
+        await _report(client, [sid], 9)
+        refused = await _report(client, [sid, 'x' * (MAX_ID + 1)], 1)
+        assert refused.get('error', {}).get('code') == 4001, refused
+        assert _viewers(conn, sid)[0]['idle_seconds'] == 9.0
+        assert 'result' in await _report(client, [sid, 'x' * MAX_ID], 1)
+    finally:
+        await client.connection.close()
+        await conn.connection.close()
+
+
+def test_input_naming_an_overlong_session_id_is_not_kept(clock):
+    from gateway.session_presence import ClientPresence, touch, viewers
+    transport = SimpleNamespace(client_presence=ClientPresence())
+    connection = SimpleNamespace(transport=transport, authority=SimpleNamespace(profile_id='home'))
+    names = ['x' * MAX_ID, 'x' * (MAX_ID + 1)]
+    authority = SimpleNamespace(profile_id='home', events={'t': transport},
+                                sessions={name: SimpleNamespace(subscribers={'a': SimpleNamespace(transport_id='t')})
+                                          for name in names})
+    for name in names:
+        touch(connection, 'prompt.submit', {'session_id': name})
+    assert [viewers(authority, name)[0]['basis'] for name in names] == ['input', None]

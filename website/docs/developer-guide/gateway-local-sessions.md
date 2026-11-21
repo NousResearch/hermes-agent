@@ -57,7 +57,8 @@ Desktop app sends `hermes-desktop` / `desktop` and the Webapp `hermes-webapp` / 
 
 An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`,
 and only then does a client send `client.activity {sessions, idle_seconds, basis, can_alert?,
-away?}`: the sessions it has in view (at most 16), how long ago the user's last input was,
+away?}`: the sessions it has in view (at most 16 ids, each at most 256 characters), how long
+ago the user's last input was,
 whether that comes from the OS idle clock (`basis: "system"`) or from input inside the Hermes
 window (`"page"`), whether it can get the user's attention for those sessions itself, and
 `away: true` when the screen locks. The owner keeps, per connection and session, the newest of

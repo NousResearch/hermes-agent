@@ -218,9 +218,12 @@ async def approvals(connection, ref, params, *, ack=False):
         from tools.approval import ack_gateway_approval
         route = next((route for route, prompt in pending if prompt['prompt_id'] == params['request_id']), None)
         return {'acknowledged': route is not None and ack_gateway_approval(route, params['request_id'])}
+    # The replay redraws the card in place: without its kind a schedule card comes back as a command card.
     return {'approvals': [{'request_id': prompt['prompt_id'], 'command': prompt['command'],
                            'description': prompt['description'], 'choices': list(prompt['choices']),
-                           'allow_permanent': 'always' in prompt['choices']} for _, prompt in pending]}
+                           'allow_permanent': 'always' in prompt['choices'],
+                           **({'kind': prompt['approval_kind']} if 'approval_kind' in prompt else {})}
+                          for _, prompt in pending]}
 
 
 async def read(connection, ref, params, *, kind):

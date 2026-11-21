@@ -172,7 +172,7 @@ interface DetailsLabels extends RoomStatusLabels {
 /** The side panel the room title opens: picture (member faces), name, and every member's
  *  live status with its full detail. */
 export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, room, statuses }: {
-  avatarFor: (name: string, size: number) => ReactNode; labels: DetailsLabels; onClose: () => void; room: CanonicalRoom
+  avatarFor: (name: string, size: number, member?: CanonicalRoom['members'][number]) => ReactNode; labels: DetailsLabels; onClose: () => void; room: CanonicalRoom
   statuses: Map<string, MemberStatus>
   /** Room settings (purpose, notes, lead) mount here. */
   children?: ReactNode
@@ -185,12 +185,12 @@ export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, ro
       <Button aria-label={labels.close} onClick={onClose} size="icon-xs" variant="ghost"><Codicon name="close" /></Button>
     </div>
     <div className="flex flex-col items-center gap-2 text-center">
-      <AvatarStack avatars={room.members.map(member => ({ key: member.member_id, node: avatarFor(faceName(member), 40) }))} max={4} />
+      <AvatarStack avatars={room.members.map(member => ({ key: member.member_id, node: avatarFor(faceName(member), 40, member) }))} max={4} />
       <span className="text-sm font-semibold text-foreground">{room.name}</span>
     </div>
     <div className="grid gap-1">
       <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">{labels.members} · {room.members.length}</span>
-      {room.members.map(member => <DetailsMember avatar={avatarFor(faceName(member), 24)} key={member.member_id} labels={labels}
+      {room.members.map(member => <DetailsMember avatar={avatarFor(faceName(member), 24, member)} key={member.member_id} labels={labels}
         member={member} status={statuses.get(member.member_id) ?? { kind: 'idle' }} />)}
       <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{labels.membersFixed}</p>
     </div>

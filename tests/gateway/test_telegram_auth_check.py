@@ -4,6 +4,7 @@ Verifies that unauthorized users are blocked before any text batching,
 event building, or response generation occurs.
 """
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -94,6 +95,41 @@ async def test_unauthorized_user_blocked_before_event_building():
     await adapter._handle_text_message(update, SimpleNamespace())
 
     assert build_called is False, "build_message_event should not be called for unauthorized user"
+
+
+@pytest.mark.parametrize("from_user_id, chat_id, expected", [
+    (999, 111, True),  # The bot's own outbound echo.
+    (111, 999, True),  # Owner-authored private-topic mirror into the bot's chat.
+    (111, 111, False),  # Canonical owner DM, including topic messages.
+    (111, -100, False),  # Ordinary group message.
+])
+def test_self_message_guard_rejects_bot_chat_mirrors(from_user_id, chat_id, expected, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # group gates must not read this machine's config.yaml
+    for name in [n for n in os.environ if n.startswith("TELEGRAM_")]:
+        monkeypatch.delenv(name)  # nor the operator's TELEGRAM_* env (allowed_chats, require_mention)
+    adapter = _make_adapter(allow_from=["111"], require_mention=False)
+    msg = _make_message(from_user_id=from_user_id, chat_id=chat_id, chat_type="group" if chat_id < 0 else "private")
+    assert adapter._is_own_message(msg) is expected
+    if not expected:
+        msg.message_thread_id = 123
+        assert adapter._should_process_message(msg) is True
+
+
+@pytest.mark.asyncio
+async def test_owner_message_mirrored_into_bot_chat_is_ignored():
+    adapter = _make_adapter(allow_from=["111"])
+
+    def unexpected_event(*args, **kwargs):
+        pytest.fail("Bot-chat mirror must not construct an agent event")
+
+    adapter._build_message_event = unexpected_event
+    update = SimpleNamespace(
+        update_id=2,
+        message=_make_message(from_user_id=111, chat_id=999, chat_type="private"),
+        effective_message=None,
+    )
+    await adapter._handle_text_message(update, SimpleNamespace())
+    assert not adapter._pending_text_batches
 
 
 @pytest.mark.asyncio

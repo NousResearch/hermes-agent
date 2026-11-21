@@ -188,6 +188,32 @@ class TestCustomReasoningWireShape:
         assert kwargs["reasoning_effort"] == expected
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
+    @pytest.mark.parametrize(
+        "model, effort, expected",
+        [
+            ("openai/gpt-oss-120b", "medium", "medium"),
+            ("openai/gpt-oss-20b", "low", "low"),
+            ("openai/gpt-oss-120b", "max", "high"),
+            ("openai/gpt-oss-120b", "minimal", "low"),
+        ],
+    )
+    def test_groq_gpt_oss_keeps_graded_efforts(self, custom_profile, model, effort, expected):
+        """gpt-oss on Groq is the mirror image of #75089: it accepts only low/medium/high and
+        rejects the clamped "default" with a 400 (#138054), so graded levels pass through
+        (clamped onto the low/medium/high wire) instead of collapsing to "default".
+
+        Drives the main transport so the clamp is proven where production reads it.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model=model, messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config={"enabled": True, "effort": effort},
+            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == expected
+        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""

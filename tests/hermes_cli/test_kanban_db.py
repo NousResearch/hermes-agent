@@ -504,13 +504,15 @@ def test_respawn_guard_blocker_auth_curated_not_open_stem(
         assert kbd.check_respawn_guard(conn, tid) == expected
 
 
-def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
+def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home, monkeypatch):
     """A plain crash's captured stdout is context, not a diagnosis.
 
     ``_classify_dead_worker`` appends the worker's last output to the persisted
     failure text.  A benign command such as ``claude auth status`` must not turn
     an unrelated crash into a permanent auth guard on the next dispatch.
     """
+    now = 5_000_000
+    monkeypatch.setattr(kbd.time, "time", lambda: now + 1)
     with kbc.connect() as conn:
         crashed_id = kb.create_task(conn, title="crashed", assignee="a")
         kb.claim_task(conn, crashed_id)
@@ -549,6 +551,59 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
 
         assert kbd.check_respawn_guard(conn, crashed_id) is None
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_expires_after_ttl(kanban_home, monkeypatch):
+    """A quota/auth stamp must not park a ready card forever (#118345)."""
+    monkeypatch.setenv("HERMES_KANBAN_BLOCKER_AUTH_TTL_SECONDS", "3600")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="auth-ttl", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='spawn_failed', status='failed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("provider authentication failed", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(kbd.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+        monkeypatch.setattr(kbd.time, "time", lambda: now + 3600)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_blocker_auth_ttl_zero_disables_hold(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_BLOCKER_AUTH_TTL_SECONDS", "0")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="auth-ttl-off", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='spawn_failed', status='failed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("401 auth failed", tid),
+        )
+        conn.commit()
+        monkeypatch.setattr(kbd.time, "time", lambda: now + 1)
+        assert kbd.check_respawn_guard(conn, tid) is None
 
 
 def test_infrastructure_spawn_refusal_never_charges_the_card(

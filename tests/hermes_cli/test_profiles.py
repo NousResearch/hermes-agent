@@ -13,6 +13,7 @@ import stat
 import sys
 import tarfile
 import types
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -1260,6 +1261,31 @@ class TestRenameProfile:
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
+
+    def test_local_chat_credentials_follow_consecutive_renames(self, profile_env):
+        from gateway.session_policy_credentials import PREFIX
+        from persistence_assembly import open_persistence, profile_scope
+
+        original = create_profile("firstbot", no_alias=True)
+        key = "gateway.local_policy.v1:local-existing"
+        route = "agent:firstbot:local:dm:local-existing"
+        ref = {"home": str(original), "profile": str(original), "session": "local-existing",
+               "entries": [[["example"], "fingerprint"]], "bound": [[["example"], "endpoint"]]}
+        receipt = {"route": route, "profile_id": str(original), "session_id": "local-existing",
+                   "entry": {"session_key": route, "origin": {"profile": "firstbot"}},
+                   "policy": {"config_secret_ref": PREFIX + json.dumps(ref)}}
+        with closing(open_persistence(profile_scope(home=original))) as store:
+            store.state_meta.set(key, json.dumps(receipt))
+
+        for old, new in (("firstbot", "secondbot"), ("secondbot", "thirdbot")):
+            with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+                 patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+                home = rename_profile(old, new)
+            with closing(open_persistence(profile_scope(home=home))) as store:
+                saved = json.loads(store.state_meta.get(key))
+            assert saved["profile_id"] == str(original)
+            assert json.loads(saved["policy"]["config_secret_ref"][len(PREFIX):]) == dict(
+                ref, home=str(home), profile=str(home))
 
     def test_rename_delegates_identity_migration_to_live_gateway(self, profile_env):
         """Under a live multiplexer the CLI must NOT rewrite the routing DB directly (the gateway holds

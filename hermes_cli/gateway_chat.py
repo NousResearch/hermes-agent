@@ -32,6 +32,54 @@ _RELOCATED = {
     "compact": "`display.compact: true` in config.yaml",
     "create-if-missing without -c <name>": "`-c <name> --create-if-missing`",
 }
+# The session this client bound (create or resume), for the exit line a supervisor reads when the
+# client dies by a signal or loses the gateway: it binds the attempt to the session it left behind.
+_BOUND_SESSION: dict[str, str] = {}
+
+
+class ClientSignal(KeyboardInterrupt):
+    """SIGTERM/SIGHUP delivered to the client; unwinds like Ctrl-C but remembers which signal."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _signal_name(signum: int) -> str:
+    import signal
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal {signum}"
+
+
+@contextlib.contextmanager
+def _signals_unwind_as_detach():
+    """Route SIGTERM/SIGHUP through the same detach path as Ctrl-C (Python's default SIGTERM dies
+    silently, with no session id and no reason). Only the main thread may install handlers."""
+    import signal
+    import threading
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        def _raise(signum, _frame):
+            raise ClientSignal(signum)
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name):
+                with contextlib.suppress(OSError, ValueError):
+                    previous[name] = signal.signal(getattr(signal, name), _raise)
+    try:
+        yield
+    finally:
+        for name, handler in previous.items():
+            with contextlib.suppress(OSError, ValueError, TypeError):
+                signal.signal(getattr(signal, name), handler)
+
+
+def _session_suffix() -> str:
+    session_id = _BOUND_SESSION.get("id")
+    return f" (session {session_id})" if session_id else ""
+
+
 _SAFE_MODE_EXAMPLE = 'hermes chat --safe-mode --provider openrouter --model anthropic/claude-sonnet-4 -q "hello"'
 
 
@@ -223,7 +271,9 @@ async def run_gateway_chat(args, emitter=None):
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
             if (warning := (snapshot.get("info") or {}).get("config_warning")) and not isinstance(oneshot_prompt, str):
                 print(f"Warning: {warning}", file=sys.stderr)
-        if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
+        _BOUND_SESSION["id"] = snapshot["stored_session_id"]
+        # main's -z writes nothing to stderr on success; a supervisor opts in with HERMES_PRINT_SESSION_ID=1.
+        if not isinstance(oneshot_prompt, str) or os.environ.get("HERMES_PRINT_SESSION_ID") == "1":
             print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
         if not oneshot:
             from hermes_cli.terminal_breadcrumbs import write_breadcrumb
@@ -387,16 +437,25 @@ def launch_from_args(args) -> int:
                 return failed(f"--query-file {query_file} is empty", 2)
         if not (getattr(args, "query", None) or getattr(args, "q", None) or getattr(args, "oneshot", None) or sys.stdin.isatty()):
             raise GatewayClientError("Noninteractive chat requires --query or --oneshot")
-        return asyncio.run(run_gateway_chat(args, emitter=emitter))
+        _BOUND_SESSION.clear()
+        with _signals_unwind_as_detach():
+            return asyncio.run(run_gateway_chat(args, emitter=emitter))
     except (GatewayClientError, OSError, TimeoutError, WebSocketException) as exc:
         # WebSocket errors can embed credential URLs/remote bodies.
         message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
-        return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
-    except KeyboardInterrupt:
-        print("Detached; accepted work continues at the gateway.", file=sys.stderr)
+        return failed(message + _session_suffix(),
+                      2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
+    except KeyboardInterrupt as exc:
+        signum = getattr(exc, "signum", 2)
+        session_id = _BOUND_SESSION.get("id")
+        line = f"Detached by {_signal_name(signum)}{_session_suffix()}; accepted work continues at the gateway."
+        if session_id:
+            line += f" Stop it with: hermes sessions interrupt {session_id}"
+        print(line, file=sys.stderr, flush=True)
         if emitter is not None:
-            return emitter.emit_result({"interrupted": True}, exit_code=130)
-        return 130
+            return emitter.emit_result({"interrupted": True, "error": f"detached by {_signal_name(signum)}"},
+                                      session_id=session_id or "", exit_code=128 + signum)
+        return 128 + signum
 
 
 def launch_from_kwargs(options) -> int:

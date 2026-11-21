@@ -95,3 +95,45 @@ def test_supervisor_with_presets_does_not_scan_unadmitted_files(tmp_path, monkey
     # llama.cpp b10964 dropped the --no-webui spelling; the router must use --no-ui.
     assert "--no-ui" in calls[0]
     assert "--no-webui" not in calls[0]
+
+
+# #102865: 35B-A3B on 6 GiB usable of an 8 GiB laptop card with 30.6 GiB of host RAM.
+_GIB = 1 << 30
+_REPORTER = HardwareBudget(6 * _GIB, 8 * _GIB, int(30.6 * _GIB))
+_COMFORTABLE = HardwareBudget(14 * _GIB, 16 * _GIB, 64 * _GIB)
+
+
+def _stage_35b(tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import catalog
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    entry = catalog.catalog_by_id()["qwen3.6-35b-a3b"]
+    variant = entry.variants[-1]
+    gguf = tmp_path / "models" / f"{variant.model_id}.gguf"
+    gguf.parent.mkdir()
+    gguf.touch()
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda h: entry.profile(variant))
+    return gguf
+
+
+def test_spill_past_half_of_host_memory_warns_before_launch(tmp_path, monkeypatch, caplog):
+    from hermes_cli.local_runtime import bootstrap, hardware
+
+    gguf = _stage_35b(tmp_path, monkeypatch)
+    heavy = presets.preset_for_model(gguf, _REPORTER, set())
+    assert heavy.spilled and heavy.keys is not None  # still launches: a warning, not a refusal
+    assert "GiB of system memory" in heavy.warning
+
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: _REPORTER)
+    monkeypatch.setattr(bootstrap, "_launch_budget", lambda capacity: None)
+    with caplog.at_level("WARNING", logger=bootstrap.logger.name):
+        bootstrap._generate_presets(gguf.parent, tmp_path / "presets.ini")
+    assert any(heavy.model_id in r.getMessage() and "system memory" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_spill_a_host_can_absorb_does_not_warn(tmp_path, monkeypatch):
+    gguf = _stage_35b(tmp_path, monkeypatch)
+    comfortable = presets.preset_for_model(gguf, _COMFORTABLE, set())
+    assert comfortable.spilled and comfortable.warning is None

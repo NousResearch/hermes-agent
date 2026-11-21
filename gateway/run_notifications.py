@@ -711,7 +711,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 completion_queue.put(evt)
                 continue
             # Settled only when accepted or deliberately dropped (notifications off,
-            # nothing to say, no route). A failed delivery is re-queued and stays pending.
+            # nothing to say, no route, profile not served). A failed delivery is re-queued and stays pending.
             delivered = None
             scope = await completion_event_scope_or_refuse(self, evt, "watch notification")
             if scope is None:
@@ -1268,6 +1268,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """
         scope = await completion_event_scope_or_refuse(self, evt, "completion notification")
         if scope is None:
+            from tools.process_registry import process_registry
+            process_registry.settle_notification(evt)  # refused for good: nothing is owed here
             return None  # terminal: never retried
         async with scope:
             return await self._deliver_completion_notification_scoped(
@@ -1471,6 +1473,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # The shared queue may be drained outside the owning profile's runtime scope.
         scope = await completion_event_scope_or_refuse(self, evt, "process completion")
         if scope is None:
+            from tools.process_registry import process_registry
+            process_registry.settle_notification(evt)  # refused for good: nothing is owed here
             return None
         async with scope:
             from tools.process_registry_notifications import should_surface_notification

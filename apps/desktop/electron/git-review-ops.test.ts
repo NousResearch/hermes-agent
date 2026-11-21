@@ -13,6 +13,7 @@ import {
   REVIEW_FILE_CAP,
   reviewCreatePr,
   reviewList,
+  reviewPrList,
   simpleGitHostEnv
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
@@ -321,6 +322,64 @@ test('reviewCreatePr surfaces gh stderr when pr create fails', async () => {
   failGh('no commits between main and feature')
 
   await assert.rejects(reviewCreatePr(dir, 'git', 'gh'), /no commits between main and feature/)
+})
+
+// Answer `gh repo view` with a repo slug and `gh api graphql` with `byBranch`
+// or `byNumber`, depending on which aliases the query asks for.
+function answerGh(byBranch: object, byNumber: object): void {
+  ;(
+    mockExecFile as unknown as {
+      mockImplementation: (
+        impl: (file: string, args: string[], options: object, callback: ExecFileCallback) => void
+      ) => unknown
+    }
+  ).mockImplementation((_bin: string, args: string[], _opts: object, callback: ExecFileCallback) => {
+    if (args[0] === 'repo') {
+      callback(null, 'acme/widgets\n', '')
+
+      return
+    }
+
+    const query = args.find(arg => arg.startsWith('query=')) ?? ''
+
+    callback(null, JSON.stringify(query.includes('n0:') ? byNumber : byBranch), '')
+  })
+}
+
+const prNode = (number: number, headRefName: string, state = 'OPEN') => ({
+  headRefName,
+  isCrossRepository: false,
+  isDraft: false,
+  number,
+  state,
+  title: `PR ${number}`,
+  url: `https://github.com/acme/widgets/pull/${number}`
+})
+
+test('reviewPrList never badges the default branch with a PR whose head is the trunk', async () => {
+  // Failure caught: a long-closed own-repo PR opened FROM `main` (e.g. main -> a
+  // baseline branch) badged every trunk session with "#2", linking a dead PR.
+  const dir = makeRepo()
+
+  answerGh(
+    {
+      data: {
+        repository: {
+          b0: { nodes: [prNode(2, 'main', 'CLOSED')] },
+          b1: { nodes: [prNode(7, 'feature')] },
+          defaultBranchRef: { name: 'main' }
+        }
+      }
+    },
+    { data: { repository: { defaultBranchRef: { name: 'main' }, n0: prNode(2, 'main', 'CLOSED') } } }
+  )
+
+  const result = await reviewPrList(dir, 'gh', ['main', 'feature'], [2])
+
+  assert.deepEqual(
+    result.prs.map((pr: { branch: string; number: number }) => [pr.number, pr.branch]),
+    [[7, 'feature']]
+  )
 })
 
 test('reviewCreatePr falls back to the generic message when gh reports no stderr', async () => {

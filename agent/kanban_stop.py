@@ -4,11 +4,19 @@ the card to whoever owns it next (``kanban_complete``, ``kanban_block``,
 and stop with no tool calls; Hermes treats that as a clean exit → ``rc=0`` → dispatcher
 ``protocol_violation``. Policy-only: return a bounded synthetic nudge so the loop continues
 instead of exiting.
+
+The guard's nudge is suppressed when this session made a terminal board call or its
+own run has a terminal board outcome. The run check stays pinned to
+``HERMES_KANBAN_RUN_ID`` even if another worker has since claimed the card.
+
+Missing identity or an unreadable board cannot prove the run ended, so the nudge
+remains available to a live worker.
 """
 
 from __future__ import annotations
 
 import os
+import sqlite3
 from typing import Any, Iterable, Optional
 
 from agent.delegation_context import owned_kanban_task
@@ -29,7 +37,6 @@ _TERMINAL_KANBAN_TOOLS = frozenset({
 
 _DEFAULT_MAX_ATTEMPTS = 2
 
-
 def kanban_stop_nudge_enabled() -> bool:
     """On when ``HERMES_KANBAN_TASK`` is set for the dispatcher-owned worker, unless
     ``HERMES_KANBAN_STOP_NUDGE`` disables it. In-process delegate_task children and cron runs
@@ -37,6 +44,24 @@ def kanban_stop_nudge_enabled() -> bool:
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
         return False
     return bool(owned_kanban_task())
+
+
+def _own_run_has_outcome() -> bool:
+    """Read this worker's run outcome from the board on every guard attempt."""
+    run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if not run_id:
+        return False
+    try:
+        from hermes_cli import kanban_db, kanban_db_connect
+
+        conn = kanban_db_connect.connect()
+        try:
+            run = kanban_db.get_run(conn, int(run_id))
+        finally:
+            conn.close()
+    except (ImportError, OSError, ValueError, sqlite3.Error):
+        return False
+    return bool(run and run.task_id == owned_kanban_task() and run.outcome is not None)
 
 
 def _tool_call_name(tc: Any) -> str:
@@ -69,11 +94,13 @@ def build_kanban_stop_nudge(
     task_id: Optional[str] = None,
 ) -> Optional[str]:
     """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
-    the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
+    the guard should not fire (not a kanban worker, terminal handoff already made,
+    or budget exhausted)."""
     if (
         not kanban_stop_nudge_enabled()
         or attempts >= max_attempts
         or session_called_kanban_terminal(messages)
+        or _own_run_has_outcome()
     ):
         return None
 
@@ -85,7 +112,8 @@ def build_kanban_stop_nudge(
         "terminal state for the board.\n\n"
         f"Task `{tid}` has not been handed off: this session made no terminal board "
         "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "
-        "causes a protocol violation (clean exit with the card still `running`).\n\n"
+        "without one causes a protocol violation (a clean exit recorded with no board "
+        "handoff).\n\n"
         "Do this immediately in your next response — do not narrate intent:\n"
         "1. Finish any remaining deliverable (write the required file(s) now).\n"
         "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work is done "
@@ -98,4 +126,8 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+__all__ = [
+    "build_kanban_stop_nudge",
+    "kanban_stop_nudge_enabled",
+    "session_called_kanban_terminal",
+]

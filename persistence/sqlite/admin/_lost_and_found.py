@@ -419,7 +419,7 @@ _TOKEN_PATTERN = re.compile(r"^[a-z][a-z0-9_.:-]*$")
 # TITLE_SOURCE_* + _title_rank). chat_type is platform-supplied
 # and open-ended, so it only gets the identifier shape.
 _HANDOFF_STATES = frozenset({"pending", "running", "completed", "failed"})
-_TITLE_SOURCES = frozenset({"derived", "llm", "user"})
+_TITLE_SOURCES = frozenset({"branch", "branch_fallback", "derived", "llm", "user"})
 
 
 def _is_epoch(value: Any) -> bool:

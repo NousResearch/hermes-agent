@@ -39,9 +39,9 @@ def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypat
         })
         assert "error" not in response, response
         child = response["result"]["stored_session_id"]
-        # A DERIVED title is what memory providers skip when naming sessions (the provenance
-        # contract on TitleSource); a generated parent title must not arrive as USER/LLM.
-        assert db.sessions.get_title_source(child) == TitleSource.DERIVED
+        # A BRANCH title is automatic provenance, not a user-selected identity (the contract on
+        # TitleSource); a generated parent title must not arrive as USER/LLM.
+        assert db.sessions.get_title_source(child) == TitleSource.BRANCH
         assert len(db.messages.read_transcript(child, TranscriptRead(view=TranscriptView.ALL))) == len(history)
         # A subsequent explicit rename must retain user authority.
         db.sessions.set_title(child, "User chosen title")

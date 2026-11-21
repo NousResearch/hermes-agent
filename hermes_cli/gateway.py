@@ -3159,7 +3159,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
                             python=python_path, home=hermes_home)
     cleanup = installation_command(project_root, module="gateway.cgroup_cleanup",
                               python=python_path, home=hermes_home)
-    stop_mark = installation_command(project_root, module="gateway.systemd_stop_mark",
+    stop_mark = installation_command(project_root, module="hermes_systemd_planned_stop",
                                 python=python_path, home=hermes_home)
     from hermes_cli.gateway_bundled_env import systemd_bundled_env_block
     bundled_env_block = systemd_bundled_env_block(get_systemd_unit_path(system=system))  # #85357
@@ -3185,7 +3185,7 @@ RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
-ExecStop=-{_systemd_command(stop_mark)}
+ExecStop=-{_systemd_command(stop_mark)} $MAINPID
 ExecStopPost=-{_systemd_command(cleanup)}
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal

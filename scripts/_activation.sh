@@ -34,6 +34,8 @@ hermes_sync() {
 # any dependency is importable. It only emits the environment; it installs nothing.
 hermes_bootstrap_python() {
     local repo="$1" store candidate
+    # zsh aborts on a glob that matches nothing (nomatch); the store lists below often do.
+    [ -z "${ZSH_VERSION:-}" ] || setopt local_options nullglob
     for candidate in "$repo/.venv/bin/python" "$repo/.venv/Scripts/python.exe" \
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
@@ -87,6 +89,7 @@ hermes_apply_env() {
 # matches REPO's current inputs.
 hermes_activation_current() {
     local repo="$1" sentinel stamps stamp input stamped=0
+    [ -z "${ZSH_VERSION:-}" ] || setopt local_options nullglob
     [ -n "${__HERMES_ACTIVATED:-}" ] && [ -e "${__HERMES_ACTIVATED}" ] || return 1
     # activate.ps1 records a Windows path; Git Bash accepts it with slashes.
     sentinel="${__HERMES_ACTIVATED//\\//}"

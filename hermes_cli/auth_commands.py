@@ -4,6 +4,7 @@ from __future__ import annotations
 from pm import install_hint
 from hermes_cli.cli_output import line_input
 
+import json
 import math
 import sys
 import time
@@ -685,6 +686,24 @@ def _moved_auth_hint(action: str, provider: str) -> str:
     return moved_command_hint("hermes auth", provider, action)
 
 
+def _status_json_payload(provider: str, status: dict[str, Any]) -> dict[str, Any]:
+    """Machine-readable ``hermes auth status --json`` view.
+
+    ``logged_in`` answers the readiness question a caller actually asks — "can this provider serve
+    requests?" — so the nous free tier (a guest identity with working inference, no account login)
+    reports ``true`` and flags itself with ``free_tier``.
+    """
+    payload: dict[str, Any] = {
+        "provider": provider,
+        "logged_in": bool(status.get("logged_in") or status.get("free_tier")),
+        "auth_type": status.get("auth_type"),
+        "free_tier": bool(status.get("free_tier")),
+    }
+    if status.get("error"):
+        payload["error"] = status["error"]
+    return payload
+
+
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
@@ -696,6 +715,14 @@ def auth_status_command(args) -> None:
     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
         load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
+    if getattr(args, "json", False):
+        # Drain the heal notices instead of printing them: stdout is the JSON object alone.
+        auth_mod.consume_oauth_heal_notices()
+        payload = _status_json_payload(provider, status)
+        print(json.dumps(payload))
+        if not payload["logged_in"]:
+            raise SystemExit(1)
+        return
     _print_oauth_heal_notices()
     if status.get("free_tier"):
         # Free tier: not an account login, so no account fields; point at the upgrade path.
@@ -708,7 +735,7 @@ def auth_status_command(args) -> None:
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
         if provider in EXTERNAL_LOGIN_PROVIDERS:
             _print_external_login_notice()
-        return
+        raise SystemExit(1)
     print(f"{provider}: logged in")
     for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
         value = status.get(key)

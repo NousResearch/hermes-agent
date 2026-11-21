@@ -323,14 +323,15 @@ TOOL_CATEGORIES = {
             "Hermes routes X searches through xAI's built-in x_search Responses tool for read-only public X "
             "discovery. Use the xurl skill for authenticated X API reads and account actions. Both credential "
             "sources hit the same https://api.x.ai/v1/responses endpoint — pick whichever you already have. "
-            "SuperGrok OAuth is preferred when both are set (uses your subscription quota instead of API spend)."
+            "Your selection is saved for X Search only; an explicit OAuth choice never falls back to a paid API key. "
+            "OAuth results may lack citations; provider-side subscription entitlements still apply."
         ),
         "icon": "🐦",
         "providers": [
             _row("xAI Grok OAuth (SuperGrok / Premium+)", "subscription", "Browser login at accounts.x.ai — no API key required",
-                 post_setup="xai_grok"),
+                 post_setup="x_search_oauth", x_search_credential_source="oauth"),
             _row("xAI API key", "paid", "Direct xAI API billing via XAI_API_KEY",
-                 [_key("XAI_API_KEY", "xAI API key", "https://console.x.ai/")]),
+                 [_key("XAI_API_KEY", "xAI API key", "https://console.x.ai/")], x_search_credential_source="api_key"),
         ],
     },
     "browser": {

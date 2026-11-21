@@ -2,8 +2,8 @@
 """X Search tool backed by xAI's built-in ``x_search`` Responses API tool.
 
 Registers when either xAI credential path is available (``XAI_API_KEY`` or ``hermes auth add
-xai-oauth``). At call time an explicit ``XAI_API_KEY`` wins (``prefer_api_key=True``): x_search
-is API-metered and the subscription OAuth bearer answers ``/v1/responses`` without citations.
+xai-oauth``). Unconfigured installs prefer ``XAI_API_KEY``; ``x_search.credential_source``
+can pin OAuth or API-key authentication without falling back to the other source.
 Date filters are validated client-side so malformed windows fail fast instead of burning a
 billable call. Results carry ``degraded``: True when a narrowing filter was active AND xAI
 returned no citations in either channel (answer came from model knowledge, not the X index).
@@ -35,8 +35,8 @@ def _load_x_search_config() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         return load_config().get("x_search", {}) or {}
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise RuntimeError("Cannot read X Search credential selection; refusing credential fallback.") from exc
 
 
 def _get_x_search_reasoning_effort() -> Optional[str]:
@@ -65,7 +65,11 @@ def _resolve_xai_bearer() -> tuple[str, str, str]:
     the shared resolver checks the explicit API key first — same root cause as the TTS fix for #87045
     (#87081) — keeping OAuth as the fallback when no API key is configured.
     """
-    creds = resolve_xai_http_credentials(prefer_api_key=True)
+    source = _load_x_search_config().get("credential_source", "auto")
+    if source not in ("auto", "oauth", "api_key"):
+        raise RuntimeError("x_search.credential_source must be auto, oauth, or api_key")
+    creds = (resolve_xai_http_credentials(prefer_api_key=True) if source == "auto"
+             else resolve_xai_http_credentials(prefer_api_key=True, credential_source=source))
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError(
@@ -77,8 +81,12 @@ def _resolve_xai_bearer() -> tuple[str, str, str]:
 
 
 def check_x_search_requirements() -> bool:
-    """True when xAI credentials resolve to a non-empty bearer (OAuth auto-refreshed)."""
-    return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+    """Use the same credential selection as execution (OAuth auto-refreshed)."""
+    try:
+        _resolve_xai_bearer()
+        return True
+    except RuntimeError:
+        return False
 
 
 def _normalize_handles(handles: Optional[list[str]], field_name: str) -> list[str]:

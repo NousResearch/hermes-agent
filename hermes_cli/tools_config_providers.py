@@ -463,6 +463,7 @@ def _imagegen_backend_active(provider: dict, config: dict) -> bool:
 # Non-managed active checks, evaluated in order; the first marker the row carries decides (see ``_has_marker``).
 # Default stt.provider is "local" — an unset key means Local Whisper.
 _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
+    ("x_search_credential_source", lambda p, c: cfg_get(c, "x_search", "credential_source") == p["x_search_credential_source"]),
     ("tts_provider", lambda p, c: cfg_get(c, "tts", "provider") == p["tts_provider"]),
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("browser_provider", _browser_provider_active),
@@ -696,6 +697,9 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     writes exactly ONE provider string per category (``nous`` for managed rows) and removes any legacy
     ``use_gateway`` key so the read-time shim cannot override the new choice."""
     from hermes_cli.tools_config import TOOL_CATEGORIES
+
+    if provider.get("x_search_credential_source"):
+        config.setdefault("x_search", {})["credential_source"] = provider["x_search_credential_source"]
 
     for marker, section_key in (("tts_provider", "tts"), ("stt_provider", "stt")):
         if provider.get(marker):

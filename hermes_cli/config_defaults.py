@@ -2375,9 +2375,9 @@ DEFAULT_CONFIG = {
         # language_id: "..." (didOpen languageId), description: "...". Manual install only.
         "servers": {},
     },
-    # X (Twitter) Search via xAI's x_search Responses tool. Registers when xAI creds exist
-    # (SuperGrok OAuth or XAI_API_KEY) AND the toolset is enabled in `hermes tools`.
+    # X Search: requires selected xAI credentials and the enabled toolset.
     "x_search": {
+        "credential_source": "auto",  # oauth/api_key pin one source; auto prefers API key.
         # xAI model for the Responses call; any Grok model with x_search access works.
         "model": "grok-4.5",
         # Reasoning effort for models that support it; null keeps the model default.

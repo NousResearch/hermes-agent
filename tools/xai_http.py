@@ -176,6 +176,7 @@ def _xai_base_url_override() -> str:
 
 def resolve_xai_http_credentials(
     *, force_refresh: bool = False, api_key_hint: Optional[str] = None, prefer_api_key: bool = False,
+    credential_source: Optional[str] = None,
 ) -> dict[str, str]:
     """Resolve bearer credentials for direct xAI HTTP endpoints.
 
@@ -187,6 +188,9 @@ def resolve_xai_http_credentials(
     pass the rejected bearer as ``api_key_hint`` so a multi-account pool refreshes the issuing
     entry, not whichever its strategy selects first.
 
+    ``credential_source=oauth|api_key`` pins the requested source, overriding preference
+    ordering and raising RuntimeError if unavailable. None/auto preserves legacy behavior.
+
     Prefers Hermes-managed xAI OAuth credentials when available, then falls back to ``XAI_API_KEY`` resolved
     via ``hermes_cli.config.get_env_value`` so keys stored in ``~/.hermes/.env`` (the standard Hermes
     location) are honored — not just ones already exported into ``os.environ``. This keeps direct xAI
@@ -196,12 +200,19 @@ def resolve_xai_http_credentials(
     scoping is identical to the fallback branch, and the base URL honors ``HERMES_XAI_BASE_URL`` /
     ``XAI_BASE_URL`` behind the same origin-pinning validation as the OAuth branch. See #87045, #88040.
     """
+    if credential_source not in (None, "auto", "oauth", "api_key"):
+        raise RuntimeError("xAI credential_source must be auto, oauth, or api_key")
     import hermes_cli.auth as auth_mod
-    if prefer_api_key and (explicit_key := str(_resolve_explicit_xai_api_key() or "").strip()):
+    if credential_source == "oauth":
+        prefer_api_key = False
+    if (prefer_api_key or credential_source == "api_key") and (explicit_key := str(_resolve_explicit_xai_api_key() or "").strip()):
         # Origin-pinned so a tampered env override can't exfiltrate the bearer; rejection -> default URL.
         override = _xai_base_url_override()
         base_url = auth_mod._xai_validate_inference_base_url(override, fallback=DEFAULT_XAI_BASE_URL)
         return {"provider": "xai", "api_key": explicit_key, "base_url": base_url}
+
+    if credential_source == "api_key":
+        raise RuntimeError("X Search requires XAI_API_KEY for credential_source=api_key. No OAuth fallback.")
 
     try:
         from agent.credential_pool import load_pool
@@ -220,9 +231,12 @@ def resolve_xai_http_credentials(
         base_url = auth_mod._xai_validate_inference_base_url(_xai_base_url_override(), fallback=fallback_base_url)
         if str(access_token).strip():
             return {"provider": "xai-oauth", "api_key": str(access_token).strip(), "base_url": base_url}
-    except Exception:
-        pass
+    except Exception as exc:
+        if credential_source == "oauth":
+            raise RuntimeError("X Search OAuth credentials unavailable; sign in with `hermes auth add xai-oauth`. No API-key fallback.") from exc
 
+    if credential_source == "oauth":
+        raise RuntimeError("X Search OAuth credentials unavailable; sign in with `hermes auth add xai-oauth`. No API-key fallback.")
     from hermes_cli.config import get_env_value
     api_key = _resolve_explicit_xai_api_key()
     base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")

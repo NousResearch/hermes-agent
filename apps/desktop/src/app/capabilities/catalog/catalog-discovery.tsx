@@ -6,14 +6,17 @@ import { type ReactNode, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { overlayFrom, pluginCategoryText } from '@/i18n/catalog-content'
+import { useContentDictionary } from '@/i18n/catalog-content/use-content-dictionary'
 
 import { BENTO_COLUMNS, packBento } from './catalog-bento'
 import type { CatalogCardVariant } from './catalog-card'
 import { pluginTier, type PluginTier } from './catalog-curation'
-import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { type CatalogEntry, type CatalogKind } from './catalog-data'
 import { CatalogDeveloper } from './catalog-developer'
 import { CatalogFeaturedSlider } from './catalog-featured-slider'
 import { catalogCategories } from './catalog-query'
+import { categoryText } from './localize-catalog'
 
 /** Fewest cards a category needs for its own shelf; smaller ones share "More to explore". */
 const MIN_SHELF = 3
@@ -42,7 +45,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   /** Several categories picked: one shelf per category, tiers and small-shelf folding off. */
   byCategory?: boolean
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  useContentDictionary(locale)
   const [categoryLimit, setCategoryLimit] = useState(CATEGORY_PAGE)
   const [looseRows, setLooseRows] = useState(LOOSE_ROWS_PAGE)
   const title = kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills
@@ -65,7 +69,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
   const sections: [string, string, CatalogEntry[]][] = (
     kind === 'plugins'
-      ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
+      ? groupCatalogPlugins(remaining).map(([key, items]) => [key, pluginCategoryText(key, locale, overlayFrom(t))?.label ?? PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
       : catalogCategories(remaining).map(([key, meta]) => [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]])
   ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
 
@@ -108,8 +112,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
         return <section data-catalog-section={category} key={category}>
           <header className="catalog-section-heading">
             <div>
-              <h2><Button className="text-[length:inherit] font-[inherit] text-(--ui-text-primary) hover:text-(--ui-text-primary)" onClick={() => onCategory(category)} size="inline" variant="text">{catalogLabel(label)}</Button></h2>
-              <p>{kind === 'plugins' ? PLUGIN_CATEGORIES[category]?.blurb : t.catalog.skillsFor(catalogLabel(label))}</p>
+              <h2><Button className="text-[length:inherit] font-[inherit] text-(--ui-text-primary) hover:text-(--ui-text-primary)" onClick={() => onCategory(category)} size="inline" variant="text">{categoryText(label)}</Button></h2>
+              <p>{kind === 'plugins' ? (pluginCategoryText(category, locale, overlayFrom(t))?.blurb ?? PLUGIN_CATEGORIES[category]?.blurb) : t.catalog.skillsFor(categoryText(label))}</p>
             </div>
             {items.length > packBento(items).length && <Button onClick={() => onCategory(category)} size="inline" variant="text">{t.catalog.seeAll}<Codicon name="arrow-right" /></Button>}
           </header>

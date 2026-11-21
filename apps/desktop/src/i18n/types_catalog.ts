@@ -1,4 +1,7 @@
 export interface CatalogTranslations {
+  /** Disclosure in a detail view for a translated entry: the untranslated title and description. */
+  contentOriginal: string
+  contentTechnicalId: string
   add: string
   added: string
   discover: string

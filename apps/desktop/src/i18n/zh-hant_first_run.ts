@@ -36,6 +36,14 @@ export const zhHantFirstRun: FirstRunCopy = {
     setUp: '設定',
     notNow: '暫時不要'
   },
+  nextMoves: {
+    title: '你的下一步：3 件事',
+    subtitle: '選一件——都會直接在目前視窗開啟。',
+    palette: '叫出命令面板',
+    bots: '認識你的 Bots',
+    plugins: '瀏覽外掛（Kanban 在這裡）',
+    done: '完成'
+  },
   intro: {
     greeting: '你好，我是 Hermes。',
     plan: '我們先幫你把一切設定好，然後一起做點很酷的事。'

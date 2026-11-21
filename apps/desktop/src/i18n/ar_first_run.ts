@@ -36,6 +36,14 @@ export const arFirstRun: FirstRunCopy = {
     setUp: 'إعداده',
     notNow: 'ليس الآن'
   },
+  nextMoves: {
+    title: 'خطوتك التالية: 3',
+    subtitle: 'اختر واحدة — كل منها يُفتح هنا مباشرة.',
+    palette: 'استدعاء لوحة الأوامر',
+    bots: 'تعرّف على مساعديك (Bots)',
+    plugins: 'تصفّح الإضافات (Kanban هنا)',
+    done: 'تم'
+  },
   intro: {
     greeting: 'مرحبًا، أنا Hermes.',
     plan: 'لنجهّز كل شيء لك، ثم ننجز معًا شيئًا رائعًا.'

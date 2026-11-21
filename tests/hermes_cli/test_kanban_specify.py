@@ -93,6 +93,84 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+# ---------------------------------------------------------------------------
+# Routing label preservation
+#
+# A leading `Word:` on a card title is a routing contract — the board's
+# automation dispatches on it (`Spec:` -> spec, `Build:` -> build). The
+# specifier asks an auxiliary LLM for a tightened title and writes it back,
+# so before this fix the label was rewritten along with the prose: `Spec:
+# 2026-10-31-money-tracker-stitch-design-of-record` came back as `Specify
+# 2026-10-31-money-tracker-stitch-design-of-record` and the card silently
+# stopped being dispatched.
+# ---------------------------------------------------------------------------
+
+
+def _specify_with_reply(task_id: str, title: str, body: str = "**Goal**\nA goal."):
+    """Run the specifier against a mocked LLM that answers with ``title``."""
+    content = jsonlib.dumps({"title": title, "body": body})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(task_id, author="ace")
+    assert outcome.ok is True, outcome.reason
+    return outcome
+
+
+def test_specify_task_keeps_leading_routing_label(kanban_home):
+    """The live symptom: the model rewrote `Spec:` into the prose word
+    `Specify`, and the card stopped being dispatched."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="Spec: 2026-10-31-money-tracker-stitch-design-of-record", triage=True,
+        )
+
+    outcome = _specify_with_reply(tid, "Specify 2026-10-31-money-tracker-stitch-design-of-record")
+
+    assert outcome.new_title == "Spec: 2026-10-31-money-tracker-stitch-design-of-record"
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.title == "Spec: 2026-10-31-money-tracker-stitch-design-of-record"
+
+
+def test_specify_task_keeps_original_label_when_model_echoes_another(kanban_home):
+    """The ORIGINAL label is authoritative — a model reply cannot re-route a
+    card by answering with a different label."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Spec: stitch the money tracker", triage=True)
+
+    outcome = _specify_with_reply(tid, "Review: stitch the money tracker")
+
+    assert outcome.new_title == "Spec: stitch the money tracker"
+
+
+def test_specify_task_leaves_unlabelled_title_unchanged(kanban_home):
+    """A title with no routing label behaves exactly as before the fix."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough idea about money", triage=True)
+
+    outcome = _specify_with_reply(tid, "Refined money idea")
+
+    assert outcome.new_title == "Refined money idea"
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.title == "Refined money idea"
+
+
+def test_specify_task_prompt_asks_for_the_label_verbatim(kanban_home):
+    """The prompt is the first line of defence; the code path is the guarantee."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Spec: stitch the money tracker", triage=True)
+
+    content = jsonlib.dumps({"title": "Spec: stitch the money tracker", "body": "body"})
+    p, mock_fn = _patch_aux_client(content)
+    with p:
+        spec.specify_task(tid, author="ace")
+
+    system = mock_fn.call_args.kwargs["messages"][0]["content"]
+    assert "ROUTING LABEL" in system
+    assert "Spec:" in system
+
+
 
 
 

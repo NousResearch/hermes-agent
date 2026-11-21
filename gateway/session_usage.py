@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import logging
 import time
+from types import SimpleNamespace
+
+logger = logging.getLogger(__name__)
 
 _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "session_output_tokens"),
              ("cache_read_tokens", "session_cache_read_tokens"),
@@ -20,6 +24,22 @@ _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "sessio
              ("api_calls", "session_api_calls"))
 # The output-token count at the start of the viewer's current turn (``↓ N tok`` on main's spinner).
 TURN_BASE_ATTR = "_viewer_turn_output_base"
+# Providers whose own usage API reports normalized window percentages — the same shape a Portal
+# usage-window plan sends, so the status bar can carry one. Window label (first word, lowercased) →
+# (gauge id, status-bar word): a known id (``week``/``month``) is localized by the Desktop client, any
+# other id renders the word as its own title (``gaugeTitle`` in apps/shared/src/plan-usage.ts).
+# Insertion order is the status bar's preference — shortest window first, the one that burns while a
+# turn runs (Go has no daily window; its 5-hour rolling one is the closest thing).
+_PROVIDER_WINDOW_GAUGES: dict[str, dict[str, tuple[str, str]]] = {
+    "opencode-go": {"rolling": ("rolling", "5h"), "weekly": ("week", "Weekly"), "monthly": ("month", "Monthly")},
+}
+# A window this spent is about to block, so it outranks the short one as the status bar's figure
+# (the same 80% the Desktop paints red).
+_PROVIDER_WINDOW_ALERT_BP = 8_000
+# How often the status bar may ask its provider. REFRESH_AFTER_S (2 min) is a picker's cadence; the
+# number the user watches mid-turn moves in whole percentage points, so one minute keeps it alive
+# without spending a request per usage frame.
+_PROVIDER_WINDOW_REFRESH_S = 60.0
 
 
 def _finite(value):
@@ -61,18 +81,135 @@ def _rate_limit(agent):
 def plan_gauge(agent) -> dict | None:
     """Window plans only: the allowance the status bar shows at a glance (today's, else the one that binds),
     from the reply headers the agent already tracks — no extra round trip, None for everyone else."""
+    gauge = _portal_plan_gauge(agent)
+    if gauge is None:  # a provider that reports its own windows (opencode-go) carries the same slot
+        try:
+            gauge = _provider_plan_gauge(agent)
+        except Exception:  # a status-bar readout must never break usage reporting
+            logger.debug("provider plan gauge failed; this frame carries no allowance", exc_info=True)
+    return gauge
+
+
+def _portal_route(agent) -> bool:
+    """Whether the agent's *intended* route is a Nous one — the only route that sends plan headers.
+
+    ``_credits_state`` is adopted from those headers and outlives an in-place model switch
+    (``agent.provider`` changes, nothing clears the state), so a Go turn after a Nous one would keep
+    showing the Nous allowance and never the Go window. The primary runtime is the route a fallback
+    turn restores, so a live fallback away from Nous still shows the plan it is spending.
+    """
+    from agent.rate_limit_credits import _is_nous_agent
+
+    primary = getattr(agent, "_primary_runtime", None) or {}
+    route = SimpleNamespace(provider=primary.get("provider"), base_url=primary.get("base_url")) if primary else agent
+    return _is_nous_agent(route)
+
+
+def _portal_plan_gauge(agent) -> dict | None:
+    """A Nous Portal usage-window plan: today's allowance, else the one that binds, off the reply headers."""
     with contextlib.suppress(Exception):
-        state = getattr(agent, "_credits_state", None)
-        if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
-            binding = state.binding_gauge
-            day = next((g for g in state.gauges if g.id == "day" and g.scope == "all"), None)
-            # A full allowance is what blocks, so it wins over today's; a passed reset is no longer current.
-            gauge = binding if binding is not None and binding.full else (day or binding)
-            reset = getattr(gauge, "resets_at_ms", None)
-            if gauge is not None and not (isinstance(reset, int) and 0 < reset <= int(time.time() * 1000)):
-                return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp),
-                        "resets_at_ms": gauge.resets_at_ms}
+        if not _portal_route(agent):
+            return None  # the plan state belongs to the route that produced it
+        return _portal_state_gauge(getattr(agent, "_credits_state", None))
     return None
+
+
+def _portal_state_gauge(state) -> dict | None:
+    """A passed reset is no longer current: the bar would name an allowance that already refilled."""
+    if getattr(state, "is_usage_window", False) is not True:  # `is True`: a Mock agent's attribute is not a plan
+        return None
+    gauge = _portal_shown_window(state)
+    reset = getattr(gauge, "resets_at_ms", None)
+    if gauge is None or (isinstance(reset, int) and 0 < reset <= int(time.time() * 1000)):
+        return None
+    return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp), "resets_at_ms": gauge.resets_at_ms}
+
+
+def _portal_shown_window(state):
+    """A full allowance is what blocks, so it wins over today's all-scope window."""
+    binding = state.binding_gauge
+    if binding is not None and binding.full:
+        return binding
+    return next((g for g in state.gauges if g.id == "day" and g.scope == "all"), None) or binding
+
+
+def _reset_ms(window) -> int | None:
+    """A usage window's reset as epoch milliseconds; None when the fetcher left it out."""
+    with contextlib.suppress(AttributeError, OSError, OverflowError, TypeError, ValueError):
+        return int(window.reset_at.timestamp() * 1000)
+    return None
+
+
+def _pooled_credentials(agent) -> bool:
+    """Whether this provider serves from more than one credential.
+
+    The provider-wide fetch below reads whichever key the resolver hands back, so on a pool its
+    percentage may be another account's — ``hermes_cli/inventory.py`` refuses the provider-wide
+    figure for a pooled provider for the same reason. One account (the common case) is exact.
+    ``CredentialPool.entries`` is a METHOD (guarded by the pool's lock), not an attribute."""
+    pool = getattr(agent, "_credential_pool", None)
+    entries = getattr(pool, "entries", None)
+    if callable(entries):
+        entries = entries()
+    return len(entries or ()) > 1
+
+
+def _provider_plan_gauge(agent) -> dict | None:
+    """A provider that reports its own usage windows — the same gauge a Portal plan sends.
+
+    ``opencode-go``'s ``GET /zen/go/v1/usage`` answers ``{"usage": {"rolling"|"weekly"|"monthly":
+    {"percent", "resetsAt"}}}``; its provider profile already normalizes that into an
+    ``AccountUsageSnapshot`` for ``/usage``. The status bar carries the provider's shortest window
+    (the one that moves while a turn runs), yielding to any window at ``_PROVIDER_WINDOW_ALERT_BP``.
+    Read from the account-usage cache — the refresh rides a daemon thread, so a usage frame never
+    waits on the network."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    windows = _PROVIDER_WINDOW_GAUGES.get(provider)
+    if not windows or _pooled_credentials(agent):
+        return None
+    from agent.account_usage_cache import cached_account_usage, refresh_account_usage_async, snapshot_is_stale
+
+    # Throttled per provider: a turn's frames cannot storm the provider's API.
+    refresh_account_usage_async([provider], interval=_PROVIDER_WINDOW_REFRESH_S)
+    snapshot = cached_account_usage(provider)
+    if snapshot is None or snapshot_is_stale(snapshot):
+        return None  # nothing trustworthy yet; the refresh above lands in a later frame
+    return _status_bar_window(snapshot, windows)
+
+
+def _window_key(window) -> str:
+    """A window's stable key, else the first word of its label (fetchers that send no key)."""
+    key = str(getattr(window, "key", "") or "").strip().lower()
+    return key or str(getattr(window, "label", "") or "").strip().lower().split(" ")[0]
+
+
+def _window_gauge(window, windows, now_ms: int) -> dict | None:
+    """One snapshot window as the status bar's gauge, or None when it has nothing to render."""
+    words = windows.get(_window_key(window))
+    used, reset = getattr(window, "used_percent", None), _reset_ms(window)
+    if words is None or isinstance(used, bool) or not isinstance(used, (int, float)):
+        return None
+    if reset is not None and reset <= now_ms:
+        used, reset = 0.0, None  # Go keeps the last percent until the window refills: a passed reset is empty
+    return {"id": words[0], "label": words[1],
+            "used_bp": max(0, min(10_000, round(float(used) * 100))), "resets_at_ms": reset}
+
+
+def _status_bar_window(snapshot, windows) -> dict | None:
+    """The provider's shortest window — unless one is about to block, then that one.
+
+    ``windows`` is the provider's table, whose order is the preference (shortest first), so the
+    snapshot's own ordering cannot decide the figure. A window at ``_PROVIDER_WINDOW_ALERT_BP`` is
+    the news the user needs; of several, the most used wins."""
+    now_ms = int(time.time() * 1000)
+    gauges = [g for g in (_window_gauge(w, windows, now_ms) for w in snapshot.windows) if g is not None]
+    if not gauges:
+        return None
+    alerting = [g for g in gauges if g["used_bp"] >= _PROVIDER_WINDOW_ALERT_BP]
+    if alerting:
+        return max(alerting, key=lambda g: g["used_bp"])
+    rank = {gauge_id: index for index, (gauge_id, _label) in enumerate(windows.values())}
+    return min(gauges, key=lambda g: rank[g["id"]])
 
 
 def usage_stats(agent) -> dict:

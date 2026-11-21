@@ -1279,7 +1279,13 @@ weekdays at 9am          → Weekdays at 9:00 AM
 weekends at 10am         → Saturdays and Sundays at 10:00 AM
 daily at 7am             → Daily at 7:00 AM
 monday, wednesday at 9am → Mondays and Wednesdays at 9:00 AM
+monday and friday at 9am and 5pm      → Mondays and Fridays at 9:00 AM and 5:00 PM
+every second monday at 9am            → The 2nd Monday of each month at 9:00 AM
+every last friday of the month at 5pm → The last Friday of each month at 5:00 PM
+first and third tuesday at 10:00      → The 1st and 3rd Tuesday of each month at 10:00 AM
 ```
+
+Ordinals are `first`…`fifth` (or `1st`…`5th`) and `last`. Several times in one phrase must share the minute (`9am and 5pm` works, `9am and 5:30pm` does not fit one cron line: use two jobs).
 
 Times accept `9am`, `9:30pm`, `14:00`, bare 24-hour hours (`at 7`), `noon`, and `midnight`. These forms compile to cron expressions internally (they require the `croniter` package, installed by default).
 
@@ -1292,6 +1298,9 @@ Times accept `9am`, `9:30pm`, `14:00`, bare 24-hour hours (`at 7`), `noon`, and 
 0 */6 * * *     → Every 6 hours
 30 8 1 * *      → First of every month at 8:30 AM
 0 0 * * 0       → Every Sunday at midnight
+0 9 * * 1#2     → Second Monday of every month at 9:00 AM
+0 17 * * L5     → Last Friday of every month at 5:00 PM
+0 0 L * *       → Last day of every month at midnight
 ```
 
 ### ISO timestamps

@@ -327,6 +327,9 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
+        _arg("--at", metavar="ISO8601",
+             help="Wake on a dispatcher tick at/after this timezone-qualified timestamp "
+                  "(Z or +HH:MM). Replaces the previous schedule; omit for manual unblock."),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),

@@ -74,6 +74,7 @@ from session_rules.turns import (
     _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
     _LENGTH_CONTINUATION_NETWORK_STUB,
     _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+    _THINKING_ONLY_FINAL_NUDGE,
 )
 
 logger = logging.getLogger(__name__)

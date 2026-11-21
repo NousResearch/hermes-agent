@@ -92,8 +92,15 @@ def add_empty_response_retry_hint(agent: Any, api_messages: list[dict[str, Any]]
     if not hint or not api_messages or api_messages[-1].get("role") not in {"user", "tool"}:
         return ""
     tail = api_messages[-1]
-    content = tail.get("content")
     suffix = "\n\n" + hint
+    if tail.get("role") == "tool" and getattr(agent, "api_mode", None) == "anthropic_messages":
+        # Appended to a tool result, the reminder reads as text the tool returned, and models
+        # hardened against prompt injection disregard it (Claude Haiku 5.5 said so in 6 of 7
+        # live runs). On the Messages API a separate user row merges into the same user turn as
+        # the tool_result, as its own text block, so roles and the cache prefix are unchanged.
+        api_messages.append({"role": "user", "content": hint})
+        return suffix
+    content = tail.get("content")
     if isinstance(content, list):
         content = [*content, {"type": "text", "text": suffix}]
     else:
@@ -120,6 +127,8 @@ def _retry_empty(
         _empty_guard.empty_retry_budget(agent, response)
         if empty_candidate else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
     )
+    if empty_candidate and observed_generation:
+        budget = min(budget, _empty_guard.REASONING_ONLY_RETRY_BUDGET)
     deterministic = empty_candidate and _empty_guard.deterministic_empty(agent)
     if not (empty_candidate and agent._empty_content_retries < budget and not deterministic):
         return None, None, deterministic
@@ -151,6 +160,14 @@ def _retry_empty(
     )
     if _interrupted is not None:
         return "return", _interrupted, deterministic
+    if observed_generation:
+        # Generic custom endpoints cannot disable reasoning on the wire. Give the final
+        # attempt a distinct request-local prompt as well as the one-shot override.
+        agent._empty_response_retry_hint = (
+            "[System: Earlier attempts produced internal reasoning but no visible answer. "
+            "Reply now with the user-visible answer or the next tool call, without further analysis.]"
+        )
+        agent._ephemeral_reasoning_off = True
     return "continue", None, deterministic
 
 
@@ -276,7 +293,8 @@ def recover_empty_response(
 ) -> EmptyResponseVerdict:
     """Recover without storing failed reasoning or synthetic conversation turns."""
     from agent.conversation_loop import (
-        _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message,
+        _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE, _THINKING_ONLY_FINAL_NUDGE,
+        _sync_failover_system_message,
     )
 
     _turn_exit_reason = turn_exit_reason
@@ -350,7 +368,15 @@ def recover_empty_response(
         agent._buffer_diagnostic_status(
             f"↻ Thinking-only response — requesting completion ({agent._thinking_prefill_retries}/2)"
         )
-        agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
+        if agent._thinking_prefill_retries >= 2:
+            # Escalate instead of re-sending the same reminder (a byte-identical retry makes
+            # the model re-derive the same reasoning), and answer this one request without
+            # thinking. The override is one-shot and degrades to the route default when the
+            # route rejects disabling reasoning.
+            agent._empty_response_retry_hint = _THINKING_ONLY_FINAL_NUDGE
+            agent._ephemeral_reasoning_off = True
+        else:
+            agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
         final_response = None
         return _verdict("continue")
 

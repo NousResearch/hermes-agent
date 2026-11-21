@@ -1230,6 +1230,59 @@ the write may still commit. Poll or retry the same identity; a timeout does not 
 Results follow the gateway's existing admission retention. These methods do not approve prompts,
 execute slash commands, interrupt turns, or grant additional tools.
 
+### Exact tool batches
+
+A plugin with its own model can request a native tool round without another host-model inference:
+
+```python
+catalog = await host_call(
+    ctx.conversation_tools, session_key=session_key, expected_session_id=session_id,
+)
+receipt = await host_call(
+    ctx.execute_tools,
+    [{"call_id": "read-status", "name": "terminal", "arguments": {"command": "git status --short"}}],
+    session_key=session_key, expected_session_id=session_id,
+    request_id="status-request", text="Inspect the working tree status.",
+    require_background=True,
+)
+```
+
+Both methods use the same gateway injection consent, profile ownership, session pin and current
+route authorization as submission receipts. Use the independent waiter pool and `host_call` helper
+above, never the gateway loop or its default executor. The catalog returns
+`ok`, `session_id`, flat OpenAI function schemas in `tools`, and `catalog_source`: `session_pin`
+when a persisted tool snapshot exists, otherwise `configuration`. Discovery is advisory: reloads
+and current native execution policy can still refuse a listed tool.
+
+`execute_tools` accepts one to 32 calls with unique, nonempty `call_id` values, `name` and dictionary
+`arguments`. `text` describes the plugin-requested operation; it need not pretend to be a verbatim
+human transcript. Calls, text and the background requirement are durably admitted together. Repeat
+**the same method with the same identity and arguments** to observe its receipt; changed arguments
+conflict. These requests have their own identity namespace, so `submission_status` and parent-message
+controls do not target them. A terminal receipt includes `outputs`, a list of `{call_id, output}`
+from that exact admission's tool trace, sharing a 64,000-character budget. `outputs_truncated` and
+an affected output's `truncated` flag identify omitted content. Outputs follow the normal persisted-result secret redaction.
+Tool-level refusal is returned in the tool output; a completed turn does not imply every tool succeeded.
+
+Execution uses the normal agent tool loop, session serialization, approvals and tool hooks.
+Supported host API modes are Chat Completions and Codex Responses; other modes refuse instead of
+falling back to inference. This does not expose native Codex engine tool execution. It adds no
+model tool, changes no session prompt and grants no extra tool permissions. The normal transcript
+retains the request and tool trace; a silent completion marker avoids an extra gateway reply.
+
+`require_background=True` affects delegation in this parent round only. A `delegate_task` spawn
+must detach or return a refusal: joined-session policy, unavailable completion delivery or a full
+pool cannot silently turn it into synchronous work. A partial dispatch retains accepted child IDs
+and reports refused children. Native `delegate_task` list/steer/stop actions remain available, with
+its returned child IDs and ordinary ownership checks. Steering is queued and observed at the next
+supported child boundary; it cannot interrupt an uninterruptible tool or provider call immediately.
+
+A single parent session still has one writer. A long synchronous parent turn queues later exact
+rounds. For responsive hybrid clients, start long work as a native background child, then issue
+short parent operations while that child runs. These APIs do not classify a tool's duration or make
+concurrent workspace edits safe. Restart recovery follows the existing durable admission policy;
+unknown execution must be resolved before retrying under a new identity.
+
 ## Plugin code inside the gateway
 
 Hooks, tools and injected turns of every chat and every local session (CLI, TUI, Desktop) run in the one gateway process, not in the client you launched. Some process-level habits from the classic CLI do not carry over:

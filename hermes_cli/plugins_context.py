@@ -416,6 +416,18 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         return plugin_submission(self, content=None, read_only=True, session_key=session_key,
                                  expected_session_id=expected_session_id, request_id=request_id)
 
+    def conversation_tools(self, *, session_key: str, expected_session_id: str) -> dict:
+        """Read configured tool schemas for an authorized, pinned gateway conversation."""
+        from hermes_cli.plugins_injection import plugin_tools
+        return plugin_tools(self, session_key=session_key, expected_session_id=expected_session_id, discover=True)
+
+    def execute_tools(self, calls: list, *, session_key: str, expected_session_id: str,
+                      request_id: str, text: str, require_background: bool = False) -> dict:
+        """Admit exact tool calls through a native turn; retry the identity to observe completion."""
+        from hermes_cli.plugins_injection import plugin_tools
+        return plugin_tools(self, calls=calls, session_key=session_key, expected_session_id=expected_session_id,
+                            request_id=request_id, text=text, require_background=require_background)
+
     def session_cwd(self) -> str:
         """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
         from hermes_cli.plugin_session import context_cwd

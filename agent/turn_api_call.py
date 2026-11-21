@@ -8,7 +8,8 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
 import logging
 import time
@@ -21,6 +22,23 @@ from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repet
 from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
+
+_transport = ContextVar('external_completion', default=None)
+
+
+@contextmanager
+def bind_completion(agent, complete):
+    """Bind a host completion callback to this exact agent, never its delegated children."""
+    token = _transport.set((agent, complete))
+    try:
+        yield
+    finally:
+        _transport.reset(token)
+
+
+def transport_for(agent):
+    current = _transport.get()
+    return current[1] if current is not None and current[0] is agent else None
 
 
 def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
@@ -91,6 +109,9 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        external = transport_for(agent)
+        if external is not None:
+            return external(agent, next_api_kwargs)
         if agent.api_mode == "codex_responses":
             from agent.codex_responses_adapter import drops_replay_item_ids
 

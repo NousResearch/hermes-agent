@@ -31,10 +31,11 @@ class Request:
     plugin_id: str
     plugin_home: Path
     content: str | None = None
+    operation: str = "message"
 
     @property
     def identity(self):
-        return json.dumps(['plugin', self.plugin_id, self.session_key, self.request_id], separators=(',', ':'))
+        return json.dumps(['plugin-tools' if self.operation == 'execute' else 'plugin', self.plugin_id, self.session_key, self.request_id], separators=(',', ':'))
 
     def refused(self, error, *, status='refused'):
         return dict(ok=False, status=status, error=error, request_id=self.request_id,
@@ -42,9 +43,9 @@ class Request:
 
 
 def call(runner, *, content=None, session_key, expected_session_id, request_id, plugin_id,
-         plugin_home, timeout=30):
+         plugin_home, timeout=30, operation="message"):
     """Wait for admission, never execution. Must run outside the gateway event loop."""
-    request = Request(session_key, expected_session_id, request_id, plugin_id, plugin_home, content)
+    request = Request(session_key, expected_session_id, request_id, plugin_id, plugin_home, content, operation)
     if (any(not isinstance(value, str) or not value.strip() for value in
             (session_key, expected_session_id, request_id, plugin_id))
             or len(request_id) > 256 or plugin_home is None
@@ -140,6 +141,21 @@ async def _dispatch_bound(runner, authority, request, entry, source, adapter, ch
     store = authority_persistence(authority)
     if not await asyncio.to_thread(_owned_by, store, request.expected_session_id, entry.session_id):
         raise AuthorityRefusal('admission_conflict')
+    if request.operation == 'tools':
+        check()
+        session = await asyncio.to_thread(store.sessions.get, entry.session_id)
+        pin = session.tool_pin if session is not None else None
+        if pin is not None:
+            from tools.mcp_tool_agent import pinned_tool_defs
+            definitions = await asyncio.to_thread(pinned_tool_defs, pin)
+        else:
+            import model_tools
+            settings = runner._run_agent_display_settings(source)
+            definitions = await asyncio.to_thread(model_tools.get_tool_definitions,
+                enabled_toolsets=settings.enabled_toolsets, disabled_toolsets=settings.disabled_toolsets, quiet_mode=True)
+        check()
+        return dict(ok=True, tools=[dict(type='function', **tool['function']) for tool in definitions],
+                    session_id=entry.session_id, catalog_source='session_pin' if pin is not None else 'configuration')
     owner = _route_owner(authority, entry)
     row = await asyncio.to_thread(store.admissions.find, principal_id='automation:' + request.session_key,
                                   session_id=owner, request_id=request.identity)
@@ -182,12 +198,31 @@ async def _project(authority, request, record):
             row = live.settling.get(record.admission_id, row)
     receipt = authority._receipt(row)
     result = None
+    outputs = []
+    outputs_truncated = False
     if receipt.status == 'terminal':
         stored = await asyncio.to_thread(authority_persistence(authority).admissions.settled_result,
                                          admission_id=receipt.admission_id)
         if stored is not None and stored.result is not None:
             text = (stored.result.get('result') or {}).get('final_response') or ''
             result = dict(final_response=text[:16000], truncated=len(text) > 16000)
+            if request.operation == 'execute':
+                requested = {call['call_id'] for call in json.loads(request.content)['calls']}
+                from session_rules.results import compact_result
+                value = dict(stored.result.get('result') or {})
+                # Stored compression snapshots retain history; project only this execution.
+                value.pop('_compressed', None)
+                suffix = compact_result({'result': value}, user_message=request.content)['result']
+                remaining = 64000
+                for message in suffix.get('messages', []):
+                    if message.get('role') != 'tool' or message.get('tool_call_id') not in requested:
+                        continue
+                    text = str(message.get('content', ''))
+                    output = dict(call_id=message['tool_call_id'], output=text[:remaining])
+                    if len(text) > remaining:
+                        output['truncated'] = outputs_truncated = True
+                    remaining = max(0, remaining - len(output['output']))
+                    outputs.append(output)
     return dict(ok=True, status=receipt.status, request_id=request.request_id,
                 admission_id=receipt.admission_id, session_id=receipt.ref.session_id,
-                outcome=receipt.outcome, result=result)
+                outcome=receipt.outcome, result=result, outputs=outputs, outputs_truncated=outputs_truncated)

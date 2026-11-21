@@ -46,6 +46,10 @@ def admission_turn_scope(authority, ref, live, row):
     the plugin's message (already, or arriving while it waits) or steered or redirected into it
     (:func:`wake_background_wait`) and a gateway drain or profile retirement end that wait at once,
     so neither inherits it."""
+    from gateway.plugin_submission.execution import admission_scope
+    exact = admission_scope(row, before=_waiting_turn(authority, ref, live))
+    if exact is not None:
+        return exact
     if not _plugin_admission(row):
         return contextlib.nullcontext()
     return _waiting_turn(authority, ref, live)

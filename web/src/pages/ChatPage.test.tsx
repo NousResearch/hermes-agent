@@ -30,6 +30,9 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static customKeyEventHandler: ((event: KeyboardEvent) => boolean) | null =
+    null;
+
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -42,7 +45,8 @@ class FakeTerminal {
     this.options = options;
   }
 
-  attachCustomKeyEventHandler() {
+  attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+    FakeTerminal.customKeyEventHandler = handler;
     return true;
   }
 
@@ -213,6 +217,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.customKeyEventHandler = null;
   FakeWebSocket.instances = [];
   webglInstances.length = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
@@ -364,6 +369,33 @@ describe("ChatPage", () => {
     });
     return paste;
   }
+
+  it.each([
+    { clipboardAvailable: true, modifier: "metaKey" as const, platform: "MacIntel" },
+    { clipboardAvailable: false, modifier: "ctrlKey" as const, platform: "Linux x86_64" },
+  ])(
+    "lets bare paste reach the native ClipboardEvent (API available: $clipboardAvailable)",
+    async ({ clipboardAvailable, modifier, platform }) => {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: platform,
+      });
+      const readText = vi.fn().mockRejectedValue(new Error("denied"));
+      Object.defineProperty(window.navigator, "clipboard", {
+        configurable: true,
+        value: clipboardAvailable ? { readText } : undefined,
+      });
+      await renderChat();
+      const keydown = new KeyboardEvent("keydown", {
+        key: "v",
+        cancelable: true,
+        ...(modifier === "metaKey" ? { metaKey: true } : { ctrlKey: true }),
+      });
+      expect(FakeTerminal.customKeyEventHandler?.(keydown)).toBe(false);
+      expect(keydown.defaultPrevented).toBe(false);
+      expect(readText).not.toHaveBeenCalled();
+    },
+  );
 
   it("delivers a native text paste through term.paste exactly once (#52471)", async () => {
     const host = await renderChat();

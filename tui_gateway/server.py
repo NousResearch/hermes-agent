@@ -1623,7 +1623,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row.cwd
-                        _sessions[sid]["coding_workspace"] = dict(row.model_config or {}).get("coding_workspace")
+                        _sessions[sid]["coding_workspace"] = dict(getattr(row, "model_config", None) or {}).get("coding_workspace")
                         if remote:
                             _sessions[sid]["explicit_cwd"] = True
                 # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
@@ -1645,7 +1645,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
             # The badge lives in model_config regardless of whether the row carries a cwd (a desktop launch-dir
             # session has none — exactly the shape that earns the badge).
             if row and sid in _sessions:
-                _restore_agent_worktree(_sessions[sid], dict(row.model_config or {}))
+                _restore_agent_worktree(_sessions[sid], dict(getattr(row, "model_config", None) or {}))
     finally:
         if owns_db and db is not None:
             with contextlib.suppress(Exception):

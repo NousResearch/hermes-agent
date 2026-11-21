@@ -369,7 +369,7 @@ def _ensure_managed_worktrees_ignored(root: str) -> None:
     def ignored() -> bool:
         result = subprocess.run(
             ["git", "-C", root, "check-ignore", "-q", ".worktrees/"],
-            capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False,
         )
         if result.returncode not in (0, 1):
             raise ValueError(result.stderr.strip() or "Cannot inspect Git exclusion rules")

@@ -5,6 +5,7 @@ import httpx
 import pytest
 from openai import OpenAI
 
+from agent.auxiliary_client import CodexAuxiliaryClient
 from agent.client_lifecycle import _swap_fallback_clients
 
 
@@ -47,3 +48,31 @@ def test_anthropic_fallback_keeps_callable_without_treating_it_as_oauth_text():
         agent._anthropic_client.close()
     finally:
         client.close()
+
+
+def test_codex_wrapper_fallback_keeps_entra_credential_source():
+    """A CodexAuxiliaryClient (azure-foundry codex_responses fallback, Entra ID) must carry the
+    rotating bearer: the wrapper's own .api_key mirrors the SDK's empty-string representation,
+    so without _api_key_provider the swap hands the agent api_key="" and every call 401s (#135474)."""
+    source = lambda: "fixture-entra"
+    real = OpenAI(api_key=source, base_url="http://localhost:1234/v1")
+    wrapper = CodexAuxiliaryClient(real, "fixture")
+    agent = SimpleNamespace()
+    try:
+        _swap_fallback_clients(agent, wrapper, "fixture", "fixture", str(wrapper.base_url), "codex_responses")
+        assert agent.api_key is source
+        assert agent._client_kwargs["api_key"] is source
+    finally:
+        wrapper.close()
+
+
+def test_codex_wrapper_fallback_keeps_static_string_credential():
+    real = OpenAI(api_key="fixture", base_url="http://localhost:1234/v1")
+    wrapper = CodexAuxiliaryClient(real, "fixture")
+    agent = SimpleNamespace()
+    try:
+        _swap_fallback_clients(agent, wrapper, "fixture", "fixture", str(wrapper.base_url), "codex_responses")
+        assert agent.api_key == "fixture"
+        assert agent._client_kwargs["api_key"] == "fixture"
+    finally:
+        wrapper.close()

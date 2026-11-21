@@ -4,6 +4,9 @@ A multiplexer answers the delete's rescan ``pending`` after 5 s and keeps tearin
 it releases the profile's ``gateway.lock`` reservation last. The holder here is a real separate
 process reserving through the same primitive the multiplexer uses (``process_ownership.reserve``).
 """
+import argparse
+import errno
+import os
 import shutil
 import subprocess
 import sys
@@ -13,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles, profiles_remove
+from hermes_cli import profile_cmd, profiles, profiles_remove
+from hermes_constants import named_profile_has_identity
 
 _HOLDER = (
     "import sys\nfrom pathlib import Path\nfrom gateway.runtime_ownership import process_ownership\n"
@@ -141,3 +145,58 @@ def test_delete_incomplete_checks_the_tombstone_before_probing_identity(tmp_path
         raise PermissionError(13, "Permission denied", str(_home / "config.yaml"))
     monkeypatch.setattr(hermes_constants, "named_profile_has_identity", unreadable)
     assert hermes_constants.named_profile_delete_incomplete(home) is False
+
+
+def test_partial_delete_preserves_markerless_files_for_rename(profile, monkeypatch, capsys):
+    note = profile / 'preserved-note.txt'
+    note.write_text('keep me', encoding='utf-8')
+    unlink = os.unlink
+
+    def fail_on_note(path, *args, **kwargs):
+        if Path(path).name == note.name:
+            # Model the order in which rmtree can remove all the root identity files
+            # before encountering an open file, independently of scandir order.
+            for filename in ('config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db'):
+                (profile / filename).unlink(missing_ok=True)
+            raise OSError(errno.EBUSY, 'file is in use', path)
+        return unlink(path, *args, **kwargs)
+
+    profiles.set_active_profile('owned-delete')
+    with monkeypatch.context() as fail:
+        fail.setattr(os, 'unlink', fail_on_note)
+        for _ in range(2):
+            with pytest.raises(RuntimeError) as failed:
+                profiles.delete_profile('owned-delete', yes=True)
+            assert not named_profile_has_identity(profile) and note.exists()
+            assert 'did not finish' in str(failed.value)
+
+    assert profiles.get_active_profile_name() == 'default'
+    assert 'owned-delete' not in profiles.list_profile_names()
+    capsys.readouterr()
+    profile_cmd._profile_list(argparse.Namespace())
+    assert 'delete incomplete' in capsys.readouterr().out
+    with pytest.raises(FileExistsError, match='did not finish'):
+        profiles.create_profile('owned-delete', no_alias=True)
+    assert note.read_text(encoding='utf-8') == 'keep me'
+    monkeypatch.setattr(profiles, 'check_alias_collision', lambda _name: 'test alias not installed')
+    kept = profiles.rename_profile('owned-delete', 'kept')
+    assert (kept / note.name).read_text(encoding='utf-8') == 'keep me'
+    assert profiles.create_profile('owned-delete', no_alias=True, no_skills=True).is_dir()
+
+
+def test_a_retried_partial_delete_leaves_a_replaceable_post_delete_shell(profile, monkeypatch):
+    """The retry that finishes a partial delete records a plain delete again, so a shell a stale
+    writer re-creates afterwards is replaced by ``create`` instead of refused as unfinished."""
+    def partial(path, _onexc):
+        for filename in ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db"):
+            (path / filename).unlink(missing_ok=True)
+        raise OSError(errno.EBUSY, "file is in use", str(path / "preserved-note.txt"))
+
+    with monkeypatch.context() as fail:
+        fail.setattr(profiles, "_rmtree_with_retry", partial)
+        with pytest.raises(RuntimeError, match="did not finish"):
+            profiles.delete_profile("owned-delete", yes=True)
+    profiles.delete_profile("owned-delete", yes=True)
+    assert not profile.exists()
+    profile.mkdir()  # a stale writer re-creates the deleted home
+    assert profiles.create_profile("owned-delete", no_alias=True, no_skills=True).is_dir()

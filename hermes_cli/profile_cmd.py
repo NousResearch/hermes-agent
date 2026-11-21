@@ -139,8 +139,7 @@ def _unfinished_deletes() -> list:
     """``(name, dir)`` per profile whose delete did not finish: hidden from ``list_profiles`` (it
     is tombstoned), but its files are still there, so ``profile list`` must not hide it."""
     from hermes_cli.profiles import _iter_named_profile_dirs
-    from hermes_constants import named_profile_delete_incomplete
-    return [(d.name, d) for d in _iter_named_profile_dirs(live_only=False) if named_profile_delete_incomplete(d)]
+    return [(d.name, d) for d in _iter_named_profile_dirs(incomplete_only=True)]
 
 
 def _shared_credential_warnings(profiles) -> list:

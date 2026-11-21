@@ -26,6 +26,12 @@ def delete_incomplete_message(canon: str, profile_dir: Path | None) -> str | Non
 
 def delete_failed_error(canon: str, profile_dir: Path, error: Exception) -> RuntimeError:
     """A delete whose rmtree was refused or failed; names the state it left and how to finish."""
+    from hermes_constants import mark_named_profile_deleted, named_profile_has_identity
+    # rmtree can remove all identity files before it hits an open file. Do not let create
+    # mistake the surviving data for a shell recreated after a successful delete.
+    with contextlib.suppress(OSError):  # preserve the original deletion error if recording fails
+        if profile_dir.is_dir() and not named_profile_has_identity(profile_dir):
+            mark_named_profile_deleted(profile_dir, incomplete=True)
     left = delete_incomplete_message(canon, profile_dir)
     return RuntimeError(f"Could not remove profile directory {profile_dir}: {error}" + (f". {left}" if left else ""))
 

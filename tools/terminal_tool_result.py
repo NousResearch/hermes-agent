@@ -178,7 +178,24 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _strip_wrapper_suffix(raw_spill: str, env: Any, cwd_observed: bool) -> str:
+    """Drop the session wrapper's trailing cwd and PIPESTATUS marker lines from a spill. The
+    collector tees the raw stream, so they are still there; ``_extract_cwd_from_output`` only
+    cleans the in-memory copy. Only a marker that ENDS the spill of a command that reported its
+    cwd is the wrapper's: an interrupted or capped spill has no real suffix, and marker-shaped
+    text the command printed must stay."""
+    if not cwd_observed:
+        return raw_spill
+    from tools.environments.base_session_env import _split_cwd_marker
+    for marker in (getattr(env, "_cwd_marker", None), getattr(env, "_pipe_marker", None)):
+        if isinstance(marker, str) and marker and raw_spill.rstrip("\r\n").endswith(marker):
+            split = _split_cwd_marker(raw_spill, marker)
+            if split is not None:
+                raw_spill = split[1]
+    return raw_spill
+
+
+def _redact_spill_file(path, total_chars, command, env=None, cwd_observed=False) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -188,7 +205,8 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+        raw_spill = _strip_wrapper_suffix(Path(path).read_text(encoding="utf-8-sig", errors="replace"),
+                                          env, cwd_observed)
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
         write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
@@ -274,7 +292,8 @@ def finalize_foreground_result(
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         ("cwd_fallback", _cwd_fallback_note(result.get("cwd_fallback"))),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command, env,
+                            bool(result.get("cwd_observed"))),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output, result.get("pipeline_status"))),

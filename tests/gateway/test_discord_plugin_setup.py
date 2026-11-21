@@ -73,6 +73,45 @@ class TestDiscordHomeChannelClear:
         assert "DISCORD_HOME_CHANNEL" not in saved
 
 
+class TestDiscordHomeChannelIdShape:
+    """A ``<server>/<channel>`` path copied from the address bar is not saved as the home channel:
+    every home-channel delivery then failed with ``invalid literal for int()``."""
+
+    def test_server_slash_channel_reprompts_with_the_channel_id(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed, errors = {}, [], []
+        prompts = ["fake-bot-token.part2.part3", "", "302523857364451329/202523857364451329",
+                   "202523857364451329"]
+        _patch_setup_io(monkeypatch, prompts, saved, removed, existing={})
+        monkeypatch.setattr(cli_output_mod, "print_error", lambda *a, **_kw: errors.append(" ".join(map(str, a))))
+        interactive_setup()
+        assert saved["DISCORD_HOME_CHANNEL"] == "202523857364451329"
+        assert any("202523857364451329" in e and "not a channel ID" in e for e in errors)
+
+    def test_two_unusable_answers_keep_the_saved_home_channel(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        prompts = ["fake-bot-token.part2.part3", "", "general", "123/456"]
+        _patch_setup_io(monkeypatch, prompts, saved, removed,
+                        existing={"DISCORD_HOME_CHANNEL": "987654321098765432"})
+        monkeypatch.setattr(cli_output_mod, "print_error", lambda *_a, **_kw: None)
+        interactive_setup()
+        assert "DISCORD_HOME_CHANNEL" not in saved
+        assert "DISCORD_HOME_CHANNEL" not in removed
+
+
+    def test_non_ascii_numeric_glyph_is_reprompted(self, monkeypatch, tmp_path):
+        """Python accepts superscript ² as isdigit(), but int("²") fails at delivery."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed, errors = {}, [], []
+        prompts = ["fake-bot-token.part2.part3", "", "²", "202523857364451329"]
+        _patch_setup_io(monkeypatch, prompts, saved, removed, existing={})
+        monkeypatch.setattr(cli_output_mod, "print_error",
+                            lambda *a, **_kw: errors.append(" ".join(map(str, a))))
+        interactive_setup()
+        assert saved["DISCORD_HOME_CHANNEL"] == "202523857364451329"
+        assert any("not a channel ID" in e for e in errors)
+
 class TestDiscordTokenCheckedWithDiscord:
     """The wizard asks Discord about the pasted token: a rejected token is never written, and an
     accepted one yields the invite link and adds the bot's owner to whoever is already allowed."""

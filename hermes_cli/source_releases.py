@@ -1,7 +1,7 @@
 """Resolve promoted source releases, never infer publication from a Git tag."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 import json
 import logging
@@ -20,6 +20,10 @@ _GITHUB_ORIGIN = re.compile(
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
 )
 _SHA = re.compile(r"[0-9a-f]{40}")
+
+
+class ReleaseRelationUnknown(ValueError):
+    """Neither Git nor the comparison API could establish the release relation."""
 
 
 def source_repository(git_cmd=None, cwd=None) -> str:
@@ -79,19 +83,19 @@ def _resolve_channel(name: str, repository: str):
 
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
-                          forward_only: bool = False) -> SourceTarget:
+                          forward_only: bool = False, require_known_relation: bool = False) -> SourceTarget:
     """Resolve a subscription: stable from GitHub releases, main from the git branch,
     preview channels (e.g. ``pm-preview``) through their R2 records.
 
     ``forward_only`` (an unchosen default subscription) pins a checkout that already
-    contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
+    contains the release to its own HEAD. On an unknown relation, the updater keeps
+    HEAD and status callers can set ``require_known_relation`` to report a failure.
     """
     target = _resolve_source_target(channel, git_cmd, cwd, repository=repository)
     if forward_only and target.commit and git_cmd is not None and cwd is not None:
-        head = _head_containing(git_cmd, cwd, target.commit, target.repository)
+        head = _head_containing(git_cmd, cwd, target.commit, target.repository,
+                                require_known_relation=require_known_relation)
         if head is not None and head != target.commit:
-            from dataclasses import replace
-
             return replace(target, commit=head, ahead=True)
     return target
 
@@ -114,11 +118,12 @@ def _probe(git_cmd, cwd, *args):
         return None
 
 
-def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
-    """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
+def _head_containing(git_cmd, cwd, commit: str, repository: str, *,
+                     require_known_relation: bool = False) -> str | None:
+    """Return HEAD if it contains ``commit``, or None if it does not.
 
-    An unchosen default must never move a checkout backward on a guess, so an
-    unknown relation (shallow history, GitHub unreachable) keeps HEAD.
+    When the relation is unknown, keep HEAD for forward-only updates and raise
+    ``ReleaseRelationUnknown`` for status callers that need a verified answer.
     """
     from hermes_cli.source_check import _github_compare, source_git_env
 
@@ -128,6 +133,8 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     ).stdout.strip()
     if not _SHA.fullmatch(head):
         return None
+    if head == commit:
+        return head
     # An unanswered probe falls through to the comparison API, as a shallow checkout's does.
     ancestry = _probe(git_cmd, cwd, "merge-base", "--is-ancestor", commit, head)
     if ancestry is not None and ancestry.returncode == 0:
@@ -138,7 +145,11 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
         if shallow is not None and shallow.stdout.strip() == "false":
             return None
     status = (_github_compare(commit, head, repository) or {}).get("status")
-    return None if status in ("behind", "diverged") else head
+    if status in ("behind", "diverged"):
+        return None
+    if require_known_relation and status not in ("ahead", "identical"):
+        raise ReleaseRelationUnknown("Could not compare the checkout with the published release.")
+    return head
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:

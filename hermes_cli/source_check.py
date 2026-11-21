@@ -18,7 +18,12 @@ import urllib.error
 import urllib.request
 
 from hermes_constants import get_hermes_home
-from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_target
+from hermes_cli.source_releases import (
+    OFFICIAL_REPOSITORY,
+    ReleaseRelationUnknown,
+    _GITHUB_ORIGIN,
+    resolve_source_target,
+)
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -458,7 +463,10 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
     try:
         source_target = resolve_source_target(channel, [co.git] if not co.embedded else None, co.root,
                                               repository=co.repository or OFFICIAL_REPOSITORY,
-                                              forward_only=forward_only)
+                                              forward_only=forward_only, require_known_relation=True)
+    except ReleaseRelationUnknown as exc:
+        result.update(error="release-relation-unknown", message=str(exc))
+        return None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
         return None
@@ -599,7 +607,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 3,
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 4,
                 "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()

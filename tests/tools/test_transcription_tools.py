@@ -406,6 +406,21 @@ class TestTranscribeLocalCommand:
     reason="faster_whisper not installed",
 )
 class TestLocalModelLoading:
+    def test_hub_download_fallback_uses_bounded_timeouts(self, monkeypatch):
+        for name in ("HF_HUB_ETAG_TIMEOUT", "HF_HUB_DOWNLOAD_TIMEOUT"):
+            monkeypatch.delenv(name, raising=False)
+
+        from tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
+        cache_miss = _hub_cache_miss_error()("model cache is empty")
+        with patch("faster_whisper.WhisperModel", side_effect=[cache_miss, object()]):
+            _create_whisper_model("base", device="cpu", compute_type="int8")
+
+        assert os.environ["HF_HUB_ETAG_TIMEOUT"] == "8"
+        assert os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] == "45"
+        hub_constants = pytest.importorskip("huggingface_hub.constants")
+        assert hub_constants.HF_HUB_ETAG_TIMEOUT == 8
+        assert hub_constants.HF_HUB_DOWNLOAD_TIMEOUT == 45
+
     def test_cached_model_load_never_uses_online_resolution(self):
         cached_model = object()
 

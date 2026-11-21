@@ -5506,6 +5506,8 @@ export const esOverrides = {
     imageDownloadFailed: 'Falló la descarga de imagen',
     openImage: 'Abrir imagen',
     downloadImage: 'Descargar imagen',
+    previousImage: 'Imagen anterior',
+    nextImage: 'Imagen siguiente',
     savingImage: 'Guardando imagen',
     imagePreviewFailed: 'Falló la vista previa de imagen',
     imageAttach: 'Adjuntar imagen',

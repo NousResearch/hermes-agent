@@ -1,0 +1,6 @@
+# Hermes Desktop Webapp — the gateway's own listener, never a separate process.
+# Rendered by scripts/install-desktop.sh: <DESK_HOST>, <PORT>.
+<DESK_HOST> {
+	reverse_proxy 127.0.0.1:<PORT>
+	encode zstd gzip
+}

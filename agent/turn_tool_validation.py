@@ -78,10 +78,12 @@ def _route_deferred_call(agent, tc) -> bool:
     return True
 
 
-def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> dict[str, Any]:
+def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str,
+                  task_id: Any) -> dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
-    This path never reaches finalize_turn, so persist here."""
+    This path never reaches finalize_turn, so release the turn's task resources and persist here."""
+    agent._cleanup_task_resources(task_id)
     close_interrupted_tool_sequence(messages, final_response)
     agent._persist_session(messages, conversation_history)
     return stamp_failure({
@@ -170,7 +172,7 @@ def validate_tool_calls(
             agent._invalid_tool_retries = 0
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count,
-                f"Model generated invalid tool call: {invalid_preview}",
+                f"Model generated invalid tool call: {invalid_preview}", effective_task_id,
             ))
 
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
@@ -224,7 +226,6 @@ def validate_tool_calls(
                 force=True, diagnostic=True,
             )
             agent._invalid_json_retries = 0
-            agent._cleanup_task_resources(effective_task_id)
             # Blame the output cap only when the model reported one; otherwise the args
             # were cut by a stream break or a router rewriting finish_reason (#91717).
             _copy = (
@@ -232,7 +233,7 @@ def validate_tool_calls(
                 else site_copy("truncated_unreported")
             )
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count, _copy,
+                agent, messages, conversation_history, api_call_count, _copy, effective_task_id,
             ))
 
         agent._invalid_json_retries += 1

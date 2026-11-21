@@ -1453,8 +1453,7 @@ def _classify_400(c: _Ctx) -> Verdict:
         return verdict
     # Generic 400 + large session → probable overflow (Anthropic can return a
     # bare "Error"); proxy shapes are read so a descriptive rejection isn't "bare".
-    body_msg = next((m for m in (str(x or "").strip().lower() for x in _body_message_candidates(c.body)) if m), "")
-    is_generic = len(body_msg) < 30 or body_msg in {"error", ""}
+    is_generic = all(len(str(message or "").strip()) < 30 for message in _body_message_candidates(c.body))
     if is_generic and c.large_session(0.4, 80000, 80):
         return _V_CONTEXT_OVERFLOW
     return _V_FORMAT_ERROR
@@ -1602,7 +1601,8 @@ def _build_error_msg(error: Exception, body: Any) -> str:
     body_msg = metadata_msg = ""
     if isinstance(body, dict):
         err_obj = _error_obj(body)
-        body_msg = str(err_obj.get("message") or "").lower() or str(body.get("message") or "").lower()
+        body_msg = " ".join(value.lower() for value in _body_message_candidates(body)
+                            if isinstance(value, str) and value.strip())
         metadata_msg = _openrouter_wrapped_message(err_obj) if err_obj else ""
     parts = [raw_msg]
     if body_msg and body_msg not in raw_msg:
@@ -1625,6 +1625,11 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     # validation shape, read by _oversized_message_content_rejection.
     detail = body.get("detail")
     yield detail.get("message") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
+    # Proxy envelopes can put the upstream rejection under parameters instead of error.message.
+    params = body.get("parameters")
+    if isinstance(params, dict):
+        for key in ("errorMessage", "responseBody", "reason"):
+            yield params.get(key)
 
 
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:

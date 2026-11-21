@@ -14,11 +14,16 @@ const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 // The backend forbids a permanent allow for this prompt, so drop "always".
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
+// Client-renderable EXTENSIONS: never offered on their own, only when — and only when — the
+// gateway's own `choices` name them (a local gate extension declares them; stock gateways don't).
+// New extension choice goes in this list; the constant count does not grow.
+const APPROVAL_EXTRA_CHOICES = ['hold'] as const
+const APPROVAL_OPTS_WITH_EXTENSIONS = [...APPROVAL_OPTS, ...APPROVAL_EXTRA_CHOICES] as const
 
 const approvalLabels = (): Record<ApprovalChoice, string> => {
   const p = messages().prompt.approval
 
-  return { always: p.always, deny: p.deny, once: p.once, session: p.session, tell: p.tell }
+  return { always: p.always, deny: p.deny, hold: p.hold, once: p.once, session: p.session, tell: p.tell }
 }
 
 const CMD_PREVIEW_LINES = 10
@@ -37,12 +42,14 @@ export function commandPage(total: number, page: number, size = CMD_PREVIEW_LINE
 
 // `tell` is local to this prompt: it answers the gateway with a plain deny, after steering the typed
 // instruction into the running turn (#25693).
-type ApprovalChoice = 'always' | 'deny' | 'once' | 'session' | 'tell'
+type ApprovalChoice = 'always' | 'deny' | 'hold' | 'once' | 'session' | 'tell'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
     // The gateway decides which choices exist; the numbering stays the familiar one (Deny last).
-    return APPROVAL_OPTS.filter(choice => req.choices!.includes(choice))
+    // Extensions ride the same rule — absent from `choices`, they never show, and they stay after
+    // the four stock keys so quick-pick 1-4 means the same thing it always did.
+    return APPROVAL_OPTS_WITH_EXTENSIONS.filter(choice => req.choices!.includes(choice))
   }
 
   if (req.smartDenied) {

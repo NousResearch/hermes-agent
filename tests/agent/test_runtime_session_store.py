@@ -48,18 +48,144 @@ def test_outbox_has_private_posix_mode(tmp_path):
         store.close()
 
 
-def test_outbox_capacity_failure_does_not_advance_or_discard(tmp_path):
-    def unavailable(*args, **kwargs):
-        raise TimeoutError('offline')
-    store = RuntimeSessionStore(unavailable, {'session_id': 's'}, tmp_path / 'private', max_bytes=500)
+def _recording_rpc(seen, durable=None):
+    """An owner stand-in that enforces the owner's sequence rule.
+
+    The owner accepts a receipt only when its sequence is exactly one past the
+    last one it acknowledged, and it returns the stored result for an exact
+    retry. The store's sequence counter advances only over entries the journal
+    admitted, so a refused row never gets a sequence — the owner cannot see
+    that gap. ``durable`` records the transcript rows the owner accepted.
+    """
+    state = {'last': 0}
+
+    def rpc(method, **params):
+        if method != 'worker.persist':
+            return {'value': True}
+        seen.append(params)
+        sequence = params['sequence']
+        if sequence != state['last'] + 1:
+            raise RuntimeError(f'invalid_params: sequence={sequence} last={state["last"]}')
+        state['last'] = sequence
+        operation = params.get('operation')
+        payload = params.get('payload') or {}
+        if operation == 'transcript.append':
+            messages = payload.get('messages') or []
+            if durable is not None:
+                durable.extend(m.get('content') for m in messages)
+            return {'count': len(messages), 'annotations': [None] * len(messages)}
+        # Every other operation answers with the value its caller reads.
+        return {'value': True, 'count': 0, 'annotations': []}
+
+    return rpc
+
+
+def test_outbox_capacity_refusal_releases_only_a_releasable_archive(tmp_path):
+    """An oversized ``compression.archive`` must not latch the whole store.
+
+    The archive is the one operation whose own caller keeps the original
+    transcript when the write is refused (context_compressor_prune: "keeping
+    the original transcript"), so refusing it loses nothing durable — but the
+    latch it used to set also vetoed ``turn.renew``, the lease whose expiry
+    hard-interrupted the whole turn.
+    """
+    seen = []
+    durable = []
+    rpc = _recording_rpc(seen, durable)
+    store = RuntimeSessionStore(rpc, {'session_id': 's'}, tmp_path / 'private', max_bytes=4096)
     try:
         before = store.path.read_bytes()
+        sequence_before = store.journal['next_sequence']
         with pytest.raises(WorkerPersistenceError, match='outbox_full'):
-            store.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 1000}])
+            store._apply('compression.archive', {'messages': [{'role': 'user', 'content': 'x' * 8000}]})
+        # The refusal left the journal untouched, so it advanced nothing and wrote nothing.
         assert store.path.read_bytes() == before
-        assert store.failure == 'outbox_full'
+        assert store.journal['next_sequence'] == sequence_before
+        assert store.journal['pending'] == []
+        # ... and it did not latch the store.
+        assert store.failure is None
+        # The turn lease stays renewable, which is what the old latch broke.
+        assert store.refresh_session_turn_lease('s', 'holder', ttl_seconds=300.0) is True
+        assert [params['operation'] for params in seen] == ['turn.renew']
     finally:
+        store.close()
+
+
+def test_outbox_capacity_refusal_of_a_transcript_append_stays_sticky(tmp_path):
+    """A refused ``transcript.append`` must keep failing loudly.
+
+    The refused row never received a sequence, so the next append would take
+    that same sequence and the owner would accept it: the row would be missing
+    from the durable transcript with no error anywhere. The owner cannot
+    detect that gap, so the store has to refuse to continue instead.
+    """
+    seen = []
+    durable = []
+    rpc = _recording_rpc(seen, durable)
+    store = RuntimeSessionStore(rpc, {'session_id': 's'}, tmp_path / 'private', max_bytes=4096)
+    try:
         with pytest.raises(WorkerPersistenceError, match='outbox_full'):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 8000}])
+        assert store.failure == 'outbox_full'
+        # The store refuses to continue, so no later append can slip past the gap.
+        with pytest.raises(WorkerPersistenceError, match='outbox_full'):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'small'}])
+        assert durable == []
+        assert not any(params.get('operation') == 'transcript.append' for params in seen)
+        # The lease is lost with the transcript write: the session cannot persist
+        # its own conversation, so ending the turn is the correct outcome.
+        with pytest.raises(WorkerPersistenceError, match='outbox_full'):
+            store.refresh_session_turn_lease('s', 'holder', ttl_seconds=300.0)
+    finally:
+        # close() flushes the usage counts, and the store is failed, so the flush
+        # refuses — the same failure the caller sees.
+        with pytest.raises(WorkerPersistenceError, match='outbox_full'):
+            store.close()
+
+
+def test_outbox_capacity_refusal_after_an_owner_acknowledgement_stays_sticky(tmp_path):
+    """A failure while the receipt is journalled stays sticky.
+
+    The owner already acknowledged the entry when ``retry_pending`` saves the
+    receipt, so the entry is still pending on disk. Releasing the latch there
+    would only turn the refusal into a ``pending_receipt`` on the next
+    operation and hide the real cause.
+    """
+    def rpc(method, **params):
+        if method != 'worker.persist':
+            return {'value': True}
+        # The owner answers, then the receipt cannot be journalled: the store is
+        # out of room for the pending entry it still holds.
+        raise RuntimeError('receipt could not be journalled')
+
+    store = RuntimeSessionStore(rpc, {'session_id': 's'}, tmp_path / 'private', max_bytes=4096)
+    try:
+        with pytest.raises(RuntimeError, match='receipt could not be journalled'):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'small'}])
+        # The failure latched the store, so nothing else runs behind it.
+        assert store.failure == 'receipt could not be journalled'
+        with pytest.raises(WorkerPersistenceError, match='receipt could not be journalled'):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'small'}])
+    finally:
+        with pytest.raises(WorkerPersistenceError, match='receipt could not be journalled'):
+            store.close()
+
+
+def test_outbox_capacity_refusal_does_not_clear_an_earlier_failure(tmp_path):
+    """An archive refusal must not wash out an earlier operation's failure."""
+    def rpc(method, **params):
+        raise TimeoutError('offline')
+
+    store = RuntimeSessionStore(rpc, {'session_id': 's'}, tmp_path / 'private', max_bytes=4096)
+    try:
+        with pytest.raises(TimeoutError):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'small'}])
+        assert store.failure == 'offline'
+        with pytest.raises(WorkerPersistenceError, match='offline'):
+            store._apply('compression.archive', {'messages': [{'role': 'user', 'content': 'x' * 8000}]})
+        assert store.failure == 'offline'
+    finally:
+        with pytest.raises(WorkerPersistenceError, match='offline'):
             store.close()
 
 

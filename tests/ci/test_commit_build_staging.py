@@ -14,7 +14,7 @@ import pytest
 
 from tests.ci.desktop_release_roles import (
     DOWNLOADABLE_DISPATCHES, admitted, commit_summary, gate, native_builds, needs_of, selection_gates, stage_step,
-    termux_builder, universal_assembler,
+    termux_builds, universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
 from tests.scripts.test_release_r2 import r2_server
@@ -163,7 +163,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
         puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
         assert puts[-1].endswith(receipt_key)
 
-    termux_stage = stage_step(jobs[termux_builder(jobs)])['run']
+    termux_stage = stage_step(jobs[termux_builds(jobs)['commit']])['run']
     before = dict(r2_server.store)
     missing = shell_step(tmp_path, r2_server, '', '', env, script=termux_stage)
     assert missing.returncode != 0

@@ -45,7 +45,7 @@ _REPORTED = object()
 class _Record:
     last_input: float  # time.monotonic()
     basis: str  # 'input' (seen by the owner) or the reported 'system' / 'page'
-    can_alert: bool | None = None  # None until the client reports it
+    can_alert: bool | None = None  # None for owner-seen input; a report always carries one
 
 
 class ClientPresence:
@@ -60,28 +60,24 @@ class ClientPresence:
 
     def seen(self, profile_id, session_id, at):
         """Owner-seen input for *session_id* of the profile *profile_id* at *at*."""
+        key = (profile_id, session_id)
         with self._lock:
-            self._note((profile_id, session_id), at, 'input')
+            record = self._records.get(key)
+            # An older time than the record's never moves its clock back.
+            self._keep(key, record if record is not None and at < record.last_input else _Record(at, 'input'))
 
     def reported(self, session_ids, at, basis, can_alert):
-        """A report: input at *at* for each of *session_ids*, and nothing any more for any other session."""
+        """A report: input at *at* for each of *session_ids*, and nothing any more for any other session.
+        It replaces the last report outright; only ``read`` weighs it against owner-seen input."""
         listed = set(session_ids)
         with self._lock:
             for key in [key for key in self._records if key[1] not in listed]:
                 del self._records[key]
             for session_id in session_ids:
-                self._note((_REPORTED, session_id), at, basis, can_alert)
+                self._keep((_REPORTED, session_id), _Record(at, basis, can_alert))
 
-    def _note(self, key, at, basis, can_alert=None):
-        # An older evidence than the record's never moves its clock back; a reported *can_alert* is
-        # kept whatever the age of its evidence.
-        record = self._records.get(key)
-        if record is None:
-            record = self._records[key] = _Record(at, basis)
-        elif at >= record.last_input:
-            record.last_input, record.basis = at, basis
-        if can_alert is not None:
-            record.can_alert = can_alert
+    def _keep(self, key, record):
+        self._records[key] = record
         self._records.move_to_end(key)
         # The bound is per source: a report may name MAX_SESSIONS sessions, and input seen on them
         # must not push those reports (their ``can_alert``) out, nor a report the newer input.

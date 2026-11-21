@@ -15,7 +15,8 @@ export type Locale =
   | "pt"
   | "ru"
   | "hu"
-  | "ar";
+  | "ar"
+  | "sv";
 
 export interface Translations {
   // ── Common ──
@@ -70,6 +71,118 @@ export interface Translations {
     gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
+  };
+
+  // ── Webhooks page ──
+  // Optional while locales are introduced incrementally. Components fall back
+  // to the English catalog until a locale supplies this group.
+  webhooksUi?: {
+    copy: string;
+    failedToLoad: string;
+    gatewayRestartFailedExit: string;
+    gatewayRestartFailedManual: string;
+    gatewayRestarting: string;
+    failedToRestart: string;
+    webhooksEnabledRestarting: string;
+    webhooksEnabledRestartFailed: string;
+    failedToEnableWebhooks: string;
+    nameRequired: string;
+    created: string;
+    failedToCreate: string;
+    deletedNamed: string;
+    enabledNamed: string;
+    disabledNamed: string;
+    error: string;
+    newSubscription: string;
+    deleteWebhook: string;
+    deleteDescriptionNamed: string;
+    deleteDescription: string;
+    close: string;
+    createdCopySecret: string;
+    webhookUrl: string;
+    secretShownOnce: string;
+    done: string;
+    name: string;
+    namePlaceholder: string;
+    description: string;
+    descriptionPlaceholder: string;
+    events: string;
+    eventsPlaceholder: string;
+    deliverTo: string;
+    log: string;
+    githubComment: string;
+    deliverOnly: string;
+    skipAgent: string;
+    prompt: string;
+    promptPlaceholder: string;
+    webhookReceiverDisabled: string;
+    webhookReceiverDisabledHint: string;
+    enabling: string;
+    enableWebhooks: string;
+    enable: string;
+    disable: string;
+    restartNeeded: string;
+    restarting: string;
+    restartGateway: string;
+    subscriptions: string;
+    subscriptionsHint: string;
+    noSubscriptions: string;
+    allEvents: string;
+    deliverOnlyStatus: string;
+    disabledStatus: string;
+  };
+
+  channelsRelayUi?: {
+    copied: string;
+    copyFailed: string;
+    teamGateway: string;
+    managedHint: string;
+    linkHint: string;
+    unlink: string;
+    linkInPortal: string;
+    qrCodeAlt: string;
+    scanOrOpen: string;
+    openBot: string;
+    sendMessage: string;
+    openPlatform: string;
+    copyMessage: string;
+    cancel: string;
+    waiting: string;
+    linkAnother: string;
+    link: string;
+    linkRefused: string;
+    accountLinked: string;
+    codeExpired: string;
+    inactiveCode: string;
+  };
+
+  channelsUi?: {
+    state: {
+      connected: string;
+      pendingRestart: string;
+      gatewayStopped: string;
+      startFailed: string;
+      disconnected: string;
+      notConfigured: string;
+      disabled: string;
+      error: string;
+      viaTeamGateway: string;
+      managedByTeamGateway: string;
+    };
+    loadFailed: string;
+    nothingToSave: string;
+    fixFields: string;
+    saved: string;
+    savedConnecting: string;
+    saveFailed: string;
+    updateFailed: string;
+    testFailed: string;
+    restarting: string;
+    restartGateway: string;
+    restartRequired: string;
+    restartNow: string;
+    gatewayStoppedHint: string;
+    configuredSummary: string;
   };
 
   // ── App shell ──
@@ -240,6 +353,254 @@ export interface Translations {
       system: string;
       tool: string;
     };
+  };
+
+  /** Optional while existing locales adopt the extended sessions-page strings. */
+  sessionsUi?: {
+    contextHandoff: string;
+    toolCallNamed: string;
+    localSource: string;
+    renameSession: string;
+    exportSession: string;
+    exportSessionJson: string;
+    sessionTitle: string;
+    saveTitle: string;
+    cancelRename: string;
+    anyChatSource: string;
+    anyAutomationSource: string;
+    chatSources: string;
+    automationSources: string;
+    noSources: string;
+    sourceCount: string;
+    pruneOldSessions: string;
+    pruneDescription: string;
+    olderThanDays: string;
+    prune: string;
+    sessionRenamed: string;
+    sessionRenameFailed: string;
+    sessionExportFailed: string;
+    validNumberOfDays: string;
+    sessionsPruneFailed: string;
+    importExportedSessions: string;
+    importExportedSessionsHint: string;
+    importSessions: string;
+    total: string;
+    activeInStore: string;
+    archived: string;
+    messages: string;
+    sources: string;
+    apiServer: string;
+    toolSource: string;
+    vulcanDelegate: string;
+  };
+
+  /** Optional while existing locales adopt the pairing-page strings. */
+  pairingUi?: {
+    failedToLoad: string;
+    missingRequest: string;
+    approved: string;
+    failedToApprove: string;
+    confirmClearPending: string;
+    clearedPending: string;
+    failedToClear: string;
+    revoked: string;
+    failedToRevoke: string;
+    clearPending: string;
+    revokeAccess: string;
+    revokeUserDescription: string;
+    revokeDescription: string;
+    revoke: string;
+    pendingRequests: string;
+    noPendingRequests: string;
+    minutesAgo: string;
+    approve: string;
+    approvedUsers: string;
+    noApprovedUsers: string;
+  };
+
+  /** Optional while existing locales adopt the extended models-page strings. */
+  modelsUi?: {
+    cacheRead: string;
+    reasoning: string;
+    input: string;
+    output: string;
+    tools: string;
+    vision: string;
+    useAs: string;
+    mainModel: string;
+    current: string;
+    auxiliaryTask: string;
+    allAuxiliaryTasks: string;
+    missingProviderModel: string;
+    expensiveModelWarning: string;
+    expensivePricing: string;
+    switchAnyway: string;
+    cancel: string;
+    main: string;
+    auxiliary: string;
+    context: string;
+    outputTokens: string;
+    close: string;
+    auxiliaryTasks: string;
+    resetAllToAuto: string;
+    auxiliaryTasksDescription: string;
+    providerDefault: string;
+    autoUsesMain: string;
+    inherits: string;
+    follow: string;
+    change: string;
+    setAuxiliary: string;
+    resetAuxiliaryModels: string;
+    resetAuxiliaryDescription: string;
+    resetAll: string;
+    configureMoaPresets: string;
+    moaDescription: string;
+    setDefault: string;
+    delete: string;
+    newPresetName: string;
+    addPreset: string;
+    default: string;
+    referenceModels: string;
+    remove: string;
+    addReferenceModel: string;
+    aggregator: string;
+    save: string;
+    saving: string;
+    selectMoaModel: string;
+    moaNoRecursive: string;
+    modelSettings: string;
+    appliesToNewSessions: string;
+    unset: string;
+    overridesAndAuto: string;
+    tasksAllAuto: string;
+    configure: string;
+    mixtureOfAgents: string;
+    moaSummary: string;
+    notLoaded: string;
+    setMainModel: string;
+    providerPlaceholder: string;
+    modelPlaceholder: string;
+    tokenAnalyticsHiddenBefore: string;
+    tokenAnalyticsHiddenAfter: string;
+    in: string;
+    config: string;
+  };
+
+  /** Optional while existing locales adopt the MCP-page strings. */
+  mcpUi?: {
+    loadServersFailed: string;
+    loadCatalogFailed: string;
+    invalidServer: string;
+    addedOAuth: string;
+    added: string;
+    addFailed: string;
+    toolCount: string;
+    failed: string;
+    testFailed: string;
+    oauthComplete: string;
+    signInFailed: string;
+    restartNote: string;
+    updateFailed: string;
+    deleted: string;
+    removeFailed: string;
+    installingBackground: string;
+    installed: string;
+    installFailed: string;
+    required: string;
+    addServer: string;
+    removeServer: string;
+    removeNamed: string;
+    removeDescription: string;
+    close: string;
+    name: string;
+    transport: string;
+    url: string;
+    authentication: string;
+    none: string;
+    bearerToken: string;
+    tokenPlaceholder: string;
+    tokenHint: string;
+    oauthHint: string;
+    command: string;
+    args: string;
+    environment: string;
+    adding: string;
+    add: string;
+    installNamed: string;
+    installRequires: string;
+    installing: string;
+    install: string;
+    serverCount: string;
+    noServers: string;
+    browseCatalog: string;
+    disabled: string;
+    environmentVariable: string;
+    environmentVariables: string;
+    connectedNoTools: string;
+    tools: string;
+    connectionFailed: string;
+    authenticate: string;
+    authenticateWithOAuth: string;
+    enable: string;
+    disable: string;
+    testConnection: string;
+    delete: string;
+    catalogCount: string;
+    catalogDescription: string;
+    noCatalogEntries: string;
+    source: string;
+    authLabel: string;
+    installedLabel: string;
+    endpoint: string;
+    runs: string;
+    installsFrom: string;
+    bootstrapCommands: string;
+    setupNotes: string;
+  };
+
+  // ── Files page ──
+  /** Optional while existing locales adopt the files-page strings. */
+  files?: {
+    title: string;
+    refresh: string;
+    path: string;
+    go: string;
+    upload: string;
+    create: string;
+    uploadFiles: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    chooseFiles: string;
+    name: string;
+    size: string;
+    modified: string;
+    actions: string;
+    loadingFiles: string;
+    noFiles: string;
+    brokenSymbolicLink: string;
+    brokenLink: string;
+    openNamed: string;
+    downloadNamed: string;
+    deleteNamed: string;
+    createFolder: string;
+    target: string;
+    folderName: string;
+    pathRequired: string;
+    directoryUnavailable: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    file: string;
+    files: string;
+    filesUploaded: string;
+    uploadFailed: string;
+    downloadFailed: string;
+    deleted: string;
+    deleteFailed: string;
+    deleteItemTitle: string;
+    deleteFileDescription: string;
+    deleteFolderDescription: string;
   };
 
   // ── Analytics page ──
@@ -495,6 +856,72 @@ export interface Translations {
     activeSetHint?: string;
   };
 
+  /** Optional while existing locales adopt the profile-builder flow. */
+  profileBuilderUi?: {
+    steps: {
+      identity: string;
+      model: string;
+      skills: string;
+      mcp: string;
+      review: string;
+    };
+    invalidName: string;
+    newProfile: string;
+    profileName: string;
+    nameRule: string;
+    descriptionOptional: string;
+    descriptionPlaceholder: string;
+    modelHint: string;
+    filterModels: string;
+    loadingModels: string;
+    useDefault: string;
+    fullBundle: string;
+    keepSkillsHint: string;
+    filterSkills: string;
+    loadingSkills: string;
+    addFromHub: string;
+    searchHub: string;
+    searching: string;
+    add: string;
+    removeNamed: string;
+    mcpServers: string;
+    mcpHint: string;
+    configured: string;
+    addServer: string;
+    serverName: string;
+    serverNamePlaceholder: string;
+    transport: string;
+    authentication: string;
+    none: string;
+    bearerToken: string;
+    tokenPlaceholder: string;
+    tokenHint: string;
+    oauthHint: string;
+    command: string;
+    arguments: string;
+    environment: string;
+    remove: string;
+    reviewLabels: {
+      name: string;
+      description: string;
+      model: string;
+      skills: string;
+      hubSkills: string;
+      mcpServers: string;
+    };
+    defaultSetLater: string;
+    fullBundleSummary: string;
+    keptSkills: string;
+    noMcpServers: string;
+    back: string;
+    next: string;
+    createProfile: string;
+    creating: string;
+    created: string;
+    createdInstalling: string;
+    createFailed: string;
+  };
+
   // ── Skills page ──
   skills: {
     title: string;
@@ -522,6 +949,82 @@ export interface Translations {
     profileSelector?: string;
     currentProfile?: string;
     managingProfile?: string;
+  };
+
+  /** Optional while existing locales adopt the Skills-page controls. */
+  skillsUi?: {
+    browseHub: string;
+    learnSkill: string;
+    newSkill: string;
+    configure: string;
+    editNamed: string;
+    learnDescription: string;
+    localSource: string;
+    localSourcePlaceholder: string;
+    url: string;
+    urlPlaceholder: string;
+    additionalSource: string;
+    additionalSourcePlaceholder: string;
+    cancel: string;
+    learnIt: string;
+    saved: string;
+  };
+
+  /** Optional while existing locales adopt Skills Hub strings. */
+  skillsHubUi?: {
+    searchFailed: string;
+    installing: string;
+    installFailed: string;
+    updating: string;
+    updateFailed: string;
+    searchPlaceholder: string;
+    search: string;
+    updateAll: string;
+    running: string;
+    done: string;
+    dismiss: string;
+    starting: string;
+    featured: string;
+    featuredHint: string;
+    emptyHub: string;
+    noMatches: string;
+    connecting: string;
+    resultsFrom: string;
+    connectedHubs: string;
+    githubRateLimited: string;
+    indexUnavailable: string;
+    rateLimited: string;
+    resultCountOne: string;
+    resultCountOther: string;
+    timedOut: string;
+    openNamed: string;
+    installed: string;
+    details: string;
+    install: string;
+    previewFailed: string;
+    scanFailed: string;
+    previewDescription: string;
+    readSkill: string;
+    rescan: string;
+    securityScan: string;
+    files: string;
+    emptySkillFile: string;
+    sourceLoadFailed: string;
+    fetchingAndScanning: string;
+    scanPrompt: string;
+    installAllowed: string;
+    needsConfirmation: string;
+    installBlocked: string;
+    verdict: string;
+    findingsSummaryOne: string;
+    findingsSummaryOther: string;
+    noRiskyPatterns: string;
+    safe: string;
+    caution: string;
+    dangerous: string;
+    trusted: string;
+    builtin: string;
+    community: string;
   };
 
   // ── Config page ──

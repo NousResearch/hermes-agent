@@ -243,7 +243,7 @@ def _cache_mcp_audio_block(block) -> str:
         cap_what="audio resource")
 
 
-def _mcp_resource_filename(uri: str, mime_type: str) -> str:
+def _mcp_resource_filename(uri: str, mime_type: str, data: bytes = b"") -> str:
     """Safe display filename from the URI's last path segment, used only as a name hint:
     ``cache_document_from_bytes`` re-sanitizes and prefixes it, so remote path components
     can't steer the cache location."""
@@ -263,9 +263,42 @@ def _mcp_resource_filename(uri: str, mime_type: str) -> str:
         stem, dot, ext = name.rpartition(".")
         name = stem[: 150 - len(ext) - 1] + "." + ext if dot and 0 < len(ext) <= 12 else name[:150]
     if not name or name in {".", ".."}:
-        ext = mimetypes.guess_extension(_base_mime(mime_type)) or ".bin"
-        name = f"resource{ext}"
+        name = "resource"
+    if "." not in name.strip("."):
+        # No extension in the URI: a generic MIME (application/octet-stream, the norm for
+        # downloads) maps to .bin, which read_file then refuses as binary even for a PDF or
+        # PNG it can open. The bytes say what the file is (Claude Code 2.1.329 parity).
+        mime = _base_mime(mime_type)
+        guessed = None if mime in _GENERIC_MIMES else mimetypes.guess_extension(mime)
+        name += guessed or _sniff_document_extension(data) or ".bin"
     return name
+
+
+_GENERIC_MIMES = frozenset({"", "application/octet-stream", "binary/octet-stream", "application/unknown"})
+_OOXML_EXTENSIONS = {"word/": ".docx", "xl/": ".xlsx", "ppt/": ".pptx"}
+
+
+def _sniff_document_extension(data: bytes) -> Optional[str]:
+    """Extension for bytes read_file can open (PDF, images, Office OOXML), else ``None``."""
+    if data.startswith(b"%PDF-"):
+        return ".pdf"
+    from agent.image_routing import _sniff_mime_from_bytes
+    image_mime = _sniff_mime_from_bytes(data[:512])
+    if image_mime:
+        return {"image/jpeg": ".jpg", "image/svg+xml": ".svg"}.get(image_mime) or mimetypes.guess_extension(image_mime)
+    if data.startswith(b"PK\x03\x04"):
+        import io
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = archive.namelist()
+        except (zipfile.BadZipFile, ValueError):
+            return None
+        if "[Content_Types].xml" in names:
+            for prefix, ext in _OOXML_EXTENSIONS.items():
+                if any(n.startswith(prefix) for n in names):
+                    return ext
+    return None
 
 
 def _render_mcp_dropped_block_notice(block, block_type: str) -> str:
@@ -325,7 +358,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
         return err
     kind = mime or "unknown type"
     path, err = _write_block_cache(
-        "cache_document_from_bytes", "embedded resource", "resource", raw_bytes, _mcp_resource_filename(uri, mime),
+        "cache_document_from_bytes", "embedded resource", "resource", raw_bytes, _mcp_resource_filename(uri, mime, raw_bytes),
         unavailable=f"[MCP embedded resource received ({len(raw_bytes)} bytes, {kind}) but document cache unavailable in this process]",
         failed=f"[MCP embedded resource could not be cached: {mime or uri}]")
     if path is None:

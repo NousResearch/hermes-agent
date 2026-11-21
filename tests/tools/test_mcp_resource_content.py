@@ -91,6 +91,19 @@ class TestResourceFilename:
         assert len(name) <= 150
         assert name.endswith(".pdf")
 
+    def test_octet_stream_without_extension_saved_readable(self, doc_cache):
+        """A download served as application/octet-stream keeps its real type, so read_file
+        can open it instead of refusing a ``.bin``/extensionless file (Claude Code 2.1.329)."""
+        from tools.mcp_tool_content import _render_mcp_resource_block
+
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        cases = {"mcp://srv/download?id=7": (PDF_BYTES, ".pdf"), "": (png, ".png"),
+                 "mcp://srv/blob": (b"\x00\x01opaque", ".bin")}
+        for uri, (data, ext) in cases.items():
+            out = _render_mcp_resource_block(
+                _embedded(_blob_resource(data, uri=uri, mime="application/octet-stream")), "srv")
+            assert out.split("saved to ", 1)[1].split(" (", 1)[0].endswith(ext), (uri, out)
+
 
 class TestPreDecodeSizeCap:
     def test_oversized_b64_rejected_before_decode(self, monkeypatch):

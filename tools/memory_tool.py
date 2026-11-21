@@ -176,6 +176,22 @@ def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
 
 
+def _unstaged_failure_message(failure: dict[str, Any]) -> str:
+    """A refused proposal's message has to name the fix for the failure that actually refused it:
+    a dead anchor is repaired by re-reading the file, a batch that cannot fit the budget by
+    planning a leaner batch. Pointing at the budget for a stale anchor sends the review to the
+    wrong wall, and the next pass dies the same way."""
+    message = failure.get("message") or ""
+    tail = (" This proposal was NOT staged for approval: the pending queue only holds writes that "
+            "can be accepted.")
+    if failure.get("failure_class") == "no_match":
+        return message + tail
+    return message + tail + (
+        " Reissue ONE batch that fits the limit on its final state (merge or shorten entries in "
+        "the same batch), or — if the durable fact is a procedure — put it in the skill that "
+        "governs the task instead of memory.")
+
+
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
@@ -183,7 +199,13 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     single or inside a batch — are never applied unattended. The op is staged in the pending
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    staging failure fails closed to a plain denial.
+
+    Staging also requires the write to be one the user can ACCEPT: ``/memory approve`` replays
+    the payload verbatim (there is no editing step), so a batch the budget can never fit would
+    sit in the queue failing on every approve — and a failed approve does not consume it. Such
+    a batch is refused here, with the live entries and usage the fork needs to reissue a leaner
+    one, instead of being queued."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -193,6 +215,19 @@ def _background_delete_gate(store, action, operations, target="memory", content=
                {"action": action, "target": target, "content": content, "old_text": old_text})
     if not destructive_ops(payload):
         return None
+    # A staged write is a decision the user can only ACCEPT: /memory approve replays it verbatim.
+    # Queueing one that cannot apply leaves an item the queue can never drain (a failed approve
+    # does not consume it), so the same dry run the approve path would hit runs now.
+    ops = payload["operations"] if payload.get("action") == "batch" else None
+    would_fail = (store.preview_batch(target, ops) if ops is not None
+                  else store.preview_single(target, action, content, old_text))
+    if would_fail:
+        return json.dumps({
+            "success": False,
+            "error": _unstaged_failure_message(would_fail),
+            "current_entries": store._entries_for(target),
+            "usage": store._usage(target),
+        }, ensure_ascii=False)
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:

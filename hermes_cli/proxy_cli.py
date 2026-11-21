@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from agent.i18n import t
 from agent.proxy_sources import iron_proxy as ip
 from agent.redact import mask_secret
 from hermes_cli._secrets_common import console_safe
@@ -449,27 +450,27 @@ def format_status_text(*, show_tokens: bool = False) -> str:
     cfg = load_config()
     proxy_cfg = cfg.get("proxy") or {}
     status = ip.get_status()
-    lines = ["Egress proxy status", ""]
+    lines = [t("egress.status.title"), ""]
     lines.extend(
         f"{label}: {value}"
-        for label, value in _status_rows(proxy_cfg, status, yn=lambda v: "yes" if v else "no", dim=lambda t: t)
+        for label, value in _status_rows(proxy_cfg, status, yn=_status_bool, dim=lambda text: text)
     )
-    lines.append("Scope: Docker backend only in this release")
+    lines.append(t("egress.status.scope"))
     mappings = ip.load_mappings()
     if mappings:
-        lines.extend(["", "Token mappings:"])
+        lines.extend(["", f"{t('egress.status.token_mappings')}:"])
         for m in mappings:
             tok = m.proxy_token if show_tokens else mask_secret(m.proxy_token)
             lines.append(f"  - {m.real_env_name}: {tok} ({', '.join(m.upstream_hosts)})")
     uncovered = ip.discover_uncovered_providers()
     if uncovered:
-        lines.extend(["", "Uncovered providers (real credentials still visible inside the sandbox):"])
+        lines.extend(["", f"{t('egress.status.uncovered_providers')}:"])
         for name in uncovered:
             lines.append(f"  - {name}")
     if bool(proxy_cfg.get("enabled")) and not status.configured:
-        lines.extend(["", "Next: run `hermes egress setup` to mint tokens and write proxy.yaml."])
+        lines.extend(["", t("egress.status.setup_hint")])
     elif bool(proxy_cfg.get("enabled")) and not (status.pid and status.listening):
-        lines.extend(["", "Next: run `hermes egress start` before launching Docker sandboxes."])
+        lines.extend(["", t("egress.status.start_hint")])
     return "\n".join(lines)
 
 
@@ -481,24 +482,29 @@ def cmd_status(args: argparse.Namespace) -> int:
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("", style="bold")
     table.add_column("")
-    for label, value in _status_rows(proxy_cfg, status, yn=_yn, dim=lambda t: f"[dim]{t}[/dim]"):
+    for label, value in _status_rows(
+        proxy_cfg, status, yn=_yn, dim=lambda text: f"[dim]{text}[/dim]"
+    ):
         table.add_row(label, value)
     console.print(table)
     mappings = ip.load_mappings()
     if mappings:
         console.print()
-        console.print("[bold]Token mappings[/bold]")
-        console.print(_mappings_table(mappings, "Real env", "Upstream", show_tokens=args.show_tokens))
+        console.print(f"[bold]{t('egress.status.token_mappings')}[/bold]")
+        console.print(_mappings_table(
+            mappings,
+            t("egress.status.real_env"),
+            t("egress.status.upstream"),
+            show_tokens=args.show_tokens,
+            token_header=t("egress.status.proxy_token"),
+        ))
         if args.show_tokens:
-            console.print(
-                "[yellow]⚠[/yellow]  proxy tokens just printed in full — "
-                "they may persist in your shell history.  Consider clearing it after this command."
-            )
+            console.print(f"[yellow]⚠[/yellow]  {t('egress.status.show_tokens_warning')}")
     # Uncovered providers = the isolation boundary is incomplete for those upstreams.
     uncovered = ip.discover_uncovered_providers()
     if uncovered:
         console.print()
-        console.print("[yellow]Uncovered providers[/yellow] (real credentials still visible inside the sandbox):")
+        console.print(f"[yellow]{t('egress.status.uncovered_providers')}:[/yellow]")
         for name in uncovered:
             console.print(f"  - {name}")
     return 0
@@ -590,11 +596,13 @@ def _load_env_file_into_environ() -> int:
     return added
 
 
-def _mappings_table(mappings, env_header: str, hosts_header: str, *, show_tokens: bool) -> Table:
+def _mappings_table(
+    mappings, env_header: str, hosts_header: str, *, show_tokens: bool, token_header: str = "Proxy token",
+) -> Table:
     table = Table(show_header=True, header_style="bold")
     table.add_column(env_header, style="cyan")
     table.add_column(hosts_header, style="dim")
-    table.add_column("Proxy token", style="green")
+    table.add_column(token_header, style="green")
     for m in mappings:
         tok = m.proxy_token if show_tokens else mask_secret(m.proxy_token)
         table.add_row(m.real_env_name, ", ".join(m.upstream_hosts), tok)
@@ -613,8 +621,13 @@ def _refuse(console: Console, reason: str, hint: str) -> int:
     return 1
 
 
+def _status_bool(value: bool) -> str:
+    return t("egress.status.affirmative") if value else t("egress.status.negative")
+
+
 def _yn(value: bool) -> str:
-    return "[green]yes[/green]" if value else "[dim]no[/dim]"
+    style = "green" if value else "dim"
+    return f"[{style}]{_status_bool(value)}[/{style}]"
 
 
 def _prompt(text: str) -> str:
@@ -629,14 +642,14 @@ def _status_rows(proxy_cfg: dict, status, *, yn, dim) -> list[tuple[str, str]]:
     """``(label, value)`` rows shared by the rich ``status`` table and the plain-text variant;
     ``yn`` renders booleans, ``dim`` wraps placeholder text for missing values."""
     return [
-        ("Enabled", yn(bool(proxy_cfg.get("enabled")))),
-        ("Binary", str(status.binary_path or dim("(missing)"))),
-        ("Binary version", status.binary_version or dim("(unknown)")),
-        ("Config", str(status.config_path or dim("(not generated)"))),
-        ("CA cert", str(status.ca_cert_path or dim("(not generated)"))),
-        ("Tunnel port", str(status.tunnel_port)),
-        ("Process", f"pid {status.pid}" if status.pid else dim("(stopped)")),
-        ("Listening", yn(status.listening)),
-        ("Credential src", str(proxy_cfg.get("credential_source", "env"))),
-        ("Docker enforce", yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
+        (t("egress.status.enabled"), yn(bool(proxy_cfg.get("enabled")))),
+        (t("egress.status.binary"), str(status.binary_path or dim(t("egress.status.missing")))),
+        (t("egress.status.binary_version"), status.binary_version or dim(t("egress.status.unknown"))),
+        (t("egress.status.config"), str(status.config_path or dim(t("egress.status.not_generated")))),
+        (t("egress.status.ca_cert"), str(status.ca_cert_path or dim(t("egress.status.not_generated")))),
+        (t("egress.status.tunnel_port"), str(status.tunnel_port)),
+        (t("egress.status.process"), f"pid {status.pid}" if status.pid else dim(t("egress.status.stopped"))),
+        (t("egress.status.listening"), yn(status.listening)),
+        (t("egress.status.credential_source"), str(proxy_cfg.get("credential_source", "env"))),
+        (t("egress.status.enforce_on_docker"), yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
     ]

@@ -1517,6 +1517,35 @@ platform:
     confirm_cancel: "إلغاء"
     prompt_other: "✏️ غير ذلك (اكتب الإجابة)"
     prompt_expired: ⌛ لم يعد هذا الطلب ينتظر إجابة. أرسل ردك كرسالة عادية.
+egress:
+  status:
+    title: "حالة وكيل الخروج الشبكي"
+    enabled: "مفعّل"
+    binary: "الملف التنفيذي"
+    binary_version: "إصدار الملف التنفيذي"
+    config: "ملف الإعدادات"
+    ca_cert: "شهادة المرجع المصدّق"
+    tunnel_port: "منفذ النفق"
+    process: "العملية"
+    listening: "قيد الاستماع"
+    credential_source: "مصدر بيانات الاعتماد"
+    enforce_on_docker: "فرض الاستخدام في Docker"
+    affirmative: "نعم"
+    negative: "لا"
+    missing: "(مفقود)"
+    unknown: "(غير معروف)"
+    not_generated: "(لم يُنشأ)"
+    stopped: "(متوقف)"
+    scope: "النطاق: يدعم هذا الإصدار بيئة Docker فقط"
+    token_mappings: "تعيينات الرموز المميزة"
+    uncovered_providers: "المزوّدون غير المشمولين (تظل بيانات الاعتماد الفعلية مرئية داخل البيئة المعزولة)"
+    setup_hint: "الخطوة التالية: شغّل `hermes egress setup` لإنشاء الرموز المميزة وكتابة ملف proxy.yaml."
+    start_hint: "الخطوة التالية: شغّل `hermes egress start` قبل تشغيل بيئات Docker المعزولة."
+    real_env: "متغير البيئة الفعلي"
+    upstream: "الوجهة الأصلية"
+    proxy_token: "الرمز المميز للوكيل"
+    show_tokens_warning: "عُرضت الرموز المميزة للوكيل كاملةً وقد تبقى في سجل أوامر الطرفية. يُستحسن مسح السجل بعد تنفيذ هذا الأمر."
+
 slash:
   rewind:
     description: "الإرجاع إلى موجّه سابق لتعديله وإعادة إرساله، أو التفريع من هناك (Esc Esc)"

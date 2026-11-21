@@ -1534,6 +1534,35 @@ platform:
     confirm_cancel: "Mégse"
     prompt_other: "✏️ Egyéb (írd be a választ)"
     prompt_expired: ⌛ Ez a kérdés már nem vár válaszra. Küldd el a válaszodat normál üzenetként.
+egress:
+  status:
+    title: "A kimenő proxy állapota"
+    enabled: "Engedélyezve"
+    binary: "Futtatható fájl"
+    binary_version: "A futtatható fájl verziója"
+    config: "Konfiguráció"
+    ca_cert: "CA-tanúsítvány"
+    tunnel_port: "Alagútport"
+    process: "Folyamat"
+    listening: "Kapcsolatok fogadása"
+    credential_source: "A hitelesítési adatok forrása"
+    enforce_on_docker: "Kötelező használat Dockerben"
+    affirmative: "igen"
+    negative: "nem"
+    missing: "(hiányzik)"
+    unknown: "(ismeretlen)"
+    not_generated: "(még nincs létrehozva)"
+    stopped: "(leállítva)"
+    scope: "Hatókör: ez a kiadás csak a Docker-háttérrendszert támogatja"
+    token_mappings: "Token-hozzárendelések"
+    uncovered_providers: "Nem védett szolgáltatók (a valódi hitelesítési adatok továbbra is láthatók a sandboxban)"
+    setup_hint: "Következő lépés: futtasd a `hermes egress setup` parancsot a tokenek és a proxy.yaml létrehozásához."
+    start_hint: "Következő lépés: futtasd a `hermes egress start` parancsot a Docker-sandboxok indítása előtt."
+    real_env: "Valódi környezeti változó"
+    upstream: "Célkiszolgáló"
+    proxy_token: "Proxy token"
+    show_tokens_warning: "A proxy tokenjei teljes terjedelemben megjelentek, és megmaradhatnak a parancselőzményekben. Érdemes a parancs után törölni az előzményeket."
+
 slash:
   rewind:
     description: "Visszatekerés egy korábbi prompthoz a szerkesztéshez és újraküldéshez, vagy elágazás onnan (Esc Esc)"

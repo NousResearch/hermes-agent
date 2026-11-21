@@ -39,7 +39,9 @@ class _NonStreamRequest:
             if self.codex_token is not None
             else None
         )
-        self.call_start = h.time.time()
+        # Monotonic: anchored by the TTFB/idle/progress watchdogs, which all difference
+        # it against a later reading. A wall-clock step made a healthy request look stalled.
+        self.call_start = h.time.monotonic()
         self.wait_notice_started_ts = None
         self.wait_notice = wn.WaitNoticeState()
         self.thread = None
@@ -288,7 +290,7 @@ class _NonStreamRequest:
             poll_count += 1
             # Keep the quiet gateway heartbeat; only silence warrants a notice.
             # Resumed events clear our notice on the next poll, not 30s later.
-            now = h.time.time()
+            now = h.time.monotonic()
             elapsed = now - self.call_start
             self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0)
             last_event_ts, last_progress_ts, retry_started_ts, attempt_started_ts = self._codex_watchdog_snapshot()

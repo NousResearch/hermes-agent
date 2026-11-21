@@ -274,20 +274,90 @@ describe('roster search narrows without re-ranking', () => {
   })
 })
 
-describe('unreachable same-name twins (#92286)', () => {
+describe('unreachable same-name twins (#92286, §6.3 of gateway-scoped-bots)', () => {
   // After Desktop moves to the built-in This-device source, the old loopback
   // row (127.0.0.1:port, not listening) still sits beside the live profile
   // and looks like a second agent. Only sidebar tiles are filtered — routing
   // identities, group members and @-mentions still see every row.
-  const live = row({ connectionId: 'local', name: 'default', sourceReachable: true, sourceScoped: true })
+  //
+  // The rule is identity, not name: a DEAD row is dropped only when it is the
+  // same backend as the live row with that name (this device under an old
+  // loopback address). A separate gateway's bot that happens to share the
+  // profile name — `default` on `cloud-123` beside `default` on This device —
+  // keeps its tile, because an unreachable gateway removes no rows (§6.3).
+  const live = row({ connectionId: 'local', installId: 'this-device', name: 'default', sourceReachable: true, sourceScoped: true })
   const dead = row({ connectionId: 'loopback', name: 'default', sourceReachable: false, sourceScoped: true })
+  const legacyLocalForward = [{ connectionId: 'loopback', kind: 'remote', url: 'http://127.0.0.1:19119' }]
+
+  const cloudSources = [
+    { connectionId: 'local', kind: 'local', label: 'This device' },
+    {
+      cloud: { bot: 'cloud-123', gateway_id: 'gw-cloud' },
+      connectionId: 'cloud-123',
+      kind: 'remote',
+      label: 'cloud-123',
+      name: 'cloud-123',
+      url: 'http://127.0.0.1:18764'
+    }
+  ]
 
   it('drops a dead twin when a live copy exists', () => {
-    expect(preferReachableSameNameRows([live, dead]).map(bot => bot.connectionId)).toEqual(['local'])
+    expect(preferReachableSameNameRows([live, dead], legacyLocalForward).map(bot => bot.connectionId)).toEqual([
+      'local'
+    ])
+  })
+
+  it('drops a dead twin that is the same backend under another address (installId)', () => {
+    const secondAddress = row({
+      connectionId: 'box-ssh',
+      installId: 'this-device',
+      name: 'default',
+      sourceReachable: false,
+      sourceScoped: true
+    })
+
+    expect(preferReachableSameNameRows([live, secondAddress]).map(bot => bot.connectionId)).toEqual(['local'])
+  })
+
+  it('keeps a down cloud gateway row that shares the local profile name', () => {
+    const cloudDead = row({
+      connectionId: 'cloud-123',
+      gatewayName: 'cloud-123',
+      installId: 'cloud-123-install',
+      name: 'default',
+      sourceError: 'connect ECONNREFUSED 127.0.0.1:18764',
+      sourceReachable: false,
+      sourceScoped: true
+    })
+
+    expect(preferReachableSameNameRows([live, cloudDead], cloudSources).map(bot => bot.connectionId)).toEqual([
+      'local',
+      'cloud-123'
+    ])
+  })
+
+  it('keeps a down named remote gateway row: only a unnamed loopback forward is a duplicate', () => {
+    const namedRemote = row({
+      connectionId: 'homelab',
+      name: 'default',
+      sourceReachable: false,
+      sourceScoped: true
+    })
+
+    const sources = [
+      { connectionId: 'local', kind: 'local', label: 'This device' },
+      { connectionId: 'homelab', kind: 'remote', label: 'homelab', name: 'homelab', url: 'https://homelab.example' }
+    ]
+
+    expect(preferReachableSameNameRows([live, namedRemote], sources)).toHaveLength(2)
+  })
+
+  it('keeps an unreachable row whose source is not in the snapshot (never assume a duplicate)', () => {
+    expect(preferReachableSameNameRows([live, dead], [])).toHaveLength(2)
   })
 
   it('keeps two live sources sharing a profile name', () => {
-    const other = row({ connectionId: 'vera', name: 'default', sourceReachable: true, sourceScoped: true })
+    const other = row({ connectionId: 'vera', installId: 'vera-install', name: 'default', sourceReachable: true, sourceScoped: true })
 
     expect(preferReachableSameNameRows([live, other])).toHaveLength(2)
   })
@@ -308,13 +378,13 @@ describe('unreachable same-name twins (#92286)', () => {
   })
 
   it('keeps a ghost so a selected-but-offline owner is never replaced by a twin', () => {
-    expect(preferReachableSameNameRows([live, { ...dead, ghost: true }])).toHaveLength(2)
+    expect(preferReachableSameNameRows([live, { ...dead, ghost: true }], legacyLocalForward)).toHaveLength(2)
   })
 
   it('does not mutate the input list', () => {
     const input = [live, dead]
 
-    preferReachableSameNameRows(input)
+    preferReachableSameNameRows(input, legacyLocalForward)
     expect(input).toHaveLength(2)
   })
 })

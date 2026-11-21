@@ -200,6 +200,31 @@
           "url": "http://b"
         }
       ]
+    },
+    "remote-name": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        },
+        {
+          "id": "cloud-9",
+          "kind": "remote",
+          "label": "Cloud 9",
+          "url": "http://127.0.0.1:18764",
+          "authMode": "token",
+          "token": {
+            "encoding": "plain",
+            "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "name": "cloud-9"
+        }
+      ]
     }
   },
   "saveRegistry": {
@@ -247,6 +272,18 @@
         "user": "alice",
         "port": 2222,
         "remoteProfile": "coder"
+      },
+      {
+        "id": "cloud-9",
+        "kind": "remote",
+        "label": "Cloud 9",
+        "url": "http://127.0.0.1:18764",
+        "authMode": "token",
+        "token": {
+          "encoding": "plain",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "name": "cloud-9"
       }
     ]
   },
@@ -379,6 +416,11 @@
       "kind": "remote",
       "label": "Connection",
       "url": "http://slug1"
+    },
+    {
+      "id": "cloud-9",
+      "kind": "remote",
+      "label": "renamed"
     }
   ],
   "expected": {
@@ -478,7 +520,8 @@
           "kind": "remote",
           "label": "OAuth box",
           "url": "https://gw.example.com",
-          "authMode": "oauth"
+          "authMode": "oauth",
+          "name": "dropped"
         },
         {
           "id": "box",
@@ -633,6 +676,31 @@
           "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL 2",
           "url": "http://b",
           "authMode": "token"
+        }
+      ]
+    },
+    "remote-name": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        },
+        {
+          "id": "cloud-9",
+          "kind": "remote",
+          "label": "Cloud 9",
+          "url": "http://127.0.0.1:18764",
+          "authMode": "token",
+          "token": {
+            "encoding": "plain",
+            "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "name": "cloud-9"
         }
       ]
     }
@@ -802,6 +870,16 @@
         "label": "Connection",
         "url": "http://slug1",
         "authMode": "token"
+      }
+    },
+    {
+      "entry": {
+        "id": "cloud-9",
+        "kind": "remote",
+        "label": "renamed",
+        "url": "http://127.0.0.1:18764",
+        "authMode": "token",
+        "name": "cloud-9"
       }
     }
   ]

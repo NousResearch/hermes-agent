@@ -237,7 +237,7 @@ export function renderRosterToolbar({
                             className={cn('mr-1.5', !status.available && 'text-amber-600 dark:text-amber-300')}
                             kind={option.kind}
                           />
-                          <span className="min-w-0 flex-1 truncate">{option.label || option.connectionId}</span>
+                          <span className="min-w-0 flex-1 truncate">{option.name || option.label || option.connectionId}</span>
                           <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">
                             {option.count}
                           </span>

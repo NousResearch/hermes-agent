@@ -324,7 +324,7 @@ export function BotsPane() {
     activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId, groupKeys).map(botRosterKey)
   )
 
-  const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
+  const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster, data?.primaryConnectionId)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)
   useEffect(() => {

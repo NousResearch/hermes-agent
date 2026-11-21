@@ -9,15 +9,17 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import type { ConnectionRegistry } from './connection-registry'
+import type { ConnectionRegistry, RegistryConnection } from './connection-registry'
 import {
   agentHandle,
   backendScopeKey,
   backendScopePrefix,
   buildAgentRoster,
+  cloudGatewayIdentity,
   connectionDialFieldsChanged,
   connectionIdForLabel,
   connectionIdForPendingLogin,
+  isLoopbackRemoteUrl,
   labelKey,
   labelSlug,
   LOCAL_CONNECTION_ID,
@@ -123,6 +125,70 @@ test('Cloud name survives partial edits but never inherits across gateway URLs',
   )
 
   assert.equal(retargeted.name, undefined)
+})
+
+test('a remote entry keeps `name` through a save and inherits it on a name-less edit (D3)', () => {
+  const registry = emptyRegistry()
+
+  const saved = normalizeConnectionInput(
+    {
+      kind: 'remote',
+      label: 'cloud-9',
+      name: 'cloud-9',
+      url: 'http://127.0.0.1:18764',
+      authMode: 'token',
+      token: { encoding: 'plain', value: 'a'.repeat(64) }
+    },
+    registry
+  )
+
+  assert.equal(saved.name, 'cloud-9')
+
+  // The Settings editor's payload omits `name`; the merge must re-supply it.
+  const merged = mergeConnectionInput({ id: saved.id, kind: 'remote', label: 'renamed' }, saved)
+  const edited = normalizeConnectionInput(merged, registry)
+
+  assert.equal(edited.name, 'cloud-9')
+  assert.equal(edited.label, 'renamed')
+})
+
+test('cloud gateway attribution: only a named loopback token remote is a cloud gateway', () => {
+  const cloud: RegistryConnection = {
+    id: 'cloud-123',
+    kind: 'remote',
+    label: 'cloud-123',
+    name: 'cloud-123',
+    url: 'http://127.0.0.1:18764',
+    authMode: 'token',
+    token: { encoding: 'plain', value: 'a'.repeat(64) }
+  }
+
+  const local: RegistryConnection = { id: 'local', kind: 'local', label: 'This device' }
+
+  const roster = buildAgentRoster([
+    { connection: local, profiles: ['default'] },
+    { connection: cloud, profiles: ['default'] }
+  ])
+
+  // The badge is carried on the cloud row only.
+  assert.equal(roster.find(agent => agent.connectionId === 'cloud-123')?.gatewayName, 'cloud-123')
+  assert.equal(roster.find(agent => agent.connectionId === 'local')?.gatewayName, undefined)
+
+  assert.deepEqual(cloudGatewayIdentity(cloud), { bot: 'cloud-123' })
+  assert.deepEqual(cloudGatewayIdentity(cloud, 'install-1'), { bot: 'cloud-123', gateway_id: 'install-1' })
+
+  // A hand-saved LAN remote (or one without a name / a token) is NOT a cloud
+  // gateway — no badge, no `cloud` block.
+  assert.equal(cloudGatewayIdentity({ ...cloud, url: 'http://192.168.1.9:18764' }), null)
+  assert.equal(cloudGatewayIdentity({ ...cloud, name: undefined }), null)
+  assert.equal(cloudGatewayIdentity({ ...cloud, authMode: 'oauth' }), null)
+  assert.equal(cloudGatewayIdentity({ ...cloud, kind: 'cloud', authMode: 'oauth' }), null)
+
+  assert.equal(isLoopbackRemoteUrl('http://127.0.0.1:18764'), true)
+  assert.equal(isLoopbackRemoteUrl('http://localhost:18764'), true)
+  assert.equal(isLoopbackRemoteUrl('http://[::1]:18764'), true)
+  assert.equal(isLoopbackRemoteUrl('https://gw.example.com'), false)
+  assert.equal(isLoopbackRemoteUrl(''), false)
 })
 
 // --- labels, slugs, handles ---

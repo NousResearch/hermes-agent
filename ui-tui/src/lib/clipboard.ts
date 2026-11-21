@@ -1,6 +1,8 @@
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
+import { reportClipboardCopy } from '../app/clipboardFeedbackStore.js'
+
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
 
@@ -154,7 +156,7 @@ function writeClipboardCommands(platform: NodeJS.Platform, env: NodeJS.ProcessEn
  * Returns true if at least one backend succeeded, false otherwise
  * (callers should fall back to OSC52 on false).
  */
-export async function writeClipboardText(
+export async function writeClipboard(
   text: string,
   platform: NodeJS.Platform = process.platform,
   start: typeof spawn = spawn,
@@ -199,4 +201,20 @@ export async function writeClipboardText(
   }
 
   return false
+}
+
+/** Copy text and announce success. Cuts use the raw writer until deletion succeeds. */
+export async function writeClipboardText(
+  text: string,
+  platform: NodeJS.Platform = process.platform,
+  start: typeof spawn = spawn,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
+  const ok = await writeClipboard(text, platform, start, env)
+
+  if (ok) {
+    reportClipboardCopy(text)
+  }
+
+  return ok
 }

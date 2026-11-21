@@ -19,6 +19,7 @@ import App from './components/App.js'
 import type { CursorAdvanceNotifier } from './components/CursorAdvanceContext.js'
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js'
 import { FRAME_INTERVAL_MS, MAX_COALESCED_BACKPRESSURE_FRAMES } from './constants.js'
+import { copySelectionText } from './copy-selection.js'
 import * as dom from './dom.js'
 import { markDirty } from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
@@ -105,13 +106,7 @@ import {
   SHOW_CURSOR
 } from './termio/dec.js'
 import { isDashboardHosted } from './termio/host.js'
-import {
-  CLEAR_ITERM2_PROGRESS,
-  CLEAR_TAB_STATUS,
-  setClipboard,
-  supportsTabStatus,
-  wrapForMultiplexer
-} from './termio/osc.js'
+import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js'
 import { TerminalWriteProvider } from './useTerminalNotification.js'
 
 // Alt-screen: renderer.ts sets cursor.visible = !isTTY || screen.height===0,
@@ -251,6 +246,7 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>()
+  private readonly selectionCopyListeners = new Set<(text: string) => void>()
   private selectionVersion = 0
   private lastSelectionSignature = ''
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
@@ -1631,31 +1627,12 @@ export default class Ink {
    * taken (e.g. headless Linux without tmux). Matches iTerm2's copy-on-select
    * behavior where the selected region stays visible after the automatic copy.
    */
-  async copySelectionNoClear(): Promise<string> {
-    if (!hasSelection(this.selection)) {
-      return ''
-    }
-
-    const text = this.getTextSelectionText()
-
-    if (text) {
-      try {
-        const { sequence, success } = await setClipboard(text)
-
-        if (sequence) {
-          this.options.stdout.write(sequence)
-        }
-
-        if (success) {
-          return text
-        }
-      } catch {
-        // Clipboard failed across every path — caller sees the empty
-        // return below and surfaces a hint via the slash command.
-      }
-    }
-
-    return ''
+  copySelectionNoClear(): Promise<string> {
+    return copySelectionText(
+      this.getTextSelectionText(),
+      sequence => this.options.stdout.write(sequence),
+      this.selectionCopyListeners
+    )
   }
 
   getTextSelectionText(): string {
@@ -1948,6 +1925,12 @@ export default class Ink {
     this.selectionListeners.add(cb)
 
     return () => this.selectionListeners.delete(cb)
+  }
+
+  subscribeToSelectionCopy(cb: (text: string) => void): () => void {
+    this.selectionCopyListeners.add(cb)
+
+    return () => this.selectionCopyListeners.delete(cb)
   }
   private notifySelectionChange(): void {
     this.scheduleRender()

@@ -255,7 +255,26 @@ def _cfg_get_mtime(params):
 
 
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
+def _cfg_get_dashboard_auth(params):
+    """Read-only view of the local backend's dashboard sign-in: the username when a
+    username + password/hash are configured, else "". Never returns a password or a
+    hash. Env-configured credentials count too — the basic-auth provider resolves
+    env over config — but env is process-wide (the launch profile's), so for a
+    secondary profile this may describe the gateway process, not that profile."""
+    import os
+    cfg = _load_cfg()
+    dashboard = cfg.get("dashboard") if isinstance(cfg, dict) else None
+    section = dashboard.get("basic_auth") if isinstance(dashboard, dict) else None
+    section = section if isinstance(section, dict) else {}
+    username = (section.get("username") or os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME") or "").strip()
+    has_password = bool((section.get("password_hash") or section.get("password")
+                         or os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH")
+                         or os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD") or "").strip())
+    return {"value": username if username and has_password else ""}
+
+
 _CONFIG_GETTERS = {
+    "dashboard.auth": _cfg_get_dashboard_auth,
     "provider": _cfg_get_provider,
     "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
     "project": _cfg_get_project,

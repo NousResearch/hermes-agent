@@ -516,7 +516,7 @@ export interface ConfigProviderRef {
   authenticated?: boolean
   [key: string]: unknown
 }
-/** ``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles); ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``. */
+/** ``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles); ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``. ``username`` / ``password`` apply only to the ``dashboard.auth`` setter, which hashes the password server-side; they are never echoed back in the result. */
 export interface ConfigSetParams {
   profile?: string | null
   key: string
@@ -524,8 +524,10 @@ export interface ConfigSetParams {
   session_id?: string | null
   scope?: string | null
   confirm_expensive_model?: boolean
+  username?: string | null
+  password?: string | null
 }
-/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles. */
+/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``; ``dashboard.auth`` adds ``auth_configured`` / ``restart_required``. ``value`` is a bool only for the display toggles. */
 export interface ConfigSetResult {
   key: string
   value?: string | boolean | null
@@ -539,6 +541,8 @@ export interface ConfigSetResult {
   branch?: string | null
   history_reset?: boolean | null
   info?: SessionLiveInfo | null
+  auth_configured?: boolean | null
+  restart_required?: boolean | null
 }
 /** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
 export interface SessionLiveInfo {

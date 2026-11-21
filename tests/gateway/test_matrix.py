@@ -897,7 +897,8 @@ class TestMatrixE2EEHardFail:
     """connect() must refuse to start when E2EE is requested but deps are missing."""
 
     @pytest.mark.asyncio
-    async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self):
+    @pytest.mark.parametrize("installable", [True, False])
+    async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self, installable):
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
@@ -926,12 +927,16 @@ class TestMatrixE2EEHardFail:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
-        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+                patch.object(matrix_mod, "_e2ee_installable", return_value=installable):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
                     result = await adapter.connect()
 
         assert result is False
+        # Where python-olm can never install, reconnecting cannot help: Matrix is parked, not retried.
+        assert adapter.has_fatal_error is not installable
+        assert adapter.fatal_error_retryable is installable
 
     @pytest.mark.asyncio
     async def test_connect_continues_when_e2ee_optional_but_no_deps(self):

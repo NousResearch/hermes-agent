@@ -268,6 +268,8 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
     from hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
     publish_pending_multiplex_decision()
     _claim_host_gateway_role(force=force)
+    from hermes_cli.web_server_gateway import bind_restart_record
+    bind_restart_record()  # the first gateway after a dashboard-spawned restart claims or voids it
     return True
 
 

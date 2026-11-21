@@ -215,6 +215,24 @@ def test_successful_goal_turn_accepts_only_valid_completion_outcomes(
     assert server._is_successful_goal_turn(result, status, raw) is expected
 
 
+def test_failed_turn_pauses_active_goal_with_reason(server, session, monkeypatch):
+    """Retries already ran and the turn failed: the goal pauses and the TUI is told why, instead of
+    the goal staying active with nothing queued."""
+    from hermes_cli.goals import GoalManager
+
+    sid, session_key, s = session
+    GoalManager(session_key).set("ship the release")
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda ev, _sid, payload=None: emitted.append((ev, payload)))
+    result = {"final_response": "", "failed": True, "error": "HTTP 500", "failure_reason": "server_error"}
+    with patch("hermes_cli.goals.judge_goal") as judge:
+        assert server._goal_followup_after_turn(sid, s, result, "error", "") is None
+    judge.assert_not_called()
+    state = GoalManager(session_key).state
+    assert state is not None and (state.status, state.paused_reason) == ("paused", "turn failed (server_error)")
+    assert [ev for ev, _ in emitted] == ["status.update"] and "server_error" in emitted[0][1]["text"]
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 

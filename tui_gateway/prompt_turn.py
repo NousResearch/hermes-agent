@@ -358,6 +358,14 @@ def _goal_followup_after_turn(
         goal_followup = recovery_prompt or None
     except Exception as _goal_recovery_exc:
         _hook_failure("goal compression recovery", _goal_recovery_exc)
+    try:
+        if (isinstance(result, dict) and result.get("failed") and session.get("session_key")
+                and (goal_mgr := _active_goal_manager(session)) is not None
+                and (notice := goal_mgr.pause_after_failed_turn(result))):
+            # Retries already ran and failed: pause with the reason rather than sit idle as active.
+            _emit("status.update", sid, {"kind": "goal", "text": notice})
+    except Exception as _goal_pause_exc:  # health: allow BLE001 -- post-turn hook boundary like its neighbours; reported via _hook_failure
+        _hook_failure("goal failure pause", _goal_pause_exc)
     if compression_exhausted or not _is_successful_goal_turn(result, status, raw):
         return goal_followup
     try:

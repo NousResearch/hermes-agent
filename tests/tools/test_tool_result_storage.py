@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -804,3 +805,114 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+
+# ── Rule-bearing tools: skill_view spill notice (#151283) ─────────────
+
+
+def _skill_payload(*, sections: int = 40, lines_per_section: int = 12) -> str:
+    """A skill_view-shaped JSON result: frontmatter-ish fields plus a long rule body."""
+    body: list[str] = []
+    for section in range(sections):
+        body.append(f"## Section {section}")
+        body.extend(f"rule line {section}.{line}: never infer this." for line in range(lines_per_section))
+    return json.dumps({
+        "name": "prod-ops",
+        "path": "/skills/prod-ops/SKILL.md",
+        "description": "Production ops runbook",
+        "content": "\n".join(body),
+        "linked_files": {"references/runbook.md": "details"},
+        "status": "ok",
+    })
+
+
+class TestRuleBearingSpill:
+    """A spilled skill_view preview is policy, not data: it must say its rules are incomplete."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+        yield
+
+    def test_skill_view_spill_says_rules_are_incomplete(self):
+        result = maybe_persist_tool_result(
+            content=_skill_payload(), tool_name="skill_view", tool_use_id="tc_skill_1",
+            env=None, threshold=1_000,
+        )
+
+        assert result.startswith(PERSISTED_OUTPUT_TAG)
+        assert result.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
+        assert "SKILL RULES INCOMPLETE" in result
+        assert "Do NOT act on write operations" in result
+        assert "Full output saved to: " in result
+        assert "This tool result was too large" not in result
+
+    def test_skill_view_outline_names_sections_with_pageable_line_ranges(self):
+        result = maybe_persist_tool_result(
+            content=_skill_payload(), tool_name="skill_view", tool_use_id="tc_skill_2",
+            env=None, threshold=1_000,
+        )
+
+        assert "Skill: prod-ops — Production ops runbook" in result
+        assert "Sections (page with read_file offset/limit):" in result
+        # The outline points at line ranges, because read_file paginates in lines, not characters.
+        assert "  - ## Section 0 — lines 1–13" in result or "  - ## Section 0 — lines" in result
+
+        # Every quoted range must land on its own heading in the saved file.
+        spill = (get_spillover_dir() / "tc_skill_2.txt").read_text(encoding="utf-8").splitlines()
+        rows = re.findall(r"- ## (.+?) — lines (\d+)–(\d+)", result)
+        assert rows, result
+        for title, first, _last in rows:
+            assert spill[int(first) - 1] == f"## {title}"
+
+    def test_outline_caps_sections_and_counts_the_rest(self):
+        result = maybe_persist_tool_result(
+            content=_skill_payload(sections=30), tool_name="skill_view", tool_use_id="tc_skill_3",
+            env=None, threshold=1_000,
+        )
+
+        assert "more sections" in result
+        assert result.count("  - ## ") == 20
+
+    def test_generic_tool_keeps_the_generic_notice(self):
+        """Regression: only rule-bearing tools change; every other tool keeps the old text."""
+        result = maybe_persist_tool_result(
+            content=_skill_payload(), tool_name="terminal", tool_use_id="tc_term_1",
+            env=None, threshold=1_000,
+        )
+
+        assert "This tool result was too large" in result
+        assert "RULES INCOMPLETE" not in result
+        assert "Sections (page with read_file" not in result
+
+    def test_rule_bearing_outline_is_empty_without_headings(self):
+        from tools.tool_result_storage import _rule_bearing_outline
+
+        assert _rule_bearing_outline("name: plain\nno sections here\n") == ""
+
+    def test_skill_view_without_headings_still_spills_safely(self):
+        result = maybe_persist_tool_result(
+            content="name: plain\n" + ("flat rule line\n" * 2_000),
+            tool_name="skill_view", tool_use_id="tc_skill_4", env=None, threshold=1_000,
+        )
+
+        assert "SKILL RULES INCOMPLETE" in result
+        assert "Sections (page with read_file" not in result
+
+    def test_skill_view_under_threshold_is_untouched(self):
+        content = _skill_payload(sections=1, lines_per_section=1)
+
+        assert maybe_persist_tool_result(
+            content=content, tool_name="skill_view", tool_use_id="tc_skill_5", env=None,
+        ) == content
+
+    def test_extract_persisted_path_still_reads_the_skill_notice(self):
+        """agent/tool_guardrails.py resolves the spill path from this block; keep the contract."""
+        result = maybe_persist_tool_result(
+            content=_skill_payload(), tool_name="skill_view", tool_use_id="tc_skill_6",
+            env=None, threshold=1_000,
+        )
+
+        assert extract_persisted_path(result) == str(get_spillover_dir() / "tc_skill_6.txt")

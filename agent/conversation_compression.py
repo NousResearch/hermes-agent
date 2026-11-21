@@ -2159,6 +2159,15 @@ def _extract_steer_text_from_message(message: Any) -> Optional[str]:
     return text[start:end].strip() or None
 
 
+def steer_display_text(message: Any) -> Optional[str]:
+    """The user's words in a stored steer row. Rows written while the current-turn anchor sat on the steer
+    hold the turn's prompt in ``content`` and the marker only in the ``api_content`` sidecar, so read that
+    when ``content`` carries no marker."""
+    sidecar = message.get("api_content") if isinstance(message, dict) else None
+    return _extract_steer_text_from_message(message) or (
+        _extract_steer_text_from_message({"role": "user", "content": sidecar}) if isinstance(sidecar, str) else None)
+
+
 def _compressed_has_busy_steer(messages: list) -> bool:
     """Whether *messages* already carries a steer marker in a ``role=tool`` row.
     Only tool rows count, so a summary merely quoting the marker text is not mistaken for live intent."""

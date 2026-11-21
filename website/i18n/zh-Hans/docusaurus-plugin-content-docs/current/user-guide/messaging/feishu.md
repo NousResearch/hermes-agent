@@ -214,6 +214,31 @@ FEISHU_REQUIRE_MENTION=false
 
 如需按群控制，在 `group_rules` 条目中设置 `require_mention`——参见下方[按群访问控制](#per-group-access-control)。
 
+### 群聊话题（Thread）回复
+
+默认情况下，Hermes 在群聊中以引用回复的方式回答主聊天流中的消息。设置 `FEISHU_THREAD_REPLY=true` 后，回复将落在飞书话题内：机器人的首次回复会以 `reply_in_thread` 引用触发消息，从而基于该消息创建一个新话题；同一条回复的后续分块消息都会加入该话题。下一个问题会创建自己的新话题，群聊因此更加整洁。
+
+```bash
+FEISHU_THREAD_REPLY=true
+```
+
+或者在 `config.yaml` 的平台配置块中：
+
+```yaml
+platforms:
+  feishu:
+    thread_reply: true
+```
+
+说明：
+- 仅对**群聊**生效。私聊消息、向 `ou_…` open_id 发送的消息、以及已在现有话题内的回复均保持原有行为不变。
+- 作用范围是**消息触发的回复**。定时任务、通知和 home-channel 投递没有回复锚点，因此始终发到主聊天——飞书话题只能由回复创建，直接向 `thread_id` 裸发 create 并非合法 API（参见 #78975）。
+- 网关重启后每个群的首条回复会额外支付一次 `im.v1.chat.get` 查询以确定聊天类型；后续回复使用已就绪的缓存。若该查询失败（API 中断），本次回复降级为普通引用回复，下一条回复会自动重试查询——瞬时故障不会让开关永久失效。
+- 话题回复需要群聊本身支持（话题群天然支持；对话群取决于群设置，且被聚合的锚点消息不可再开话题）。若飞书拒绝话题形式（错误码 230071/230072），Hermes 会将同一条回复自动重试一次为普通引用回复——任何群模式下回复都能送达。
+- 长回复会分块发送；同一条回复的所有分块都会落在同一个话题中。
+- 如果触发消息在回复发出前被撤回，Hermes 将回退为普通顶层消息（不会产生多余的第二个话题）。
+- 在群聊配置步骤中，`hermes setup feishu` 会询问此偏好设置。
+
 ### 机器人身份
 
 Hermes 在启动时自动检测机器人的 `open_id` 和显示名称。仅当自动检测无法访问飞书 API，或你的应用使用租户范围用户 ID 时，才需要手动设置：
@@ -498,6 +523,7 @@ platforms:
 | `FEISHU_ALLOWED_USERS` | — | _（空）_ | 用户白名单的逗号分隔 open_id 列表 |
 | `FEISHU_ALLOW_BOTS` | — | `none` | 接受其他机器人消息：`none`、`mentions` 或 `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
+| `FEISHU_THREAD_REPLY` | — | `false` | 群聊回复是否落入话题线程（`reply_in_thread`） |
 | `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
 | `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |

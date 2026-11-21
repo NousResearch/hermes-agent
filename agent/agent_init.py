@@ -1182,7 +1182,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                     memory_enabled=agent._memory_enabled,
                     user_profile_enabled=agent._user_profile_enabled,
                 )
-                agent._memory_store.load_from_disk()
+                agent._memory_store.load_from_disk(say=agent._emit_startup_warning)
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None

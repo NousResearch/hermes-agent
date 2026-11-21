@@ -863,7 +863,7 @@ def invalidate_system_prompt(agent: Any) -> None:
         agent._plugin_system_prompt_sections_previous = agent._plugin_system_prompt_sections_snapshot
         del agent._plugin_system_prompt_sections_snapshot
     if agent._memory_store:
-        agent._memory_store.load_from_disk()
+        agent._memory_store.load_from_disk(say=agent._emit_startup_warning)
 
 
 def reconstruct_static_prefix(agent: Any, system_message: Optional[str] = None, *, log_label: str = "restore") -> None:

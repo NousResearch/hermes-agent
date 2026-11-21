@@ -283,7 +283,8 @@ def _validate_package_platform_row(item: dict, tag: str, expected_windows_versio
     """Validate platform-specific version and signing metadata for one candidate package row.
 
     A commit claim built from a pre-PR commit (legacyCommitBuild=True) carries tagless commit
-    versions (X.Y.Z.0 / X.Y.Z / X.Y.Z-1); stable and canary releases never admit legacyCommitBuild.
+    versions (X.Y.Z.0 / X.Y.Z / X.Y.Z+commit<sha12>); stable and canary releases never admit
+    legacyCommitBuild.
     """
     legacy = bool(item.get("legacyCommitBuild"))
     if legacy and not is_commit_claim(tag):
@@ -310,7 +311,7 @@ def _validate_package_platform_row(item: dict, tag: str, expected_windows_versio
         if item.get("version") != expected_mac or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
             raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
     else:
-        expected_deb = f"{core}-1" if legacy else _deb_version(tag)
+        expected_deb = f"{core}+commit{item['commit'][:12]}" if legacy else _deb_version(tag)
         if item.get("version") != expected_deb:
             raise ValueError("Termux candidate version differs from the admitted release")
 

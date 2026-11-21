@@ -22,12 +22,15 @@ import zipfile
 
 import pytest
 
+from hermes_platform.resolver import locate_command
 from scripts.bundles import release_artifacts
 from scripts.releases import r2, stable
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "0123456" + "a" * 33
 COMMIT_TAG = "commit.20261026T180000Z-v0.33.0"
+# What a pre-claim tree's tagless --commit Termux build stamps (build_deb.sh).
+LEGACY_DEB_VERSION = f"0.33.0+commit{COMMIT[:12]}"
 PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
 
 
@@ -102,6 +105,28 @@ def test_verify_detects_pre_pr_commit_and_emits_legacy_flag(tmp_path, monkeypatc
         stable.verify({"GITHUB_OUTPUT": str(tmp_path / "bad"), "BUNDLE_ENV_JSON": "{}"}, run=new_git)
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.skipif(not locate_command("dpkg-deb").found, reason="builds a real .deb")
+def test_legacy_termux_record_accepts_the_tagless_commit_version(tmp_path):
+    package = tmp_path / "package"
+    stamp = package / "data/data/com.termux/files/usr/opt/hermes-agent/install-stamp.json"
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text(json.dumps({"source": "commit-build", "commit": COMMIT, "tag": None}), encoding="utf-8")
+    (package / "DEBIAN").mkdir()
+    (package / "DEBIAN/control").write_text(
+        f"Package: hermes-agent\nVersion: {LEGACY_DEB_VERSION}\nArchitecture: aarch64\n"
+        "Maintainer: Fixture <fixture@example.invalid>\nDescription: fixture\n", encoding="utf-8")
+    root = tmp_path / "termux-build"
+    (root / "deb").mkdir(parents=True)
+    subprocess.run(["dpkg-deb", "--root-owner-group", "--build", str(package), str(root / "deb/hermes-agent.deb")],
+                   check=True, capture_output=True, timeout=60)
+    out = root / "metadata-termux-aarch64.json"
+
+    release_artifacts.record("termux", "aarch64", root, COMMIT_TAG, COMMIT, out, legacy_commit_build=True)
+    row = json.loads(out.read_text(encoding="utf-8"))
+    assert row["version"] == LEGACY_DEB_VERSION and row["legacyCommitBuild"] is True
+
+
 def test_a_commit_of_this_tree_builds_as_a_claim():
     """Only trees from before commit claims take the legacy path; this one must not."""
     def git(argv):
@@ -156,9 +181,9 @@ def test_legacy_commit_record_and_candidate_validation_round_trip(tmp_path):
             },
             {
                 "platform": "termux", "arch": "aarch64", "tag": COMMIT_TAG, "commit": COMMIT,
-                "identity": "hermes-agent", "version": "0.33.0-1", "legacyCommitBuild": True,
+                "identity": "hermes-agent", "version": LEGACY_DEB_VERSION, "legacyCommitBuild": True,
                 "artifact": {
-                    "url": f"{PUBLIC_BASE}/releases/tag/{COMMIT_TAG}/deb/hermes-agent_0.33.0-1_aarch64.deb",
+                    "url": f"{PUBLIC_BASE}/releases/tag/{COMMIT_TAG}/deb/hermes-agent_{LEGACY_DEB_VERSION}_aarch64.deb",
                     "sha256": "e" * 64,
                 },
             },

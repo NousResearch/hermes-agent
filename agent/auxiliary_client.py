@@ -7221,7 +7221,7 @@ def _resolve_call_client(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto", model=resolved_model, async_mode=async_mode,
                 main_runtime=main_runtime)
-        if client is not None:
+        if client is not None and resolved_provider != "auto":  # auto stays auto: the ladder's fallback gate
             resolved_provider = effective_provider or resolved_provider
     else:
         client, final_model = _get_cached_client(

@@ -87,6 +87,18 @@ def is_canary_claim(tag: object) -> bool:
     return is_canary_tag(tag)
 
 
+def is_commit_claim(tag: object) -> bool:
+    """A commit build runs the stable pipeline on its own annotated ``commit.<stamp>-vX.Y.Z`` tag."""
+    from hermes_cli.update_channel import is_commit_tag
+
+    return is_commit_tag(tag)
+
+
+def is_stamped_claim(tag: object) -> bool:
+    """A claim tag that is its own release identity and carries its build time (canary, commit)."""
+    return is_canary_claim(tag) or is_commit_claim(tag)
+
+
 def _deb_version(tag: str) -> str:
     # Imported here: release.py's isolated entrypoint copies scripts/releases alone.
     from scripts.termux.deb_version import deb_version_for_tag
@@ -105,19 +117,26 @@ def payload_version(tag: str) -> str:
 
 
 def require_release_identity(tag: str, commit: str) -> None:
-    """A payload the pipeline may validate: a stable release or a canary.
+    """A payload the pipeline may validate: a stable release, canary or commit claim.
 
     Only the stable shape may ever receive a final receipt tag (require_stable_identity)."""
-    if not isinstance(tag, str) or not (STABLE_TAG_RE.fullmatch(tag) or is_canary_claim(tag)) \
+    if not isinstance(tag, str) or not (STABLE_TAG_RE.fullmatch(tag) or is_stamped_claim(tag)) \
             or not SHA.fullmatch(commit or ""):
         raise ValueError("Invalid release payload identity")
 
 
 def canary_epoch(tag: str) -> int:
     """The canary's immutable build time: the UTC stamp its tag name carries."""
-    from hermes_cli.update_channel import canary_timestamp
+    if not is_canary_claim(tag):
+        raise ValueError("Invalid canary release identity")
+    return stamped_epoch(tag)
 
-    stamp = canary_timestamp(tag)
+
+def stamped_epoch(tag: str) -> int:
+    """A canary's or commit build's immutable build time: the UTC stamp its tag name carries."""
+    from hermes_cli.update_channel import canary_timestamp, commit_timestamp
+
+    stamp = canary_timestamp(tag) or commit_timestamp(tag)
     if stamp is None:
         raise ValueError("Invalid canary release identity")
     try:
@@ -131,15 +150,22 @@ def canary_epoch(tag: str) -> int:
 
 def canary_windows_version(tag: str) -> str:
     """The canary package quad ``yy.mmdd.hh.mmss`` (scripts/msix-shared.mjs canaryPackageVersionAt)."""
-    instant = datetime.fromtimestamp(canary_epoch(tag), tz=UTC)
+    if not is_canary_claim(tag):
+        raise ValueError("Invalid canary release identity")
+    return stamped_windows_version(tag)
+
+
+def stamped_windows_version(tag: str) -> str:
+    """The package quad ``yy.mmdd.hh.mmss`` of a canary or commit build, from its tag stamp."""
+    instant = datetime.fromtimestamp(stamped_epoch(tag), tz=UTC)
     return (f"{instant.year % 100}.{instant.month * 100 + instant.day}.{instant.hour}."
             f"{instant.minute * 100 + instant.second}")
 
 
 def release_windows_version(tag: str, epoch: object) -> str:
-    """The Windows package version a release must carry: a canary's comes from its tag stamp,
-    a stable release's from its claim epoch."""
-    return canary_windows_version(tag) if is_canary_claim(tag) else stable_windows_version(epoch)
+    """The Windows package version a release must carry: a canary's or commit build's comes from its
+    tag stamp, a stable release's from its claim epoch."""
+    return stamped_windows_version(tag) if is_stamped_claim(tag) else stable_windows_version(epoch)
 
 
 def require_success(needs: dict, required: list[str]) -> None:

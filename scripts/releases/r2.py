@@ -449,9 +449,13 @@ def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
 # ---------------------------------------------------------------------------
 
 def channel_for_tag(tag: str) -> str:
-    """Return the release channel encoded by a canonical tag."""
-    from hermes_cli.update_channel import is_canary_tag
+    """Return the release channel encoded by a canonical tag.
 
+    A commit build publishes to no channel; asking for its channel is a bug, never ``stable``."""
+    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+
+    if is_commit_tag(tag):
+        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 

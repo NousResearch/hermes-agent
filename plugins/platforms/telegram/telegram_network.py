@@ -12,6 +12,7 @@ import socket
 import ssl
 import sys
 import time
+from functools import partial
 from typing import Iterable, Optional
 
 import httpx
@@ -326,7 +327,14 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
-            return await (await self._get_primary()).handle_async_request(request)
+            primary = await self._get_primary()
+            try:
+                response = await primary.handle_async_request(request)
+            except _POST_SEND_FAILURES:
+                await self._reset_primary(primary)
+                raise
+            response.stream = _RetireOnReadFailure(response.stream, partial(self._reset_primary, primary))
+            return response
         last_error: Exception | None = None
         failures: list[tuple[str, str]] = []
         order = self._attempt_order()
@@ -360,9 +368,12 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                                 # A recovery after a failed path is INFO, not
                                 # WARNING: the request succeeded (#152898).
                                 logger.info("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
+                response.stream = _RetireOnReadFailure(response.stream, partial(self._retire_path, ip, transport))
                 return response
             except Exception as exc:
                 last_error = exc
+                if isinstance(exc, _POST_SEND_FAILURES):
+                    await self._retire_path(ip, transport)
                 if not _is_retryable_connect_error(exc):
                     if failures:  # earlier paths failed and are logged only at INFO so far
                         _warn_walk_failed(f"failed on {ip or _TELEGRAM_API_HOST} ({_describe_transport_error(exc)}) "
@@ -394,6 +405,18 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             "unreachable via all paths" if len(failures) == len(order)
             else "connect budget exhausted before all paths were tried", failures)
         raise last_error
+
+    async def _retire_path(self, ip: Optional[str], transport: PoolGeneration) -> None:
+        """Unpin ``ip`` and retire the pool generation that failed on it."""
+        async with self._sticky_lock:
+            if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
+                self._sticky_ip = _UNSET
+        if ip is None:
+            await self._reset_primary(transport)
+        else:
+            await self._reset_fallback(ip, transport)
+        logger.info("[Telegram] Retired the %s pool after a failure past the request write",
+                    ip or _TELEGRAM_API_HOST)
 
     async def aclose(self) -> None:
         """Retire every pool generation; the next request builds fresh ones, because PTB's
@@ -550,7 +573,36 @@ def _request_with_connect_budget(request: httpx.Request, connect_budget: float) 
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    """The request never reached Telegram (connect failed, or no pooled socket was free in time), so
+    walking on to the next path and sending it there cannot deliver it twice."""
+    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout))
+
+
+#: The request may already have reached Telegram (the socket died after the write: a half-closed
+#: keep-alive connection surfaces as ``ReadTimeout`` once the full read timeout expires). Resending
+#: it on another path could post a message twice, so the path's pool is retired and its sticky pin
+#: cleared, then the error goes to the caller, whose own retry gets a fresh pool. Left unhandled,
+#: the dead socket stayed pinned and every retry reused it until the process restarted (#156504).
+_POST_SEND_FAILURES = (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+
+
+class _RetireOnReadFailure(httpx.AsyncByteStream):
+    """A response body that retires its path when the read dies after the headers arrived (the
+    transport's own ``except`` has already returned by then)."""
+
+    def __init__(self, stream, retire) -> None:
+        self._stream, self._retire = stream, retire
+
+    async def __aiter__(self):
+        try:
+            async for chunk in self._stream:
+                yield chunk
+        except _POST_SEND_FAILURES:
+            await self._retire()
+            raise
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
 
 
 def bot_api_urls(extra: Optional[dict]) -> dict:

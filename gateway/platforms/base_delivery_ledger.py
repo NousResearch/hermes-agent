@@ -26,6 +26,25 @@ async def ledger_bracket(adapter: Any, event: Any, session_key: str, text_conten
     return result, delivery_adapter
 
 
+def idempotent_metadata(metadata: Optional[dict], obligation_id: Optional[str]) -> Optional[dict]:
+    """``metadata`` for a ledgered final's send: a copy carrying ``idempotency_key=obligation_id``, so every
+    re-send of the same final (send retry, plain-text fallback, the ledger's own redelivery) presents the
+    same key and an adapter with platform-side dedup (Discord's message nonce) cannot post a second copy
+    when the first send landed but its acknowledgement was lost. The caller's dict is never mutated; with
+    the ledger off (no obligation id) ``metadata`` is returned unchanged."""
+    if obligation_id is None:
+        return metadata
+    return {**(metadata or {}), "idempotency_key": obligation_id}
+
+
+def without_idempotency_key(metadata: Any) -> Any:
+    """``metadata`` minus ``idempotency_key``, for a send that is NOT the keyed reply (the delivery-failure
+    notice): sharing the key would let the platform dedupe the reply's later redelivery onto that notice."""
+    if not isinstance(metadata, dict) or "idempotency_key" not in metadata:
+        return metadata
+    return {k: v for k, v in metadata.items() if k != "idempotency_key"}
+
+
 async def ledger_attempted(adapter: Any, event: Any, session_key: str, text: str, error: str) -> bool:
     """``BasePlatformAdapter.ledger_attempted_final``: ledger ``text`` on the CURRENT transport as a failed
     row instead of sending it again, so the timed redelivery sends it once more with the duplicate marker

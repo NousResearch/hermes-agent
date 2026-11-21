@@ -525,3 +525,20 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     assert send.await_count == 1
     kwargs = send.await_args.kwargs
     assert not kwargs.get("files") and "big.png" in kwargs["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("users_enabled", [True, False])
+async def test_scoped_send_mentions_only_requested_users(monkeypatch, users_enabled):
+    from plugins.platforms.discord import adapter as discord_adapter
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_USERS", str(users_enabled).lower())
+    monkeypatch.setattr(discord_adapter.discord, "AllowedMentions", lambda **kw: SimpleNamespace(**kw))
+    monkeypatch.setattr(discord_adapter.discord, "Object", lambda *, id: SimpleNamespace(id=id))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(id=555, send=AsyncMock(return_value=SimpleNamespace(id=888)))
+    adapter._client = SimpleNamespace(get_channel=lambda _: channel)
+    result = await adapter.send("555", "<@111> <@222> <@&333> @everyone", metadata={"mention_user_ids": ["111"]})
+    assert result.success
+    allowed = channel.send.await_args.kwargs["allowed_mentions"]
+    assert ([user.id for user in allowed.users] if allowed.users else []) == ([111] if users_enabled else [])
+    assert (allowed.roles, allowed.everyone, allowed.replied_user) == (False, False, False)

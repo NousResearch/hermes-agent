@@ -3036,21 +3036,20 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 channel = await self._resolve_channel(chat_id)
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+            from plugins.platforms.discord.adapter_config_readers import scoped_send_mentions
+            mention_kwargs = scoped_send_mentions(getattr(self.config, "extra", None), metadata)
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, content, **mention_kwargs)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
-                if self._reply_to_mode == "all":
-                    chunk_reference = reference
-                else:  # "first" (default) or "off"
-                    chunk_reference = reference if i == 0 else None
+                chunk_reference = reference if self._reply_to_mode == "all" or i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(content=chunk, reference=chunk_reference, **mention_kwargs)
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3058,7 +3057,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(content=chunk, reference=None, **mention_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -3097,7 +3096,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
         return thread_channel, thread_id, starter_msg, message_id
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(self, forum_channel: Any, content: str, **mention_kwargs) -> SendResult:
         """Create a forum thread post with the message as starter (forum channels reject direct
         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
         formatted = self.format_message(content)
@@ -3105,7 +3104,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
-            thread = await forum_channel.create_thread(name=thread_name, content=starter_content)
+            thread = await forum_channel.create_thread(name=thread_name, content=starter_content, **mention_kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -3114,7 +3113,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(content=chunk, **mention_kwargs)
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"

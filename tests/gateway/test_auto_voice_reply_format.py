@@ -241,3 +241,33 @@ def test_bridge_called_tts_audio_is_delivered():
     other[1]["tool_calls"][0]["function"]["arguments"] = json.dumps(
         {"calls": [{"name": "session_search", "arguments": {"query": "voice"}}]})
     assert _collect_auto_append_media_tags(other) == ([], False)
+
+
+def test_internal_completion_voice_origin_uses_current_mode():
+    from gateway.run_notifications import _watch_notification_metadata
+    runner = _make_runner()
+    adapter = _make_adapter(Platform.TELEGRAM)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._voice_mode["telegram:123"] = "voice_only"
+    event = _make_event(Platform.TELEGRAM, chat_id="123")
+    event.internal = True
+    event.metadata = _watch_notification_metadata({"type": "async_delegation", "origin_message_type": "voice"}, event.source)
+    assert event.message_type == MessageType.TEXT
+    assert runner._should_send_voice_reply(event, "done", [])
+    runner._voice_mode["telegram:123"] = "off"
+    assert not runner._should_send_voice_reply(event, "done", [])
+
+
+def test_global_voice_only_accepts_internal_voice_completion_not_external_text():
+    runner = _make_runner()
+    adapter = _make_adapter(Platform.TELEGRAM)
+    adapter._auto_tts_mode = "voice_only"
+    adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    event = _make_event(Platform.TELEGRAM)
+    event.metadata = {"presentation_origin": "voice"}
+    assert not runner._should_send_voice_reply(event, "done", [])
+    event.internal = True
+    assert runner._should_send_voice_reply(event, "done", [])
+    runner._voice_mode["telegram:123"] = "off"
+    assert not runner._should_send_voice_reply(event, "done", [])

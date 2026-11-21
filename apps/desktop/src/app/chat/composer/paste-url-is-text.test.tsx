@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { AssistantRuntimeProvider, useExternalStoreRuntime } from '@assistant-ui/react'
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -57,22 +59,26 @@ function Harness({ onAttachPrCommentUrl }: { onAttachPrCommentUrl: (url: string)
     onNew: async () => {}
   })
 
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <MemoryRouter>
-        <I18nProvider configClient={null} initialLocale="en">
-          <ChatBar
-            busy={false}
-            disabled={false}
-            gateway={null}
-            onCancel={vi.fn()}
-            onSubmit={vi.fn(async () => true)}
-            state={state}
-            {...({ onAttachPrCommentUrl } as Record<string, unknown>)}
-          />
-        </I18nProvider>
-      </MemoryRouter>
-    </AssistantRuntimeProvider>
+    <QueryClientProvider client={client}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale="en">
+            <ChatBar
+              busy={false}
+              disabled={false}
+              gateway={null}
+              onCancel={vi.fn()}
+              onSubmit={vi.fn(async () => true)}
+              state={state}
+              {...({ onAttachPrCommentUrl } as Record<string, unknown>)}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </AssistantRuntimeProvider>
+    </QueryClientProvider>
   )
 }
 

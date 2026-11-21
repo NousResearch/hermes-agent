@@ -15,6 +15,7 @@ from persistence.authority.bindings import SessionBinding
 from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
 from persistence.core.errors import AuthorityRefusal
 from persistence.core.identity import SessionId
+from session_rules.coding_workspace import claim_conflict
 from session_rules.legacy_local import not_client_labels
 from session_rules.local_create import same_create_retry
 
@@ -63,6 +64,10 @@ def commit_local_session(holder, *, epoch, receipt, client_request, created_sour
         if 'legacy_session_id' in receipt:
             from ._local_migration import bind_legacy_target
             bind_legacy_target(holder, conn, receipt, owner)
+        rows = conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',))
+        if claim_conflict(receipt, (raw for (raw,) in rows)):
+            # Two principals cannot own one coding-workspace claim.
+            raise AuthorityRefusal('admission_conflict')
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()

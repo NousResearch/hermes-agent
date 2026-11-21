@@ -1324,15 +1324,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         with ExitStack() as scope:
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
+                scope.enter_context(api_policy_scope())
+                bind_turn_workspace(policy, self._ctx.session_id)
+                from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+                cwd_owner = restore_turn_cwd(self._runner, self._ctx.session_key, policy)
+                # Local unbind above may legitimately retire a historical owned mount. Check the
+                # terminal that will actually execute only after that normal boundary cleanup (and
+                # after a restored cd, so a coding checkout re-anchors one that left it).
+                from gateway.session_coding_workspace import begin_turn
+                begin_turn(policy, task_id=self._ctx.session_id, session_key=self._ctx.session_key)
             except AuthorityRefusal as exc:
                 result = refused_turn_result(policy, exc)
                 if result is None:
                     raise
             else:
-                scope.enter_context(api_policy_scope())
-                bind_turn_workspace(policy, self._ctx.session_id)
-                from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
-                cwd_owner = restore_turn_cwd(self._runner, self._ctx.session_key, policy)
                 try:
                     result = self._run_sync_scoped()
                 finally:

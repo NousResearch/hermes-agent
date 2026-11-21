@@ -28,6 +28,7 @@ from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES, OwnerRule
 from persistence.conversation.sessions import SessionLineageKind
 from persistence.core.canonical import canonical_json
 from persistence.core.identity import JsonValue
+from session_rules.coding_workspace import claim_conflict
 from session_rules.legacy_local import binding_names, client_history_row, legacy_history_row, not_client_labels, same_owner, validate_legacy_row
 
 from .._authority import AuthorityState, authority_state
@@ -281,6 +282,8 @@ class InMemorySessionBindingRepository(ApiBindingVerbs, LineageWriteVerbs):
                 raise AuthorityRefusal("admission_conflict")
             if "legacy_session_id" in receipt:
                 _bind_legacy_target(self._backend, self._backend.scope, staged.authority, staged.scope, receipt, owner)
+            if claim_conflict(receipt, (value for key, value in meta.items() if key.startswith(RECEIPT_PREFIX))):
+                raise AuthorityRefusal("admission_conflict")
             if sid not in sessions:
                 sessions[sid] = _reserved_row(self._backend, binding, receipt)
             state.failpoints.hit(BETWEEN_SESSION_AND_ROUTE)

@@ -24,10 +24,15 @@ cli.py's map; the config-set path is checked for key coverage only.
 import os
 from unittest.mock import patch
 
+# Import ``cli`` at module level (collection time), before the real-home I/O
+# guard fixtures install: the session's first in-test ``import cli`` triggers
+# hermes_bootstrap dependency activation, which stats real-hermes-home paths
+# that the guard refuses (see tests/home_io_guard.py).
+import cli
+
 
 def _cli_env_map() -> dict[str, str]:
     """terminal config key -> env var bridged by cli.load_cli_config() (via _mirror_config_to_env)."""
-    import cli
     return dict(cli._TERMINAL_ENV_MAPPINGS)
 
 

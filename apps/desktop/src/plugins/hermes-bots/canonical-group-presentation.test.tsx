@@ -94,6 +94,30 @@ it('keeps attachment-only messages and rows without optional display metadata re
   expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy()
 })
 
+it('shows who was added at the point the roster changed, even after they leave', () => {
+  const planner = { member_id: 'planner', profile: 'planner', handle: 'planner', display_name: 'Planner' }
+  const helper = { member_id: 'helper', profile: 'helper', handle: 'helper' }
+  const reviewer = { member_id: 'reviewer', profile: 'reviewer', handle: 'review', display_name: 'Reviewer' }
+  const writer = { member_id: 'writer', profile: 'writer', handle: 'writer' }
+
+  const events = [
+    { seq: 1, kind: 'message.user', payload: { text: 'Earlier message' } },
+    { seq: 2, kind: 'room.members_changed', payload: { previous_members: [planner, helper], members: [planner, helper, reviewer, writer] } },
+    { seq: 3, kind: 'message.user', payload: { text: 'Later message' } },
+    { seq: 4, kind: 'room.members_changed', payload: { previous_members: [planner, helper, reviewer, writer], members: [writer, planner, helper] } },
+    { seq: 5, kind: 'room.members_changed', payload: { previous_members: [writer, planner, helper], members: [planner, writer, helper] } }
+  ]
+
+  const { container } = render(<CanonicalGroupHistory binding={binding} events={events} members={[planner, writer, helper]} />)
+
+  expect([...container.querySelectorAll('[data-room-activity]')].map(row => row.textContent)).toEqual([
+    'Reviewer was added to the group chat',
+    'writer was added to the group chat',
+    'Reviewer was removed from the group chat'
+  ])
+  expect(container.textContent).toMatch(/Earlier message.*Reviewer was added to the group chat.*Later message/s)
+})
+
 it('keeps failed, cancelled, deferred and unavailable work visible without printing transport markers', () => {
   const events = [
     { seq: 1, kind: 'turn.failed', payload: { member_id: 'helper', error: 'Provider timed out' } },

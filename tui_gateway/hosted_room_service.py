@@ -942,6 +942,53 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
+    def replace_members(self, *, room_id: str, event_id: str, expected_revision: int, members: Any,
+                        eligible_profiles=None, refused_profiles=None) -> dict[str, Any]:
+        from gateway.session_hosted_members import refuse_unseatable
+        from session_rules.hosted_rooms import _event_id
+        room_id = hosted_rooms._room_id(room_id)
+        event_id = f"members:{_event_id(event_id)}"
+        # Check the wrapped id too: the membership operation owns its event namespace.
+        _event_id(event_id)
+        expected_revision = hosted_rooms._non_negative(expected_revision, "expected_revision")
+        with self._policy_lock:
+            room = self._room(room_id)
+            gateway_id, epoch = _authority(room)
+            if gateway_id != hosted_rooms.local_authority_gateway_id():
+                raise AuthorityConflictError("This Group Chat is managed by another gateway.")
+            previous_edit = self.store.hosted_rooms.event_by_id(
+                placement=self.placement, room_id=room_id, event_id=event_id)
+            recorded_members = (previous_edit["payload"]["members"]
+                                if previous_edit is not None and previous_edit["kind"] == "room.members_changed" else [])
+            known_local_profiles = {member["profile"] for member in (*room["members"], *recorded_members)
+                                    if (member.get("target") or {}).get("kind") != "peer"}
+            # The authenticated caller's roster applies to new seats. Existing seats can be kept
+            # when their profile is offline. An exact replay can also name a since-retired Bot.
+            eligible = set(self.local_profiles() if eligible_profiles is None else eligible_profiles)
+            normalized = discussion.validate_roster(members, local_profiles=eligible | known_local_profiles)
+            roster = [{"member_id": m.member_id, "profile": m.profile, "handle": m.handle, "target": dict(m.target),
+                       **({"display_name": m.display_name} if m.display_name else {})} for m in normalized]
+            ready = False
+            if previous_edit is None:
+                old_ids = {member["member_id"] for member in room["members"]}
+                additions = [member for member in roster
+                             if member["target"]["kind"] == "local" and member["member_id"] not in old_ids]
+                refuse_unseatable(additions, refused_profiles or {})
+                if any(member["profile"] not in eligible for member in additions):
+                    raise discussion.DiscussionValidationError("A new Bot must be eligible on this gateway.")
+                ready = not self._policy_snapshot(room).events and self._room_outcomes_published(room_id)
+            return self.store.hosted_rooms.replace_members(
+                placement=self.placement, room_id=room_id, event_id=event_id, members=roster,
+                expected_revision=expected_revision, expected_latest_seq=int(room["latest_seq"]),
+                authority_gateway_id=gateway_id, authority_epoch=epoch, ready=ready)
+
+    def _room_outcomes_published(self, room_id: str) -> bool:
+        # A terminal task's reply may still be waiting to publish. Treat that interval as busy.
+        tasks = driver.list_tasks(self.store, placement=self.placement, room_id=room_id)
+        return all(task["status"] in {"settled", "failed", "cancelled"} and self.policy_checkpoint.publication_exists(
+            room_id=room_id, task_id=task["identity"].task_id, status=task["status"],
+            execution_generation=task["execution_generation"]) for task in tasks)
+
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         from gateway.session_hosted_attachments import append_user_event
         try:

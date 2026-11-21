@@ -167,15 +167,17 @@ interface DetailsLabels extends RoomStatusLabels {
   groupDetails: string
   members: string
   membersFixed: string
+  manageMembers: string
 }
 
 /** The side panel the room title opens: picture (member faces), name, and every member's
  *  live status with its full detail. */
-export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, room, statuses }: {
+export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, onManageMembers, room, statuses }: {
   avatarFor: (name: string, size: number) => ReactNode; labels: DetailsLabels; onClose: () => void; room: CanonicalRoom
   statuses: Map<string, MemberStatus>
   /** Room settings (purpose, notes, lead) mount here. */
   children?: ReactNode
+  onManageMembers?: (trigger: HTMLElement) => void
 }) {
   const faceName = (member: CanonicalRoom['members'][number]) => member.profile || member.handle || member.member_id
 
@@ -189,10 +191,13 @@ export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, ro
       <span className="text-sm font-semibold text-foreground">{room.name}</span>
     </div>
     <div className="grid gap-1">
-      <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">{labels.members} · {room.members.length}</span>
+      <div className="flex flex-wrap items-center justify-between gap-1">
+        <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">{labels.members} · {room.members.length}</span>
+        {onManageMembers && <Button onClick={event => onManageMembers(event.currentTarget)} size="inline" variant="textStrong">{labels.manageMembers}</Button>}
+      </div>
       {room.members.map(member => <DetailsMember avatar={avatarFor(faceName(member), 24)} key={member.member_id} labels={labels}
         member={member} status={statuses.get(member.member_id) ?? { kind: 'idle' }} />)}
-      <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{labels.membersFixed}</p>
+      {!onManageMembers && <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{labels.membersFixed}</p>}
     </div>
     {children}
   </aside>

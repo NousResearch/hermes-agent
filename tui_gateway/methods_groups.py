@@ -21,7 +21,7 @@ method = _registry.method
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
-    "groups.rename", "groups.context", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
+    "groups.rename", "groups.members.update", "groups.context", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.continue", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
     "groups.attachment.download")
@@ -275,7 +275,8 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
             "log_replication", "authority_takeover"],
-        "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
+        "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT,
+        "seatable_profiles": list(service.local_profiles()) if driver_ready else []})
 
 
 @_room_method("groups.peer.invite", code=4120, store=True)
@@ -458,6 +459,14 @@ def _(rid, params: dict, service) -> dict:
     """Create a hosted room idempotently; authority is this gateway's stable install identity."""
     room = service.create_room(
         room_id=params.get("room_id"), name=params.get("name"), members=params.get("members"))
+    return _ok(rid, {"room": room})
+
+
+@_room_method("groups.members.update", code=5126, room_code=4128, service_code=4123)
+def _(rid, params: dict, service) -> dict:
+    """Edit an idle hosted room's roster without replacing it."""
+    room = service.replace_members(room_id=params.get("room_id"), event_id=params.get("event_id"),
+                                   expected_revision=params.get("expected_revision"), members=params.get("members"))
     return _ok(rid, {"room": room})
 
 

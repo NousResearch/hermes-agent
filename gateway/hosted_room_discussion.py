@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -186,6 +186,7 @@ class _ValidatedEvent:
     kind: str
     actor: Payload
     payload: Payload
+    member_handle: str | None = None
 
 
 _identifier = partial(common.identifier, error=DiscussionValidationError, max_chars=driver.MAX_IDENTIFIER_CHARS)
@@ -498,9 +499,14 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
             raise DiscussionValidationError(message)
     if kind in _EPOCH_STAMPED_KINDS and raw.get("authority_epoch") != room.authority_epoch:
         raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+    if (historical := raw.get("_historical_members")) is not None:
+        # History may name a profile that has since been removed from the room and deleted.
+        room = replace(room, members=validate_roster(historical, local_profiles={m["profile"] for m in historical}))
     if (validator := _EVENT_VALIDATORS.get(kind)) is not None:
         payload = validator(kind, payload, actor, room)
-    return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)
+    handle = _member_by_id(room, payload["member_id"]).handle if kind == "message.member" else None
+    return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload,
+                           member_handle=handle)
 
 
 def _validated_events(events: Sequence[Mapping[str, Any]], *, room: DiscussionRoom) -> tuple[_ValidatedEvent, ...]:
@@ -572,7 +578,7 @@ def _scheduled_job(event: _ValidatedEvent | None) -> str | None:
     return str(event.actor.get("display_name") or event.actor.get("id"))
 
 
-def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
+def _format_message(event: _ValidatedEvent) -> str:
     if event.kind == "message.user" and (job := _scheduled_job(event)) is None:
         return f"User (user): {event.payload['text']}"
     # Scheduled output is agent-written too (often a summary of fetched content), so it gets the same
@@ -580,7 +586,7 @@ def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
     if event.kind == "message.user":
         return f'Scheduled job "{job}" (automated post, not the user): {text}'
-    return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
+    return f"@{event.member_handle}: {text}"
 
 
 def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
@@ -631,7 +637,7 @@ def _build_prompt(
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
     selected: list[str] = []
     for event in reversed(delta):
-        line = f"  {_format_message(event, room)}"
+        line = f"  {_format_message(event)}"
         if (line_bytes := len(line.encode("utf-8")) + 1) > available:
             if not selected and available > 32:
                 selected.append(_truncate_utf8_text(line, max_bytes=available))

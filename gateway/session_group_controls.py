@@ -19,6 +19,7 @@ GROUP_METHODS = {
     'groups.log': 'session:read',
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
+    'groups.members.update': 'session:control',
     'groups.context': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
@@ -40,6 +41,7 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
+    'groups.members.update': {'room_id', 'event_id', 'expected_revision', 'members'},
     'groups.context': {'room_id', 'event_id', 'purpose', 'notes', 'routing', 'lead_member_id'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
@@ -164,6 +166,16 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not params.get('room_id'):
             raise AuthorityRefusal('invalid_params')
         return _execution_control(service, method, params)
+    if method == 'groups.members.update':
+        if service is None or not params.get('room_id'):
+            raise AuthorityRefusal('runtime_coordination_required')
+        from gateway.hosted_room_discussion import DiscussionValidationError
+        from gateway.session_hosted_members import member_roster
+        homes, refused = member_roster(authority, siblings=host_scope)
+        try:
+            return {'room': service.replace_members(**params, eligible_profiles=homes, refused_profiles=refused)}
+        except DiscussionValidationError as exc:
+            raise AuthorityRefusal('invalid_params', field='members', detail=str(exc)) from exc
     if method == 'groups.peer.register':
         if service is None:
             raise AuthorityRefusal('runtime_coordination_required')

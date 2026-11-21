@@ -9,6 +9,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
+import { useCanonicalGroupMemberEditor } from './canonical-group-member-editor'
 import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
@@ -654,8 +655,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const replyTo = (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
     setReply({ member, name: member ? canonicalMemberName(member) : author, quote: text.split('\n').map(line => line.trim()).find(Boolean) ?? '', thread })
 
-    if (member) {
-      const tag = `@${member.handle}`
+    const activeMember = members.find(candidate => candidate.member_id === member?.member_id)
+
+    if (activeMember) {
+      const tag = `@${activeMember.handle}`
       setDraft(current => current.trimStart().startsWith(tag) ? current : `${tag} ${current}`)
     }
 
@@ -673,14 +676,20 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   }
 
   const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
+  const roomWorking = working || !!sending.current || stopping
+
+  const { memberEditor, openMembers } = useCanonicalGroupMemberEditor({
+    binding, methods, onSaved: refreshAfterChange, room: state?.room,
+    roomBusy: [busy, roomWorking, driver?.pending_actions?.length].some(Boolean), visible
+  })
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
         canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
         onChanged={() => void refreshAfterChange().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
-        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
+        onDisband={end} onManageMembers={openMembers} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
+        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={roomWorking} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
         notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))}
         readError={readError} unavailable={Boolean(state && !driver)} />
@@ -728,8 +737,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       </RoomComposer>
       </div>
     </div>
-    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
+    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels}
+      onClose={() => setDetailsOpen(false)} onManageMembers={openMembers} room={state.room} statuses={statuses}>
       <CanonicalGroupRoomSettings autoRouting={!!driver?.routing_modes?.includes('auto')} binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refreshAfterChange} />
     </CanonicalGroupDetails>}
+    {memberEditor}
   </section>
 }

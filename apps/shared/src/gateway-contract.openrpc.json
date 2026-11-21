@@ -1303,6 +1303,24 @@
       }
     },
     {
+      "name": "groups.members.update",
+      "summary": "Replace the local roster of an idle hosted room while preserving the room and its history.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsMembersUpdateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsRenameResult"
+        }
+      }
+    },
+    {
       "name": "groups.peer.invite",
       "summary": "Mint one target-issued room/profile grant for a prospective room home.",
       "params": [
@@ -20519,6 +20537,50 @@
           "authority"
         ],
         "title": "GroupsLogResult",
+        "type": "object"
+      },
+      "GroupsMembersUpdateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/RoomMemberInput"
+            },
+            "title": "Members",
+            "type": "array"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "expected_revision",
+          "members"
+        ],
+        "title": "GroupsMembersUpdateParams",
         "type": "object"
       },
       "GroupsPeerInviteParams": {

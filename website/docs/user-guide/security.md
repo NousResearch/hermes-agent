@@ -51,6 +51,7 @@ The full set of keys:
 | `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
 | `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Exception: an api_server session whose client can answer the card (`/v1/runs` and streaming chat completions, via `POST /v1/runs/{id}/approval`) still gets the approval request. Mirrors `cron_mode`. |
 | `approvers` | `["*"]` | Who may answer a pending approval from a messaging chat. `["*"]`: any admitted member. `[]` or a list of user ids: the requester, those ids and the platform admins only — see [Who can answer an approval in a shared chat](#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers). |
+| `approvers_only` | `false` | Opt-in for independent approval of dangerous commands: the requester is not automatically trusted, only explicitly listed ids or chat-scope admins may approve. Deny remains available to admitted members. Use a finite `approvers` list (not `["*"]`). |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
@@ -330,7 +331,17 @@ Discord interactions through the relay are checked more tightly. The relay forwa
 
 Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
 
-The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
+The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on), except for independently approved exec prompts. QQBot already accepts clicks only from the session's own user.
+
+For a shared Matrix room where another bot can request commands, enable independent approvals rather than relying on the requester identity:
+
+```yaml
+approvals:
+  approvers: ["@operator:example.org"]
+  approvers_only: true
+```
+
+This opt-in applies to **dangerous-command approvals**, not slash confirmations, clarify questions or host UI approvals. For those exec requests, only explicitly listed chat user ids and scoped admins can **approve** (once, session, or always); the requester is not trusted solely for asking. A listed requester can still approve, so omit bot ids from the list. Any admitted chat member can **deny** via a reaction or reply. With `approvers_only: true`, the default wildcard `approvers: ["*"]` grants **no** approval authority by itself (explicit admins still qualify). Matrix allows a separately listed approver to react even with `MATRIX_APPROVAL_REQUIRE_SENDER` enabled, and silently ignores unauthorized exec-approval reactions to avoid bot loops. Typed slash commands still honor the chat's command access policy.
 
 ### Permanent Allowlist
 

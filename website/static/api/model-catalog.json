@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-19T11:17:17Z",
+  "updated_at": "2026-11-21T04:56:25Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -247,6 +247,10 @@
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-ember",
           "description": ""
         },
         {
@@ -508,6 +512,9 @@
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "meta/muse-ember"
         },
         {
           "id": "meta/muse-spark-1.2"

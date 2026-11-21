@@ -1,0 +1,41 @@
+# Community catalog entry - hermes-composer-spellcheck-plugin
+#
+# Owner-submitted: the PR author (thileman) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the plugin is a static
+# `desktop/plugin.js` that never downloads code, replaces or reloads itself.
+# PIN NOTE: this is the tip of the repo's main, a squash of PR #8 ("docs: replace
+# the settings screenshot with a fresh capture") on top of PR #6 ("Restore the
+# settings photo, and drop the dead editor selector") on top of PR #5 ("Drop the
+# code-span mask, and resolve `auto` from <html lang>") on top of PR #4 ("Make
+# the docs true, and fix three locale/word-list defects") on top of PR #3
+# ("Rank suggestions in 20 ms instead of 800, and fix the English-dictionary
+# fallback") on top of PR #2 (the README/docs alignment and the recaptured
+# screenshots) on top of PR #1 ("Use the SDK composer seams instead of
+# reaching into the composer DOM"). It contains the SDK rewrite, the recaptured
+# screenshots, the English-dictionary fallback, the banded ranker, the doc-truth
+# and locale fixes, the removal of the code-span mask and of the dead editor
+# selector, and the settings photo exactly as it was taken. No earlier commit
+# contains all of it.
+name: hermes-composer-spellcheck-plugin
+repo: https://github.com/thileman/hermes-composer-spellcheck-plugin
+sha: "29e1845af2f8b9ada589c43d73bc41a8cfbfd6c3"
+title: Composer Spellcheck
+description: "Spell check for the Hermes Desktop composer - Desktop-only, one desktop/plugin.js inside the plugin SDK surface, with no agent tools, hooks, middleware or environment variables. It contributes right-click spelling suggestions as rows in the app's own composer context menu through the SDK's COMPOSER_AREAS.contextMenu contribution, so the app renders, orders and caps them and the plugin never draws, queries or mutates a menu of its own; candidates are ranked with Damerau-Levenshtein distance over the standard SCOWL/Hunspell English dictionary - the corpus Firefox and LibreOffice ship - embedded and affix-expanded at load, banded so a right-click ranks in milliseconds rather than seconds, and the ranking is pinned by a test that compares it against the pre-optimisation algorithm. It keeps the dictionary's capitalisation: a lowercase proper noun such as 'english' is flagged, and the suggestion offered is the capitalised 'English'. Those rows need a newer Hermes than 0.22.5: the composer context-menu seam is upstream PR #143678, merged on 2026-10-23 and in no release yet. Hence requires_hermes is 0.22.5 - the current release, not newer - because on 0.22.5 the plugin still loads, the dictionary and the Custom Words page work, and it says so once when the right-click suggestions are unavailable instead of being refused. The red squiggles need the app to expose host.composer.setSpellcheck, which is in an open upstream PR and is in no release yet; the plugin feature-detects it, and until that lands its own suggestions work while Chromium's underline stays off - there is deliberately no DOM-attribute fallback. Words are managed on the Custom Words page and each one is added to the app's own spell-check dictionary through the SDK (host.spellcheck.addWord, removed symmetrically with removeWord), so a word you add is remembered by the app itself. Disclosures: the plugin writes nothing into the composer's DOM - no attributes, no wrappers, no nodes, no caret moves; it contributes rows and reaches the composer only through the SDK. For a non-English locale it fetches that locale's .dic/.aff word list from raw.githubusercontent.com (the wooorm/dictionaries repo, pinned to a commit SHA), while English is embedded so an English user is fully offline, and a locale whose fetch fails falls back to the embedded English list rather than offering nothing - the fetched files are data only, and no code is fetched or executed."
+maintainer: thileman
+tier: community
+category: desktop
+docs_url: https://github.com/thileman/hermes-composer-spellcheck-plugin
+version: "1.0.0"
+image: https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/29e1845af2f8b9ada589c43d73bc41a8cfbfd6c3/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/29e1845af2f8b9ada589c43d73bc41a8cfbfd6c3/docs/images/context-menu.png
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/29e1845af2f8b9ada589c43d73bc41a8cfbfd6c3/docs/images/settings.png
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/29e1845af2f8b9ada589c43d73bc41a8cfbfd6c3/docs/images/custom-words.png
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/29e1845af2f8b9ada589c43d73bc41a8cfbfd6c3/docs/images/suggestion-rows.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.5"

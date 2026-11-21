@@ -275,3 +275,35 @@ def test_the_update_notice_names_neither_a_foreign_nor_an_unknown_env_line_unit(
     assert notice_for("hermes-dashboard-home.service") is None  # unknown: never claimed
     assert "hermes-dashboard-trace.service" in notice_for("hermes-dashboard-trace.service")
     assert "hermes-dashboard-plain.service" in notice_for("hermes-dashboard-plain.service")
+
+
+@pytest.mark.parametrize(("argv", "refused"), [
+    # systemd shows "NOTE=two words" as NOTE=two words: the pairs seem to end at `words`, but SOMEVAR is still set
+    (f'/bin/env "NOTE=two words" SOMEVAR=launcher-only {_HERMES}', True),
+    (f'/bin/env "NOTE=two words" OTHER=1 SOMEVAR=launcher-only {_HERMES}', True),
+    (f'/bin/env "NOTE=two words" {_HERMES}', False),  # control: nothing assigned after the quoted value
+    (f"/bin/env NOTE=one {_HERMES}", False),  # control: a plain pair of another variable
+])
+def test_a_quoted_value_on_the_env_line_does_not_hide_a_later_assignment(home, capsys, argv, refused):
+    _dotenv(home, _TEMPLATE)
+    host = StoppedUserUnitHost(home, argv, environment={"HERMES_HOME": str(home), "SOMEVAR": "same"})
+    host.gateway_environment = lambda: ({"SOMEVAR": "same"}, None)
+
+    code, out = _plan(host, capsys)
+
+    if refused:
+        assert code == engine.EXIT_BLOCKED and out["steps"] == []
+        (blocker,) = _template_blockers(out)
+        assert "SOMEVAR" in blocker
+    else:
+        assert code == engine.EXIT_OK and out["steps"] and not out["plan"]["blockers"]
+
+
+def test_a_quoted_value_on_the_env_line_does_not_hide_a_later_home(home, capsys):
+    host = StoppedUserUnitHost(home, f'/bin/env "NOTE=two words" HERMES_HOME=/srv/other {_HERMES}',
+                               environment={"HERMES_HOME": str(home)})
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED and out["steps"] == []
+    assert "which sets HERMES_HOME on that line" in _owner_blocker(out)

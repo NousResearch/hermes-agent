@@ -1045,12 +1045,16 @@ class CLIModalMixin:
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
         state + queue answered by the Enter binding."""
-        from cli import _DIM, _RST, _cprint
+        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from tools.clarify_gateway import resolve_clarify_timeout
 
         response_queue = queue.Queue()
         self._capture_modal_input_snapshot()
         self._sudo_state = {"response_queue": response_queue}
-        self._sudo_deadline = _time.monotonic() + 45
+        # Same timeout as the clarify (options) prompt: legacy clarify.timeout, else
+        # agent.clarify_timeout (default 3600); <= 0 waits indefinitely.
+        _timeout = resolve_clarify_timeout(CLI_CONFIG)
+        self._sudo_deadline = None if _timeout <= 0 else _time.monotonic() + _timeout
         self._ring_bell(prompt=True, context=t("cli.secret.bell_sudo"))
         self._paint_now()
 
@@ -1151,12 +1155,15 @@ class CLIModalMixin:
     def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
         """Masked master-password prompt for an external password manager (agent thread).
         Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
-        from cli import _DIM, _RST, _cprint
+        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from tools.clarify_gateway import resolve_clarify_timeout
 
         response_queue = queue.Queue()
         self._capture_modal_input_snapshot()
         self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
-        self._sudo_deadline = _time.monotonic() + 120
+        # Master-password prompt shares the sudo panel: same clarify timeout source.
+        _timeout = resolve_clarify_timeout(CLI_CONFIG)
+        self._sudo_deadline = None if _timeout <= 0 else _time.monotonic() + _timeout
         self._ring_bell(prompt=True, context=t("cli.secret.bell_unlock", name=display_name))
         self._paint_now()
 

@@ -561,3 +561,55 @@ class TestClearOverlaysForInterrupt:
         assert not t.is_alive(), "worker thread never unblocked"
         assert result["value"] == "deny"
 
+
+def _pending_secret_prompt(cli, call):
+    """Run a secret callback on the agent thread, return (deadline seen while pending).
+
+    The callback sets its deadline before blocking on the response queue; the queue answer
+    releases it, and the callback clears the deadline on exit — so the deadline must be
+    sampled while the prompt is still up.
+    """
+    result = {}
+    with patch.object(cli_module, "_cprint"):
+        thread = threading.Thread(target=lambda: result.setdefault("value", call(cli)), daemon=True)
+        thread.start()
+        deadline = time.time() + 2
+        while cli._sudo_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert cli._sudo_state is not None, "secret prompt never came up"
+        seen = cli._sudo_deadline
+        cli._sudo_state["response_queue"].put("")
+        thread.join(timeout=2)
+    assert not thread.is_alive(), "secret prompt never released"
+    return seen
+
+
+def test_sudo_password_prompt_uses_the_clarify_timeout(monkeypatch):
+    """The sudo password prompt used to die on a hardcoded 45s deadline while the visible
+    clarify prompts it shares the modal UI with honour agent.clarify_timeout (default 3600).
+    A user stepping away for a minute silently lost the secret."""
+    cli = _make_cli_stub()
+    monkeypatch.setattr("tools.clarify_gateway.resolve_clarify_timeout", lambda config: 900)
+    seen = _pending_secret_prompt(cli, HermesCLI._sudo_password_callback)
+    remaining = seen - time.monotonic()
+    assert 880 < remaining <= 900, f"expected the clarify timeout, saw {remaining:.0f}s"
+
+
+def test_vault_unlock_prompt_uses_the_clarify_timeout(monkeypatch):
+    """The vault master-password prompt reuses the sudo panel — it must share its timeout
+    source too (was hardcoded 120s)."""
+    cli = _make_cli_stub()
+    monkeypatch.setattr("tools.clarify_gateway.resolve_clarify_timeout", lambda config: 900)
+    seen = _pending_secret_prompt(
+        cli, lambda c: HermesCLI._vault_unlock_callback(c, "kwallet", "KWallet"))
+    remaining = seen - time.monotonic()
+    assert 880 < remaining <= 900, f"expected the clarify timeout, saw {remaining:.0f}s"
+
+
+def test_clarify_timeout_zero_waits_indefinitely_on_secret_prompts(monkeypatch):
+    """clarify_timeout <= 0 already means 'wait indefinitely' for clarify; secret prompts
+    now follow the same contract instead of a hard deadline (deadline None)."""
+    cli = _make_cli_stub()
+    monkeypatch.setattr("tools.clarify_gateway.resolve_clarify_timeout", lambda config: 0)
+    assert _pending_secret_prompt(cli, HermesCLI._sudo_password_callback) is None
+

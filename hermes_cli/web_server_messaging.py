@@ -222,9 +222,20 @@ def _whatsapp_onboarding_payload(pairing_id: str, record: _WhatsAppOnboardingSes
     return {"pairing_id": pairing_id, **{f: getattr(record, f) for f in _WHATSAPP_PAYLOAD_FIELDS}}
 
 
-def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
-    from hermes_cli.web_server_gateway import _restart_gateway_after
-    return _restart_gateway_after(profile, what="WhatsApp onboarding", label="WhatsApp onboarding")
+def _activate_gateway_whatsapp_after_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
+    """Tell the gateway serving this profile to load its newly paired WhatsApp adapter."""
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_cli.gateway_multiplex_served import notify_gateway_whatsapp_paired
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+
+    name = (profile or "").strip()
+    home = _resolve_profile_dir(name) if name and name != "current" else get_hermes_home()
+    name = profile_name_for_home(home) or name or "default"
+    answer = notify_gateway_whatsapp_paired(home, name)
+    if answer is None:
+        return {"activation_started": False, "needs_restart": True,
+                "activation_error": "No live gateway accepted WhatsApp activation; start or update the gateway."}
+    return {"activation_started": True, "needs_restart": False, **answer}
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"

@@ -5,7 +5,7 @@ adapter was never built because no plugin registered it in that profile (its loa
 its deadline, #137268). One task per (profile, platform) rebuilds it under that profile's own runtime
 scope until it connects or can no longer heal.
 
-Split out of ``gateway/run_adapters.py`` (its size ratchet is at its target). ``gateway.run``
+Split out of ``gateway/run_adapters/__init__.py`` (its size ratchet is at its target). ``gateway.run``
 internals are imported lazily inside method bodies (import cycle), so ``patch("gateway.run.X")``
 keeps intercepting them at call time.
 """

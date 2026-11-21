@@ -490,7 +490,7 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     warns -- exactly once per process for this profile/value, read the way authz
     reads it (the profile scope, not the default profile's os.environ), and even
     when the first connect fails. Reconnects build a FRESH adapter each attempt
-    (gateway/run_adapters.py), so the dedup cannot live on the instance."""
+    (gateway/run_adapters/__init__.py), so the dedup cannot live on the instance."""
     import logging
 
     import websockets

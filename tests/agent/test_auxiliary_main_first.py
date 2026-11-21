@@ -407,7 +407,11 @@ class TestResolveVisionCustomProvider:
         """custom main with recorded runtime endpoint → Step 1 builds a client."""
         import agent.auxiliary_client as aux
 
-        with aux.scoped_runtime_main({"base_url": "https://my.endpoint.example/v1", "api_key": "sk-runtime-key", "api_mode": "anthropic_messages"}), patch(
+        with aux.scoped_runtime_main({
+            "provider": "custom", "model": "claude-opus-4-8",
+            "base_url": "https://my.endpoint.example/v1", "api_key": "runtime-test-key",
+            "api_mode": "anthropic_messages",
+        }), patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
             "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
@@ -431,7 +435,7 @@ class TestResolveVisionCustomProvider:
         # otherwise resolve_provider_client("custom") returns (None, None).
         kwargs = mock_resolve.call_args.kwargs
         assert kwargs.get("explicit_base_url") == "https://my.endpoint.example/v1"
-        assert kwargs.get("explicit_api_key") == "sk-runtime-key"
+        assert kwargs.get("explicit_api_key") == "runtime-test-key"
         assert kwargs.get("is_vision") is True
 
     def test_custom_prefixed_main_forwards_runtime_endpoint(self):
@@ -476,7 +480,7 @@ class TestResolveVisionCustomProvider:
             return_value=("auto", None, None, None, None),
         ), patch(
             "agent.auxiliary_client._resolve_custom_runtime",
-            return_value=("https://configured.example/v1", "sk-configured", "chat_completions"),
+            return_value=("https://configured.example/v1", "runtime-test-key", "chat_completions"),
         ), patch(
             "agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
@@ -490,6 +494,6 @@ class TestResolveVisionCustomProvider:
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs
         assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
-        assert kwargs.get("explicit_api_key") == "sk-configured"
+        assert kwargs.get("explicit_api_key") == "runtime-test-key"
 
 # ── Constant cleanup ────────────────────────────────────────────────────────

@@ -1,0 +1,37 @@
+name: arcade-for-hermes
+repo: https://github.com/ArcadeAI/arcade-for-hermes
+sha: 30f363738a0c839c3805c5391538602db28713ba
+title: Arcade for Hermes
+description: >
+  Arcade's tools for Hermes with one Arcade principal per agent role, a look/draft/ship policy
+  enforced in pre_tool_call, native approvals for ship actions, and receipts. GitHub, Google and
+  1,000+ more tools through api.arcade.dev. Disclosure: every arcade_* call goes to api.arcade.dev
+  with your ARCADE_API_KEY (read through Hermes's secret scope); app OAuth tokens live in Arcade and
+  never reach Hermes; receipts and a scrubbed activity feed are written to <HERMES_HOME>/plugin-data/arcade-for-hermes; no telemetry;
+  one Python dependency (arcadepy).
+maintainer: ArcadeAI
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/ArcadeAI/arcade-for-hermes#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - arcade_search_tools
+    - arcade_authorize
+    - arcade_execute
+    - arcade_whoami
+    - arcade_draft_company
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_approval_response
+    - transform_tool_result
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - on_interim_message
+  provides_middleware: []
+  requires_env:
+    - ARCADE_API_KEY

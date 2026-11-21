@@ -49,7 +49,8 @@ jobs:
             tests/gateway/test_discord_clarify_lossless.py tests/gateway/test_discord_clarify_buttons.py \
             tests/plugins/platforms/test_discord_delivery_receipts.py \
             tests/plugins/test_pocketbase.py tests/plugins/test_pocketbase_api_scope.py \
-            tests/hermes_cli/test_gateway_external_supervisor.py tests/hermes_cli/test_dashboard_external_supervisor.py
+            tests/hermes_cli/test_gateway_external_supervisor.py tests/hermes_cli/test_dashboard_external_supervisor.py \
+            tests/scripts/test_fork_sync_health.py
 
       - name: Custom plugin unittests
         run: |
@@ -87,5 +88,8 @@ jobs:
           checks=$(.venv/bin/python -c "import runpy; g = runpy.run_path('scripts/check', run_name='fork_ci'); print(','.join(n for n in g['_CHECKS'] if n != 'health'))")
           .venv/bin/python scripts/check --only "$checks" --base "$DIFF_BASE"
 
+      # A change that brings in an upstream release makes the ratchet judge every file upstream
+      # added or moved as new code, so it is judged against the release too and only findings new
+      # against both block. Any other change gets the plain run (the script's docstring has why).
       - name: Code-health ratchet
-        run: .venv/bin/python -m scripts.code_health --base "$DIFF_BASE"
+        run: .venv/bin/python .github/scripts/fork_sync_health.py --base "$DIFF_BASE"

@@ -13,7 +13,7 @@ sync, a deploy, or adding a new integration.
 | Discord clarify fix | `plugins/platforms/discord/adapter.py` (PR #5) | Occasionally | Upstream fixes lossless clarify options |
 | Update restart hand-back fix | `hermes_cli/gateway.py::_prepare_profile_gateway_update_restart` (PR #13) | Occasionally | Upstream takes the same fix |
 | Dashboard `--external-supervisor` | `hermes_cli/dashboard_procs.py::_restart_killed_backends`, `subcommands/dashboard.py`, `main_dashboard.py::_route_named_profile_dashboard` (PR #16) | Occasionally | Upstream ships an external-supervisor declaration for `dashboard`/`serve` |
-| Fork CI | `.github/workflows/fork-ci.yml` | Never (new path) | n/a |
+| Fork CI | `.github/workflows/fork-ci.yml`, `.github/scripts/fork_sync_health.py`, `tests/scripts/test_fork_sync_health.py` | Never (new paths) | n/a |
 
 Hook call sites in upstream files (the conflict checklist):
 `gateway/platforms/base.py`, `gateway/run_turn_prepare.py`, `gateway/session.py`,
@@ -74,15 +74,19 @@ HERMES_PYTHON=.venv/bin/python scripts/run_tests.sh \
   tests/gateway/test_discord_clarify_lossless.py tests/gateway/test_discord_clarify_buttons.py \
   tests/plugins/platforms/test_discord_delivery_receipts.py \
   tests/plugins/test_pocketbase.py tests/plugins/test_pocketbase_api_scope.py \
-  tests/hermes_cli/test_gateway_external_supervisor.py tests/hermes_cli/test_dashboard_external_supervisor.py
+  tests/hermes_cli/test_gateway_external_supervisor.py tests/hermes_cli/test_dashboard_external_supervisor.py \
+  tests/scripts/test_fork_sync_health.py
 for d in custom_plugins/*/; do .venv/bin/python -m unittest discover -s "$d" -p 'test_*.py'; done
 python scripts/check            # every guard + the health ratchet
-python -m scripts.code_health    # only if health hit scripts/check's 900s per-check cap
+python .github/scripts/fork_sync_health.py --base origin/main   # the health ratchet as Fork CI gates a sync
 ```
 
 (Windows: `.venv/Scripts/python.exe`, with `PYTHONUTF8=1`.) A sync makes the health ratchet judge
 every upstream file it brings in, which can outlast `scripts/check`'s 900s per-check cap on a slow
-host; run it directly as above. Only findings in the fork-delta files above are ours. GitHub can
+host, and fails on upstream's own code wherever upstream added or moved a file. Judge it as Fork CI
+does, with the last command above: a sync is measured against `origin/main` and against the release,
+and only findings new against both block (upstream's code is clean against the release, fork debt
+against `main`). A sync to an unreleased upstream `main` commit gets the plain ratchet. GitHub can
 take ~20 minutes to attach a push to a large sync PR; if Fork CI hasn't started, run it from the
 Actions tab (`gh workflow run fork-ci.yml --ref <branch>`). Windows hosts also fail a few path/file-lock tests that pass on
 Linux (`file:///C:/...` media paths, todo-assessment `test_gateway_handoff`); compare against

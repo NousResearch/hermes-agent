@@ -713,7 +713,7 @@ def _pause(token: dict) -> str | None:
         pause_record.sync(token)
         return None
     pause_record.sync(token)
-    print(f"  ⏸ Paused for the update: {_describe(token)} (restarted once the dependencies are synced)")
+    print(f"  ⏸ Paused for the update: {_describe(token)} (restarted after the dependency step)")
     return None
 
 

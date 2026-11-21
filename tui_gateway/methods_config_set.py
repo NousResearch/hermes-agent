@@ -201,7 +201,17 @@ def _set_model(rid, params, key, value, session):
         failed_agent_init = (
             failed_agent_init and session.get("agent") is None and session.get("agent_error") is not None
             and session.get("agent_ready") is failed_ready and failed_ready.is_set())
-        if session.get("agent") is None and not explicit_provider.strip() and not failed_agent_init:
+        # session.create schedules the build ~50 ms later, so a pick that names a provider (Desktop always
+        # does) can land while it is in flight. Applying it with agent=None only writes ``model_override``,
+        # which the build (kwargs already captured) never sees: the session announced and ran the old model.
+        # Wait for an in-flight build so the pick switches the real agent; a not-yet-started build keeps the
+        # override-only path (the first build reads it).
+        build_in_flight = bool(
+            session.get("agent") is None and session.get("agent_build_started")
+            and session.get("agent_error") is None
+            and session.get("agent_ready") is not None and not session["agent_ready"].is_set())
+        if (session.get("agent") is None and (not explicit_provider.strip() or build_in_flight)
+                and not failed_agent_init):
             _start_agent_build(sid, session)
             if init_err := _cfgset_await_agent(session, rid):
                 return init_err

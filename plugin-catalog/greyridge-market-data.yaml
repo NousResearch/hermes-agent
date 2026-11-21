@@ -1,0 +1,18 @@
+name: greyridge-market-data
+repo: https://github.com/rezearcher/greyridge-market-data-skill
+sha: 822219bf96fc79cdb132ece6614cc79f20cd8b1c
+description: "Skill that fetches live crypto market data for a Base/EVM trading or analysis agent — spot prices (DefiLlama), top & trending coins (CoinGecko), DeFi yields, and a one-call market brief — by curling the Grey Ridge x402 API's free preview endpoints. Skill-only: no tools, hooks or env vars. Disclosure — the skill has the agent run `curl` against Grey Ridge Signals Group LLC's API (api.greyridgesignals.ai) with coin ids / chain; it mentions paid x402 routes ($0.001-$0.01 USDC per call on Base for full/unattended use) and an unpinned `pip install git+https://github.com/rezearcher/greyridge-x402-tools` helper that the user installs themselves. Data is sourced from CoinGecko/DefiLlama and is not financial advice."
+maintainer: rezearcher
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/rezearcher/greyridge-market-data-skill
+version: "0.1.0"
+known_issues:
+  - Prices/trending/markets are CoinGecko + DefiLlama sourced; freshness is their cadence (seconds-minutes), not a live orderbook. Free preview is rate-limited; unattended use needs the paid x402 routes.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

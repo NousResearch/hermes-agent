@@ -1580,3 +1580,75 @@ def test_a_forced_no_service_recipe_names_the_running_turns_once(home, capsys, m
     (entry,) = out["plan"]["unsupported"]
     assert code == engine.EXIT_UNSUPPORTED and out["plan"]["running_turns"] == 2 and entry["steps"]
     assert entry["instructions"].count(_RUNNING) == 1
+
+
+# --- review round 6: the home's .env, not the launcher, holds the sign-in the old backend uses
+
+
+_PW_KEY, _TOKEN_KEY = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN"
+
+
+def _env_file_sets(home, **values):
+    with (home / ".env").open("a", encoding="utf-8") as f:
+        f.writelines(f"{k}={v}\n" for k, v in values.items())
+
+
+@pytest.mark.parametrize("dotenv_value", ["pw-current-in-env-file", ""])
+def test_a_key_the_env_file_sets_is_not_copied_from_the_launcher(home, capsys, dotenv_value):
+    """The old backend loads the home's .env over its launch environment, so it signs in with the .env
+    password: copying the launcher's older one into .env would lock out the current password."""
+    from hermes_cli.gateway_migrate_backends_plan import build_plan
+    _env_file_sets(home, **{_PW_KEY: dotenv_value})
+    before = (home / ".env").read_bytes()
+
+    code, out = _plan(FakeHost(home), capsys)
+
+    assert code == engine.EXIT_OK
+    assert out["plan"]["copy_env_keys"] == ["HERMES_DASHBOARD_BASIC_AUTH_SECRET", "HERMES_DASHBOARD_BASIC_AUTH_USERNAME"]
+    assert _PW_KEY not in build_plan(FakeHost(home)).carry and (home / ".env").read_bytes() == before
+    assert engine.cmd_apply(FakeHost(home), _args(dry_run=True)) == engine.EXIT_OK
+    (copies,) = [line for line in capsys.readouterr().out.splitlines() if ".env copies:" in line]
+    assert _PW_KEY not in copies and "HERMES_DASHBOARD_BASIC_AUTH_USERNAME" in copies
+
+
+def test_a_key_the_env_file_lacks_is_still_copied_from_the_launcher(home, capsys):
+    from hermes_cli.gateway_migrate_backends_plan import build_plan
+
+    code, out = _plan(FakeHost(home), capsys)
+
+    assert code == engine.EXIT_OK and _PW_KEY in out["plan"]["copy_env_keys"]
+    assert build_plan(FakeHost(home)).carry[_PW_KEY] == _PASSWORD
+
+
+def test_the_session_token_the_launcher_exports_is_copied_over_the_env_file(home, capsys):
+    """The one key whose exported value beats the .env (``_SPAWN_CREDENTIAL_KEYS``): the old backend uses
+    the launcher's, so that one is still copied when the .env holds another."""
+    _env_file_sets(home, **{_TOKEN_KEY: "token-in-env-file"})
+    host = FakeHost(home)
+    base = host.process_env(_BACKEND_PID)
+    host.process_env = lambda pid: {**base, _TOKEN_KEY: "token-the-backend-uses"}
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_OK and _TOKEN_KEY in out["plan"]["copy_env_keys"]
+
+
+def _system_unit_steps(home, capsys):
+    code = engine.cmd_apply(FakeHost(home, supervisor="systemd", scope="system"), _args(dry_run=True))
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert code == engine.EXIT_UNSUPPORTED
+    return [s for s in lines[lines.index("Steps, in this order (one command per line):") + 1:] if s.startswith("# copy")]
+
+
+def test_the_by_hand_recipe_copies_only_what_the_env_file_lacks(home, capsys):
+    env = home / ".env"
+    (copy_all,) = _system_unit_steps(home, capsys)
+    assert copy_all.startswith(f"# copy HERMES_DASHBOARD_BASIC_AUTH_PASSWORD, HERMES_DASHBOARD_BASIC_AUTH_SECRET, "
+                               f"HERMES_DASHBOARD_BASIC_AUTH_USERNAME from the old launcher's environment into {env}")
+    _env_file_sets(home, **{_PW_KEY: "pw-current-in-env-file"})
+    (copy,) = _system_unit_steps(home, capsys)
+    assert copy.startswith("# copy HERMES_DASHBOARD_BASIC_AUTH_SECRET, HERMES_DASHBOARD_BASIC_AUTH_USERNAME from")
+    _env_file_sets(home, HERMES_DASHBOARD_BASIC_AUTH_USERNAME="op", HERMES_DASHBOARD_BASIC_AUTH_SECRET="s")
+    (rest,) = _system_unit_steps(home, capsys)  # nothing left to name: the generic line must not undo the .env
+    assert rest == (f"# copy every HERMES_DASHBOARD_* line from the old launcher's environment that {env} does "
+                    f"not already set, if any, into {env} (chmod 600)")

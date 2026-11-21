@@ -421,7 +421,8 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item: Optiona
         copy = (f"# copy {', '.join(sorted(env_keys))} from the old launcher's environment into {env}, "
                 f"then: chmod 600 {env}  (values are never printed here)")
     else:
-        copy = f"# copy every HERMES_DASHBOARD_* line from the old launcher's environment, if any, into {env} (chmod 600)"
+        copy = (f"# copy every HERMES_DASHBOARD_* line from the old launcher's environment that {env} does not "
+                f"already set, if any, into {env} (chmod 600)")
     known = old_host is not None and old_port is not None
     where = f"webapp.host: {old_host}, webapp.port: {old_port}" if known else \
         "webapp.host and webapp.port to the old backend's address"
@@ -479,8 +480,7 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
     env = _manual_launcher_env(item, kind, host)  # names only leave this function
     keys: list[str] = []
     if kind == "windows" or (item is not None and item.supervisor == "systemd" and item.unit and item.scope):
-        dotenv = host.dotenv()
-        keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
+        keys = list(_keys_to_copy({k: v for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v}, host.dotenv()))
     url = resolve_public_url(host.effective_config(), backend_url_env(host, env))
     if kind == "windows":
         from hermes_cli.gateway_migrate_backends_windows import manual_steps as windows_steps
@@ -572,10 +572,19 @@ def _record(item: BackendItem, host) -> tuple[dict, Optional[dict]]:
     return rec, env
 
 
+def _keys_to_copy(launcher: dict, dotenv: dict) -> dict:
+    """The launcher's keys whose value the old backend uses and the home's ``.env`` lacks. ``load_hermes_dotenv``
+    loads the ``.env`` over the launch environment, so a key the ``.env`` sets (even empty) already holds the
+    value in use; only a parent-minted ``_SPAWN_CREDENTIAL_KEYS`` key keeps its exported value over the ``.env``."""
+    from hermes_cli.env_loader import _SPAWN_CREDENTIAL_KEYS
+    return {k: v for k, v in launcher.items()
+            if k not in dotenv or (k in _SPAWN_CREDENTIAL_KEYS and dotenv[k] != v)}
+
+
 def _credentials(plan: BackendPlan, env: Optional[dict], host, cfg: dict) -> None:
     dotenv = host.dotenv()
     launcher = {k: v for k, v in (env or {}).items() if k.startswith(_AUTH_PREFIX) and v}
-    plan.carry = {k: v for k, v in launcher.items() if dotenv.get(k) != v}
+    plan.carry = _keys_to_copy(launcher, dotenv)
     basic = ((cfg.get("dashboard") or {}).get("basic_auth") or {}) if isinstance(cfg.get("dashboard"), dict) else {}
     has_secret = bool(launcher.get(_SECRET_KEY) or dotenv.get(_SECRET_KEY) or os.environ.get(_SECRET_KEY)
                       or (isinstance(basic, dict) and basic.get("secret")))

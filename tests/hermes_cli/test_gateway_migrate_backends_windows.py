@@ -387,3 +387,17 @@ def test_a_forced_windows_plan_names_the_running_turns_exactly_once(home, capsys
     assert engine.cmd_apply(host, _args(dry_run=True, json=True, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
     (entry,) = json.loads(capsys.readouterr().out)["plan"]["unsupported"]
     assert entry["instructions"].count("2 turn(s) are running on it now: stopping it interrupts them") == 1
+
+
+def test_the_windows_recipe_copies_only_what_the_env_file_lacks(home, capsys):
+    """The old backend loads the home's .env over its launch environment: a password the .env sets is the
+    one it uses, and the recipe must not tell the user to copy the launcher's older one over it."""
+    with (home / ".env").open("a", encoding="utf-8") as f:
+        f.write("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=pw-current-in-env-file\n")
+
+    code = engine.cmd_apply(WindowsHost(home), _args(dry_run=True))
+
+    out = capsys.readouterr().out
+    (copy,) = [line.strip() for line in out.splitlines() if line.strip().startswith("# copy")]
+    assert code == engine.EXIT_UNSUPPORTED
+    assert copy.startswith("# copy HERMES_DASHBOARD_BASIC_AUTH_SECRET, HERMES_DASHBOARD_BASIC_AUTH_USERNAME from")

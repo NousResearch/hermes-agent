@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- Growth is limited to keyword-only, default-off refuse_live_claim/reason/actor on archive_task and actor on unlink_tasks; these must stay inside the existing write_txn for atomicity because write_txn cannot nest and composition races; no new function or schema.
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards

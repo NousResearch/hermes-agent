@@ -35,6 +35,7 @@ _RESIZE_SETTLE = 0.03
 # signal lands a few ms after the multiplexer re-wraps, and it reads our output promptly — in
 # tmux, paints that ended up to 4 ms before the signal were re-wrapped, never clipped (#95375).
 _RESIZE_PAINT_MARGIN = 0.01
+_PROGRAM_STATUS_WRITE_LOCK = threading.Lock()
 
 
 def _is_eio(exc: BaseException) -> bool:
@@ -78,6 +79,51 @@ def _write_terminal_sequence(app, seq: str) -> None:
 
 class CLITerminalMixin:
     """Terminal repaint/resize recovery, input-mode healing, and clipboard helpers for the interactive CLI"""
+
+    def _report_program_status(self, state: str, *, kind: str | None = None) -> None:
+        """Report the interactive lifecycle through OSC 7501 when hosted by herdr-core.
+
+        Worker-thread writes are serialized onto prompt_toolkit's app loop so the OSC record cannot
+        splice into an in-flight terminal frame. If that loop is closing, the advisory update is
+        dropped rather than written from a second thread. Outside a Herdr TTY this is a strict no-op.
+        """
+        with _PROGRAM_STATUS_WRITE_LOCK:
+            if state != "clear" and getattr(self, "_program_status_closed", False):
+                return
+            if state == "clear":
+                # Latch while holding the same lock as the direct writer so a
+                # worker cannot pass the check and emit after shutdown clears.
+                self._program_status_closed = True
+            if getattr(self, "_terminal_io_broken", False):
+                return
+            from hermes_cli.terminal_notify import program_status_sequence, program_status_supported, write_tty
+
+            if not program_status_supported():
+                return
+            seq = program_status_sequence(state, kind=kind)
+            app = getattr(self, "_app", None)
+            if app is None or not getattr(app, "_is_running", False):
+                write_tty(seq)
+                return
+
+        def _emit() -> None:
+            # A worker may have passed the pre-scheduling latch check just
+            # before shutdown. Recheck on the single writer's loop so no
+            # already-racing update can recreate the record after ``clear``.
+            if state != "clear" and getattr(self, "_program_status_closed", False):
+                return
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass
+
+        loop = getattr(app, "loop", None)
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(_emit)
+        except RuntimeError:
+            return
 
     def _mark_terminal_io_broken(self, reason: str = "") -> None:
         """Stop UI paints after the PTY/stdout becomes unusable (#81521)."""

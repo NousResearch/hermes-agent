@@ -160,8 +160,19 @@ class CLITuiRuntimeMixin:
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
+        self._report_program_status("working")
         try:
-            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
+            result = self.chat(
+                notification_preview or user_input,
+                images=submit_images or None,
+                voice_input=is_voice_input,
+            )
+            if result is None and not self._last_turn_interrupted:
+                self._last_turn_failed = True
+        except BaseException:
+            if not self._last_turn_interrupted:
+                self._last_turn_failed = True
+            raise
         finally:
             self._tui_after_turn()
 
@@ -192,6 +203,12 @@ class CLITuiRuntimeMixin:
         self._pet_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False
+        if getattr(self, "_last_turn_failed", False):
+            self._report_program_status("error")
+        elif getattr(self, "_last_turn_interrupted", False):
+            self._report_program_status("idle")
+        else:
+            self._report_program_status("done")
         self._app.invalidate()
 
         # After an interrupt the renderer may have drifted (leaked CPR text, VT100 parser
@@ -431,6 +448,7 @@ class CLITuiRuntimeMixin:
     def _tui_build_application(self, layout, kb, style):
         """Construct the prompt_toolkit Application for the REPL."""
         from cli import CLI_CONFIG, EditingMode, _STEADY_CURSOR, _select_classic_cli_pt_output
+        self._report_program_status("idle")
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
@@ -521,6 +539,7 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        self._report_program_status("clear")
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

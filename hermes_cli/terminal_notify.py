@@ -1,8 +1,12 @@
-"""Terminal-native desktop notifications: OSC 9 and Warp's OSC 777 CLI-agent protocol.
+"""Terminal-native agent status and notifications.
 
 OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
 others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
 structured CLI-agent protocol (tab status + notification mailbox).
+
+OSC 7501 (``ESC ] 7501 ; state=... ST``) is the Program Status Protocol consumed by
+Herdr terminals. Hermes emits it only when herdr-core supplied ``HC_TERMINAL_ID`` and stdout is
+a real TTY; ordinary terminals, pipes, gateways, cron, and messaging surfaces are untouched.
 
 Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
 prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
@@ -20,6 +24,8 @@ import sys
 
 _C0_AND_DEL = re.compile(r"[\x00-\x1f\x7f]")
 _WARP_PROTOCOL_VERSION = 1
+_PROGRAM_STATUS_STATES = frozenset({"idle", "working", "done", "blocked", "error", "clear"})
+_PROGRAM_STATUS_KINDS = frozenset({"permission", "question", "auth"})
 # Last Warp release per channel that set WARP_CLI_AGENT_PROTOCOL_VERSION but could not render
 # structured payloads (Warp's should-use-structured.sh). Bash compares lexicographically; so do we.
 _WARP_LAST_BROKEN = {"stable": "v0.2026.03.25.08.24.stable_05", "preview": "v0.2026.03.25.08.24.preview_05"}
@@ -38,6 +44,37 @@ def write_tty(seq: str) -> None:
         sys.stdout.flush()
     except Exception:
         pass
+
+
+def program_status_supported(env=None, *, is_tty=None) -> bool:
+    """Whether this process is the foreground program of a herdr-core terminal.
+
+    The explicit environment gate prevents OSC bytes from leaking into normal Hermes output;
+    the fd check prevents redirected/non-interactive invocations from claiming agent status.
+    ``is_tty`` is injectable for deterministic tests.
+    """
+    env = os.environ if env is None else env
+    if not str(env.get("HC_TERMINAL_ID") or "").strip():
+        return False
+    if is_tty is None:
+        try:
+            is_tty = os.isatty(1)
+        except (OSError, ValueError):
+            is_tty = False
+    return bool(is_tty)
+
+
+def program_status_sequence(state: str, *, kind: str | None = None) -> str:
+    """Encode one root OSC 7501 report using fixed, escape-safe Hermes fields."""
+    if state not in _PROGRAM_STATUS_STATES:
+        raise ValueError(f"unsupported program status state: {state}")
+    if kind is not None and (state != "blocked" or kind not in _PROGRAM_STATUS_KINDS):
+        raise ValueError(f"unsupported program status kind: {kind}")
+    fields = [f"state={state}"]
+    if kind is not None:
+        fields.append(f"kind={kind}")
+    fields.append("app=hermes")
+    return f"\x1b]7501;{':'.join(fields)}\x1b\\"
 
 
 def osc9(body: str) -> str:

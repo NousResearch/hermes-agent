@@ -98,4 +98,25 @@ describe('playSpeechText same-turn start', () => {
     stopVoicePlayback()
     await Promise.allSettled([first])
   })
+
+  it('warns when a reply sanitizes to empty instead of skipping silently', async () => {
+    // A reply that is entirely a fenced code block strips to '' and startSpeechText
+    // returns false. That silent return is why the auto-speak hook releases its
+    // claim with no sound and no message, so the skip has to leave a trace.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const started = await playSpeechText('```json\n{"a": 1}\n```', {
+      messageId: 'assistant-code-only',
+      source: 'read-aloud',
+      turnKey: 'session:9'
+    })
+
+    expect(started).toBe(false)
+    expect(warn).toHaveBeenCalledWith(
+      '[speech] empty after sanitize',
+      expect.objectContaining({ original: expect.any(Number), turnKey: 'session:9' })
+    )
+
+    warn.mockRestore()
+  })
 })

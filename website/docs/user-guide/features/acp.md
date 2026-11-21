@@ -140,6 +140,37 @@ The bootstrap is idempotent — re-running it is fast and skips work that's alre
 
 ## Host setup
 
+### Kylon
+
+[Kylon](https://kylon.io) is a collaboration workspace for people and agents.
+It can host your local Hermes installation over ACP so you can work with Hermes
+from Kylon Rooms and threads.
+
+1. Complete the ACP installation above and run `hermes acp --check`.
+   Configure Hermes' model provider with `hermes model` if needed.
+2. In Kylon, create or select a Hermes Agent and copy its connection prompt.
+   Paste the prompt into Hermes on the computer you want to connect. It links
+   to the [Kylon Hermes setup guide](https://api.kylon.io/agent-setup/hermes.md),
+   which covers installation, linking, and troubleshooting.
+3. Follow that guide using the one-time link from Kylon. With Node.js 22.15.0
+   or newer available, the connection command has this form:
+
+   ```bash
+   npx --yes kylon-cli@latest agent link --url "<one-time link from Kylon>" --yes
+   ```
+
+4. Confirm that the Agent appears online in Kylon, add it to the intended
+   Room, and mention it with a task. Keep the connected computer on and awake
+   so Hermes can respond.
+
+The connection prompt contains a short-lived credential; keep it private. Run
+the setup as the same operating-system user who configured Hermes. Hermes uses
+that user's local model credentials and tools, so review who can prompt the
+Agent before sharing it with a Room.
+
+This connection is configured through Kylon as an ACP host. It does not add a
+Kylon platform to `hermes gateway setup`.
+
 ### Buzz channels (relay bridge)
 
 [Buzz](https://github.com/block/buzz) is a Nostr-based collaboration platform

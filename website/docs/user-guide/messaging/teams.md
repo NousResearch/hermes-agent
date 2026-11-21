@@ -28,6 +28,37 @@ Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which
 
 Without resource-specific consent (RSC) Teams only delivers messages that @mention the bot, so no filtering is needed. Once the app manifest grants `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat`, Teams delivers **every** message in the conversation — set `require_mention: true` (or `TEAMS_REQUIRE_MENTION=true`) so the bot only answers channel/group-chat messages that @mention it or reply to one of its own messages. Personal chats are never gated, and a gated message is dropped before its attachments are downloaded.
 
+#### Thread follow-ups without a mention
+
+With `require_mention` on, a channel thread the bot has answered in keeps going without an @mention: once someone @mentions the bot in a post (or the bot posts into a thread, e.g. a cron delivery), later replies in that thread reach the bot unaddressed. New posts and threads the bot never took part in still need an @mention. This matches the Discord and Matrix adapters. The bot remembers up to 500 threads in `teams_threads.json` under the profile's Hermes home, so it keeps following them after a restart.
+
+This needs `ChannelMessage.Read.Group`: without it Teams only sends the bot the messages that @mention it, so an unaddressed reply never arrives. Group chats have no threads; they stay mention-gated.
+
+Set `thread_require_mention: true` under `extra` (or `TEAMS_THREAD_REQUIRE_MENTION=true`) to require an @mention in threads as well, for example when several bots share a channel.
+
+#### Granting RSC message-read consent
+
+Add the permissions to the app manifest (`manifest.json`, schema v1.12 or later), then upload the new app version and reinstall or update it in the team or chat. Team owners grant consent when they install the app.
+
+```json
+{
+  "webApplicationInfo": {
+    "id": "<TEAMS_CLIENT_ID>",
+    "resource": "https://RscBasedStoreApp"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        { "name": "ChannelMessage.Read.Group", "type": "Application" },
+        { "name": "ChatMessage.Read.Chat", "type": "Application" }
+      ]
+    }
+  }
+}
+```
+
+`ChannelMessage.Read.Group` covers channels in teams where the app is installed; `ChatMessage.Read.Chat` covers group chats. Include only the scopes you install the app into. See Microsoft's [resource-specific consent](https://learn.microsoft.com/en-us/microsoftteams/platform/graph-api/rsc/grant-resource-specific-consent) guide for older manifest versions.
+
 ---
 
 For source or local installs, include the Teams extra so the bundled adapter can
@@ -175,6 +206,7 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 | `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
+| `TEAMS_THREAD_REQUIRE_MENTION` | Set `true` to keep requiring an @mention in channel threads the bot already answered in (default: `false`, so those threads continue without one) |
 
 ### config.yaml
 
@@ -189,6 +221,7 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
+      thread_require_mention: false   # true to gate threads the bot answered in, too
     require_mention: false   # true once the app has RSC message-read consent
 ```
 

@@ -1159,6 +1159,107 @@ class TestTeamsRequireMention:
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
 
 
+class TestTeamsThreadFollowUp:
+    """Under ``require_mention`` a channel thread the bot answered in keeps going without an @mention
+    (Discord/Matrix parity); new posts and other threads stay gated, the gate still runs before any
+    attachment download, ``thread_require_mention`` restores the gate, and participation survives a
+    restart."""
+
+    APP_ID = "bot-id"
+    CHANNEL = "19:chan@thread.tacv2"
+
+    def _make_adapter(self, monkeypatch, env=None, **extra):
+        monkeypatch.delenv("TEAMS_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("TEAMS_THREAD_REQUIRE_MENTION", raising=False)
+        for key, value in (env or {}).items():
+            monkeypatch.setenv(key, value)
+        adapter = TeamsAdapter(_make_config(
+            client_id=self.APP_ID, client_secret="secret", tenant_id="tenant", require_mention=True, **extra))
+        adapter._app = MagicMock()
+        adapter._app.id = self.APP_ID
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="bot-reply-1"))
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
+        return adapter
+
+    def _post(self, root, msg_id, *, mention=False):
+        """A channel message in the thread rooted at ``root`` (a new post is its own root)."""
+        activity = MagicMock()
+        activity.text = "<at>Hermes</at> hi" if mention else "follow-up"
+        activity.id = msg_id
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.conversation = MagicMock(conversation_type="channel", tenant_id="t")
+        activity.conversation.id = f"{self.CHANNEL};messageid={root}"
+        activity.conversation.name = "Chan"
+        att = MagicMock(content_type="image/png")
+        att.name = "a.png"
+        att.content_url = "https://smba.trafficmanager.net/emea/v3/attachments/1/views/original"
+        activity.attachments = [att]
+        activity.reply_to_id = root
+        activity.entities = []
+        if mention:
+            entity = MagicMock(type="mention")
+            entity.mentioned = MagicMock()
+            entity.mentioned.id = f"28:{self.APP_ID}"
+            activity.entities = [entity]
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    @pytest.mark.anyio
+    async def test_unmentioned_new_post_is_dropped_before_download(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        await adapter._on_message(self._post("1001", "1001"))
+        adapter.handle_message.assert_not_awaited()
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_unmentioned_reply_in_participated_thread_is_dispatched(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        await adapter._on_message(self._post("1001", "1001", mention=True))
+        await adapter._on_message(self._post("1001", "1002"))
+        assert adapter.handle_message.await_count == 2
+        assert adapter.handle_message.await_args.args[0].text == "follow-up"
+
+    @pytest.mark.anyio
+    async def test_unmentioned_reply_in_other_thread_is_dropped_before_download(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        await adapter._on_message(self._post("1001", "1001", mention=True))
+        adapter._fetch_attachment_bytes.reset_mock()
+        await adapter._on_message(self._post("2001", "2002"))
+        assert adapter.handle_message.await_count == 1
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_bot_reply_into_a_thread_marks_it(self, monkeypatch):
+        """A thread the bot posted into (e.g. a cron delivery) counts as participated too."""
+        adapter = self._make_adapter(monkeypatch)
+        assert (await adapter.send(f"{self.CHANNEL};messageid=3001", "report")).success
+        await adapter._on_message(self._post("3001", "3002"))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("use_env", [False, True])
+    async def test_thread_require_mention_gates_participated_threads(self, monkeypatch, use_env):
+        if use_env:
+            adapter = self._make_adapter(monkeypatch, env={"TEAMS_THREAD_REQUIRE_MENTION": "true"})
+        else:
+            adapter = self._make_adapter(monkeypatch, thread_require_mention=True)
+        await adapter._on_message(self._post("1001", "1001", mention=True))
+        await adapter._on_message(self._post("1001", "1002"))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_participation_survives_restart(self, monkeypatch):
+        await self._make_adapter(monkeypatch)._on_message(self._post("1001", "1001", mention=True))
+        restarted = self._make_adapter(monkeypatch)
+        await restarted._on_message(self._post("1001", "1002"))
+        restarted.handle_message.assert_awaited_once()
+
+
 @pytest.mark.anyio
 async def test_expired_approval_click_keeps_the_request():
     """A click after the approval ended replaces the card; the replacement still shows command and reason."""

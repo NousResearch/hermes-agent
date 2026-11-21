@@ -46,6 +46,10 @@ optional_env:
     description: "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
     prompt: "Require @mention in channels and group chats? (true/false)"
     password: false
+  - name: TEAMS_THREAD_REQUIRE_MENTION
+    description: "Keep requiring @mention in channel threads the bot already answered in (default false: those threads continue without a mention)"
+    prompt: "Require @mention in threads the bot joined? (true/false)"
+    password: false
   - name: TEAMS_HOME_CHANNEL
     description: "Default chat/channel ID for cron / notification delivery"
     prompt: "Home channel (or empty)"

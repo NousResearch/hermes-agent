@@ -84,3 +84,38 @@ def test_locked_turn_served_by_another_runtime_settles_failed(api):
         api_execution.reset(token)
     assert result['failed'] is True and result['completed'] is False and result['final_response'] == ''
     assert 'confirmed model lock runtime mismatch' in result['error']
+
+
+def test_unlocked_routed_turn_records_the_served_runtime(api):
+    """#118254: an unlocked API turn that named a model records what served it (fallback
+    included) so the OpenAI-compatible doors report it, and never fails on a mismatch."""
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import _settle_api_runtime_lock
+    from gateway.session_api_turn import api_execution
+
+    agent = SimpleNamespace(provider='custom', model='backup-model', _hermes_api_runtime={'provider': 'custom'})
+    result, captured = {'final_response': 'BACKUP_OK', 'completed': True}, {'usage': {}}
+    token = api_execution.set({'adapter': api, 'settings': {
+        'requested_model': 'other-model', 'requested_runtime': {'provider': '', 'model': 'other-model'},
+        'route_source': 'raw_request'}})
+    try:
+        _settle_api_runtime_lock(agent, result, captured)
+    finally:
+        api_execution.reset(token)
+    assert result == {'final_response': 'BACKUP_OK', 'completed': True}
+    assert captured['usage']['runtime']['model'] == 'backup-model'
+    assert captured['usage']['runtime']['requested']['model'] == 'other-model'
+
+
+def test_unrouted_turn_records_no_runtime(api):
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import _settle_api_runtime_lock
+    from gateway.session_api_turn import api_execution
+
+    captured = {'usage': {}}
+    token = api_execution.set({'adapter': api, 'settings': {'route_source': 'global'}})
+    try:
+        _settle_api_runtime_lock(SimpleNamespace(provider='custom', model='m'), {'completed': True}, captured)
+    finally:
+        api_execution.reset(token)
+    assert captured == {'usage': {}}

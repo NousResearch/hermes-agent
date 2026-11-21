@@ -587,6 +587,10 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     protectLastN: 'Protected Recent Messages'
   },
   auxiliary: {
+    titleGeneration: {
+      enabled: 'Automatic chat titles',
+      modelUpgradeEnabled: 'AI title refinement'
+    },
     compression: {
       timeout: 'Compression model timeout (s)'
     }
@@ -663,6 +667,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.'
   },
   auxiliary: {
+    titleGeneration: {
+      enabled:
+        'Name new chats from their first message. Off leaves chats untitled until you rename them; no title model is called.',
+      modelUpgradeEnabled:
+        'After the instant title, ask the title model for a better one. Off keeps the instant title and saves that extra model call.'
+    },
     compression: {
       timeout:
         'Seconds to wait for the auxiliary compression model per call (default 120). Raise for slow local models.'
@@ -727,7 +737,14 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: [
+      'display.personality',
+      'timezone',
+      'display.show_reasoning',
+      'auxiliary.title_generation.enabled',
+      'auxiliary.title_generation.model_upgrade_enabled',
+      'agent.image_input_mode'
+    ]
   },
   {
     id: 'appearance',

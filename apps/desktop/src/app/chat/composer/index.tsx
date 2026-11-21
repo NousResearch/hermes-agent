@@ -165,7 +165,6 @@ export function ChatBar({
   focusKey,
   freshDraftKey,
   gateway,
-  maxRecordingSeconds = 120,
   profile,
   queueSessionKey,
   sessionId,
@@ -1127,7 +1126,6 @@ export function ChatBar({
     disabled,
     focusInput,
     insertText,
-    maxRecordingSeconds,
     // Voice barge-in mid-generation halts the run like the Stop button.
     onInterrupt: haltRun,
     onSubmit,

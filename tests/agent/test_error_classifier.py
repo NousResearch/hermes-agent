@@ -1592,6 +1592,45 @@ class TestMultimodalToolContentUnsupported:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    @pytest.mark.parametrize(
+        ("message", "body"),
+        [
+            (
+                "Error code: 400 - Invalid input",
+                {"error": {"message": "Invalid input", "param": "messages.13.content"}},
+            ),
+            (
+                "Error code: 400 - {'error': {'message': 'Invalid input', "
+                "'param': 'messages.13.content'}}",
+                {},
+            ),
+        ],
+        ids=["structured-param", "sdk-dump-param"],
+    )
+    def test_commandcode_invalid_input_messages_n_content_retries(self, message, body):
+        """#107457: commandcode rejects image lists in tool-message content."""
+        result = classify_api_error(MockAPIError(message, status_code=400, body=body))
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    @pytest.mark.parametrize(
+        "param",
+        ["messages.13.role", "messages.13.tool_call_id", "messages.content", "messages.x.content"],
+    )
+    def test_commandcode_invalid_input_non_content_param_stays_format_error(self, param):
+        result = classify_api_error(
+            MockAPIError(
+                "Error code: 400 - Invalid input",
+                status_code=400,
+                body={"error": {"message": "Invalid input", "param": param}},
+            )
+        )
+        assert result.reason == FailoverReason.format_error
+
+    def test_bare_invalid_input_stays_format_error(self):
+        result = classify_api_error(MockAPIError("Error code: 400 - Invalid input", status_code=400))
+        assert result.reason == FailoverReason.format_error
+
 
 
 

@@ -5,12 +5,14 @@
     python scripts/check_re2_patterns.py [--pre-swap] [--verbose] [--json OUT] PATH...
 
 For every call `<alias>.compile/search/match/fullmatch/findall/finditer/split/sub/subn(<string literal>, ...)` where
-<alias> is the name the file binds to the regex module:
+<alias> is the name the file binds to the regex module, and every call of such a function imported by name
+(`from hermes_re import compile [as c]`); the pattern may be positional or the `pattern=` keyword:
   REJECTED   hermes_re refuses the pattern, or its RE2 program cannot be built
   SURROGATE  the pattern names a lone surrogate (U+D800..U+DFFF); RE2 can never match one
   INEXACT    the pattern has a `\\b` / `\\B` that RE2 evaluates with ASCII word rules
   DIFFERS    the call's operation gives another result than stdlib `re` on generated strings
-  DYNAMIC    the first argument is not a string literal: counted, not checked (listed with --verbose)
+  DYNAMIC    not checked, with the reason (listed with --verbose): the pattern is not a string literal, or the
+             flags are not a literal (a clean result with flags=0 says nothing about the real flags)
 Any finding except DYNAMIC makes the exit status 1. One call is waived with a comment on its first or last line:
     # re2: reviewed -- <reason>
 Without --pre-swap only files that import `hermes_re` are checked (the state after their swap). With --pre-swap,
@@ -126,10 +128,13 @@ def differs(facade, pattern, flags, fn, repl):
     return None
 
 
-def classify(facade, node, fn):
+def keyword(node, name):
+    return next((k.value for k in node.keywords if k.arg == name), None)
+
+
+def classify(facade, node, fn, pattern):
     """(kind, detail) for one call with a literal pattern, or None when it is clean."""
-    pattern = node.args[0].value
-    flag_node = next((k.value for k in node.keywords if k.arg == "flags"), None)
+    flag_node = keyword(node, "flags")
     index = FUNCS[fn]
     if flag_node is None and len(node.args) > index:
         flag_node = node.args[index]
@@ -144,40 +149,57 @@ def classify(facade, node, fn):
         return "REJECTED", f"{type(exc).__name__}: {exc}"[:110] + note
     if isinstance(pattern, str) and facade.inexact_boundaries(pattern, flags):
         return "INEXACT", "ASCII-only word boundary" + note
-    repl = node.args[1].value if fn in ("sub", "subn") and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) \
-        and isinstance(node.args[1].value, str) else "<>"
+    if note:
+        return "DYNAMIC", "not checked (flags not a literal)"
+    repl_node = node.args[1] if len(node.args) > 1 else keyword(node, "repl")
+    repl = repl_node.value if fn in ("sub", "subn") and isinstance(repl_node, ast.Constant) \
+        and isinstance(repl_node.value, str) else "<>"
     example = differs(facade, pattern, flags, fn, repl)
     if example is not None:
-        return "DIFFERS", f"{fn}() differs from stdlib on {example!r}"[:110] + note
+        return "DIFFERS", f"{fn}() differs from stdlib on {example!r}"[:110]
     return None
 
 
 def aliases(tree, pre_swap):
+    """(names bound to the regex module, {name bound by `from <module> import <fn>`: fn})."""
     wanted = {"hermes_re"} | ({"re"} if pre_swap else set())
-    found = set()
+    modules, functions = set(), {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found |= {a.asname or a.name for a in node.names if a.name in wanted}
-    return found
+            modules |= {a.asname or a.name for a in node.names if a.name in wanted}
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module in wanted:
+            functions.update((a.asname or a.name, a.name) for a in node.names if a.name in FUNCS)
+    return modules, functions
+
+
+def called_function(node, modules, functions):
+    """The regex function a call node invokes, or None when it is not one."""
+    func = node.func
+    if isinstance(func, ast.Attribute) and func.attr in FUNCS and isinstance(func.value, ast.Name) \
+            and func.value.id in modules:
+        return func.attr
+    if isinstance(func, ast.Name):
+        return functions.get(func.id)
+    return None
 
 
 def check_file(facade, path, pre_swap):
     text = Path(path).read_text(encoding="utf-8-sig")
     tree = ast.parse(text)
-    names = aliases(tree, pre_swap)
-    if not names:
+    modules, functions = aliases(tree, pre_swap)
+    if not modules and not functions:
         return None
     lines = text.splitlines()
     rows = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in FUNCS
-                and isinstance(node.func.value, ast.Name) and node.func.value.id in names and node.args):
+        fn = called_function(node, modules, functions) if isinstance(node, ast.Call) else None
+        arg = (node.args[0] if node.args else keyword(node, "pattern")) if fn else None
+        if arg is None:
             continue
-        arg = node.args[0]
         if not isinstance(arg, ast.Constant) or not isinstance(arg.value, (str, bytes)):
-            rows.append(("DYNAMIC", node.lineno, "", ""))
+            rows.append(("DYNAMIC", node.lineno, "", "not checked (pattern not a literal)"))
             continue
-        found = classify(facade, node, node.func.attr)
+        found = classify(facade, node, fn, arg.value)
         last = lines[(node.end_lineno or node.lineno) - 1]
         if found and WAIVER not in last and WAIVER not in lines[node.lineno - 1]:
             rows.append((found[0], node.lineno, repr(arg.value)[:60], found[1]))
@@ -222,7 +244,7 @@ def main(argv):
             if kind == "DYNAMIC":
                 dynamic += 1
                 if verbose:
-                    print(f"DYNAMIC   {path}:{line}")
+                    print(f"DYNAMIC   {path}:{line}: {shown} {why}")
             else:
                 bad += 1
                 print(f"{kind:9} {path}:{line}: {shown} {why}")

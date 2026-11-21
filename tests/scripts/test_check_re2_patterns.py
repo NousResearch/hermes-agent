@@ -1,0 +1,120 @@
+"""scripts/check_re2_patterns.py: refused literals fail, clean ones pass, unchecked call shapes are reported."""
+
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "check_re2_patterns.py"
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("check_re2_patterns", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _gate(tmp_path, source, *flags):
+    path = tmp_path / "mod.py"
+    path.write_text(source, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), *flags, str(path)],
+        capture_output=True, text=True, encoding="utf-8", check=False, timeout=120, cwd=tmp_path,
+    )
+    return proc.returncode, proc.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import hermes_re as re\nre.compile(r"(?=a)b")\n',
+        'import hermes_re\nhermes_re.search(r"(a)\\1", "aa")\n',
+        'from hermes_re import compile as hcompile\nhcompile(r"(?=a)b")\n',
+        'from hermes_re import search\nsearch(r"(?=a)b", "ab")\n',
+        'import hermes_re as re\nre.compile(pattern=r"(?=a)b")\n',
+    ],
+    ids=["module-alias", "backreference", "from-import-alias", "from-import", "pattern-keyword"],
+)
+def test_refused_literal_fails(tmp_path, source):
+    code, out = _gate(tmp_path, source)
+    assert code == 1
+    assert "REJECTED" in out
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import hermes_re as re\nre.compile(r"a+b", re.I)\n',
+        'from hermes_re import sub\nsub(pattern=r"[0-9]+", repl="#", string="a1")\n',
+        'import hermes_re as re\nre.compile(r"(?=a)b")  # re2: reviewed -- probe\n',
+        'import re\nre.compile(r"(?=a)b")\n',
+    ],
+    ids=["clean", "clean-keywords", "waived", "not-swapped"],
+)
+def test_clean_or_out_of_scope_passes(tmp_path, source):
+    assert _gate(tmp_path, source)[0] == 0
+
+
+def test_pre_swap_checks_stdlib_importers(tmp_path):
+    code, out = _gate(tmp_path, 'from re import compile\ncompile(r"(?=a)b")\n', "--pre-swap")
+    assert code == 1
+    assert "mod.py:2" in out
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ('import hermes_re as re\np = "a"\nre.compile(f"{p}+")\n', "pattern not a literal"),
+        ('import hermes_re as re\np = "a"\nre.compile(p + "b")\n', "pattern not a literal"),
+        ('import hermes_re as re\np = "a"\nre.compile(pattern=p)\n', "pattern not a literal"),
+        ('import hermes_re as re\nf = re.I\nre.compile(r"a+", f)\n', "flags not a literal"),
+        ('import hermes_re as re\nf = re.I\nre.compile(r"a+", flags=f)\n', "flags not a literal"),
+    ],
+    ids=["f-string", "concatenation", "pattern-keyword-name", "flags-positional", "flags-keyword"],
+)
+def test_unchecked_calls_are_counted_and_listed(tmp_path, source, reason):
+    code, out = _gate(tmp_path, source, "--verbose")
+    assert code == 0
+    assert f"not checked ({reason})" in out
+    assert "1 dynamic sites not checked" in out
+
+
+def test_non_literal_flags_still_report_a_refused_pattern(tmp_path):
+    code, out = _gate(tmp_path, 'import hermes_re as re\nf = 0\nre.compile(r"(?=a)b", f)\n')
+    assert code == 1
+    assert "REJECTED" in out
+
+
+def test_missing_engine_exits_2_with_one_line(tmp_path):
+    blocker = (
+        "import sys, runpy\n"
+        "class Block:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 're2' or name.startswith('re2.'):\n"
+        "            raise ModuleNotFoundError(\"No module named 're2'\", name='re2')\n"
+        "sys.meta_path.insert(0, Block())\n"
+        f"sys.argv = [{str(SCRIPT)!r}, {str(SCRIPT)!r}]\n"
+        f"runpy.run_path({str(SCRIPT)!r}, run_name='__main__')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", blocker],
+        capture_output=True, text=True, encoding="utf-8", check=False, timeout=120, cwd=tmp_path,
+    )
+    assert proc.returncode == 2
+    assert proc.stdout.strip().count("\n") == 0
+    assert "google-re2" in proc.stdout
+
+
+def test_no_argument_run_finds_the_repo_root(tmp_path):
+    assert _load().ROOT == ROOT
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        capture_output=True, text=True, encoding="utf-8", check=False, timeout=300, cwd=tmp_path,
+    )
+    summary = proc.stdout.strip().splitlines()[-1]
+    assert summary.startswith("checked ")
+    assert int(summary.split()[1]) >= 1

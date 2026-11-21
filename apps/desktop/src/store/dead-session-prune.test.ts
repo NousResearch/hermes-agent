@@ -14,7 +14,7 @@ vi.mock('@/hermes', async importOriginal => {
   }
 })
 
-import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { clearSessionDraft, rotateFreshDraftKey, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
@@ -123,6 +123,24 @@ describe('__runDeadSessionPrunePass', () => {
 
     expect(takeSessionDraft('dead-draft-session').text).toBe('')
     expect(takeSessionDraft('__new__').text).toBe('brand new')
+  })
+
+  it('never probes or discards a per-chat new-chat draft (__new__:<uuid>)', async () => {
+    // Each New session gets its own fresh-draft key since the per-lifecycle split.
+    const freshKey = rotateFreshDraftKey()
+
+    $sessions.set([row('unrelated')])
+    stashSessionDraft('dead-draft-session', 'stale text', [])
+    stashSessionDraft(freshKey, 'brand new', [])
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(getSessionMock.mock.calls.map(([id]) => id)).not.toContain(freshKey)
+    expect(takeSessionDraft(freshKey).text).toBe('brand new')
+    expect(takeSessionDraft('dead-draft-session').text).toBe('')
+
+    clearSessionDraft(freshKey)
   })
 
   it('drops queued prompts for dead sessions and keeps live ones', async () => {

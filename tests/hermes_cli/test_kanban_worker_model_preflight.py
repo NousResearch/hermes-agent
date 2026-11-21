@@ -136,13 +136,14 @@ def test_a_card_without_a_model_takes_the_profiles(profile_model, expected, monk
     {"model": {"provider": "llamacpp", "base_url": "https://stale.example.test/v1"}},
     {"model": {"provider": "custom", "base_url": "http://localhost.:8000/v1"}},
     {"model": {"provider": "custom", "base_url": "http://192.168.1.50:8000/v1"}},
+    {"model": {"provider": "custom", "base_url": "https://box.tail1234.ts.net/v1"}},
     {"model": {"provider": "custom", "base_url": "https://llm.example.test/v1"},
      "fallback_providers": [{"provider": "openrouter", "model": "fallback-model"}]},
     {"model": {"provider": "custom:lan", "base_url": "https://stale.example.test/v1"},
      "custom_providers": [{"name": "lan", "base_url": "http://192.168.1.50:8000/v1"}]},
     {"model": {"provider": "auto"}},
     {},
-], ids=["custom-loopback", "builtin-loopback", "builtin-local-default", "managed-llamacpp", "managed-llamacpp-stale-url", "loopback-trailing-dot", "lan-server", "fallback-chain", "named-lan-entry", "auto", "unset"])
+], ids=["custom-loopback", "builtin-loopback", "builtin-local-default", "managed-llamacpp", "managed-llamacpp-stale-url", "loopback-trailing-dot", "lan-server", "tailnet-hostname", "fallback-chain", "named-lan-entry", "auto", "unset"])
 def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp_path, monkeypatch):
     import socket
 
@@ -181,8 +182,10 @@ def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp
      ("", False)),
     ({"provider": "openai", "base_url": "https://api.openai.com/v1"}, "OPENAI_BASE_URL", "http://127.0.0.1:9/v1", ("", False)),
     ({"provider": "deepseek", "base_url": "http://127.0.0.1:8000/v1"}, "DEEPSEEK_BASE_URL", "", ("", False)),
+    ({"provider": "deepseek", "base_url": "https://box.tail1234.ts.net/v1"}, "DEEPSEEK_BASE_URL", "", ("", False)),
+    ({"provider": "deepseek", "base_url": "https://api.notts.net/v1"}, "DEEPSEEK_BASE_URL", "", ("cloud-model", False)),
 ], ids=["openai-alias-local", "openai-api-lan", "deepseek-local", "openai-api-public", "env-over-model-base-url",
-        "openai-env-over-model-base-url", "model-base-url-without-env"])
+        "openai-env-over-model-base-url", "model-base-url-without-env", "tailnet-model-base-url", "tailnet-lookalike-host"])
 def test_a_builtin_providers_own_base_url_variable_decides_locality(model, env_var, url, expected, monkeypatch):
     from hermes_cli import models
     from hermes_cli.kanban_worker_preflight import task_model
@@ -307,3 +310,24 @@ def test_an_env_url_that_is_the_registry_default_yields_to_a_local_model_base_ur
     env_row = SimpleNamespace(source=f"env:{env_var}", runtime_api_key="k")
     assert _pool_entry_mode_and_url(provider, env_row, model_cfg, "", default_url.rstrip("/"))[1] == local
     assert task_model(_card(), {"model": model_cfg}) == ("", False)
+
+
+@pytest.mark.parametrize("model, env, expected", [
+    ({"provider": "lm-studio", "base_url": "https://stale.example.test/v1"}, {}, ("", False)),
+    ({"provider": "azure-foundry", "base_url": "http://127.0.0.1:9/v1"},
+     {"AZURE_FOUNDRY_BASE_URL": "https://foundry.example.test/v1"}, ("", False)),
+    ({"provider": "anthropic", "base_url": "http://127.0.0.1:4000/anthropic"},
+     {"ANTHROPIC_BASE_URL": "https://relay.example.test"}, ("", False)),
+    ({"provider": "deepseek", "base_url": "https://proxy.example.test/v1"},
+     {"DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1"}, ("cloud-model", False)),
+], ids=["alias-with-stale-url", "config-first-provider", "anthropic-local-relay", "all-public"])
+def test_a_self_hosted_url_the_runtime_may_pick_defers(model, env, expected, monkeypatch):
+    """The runtime orders the scoped env URL, model.base_url and the registry default differently per branch (alias
+    match, Foundry config-first, Anthropic's /anthropic relay), so any self-hosted candidate defers the card."""
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: "cloud-model")
+    assert task_model(_card(), {"model": model}) == expected

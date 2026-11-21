@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: granola
+description: Meeting notes, AI summaries, and transcripts from Granola.
+source: https://docs.granola.ai/help-center/sharing/integrations/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Streamable HTTP with native OAuth 2.0 + Dynamic
+# Client Registration (RFC 7591); Granola supports no API key or bearer token
+# on this endpoint. Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh.
+#
+# All tools are read-only (account info, list/get meetings, transcripts,
+# natural-language query), so no default filter: the install checklist
+# starts with everything pre-checked.
+#
+# Note: on centrally managed Granola workspaces MCP is off by default and a
+# workspace admin must enable it. Transcripts and meetings older than 30 days
+# require a paid Granola plan.
+
+transport:
+  type: http
+  url: https://mcp.granola.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - granola
+  hosts:
+    - granola.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Granola (or run `hermes mcp login granola`). Approve access,
+  then restart the session so tools load.
+
+  If authorization fails on a company workspace, ask your Granola
+  workspace admin to enable MCP in Granola's workspace settings.

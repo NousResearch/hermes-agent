@@ -4940,7 +4940,14 @@ async function resolveHermesBackend(backendArgs: string[], progress?: typeof adv
   //    bootstrap when the runtime itself is unusable.
   //    HERMES_DESKTOP_IGNORE_EXISTING=1 skips this rung (see backend-resolution).
   const activeBackend: SourceBackend | null = await installedRuntimeGate.resolve(ACTIVE_HERMES_ROOT, () =>
-    resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, { hermesHome: HERMES_HOME })
+    resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, {
+      hermesHome: HERMES_HOME,
+      // Boot is the one caller where "unknown" must not become "not installed": the
+      // fall-through is the first-run setup card, which would offer to install over a
+      // working checkout just because the machine was busy (#79087). The updater keeps
+      // the strict default so an unproven pair still gets --repair.
+      onProbeTimeout: 'accept'
+    })
   )
 
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)

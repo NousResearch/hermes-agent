@@ -26,7 +26,8 @@ from tools.binary_extensions import (
 )
 from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
-from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+from tools.file_tools_read_tracking import (
+    _file_version, _full_write_baseline, _is_own_blind_patch, _read_mtime_drifted)
 import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -464,15 +465,12 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     keep ``Path.is_file`` semantics; anything not proven absent is
     ``"unavailable"`` and callers must fail closed.
     """
-    from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
-    try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
-    except Exception:
-        resolved = None
+    from tools.file_tools import _confined_local_file_ops, _file_ops_uses_host_paths, _get_file_ops, _resolve_or_none
     try:
         file_ops = _get_file_ops(task_id)
     except Exception:
         return "unavailable"
+    resolved = _resolve_or_none(filepath, task_id, confined_ops=_confined_local_file_ops(file_ops))
     if _file_ops_uses_host_paths(file_ops):
         # Host writes land on the resolved path, else today's HOST
         # ``_expand_tilde`` fallback — probe exactly that string.
@@ -571,7 +569,8 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "still current — refer to that instead of re-reading.")
 
 
-def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:
+def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str,
+                             *, confined_ops=None) -> str | None:
     """Reason write_file must NOT replace the existing file, else ``None``.
 
     Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
@@ -584,6 +583,8 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     """
     if file_state.guard_disabled():
         return None
+    if confined_ops is not None:
+        return _confined_overwrite_blocker(resolved or filepath, task_id, confined_ops)
     stale = file_state.check_stale(task_id, resolved) if resolved else None
     if stale:
         return stale
@@ -592,9 +593,12 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
             f"{filepath} was modified since you last read it (external edit or "
             "concurrent agent). Re-read the file before writing.")
     from tools.environments.sandbox_scope import hosted_scope
-    if not resolved or hosted_scope() is not None or _has_full_write_baseline(resolved, task_id):
+    if not resolved or hosted_scope() is not None:
         # A hosted agent's path names its sandbox, where no host baseline can exist (as for any
         # remote backend, whose files the host-side existence check below never finds).
+        return None
+    baseline = _full_write_baseline(resolved, task_id)
+    if baseline is not None and _file_version(resolved) == baseline:
         return None
     try:
         exists = Path(resolved).exists()
@@ -602,10 +606,29 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return None
     if not exists:
         return None
-    if _is_own_blind_patch(resolved, task_id):
+    return _unknown_overwrite_reason(resolved, task_id)
+
+
+def _confined_overwrite_blocker(resolved: str, task_id: str, file_ops) -> str | None:
+    digest = file_ops.confined_file_digest(resolved)
+    if digest == b"":
+        return None
+    if digest is None:
+        return f"Could not verify the current contents of {resolved} in the terminal backend."
+    baseline = _full_write_baseline(resolved, task_id)
+    if baseline == (digest,):
+        return None
+    return _unknown_overwrite_reason(resolved, task_id, digest=digest, changed=baseline is not None)
+
+
+def _unknown_overwrite_reason(resolved: str, task_id: str, *, digest: bytes | None = None,
+                              changed: bool = False) -> str:
+    if _is_own_blind_patch(resolved, task_id, digest=digest):
         return (
             "Your patch changed this file without a full view of its current content. Read the current file "
             "in full before a whole-file overwrite, or continue with targeted patches.")
+    if changed:
+        return f"{resolved} changed since the last full read or write. Re-read it before overwriting it."
     return (
         f"{resolved} exists but this task has not seen its full current content "
         "(never read, patched without a prior full read, or only a redacted/partial view). Read the "

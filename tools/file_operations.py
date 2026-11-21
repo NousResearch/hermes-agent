@@ -700,6 +700,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         except ValueError:
             return 0, "bad_size"
 
+    def confined_file_digest(self, path: str) -> bytes | None:
+        """SHA-256 from the backend, empty bytes for a missing path, None if unverified."""
+        arg = self._escape_shell_arg(path)
+        result = self._exec(
+            f"if [ -f {arg} ]; then "
+            f"sha256sum 2>/dev/null < {arg} || shasum -a 256 2>/dev/null < {arg}; "
+            f"elif [ ! -e {arg} ] && [ ! -L {arg} ]; then echo {MISSING_SENTINEL}; fi")
+        output = _strip_terminal_fence_leaks(result.stdout).strip()
+        if result.exit_code != 0:
+            return None
+        if output == MISSING_SENTINEL:
+            return b""
+        digest = output.partition(" ")[0]
+        return bytes.fromhex(digest) if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+
     def _env_unavailable_error(self, path: str, status: str = "env_unavailable") -> ReadResult:
         if status != "env_unavailable":
             return ReadResult(error=status)

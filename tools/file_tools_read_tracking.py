@@ -148,12 +148,14 @@ def _pop_not_found(op: str, resolved_str: str, task_id: str) -> None:
         nf.pop((op, resolved_str), None)
 
 
-def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | None:
+def _check_not_found_cache(op: str, resolved_str: str, task_id: str, *, confined_ops=None) -> str | None:
     """Return cached not-found JSON for *(op, resolved_str)* if still fresh.
 
     *op* is "read" or "search" (different error JSON shapes). Evicted by TTL,
     by write_file/patch on the path, or by any other tool call.
     """
+    if confined_ops is not None:
+        return None
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
         entry = (task_data.get("not_found") or {}).get((op, resolved_str)) if task_data else None
@@ -174,8 +176,10 @@ def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | No
     return cached_json
 
 
-def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str) -> None:
+def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str, *, confined_ops=None) -> None:
     """Cache a not-found error so the next *op* call for *resolved_str* skips I/O."""
+    if confined_ops is not None:
+        return
     with _read_tracker_lock:
         task_data = _task_data(task_id)
         task_data.setdefault("not_found", {})[(op, resolved_str)] = (time.monotonic(), error_json)
@@ -254,7 +258,8 @@ def reset_file_dedup(task_id: str | None = None):
         candidates = [(task_data, dict(task_data.get("full_write_baselines", {})))
                       for task_data in targets]
     for task_data, baselines in candidates:
-        changed = {p for p, version in baselines.items() if _file_metadata(p) != version[:-1]}
+        # A backend digest has no host metadata. Its next overwrite rechecks it in the backend.
+        changed = {p for p, version in baselines.items() if version[:-1] and _file_metadata(p) != version[:-1]}
         if changed:
             with _read_tracker_lock:
                 for p in changed:
@@ -285,6 +290,10 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     resolved = _resolved_or_none(filepath, task_id)
     if resolved is None:
         return
+    _invalidate_resolved_read(resolved, task_id)
+
+
+def _invalidate_resolved_read(resolved: str, task_id: str) -> None:
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
         if task_data is None:
@@ -336,8 +345,11 @@ def _file_metadata(resolved: str) -> tuple | None:
         return None
 
 
-def _file_version(resolved: str) -> tuple | None:
+def _file_version(resolved: str, confined_ops=None) -> tuple | None:
     """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
+    if confined_ops is not None:
+        digest = confined_ops.confined_file_digest(resolved)
+        return (digest,) if digest else None
     if not _on_host(resolved):
         return None
     try:
@@ -359,11 +371,12 @@ def _file_version(resolved: str) -> tuple | None:
         return None
 
 
-def _mark_full_write_baseline(resolved: str, task_id: str, expected_sha256: str | None = None) -> None:
+def _mark_full_write_baseline(resolved: str, task_id: str, expected_sha256: str | None = None,
+                              *, confined_ops=None) -> None:
     """Record that *task_id* saw the whole current content of *resolved* (full
     unredacted read_file, or its own successful write_file), so a later
     write_file may replace the file. Acquires the lock itself."""
-    version = _file_version(resolved)
+    version = _file_version(resolved, confined_ops)
     if version is None or (expected_sha256 is not None and version[-1].hex() != expected_sha256):
         return
     with _read_tracker_lock:
@@ -373,14 +386,13 @@ def _mark_full_write_baseline(resolved: str, task_id: str, expected_sha256: str 
         _cap_read_tracker_data(task_data)
 
 
-def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
+def _full_write_baseline(resolved: str, task_id: str) -> tuple | None:
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id) or {}
-        baseline = task_data.get("full_write_baselines", {}).get(str(resolved))
-    return baseline is not None and _file_version(resolved) == baseline
+        return task_data.get("full_write_baselines", {}).get(resolved)
 
 
-def _known_full_content_sha256(resolved_paths, task_id: str) -> dict:
+def _known_full_content_sha256(resolved_paths, task_id: str, *, confined_ops=None) -> dict:
     """``{resolved: sha256 hex}`` for each path whose recorded full-write baseline still
     matches the bytes on disk. Call under the per-path locks, before a patch reads."""
     with _read_tracker_lock:
@@ -388,12 +400,13 @@ def _known_full_content_sha256(resolved_paths, task_id: str) -> dict:
     known = {}
     for resolved in {str(r) for r in resolved_paths if r}:
         baseline = baselines.get(resolved)
-        if baseline is not None and _file_version(resolved) == baseline:
+        if baseline is not None and _file_version(resolved, confined_ops) == baseline:
             known[resolved] = baseline[-1].hex()
     return known
 
 
-def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resolved: dict) -> None:
+def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resolved: dict,
+                                 *, confined_ops=None) -> None:
     """After this task's own successful patch: keep the whole-file baseline of each written
     path when the task knew the exact bytes the patch read (``known``, from
     ``_known_full_content_sha256``) or the patch created the file (read sha ``""``). Then
@@ -416,7 +429,7 @@ def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resol
         if written_sha is None:
             continue
         if known[resolved] is not None:
-            _mark_full_write_baseline(resolved, task_id, written_sha)
+            _mark_full_write_baseline(resolved, task_id, written_sha, confined_ops=confined_ops)
             continue
         with _read_tracker_lock:
             task_data = _task_data(task_id)
@@ -424,15 +437,17 @@ def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resol
             _cap_read_tracker_data(task_data)
 
 
-def _is_own_blind_patch(resolved: str, task_id: str) -> bool:
+def _is_own_blind_patch(resolved: str, task_id: str, *, digest: bytes | None = None) -> bool:
     """True when the bytes on disk are exactly what this task's own patch wrote without a
     full-content baseline (a blind patch, or one after a partial view)."""
     with _read_tracker_lock:
         written_sha = ((_read_tracker.get(task_id) or {}).get("blind_patches") or {}).get(str(resolved))
     if written_sha is None:
         return False
-    version = _file_version(resolved)
-    return version is not None and version[-1].hex() == written_sha
+    if digest is None:
+        version = _file_version(resolved)
+        digest = version[-1] if version is not None else None
+    return digest is not None and digest.hex() == written_sha
 
 
 _READ_COVERAGE_RANGES_CAP = 256

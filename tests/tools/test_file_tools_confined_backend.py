@@ -13,10 +13,15 @@ import json
 
 import pytest
 
+from agent.runtime_scope import bind_profile_scope
+from agent.terminal_env_provider import TerminalEnvironmentProvider
+from agent.terminal_env_registry import _registry as terminal_env_registry
 from tools import terminal_tool
 from tools.environments.local import LocalEnvironment
-from tools.file_tools import clear_file_ops_cache
+from tools.file_tools import _get_file_ops, clear_file_ops_cache
+from tools.file_tools_read_tracking import reset_file_dedup
 from tools.registry import registry
+from tools.terminal_tool_lifecycle import cleanup_vm
 
 # The host fast path is POSIX-only (``_native_read_enabled``); Windows always takes the shell path.
 pytestmark = pytest.mark.platforms("posix")
@@ -40,8 +45,29 @@ class _ConfinedEnv(_MountedViewEnv):
     uses_host_filesystem = False
 
 
+class _CardProvider(TerminalEnvironmentProvider):
+    name = "test_card"
+    is_remote = False
+    is_container = False
+
+    def __init__(self, workspace):
+        self.default_workspace = str(workspace)
+
+    @property
+    def default_cwd(self):
+        return self.default_workspace
+
+    def is_available(self):
+        return True
+
+    def create_environment(self, *, cwd, timeout, **kwargs):
+        return _ConfinedEnv(self.default_workspace, self.default_workspace)
+
+
 def _dispatch(name, task_id, **arguments):
-    return json.loads(registry.dispatch(name, arguments, task_id=task_id))
+    result = registry.dispatch(name, arguments, task_id=task_id)
+    assert isinstance(result, str)
+    return json.loads(result)
 
 
 @pytest.fixture
@@ -91,3 +117,105 @@ def test_host_backend_keeps_the_host_fast_path(mounted):
     assert "error" not in written, written
     assert (view / "b.txt").read_text(encoding="utf-8") == "gamma\n"
     assert not (real / "b.txt").exists()
+
+
+@pytest.mark.parametrize("mounted", [_ConfinedEnv], indirect=True)
+def test_confined_overwrite_checks_backend_file_instead_of_host_decoy(mounted, tmp_path):
+    _env, view, real, task = mounted
+    view.mkdir()
+    decoy = tmp_path / "decoy.txt"
+    decoy.write_text("host copy\n", encoding="utf-8")
+    path = view / "a.txt"
+    path.symlink_to(decoy)
+
+    refused = _dispatch("write_file", task, path=str(path), content="unread\n")
+    assert refused.get("stale_write_blocked"), refused
+    read = _dispatch("read_file", task, path=str(path))
+    assert read.get("content") == "1|alpha\n2|beta", read
+    written = _dispatch("write_file", task, path=str(path), content="backend copy\n")
+    assert "error" not in written, written
+    assert (real / "a.txt").read_text(encoding="utf-8") == "backend copy\n"
+
+    (real / "a.txt").write_text("external edit\n", encoding="utf-8")
+    refused = _dispatch("write_file", task, path=str(path), content="stale\n")
+    assert refused.get("stale_write_blocked"), refused
+    assert (real / "a.txt").read_text(encoding="utf-8") == "external edit\n"
+    assert decoy.read_text(encoding="utf-8") == "host copy\n"
+
+
+@pytest.fixture
+def card_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "config.yaml").write_text("terminal:\n  backend: test_card\n", encoding="utf-8")
+    path = workspace / "draft.json"
+    path.write_text('{\n  "status": "draft"\n}\n', encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY", "1")
+    task = "card-workspace"
+    with bind_profile_scope(profile, hydrate_secrets=False):
+        terminal_env_registry.register(_CardProvider(workspace))
+        terminal_tool.record_session_cwd(task, str(workspace))
+        try:
+            yield path, task
+        finally:
+            cleanup_vm(terminal_tool._resolve_container_task_id(task))
+            terminal_tool.clear_session_cwd(task)
+            clear_file_ops_cache(task)
+            terminal_env_registry.reset_for_tests()
+
+
+@pytest.mark.parametrize("patch_first", [False, True], ids=["full-read", "full-reread-after-patch"])
+def test_card_workspace_full_read_allows_overwrite(card_workspace, patch_first):
+    path, task = card_workspace
+    read = _dispatch("read_file", task, path=str(path))
+    assert read.get("truncated") is False and read.get("total_lines") == 3, read
+    if patch_first:
+        patched = _dispatch("patch", task, path=str(path), old_string='"draft"', new_string='"reviewed"')
+        assert patched["success"], patched
+        read = _dispatch("read_file", task, path=str(path))
+        assert read.get("truncated") is False and '"reviewed"' in read["content"], read
+
+    content = '{"status": "final"}\n'
+    written = _dispatch("write_file", task, path=str(path), content=content)
+    assert "error" not in written, written.get("error")
+    assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize("prior_read", ["none", "partial", "stale"])
+def test_card_workspace_overwrite_requires_current_full_read(card_workspace, prior_read):
+    path, task = card_workspace
+    if prior_read == "partial":
+        read = _dispatch("read_file", task, path=str(path), limit=1)
+        assert read.get("truncated") is True, read
+    if prior_read == "stale":
+        read = _dispatch("read_file", task, path=str(path))
+        assert read.get("truncated") is False, read
+        path.write_text('{"status": "changed externally"}\n', encoding="utf-8")
+    saved = path.read_text(encoding="utf-8")
+
+    refused = _dispatch("write_file", task, path=str(path), content='{"status": "final"}\n')
+    assert refused.get("stale_write_blocked"), refused
+    assert path.read_text(encoding="utf-8") == saved
+
+
+def test_card_workspace_paged_read_uses_task_cwd_and_survives_compaction(card_workspace, tmp_path):
+    path, task = card_workspace
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / path.name).write_text('{"status": "other"}\n', encoding="utf-8")
+    _get_file_ops(task).env.cwd = str(other)
+
+    first = _dispatch("read_file", task, path=path.name, limit=1)
+    assert first.get("truncated") is True, first
+    rest = _dispatch("read_file", task, path=path.name, offset=2)
+    assert '"draft"' in rest.get("content", ""), rest
+    reset_file_dedup(task)
+
+    content = '{"status": "final"}\n'
+    written = _dispatch("write_file", task, path=path.name, content=content)
+    assert "error" not in written, written
+    assert path.read_text(encoding="utf-8") == content
+    assert (other / path.name).read_text(encoding="utf-8") == '{"status": "other"}\n'

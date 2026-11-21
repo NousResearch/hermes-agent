@@ -8,6 +8,7 @@ staleness state).
 
 import base64
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ import stat
 import threading
 import time
 from contextlib import ExitStack
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
@@ -29,8 +30,8 @@ from tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _hosted_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
-    _resolve_path_for_task)
+    _authoritative_workspace_root, _expand_tilde, _hosted_tilde, _path_resolution_warning,
+    _resolve_base_dir, _resolve_entry_for_task, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -38,7 +39,7 @@ from tools.file_tools_write_guards import (
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
     _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
-    _file_metadata, _file_version, _on_host,
+    _file_metadata, _file_version, _invalidate_resolved_read, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
@@ -130,6 +131,24 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     return env_uses_host_filesystem(env)
 
 
+def _confined_local_file_ops(file_ops) -> ShellFileOperations | None:
+    env = getattr(file_ops, "env", None)
+    if getattr(env, "is_local", False) is True and not _file_ops_uses_host_paths(file_ops):
+        return file_ops
+    return None
+
+
+def _confined_file_path(path: str, task_id: str, file_ops: ShellFileOperations) -> Path:
+    """Anchor in the task's workspace without following this host's symlinks."""
+    from tools.environments.local import _msys_to_windows_path
+
+    text = _msys_to_windows_path(file_ops._expand_path(path))
+    if not os.path.isabs(text):
+        base = _authoritative_workspace_root(task_id) or file_ops.cwd
+        text = os.path.join(_msys_to_windows_path(base), text)
+    return Path(os.path.normpath(text))
+
+
 # V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after
 # ``***`` mirrors patch_parser's leniency (``***Update File:`` applies, so it
 # must be checked).
@@ -137,9 +156,9 @@ _V4A_SINGLE_HEADER_RE = re.compile(r'^(\*\*\*\s*(Update|Add|Delete)\s+File:\s*)(
 _V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
-def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
-                                      file_ops, task_id: str = "default") -> str:
-    """Rewrite V4A file headers to the resolved host paths (host backends only).
+def _rewrite_v4a_patch_paths(patch: str, path_to_resolved: dict, path_to_entry: dict,
+                            file_ops, task_id: str = "default", *, confined_ops=None) -> str:
+    """Anchor V4A file headers for local and confined local backends.
 
     The shell layer must patch the SAME files ``patch_tool`` resolved for
     locking/staleness, not re-resolve a relative header against its own cwd
@@ -151,7 +170,7 @@ def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_t
     """
     from tools.environments.sandbox_scope import hosted_scope
     hosted = hosted_scope() is not None
-    if not _file_ops_uses_host_paths(file_ops) and not hosted:
+    if not _file_ops_uses_host_paths(file_ops) and not hosted and confined_ops is None:
         return patch
 
     def _res(raw: str, entry: bool = False) -> str:
@@ -171,7 +190,7 @@ def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_t
         else f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
-def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
+def _is_blocked_device(filepath: str, base_dir: str | PurePath | None = None) -> bool:
     """True if the path (literal, any symlink hop, or final realpath) is a blocked device.
 
     Literal first so /dev/stdin is caught before resolving to a terminal path;
@@ -419,7 +438,8 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                             *, confined_ops=None) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -451,7 +471,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
             logger.debug("Archive sync before read failed for %s", path, exc_info=True)
     # The sandbox resolves its own ``~`` and cwd: _resolved expanded them with the host's, so a sandbox
     # gets the path as the model gave it, like the ordinary read in read_file_tool.
-    byte_path = str(_resolved) if _file_ops_uses_host_paths(file_ops) else path
+    byte_path = str(_resolved) if confined_ops is not None or _file_ops_uses_host_paths(file_ops) else path
     try:
         binary = file_ops.read_file_bytes(byte_path, max_bytes=MAX_DOCUMENT_BYTES)
         if binary.error or binary.base64_content is None:
@@ -514,10 +534,18 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         # The whole document was shown, so a text-authorable format (.ipynb)
         # may later be overwritten by write_file; the binary-container guard
         # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
-        _mark_full_write_baseline(str(_resolved), task_id)
-        _update_read_timestamp(str(_resolved), task_id)
-        file_state.record_read(task_id, str(_resolved))
+        _mark_document_read(str(_resolved), task_id, document_bytes, confined_ops)
     return json.dumps(result_dict, ensure_ascii=False)
+
+
+def _mark_document_read(resolved: str, task_id: str, document_bytes: bytes, confined_ops) -> None:
+    if confined_ops is not None:
+        _mark_full_write_baseline(resolved, task_id, hashlib.sha256(document_bytes).hexdigest(),
+                                  confined_ops=confined_ops)
+        return
+    _mark_full_write_baseline(resolved, task_id)
+    _update_read_timestamp(resolved, task_id)
+    file_state.record_read(task_id, resolved)
 
 
 def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
@@ -553,10 +581,27 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
     }, ensure_ascii=False)
 
 
+def _read_version_before(resolved: str, host_paths: bool, confined_ops) -> tuple | None:
+    if confined_ops is not None:
+        return _file_version(resolved, confined_ops)
+    return _file_metadata(resolved) if host_paths else None
+
+
+def _stable_read_version(resolved: str, version_before, snapshot, confined_ops) -> tuple | None:
+    if version_before is None:
+        return None
+    if confined_ops is not None:
+        return version_before if _file_version(resolved, confined_ops) == version_before else None
+    version = snapshot or _file_version(resolved)
+    if version is not None and version[:-1] == version_before == _file_metadata(resolved):
+        return version
+    return None
+
+
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None, confined_ops=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -569,20 +614,19 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     background-review read-mark (a FULL read of a skill file counts like
     skill_view so a follow-up skill_manage(patch) is accepted).
     """
-    version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
-    stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
+    version = _stable_read_version(resolved_str, version_before, snapshot, confined_ops)
     complete = False
     with _read_tracker_lock:
         count, dedup = _note_read_served(task_data, dedup_key, path, offset, limit)
         task_data["read_history"].add((path, offset, limit))
         try:
-            if _on_host(resolved_str):
+            if confined_ops is None and _on_host(resolved_str):
                 _mtime_now = os.path.getmtime(resolved_str)
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]
-        if stable and version is not None and count < 4:
+        if version is not None and count < 4:
             dedup[dedup_key] = version_before
             # A narrower view does not undo knowledge of these same bytes. Do
             # not revive a baseline after a partial read of a different version.
@@ -598,13 +642,14 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
-        if not stable or count >= 4:
+        if version is None or count >= 4:
             task_data["dedup"].pop(dedup_key, None)
             task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
 
     try:
-        file_state.record_read(task_id, resolved_str, partial=not complete)
+        if confined_ops is None:
+            file_state.record_read(task_id, resolved_str, partial=not complete)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -635,6 +680,31 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
         return None, True
 
 
+def _read_target(path: str, task_id: str, confined_ops, unanchored: bool) -> Path | PurePosixPath:
+    if confined_ops is not None:
+        return _confined_file_path(path, task_id, confined_ops)
+    return PurePosixPath(path) if unanchored else _resolve_path_for_task(path, task_id)
+
+
+def _read_target_refusal(path: str, resolved: Path | PurePosixPath, host_paths: bool) -> str | None:
+    if host_paths:
+        kind = _special_file_kind(resolved)
+        if kind is not None:
+            return json.dumps({
+                "success": False,
+                "note": (
+                    f"'{path}' is {kind}, not a regular file — reading "
+                    "it would block indefinitely, so no read was "
+                    "attempted. Use terminal utilities if you need to "
+                    "interact with it.")})
+
+    # Check the full path before extraction. Checking a relative "auth.json"
+    # against the process cwd can miss a protected store in the task cwd.
+    if block_error := get_read_block_error(str(resolved)):
+        return tool_error(block_error)
+    return None
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -661,29 +731,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 f"Cannot read '{path}': this is a device file that would "
                 "block or produce infinite output.")
 
-        _resolved = PurePosixPath(path) if unanchored else _resolve_path_for_task(path, task_id)
+        file_ops = _get_file_ops(task_id)
+        confined_ops = _confined_local_file_ops(file_ops)
+        _resolved = _read_target(path, task_id, confined_ops, unanchored)
+        host_paths = _file_ops_uses_host_paths(file_ops)
 
-        # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
-            kind = _special_file_kind(_resolved)
-            if kind is not None:
-                return json.dumps({
-                    "success": False,
-                    "note": (
-                        f"'{path}' is {kind}, not a regular file — reading "
-                        "it would block indefinitely, so no read was "
-                        "attempted. Use terminal utilities if you need to "
-                        "interact with it.")})
+        if refusal := _read_target_refusal(path, _resolved, host_paths):
+            return refusal
 
-        # Hermes internal denylist (prompt injection via catalog metadata,
-        # credential stores). Runs BEFORE document extraction so a
-        # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
-        # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
-
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, confined_ops=confined_ops)
         if extracted is not None:
             return extracted
 
@@ -695,7 +751,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "Use vision_analyze for images, or terminal to inspect binary files.")
 
         resolved_str = str(_resolved)
-        cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
+        cached_not_found = _check_not_found_cache("read", resolved_str, task_id, confined_ops=confined_ops)
         if cached_not_found is not None:
             return cached_not_found
 
@@ -705,13 +761,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         task_data, cached_version, content_served_in_generation = _dedup_lookup(task_id, dedup_key)
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
-        file_ops = _get_file_ops(task_id)
-        version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
+        version_before = _read_version_before(resolved_str, host_paths, confined_ops)
         if (cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        result = file_ops.read_file(resolved_str if host_paths or confined_ops is not None else path, offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -719,7 +774,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if isinstance(_err, str) and _err.startswith("File not found:"):
             from tools.tool_result_storage import expired_archive_fields
             result_dict.update(expired_archive_fields(path))
-            _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
+            _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False),
+                              confined_ops=confined_ops)
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -767,7 +823,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        snapshot=getattr(result, "_snapshot", None), confined_ops=confined_ops)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -788,10 +844,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
-def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False) -> str | None:
+def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False, confined_ops=None) -> str | None:
     """Task-resolved path string, or None when resolution fails for any reason.
     ``entry``: keep a symlink in the last component (``_resolve_entry_for_task``)."""
     try:
+        if confined_ops is not None:
+            return str(_confined_file_path(filepath, task_id, confined_ops))
         return str((_resolve_entry_for_task if entry else _resolve_path_for_task)(filepath, task_id))
     except Exception:
         return None
@@ -818,14 +876,16 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
             or _check_approval_required_write(paths, task_id))
 
 
-def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> list[str]:
+def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str, *, confined_ops=None) -> list[str]:
     """One pre-edit warning per path, in priority order: cross-agent registry
     (names the sibling subagent) > per-task staleness > workspace divergence
     (relative path resolving outside the terminal's cwd — the worktree-cwd bug)."""
     warnings: list[str] = []
     for p in paths:
         r = path_to_resolved.get(p)
-        w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
+        w = None
+        if confined_ops is None:
+            w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
         if not w and r:
             w = _path_resolution_warning(p, Path(r), task_id)
         if w:
@@ -833,9 +893,14 @@ def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> li
     return warnings
 
 
-def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session_id: str | None) -> None:
+def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session_id: str | None,
+                 *, confined_ops=None) -> None:
     """Post-success bookkeeping: verification-stale marker, then per path refresh
     the read stamp (no false staleness on the next edit) and record the write."""
+    if confined_ops is not None:
+        for resolved in filter(None, path_to_resolved.values()):
+            _invalidate_resolved_read(resolved, task_id)
+        return
     _mark_verification_stale(task_id, [path_to_resolved.get(p) or p for p in paths], session_id=session_id)
     for p in paths:
         _update_read_timestamp(p, task_id)
@@ -911,9 +976,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     if err:
         return tool_error(err)
     try:
+        file_ops = _get_file_ops(task_id)
+        confined_ops = _confined_local_file_ops(file_ops)
         # Resolution failure falls back to the legacy unlocked path (the write
         # still proceeds; the per-task staleness check still runs).
-        _resolved = _resolve_or_none(path, task_id)
+        _resolved = _resolve_or_none(path, task_id, confined_ops=confined_ops)
         path_to_resolved = {path: _resolved}
         with ExitStack() as _lock:
             if _resolved:
@@ -923,12 +990,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # A whole-file overwrite of content this task never saw, or that
             # changed since, is refused HERE — before the write — instead of
             # warning after the clobber (#65604). Nothing below runs.
-            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            blocker = _stale_overwrite_blocker(path, _resolved, task_id, confined_ops=confined_ops)
             if blocker:
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
-            warnings = _edit_warnings([path], path_to_resolved, task_id)
+            warnings = _edit_warnings([path], path_to_resolved, task_id, confined_ops=confined_ops)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            result = file_ops.write_file(_resolved or path, content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -938,15 +1005,16 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.
                 result_dict["resolved_path"] = _resolved
-            if result_dict.get("error"):
-                _update_read_timestamp(path, task_id)
-            else:
+            if not result_dict.get("error"):
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
                     # Own write = current whole-file content: consecutive
                     # same-task writes stay unblocked (patch_tool carries it).
-                    _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
-                _note_edited(task_id, [path], path_to_resolved, session_id)
+                    _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None),
+                                              confined_ops=confined_ops)
+                _note_edited(task_id, [path], path_to_resolved, session_id, confined_ops=confined_ops)
+            elif confined_ops is None:
+                _update_read_timestamp(path, task_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1008,19 +1076,18 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
     if precheck_err:
         return tool_error(precheck_err)
     try:
+        file_ops = _get_file_ops(task_id)
+        confined_ops = _confined_local_file_ops(file_ops)
         # Lock paths in sorted, deduplicated order so concurrent callers with
         # overlapping multi-file patches can't deadlock (every caller locks in
         # the same order). An unresolvable path is simply not locked.
-        _path_to_resolved: dict[str, str] = {_p: _resolve_or_none(_p, task_id) for _p in _paths_to_check}
-        _path_to_entry: dict[str, str] = {_p: _resolve_or_none(_p, task_id, entry=True) for _p in _entry_paths}
+        _path_to_resolved = {_p: _resolve_or_none(_p, task_id, confined_ops=confined_ops) for _p in _paths_to_check}
+        _path_to_entry = {_p: _resolve_or_none(_p, task_id, entry=True, confined_ops=confined_ops) for _p in _entry_paths}
         with ExitStack() as _locks:
             for _r in sorted({_r for _r in (*_path_to_resolved.values(), *_path_to_entry.values()) if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
-            stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
-            file_ops = _get_file_ops(task_id)
-            # Whole-file knowledge held BEFORE the patch reads, under the same locks. Like
-            # every baseline check it stats the host path, so a sandbox path carries nothing.
-            _known = _known_full_content_sha256(_path_to_resolved.values(), task_id)
+            stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id, confined_ops=confined_ops)
+            _known = _known_full_content_sha256(_path_to_resolved.values(), task_id, confined_ops=confined_ops)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -1035,7 +1102,8 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops, task_id))
+                    _rewrite_v4a_patch_paths(patch, _path_to_resolved, _path_to_entry, file_ops, task_id,
+                                             confined_ops=confined_ops))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1050,8 +1118,9 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
-                _note_edited(task_id, _paths_to_check, _path_to_resolved, session_id)
-                _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved)
+                _note_edited(task_id, _paths_to_check, _path_to_resolved, session_id, confined_ops=confined_ops)
+                _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved,
+                                             confined_ops=confined_ops)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
         # old_string-not-found hint. Failure escalation is tracked for replace

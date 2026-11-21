@@ -436,6 +436,7 @@ describe('ChatSidebar empty-profile sections', () => {
     $messagingSessions.set([])
     $sidebarMessagingOpenIds.set([])
     $sessions.set([])
+    setSidebarAgentsGrouped(false)
   })
 
   it('shows the messaging section for a profile with no normal sessions', () => {
@@ -448,6 +449,21 @@ describe('ChatSidebar empty-profile sections', () => {
     // only renders inside the session area, so its presence proves the area
     // (and the messaging sections inside it) rendered.
     expect(screen.getByPlaceholderText('Search sessions…')).toBeTruthy()
+  })
+
+  it('keeps the messaging section visible in Project grouping view (#90579)', () => {
+    // The platform sections are global — orthogonal to whichever code
+    // workspace is in front. They used to render behind the
+    // worktreeGroupingActive gate, so switching grouping to Project made
+    // every platform section vanish with no affordance, which users read
+    // as their chat history being deleted.
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getAllByText('Telegram').length).toBeGreaterThan(0)
+    expect(screen.getByText('tg-one')).toBeTruthy()
   })
 
   it('still shows the blank state when a profile has nothing at all', () => {

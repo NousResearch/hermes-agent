@@ -896,16 +896,46 @@ def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
     The Desktop writes SSH locks beneath the ROOT home (``~/.hermes/desktop-ssh``), but a profile
     backend (``hermes --profile X serve``) runs with ``HERMES_HOME=<root>/profiles/X`` — scanning only
     the process home found no lock there and its reaper killed the sibling profile's live SSH
-    backend on every profile switch (#89811)."""
+    backend on every profile switch (#89811).
+
+    The Desktop's path is the literal ``~/.hermes/desktop-ssh`` of the SSH login account
+    (``REMOTE_LOCK_DIR`` in ``apps/desktop/electron/remote-lifecycle.ts``), independent of any
+    ``HERMES_HOME``. A custom root (Docker ``HERMES_HOME=/opt/data``, a wrapper exporting it) resolves
+    both entries above away from it, so the native ``~/.hermes`` — what the login shell expanded ``~``
+    to — is scanned too."""
     if base_dir is not None:
         return [base_dir]
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
     roots: list[Path] = []
-    for home in (_hermes_home_dir(), get_default_hermes_root()):
+    for home in (_hermes_home_dir(), get_default_hermes_root(), _get_platform_default_hermes_home()):
         root = home / _REMOTE_LOCK_SUBDIR
         if root not in roots:
             roots.append(root)
     return roots
+
+
+# What resolving / stat-ing a home-relative lock dir can raise: an undeterminable home
+# (RuntimeError, or KeyError from the password database), an unreadable or invalid path.
+_HOME_PROBE_ERRORS = (OSError, ValueError, RuntimeError, KeyError)
+
+
+def _any_remote_lock_root_visible() -> bool:
+    """True when at least one dir the Desktop may have written SSH locks under exists and can be
+    listed. When none can, an unclaimed SSH backend proves nothing: the scan is looking in the wrong
+    place (or cannot read it), not at a retired claim. Deliberately "any root": a visible root means
+    the lock scan is live, so a missing claim there is a real retirement (never raises; an
+    unreadable or unresolvable state counts as not visible)."""
+    try:
+        return any(root.is_dir() and os.access(root, os.R_OK | os.X_OK)
+                   for root in _remote_lock_roots(None))
+    except _HOME_PROBE_ERRORS:
+        return False
+
+
+def _ssh_owned_serve_cmdline(command: str) -> bool:
+    """True when argv carries the Desktop SSH owner nonce (``--ssh-owner-nonce``), i.e. the backend
+    was spawned by a Desktop over SSH and its claim lives in a ``backend.lock.json``."""
+    return _flag_value(command.split(), "--ssh-owner-nonce") is not None
 
 
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
@@ -957,7 +987,8 @@ def _process_age_seconds(pid: int) -> float:
 
 def _reap_orphaned_desktop_local_serves(
     *, reason: str = "orphaned desktop-local hermes serve", signal_term=None, signal_kill=None,
-    sleep_fn=None, lock_owned_pids_fn=None, process_age_seconds_fn=None) -> dict[str, list]:
+    sleep_fn=None, lock_owned_pids_fn=None, process_age_seconds_fn=None,
+    lock_roots_visible_fn=None) -> dict[str, list]:
     """Kill leftover Desktop-local ``hermes serve`` backends with no parent. Never raises.
 
     When Electron dies uncleanly its ``serve --host 127.0.0.1 --port 0`` children are
@@ -965,6 +996,8 @@ def _reap_orphaned_desktop_local_serves(
     backend on the corpses until EMFILE. Reaped only if ALL hold: Desktop-local shape; ppid
     0/1; not self / parent / HERMES_DESKTOP_CHILD_PID; not claimed by a valid
     ``backend.lock.json`` (SSH backends other clients started legitimately sit at ppid 1);
+    for an SSH-spawned backend (``--ssh-owner-nonce``), at least one lock dir is visible — with
+    none visible its missing claim is unproven (the scan looks in the wrong place), so it is spared;
     older than ``_REAP_MIN_AGE_SECONDS`` with a determinable age (Desktop writes the lock only
     after HERMES_BACKEND_READY, so a live sibling mid-startup is briefly unowned).
     """
@@ -975,6 +1008,7 @@ def _reap_orphaned_desktop_local_serves(
     sleep_fn = sleep_fn or _time.sleep
     lock_owned_pids_fn = lock_owned_pids_fn or _lock_owned_serve_pids
     process_age_seconds_fn = process_age_seconds_fn or _process_age_seconds
+    lock_roots_visible_fn = lock_roots_visible_fn or _any_remote_lock_root_visible
     if sys.platform == "win32":  # Windows desktop uses taskkill tree teardown
         return _empty_result()
 
@@ -983,6 +1017,12 @@ def _reap_orphaned_desktop_local_serves(
             return set(lock_owned_pids_fn())
         except Exception:
             return set()  # never let lock scanning block or widen the reap
+
+    def _lock_roots_visible() -> bool:
+        try:  # an indeterminate answer must never widen the reap
+            return bool(lock_roots_visible_fn())
+        except _HOME_PROBE_ERRORS:
+            return False
 
     def _is_stale_orphan(pid: int) -> bool:
         try:  # never let a liveness probe failure widen the reap
@@ -998,8 +1038,11 @@ def _reap_orphaned_desktop_local_serves(
     except Exception:
         return _empty_result()
     owned_now = _owned_pids()  # re-read: a lock may have been written since the scan
+    roots_visible = _lock_roots_visible()
     matched = [pid for pid, cmd in scanned
                if _is_desktop_local_serve_cmdline(cmd) and pid not in owned_now
+               # No lock dir visible at all: an SSH backend's missing claim is unproven, not retired.
+               and (roots_visible or not _ssh_owned_serve_cmdline(cmd))
                and _process_ppid(pid) in (0, 1) and _is_stale_orphan(pid)]
     if not matched:
         return _empty_result()

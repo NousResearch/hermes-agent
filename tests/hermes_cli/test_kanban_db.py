@@ -2081,3 +2081,47 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Task ids
+# ---------------------------------------------------------------------------
+
+
+def _expected_id(when: float) -> str:
+    return "t_" + time.strftime("%m%d%H%M", time.localtime(when))
+
+
+def test_task_id_is_the_creation_minute(kanban_home, monkeypatch):
+    """A card id reads as its creation minute (``t_MMddHHmm``), not a random hex."""
+    fixed = 1_800_000_000.0
+    monkeypatch.setattr(kb.time, "time", lambda: fixed)
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="dated id", assignee="a")
+    assert task_id == _expected_id(fixed)
+
+
+def test_second_card_of_a_minute_takes_the_next_free_minute(kanban_home, monkeypatch):
+    """Two cards created in one minute step apart instead of colliding.
+
+    The id *is* the minute, so the free-minute walk inside the write
+    transaction is the only thing keeping same-minute creations distinct.
+    """
+    fixed = 1_800_000_000.0
+    monkeypatch.setattr(kb.time, "time", lambda: fixed)
+    with kbc.connect() as conn:
+        first = kb.create_task(conn, title="first", assignee="a")
+        second = kb.create_task(conn, title="second", assignee="a")
+    assert first == _expected_id(fixed)
+    assert second == _expected_id(fixed + 60)
+
+
+def test_a_minute_is_free_again_once_its_card_is_gone(kanban_home, monkeypatch):
+    """The walk is a lookup, not a counter: a removed minute is reused."""
+    fixed = 1_800_000_000.0
+    monkeypatch.setattr(kb.time, "time", lambda: fixed)
+    with kbc.connect() as conn:
+        first = kb.create_task(conn, title="first", assignee="a")
+        conn.execute("DELETE FROM tasks WHERE id = ?", (first,))
+        again = kb.create_task(conn, title="again", assignee="a")
+    assert again == _expected_id(fixed)

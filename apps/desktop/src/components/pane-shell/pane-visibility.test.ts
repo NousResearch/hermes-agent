@@ -84,3 +84,29 @@ describe('hidden pane painting contract', () => {
     expect(getComputedStyle(document.getElementById('live-card')!).visibility).toBe('visible')
   })
 })
+
+describe('session switch transition suppression contract', () => {
+  // Toggling `visibility: hidden` <-> `visible` across `[data-pane-hidden] *`
+  // otherwise starts CSS transitions on transition-enabled descendants, firing
+  // a `transitionrun` storm that compounds with synchronous scroll-restore
+  // geometry reads into a 1-2s `Recalculate style` stall (#158689, #146852).
+  const paneTransitionRule = (): string => {
+    const match = cssText.match(
+      /\/\* Suppress CSS transitions on hidden keep-alive panes[\s\S]*?\[data-session-switching\] \*::after \{[\s\S]*?\}/
+    )
+
+    expect(match).not.toBeNull()
+
+    return match![0]
+  }
+
+  it('disables CSS transitions across hidden panes and switching surfaces (#158689)', () => {
+    const rule = paneTransitionRule()
+
+    expect(rule).toContain('[data-pane-hidden]')
+    expect(rule).toContain('[data-pane-hidden] *')
+    expect(rule).toContain('[data-session-switching]')
+    expect(rule).toContain('[data-session-switching] *')
+    expect(rule).toMatch(/transition:\s*none\s*!important/)
+  })
+})

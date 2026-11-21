@@ -92,6 +92,8 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `im:write` | Open and manage DMs |
 | `mpim:history` | Read group direct message (multi-person DM) history |
 | `mpim:read` | View basic group DM info |
+| `reactions:read` | Receive emoji reactions on messages the bot can see (`reaction_added` / `reaction_removed`) |
+| `reactions:write` | Add the status reactions while Hermes works on a message (👀, then ✅ or ❌). Without it no reaction appears; turn reactions off with `SLACK_REACTIONS=false` instead |
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |

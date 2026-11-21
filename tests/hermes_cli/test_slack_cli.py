@@ -154,3 +154,11 @@ class TestSlackFullManifest:
             assert event in bot_events
 
 
+@pytest.mark.parametrize("experience", ["assistant", "agent", "none"])
+def test_manifest_requests_reactions_write_for_status_reactions(experience):
+    """The adapter adds 👀/✅/❌ with reactions.add, which needs reactions:write (#157865)."""
+    manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack", messaging_experience=experience)
+
+    bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+    assert "reactions:write" in bot_scopes
+    assert "reactions:read" in bot_scopes

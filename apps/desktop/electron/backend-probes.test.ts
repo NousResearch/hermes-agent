@@ -17,6 +17,7 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
+  isTimeoutError,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
@@ -29,6 +30,91 @@ import {
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
+
+test('isTimeoutError requires an explicit ETIMEDOUT code, not termination diagnostics', () => {
+  assert.equal(isTimeoutError({ code: 'ETIMEDOUT' }), true)
+  assert.equal(isTimeoutError({ code: 'ETIMEDOUT', killed: true, signal: 'SIGTERM' }), true)
+
+  for (const error of [
+    null,
+    'ETIMEDOUT',
+    new Error('timed out'),
+    { code: 'ENOENT' },
+    { killed: true },
+    { signal: 'SIGTERM' },
+    { code: 1, killed: true, signal: 'SIGTERM' }
+  ]) {
+    assert.equal(isTimeoutError(error), false)
+  }
+})
+
+test('execProbe labels its actual Node timeout ETIMEDOUT and retries only once', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-timeout-'))
+  const attempts = path.join(root, 'attempts')
+
+  const childScript = `
+    require('node:fs').appendFileSync(${JSON.stringify(attempts)}, 'attempt\\n')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)
+  `
+
+  try {
+    await assert.rejects(
+      execProbe(NODE_BIN, ['-e', childScript], {
+        stdio: 'ignore',
+        timeout: 2_000,
+        windowsHide: true
+      }),
+      { code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true }
+    )
+    assert.equal(fs.readFileSync(attempts, 'utf8'), 'attempt\nattempt\n')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}, 15_000)
+
+test('execProbe does not label a self-terminating Node child as a timeout or retry it', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-sigterm-'))
+  const attempts = path.join(root, 'attempts')
+
+  const childScript = `
+    require('node:fs').appendFileSync(${JSON.stringify(attempts)}, 'attempt\\n')
+    process.kill(process.pid, 'SIGTERM')
+  `
+
+  try {
+    await assert.rejects(
+      execProbe(NODE_BIN, ['-e', childScript], {
+        stdio: 'ignore',
+        timeout: 5_000,
+        windowsHide: true
+      }),
+      error => {
+        assert.ok(error instanceof Error)
+        assert.equal(isTimeoutError(error), false)
+        assert.equal((error as Error & { killed: boolean }).killed, false)
+
+        if (process.platform !== 'win32') {
+          assert.equal((error as Error & { signal: string }).signal, 'SIGTERM')
+        }
+
+        return true
+      }
+    )
+    assert.equal(fs.readFileSync(attempts, 'utf8'), 'attempt\n')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}, 15_000)
+
+test('execProbe preserves no-timeout semantics for zero or omitted timeout', async () => {
+  for (const timeoutOptions of [{ timeout: 0 }, {}] as const) {
+    await execProbe(NODE_BIN, ['-e', 'process.exit(0)'], {
+      stdio: 'ignore',
+      windowsHide: true,
+      ...timeoutOptions
+    })
+  }
+})
 
 test('execProbe keeps the parent event loop available to the child', async () => {
   let unexpectedSocketError: Error | undefined

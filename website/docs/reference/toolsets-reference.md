@@ -48,6 +48,32 @@ Or in-session:
 /tools enable discord
 ```
 
+### Inspecting the resolved tool surface
+
+```bash
+hermes tools diagnose
+hermes tools diagnose --platform telegram --json
+```
+
+This builds the same inspection agent used by `hermes prompt-size`, without running
+an agent turn or calling a model. `tools_visible` comes from the agent's assembled
+schemas, after Tool Search replacement and memory/context-engine injection, rather
+than from the pre-assembly registry catalog. The agent is closed after inspection.
+
+The JSON report includes enabled/disabled toolsets, configuration keys, visible tools,
+provider summaries, registered-but-invisible tools, and duplicate final schema names.
+`not_selected_by_toolsets` identifies the selection gate; `not_in_final_surface` does
+not guess whether a selected tool was deferred, unavailable, or session-gated.
+
+**Scope:** a fresh inspection agent, not an existing gateway session or a
+provider-specific API request. Normal startup and provider initialization hooks run;
+this is **not a read-only sandbox**. It does not start MCP discovery, so disconnected
+server schemas are unknown. Provider summaries cover initialized/registered tools;
+context-engine names cover successful injection. Conflicts removed by an earlier
+registry/provider deduplication step are not reconstructed. These limitations are
+included in both human and JSON output. Exit codes: `0` report produced, `1`
+initialization/report failure, `2` unknown platform.
+
 ## Core Toolsets
 
 | Toolset | Tools | Purpose |

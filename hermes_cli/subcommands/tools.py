@@ -22,6 +22,13 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         "list", help="Show all tools and their enabled/disabled status")
     tools_list_p.add_argument("--platform", default="cli", help="Platform to show (default: cli)")
 
+    diagnose = tools_sub.add_parser(
+        "diagnose", help="Inspect a fresh agent's tool surface without running a turn",
+        description="Build an inspection agent (as prompt-size does). Provider initialization hooks run; "
+                    "this is not a read-only sandbox or an inspection of a live gateway session.")
+    diagnose.add_argument("--platform", default="cli", help="Platform to inspect (default: cli)")
+    diagnose.add_argument("--json", action="store_true", help="Print the diagnostic report as JSON")
+
     tools_disable_p = tools_sub.add_parser("disable", help="Disable toolsets or MCP tools")
     tools_disable_p.add_argument(
         "names", nargs="+", metavar="NAME",

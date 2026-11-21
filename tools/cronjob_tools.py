@@ -1321,20 +1321,21 @@ def _approval_task(job: dict[str, Any]) -> str:
 
 
 def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str,
-                       kind: str = "schedule", once_only: bool = False) -> None:
+                       kind: str = "schedule", once_only: bool = False,
+                       pattern_key: str = "cron_create") -> None:
     """Show one schedule card through the shared gate; return on approval, raise ``_ScheduleDeclined``
     otherwise. A context where no card would be shown (``schedule_card_skip_reason``) returns at once and
     says why in the log, as it did before cards existed. ``once_only`` (an edit) offers allow/deny only:
     each change is its own consent, and "allow new jobs" grants never cover one."""
-    from tools.approval import SCHEDULE_PATTERN_KEY, _run_approval_gate, schedule_card_skip_reason
+    from tools.approval import _run_approval_gate, schedule_card_skip_reason
     from tools.approval_context import get_current_session_key
 
-    reason = schedule_card_skip_reason(session_key=get_current_session_key(), live=True)
+    reason = schedule_card_skip_reason(session_key=get_current_session_key(), live=True, pattern_key=pattern_key)
     if reason:
         logger.info("cronjob %s %r applied without a card: %s", pattern_key_action, name, reason)
         return
     result = _run_approval_gate(
-        pattern_key=SCHEDULE_PATTERN_KEY, description=description, display_target=display_target,
+        pattern_key=pattern_key, description=description, display_target=display_target,
         subject="Scheduling a job requires the user's approval", noun="scheduled jobs",
         advice="Tell the user what you wanted to schedule; do not retry.",
         autoapprove_log_prefix=f"cronjob {pattern_key_action}", kind=kind, once_only=once_only)
@@ -1394,7 +1395,9 @@ def _approve_job_edit(job: dict[str, Any], updates: dict[str, Any]) -> None:
     if not changes:
         return  # only fields the card does not list (name, skills, catch-up...): nothing new to consent to
     name = job.get("name") or job["id"]
+    # Its own key, never persisted (once_only): an "Always allow new jobs" grant does not cover an edit.
     _ask_schedule_card(pattern_key_action="update", name=name, kind="schedule_edit", once_only=True,
+                       pattern_key="cron_update",
                        description=f"Change \"{name}\": " + "; ".join(changes),
                        display_target=f"<cronjob_manage> (change \"{name}\")")
 

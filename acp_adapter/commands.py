@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 from collections import Counter
@@ -103,13 +104,23 @@ class SlashCommandsMixin:
         return commands
 
     async def _send_available_commands_update(self, session_id: str) -> None:
-        """Advertise supported slash commands to the connected ACP client."""
+        """Advertise supported slash commands to the connected ACP client.
+
+        Local patch: sent twice, immediately and again after a short delay.
+        Some ACP hosts attach the session after `session/new` resolves, so an
+        update racing the attach is dropped; the delayed resend lands after
+        attach and is idempotent for clients that already adopted the list."""
         if not self._conn:
             return
-        update = AvailableCommandsUpdate(
-            session_update="available_commands_update", available_commands=self._available_commands()
-        )
-        await self._send(session_id, update, fail_msg="Failed to advertise ACP slash commands for session %s")
+        for delay in (0.0, 3.0):
+            if delay:
+                await asyncio.sleep(delay)
+            if not self._conn:
+                return
+            update = AvailableCommandsUpdate(
+                session_update="available_commands_update", available_commands=self._available_commands()
+            )
+            await self._send(session_id, update, fail_msg="Failed to advertise ACP slash commands for session %s")
 
     def _schedule_available_commands_update(self, session_id: str) -> None:
         self._schedule_soon(lambda: self._send_available_commands_update(session_id))

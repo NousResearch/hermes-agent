@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "تم اختصار المعاينة: المهمة الكاملة ({total} حرفًا) في الرسالة أعلاه."
     schedule_truncated_deny_only: "تم اختصار المعاينة ({total} حرفًا) وتعذّر عرض المهمة الكاملة هنا، لذا يُعرض الرفض فقط. راجعها في واجهة سطر الأوامر أو تطبيق سطح المكتب."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "صوت"

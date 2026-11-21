@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "プレビューを短縮しました：ジョブ全体（{total} 文字）は上のメッセージにあります。"
     schedule_truncated_deny_only: "プレビューを短縮しました（{total} 文字）。ジョブ全体をここに表示できなかったため、拒否のみ選択できます。CLI またはデスクトップアプリで確認してください。"
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "音声"

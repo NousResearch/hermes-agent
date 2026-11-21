@@ -39,7 +39,7 @@ if str(_checkout_root) not in sys.path:
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
-from gateway.platforms.base import ea_t
+from gateway.platforms.base import approval_expired_text, card_kind_scope, ea_t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
@@ -5755,12 +5755,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0
-        decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
-        if not count:
-            decision_text = t("platform.shared.approval_expired")
+        with card_kind_scope(request_id):  # the click runs outside the send's binding: rebuild as the card was sent
+            decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
+            if not count:
+                decision_text = approval_expired_text("platform.shared.approval_expired")
+            body = self._section_text(message).replace(self._ea_deadline_line(), "")
         await self._finalize_interactive_message(
-            channel_id, msg_ts, self._section_text(message).replace(self._ea_deadline_line(), ""), decision_text,
-            "Command approval request", "approval", team_id or None)
+            channel_id, msg_ts, body, decision_text, "Command approval request", "approval", team_id or None)
 
     async def _update_clarify_message(
         self, channel_id: str, msg_ts: str, question_text: str, decision_text: str) -> None:

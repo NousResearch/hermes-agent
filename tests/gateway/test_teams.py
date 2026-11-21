@@ -1194,6 +1194,30 @@ async def test_resolved_card_shows_the_prompts_full_command_preview():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("waiting", [True, False])
+async def test_a_clicked_schedule_card_keeps_its_schedule_wording(waiting):
+    """The click runs outside the runner's kind binding; the rebuilt card is still a schedule card (no
+    "run a command" header, no plan repeated as "why it was flagged", no "command was not run")."""
+    from gateway.platforms.base_exec_approval import with_approval_kind
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._card_action_denied, adapter._invoke_card = object(), (lambda _from: None), (lambda body: body)
+    adapter._send_card = AsyncMock()
+    plan = 'Schedule "check-in" (tomorrow at 09:00): remind me to check in'
+    buttons = []
+    with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
+        await with_approval_kind("schedule", adapter.send_exec_approval(
+            chat_id="c1", command=plan, session_key="s1", description=plan, request_id="req-job"))
+    ctx = MagicMock()
+    ctx.activity.value.action.data = buttons[0]["data"]
+    with patch("tools.approval.has_blocking_approval", return_value=waiting), \
+            patch("tools.approval.resolve_gateway_approval_card", return_value=1):
+        body = await adapter._on_card_action(ctx)
+    texts = " | ".join(str(block.text) for block in body)
+    assert "schedule a job" in texts and plan in texts, texts
+    assert "run a command" not in texts and "flagged" not in texts and "command was not run" not in texts
+
+
+@pytest.mark.anyio
 async def test_long_non_ascii_command_keeps_button_data_small():
     """Button data carries an id, not a copy of the preview per button, so a long CJK command
     cannot push the card past Teams' ~28 KB limit."""

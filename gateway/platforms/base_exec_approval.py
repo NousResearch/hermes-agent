@@ -109,6 +109,31 @@ async def with_approval_kind(kind: str, awaitable: Awaitable[_T]) -> _T:
     with approval_kind_scope(kind):
         return await awaitable
 
+# request id -> kind of the card sent for it. A click handler runs after the send, outside the runner's
+# binding, and rebuilds the resolved card from it (``card_kind_scope``); request ids are fresh uuids.
+_CARD_KINDS: dict[str, str] = {}
+_CARD_KINDS_KEPT = 1024
+
+
+def remember_card_kind(request_id: Optional[str]) -> None:
+    """Record the bound kind for the card answering ``request_id`` (a command needs no entry)."""
+    if request_id and _APPROVAL_KIND.get() != "command":
+        _CARD_KINDS[request_id] = _APPROVAL_KIND.get()
+        while len(_CARD_KINDS) > _CARD_KINDS_KEPT:
+            _CARD_KINDS.pop(next(iter(_CARD_KINDS)))
+
+
+def card_kind_scope(request_id: Optional[str]):
+    """Bind the kind the card for ``request_id`` was sent with, for its post-click rendering."""
+    return approval_kind_scope(_CARD_KINDS.get(request_id or "", "command"))
+
+
+def approval_expired_text(key: str, **kwargs: Any) -> str:
+    """``t(key)`` (a platform's "expired: the command was not run"), or the kind-neutral expiry line on a
+    schedule card, which ran no command."""
+    return t("gateway.approval_expired") if _APPROVAL_KIND.get() == "schedule" else t(key, **kwargs)
+
+
 # Bare strings; adapters add their own bold/HTML around them.
 EA_HEADER_TEXT = "Hermes wants to run a command that needs your OK"
 EA_REASON_LABEL_TEXT = "Why it was flagged"
@@ -254,18 +279,27 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
 
 def _render_schedule_approval(adapter: Any, body: str, smart_denied: bool,
                               full_shown: bool) -> tuple[str, bool]:
-    """A schedule card: the header, then the job description as plain text (no command fence, no
-    "why it was flagged" label: nothing was flagged, every new job asks). Cut like a command preview,
+    """A schedule card: the header, then the job description in the same fence a command preview uses (the
+    job's name and prompt are model-written: outside a fence, markup could hide or relabel part of the plan),
+    and no "why it was flagged" label: nothing was flagged, every new job asks. Cut like a command preview,
     with the same notice, when it does not fit the adapter's budget."""
     key = "truncated_full_above" if full_shown else "truncated_deny_only"
     cut_notice = "\n\n" + adapter._ea_escape(ea_t(f"gateway.exec_approval.{key}", total=len(body)))
     room = adapter._exec_approval_cmd_budget("", smart_denied)
-    shown = adapter._ea_fit(body, room, suffix="")
-    if shown != body:
-        shown = adapter._ea_fit(body, max(0, room - adapter.message_len_fn(cut_notice) - len("...")))
+
+    def fit(fence: str) -> str:
+        budget = room - 2 * (len(fence) - 3)
+        shown = adapter._ea_fit(body, budget, suffix="")
+        if shown == body:
+            return shown
+        return adapter._ea_fit(body, max(0, budget - adapter.message_len_fn(cut_notice) - len("...")))
+
+    shown, fence = fit_fenced(body, fit)
     truncated = shown != body
-    text = (f"{adapter._EA_HEADER}{adapter._ea_escape(shown)}{cut_notice if truncated else ''}"
-            f"{adapter._ea_deadline_line()}")
+    code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
+    # No reason line follows the fence here, so its trailing break would double the deadline's own gap.
+    text = (f"{adapter._EA_HEADER}{code_open}{adapter._ea_escape(shown)}{code_close.rstrip(chr(10))}"
+            f"{cut_notice if truncated else ''}{adapter._ea_deadline_line()}")
     return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
 
 
@@ -276,6 +310,7 @@ async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str,
     tap that lands before this, or during the send, can only deny it; on any failure (or a raise) the
     mark stays."""
     from tools.approval import restrict_gateway_approval_card_to_deny
+    remember_card_kind(request_id)  # every button card passes here, inside the runner's kind binding
     if truncated:
         restrict_gateway_approval_card_to_deny(session_key, request_id)  # a re-render starts Deny-only too
         if not await send_full_command(adapter, chat_id, command, metadata):

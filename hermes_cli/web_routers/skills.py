@@ -18,8 +18,8 @@ from hermes_cli.web_models import (
     SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillLock, SkillToggle,
     SkillUninstallRequest, SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
-    _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
-    spawn_profile_action)
+    _profile_scope, config_scoped_to_thread, config_write_scope, http_failure, log as _log,
+    require, scoped_to_thread, spawn_profile_action)
 
 hub_router = APIRouter()
 router = APIRouter()
@@ -121,6 +121,45 @@ async def update_skills_hub(
         log_msg="Failed to spawn skills update", prefix="Failed to update skills")
 
 
+_HUB_UPDATES_INFLIGHT: dict[str, "asyncio.Task"] = {}
+
+
+def _hub_updates_key(profile: Optional[str]) -> str:
+    """The profile a check is in flight for — ``None``/``""``/``"current"`` are one home."""
+    key = (profile or "").strip().lower()
+    return "" if key in ("", "current") else key
+
+
+async def _hub_updates_joined(profile: Optional[str], check) -> object:
+    """Run ``check()`` for ``profile``, joining the one already in flight for that profile.
+
+    The update check downloads every installed hub skill, so it must not hold
+    ``_profile_scope``'s process-wide skills lock: it reads ``tools/skills_hub``'s per-call path
+    resolvers (``HERMES_HOME`` contextvar) and none of the module globals that lock exists to
+    swap, and ``config_scoped_to_thread`` carries that contextvar plus the profile's secret
+    scope.
+
+    ``asyncio.to_thread`` cannot be cancelled, so a client that gives up leaves its worker
+    running. Coalescing the request side is what keeps that from turning into a queue: a later
+    request awaits the SAME fetch. ``shield`` is what makes an abandoned request harmless — it
+    drops only that caller's await, never the shared check.
+    """
+    key = _hub_updates_key(profile)
+    task = _HUB_UPDATES_INFLIGHT.get(key)
+    if task is None or task.done():
+        task = asyncio.create_task(config_scoped_to_thread(profile, check))
+        _HUB_UPDATES_INFLIGHT[key] = task
+
+        def _release(finished: "asyncio.Task", _key: str = key) -> None:
+            # Only the task that is still registered releases the slot: a newer check for the
+            # same profile must not be dropped by an older one's completion.
+            if _HUB_UPDATES_INFLIGHT.get(_key) is finished:
+                _HUB_UPDATES_INFLIGHT.pop(_key, None)
+
+        task.add_done_callback(_release)
+    return await asyncio.shield(task)
+
+
 @hub_router.get("/api/skills/hub/updates")
 async def list_skill_hub_updates(profile: Optional[str] = None):
     """Hub-installed skills with an upstream update, scoped to ``profile`` (the
@@ -135,7 +174,7 @@ async def list_skill_hub_updates(profile: Optional[str] = None):
             for row in rows if row.get("status") == "update_available"]}
 
     with http_failure("skills hub update check failed", 502, "Update check failed"):
-        return await scoped_to_thread(profile, _run)
+        return await _hub_updates_joined(profile, _run)
 
 
 @hub_router.get("/api/skills/hub/official")

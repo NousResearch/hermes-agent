@@ -18,6 +18,7 @@ import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
+import { adoptionTargetGroup } from './adoption-target'
 import {
   allPaneIds,
   anchorsFirst,
@@ -1358,8 +1359,7 @@ function adoptMissingPanes(target: LayoutNode, source: LayoutNode): LayoutNode {
       continue
     }
 
-    const sibling = findGroupOfPane(source, paneId)?.panes.find(p => have.has(p))
-    const targetId = (sibling ? findGroupOfPane(next, sibling)?.id : undefined) ?? groupLeafIds(next)[0]
+    const targetId = adoptionTargetGroup(source, next, paneId, have)
 
     if (targetId) {
       // Silent adoption: don't steal the target zone's active tab (logs).

@@ -31,6 +31,7 @@ export const arChat = {
     endShort: 'إنهاء',
     stopDictation: 'إيقاف الإملاء',
     transcribingDictation: 'جار تفريغ الإملاء',
+    stopAndSend: 'إيقاف وإرسال',
     voiceControls: 'صوت',
     voiceDictation: 'إملاء صوتي',
     lookupLoading: 'جار البحث...',

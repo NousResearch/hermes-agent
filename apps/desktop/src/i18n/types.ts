@@ -2959,6 +2959,7 @@ export interface Translations extends NoticeTranslations {
     endShort: string
     stopDictation: string
     transcribingDictation: string
+    stopAndSend: string
     voiceControls: string
     voiceEngine: string
     voiceEngineChained: string

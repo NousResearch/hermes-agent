@@ -371,6 +371,12 @@ class TestBuildContextFilesPrompt:
 
     # --- AGENTS.md directory chain (port of grok-cli instructions.ts) ---
 
+    def test_loads_utf16_agents_md(self, tmp_path):
+        # Windows PowerShell 5.1 `Out-File` writes UTF-16 LE with a BOM and CRLF line endings.
+        (tmp_path / "AGENTS.md").write_bytes("Use Ruff.\r\nNo tabs.\r\n".encode("utf-16"))
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Use Ruff.\nNo tabs." in result
+
     def test_agents_md_chain_merges_root_to_cwd(self, tmp_path):
         # git-root AGENTS.md + intermediate + cwd are all merged, root first
         # and cwd last so deeper guidance takes precedence.

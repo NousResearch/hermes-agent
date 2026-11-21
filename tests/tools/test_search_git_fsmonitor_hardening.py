@@ -60,3 +60,28 @@ class TestPathNotFoundHint:
         ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
         result = ops._path_not_found_result("--width/gone")
         assert "gone_sibling.txt" in (result.error or "")
+
+    def test_missing_path_hint_probes_are_time_bounded(self, tmp_path):
+        """Both hint probes pass an explicit timeout.
+
+        With no timeout they inherit ``terminal.timeout`` (180s by default), so a protected or
+        unreachable parent — macOS TCC on ``~/Desktop``, an offline mount — stalls the whole turn
+        for three minutes just to name a neighbour (#158400).
+        """
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        seen = []
+        real_exec = ops._exec
+
+        def spy(command, cwd=None, timeout=None, stdin_data=None):
+            seen.append(timeout)
+            return real_exec(command, cwd=cwd, timeout=timeout, stdin_data=stdin_data)
+
+        ops._exec = spy
+        ops._path_not_found_result(str(tmp_path / "missing_sibling"))
+
+        assert seen, "the hint ran no probes"
+        assert all(t is not None for t in seen), f"probe without a timeout: {seen}"
+        assert all(t <= 5 for t in seen), f"hint probe timeout too large: {seen}"

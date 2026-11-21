@@ -41,6 +41,7 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
     "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},
+    "opencode": {"models": {"claude-sonnet-5-5": {"cost": {"input": 2.0, "output": 10.0, "cache_read": 0.2}}}},
 }
 _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
 
@@ -70,6 +71,26 @@ def test_direct_first_party_route_prices_models_missing_from_snapshot(models_dev
     cost = estimate_usage_cost(model, _USAGE, provider=provider, base_url=base_url)
 
     assert (cost.status, cost.amount_usd) == expected
+
+
+_ZEN_USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=100_000)
+
+
+@pytest.mark.parametrize("provider", ["opencode", "opencode-zen", "opencode-go"])
+def test_opencode_relay_routes_price_from_models_dev_rate_card(models_dev_registry, provider):
+    # Zen's own /models publishes no prices; models.dev holds the rate card under "opencode".
+    cost = estimate_usage_cost(
+        "claude-sonnet-5-5", _ZEN_USAGE, provider=provider, base_url="https://opencode.ai/zen/v1"
+    )
+
+    assert (cost.status, cost.amount_usd) == ("estimated", Decimal("3.00"))
+
+
+@pytest.mark.parametrize("base_url", ["https://my-proxy.example.com/v1", "http://opencode.ai/zen/v1"])
+def test_opencode_provider_on_foreign_or_downgraded_host_stays_unknown(models_dev_registry, base_url):
+    cost = estimate_usage_cost("claude-sonnet-5-5", _ZEN_USAGE, provider="opencode", base_url=base_url)
+
+    assert (cost.status, cost.amount_usd) == ("unknown", None)
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

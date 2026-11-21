@@ -38,11 +38,12 @@ def test_list_pending_skips_non_dict_record(hermes_home):
     from tools import write_approval as wa
     wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
                    summary="ok", origin="foreground")
-    pending_dir = wa._pending_path("memory", "").parent
+    pending_dir = wa._pending_dir("memory")
     (pending_dir / "bad.json").write_text('"not a record"', encoding="utf-8")
+    (pending_dir / "0badf00d.json").write_text('"not a record"', encoding="utf-8")  # a minted-format name
     records = wa.list_pending("memory")
     assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
-    assert wa.get_pending("memory", "bad") is None
+    assert wa.get_pending("memory", "bad") is None and wa.get_pending("memory", "0badf00d") is None
 
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
@@ -409,7 +410,7 @@ def test_staged_hint_names_the_pending_dir_on_headless_surfaces(hermes_home, mon
     r = _stage_one_memory_write()
     assert "review with /memory pending" not in r["message"], r["message"]
     assert "pending records live in" in r["message"]
-    assert str(wa._pending_path(wa.MEMORY, "").parent) in r["message"]
+    assert str(wa._pending_dir(wa.MEMORY)) in r["message"]
     monkeypatch.delenv("HERMES_CRON_SESSION")
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-7")
@@ -430,3 +431,175 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+# ---------------------------------------------------------------------------
+# Pending store integrity: only minted records inside pending/<subsystem>/
+# ---------------------------------------------------------------------------
+
+def test_pending_ids_outside_the_minted_format_are_refused(hermes_home):
+    """approve|reject|diff take the id as typed (#119997): a path-like id must not read, apply or
+    delete any file outside pending/<subsystem>/."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "x"},
+                   summary="create probe", origin="foreground")  # pending/skills/ exists
+    victim = Path(hermes_home, "victim.json")
+    victim.write_text('{"id": "victim", "summary": "VICTIM", "payload": {}}', encoding="utf-8")
+    for bad in ("../../victim", str(victim.with_suffix("")), "a/b", "../skills/x"):
+        for sub in ("approve", "reject", "diff"):
+            out = handle_pending_subcommand(wa.SKILLS, [sub, bad])
+            assert out.startswith("No pending") and "VICTIM" not in out, (sub, bad, out)
+        assert wa.get_pending(wa.SKILLS, bad) is None
+        assert wa.discard_pending(wa.SKILLS, bad) is False
+    assert victim.exists() and wa.pending_count(wa.SKILLS) == 1
+    with pytest.raises(ValueError):
+        wa._pending_path("../memory", "0123abcd")
+
+
+def test_symlinks_planted_in_the_pending_store_are_never_followed(hermes_home, tmp_path):
+    """A record file or the subsystem dir linked out of the store must not be read, applied, deleted
+    or written through."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.json"
+    secret.write_text('{"id": "deadbeef", "subsystem": "skills", "summary": "OUTSIDE", "payload": '
+                      '{"action": "create", "name": "x", "content": "outside text"}}', encoding="utf-8")
+    pending = Path(hermes_home, "pending", "skills")
+    pending.mkdir(parents=True)
+    (pending / "deadbeef.json").symlink_to(secret)                       # a linked record
+    assert wa.get_pending(wa.SKILLS, "deadbeef") is None and wa.list_pending(wa.SKILLS) == []
+    for sub in ("diff", "approve", "reject"):
+        assert "OUTSIDE" not in handle_pending_subcommand(wa.SKILLS, [sub, "deadbeef"])
+    assert wa.discard_pending(wa.SKILLS, "deadbeef") is False and wa.pending_count(wa.SKILLS) == 0
+    assert secret.exists() and wa._find_skill_path("x") is None
+    (pending / "deadbeef.json").unlink()
+    pending.rmdir()
+    victim = outside / "cafebabe.json"
+    victim.write_text('{"id": "cafebabe"}', encoding="utf-8")
+    pending.symlink_to(outside)                                          # a linked subsystem dir
+    assert wa.discard_pending(wa.SKILLS, "cafebabe") is False and victim.exists()
+    assert wa.list_pending(wa.SKILLS) == [] and wa.pending_count(wa.SKILLS) == 0
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools.skill_manager_tool import skill_manage
+    _set_approval("skills", True)
+    _set_approval("memory", True)
+    Path(hermes_home, "pending", "memory").symlink_to(outside)           # nothing stored: the tools say so
+    store = MemoryStore()
+    store.load_from_disk()
+    for out in (skill_manage(action="create", name="probe", content="---\nname: probe\ndescription: p\n---\nx\n"),
+                memory_tool("add", "memory", "a fact", store=store)):
+        assert json.loads(out)["success"] is False and "staged" not in json.loads(out), out
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "x"},
+                   summary="create probe", origin="foreground")
+    assert sorted(p.name for p in outside.iterdir()) == ["cafebabe.json", "secret.json"]
+
+
+def test_a_record_is_known_by_its_file_name_not_the_id_written_inside_it(hermes_home):
+    """A forged 'id' inside a pending file must not make approve apply one record and delete another,
+    nor leave the applied record pending to be replayed."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    beta = wa.stage_write(wa.SKILLS, {"action": "create", "name": "beta",
+                                      "content": "---\nname: beta\ndescription: b\n---\nb\n"},
+                          summary="create beta", origin="foreground")
+    gamma = wa.stage_write(wa.SKILLS, {"action": "create", "name": "gamma",
+                                       "content": "---\nname: gamma\ndescription: g\n---\ng\n"},
+                           summary="create gamma", origin="foreground")
+    path = wa._pending_path(wa.SKILLS, beta["id"])
+    forged = json.loads(path.read_text(encoding="utf-8"))
+    forged["id"] = gamma["id"]
+    path.write_text(json.dumps(forged), encoding="utf-8")
+    assert sorted(r["id"] for r in wa.list_pending(wa.SKILLS)) == sorted([beta["id"], gamma["id"]])
+    assert wa.get_pending(wa.SKILLS, beta["id"])["id"] == beta["id"]
+    handle_pending_subcommand(wa.SKILLS, ["approve", beta["id"]])
+    assert wa.get_pending(wa.SKILLS, beta["id"]) is None             # applied and gone, not left to replay
+    assert wa.get_pending(wa.SKILLS, gamma["id"]) is not None        # the unreviewed record is untouched
+
+
+def test_skills_diff_never_reads_a_staged_path_outside_the_skill(hermes_home, tmp_path):
+    """A staged write_file/patch names its own file_path; /skills diff must not show a file outside
+    the skill as the diff's current side, alone or inside a staged batch."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe",
+                                     "content": "---\nname: probe\ndescription: p\n---\nbody\n"},
+                         summary="create probe", origin="foreground")
+    handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+    secret = tmp_path / "private.txt"
+    secret.write_text("PRIVATE-LINE\n", encoding="utf-8")
+    skill_dir = wa._find_skill_path("probe")
+    rel = os.path.relpath(secret, skill_dir)
+    for bad in (str(secret), rel, "references/../../" + rel):
+        staged = wa.stage_write(wa.SKILLS, {"action": "write_file", "name": "probe", "file_path": bad,
+                                            "file_content": "new\n"}, summary="write", origin="foreground")
+        out = wa.skill_pending_diff(staged)
+        assert "PRIVATE-LINE" not in out and out.startswith("(refused"), (bad, out)
+        batch = {"payload": {"action": "batch", "operations": [
+            {"action": "patch", "name": "probe", "file_path": bad, "old_string": "PRIVATE", "new_string": "X"},
+            {"action": "write_file", "name": "probe", "file_path": bad, "file_content": "new\n"}]}}
+        assert "PRIVATE-LINE" not in wa.skill_pending_diff(batch), bad
+    ok = wa.stage_write(wa.SKILLS, {"action": "write_file", "name": "probe", "file_path": "references/notes.md",
+                                    "file_content": "new\n"}, summary="write", origin="foreground")
+    assert "+new" in wa.skill_pending_diff(ok)
+
+
+def test_two_approvals_of_one_pending_write_apply_it_once(hermes_home, monkeypatch):
+    """Approve claims the record atomically: a second approval while the first is applying applies
+    nothing, and an approval that fails puts the record back in the queue."""
+    import threading
+    import hermes_cli.write_approval_commands as wac
+    from tools import write_approval as wa
+    rec = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe",
+                                     "content": "---\nname: probe\ndescription: p\n---\n# body\n"},
+                         summary="create probe", origin="foreground")
+    wac.handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+    patch = wa.stage_write(wa.SKILLS, {"action": "patch", "name": "probe", "old_string": "# body",
+                                       "new_string": "# body\nADDED-LINE"}, summary="patch", origin="foreground")
+    real, calls = wac._apply_one, []
+    first_in, second_done = threading.Event(), threading.Event()
+
+    def held(*a, **k):  # the first apply stays open until the second approval has returned
+        calls.append(1)
+        if len(calls) == 1:
+            first_in.set()
+            second_done.wait(timeout=10)
+        return real(*a, **k)
+    monkeypatch.setattr(wac, "_apply_one", held)
+    outs = []
+    first = threading.Thread(target=lambda: outs.append(
+        wac.handle_pending_subcommand(wa.SKILLS, ["approve", patch["id"]])))
+    first.start()
+    assert first_in.wait(timeout=10)
+    outs.append(wac.handle_pending_subcommand(wa.SKILLS, ["approve", patch["id"]]))
+    second_done.set()
+    first.join(timeout=10)
+    body = (wa._find_skill_path("probe") / "SKILL.md").read_text(encoding="utf-8")
+    assert body.count("ADDED-LINE") == 1 and len(calls) == 1, outs
+    assert sorted(o.startswith("Approved 1 ") for o in outs) == [False, True], outs  # the loser applied nothing
+    assert wa.get_pending(wa.SKILLS, patch["id"]) is None and not list(wa._pending_dir(wa.SKILLS).glob("*.claimed"))
+
+    failing = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe2", "content": "x"},
+                             summary="create probe2", origin="foreground")
+    monkeypatch.setattr(wac, "_apply_one", lambda *a, **k: (False, "boom", {}))
+    assert "boom" in wac.handle_pending_subcommand(wa.SKILLS, ["approve", failing["id"]])
+    assert wa.get_pending(wa.SKILLS, failing["id"]) is not None
+
+
+def test_a_claim_left_by_a_crash_goes_back_to_the_queue(hermes_home):
+    """A process that dies between claim and finish leaves <id>.claimed: listing puts it back once it is
+    older than any real apply, and leaves a live claim alone."""
+    import time
+    from tools import write_approval as wa
+    crashed, live = (wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": c},
+                                    summary=c, origin="foreground") for c in ("one", "two"))
+    old, d = time.time() - wa._STALE_CLAIM_SECONDS - 60, wa._pending_dir(wa.MEMORY)
+    os.utime(d / f"{live['id']}.json", (old, old))                       # staged long ago, claimed now
+    assert wa.claim_pending(wa.MEMORY, crashed["id"]) and wa.claim_pending(wa.MEMORY, live["id"])
+    os.utime(d / f"{crashed['id']}.claimed", (old, old))
+    assert [r["id"] for r in wa.list_pending(wa.MEMORY)] == [crashed["id"]]
+    assert wa.claim_pending(wa.MEMORY, live["id"]) is None             # the live claim is still held

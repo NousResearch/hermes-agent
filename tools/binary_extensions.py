@@ -1,12 +1,17 @@
 """Binary file extensions to skip for text-based operations (ported from
 free-code src/constants/files.ts)."""
 
+import shlex
+
+VIDEO_EXTENSIONS = frozenset({
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg",
+})
+
 # Images, video, audio, archives, executables, documents (.pdf deliberately
 # excluded — text-based, agents may want to inspect), fonts, bytecode/VM,
 # databases, design/3D, Flash, lock/profiling data.
-BINARY_EXTENSIONS = frozenset({
+BINARY_EXTENSIONS = VIDEO_EXTENSIONS | frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff", ".tif",
-    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg",
     ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".aiff", ".opus",
     ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz", ".z", ".tgz", ".iso",
     ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib", ".app", ".msi", ".deb", ".rpm",
@@ -76,6 +81,26 @@ def is_sqlite_sidecar(path: str) -> bool:
 
 def has_binary_extension(path: str) -> bool:
     return _has_extension_in(path, BINARY_EXTENSIONS)
+
+
+def binary_read_refusal(path: str, resolved: str) -> str:
+    """read_file's refusal for a known-binary extension, naming the next step for that class.
+
+    Video gets local frame extraction (inspired by Muse Code 1.4.11, "video file reads guide
+    local frame extraction without uploading the video"): a handful of frames read with
+    vision_analyze answers most questions about a clip, where the bare refusal left the model
+    hexdumping the container or uploading the whole file."""
+    suffix = _lower_suffix(resolved)  # the requested name may be a suffix-less link
+    if suffix not in VIDEO_EXTENSIONS:
+        return (f"Cannot read binary file '{path}' ({suffix}). "
+                "Use vision_analyze for images, or terminal to inspect binary files.")
+    quoted = shlex.quote(resolved)
+    return (f"Cannot read video file '{path}' ({suffix}) as text. To see what it shows, extract a few "
+            "frames locally and inspect those with vision_analyze instead of uploading the whole video: "
+            f"`ffprobe -v error -show_entries format=duration -of csv=p=0 {quoted}` prints its length "
+            f"in seconds, then `d=$(mktemp -d) && ffmpeg -v error -i {quoted} -vf fps=1/N -frames:v 8 "
+            "\"$d/frame_%02d.png\" && ls \"$d\"/*` saves one frame every N seconds (N ≈ length / 8) "
+            "and lists them.")
 
 
 def has_opaque_document_extension(path: str) -> bool:

@@ -1,0 +1,56 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: senpi
+description: >-
+  Your AI quant researcher for perpetual futures markets: the day's market
+  pulse, signals and anomalies, smart-money positioning, Hyperliquid trader
+  research, Quant Desk wallet scoring, Senpi's strategy catalog, and your own
+  portfolio and trade history. Every tool is read-only.
+source: https://github.com/Senpi-ai/senpi-plugin#readme
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry), the same server the Senpi plugin package uses.
+# Native MCP OAuth 2.1 over Streamable HTTP: the 401 carries RFC 9728
+# protected-resource metadata and the authorization server advertises PKCE
+# S256. It identifies clients by Client ID Metadata Document (no Dynamic
+# Client Registration); Hermes's published client document (loopback
+# callbacks on ports 27890-27894) is registered there, so Hermes's MCP
+# client + mcp_oauth_manager handle discovery, PKCE, token exchange, and
+# refresh with no pre-registered client block. Scope: agent:read.
+transport:
+  type: http
+  url: https://mcp.senpi.ai/mcp
+
+auth:
+  type: oauth
+
+# No tools block: every tool on this server is read-only (readOnlyHint: true),
+# so all of them start enabled. None can place a trade, move funds or change
+# the user's account.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - senpi
+    - hyperliquid
+    - quant desk
+  hosts:
+    - senpi.ai
+  examples:
+    - "What's moving the markets today?"
+    - "Scan for market signals and anomalies"
+    - "Where is smart money positioned on ETH right now?"
+    - "Score this Hyperliquid wallet with the Quant Desk: 0x..."
+    - "Which Senpi strategy fits a trend-following style?"
+
+post_install: |
+  On first connection Hermes opens a browser to sign in with Senpi (or run
+  `hermes mcp login senpi`). The sign-in step needs an interactive terminal
+  and a browser on the same machine. Approve access, then restart the session
+  or run /reload-mcp so the tools load.
+  You need a Senpi account (https://senpi.ai); there is no API key. Every tool
+  is read-only: it can't place trades or move funds, which happen only in your
+  Senpi account at senpi.ai. For Senpi's skills as well as the server, install
+  the Senpi plugin package instead (see source).

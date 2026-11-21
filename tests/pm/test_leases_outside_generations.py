@@ -337,3 +337,20 @@ def test_a_launch_beside_the_generations_counts_as_recent_use(tmp_path):
     lease.unlink()
     assert collect_orphan_install_states(installs) == []
     assert generation.is_dir()
+
+
+@pytest.mark.platforms("any")
+def test_moved_lock_releases_old_lock_when_new_lock_times_out(install):
+    """Timing out on the new lock must release the old lock before yielding False."""
+    project, state = install
+    fd = _hold(state / "locks" / "install.lock")
+    try:
+        with runtime_lock(project, timeout=0.05) as held:
+            assert held is False
+            probe = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                assert lock_fd(probe, wait=False) is True
+            finally:
+                os.close(probe)
+    finally:
+        os.close(fd)

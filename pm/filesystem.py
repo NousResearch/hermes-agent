@@ -203,6 +203,9 @@ def moved_lock(old: Path, new: Path, *, timeout: float | None):
             fd = lock_path(new, timeout=remaining, create_dir=True)
             if fd is not None:
                 held.append(fd)
+            else:
+                while held:
+                    os.close(held.pop())
         yield fd is not None
     finally:
         for fd in reversed(held):

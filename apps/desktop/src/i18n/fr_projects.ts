@@ -82,5 +82,16 @@ export const frProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `Réorganiser ${label}`,
   toggle: (label, open) => `${open ? 'Afficher' : 'Masquer'} les sessions de ${label}`,
   showAllCount: count => `Afficher les ${count} sessions`,
-  back: 'Tous les projets'
+  back: 'Tous les projets',
+  switchCurrentChat: 'Changer de conversation',
+  openProject: 'Ouvrir le projet',
+  newChat: 'Nouvelle conversation',
+  defaultForNewChats: 'Par défaut pour les nouvelles conversations',
+  setDefaultFailed: 'Impossible de définir le projet par défaut',
+  manageProjects: 'Gérer les projets…',
+  chooseFolder: 'Choisir un dossier',
+  noProjects: 'Aucun projet',
+  removeFolderConfirm: 'Retirer ce dossier du projet ? Les fichiers sur disque ne sont pas touchés.',
+  removeFolderFailed: 'Impossible de retirer le dossier',
+  setPrimaryFailed: 'Impossible de définir le dossier principal'
 }

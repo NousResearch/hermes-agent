@@ -233,6 +233,29 @@ class TestCrossProfileProjectTree:
         sessions = [s for project in payload["projects"] for s in project.get("previewSessions") or []]
         assert {s["profile"] for s in sessions} == {"worker"}
 
+    def test_all_profiles_tree_keeps_each_profile_default(self, client, profiles_on_disk, tmp_path):
+        from hermes_cli import projects_db
+
+        defaults = {}
+        for name, home in profiles_on_disk.items():
+            folder = tmp_path / "repos" / f"only-{name}"
+            folder.mkdir(parents=True)
+            _seed_session(home, f"{name}-chat", source="cli", cwd=folder)
+            project_id = _seed_project(home, f"Only {name}", folder)
+            with projects_db.connect_closing(db_path=home / "projects.db") as conn:
+                projects_db.set_default(conn, project_id)
+                assert projects_db.get_default_id(conn) == project_id
+            defaults[name] = project_id
+
+        payload = client.get("/api/profiles/projects/tree").json()
+
+        assert payload["default_ids"] == defaults
+        assert "default_id" not in payload
+
+        named = client.get("/api/profiles/projects/tree", params={"profile": "worker"}).json()
+        assert named["default_id"] == defaults["worker"]
+        assert named["default_ids"] == {"worker": defaults["worker"]}
+
     def test_a_profile_that_cannot_be_read_does_not_sink_the_rest(
         self, client, profiles_on_disk, tmp_path, monkeypatch
     ):

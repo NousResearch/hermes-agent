@@ -82,5 +82,16 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `Reordenar ${label}`,
   toggle: (label, open) => `${open ? 'Mostrar' : 'Ocultar'} sesiones de ${label}`,
   showAllCount: (count: number) => `Mostrar las ${count} sesiones`,
-  back: 'Todos los proyectos'
+  back: 'Todos los proyectos',
+  switchCurrentChat: 'Cambiar chat actual',
+  openProject: 'Abrir proyecto',
+  newChat: 'Chat nuevo',
+  defaultForNewChats: 'Predeterminado para chats nuevos',
+  setDefaultFailed: 'No se pudo establecer el proyecto predeterminado',
+  manageProjects: 'Gestionar proyectos…',
+  chooseFolder: 'Elegir carpeta',
+  noProjects: 'Sin proyectos',
+  removeFolderConfirm: '¿Quitar esta carpeta del proyecto? Los archivos en disco no se tocan.',
+  removeFolderFailed: 'No se pudo quitar la carpeta',
+  setPrimaryFailed: 'No se pudo establecer la carpeta principal'
 }

@@ -1704,6 +1704,7 @@ test('all-profiles project tree merges one read per profile by folder', async ()
         { id: '__no_project__', mergeKey: '__no_project__', isNoProject: true, sessionCount: 1, lastActive: 2, previewSessions: [session('d3', 'default', 2)] }
       ],
       active_id: null,
+      default_id: 'auto:/repo',
       scoped_session_ids: ['d1'],
       errors: []
     },
@@ -1717,6 +1718,7 @@ test('all-profiles project tree merges one read per profile by folder', async ()
         }
       ],
       active_id: null,
+      default_id: 'p_abc',
       scoped_session_ids: ['w1'],
       errors: []
     }
@@ -1754,6 +1756,7 @@ test('all-profiles project tree merges one read per profile by folder', async ()
   assert.deepEqual(repo.repos[0].groups[0].sessions.map((s: any) => s.id), ['w1', 'd1'])
   assert.deepEqual(result.scoped_session_ids, ['d1', 'w1'])
   assert.equal(result.active_id, null)
+  assert.deepEqual(result.default_ids, { default: 'auto:/repo', work: 'p_abc' })
   assert.deepEqual(result.errors, [{ profile: 'broken', error: '403: denied' }])
 })
 

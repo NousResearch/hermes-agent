@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from 'react'
+import { createElement, useCallback, useMemo } from 'react'
 
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { displayPath } from '@/lib/display-path'
@@ -42,6 +43,7 @@ export function useChangeWorkspaceItem(
     () => ({
       disabled: busy,
       hidden: targetId === null || Boolean(focusedRowConnectionId),
+      icon: createElement(Codicon, { name: 'folder', size: '0.75rem' }),
       id: 'change-workspace-path',
       label: title,
       onSelect: () => void changeWorkspace(),

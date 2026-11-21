@@ -1,7 +1,8 @@
 """``hermes doctor``: regular expressions the user wrote that the RE2 engine refuses or reads differently.
 
 Hermes is moving its regular expressions from Python's ``re`` to RE2 (``hermes_re``), which has no
-backreferences and no lookaround. Until a setting's code has moved, a pattern RE2 refuses still
+backreferences and refuses lookaround except as an edge guard (a one-character lookbehind at the very
+start, a lookahead at the very end; a negative lookahead tests one character). Until a setting's code has moved, a pattern RE2 refuses still
 works; afterwards the setting stops working in the way its ``if_refused`` phrase says. This check
 names those patterns ahead of time. A refused one is a manual issue (doctor exits 1, like the neighbouring
 upcoming-change notices); one only read differently is a warning.
@@ -236,7 +237,9 @@ def _check_user_regex_settings(should_fix: bool, f: Finding) -> None:
             flagged += 1
             refused += 1
             check_warn(f"{item.where}: {item.pattern!r} is not a valid RE2 pattern", f"({exc})")
-            check_info(f"After the regex engine change {item.if_refused}. Fix the pattern (RE2 has no backreferences and no lookaround).")
+            check_info(f"After the regex engine change {item.if_refused}. Fix the pattern (RE2 has no backreferences; "
+                       "lookaround is refused except a one-character lookbehind at the very start and one lookahead "
+                       "at the very end, and a negative lookahead tests one character).")
             continue
         if offsets:
             flagged += 1

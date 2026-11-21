@@ -1,0 +1,13 @@
+name: conformance-surface
+version: "1.0.0"
+description: Frozen native plugin exercising the documented PluginContext registrars
+provides_tools:
+  - conformance_echo
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - transform_tool_result
+  - pre_command
+# A field no Hermes release defines: native manifests ignore unknown fields.
+conformance_future_field:
+  additive: true

@@ -13,7 +13,8 @@ from urllib.parse import quote, unquote
 import pytest
 
 from tests.ci.desktop_release_roles import (
-    commit_summary, native_builds, needs_of, selection_gates, stage_step, termux_builder, universal_assembler,
+    DOWNLOADABLE_DISPATCHES, admitted, commit_summary, gate, native_builds, needs_of, selection_gates, stage_step,
+    termux_builder, universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
 from tests.scripts.test_release_r2 import r2_server
@@ -59,7 +60,7 @@ def shell_step(tmp_path, r2_server, job, name, env, *, script=None):
     environment = _child_env(**env)
     environment['PATH'] = str(helper) + os.pathsep + environment['PATH']
     return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script_file)], cwd=tmp_path,
-                          env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                          env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
 
 @pytest.mark.parametrize("has_download", [True, False])
@@ -112,7 +113,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         if 'Not built' in line:
             assert f'[View build run]({run_url})' in line and base not in line
         elif line.startswith('| Linux'):
-            assert 'Disabled' in line and '](' not in line
+            assert 'Skipped (tag builds only)' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     # One failed arch must not cancel its siblings: the summary above only
     # has downloads to offer for the legs that were allowed to finish.
@@ -143,9 +144,6 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
         (legs[('darwin-arm64', 'commit')], 'darwin-arm64', [
             'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
             'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
-        (legs[('darwin-x64', 'commit')], 'darwin-x64', [
-            'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
-            'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
         (universal_assembler(jobs), 'windows-universal', ['HermesBundled-0.33.0.0-win.msixbundle']),
     ]
     artifact_keys = set()
@@ -214,11 +212,20 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     r2_server.store[receipt_key] = original
 
     # The actual summary command remains useful after an admitted matrix failure.
-    r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-x64.json')
+    r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-arm64.json')
     summary.unlink()
     summary_env['RELEASE_NEEDS'] = json.dumps({'validate': {'result': 'success'},
-                                             gates['darwin-x64']: {'result': 'failure'}})
+                                             gates['darwin-arm64']: {'result': 'failure'}})
     incomplete = shell_step(tmp_path, r2_server, summary_job,
                             'Render the full expected-binary matrix', summary_env)
     assert incomplete.returncode == 0, incomplete.stdout + incomplete.stderr
-    assert f"failed: {gates['darwin-x64']}" in summary.read_text(encoding='utf-8-sig')
+    assert f"failed: {gates['darwin-arm64']}" in summary.read_text(encoding='utf-8-sig')
+
+
+def test_the_commit_receipt_waits_only_on_jobs_a_commit_build_runs():
+    """The receipt requires every need to succeed, so a need the commit build skips blocks it."""
+    jobs = _workflow()['jobs']
+    commit = DOWNLOADABLE_DISPATCHES['commit']
+    for name in needs_of(jobs[commit_summary(jobs)]):
+        job = jobs[name]
+        assert 'if' not in job or gate(job['if'], commit, admitted(needs_of(job))), name

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
+from hermes_cli._startup_fast import project_root_str
 from hermes_cli.colors import Colors, color
 
 def _logger(mark: str, col: str):
@@ -64,10 +65,10 @@ def _remove_each(candidates, remove) -> list:
 
 def get_project_root() -> Path:
     """Get the project installation directory."""
-    return Path(__file__).parent.parent.resolve()
+    return Path(project_root_str())
 
 
-def code_removal_refusal() -> "str | None":
+def code_removal_refusal() -> str | None:
     """Why the uninstaller must not remove this tree's code, or ``None``.
 
     A git checkout (the install.sh / install.ps1 / `hermes desktop` layout)
@@ -188,7 +189,7 @@ def remove_wrapper_script():
     return removed
 
 
-def _node_symlink_candidate_dirs() -> "list[Path]":
+def _node_symlink_candidate_dirs() -> list[Path]:
     """Directories where the installer may have placed node/npm/npx symlinks."""
     dirs: list[Path] = [Path.home() / ".local" / "bin"]
     if sys.platform == "linux":  # root FHS installs put links in /usr/local/bin
@@ -304,7 +305,7 @@ _LAUNCHD_GATEWAY_PLIST_PATTERNS = (
 )
 
 
-def _launchd_gateway_plists() -> "list[Path]":
+def _launchd_gateway_plists() -> list[Path]:
     """Every gateway LaunchAgent plist on disk, under the real account home."""
     from hermes_cli.gateway import get_launchd_plist_path
 
@@ -437,7 +438,7 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
     return _remove_each((t for t in targets if t.exists()), lambda t: shutil.rmtree(t) or True)
 
 
-def _xdg_leftover_paths(full_uninstall: bool) -> "tuple[list[Path], list[Path]]":
+def _xdg_leftover_paths(full_uninstall: bool) -> tuple[list[Path], list[Path]]:
     """The XDG cache/data dirs an install scatters outside HERMES_HOME.
 
     Returns (removable, data_preserved): the cache dir is always removable;
@@ -616,7 +617,7 @@ def _uninstall_profile(profile) -> None:
     log_info(f"Uninstalling profile '{name}'...")
 
     # 1. Gateway service, via `python -m hermes_cli.main` (the `hermes` wrapper may be half-gone).
-    hermes_invocation = [sys.executable, "-m", "hermes_cli.main", "--profile", name]
+    hermes_invocation = [sys.executable, "-P", "-m", "hermes_cli.main", "--profile", name]
     for subcmd in ("stop", "uninstall"):
         try:
             subprocess.run(
@@ -915,7 +916,7 @@ def _rmtree_step(path: Path, *, indent: str = "", fully: bool = True) -> None:
             log_info("You may need to manually remove it")
 
 
-def _macos_cache_leftover_dirs() -> "list[Path]":
+def _macos_cache_leftover_dirs() -> list[Path]:
     """Cache dirs Electron/Chromium and the setup binary write OUTSIDE HERMES_HOME on
     macOS. Chromium splits the desktop app's HTTP/script caches under ``~/Library/Caches``
     keyed by both the product name and the app id, and the Tauri setup binary does the
@@ -938,7 +939,7 @@ def _rmtree_if_exists(path: Path) -> bool:
     return True
 
 
-def remove_dashboard_launchd_jobs() -> "list[Path]":
+def remove_dashboard_launchd_jobs() -> list[Path]:
     """macOS: boot out and delete every launchd job whose ``ProgramArguments`` runs a
     ``hermes dashboard`` / ``hermes serve`` backend, returning the removed plist paths.
 
@@ -960,7 +961,7 @@ def remove_dashboard_launchd_jobs() -> "list[Path]":
     from hermes_cli.main_dashboard import _launchd_plist_dirs, _parse_dashboard_runtime
 
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
-    removed: "list[Path]" = []
+    removed: list[Path] = []
     for kind, plist_dir in _launchd_plist_dirs():
         try:
             plists = sorted(plist_dir.glob("*.plist"))

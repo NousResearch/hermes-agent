@@ -1,0 +1,19 @@
+name: doc-markdown
+repo: https://github.com/TakeshiTGAL/hermes-plugin-doc-markdown
+sha: e776b16636977db980b8aebe046f5361b8bce67d
+description: "doc_convert makes Markdown from one local PDF, .docx, .xlsx, .pptx, HTML, CSV, JSON, Markdown, or plain text on Linux and macOS, built on Microsoft's MarkItDown; CSV, JSON, Markdown, and plain text must be UTF-8. Microsoft and MarkItDown are trademarks of the Microsoft group of companies. Disclosure — fetches no pages; after realpath, any allowlisted path it can open is readable, and it is not a sandbox; the child gets no Hermes keys; unpublished Hermes code locates the Hermes home, and a failed check refuses the path; on every surface, including a gateway, for anyone you allow, and for unattended calls Hermes makes; hermes tools stops it; no cron; about 500 MB; removal leaves that install."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-doc-markdown#readme
+version: 0.1.1
+requires_hermes: ">=0.21.4"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+  - doc_convert
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

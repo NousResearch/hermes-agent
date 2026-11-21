@@ -11,7 +11,7 @@ try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not).
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import json
@@ -29,7 +29,9 @@ import fire
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
-from model_tools import TOOL_TO_TOOLSET_MAP
+from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+from agent.trajectory import redact_trajectory_value
+from model_tools import get_all_tool_names
 from run_agent import AIAgent
 from toolset_distributions import (
     list_distributions,
@@ -42,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Auto-derived from model_tools so it stays in sync as tools are added. Gives every
 # trajectory a consistent tool_stats schema (Arrow/Parquet for HF datasets) and filters
 # corrupted entries (hallucinated tool names) when combining trajectories.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
+ALL_POSSIBLE_TOOLS = set(get_all_tool_names())
 
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 _REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_without_reasoning")
@@ -178,7 +180,7 @@ def _prepare_container_image(
     prompt_index: int, prompt_data: dict[str, Any], batch_num: int, task_id: str, config: dict[str, Any]
 ) -> Optional[dict[str, Any]]:
     """Register the dataset row's per-prompt container image (``image``/``docker_image``)
-    for this task's sandbox (Docker, Modal, Singularity, Daytona).
+    for this task's sandbox (Docker, Modal, Daytona, or a plugin backend such as Singularity).
 
     For Docker the image is verified (local cache, then pull) before spending tokens on the
     agent loop; Modal pulls server-side so no local check. Returns a failure result when the
@@ -194,6 +196,7 @@ def _prepare_container_image(
             probe = _sp.run(
                 ["docker", "image", "inspect", container_image],
                 capture_output=True, timeout=10,
+                check=False,
             )
             if probe.returncode != 0:
                 if config.get("verbose"):
@@ -201,6 +204,7 @@ def _prepare_container_image(
                 pull = _sp.run(
                     ["docker", "pull", container_image],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+                    check=False,
                 )
                 if pull.returncode != 0:
                     return _failure_result(
@@ -216,8 +220,9 @@ def _prepare_container_image(
     overrides = {
         "docker_image": container_image,
         "modal_image": container_image,
-        "singularity_image": f"docker://{container_image}",
         "daytona_image": container_image,
+        # A plugin backend reads its own ``<backend>_image`` override (tools.terminal_tool._select_image).
+        f"{env_type}_image": container_image,
     }
     if prompt_data.get("cwd"):
         overrides["cwd"] = prompt_data["cwd"]
@@ -254,7 +259,9 @@ def _process_single_prompt(
             log_prefix_chars=config.get("log_prefix_chars", 100),
             log_prefix=f"[B{batch_num}:P{prompt_index}]",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
-            skip_memory=True,  # Don't use persistent memory in batch runs
+            # No persistent memory in batch runs, unless compression.checkpoint_required needs the
+            # provider to checkpoint with (scoped as a fork: no recall, no turn writes).
+            skip_memory=not checkpoint_required_from_config(), memory_agent_context="subagent",
             **{key: config.get(key) for key in _AGENT_PASSTHROUGH if key != "platform"},
             # Batch is a first-class execution surface. Defaulting here (rather than
             # relying on the caller's config dict) keeps task-run telemetry attributable
@@ -355,7 +362,9 @@ def _process_batch_worker(args: tuple) -> dict[str, Any]:
             }
             _append_jsonl(batch_output_file, {
                 "prompt_index": prompt_index,
-                "conversations": result["trajectory"],
+                # Same persistence boundary as agent.trajectory.save_trajectory: tool args and
+                # outputs land in the exported dataset, so redact leaf-wise before serializing.
+                "conversations": redact_trajectory_value(result["trajectory"]),
                 "metadata": result["metadata"],
                 "completed": result["completed"],
                 "partial": result.get("partial", False),  # True if stopped due to invalid tool calls
@@ -588,7 +597,8 @@ class BatchRunner:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
 
-            if prompt_text in completed_prompts:
+            # Saved rows carry the redacted human turn, so match that form too.
+            if prompt_text in completed_prompts or redact_trajectory_value(prompt_text) in completed_prompts:
                 skipped_indices.append(idx)
             else:
                 filtered_dataset.append((idx, entry))

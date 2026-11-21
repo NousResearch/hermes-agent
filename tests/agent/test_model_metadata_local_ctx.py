@@ -98,7 +98,6 @@ class TestQueryLocalContextLengthVllm:
         from agent.model_metadata import _query_local_context_length
 
         detail_resp = self._make_resp(200, {"id": "omnicoder-9b", "max_model_len": 100000})
-        list_resp = self._make_resp(404, {})
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -285,7 +284,6 @@ class TestQueryLocalContextLengthModelsList:
         """
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {
@@ -317,7 +315,6 @@ class TestQueryLocalContextLengthModelsList:
         since the server can only actually serve the runtime value."""
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {"id": "/app/models/m.gguf", "meta": {"n_ctx": 256000, "n_ctx_train": 262144}}
@@ -381,7 +378,6 @@ class TestQueryLocalContextLengthAnthropicProxy:
     def test_models_list_prefers_max_input_tokens(self):
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {
@@ -930,7 +926,6 @@ class TestQueryLocalContextLengthMaxTokensNotContext:
         no genuine context-window key is present."""
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {
@@ -1000,7 +995,6 @@ class TestReconcileSelfHealsPoisonedCache:
         the poisoned 393216 cache entry with 1048576."""
         from agent.model_metadata import _reconcile_local_cached_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {

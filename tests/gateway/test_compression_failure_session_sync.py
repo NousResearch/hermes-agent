@@ -100,8 +100,6 @@ def _runner(session_store):
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._session_run_generation = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_skills_reload_notes = {}
@@ -117,7 +115,7 @@ def _runner(session_store):
         {"provider": "openai-codex", "api_mode": "codex_responses", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "token"},
     )
     runner._resolve_session_reasoning_config = lambda **_kwargs: None
-    runner._resolve_turn_agent_config = lambda message, model, runtime: {"model": model, "runtime": runtime}
+    runner._resolve_turn_agent_config = lambda message, model, runtime, **kw: {"model": model, "runtime": runtime}
     runner._load_service_tier = lambda: None
     runner._agent_config_signature = lambda *_args, **_kwargs: ("sig",)
     runner._extract_cache_busting_config = lambda _config: ()

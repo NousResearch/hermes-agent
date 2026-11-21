@@ -1,6 +1,6 @@
 # Spotify
 
-Hermes can control Spotify — playback, queue, search, playlists, saved tracks/albums, and listening history — through the official **`spotify` plugin** from the [plugin catalog](./plugins.md). It uses Spotify's Web API with PKCE OAuth. The plugin is maintained by Nous Research in [NousResearch/hermes-spotify](https://github.com/NousResearch/hermes-spotify) and is not part of Hermes core. Tokens are stored in `~/.hermes/auth.json` and refreshed automatically on 401; you only log in once per machine (refresh tokens expire after ~6 months; re-run `hermes spotify login` when they do).
+Hermes can control Spotify — playback, queue, search, playlists, saved tracks/albums, and listening history — through the official **`spotify` plugin** from the [plugin catalog](./plugins.md). It uses Spotify's Web API with PKCE OAuth. The plugin is maintained by Nous Research in [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/spotify) and is not part of Hermes core. Tokens are stored in `~/.hermes/auth.json` and refreshed automatically on 401; you only log in once per machine (refresh tokens expire after ~6 months; re-run `hermes spotify login` when they do).
 
 Unlike Hermes' built-in OAuth integrations, Spotify requires every user to register their own lightweight developer app. Spotify does not let third parties ship a public OAuth app that anyone can use. It takes about two minutes and `hermes spotify login` walks you through it.
 

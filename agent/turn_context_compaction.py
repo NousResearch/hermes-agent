@@ -131,13 +131,16 @@ def run_turn_start_compaction(
     active_system_prompt: Optional[str], conversation_history: Optional[list[dict[str, Any]]],
     current_turn_user_idx: int, user_message: Any, effective_task_id: str,
 ) -> CompactionOutcome:
-    """Idle compaction, then preflight compression (or the uncompressed guard)."""
+    """Idle compaction, preflight compression (or the uncompressed guard), then the cold-cache prune."""
     out = CompactionOutcome(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
     )
     _idle_compaction(agent, out, system_message, user_message, effective_task_id)
     _preflight_compression(agent, out, system_message, user_message, effective_task_id)
+    from agent.turn_proactive_prune import turn_start_cold_prune
+
+    turn_start_cold_prune(agent, out, effective_task_id)
     return out
 
 
@@ -203,7 +206,7 @@ def _idle_compaction(
     if _idle_status:
         agent._emit_status(_idle_status)
     out.messages, out.active_system_prompt = agent._compress_context(
-        messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id
+        messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id, trigger="idle",
     )
     # ``_compress_context`` returns the INPUT list object when it skips; only
     # re-baseline and re-anchor after a real compaction.
@@ -241,6 +244,11 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
+    # A structural no-op ("nothing eligible among N messages") is a verdict about that transcript;
+    # the gateway daemon keeps this compressor across turns, so a grown transcript re-arms it.
+    _lift = getattr(_compressor, "lift_structural_backoff_if_grown", None)
+    if callable(_lift):
+        _lift(len(out.messages))
     if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
@@ -381,7 +389,7 @@ def _run_preflight_passes(
         _orig_tokens = _preflight_tokens
         out.messages, out.active_system_prompt = agent._compress_context(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, trigger="turn_start_threshold",
         )
         if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
             # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
@@ -458,7 +466,8 @@ def _engine_preflight_maintenance(
     )
     _engine_input = out.messages
     out.messages, out.active_system_prompt = agent._compress_context(
-        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id
+        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id,
+        trigger="engine_preflight",
     )
     # ``_compress_context`` returns the INPUT list on every skip path and an engine
     # may no-op; re-baseline/re-anchor only after a REAL compaction.

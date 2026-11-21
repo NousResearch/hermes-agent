@@ -128,7 +128,7 @@ class Fleet:
     def url(self, role: str) -> str:
         return self.servers[role].base_url
 
-    def start(self) -> "Fleet":
+    def start(self) -> Fleet:
         for srv in self.servers.values():
             srv.start()
         return self

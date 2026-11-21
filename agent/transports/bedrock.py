@@ -26,7 +26,7 @@ class BedrockTransport(ProviderTransport):
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI messages to Bedrock Converse format."""
         from agent.bedrock_adapter import convert_messages_to_converse
-        return convert_messages_to_converse(messages)
+        return convert_messages_to_converse(messages, model=kwargs.get("model"))
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Bedrock Converse toolConfig."""
@@ -40,9 +40,11 @@ class BedrockTransport(ProviderTransport):
         """Build Converse kwargs, leaving the optional output limit to the provider."""
         from agent.bedrock_adapter import build_converse_kwargs
 
+        self._model = model  # stamps the turns normalize_response captures as this model's own
         kwargs = build_converse_kwargs(
             model=model, messages=messages, tools=tools, max_tokens=params.get("max_tokens"),
             temperature=params.get("temperature"), guardrail_config=params.get("guardrail_config"),
+            reasoning_config=params.get("reasoning_config"),
         )
         # Sentinel keys for dispatch — agent pops these before the boto3 call
         kwargs["__bedrock_converse__"] = True
@@ -64,6 +66,10 @@ class BedrockTransport(ProviderTransport):
         provider_data = {
             key: getattr(msg, key) for key in ("reasoning_details", "bedrock_content_blocks") if getattr(msg, key, None)
         }
+        if provider_data.get("reasoning_details") and getattr(self, "_model", None):
+            from agent.bedrock_adapter import CONVERSE_ISSUER_TYPE
+            provider_data["reasoning_details"] = [*provider_data["reasoning_details"],
+                                                  {"type": CONVERSE_ISSUER_TYPE, "model": self._model}]
         return NormalizedResponse(
             content=msg.content, tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",

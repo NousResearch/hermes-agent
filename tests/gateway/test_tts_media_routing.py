@@ -480,8 +480,7 @@ class _QueuedMediaCaptureAdapter(BasePlatformAdapter):
     async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
         for image_url, _alt in images:
             path = image_url
-            if path.startswith("file://"):
-                path = path[len("file://"):]
+            path = path.removeprefix("file://")
             self.images.append({"chat_id": chat_id, "image_path": path, "metadata": metadata})
 
     async def get_chat_info(self, chat_id):
@@ -540,7 +539,6 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(

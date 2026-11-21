@@ -18,6 +18,7 @@ failure fails OPEN to the per-call path with a note.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import logging
 import secrets
@@ -28,7 +29,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
+from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd, _remote_write
+from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +125,32 @@ class RemoteKernel:
     attached: int = 0
     # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
     pinned: bool = False
+    # The bound hosted scope at spawn (None outside a hosted scope): kernel maintenance (reap,
+    # eviction kill, session-boundary shutdown) may run on another agent's thread or none at all,
+    # and its commands reach the sandbox only under the scope that owns it.
+    owner_scope: Any = None
 
     def sh(self, cmd: str, timeout: int = 15) -> str:
-        return _sh(self.env, cmd, timeout)
+        with self._owning_scope():
+            return _sh(self.env, cmd, timeout)
+
+    @contextlib.contextmanager
+    def _owning_scope(self):
+        """Bind the captured owning scope for trusted teardown: the kernel record itself is the
+        authority for whose sandbox its commands may reach, never a caller's bound scope. With the
+        owning sandbox already bound (a later turn of it: its own, newer fence) or never hosted
+        this is the identity."""
+        from tools.environments.sandbox_scope import hosted_scope, sandbox_identity
+        scope, bound = self.owner_scope, hosted_scope()
+        if scope is None or (bound is not None and sandbox_identity(bound) == sandbox_identity(scope)):
+            yield
+            return
+        from hermes_scope import push_state
+        token = push_state(scope=scope, home=None, secrets=None, terminal=None)
+        try:
+            yield
+        finally:
+            token.reset()
 
     def is_alive(self) -> bool:
         """Bounded liveness probe: kill -0 through the transport. Any transport
@@ -168,9 +193,12 @@ def shutdown_all_remote_kernels() -> None:
 
 def shutdown_remote_kernels_for_owner(owner: str) -> None:
     """Session-boundary disposal — wired to the same clear_session hook as
-    local kernels, so /new and session close reap both kinds."""
+    local kernels, so /new and session close reap both kinds. The owner is
+    resolved for the CURRENT scope, so a session close touches only the
+    current agent's remote kernels, never another hosted agent's."""
     if owner:
-        _REGISTRY.shutdown(owner)
+        from tools.code_kernel import session_close_owner
+        _REGISTRY.shutdown(session_close_owner(owner))
 
 
 def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
@@ -178,7 +206,7 @@ def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
     _REGISTRY.shutdown(owner_matches=owner_matches)
 
 
-def _reap_unlocked(idle_timeout: int) -> list["RemoteKernel"]:
+def _reap_unlocked(idle_timeout: int) -> list[RemoteKernel]:
     """Pop idle-expired, unattached remote kernels; caller tears them down outside the lock. The
     runner self-exits after the same idle window, so this clears the HOST-side entry — without it
     the map grew one entry per never-revisited (owner, env_type, task_env_id) for the gateway's life."""
@@ -188,7 +216,7 @@ def _reap_unlocked(idle_timeout: int) -> list["RemoteKernel"]:
     return [_REMOTE_KERNELS.pop(key) for key in doomed]
 
 
-def _evict_over_cap_unlocked(keep: tuple) -> list["RemoteKernel"]:
+def _evict_over_cap_unlocked(keep: tuple) -> list[RemoteKernel]:
     """Pop least-recently-used unattached remote kernels beyond the process-wide cap (the same
     ``max_session_kernels`` bound as local kernels, applied independently to this map)."""
     from tools.code_kernel import _lifecycle_limits
@@ -207,9 +235,8 @@ atexit.register(shutdown_all_remote_kernels)
 def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                          sandbox_tools: frozenset, *, idle_exit: int) -> Optional[RemoteKernel]:
     """Start a detached kernel runner on the remote. None on failure (dir removed)."""
-    from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
     from tools.code_execution_tool import (
-        MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
+        MAX_STDOUT_BYTES, _env_temp_dir,
         _ship_env_file_and_launch, generate_hermes_tools_module,
     )
     kernel_dir = f"{_env_temp_dir(env)}/hermes_rkernel_{uuid.uuid4().hex[:12]}"
@@ -224,10 +251,10 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                                                 f"{kernel_dir}/rpc"),
                          "remote kernel dir setup", timeout=15)
         rpc_token = secrets.token_urlsafe(32)
-        _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
-            cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
-        _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
+        _remote_write(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
+            cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit), check=True)
+        _remote_write(env, f"{kernel_dir}/hermes_tools.py",
+                      generate_hermes_tools_module(list(sandbox_tools), transport="file"), check=True)
         # kernel.env is removed after sourcing: the runner's env keeps the
         # values, so the token file need not sit at rest for the kernel's
         # lifetime. runner.log is pre-created 600 so the launch redirect never
@@ -272,6 +299,8 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                            idle_exit: int) -> tuple[Optional[RemoteKernel], bool, bool, bool]:
     """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
     idle-expired entries on the way in."""
+    from tools.environments.sandbox_scope import hosted_scope
+    owner_scope = hosted_scope()
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
     state_lost = state_reset = False
     with _REGISTRY.lock:
@@ -294,6 +323,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         if kernel is not None:
             from agent.delegation_context import is_delegated_child_context
             kernel.pinned = is_delegated_child_context()
+            kernel.owner_scope = owner_scope
             with _REGISTRY.lock:
                 _REMOTE_KERNELS[key] = kernel
     return kernel, reused, state_reset, state_lost
@@ -301,13 +331,12 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
-    from tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
     # One round-trip: tmp write + rename publishes the request atomically.
-    _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
-                         json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True)
+    _remote_write(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
+                  json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True, check=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -336,6 +365,7 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str
 def execute_in_remote_kernel(
     code: str, *, env, env_type: str, task_env_id: str, sandbox_tools: frozenset,
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
+    session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
@@ -356,7 +386,8 @@ def execute_in_remote_kernel(
     try:
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                                  reused=reused, state_reset=state_reset, state_lost=state_lost)
+                                  reused=reused, state_reset=state_reset, state_lost=state_lost,
+                                  session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -365,7 +396,9 @@ def execute_in_remote_kernel(
 
 def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-                       reused: bool, state_reset: bool, state_lost: bool) -> dict[str, Any]:
+                       reused: bool, state_reset: bool, state_lost: bool,
+                       session_id: str | None = None, turn_id: str | None = None,
+                       conversation_id: str | None = None) -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -382,7 +415,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
         args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, tool_call_log, tool_call_counter,
-              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token))
+              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token, session_id, turn_id,
+              conversation_id))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:
@@ -430,4 +464,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
             "restart, or idle self-exit); state from earlier calls was lost and a fresh kernel was started."))
     if cell_status == "error" and result["traceback"]:
         result["error"] = result["traceback"].strip().splitlines()[-1]
+    stale_warning = stale_modules_warning(cell_payload)
+    if stale_warning:
+        kernel_info["warning"] = stale_warning  # the caller rebuilds the result but keeps `kernel`
     return result

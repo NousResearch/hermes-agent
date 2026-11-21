@@ -16,7 +16,7 @@ import pytest
 import pm
 from pm import paths
 from tests.pm._range_server import RangeHandler, url
-from tests.pm._range_server import dl_server as dl_server
+from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.fixture
@@ -159,12 +159,12 @@ def test_managed_consumers_run_their_business_protocol(consumer_store, monkeypat
         f"#!{sys.executable}\nimport json,os,sys\n"
         "if '--version' in sys.argv: print('bws fixture')\n"
         "else:\n"
-        " assert sys.argv[1:] == ['secret','list','project','--output','json']\n"
+        " assert sys.argv[1:] == ['secret','list','--output','json','--','0b6c1a8e-3f2d-4c5b-9a7e-1d2f3a4b5c6d']\n"
         " assert os.environ['BWS_SERVER_URL'] == 'https://vault.example.invalid'\n"
         " print(json.dumps([{'key':'FIXTURE_VALUE','value':os.environ['BWS_ACCESS_TOKEN']}]))\n"
     ).encode())
     install_bws()
-    assert fetch_bitwarden_secrets(access_token="local-token", project_id="project", use_cache=False,
+    assert fetch_bitwarden_secrets(access_token="local-token", project_id="0b6c1a8e-3f2d-4c5b-9a7e-1d2f3a4b5c6d", use_cache=False,
                                   server_url="https://vault.example.invalid") == (
         {"FIXTURE_VALUE": "local-token"}, []
     )

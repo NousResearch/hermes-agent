@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
 import { afterEach, test, vi } from 'vitest'
 
 import {
@@ -14,7 +13,7 @@ import {
   REVIEW_FILE_CAP,
   reviewCreatePr,
   reviewList,
-  SIMPLE_GIT_UNSAFE_BINARY_WARN
+  simpleGitHostEnv
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
 
@@ -97,38 +96,139 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
   }
 })
 
-test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
-  const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
-  // `windowsGitHost()` resolves nothing in this process (no configured roots, no
-  // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
-  // spaced `Program Files` path, which warns once per factory call.
-  const warnings: unknown[][] = []
-  const originalWarn = console.warn
+test('simpleGitHostEnv forwards the allow-listed git variables and drops the other guarded ones', () => {
+  const env = simpleGitHostEnv(
+    {
+      PATH: '/bin',
+      HOME: '/home/u',
+      GIT_SSH_COMMAND: 'ssh -i key',
+      GIT_SSH: '/usr/bin/ssh',
+      GIT_ASKPASS: '/usr/bin/askpass',
+      SSH_ASKPASS: '/usr/bin/ssh-askpass',
+      GIT_TERMINAL_PROMPT: '1',
+      GIT_PAGER: 'cat',
+      GIT_DIR: '/elsewhere/.git',
+      git_work_tree: '/elsewhere',
+      GIT_CONFIG_GLOBAL: '/tmp/gitconfig',
+      EDITOR: 'vim',
+      VISUAL: 'code',
+      PAGER: 'less',
+      PREFIX: '/usr'
+    },
+    'git'
+  )
 
-  const recordingWarn = (...args: unknown[]) => {
-    warnings.push(args)
-  }
-
-  console.warn = recordingWarn
-
-  try {
-    for (let i = 0; i < 5; i += 1) {
-      gitFor(process.cwd(), spacedBin)
-    }
-
-    assert.equal(console.warn, recordingWarn)
-
-    // The escape hatch used directly still warns: the message gitFor filters is a
-    // live emission of the installed simple-git, so the filter cannot go stale
-    // silently (an upgrade that rewords it fails this test, not production).
-    simpleGit({ baseDir: process.cwd(), binary: spacedBin, unsafe: { allowUnsafeCustomBinary: true } })
-    console.warn('unrelated warning')
-  } finally {
-    console.warn = originalWarn
-  }
-
-  assert.deepEqual(warnings, [[SIMPLE_GIT_UNSAFE_BINARY_WARN], ['unrelated warning']])
+  assert.deepEqual(env, {
+    PATH: '/bin',
+    HOME: '/home/u',
+    GIT_SSH_COMMAND: 'ssh -i key',
+    GIT_SSH: '/usr/bin/ssh',
+    GIT_ASKPASS: '/usr/bin/askpass',
+    SSH_ASKPASS: '/usr/bin/ssh-askpass',
+    GIT_TERMINAL_PROMPT: '1',
+    HERMES_GIT_ARGV0: '"git"'
+  })
 })
+
+test('simpleGitHostEnv still defaults GIT_TERMINAL_PROMPT off for the host tuple', () => {
+  assert.equal(simpleGitHostEnv({ PATH: '/bin' }, 'git').GIT_TERMINAL_PROMPT, '0')
+})
+
+// An ssh:// remote whose transport is a script recording that git ran it, so a
+// test can tell whether the user's GIT_SSH_COMMAND reached the git process.
+function makeRepoWithSshRemote() {
+  const dir = makeRepo()
+  const toolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fake-ssh-'))
+  const marker = path.join(toolDir, 'ssh-command-ran')
+  const sshScript = path.join(toolDir, 'fake-ssh.sh')
+
+  tempDirs.push(toolDir)
+
+  execFileSync('git', ['remote', 'add', 'origin', 'ssh://git@example.invalid/repo.git'], { cwd: dir })
+  fs.writeFileSync(sshScript, `#!/bin/sh\necho "$@" > "${marker}"\nexit 1\n`, { mode: 0o755 })
+
+  return { dir, marker, sshScript }
+}
+
+// Guarded variables a user's shell commonly carries; simple-git 4 rejects an
+// explicit env holding any of them and strips them when inherited.
+function stubUserGitEnv(sshScript: string) {
+  vi.stubEnv('GIT_SSH_COMMAND', sshScript)
+  vi.stubEnv('GIT_PAGER', 'cat')
+  vi.stubEnv('GIT_DIR', '/nonexistent/.git')
+  vi.stubEnv('EDITOR', 'vi')
+}
+
+test.skipIf(process.platform === 'win32')(
+  "gitFor runs git with the user's GIT_SSH_COMMAND while other inherited git variables are dropped",
+  async () => {
+    const { dir, marker, sshScript } = makeRepoWithSshRemote()
+
+    stubUserGitEnv(sshScript)
+
+    try {
+      // ls-remote fails (the fake transport exits 1); what matters is that git
+      // ran the configured ssh command, and that the inherited GIT_DIR did not
+      // point it away from the repository.
+      await assert.rejects(gitFor(dir, 'git').raw(['ls-remote', 'origin']), /Could not read from remote repository/)
+      assert.ok(fs.existsSync(marker), 'GIT_SSH_COMMAND did not reach git')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }
+)
+
+const HOST_PYTHON =
+  process.env.HERMES_PYTHON || process.env.UV_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
+
+test.skipIf(process.platform === 'win32')(
+  "gitFor's Windows host-tuple path forwards GIT_SSH_COMMAND and does not throw on inherited guarded variables",
+  async () => {
+    // The host tuple is the only path that hands simple-git an explicit env,
+    // which simple-git 4 rejects when it carries a guarded key. Drive it for real
+    // with the python host script.
+    execFileSync(HOST_PYTHON, ['--version'], { stdio: 'ignore' })
+
+    const { dir, marker, sshScript } = makeRepoWithSshRemote()
+    const actualNoConsole = await vi.importActual<typeof NoConsoleGit>('./no-console-git')
+    const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-host-'))
+
+    tempDirs.push(scriptDir)
+
+    const scriptPath = actualNoConsole.ensureNoConsoleGitScript(scriptDir)
+
+    vi.resetModules()
+    vi.doMock('./no-console-git', async importOriginal => ({
+      ...(await importOriginal<typeof NoConsoleGit>()),
+      windowsGitHost: () => ({ isWindows: true, pythonBin: HOST_PYTHON, scriptPath })
+    }))
+    stubUserGitEnv(sshScript)
+
+    try {
+      const { gitFor: gitForWithHostTuple, repoStatus: repoStatusWithHostTuple } = await import('./git-review-ops')
+
+      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'changed\n')
+
+      const status = await repoStatusWithHostTuple(dir, 'git')
+
+      assert.ok(status)
+      assert.deepEqual(
+        status.files.map(file => file.path),
+        ['tracked.txt']
+      )
+
+      await assert.rejects(
+        gitForWithHostTuple(dir, 'git').raw(['ls-remote', 'origin']),
+        /Could not read from remote repository/
+      )
+      assert.ok(fs.existsSync(marker), 'GIT_SSH_COMMAND did not reach git through the host tuple')
+    } finally {
+      vi.unstubAllEnvs()
+      vi.doUnmock('./no-console-git')
+      vi.resetModules()
+    }
+  }
+)
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {
   assert.equal(resolveRenamePath('old.ts => new.ts'), 'new.ts')

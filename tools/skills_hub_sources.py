@@ -106,7 +106,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
         return query.rstrip("/") + f"{self.BASE_PATH}/index.json"
 
     def _parse_identifier(self, identifier: str) -> Optional[dict]:
-        raw = identifier[len("well-known:"):] if identifier.startswith("well-known:") else identifier
+        raw = identifier.removeprefix("well-known:")
         if not raw.startswith(("http://", "https://")):
             return None
         parsed_url = urlparse(raw)
@@ -215,7 +215,7 @@ class UrlSource(GuardedFetchMixin, SkillSource):
         referenced = _referenced_support_paths(text)
         if referenced is None:
             return None
-        files: dict[str, Union[str, bytes]] = {"SKILL.md": text}
+        files: dict[str, str | bytes] = {"SKILL.md": text}
         base_url = url.rsplit("/", 1)[0] + "/"
         for rel_path in sorted(referenced):
             support_url = urljoin(base_url, quote(rel_path, safe="/"))
@@ -404,7 +404,7 @@ class BrowseShSource(SkillSource):
             return None
         slug = item["slug"]
         md_url = self._resolve_skill_md_url(slug, item)
-        content = _get_text(md_url, follow_redirects=True) if md_url else None
+        content = _get_text(md_url) if md_url else None
         if content is None:
             return None
         meta = self._item_to_meta(item)
@@ -417,7 +417,7 @@ class BrowseShSource(SkillSource):
 
     def _resolve_skill_md_url(self, slug: str, item: dict) -> Optional[str]:
         """``skillMdUrl`` from ``/api/skills/{slug}``; fallback to a ``raw.githubusercontent.com`` ``sourceUrl``."""
-        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug), follow_redirects=True)
+        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug))
         md_url = data.get("skillMdUrl") if isinstance(data, dict) else None
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url
@@ -427,4 +427,4 @@ class BrowseShSource(SkillSource):
 
     def _slug_from_identifier(self, identifier: str) -> str:
         """'browse-sh/airbnb.com/search-listings-abc' -> 'airbnb.com/search-listings-abc'."""
-        return identifier[len("browse-sh/"):] if identifier.startswith("browse-sh/") else identifier
+        return identifier.removeprefix("browse-sh/")

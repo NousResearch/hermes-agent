@@ -8,6 +8,7 @@ and a duplicate refusal must say which claim came from the environment.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -136,6 +137,24 @@ class TestHostGatewaySpawnEnv:
         assert env.get("HERMES_HOME") == str(worker_home)
         assert env.get("TELEGRAM_BOT_TOKEN") == _WORKER_TOKEN
 
+    def test_restart_watcher_restores_checkout_pythonpath(self, tmp_path, monkeypatch):
+        """The watcher env builders strip Hermes-owned PYTHONPATH entries; the
+        restart watcher must get the running checkout's root back, or the
+        respawned `hermes gateway restart` fails with "No module named
+        'hermes_cli'" (#152714)."""
+        from gateway.run_shutdown import GatewayShutdownMixin
+
+        _default_home, worker_home = _two_homes(tmp_path)
+        _inherit_worker_env(monkeypatch, worker_home)
+        user_lib = tmp_path / "user-lib"
+        user_lib.mkdir()
+        monkeypatch.setenv("PYTHONPATH", str(user_lib))
+        env = GatewayShutdownMixin._restart_watcher_env()
+        repo_root = str(Path(__file__).resolve().parents[2])
+        pythonpath = env.get("PYTHONPATH", "").split(os.pathsep)
+        assert pythonpath[0] == repo_root
+        assert str(user_lib) in pythonpath
+
     def test_restart_watcher_does_not_inherit_profile_token(self, tmp_path, monkeypatch):
         """The detached restart child is built with served_profile_child_env, not os.environ.copy()."""
         from gateway.run_shutdown import GatewayShutdownMixin
@@ -162,6 +181,10 @@ class TestSettledHostRecordDecidesRestart:
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+        # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+        # The handle lives in a per-test copy of the registry (and a per-test lock dir), so undo drops it.
+        monkeypatch.setattr(hr, "_lock_handles", dict(hr._lock_handles))
+        assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
         record = hr.publish_record(
             hr.ROLE_GATEWAY, profiles=tuple(profiles), home=str(home),
         )

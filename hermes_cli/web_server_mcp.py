@@ -14,7 +14,7 @@ from hermes_cli.config import redact_key
 from hermes_cli.web_models import MCPServerCreate
 
 
-def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, dict[str, Any], Optional[str]]:
+def normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, dict[str, Any], Optional[str]]:
     """Validate a Dashboard MCP create request and build its safe config.
 
     The returned config never contains the Bearer token; callers persist it via
@@ -105,7 +105,7 @@ def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = Non
     }
 
 
-_mcp_oauth_flows: dict[str, "DashboardOAuthFlow"] = {}
+_mcp_oauth_flows: "dict[str, DashboardOAuthFlow]" = {}
 _mcp_oauth_transactions: dict[tuple[str, str], threading.Lock] = {}
 _mcp_oauth_transactions_lock = threading.Lock()
 

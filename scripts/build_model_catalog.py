@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
@@ -61,7 +61,7 @@ def _nous_entry(mid: str) -> dict:
 def build_catalog() -> dict:
     return {
         "version": CATALOG_VERSION,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "updated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "metadata": {
             "source": "hermes-agent repo",
             "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog",

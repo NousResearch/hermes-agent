@@ -59,7 +59,7 @@ class _ManagedAttempt:
     def resolve(
         cls, session_id: str | None, request: dict[str, Any], metadata: dict[str, Any] | None,
         *, name: str, model_name: str,
-    ) -> "_ManagedAttempt | None":
+    ) -> _ManagedAttempt | None:
         """Return the managed attempt for ``session_id`` (None: the inherited turn's), or None to run unmanaged."""
         if session_id is None:
             session_id = _current_session_id()
@@ -429,7 +429,7 @@ class ManagedLlmStream(Iterator[Any]):
                 self._release_runtime_lease()
             raise
 
-    def __iter__(self) -> "ManagedLlmStream":
+    def __iter__(self) -> ManagedLlmStream:
         return self
 
     def _prime_completed_response(self) -> None:

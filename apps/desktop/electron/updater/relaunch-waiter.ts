@@ -1,10 +1,12 @@
 // Stage the waiter outside the package and await its old-version snapshot.
 // A failed handshake cancels our child instead of leaving a delayed relaunch.
 
-import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process'
+import { type ChildProcess, execFile, spawn as nodeSpawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+
+import { wrapHandoffForDetachedConsole } from '../updater-process'
 
 export const RELAUNCH_WAITER_SCRIPT = 'update-relaunch-waiter.ps1'
 
@@ -56,6 +58,8 @@ export type SpawnWaiter = (
 
 export interface RelaunchWaiterDeps {
   spawn?: SpawnWaiter
+  /** Stop the owned wrapper and its waiter before releasing the staging directory. */
+  kill?: (child: ChildProcess) => void | Promise<void>
   /** Handshake deadline in ms (tests shrink this). */
   handshakeTimeoutMs?: number
   /** Poll interval for the ready file (tests shrink this). */
@@ -188,11 +192,28 @@ export async function startRelaunchWaiter(
   let child: ChildProcess
 
   try {
-    child = spawn(
-      POWERSHELL_PATH,
-      buildRelaunchWaiterArgs({ ...options, scriptPath: staging.scriptPath }, staging.readyFile),
-      { detached: true, stdio: 'ignore', windowsHide: true, cwd: staging.stageDir }
+    // PowerShell 5.1 exits before executing -File under DETACHED_PROCESS.
+    // cmd owns a hidden console that PowerShell shares, stays alive as the
+    // cancellation root and returns the script's exit code.
+    // The PowerShell grandchild survives Electron's libuv job being closed.
+    const wrapped = wrapHandoffForDetachedConsole(
+      {
+        command: POWERSHELL_PATH,
+        args: buildRelaunchWaiterArgs({ ...options, scriptPath: staging.scriptPath }, staging.readyFile),
+        scriptPath: staging.scriptPath
+      },
+      [],
+      true
     )
+
+    child = spawn(path.win32.resolve(POWERSHELL_PATH, '../../../cmd.exe'), wrapped.args, {
+      detached: wrapped.detached,
+      stdio: 'ignore',
+      windowsHide: true,
+      // A working directory pins its folder: keep it out of the package, which
+      // the swap replaces, and out of the stage dir, which the script deletes.
+      cwd: os.tmpdir()
+    })
   } catch (error) {
     log(`[updates] relaunch waiter: spawning ${POWERSHELL_PATH} threw: ${errorText(error)}`)
 
@@ -223,7 +244,18 @@ export async function startRelaunchWaiter(
     cancellation ??= (async () => {
       if (!closed) {
         if (child.pid !== undefined) {
-          child.kill()
+          if (deps.kill) {
+            await deps.kill(child)
+          } else {
+            await new Promise<void>((resolve, reject) => {
+              execFile(
+                path.win32.resolve(POWERSHELL_PATH, '../../../taskkill.exe'),
+                ['/PID', String(child.pid), '/T', '/F'],
+                { windowsHide: true, timeout: cancelTimeoutMs },
+                error => (error ? reject(error) : resolve())
+              )
+            })
+          }
         }
 
         let timeout: ReturnType<typeof setTimeout> | undefined

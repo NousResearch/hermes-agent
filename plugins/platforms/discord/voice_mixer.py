@@ -50,7 +50,7 @@ class MixerChild:
         self.fade_frames = max(0, fade_in_ms // FRAME_LENGTH_MS)
         self._finished = False
 
-    def read_frame(self) -> "Optional[np.ndarray]":
+    def read_frame(self) -> Optional[np.ndarray]:
         """Next 20 ms frame as a float32 ndarray, or None when done."""
         if self._finished:
             return None
@@ -140,7 +140,7 @@ class VoiceMixer(discord.AudioSource):
             if self._closed:
                 return SILENCE_FRAME
             np = _require_numpy()
-            acc: "Optional[np.ndarray]" = None
+            acc: Optional[np.ndarray] = None
             # Speech children (drop exhausted ones; release duck when last ends)
             if self._speech:
                 still_live: list[MixerChild] = []
@@ -184,6 +184,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
             [resolve_ffmpeg_executable(), "-y", "-loglevel", "error", "-i", path, "-f", "s16le",
              "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1"],
             capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("decode_to_pcm failed for %s: %s", path, e)

@@ -13,7 +13,7 @@ import re
 import secrets
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -84,7 +84,8 @@ def _pairing_store(profile: Optional[str] = None):
 @router.get("/api/pairing")
 async def list_pairing(profile: Optional[str] = None):
     store = _pairing_store(profile)
-    return {"pending": store.list_pending(), "approved": store.list_approved()}
+    # Pairing edits wait on a cross-process lock (gateway, CLI): never on the server's event loop.
+    return {"pending": await asyncio.to_thread(store.list_pending), "approved": store.list_approved()}
 
 
 @router.post("/api/pairing/approve")
@@ -99,7 +100,10 @@ async def approve_pairing(body: PairingApprove):
         raise HTTPException(status_code=400, detail="platform and request_id or code are required")
 
     by_request_id = bool(body.request_id) or store.looks_like_request_id(target)
-    result = store.approve_request(platform, target) if by_request_id else store.approve_code(platform, target.upper())
+    if by_request_id:
+        result = await asyncio.to_thread(store.approve_request, platform, target)
+    else:
+        result = await asyncio.to_thread(store.approve_code, platform, target.upper())
     if result:
         return {"ok": True, "user": result}
     # Lockout only gates the code path — a stale request id must not surface
@@ -119,14 +123,14 @@ async def revoke_pairing(body: PairingRevoke):
     platform = (body.platform or "").lower().strip()
     if not platform or not body.user_id:
         raise HTTPException(status_code=400, detail="platform and user_id are required")
-    if store.revoke(platform, body.user_id):
+    if await asyncio.to_thread(store.revoke, platform, body.user_id):
         return {"ok": True}
     raise HTTPException(status_code=404, detail=f"User {body.user_id} not found in approved list for {platform}.")
 
 
 @router.post("/api/pairing/clear-pending")
 async def clear_pending_pairing(profile: Optional[str] = None):
-    return {"ok": True, "cleared": _pairing_store(profile).clear_pending()}
+    return {"ok": True, "cleared": await asyncio.to_thread(_pairing_store(profile).clear_pending)}
 
 
 # --- Webhooks: same JSON store as the CLI (hermes_cli.webhook); the adapter
@@ -145,6 +149,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
         "skills": list(route.get("skills") or []),
         "created_at": route.get("created_at"),
         "url": f"{base_url}/webhooks/{name}",
+        "signature": route.get("signature"),
         "secret_set": bool(route.get("secret")),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,
@@ -187,6 +192,18 @@ async def enable_webhooks(profile: Optional[str] = None):
     }
 
 
+def _dashboard_route_signature(requested: Optional[str], expected: object) -> dict[str, str]:
+    """The saved route's ``signature`` key (#84265). An unpinned route accepts every scheme, so
+    body-only GitHub/Linear MACs replay a captured V1 request; new routes are pinned to generic.
+    A re-POST replaces the record, so an omitted field keeps the stored pin verbatim (even one the
+    gateway refuses, like ``False``); an explicit pick replaces it."""
+    if requested is not None:
+        return {"signature": requested}
+    if not isinstance(expected, dict):
+        return {"signature": "generic"}
+    return {"signature": expected["signature"]} if "signature" in expected else {}
+
+
 @router.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     import hermes_cli.webhook as wh
@@ -223,6 +240,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         "skills": [s.strip() for s in body.skills if s.strip()],
         "deliver": body.deliver or "log",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **_dashboard_route_signature(body.signature, expected),
     }
     if body.script and body.script.strip():
         route["script"] = body.script.strip()
@@ -303,22 +321,25 @@ async def start_gateway(profile: Optional[str] = None):
 
 
 @router.post("/api/gateway/stop")
-async def stop_gateway(profile: Optional[str] = None):
-    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+async def stop_gateway(profile: Optional[str] = None, interrupt: bool = False):
+    from hermes_cli.web_server_gateway import live_session_refusal, multiplexed_profile_refusal
     # A served profile has no gateway of its own to stop: the child prints "No gateway running for this
     # profile" (exit 0) while the multiplexer keeps serving it and the UI flips to "stopped".
     refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "stop")
     if refusal:
         raise HTTPException(status_code=409, detail=refusal)
+    # Live sessions refuse a stop unless the caller interrupts them deliberately (`?interrupt=true`).
+    if not interrupt and (refusal := await asyncio.to_thread(live_session_refusal, profile, "stop")):
+        raise HTTPException(status_code=409, detail=refusal)
     with http_failure("Failed to spawn gateway stop", 500, "Failed to stop gateway"):
-        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
+        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop") + ["--interrupt"] * interrupt, "gateway-stop")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
 
 
 # --- Credential pool (auth.json -> credential_pool.<provider>[]): secrets are
 # redacted on read; only the agent sees raw values at session start.
 #
-# load_pool() may hit the network synchronously (Copilot token exchange over raw
+# load_pool() may hit the network synchronously (a provider token exchange over raw
 # urllib, whose timeout does NOT bound DNS resolution) — on a networkless host it
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 
@@ -381,6 +402,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
         load_pool,
     )
 
+    from hermes_cli.auth_commands import _provider_base_url
+
     provider = (body.provider or "").strip().lower()
     api_key = (body.api_key or "").strip()
     if not provider or not api_key:
@@ -405,6 +428,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
                 priority=0,
                 source=SOURCE_MANUAL,
                 access_token=api_key,
+                # The key is bound to the address it was entered for (#130410), as `hermes auth add` does.
+                base_url=_provider_base_url(provider) or None,
             ))
             # Re-adding is an explicit re-engagement signal: lift every suppression
             # for this provider so a source deleted earlier can seed again
@@ -592,8 +617,8 @@ async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     return response
 
 
-@router.get("/api/ops/backup/download")
-async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+def _dashboard_backup_path(archive: str, profile: Optional[str]) -> Path:
+    """``archive`` resolved, when it is a file in this profile's backups directory (403/404 else)."""
     try:
         backup_dir = _dashboard_backup_dir(profile).expanduser().resolve(strict=False)
         target = Path(archive).expanduser().resolve(strict=True)
@@ -601,20 +626,33 @@ async def download_dashboard_backup(archive: str, profile: Optional[str] = None)
         raise HTTPException(status_code=404, detail="Backup not found")
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid backup path")
-
     if not _path_is_under(backup_dir, target):
         raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Backup not found")
+    return target
+
+
+@router.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+    target = _dashboard_backup_path(archive, profile)
     return FileResponse(
         path=str(target), media_type="application/zip", filename=target.name, content_disposition_type="attachment",
     )
 
 
-def _spawn_import(archive: str, force: bool, profile: Optional[str] = None) -> dict:
+def _spawn_import(archive: str, force: bool, profile: Optional[str] = None, *, keep_host: bool = False,
+                  messaging_off: bool = False) -> dict:
+    """``hermes import``; ``keep_host`` (the Hermes Cloud transfer and its undo) also forces it, and
+    ``messaging_off`` (the transfer only) brings the bots over switched off. The undo point the import
+    takes is reported by ``/api/actions/import/status`` once it exists."""
     args = ["import", archive]
-    if force:
+    if force or keep_host:
         args.append("--force")
+    if keep_host:
+        args.append("--keep-host")
+    if keep_host and messaging_off:
+        args.append("--messaging-off")
     return _spawn_action(args, "import", log_msg="Failed to spawn import",
                          prefix="Failed to run import", profile=profile)
 
@@ -627,7 +665,7 @@ async def run_import(body: ImportRequest, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail="archive path is required")
     if not os.path.isfile(archive):
         raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
-    return _spawn_import(archive, body.force, profile)
+    return _spawn_import(archive, body.force, profile, keep_host=body.keep_host)
 
 
 def _safe_backup_upload_name(filename: str | None) -> str:
@@ -651,7 +689,7 @@ async def run_import_upload(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not create import staging directory: {exc}")
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{_safe_backup_upload_name(file.filename)}"
     total = await stream_upload_to_path(
         file, target, too_large="Archive is too large",

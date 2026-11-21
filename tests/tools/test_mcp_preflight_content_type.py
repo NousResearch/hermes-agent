@@ -57,11 +57,11 @@ def _serve(handler_cls):
 
 
 def _handler(status: int = 200,
-             content_type: "str | None" = "text/html; charset=utf-8",
+             content_type: str | None = "text/html; charset=utf-8",
              body: bytes = b"<html>x</html>", head_status=None, record=None,
-             post_content_type: "str | None" = None,
+             post_content_type: str | None = None,
              post_body: bytes = b"",
-             post_status: "int | None" = None):
+             post_status: int | None = None):
     """Build a BaseHTTPRequestHandler that replies with the given shape.
 
     ``head_status`` lets HEAD return a different status than GET (to exercise
@@ -130,6 +130,17 @@ def test_non_mcp_content_type_raises(content_type):
             asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
     msg = str(exc_info.value)
     assert "bad_srv" in msg
+
+
+def test_non_mcp_content_type_error_masks_url_query_credentials():
+    """The error text reaches the model and ``hermes mcp test``: a ``?token=`` key must not ride along (#133713)."""
+    secret = "s3cr3t" + "Value" + "0123456789"
+    with _serve(_handler(status=200, content_type="text/html")) as base:
+        with pytest.raises(NonMcpEndpointError) as exc_info:
+            asyncio.run(_make_task("bad_srv")._preflight_content_type(f"{base}/mcp?token={secret}&v=1", timeout=5.0))
+    msg = str(exc_info.value)
+    assert secret not in msg
+    assert "/mcp?token=***&v=1" in msg
 
 
 # ---------------------------------------------------------------------------

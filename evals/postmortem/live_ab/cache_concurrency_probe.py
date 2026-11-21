@@ -131,7 +131,6 @@ class _OAStream:
 def patched_create(self, *a, **kw):
     msgs = kw.get("messages") or []
     import re as _re
-    first = msgs[0] if msgs else {}
     sysm = next((m for m in msgs if m.get("role") == "system"), None)
     nonsys = [m for m in msgs if m.get("role") != "system"]
     f0 = nonsys[0] if nonsys else {}
@@ -164,7 +163,7 @@ else:
 if API_MODE == "chat_completions": Completions.create = patched_create
 
 import agent.prompt_caching as _pc
-_pc.effective_cache_ttl = lambda ttl, *, model="", provider="": ARGS.ttl  # the probe pins the TTL; user config must not leak in
+_pc.effective_cache_ttl = lambda ttl, *, model="", provider="", auto=False: ARGS.ttl  # the probe pins the TTL; user config must not leak in
 from run_agent import AIAgent
 import itertools
 def creds():

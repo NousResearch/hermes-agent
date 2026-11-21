@@ -41,12 +41,11 @@ class OptionalSkillSource(SkillSource):
     OFFICIAL_REPO = "NousResearch/hermes-agent"
     OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
-    _parse_frontmatter = staticmethod(_parse_frontmatter)
-
     def __init__(self, auth: Optional[GitHubAuth] = None):
         from hermes_constants import get_optional_skills_dir
 
-        self._optional_dir = get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
+        from hermes_cli._startup_fast import project_root_str
+        self._optional_dir = get_optional_skills_dir(Path(project_root_str()) / "optional-skills")
         self._auth = auth
         # GitHubSource for the live-repo fallback, created only when a skill is missing locally.
         self._github: Optional[GitHubSource] = None
@@ -57,12 +56,14 @@ class OptionalSkillSource(SkillSource):
     def _rel(identifier: str) -> str:
         return identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
 
-    def _meta(self, rel_dir: str, name: str, description: str, tags: list) -> SkillMeta:
+    def _meta(self, rel_dir: str, name: str, description: str, tags: list,
+              upstream: Optional[dict[str, str]] = None) -> SkillMeta:
         return SkillMeta(
             name=name, description=description, source="official", identifier=f"official/{rel_dir}",
-            trust_level="builtin", repo=self.OFFICIAL_REPO,
+            trust_level="trusted" if upstream else "builtin",
+            repo=upstream["repo"] if upstream else self.OFFICIAL_REPO,
             # The centralized skills index consumes repo-root-relative paths.
-            path=f"{self.OPTIONAL_SKILLS_PREFIX}/{rel_dir}", tags=tags,
+            path=upstream["path"] if upstream else f"{self.OPTIONAL_SKILLS_PREFIX}/{rel_dir}", tags=tags,
         )
 
     def _remote_meta(self, rel_dir: str) -> SkillMeta:
@@ -71,7 +72,7 @@ class OptionalSkillSource(SkillSource):
         return self._meta(rel_dir, rel_dir.rsplit("/", 1)[-1], desc, [])
 
     @staticmethod
-    def _bundle(rel_id: str, files: dict[str, Union[str, bytes]], **kwargs) -> SkillBundle:
+    def _bundle(rel_id: str, files: dict[str, str | bytes], **kwargs) -> SkillBundle:
         return SkillBundle(name=rel_id.rsplit("/", 1)[-1], files=files, source="official",
                            identifier=f"official/{rel_id}", trust_level="builtin", **kwargs)
 
@@ -123,7 +124,7 @@ class OptionalSkillSource(SkillSource):
         upstream = None if skill_md is None else self._upstream_pointer_from_content(skill_md)
         if upstream is not None:
             return self._fetch_from_upstream(upstream, rel_id)
-        files: dict[str, Union[str, bytes]] = {}
+        files: dict[str, str | bytes] = {}
         for f in skill_dir.rglob("*"):
             if f.is_file() and not _skip_bundle_file(f.relative_to(skill_dir).as_posix()):
                 try:
@@ -174,7 +175,7 @@ class OptionalSkillSource(SkillSource):
         tree = github._get_repo_tree(self.OFFICIAL_REPO)
         if tree is None:
             return None
-        files: dict[str, Union[str, bytes]] = {}
+        files: dict[str, str | bytes] = {}
         for rel_file, item_path, regular in _tree_members(tree[1], f"{self.OPTIONAL_SKILLS_PREFIX}/{rel}/"):
             if not regular or _skip_bundle_file(rel_file):
                 continue
@@ -216,7 +217,7 @@ class OptionalSkillSource(SkillSource):
                                        valid=lambda c: isinstance(c, dict) and bool(c)) or {}
         return self._remote_dirs
 
-    def _upstream_pointer_from_content(self, content: Union[str, bytes]) -> Optional[dict[str, str]]:
+    def _upstream_pointer_from_content(self, content: str | bytes) -> Optional[dict[str, str]]:
         """Parse ``metadata.hermes.upstream: {repo: owner/name, path: ...}`` out of SKILL.md content
         (a catalog stub); None for vendored skills."""
         if isinstance(content, bytes):
@@ -224,7 +225,11 @@ class OptionalSkillSource(SkillSource):
                 content = content.decode("utf-8")
             except UnicodeDecodeError:
                 return None
-        meta_block = _parse_frontmatter(content).get("metadata")
+        return self._upstream_pointer_from_frontmatter(_parse_frontmatter(content))
+
+    @staticmethod
+    def _upstream_pointer_from_frontmatter(fm: dict) -> Optional[dict[str, str]]:
+        meta_block = fm.get("metadata")
         hermes_meta = meta_block.get("hermes") if isinstance(meta_block, dict) else None
         upstream = hermes_meta.get("upstream") if isinstance(hermes_meta, dict) else None
         if not isinstance(upstream, dict):
@@ -275,7 +280,8 @@ class OptionalSkillSource(SkillSource):
             fm = _parse_frontmatter(content)
             tags = _hermes_tags(fm)
             results.append(self._meta(parent.relative_to(self._optional_dir).as_posix(), fm.get("name", parent.name),
-                                      fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
+                                      fm.get("description", "")[:200], tags if isinstance(tags, list) else [],
+                                      upstream=self._upstream_pointer_from_frontmatter(fm)))
         return results
 
 
@@ -375,6 +381,8 @@ class HermesIndexSource(SkillSource):
             bundle.name = slug
         bundle.source = entry.get("source", "hermes-index")
         bundle.identifier = identifier
+        if bundle.source == "official" and repo and repo != OptionalSkillSource.OFFICIAL_REPO:
+            bundle.metadata = {**bundle.metadata, "upstream_repo": repo, "upstream_path": path}
         return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:

@@ -124,7 +124,6 @@ def test_xai_responses_ttfb_scaled_for_large_requests(monkeypatch):
     # 2. Large request (>50k tokens) scales TTFB timeout to 120s, so it does NOT trip at 0.2s
     closes.clear()
     large_text = "word " * 65_000
-    stop_large = {"flag": False}
 
     def fake_stream_delayed(api_kwargs, client=None, on_first_delta=None):
         # Sleeps for 0.5s (longer than the initial 0.2s TTFB cutoff)

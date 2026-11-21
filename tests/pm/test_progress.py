@@ -20,7 +20,7 @@ def test_ci_streams_and_an_explicit_choice_overrides_it():
 def test_contained_run_shows_output_only_when_the_child_fails(monkeypatch, fails):
     monkeypatch.setenv("HERMES_VERBOSE", "0")
     stream = io.StringIO()
-    script = "import sys\nfor i in range(200): print('noise', i)\nprint('the real error')\nsys.exit(%d)" % fails
+    script = f"import sys\nfor i in range(200): print('noise', i)\nprint('the real error')\nsys.exit({fails:d})"
     command = [sys.executable, "-c", script]
     if fails:
         with pytest.raises(subprocess.CalledProcessError):

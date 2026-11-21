@@ -7,7 +7,7 @@ Neither path spawns the Node sidecar or binds ports.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -63,7 +63,7 @@ def _message_event(adapter: PhotonAdapter) -> MessageEvent:
             user_name=None,
         ),
         message_id="target-msg-1",
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
     )
 
 

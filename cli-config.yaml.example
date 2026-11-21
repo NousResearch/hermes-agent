@@ -417,6 +417,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Opt in per profile: after a push-chat completion ping, continue silently in the gateway.
+  # Approval/clarification controls and later human turns remain visible. Default false.
+  silent_completion_continuation: false
 
 # =============================================================================
 # Terminal Tool Configuration

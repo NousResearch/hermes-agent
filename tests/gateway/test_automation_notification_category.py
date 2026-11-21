@@ -109,7 +109,7 @@ async def test_display_kind_is_a_closed_producer_set(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('category', ['result', 'diagnostic'])
+@pytest.mark.parametrize('category', ['result', 'diagnostic', 'delivered'])
 async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, category):
     from gateway.session_ingress_context import native_callback, register_transport_home
     from gateway.session_envelope import restore_native
@@ -139,6 +139,11 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
         assert restored.internal
         assert descriptor.get('notification_category', 'result') == category
         assert restored.metadata.get('notification_category', 'result') == category
+        if category == 'delivered':
+            from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted
+            assert diagnostic_turn_muted(diagnostic_metadata(restored), Platform.DISCORD, {})
+            assert diagnostic_metadata(MessageEvent(text='human', source=source,
+                metadata={'notification_category': 'delivered'})) == {}
         assert 'notification_origin' not in descriptor
         assert 'original_trigger_message_id' not in descriptor
         if category == 'result':

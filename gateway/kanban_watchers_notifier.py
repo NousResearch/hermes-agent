@@ -543,6 +543,7 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self._silent_completion_wake = False
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -619,6 +620,12 @@ class _KanbanNotification:
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
+        if self._silent_completion_wake:
+            self.synth += ("\nThe completion above has already been delivered. This is its receipt, not a new "
+                           "assignment. Continue only pending authorized parent work; do not repeat the completion.")
+
+    def _wake_category(self) -> str:
+        return "delivered" if self._silent_completion_wake else "diagnostic" if self.wake_diagnostic else "result"
 
     def _log_woke(self) -> None:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
@@ -659,7 +666,7 @@ class _KanbanNotification:
             async with self._owner_scope():
                 await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
                                    profile=self._served_wake_profile(),
-                                   notification_category="diagnostic" if self.wake_diagnostic else "result")
+                                   notification_category=self._wake_category())
             self._log_woke()
             return
         from gateway.session import SessionSource
@@ -688,7 +695,7 @@ class _KanbanNotification:
                 raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
             await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
-                               notification_category="diagnostic" if self.wake_diagnostic else "result",
+                               notification_category=self._wake_category(),
                                display_text=self.synth.partition("\n")[0])
         self._log_woke()
 
@@ -807,8 +814,15 @@ class _KanbanNotification:
                 return
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]
-            from gateway.warning_notifications import warning_notifications_enabled
-            split = not warning_notifications_enabled(self.platform_str)
+            from gateway.warning_notifications import effective_user_config, warning_notifications_enabled
+            user_config = effective_user_config()
+            kanban_config = user_config.get("kanban")
+            self._silent_completion_wake = (
+                self.send_passive and self.is_push_adapter and self.wake_agent
+                and isinstance(kanban_config, dict) and kanban_config.get("silent_completion_continuation") is True
+                and {ev.kind for ev in original_events if ev.kind in _WAKE_KINDS} == {"completed"}
+            )
+            split = not warning_notifications_enabled(self.platform_str, user_config)
             wake_groups = ([original_events] if not split else [
                 [ev for ev in original_events if diagnostic_event(ev)],
                 [ev for ev in original_events if not diagnostic_event(ev)],

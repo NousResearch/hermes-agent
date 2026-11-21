@@ -1305,6 +1305,15 @@ may store the thread's own id as `chat_id`, so it still needs `--parent-chat-id`
 
 For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
 
+To keep the passive completion as the only visible reply while still continuing parent work, opt in in the **owning profile's** configuration:
+
+```yaml
+kanban:
+  silent_completion_continuation: true  # default false
+```
+
+This applies only to push-capable gateway chats in `notify+wake` mode, when a batch contains no other wake-worthy events besides completions and its passive ping was sent or already checkpointed. The continuation uses the normal durable admission and turn gates; its freeform text, streaming, progress and media remain private. Approval, clarification and connection controls remain live, and independent subsequent turns display normally. All prose from this one continuation is private, including new parent-work output; use a later turn when you want another visible result. Kanban failure events, review events, mixed batches, `wake`-only subscriptions and non-push/API/TUI destinations retain their existing presentation. This setting does not remove the crash window between a passive send and its checkpoint.
+
 A "wake" forges a synthetic inbound message to the destination gateway agent so it takes a normal turn (reads the comment + result, reasons, replies) instead of getting a one-line passive notification. It only fires when the notifier runs inside a live gateway process; otherwise a `notify+wake` subscription still delivers its passive message, while a `wake`-only subscription does nothing in that process.
 
 **Which events wake.** The ones that return a task outcome or require orchestration attention: `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `review_requested` (a worker finished the implementation and handed off via `kanban_request_review`) and `block_loop_detected` (the task was routed to `triage` after repeated blocks). `status`, `archived` and `unblocked` are delivered but never wake — they are bookkeeping transitions, not attention signals. When a `completed` or `review_requested` event carries a summary, that handoff rides the wake turn, so the woken agent sees what the worker actually did.

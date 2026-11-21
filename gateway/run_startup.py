@@ -786,7 +786,7 @@ class GatewayStartupMixin:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
         silence marker on a machinery turn or on a turn the adapter reported as not addressed to the
-        bot, a muted diagnostic wake); else the text to send, with any other bare silence marker
+        bot, a muted producer wake); else the text to send, with any other bare silence marker
         replaced by the same notice the live path sends."""
         from gateway.platforms.base import _strip_media_directives
         from gateway.response_filters import (
@@ -803,7 +803,7 @@ class GatewayStartupMixin:
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
-        if is_machinery_display_kind(prompt.get("display_kind")):
+        if is_machinery_display_kind(prompt.get("display_kind")) or prompt.get("display_kind") == "hidden":
             try:  # the owning profile's display policy, as the adapter reads it at delivery
                 scope = self._media_delivery_scope_for_source(origin)
             except Exception:

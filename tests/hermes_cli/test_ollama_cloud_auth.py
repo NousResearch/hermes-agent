@@ -286,7 +286,8 @@ class TestSwitchModelDirectAliasOverride:
         assert result.base_url == "http://localhost:11434/v1"
 
     @staticmethod
-    def _explicit_switch_to_provider_b(monkeypatch, aliases, explicit="provider-b", extra_cfg=""):
+    def _explicit_switch_to_provider_b(monkeypatch, aliases, explicit="provider-b", extra_cfg="",
+                                       model="shared-model"):
         """``/model shared-model --provider provider-b`` against a real config.yaml, with the
         given direct aliases loaded. Only model validation is stubbed (no network)."""
         import os
@@ -307,7 +308,7 @@ class TestSwitchModelDirectAliasOverride:
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         cfg = load_config()
         return ms.switch_model(
-            "shared-model", "provider-a", "old-model",
+            model, "provider-a", "old-model",
             current_base_url="https://api-a.example.com/v1", current_api_key="sk-provider-a",
             explicit_provider=explicit, user_providers=cfg["providers"],
             custom_providers=cfg.get("custom_providers"))
@@ -326,6 +327,43 @@ class TestSwitchModelDirectAliasOverride:
         assert result.target_provider == "provider-b"
         assert result.base_url == "https://api-b.example.com/v1"
         assert result.api_key == "sk-provider-b"
+        assert result.resolved_via_alias == ""
+
+    def test_explicit_provider_keeps_the_typed_alias_name_resolvable(self, monkeypatch):
+        """Typing an alias NAME still sends that alias's model id, even under another --provider.
+
+        The alias owns the wire model id, so the provider-identity gate must not leave the alias
+        key itself as the model — a relay would 404 on it and the turn would fall back to a
+        provider the user did not name.
+        """
+        from hermes_cli.model_switch import DirectAlias
+
+        result = self._explicit_switch_to_provider_b(monkeypatch, {
+            "my-alias": DirectAlias("deepseek-v4.1-flash", "provider-a", "https://api-a.example.com/v1"),
+        }, model="my-alias")
+
+        assert result.success, result.error_message
+        assert result.target_provider == "provider-b"
+        assert result.new_model == "deepseek-v4.1-flash"
+        assert result.resolved_via_alias == ""
+
+    def test_explicit_provider_keeps_the_typed_model_id_when_the_alias_is_elsewhere(self, monkeypatch):
+        """A relay that treats model-id case as significant must receive the name the user typed.
+
+        ``/model DeepSeek-V4.1-Flash --provider provider-b`` also matches provider-a's alias by
+        reverse lookup, whose model id is the lowercase form. Adopting that alias's id rewrote
+        the name, provider-b 404'd on it, and the turn silently fell back to another provider.
+        """
+        from hermes_cli.model_switch import DirectAlias
+
+        result = self._explicit_switch_to_provider_b(monkeypatch, {
+            "lowercase-alias": DirectAlias("deepseek-v4.1-flash", "provider-a",
+                                           "https://api-a.example.com/v1"),
+        }, model="DeepSeek-V4.1-Flash")
+
+        assert result.success, result.error_message
+        assert result.target_provider == "provider-b"
+        assert result.new_model == "DeepSeek-V4.1-Flash"
         assert result.resolved_via_alias == ""
 
     def test_explicit_provider_prefers_its_own_alias_for_a_shared_model(self, monkeypatch):

@@ -1,7 +1,10 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
+from typing import Any
+
 from agent import chat_completion_helpers as h
 from agent import chat_completion_wait_notice as wn
+from agent.stream_max_lifetime import StreamLifetime, StreamLifetimeExceeded, resolve_stream_max_lifetime
 
 
 class _NonStreamRequest:
@@ -11,10 +14,15 @@ class _NonStreamRequest:
     instance; ``_abort_request`` may run from the poll (stranger) thread.
     """
 
+    # Default so instances built without ``__init__`` (some tests do this to drive
+    # the poll loop in isolation) still poll safely. ``0`` means off, exactly like
+    # an absent ``agent.stream_max_lifetime``.
+    lifetime = StreamLifetime(0.0)
+
     def __init__(self, agent, api_kwargs: dict):
         self.agent = agent
         self.api_kwargs = api_kwargs
-        self.result = {"response": None, "error": None}
+        self.result: dict[str, Any] = {"response": None, "error": None}
         self.clients = h._RequestClientRegistry(agent)
         # Request-local cancel flag: agent._interrupt_requested is cleared at turn
         # boundaries but this daemon worker can outlive the turn, so it must know THIS
@@ -27,6 +35,10 @@ class _NonStreamRequest:
         self.codex_token = object() if agent.api_mode == "codex_responses" else None
         self.codex_retired = False
         self.wd = h._resolve_nonstream_watchdogs(agent, api_kwargs)
+        # Opt-in ``agent.stream_max_lifetime`` (#80701). Every watchdog below resets on
+        # activity, so a provider that keeps emitting events but never finishes is never cut;
+        # this clock is anchored to the attempt, never to the last event.
+        self.lifetime = StreamLifetime(resolve_stream_max_lifetime(self.wd.stale_timeout))
         self.codex_watchdog_state = (
             h.SimpleNamespace(
                 token=self.codex_token,
@@ -253,6 +265,25 @@ class _NonStreamRequest:
             f"Non-streaming API call timed out after {int(elapsed)}s with no response (threshold: {int(wd.stale_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
 
+    def _lifetime_kill(self, elapsed: float) -> None:
+        """Opt-in ``agent.stream_max_lifetime``: the stream opened and kept delivering, so
+        neither TTFB nor the idle/stale watchdogs can fire. Kill it the same way the cap kills
+        a Chat Completions stream, so the retry loop or partial delivery takes over."""
+        agent, cap = self.agent, self.lifetime.cap
+        h.logger.warning("Codex stream still running after %.0fs (stream_max_lifetime %.0fs) — "
+            "killing connection. model=%s", elapsed, cap, self._model())
+        agent._buffer_diagnostic_status(
+            f"⚠️ Response still streaming after {int(elapsed)}s (stream_max_lifetime {int(cap)}s, "
+            f"model: {self._model()}). Aborting...")
+        self._abort_request("codex_stream_max_lifetime_kill")
+        # Not a stale kill: the provider WAS responding, so the cross-turn stale breaker is
+        # left alone — a streak of cap kills must not refuse the next healthy request.
+        self._await_worker_after_kill(
+            f"Codex stream still running after {int(elapsed)}s "
+            f"(stream_max_lifetime threshold: {int(cap)}s)")
+        # Name the setting in the surfaced error, not the endpoint: the stream did deliver.
+        self.result["error"] = StreamLifetimeExceeded(elapsed, cap)
+
     def _interrupt(self, elapsed: float) -> None:
         agent = self.agent
         last_event_ts, _, _, _ = self._codex_watchdog_snapshot()
@@ -305,6 +336,10 @@ class _NonStreamRequest:
                     and (not wd.idle_requires_progress or last_progress_ts is not None)
                     and idle_elapsed > wd.idle_timeout):
                 self._idle_kill(idle_elapsed)
+                break
+            lifetime_elapsed = self.lifetime.exceeded(attempt_started_ts)
+            if lifetime_elapsed is not None:
+                self._lifetime_kill(lifetime_elapsed)
                 break
             if elapsed > wd.stale_timeout:
                 self._stale_kill(elapsed)

@@ -215,6 +215,30 @@ class TestContextCacheKeyNormalization:
         assert "m1@http://host/v1/" not in cache
 
 
+class TestLmStudioEmptyNativeModelsFallback:
+    """An LM Studio probe that returns no native models must not suppress the
+    existing /models fallback: the empty result is not metadata."""
+
+    def test_empty_native_models_fall_through(self, metadata_transport, monkeypatch):
+        import httpx
+        from agent import model_metadata as mm
+
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        responses, requests = metadata_transport
+        responses.append(
+            httpx.Response(200, json={"data": [{"id": "served-model", "context_length": 100000}]}),
+        )
+        monkeypatch.setattr(mm, "detect_local_server_type", lambda *a, **kw: "lm-studio")
+        monkeypatch.setattr(mm, "_lmstudio_native_models", lambda *a, **kw: {})
+
+        result = mm.fetch_endpoint_model_metadata("http://localhost:8000/v1", force_refresh=True)
+
+        assert result == {"served-model": {"name": "served-model", "context_length": 100000}}
+        assert len(requests) == 1
+        assert requests[0].url.path == "/v1/models"
+
+
 class TestDetectServerTypeNegativeCaching:
     """A failed detect_local_server_type verdict is cached briefly (#89863).
 

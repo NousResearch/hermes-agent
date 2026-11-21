@@ -15,6 +15,9 @@ import { useTerminalSession } from './use-terminal-session'
 const emulator = vi.hoisted(() => ({
   input: (_data: string) => {},
   output: '',
+  // Set: the next write's parse-complete callback waits until this is called.
+  finishWrite: null as (() => void) | null,
+  holdNextWrite: false,
   latestFontFamilyRef: { current: 'monospace' },
   mountedRef: { current: false }
 }))
@@ -63,7 +66,13 @@ vi.mock('@xterm/xterm', () => ({
 
       if (data.includes('\u001b[6n')) {emulator.input('\u001b[1;1R')}
       emulator.output += data
-      callback?.()
+
+      if (emulator.holdNextWrite) {
+        emulator.holdNextWrite = false
+        emulator.finishWrite = () => callback?.()
+      } else {
+        callback?.()
+      }
     }
   }
 }))
@@ -182,6 +191,8 @@ afterEach(() => {
   Socket.persistent = false
   Socket.refusal = null
   emulator.output = ''
+  emulator.finishWrite = null
+  emulator.holdNextWrite = false
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -309,6 +320,34 @@ it('replays server history once, suppresses parser replies, and detaches on remo
   act(() => emulator.input('\r'))
   await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
   expect(Socket.instances[2].url.searchParams.has('attach')).toBe(false)
+})
+
+// Re-attaching replays the shell's screen; what the user types before that replay
+// finishes parsing used to be dropped with the parser's query replies.
+it('delivers keystrokes typed while a replay parses, but not its query replies', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  const { container } = render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  const socket = Socket.instances[0]
+  const host = container.querySelector('div')!
+  // xterm emits typed data from its textarea's keydown handler, inside the dispatch.
+  host.addEventListener('keydown', event => emulator.input((event as KeyboardEvent).key))
+
+  emulator.holdNextWrite = true
+  act(() => socket.output('restored screen\u001b[6n'))
+  act(() => {
+    host.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'l' }))
+    host.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 's' }))
+  })
+  // A reply emitted outside any input event while the replay is still parsing.
+  act(() => emulator.input('\u001b[2;2R'))
+  act(() => emulator.finishWrite?.())
+
+  expect(socket.sent).toEqual(['l', 's'])
 })
 
 // Typing `exit` ends the host shell: the tab closes as it does in native Desktop, instead of

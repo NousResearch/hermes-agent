@@ -30,7 +30,7 @@ import {
 import { createSnapshotPersister } from './snapshot-persister'
 import { bindTerminalDrop } from './terminal-drop'
 import { prepareTerminalFontFamily } from './terminal-font'
-import { bindTerminalActivity, bindTerminalClipboard } from './terminal-input-bindings'
+import { bindTerminalActivity, bindTerminalClipboard, trackTerminalUserInput } from './terminal-input-bindings'
 import { createSessionAttemptController } from './terminal-session-attempt'
 import type { TerminalStatus } from './terminal-session-attempt'
 import { redrawAllTerminals, registerWebglRefresh } from './terminals'
@@ -384,9 +384,13 @@ export function useTerminalSession({
 
     cleanup.push(bindTerminalActivity(term, host, markActivity))
 
-    const dataDisposable = term.onData(session.input)
+    const userInput = trackTerminalUserInput(host)
+    const dataDisposable = term.onData(data => session.input(data, userInput.isUserInput()))
 
-    cleanup.push(() => dataDisposable.dispose())
+    cleanup.push(() => {
+      dataDisposable.dispose()
+      userInput.dispose()
+    })
 
     const selectionDisposable = term.onSelectionChange(() => {
       const next = term.getSelection()

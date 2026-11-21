@@ -2250,40 +2250,41 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     gw_running = _check_gateway_running(old_dir)
     service_removed = live_mux = renamed = False
     old_identity, unfinished_delete = None, named_profile_is_deleted(old_dir)
-    try:
-        service_removed = _cleanup_gateway_service(old_canon, old_dir)
-        _maybe_unregister_gateway_service(old_canon)
-        if gw_running:
-            _stop_gateway_process(old_dir)
-        _stop_bot_desktop(old_dir)
-        live_mux, old_identity = _live_default_multiplexer(), old_dir.lstat()
-        if live_mux:
-            if not unfinished_delete:  # an unfinished delete's own record stays as it is
-                mark_named_profile_deleted(old_dir)
-            _notify_multiplexer(old_canon)
-        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-        if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
-            raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
-        with reserve_plugin_manager_for_home(old_dir) as (_unloaded, teardown_error):
+    with contextlib.ExitStack() as reservations:
+        try:
+            service_removed = _cleanup_gateway_service(old_canon, old_dir)
+            _maybe_unregister_gateway_service(old_canon)
+            if gw_running:
+                _stop_gateway_process(old_dir)
+            _stop_bot_desktop(old_dir)
+            live_mux, old_identity = _live_default_multiplexer(), old_dir.lstat()
+            if live_mux:
+                if not unfinished_delete:  # an unfinished delete's own record stays as it is
+                    mark_named_profile_deleted(old_dir)
+                _notify_multiplexer(old_canon)
+            _unloaded, teardown_error = reservations.enter_context(reserve_plugin_manager_for_home(old_dir))
             if teardown_error is not None:
                 raise teardown_error
+            shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+            if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
+                raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
             old_dir.rename(new_dir)
             renamed = True
-    finally:
-        moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
-        if not moved and old_identity is not None:
-            with contextlib.suppress(OSError):  # no new_dir: the move never landed
-                moved = os.path.samestat(new_dir.lstat(), old_identity)
-        if moved:
-            clear_named_profile_deleted(old_dir)
-            clear_named_profile_deleted(new_dir)
-        elif not unfinished_delete:  # a delete that did not finish stays tombstoned and unregistered
-            if live_mux:
+        finally:
+            moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
+            if not moved and old_identity is not None:
+                with contextlib.suppress(OSError):  # no new_dir: the move never landed
+                    moved = os.path.samestat(new_dir.lstat(), old_identity)
+            if moved:
                 clear_named_profile_deleted(old_dir)
-                _notify_multiplexer(old_canon)
-            _maybe_register_gateway_service(old_canon)
-            if service_removed:
-                print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
+                clear_named_profile_deleted(new_dir)
+            elif not unfinished_delete:  # a delete that did not finish stays tombstoned and unregistered
+                if live_mux:
+                    clear_named_profile_deleted(old_dir)
+                    _notify_multiplexer(old_canon)
+                _maybe_register_gateway_service(old_canon)
+                if service_removed:
+                    print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted

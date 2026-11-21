@@ -17,7 +17,7 @@ def test_agent_cron_is_transport_only_and_refuses_without_owner(monkeypatch):
         yield
 
     monkeypatch.setattr(gateway_client, 'connect_gateway', unavailable)
-    monkeypatch.setattr(scheduler, '_prepare_job_prompt', lambda *a: (_ for _ in ()).throw(
+    monkeypatch.setattr(scheduler, '_prepare_job_prompt', lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError('agent prompt preparation belongs to the owner')))
     result = scheduler.run_job({'id': 'job', 'prompt': 'test'}, execution_id='fire')
     assert calls == ['connect']

@@ -14,6 +14,15 @@ from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_e
 logger = logging.getLogger(__name__)
 
 
+#: Fallback for the Accept-Language header; see ``_accept_language``.
+_DEFAULT_ACCEPT_LANGUAGE = "en-US,en;q=0.9"
+
+
+def _accept_language() -> str:
+    """Language hint for SearXNG: ``SEARXNG_LANGUAGE`` when set, else a concrete default."""
+    return provider_env("SEARXNG_LANGUAGE").strip() or _DEFAULT_ACCEPT_LANGUAGE
+
+
 class SearXNGWebSearchProvider(BaseWebSearchProvider):
     """Search via a user-hosted SearXNG instance."""
 
@@ -25,9 +34,14 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         base_url = provider_env("SEARXNG_URL").rstrip("/")
         if not base_url:
             return search_fail("SEARXNG_URL is not set")
+        # SearXNG derives the search language from this header whenever the request carries no
+        # `language` param (searx/webapp.py `_get_browser_language`). Without it the language is
+        # not concrete and language-sensitive engines (e.g. zapmeta) silently return zero results
+        # instead of erroring. Override with SEARXNG_LANGUAGE, e.g. "zh-CN,zh;q=0.9,en;q=0.8".
+        headers = {"Accept": "application/json", "Accept-Language": _accept_language()}
         data, failure = http_get_json(
             "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
-            headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
+            headers=headers, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
         )
         if failure is not None:
             return failure

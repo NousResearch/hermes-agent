@@ -37,8 +37,9 @@ import http from 'node:http'
 import https from 'node:https'
 
 // JSON pool: many small concurrent calls (session lists, config, prompts).
-const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
-const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
+// Retire idle pooled sockets to limit reuse after silent middlebox drops.
+const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50, timeout: 15_000 })
+const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50, timeout: 15_000 })
 
 // Download pool: few long-lived streaming bodies. Isolated from the JSON pool
 // so saturating it with large file downloads can't block interactive calls.

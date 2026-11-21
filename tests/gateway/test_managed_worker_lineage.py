@@ -76,6 +76,10 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
                 await async_wait_until(lambda: query('SELECT status FROM session_admissions') == [('unknown',)],
                                        timeout=30, interval=.02, what='failed worker admission unknown')
                 assert peer.requests == []
+                # Admission settlement can precede the asynchronous log listener's file write.
+                await async_wait_until(
+                    lambda: 'Managed worker lost: managed_worker_failed' in (home / 'logs/errors.log').read_text(),
+                    timeout=10, interval=.02, what='managed worker failure log flushed')
                 errors = (home / 'logs/errors.log').read_text()
                 assert 'Managed worker lost: managed_worker_failed' in errors
                 assert 'invalid_worker_frame' not in errors

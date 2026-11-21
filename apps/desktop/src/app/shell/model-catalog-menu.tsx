@@ -45,7 +45,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { compareModelNames, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -1443,7 +1443,12 @@ function groupModels(
     )
 
     if (families.length > 0) {
-      groups.push({ families, provider })
+      // Rows read alphabetically by the name the user sees (case-insensitive,
+      // numeric version order), not in the provider's raw catalog order. The
+      // active row keeps its alphabetical place; "Recommended" picks still
+      // paint above the rest through recommendedFirst.
+      const sorted = families.sort((a, b) => compareModelNames(a.id, b.id))
+      groups.push({ families: recommendedFirst(provider, sorted), provider })
     }
   }
 

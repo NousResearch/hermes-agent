@@ -141,3 +141,24 @@ describe('Edit Models reset', () => {
     expect(screen.queryByRole('button', { name: /reset to defaults/i })).toBeNull()
   })
 })
+
+describe('Edit Models row order', () => {
+  it('lists a provider in the same name order as the menu', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        { authenticated: true, models: ['zeta-2', 'alpha-10', 'alpha-2'], name: 'Alphabet', slug: 'alphabet' }
+      ]
+    })
+
+    const { container } = renderDialog()
+
+    await screen.findByText('Alphabet')
+
+    // The dialog portals its body, so read the rows from the render document.
+    const rows = Array.from(container.ownerDocument.querySelectorAll('label')).map(row =>
+      (row.textContent ?? '').trim()
+    )
+
+    expect(rows).toEqual(['Alpha 2', 'Alpha 10', 'Zeta 2'])
+  })
+})

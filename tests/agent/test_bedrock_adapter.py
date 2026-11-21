@@ -767,6 +767,63 @@ class TestCachePointRejectionRecovery:
             "[toolChoice] is not permitted"
         )) is None
 
+    def test_classifies_model_level_and_insertion_rejections(self):
+        # Other Bedrock wordings for a model that takes no (or no message-level) cachePoint.
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(Exception(
+            "ValidationException: This model doesn't support the cachePoint field. "
+            "Remove cachePoint and try again."
+        )) == "all"
+        assert cache_point_rejection_placement(Exception(
+            "ValidationException: Cache point cannot be inserted after the preceding content "
+            "block for this model. Please remove the invalid cache point and try again."
+        )) == "messages"
+
+    def test_model_level_rejection_strips_every_marker_and_remembers_it(self):
+        from agent.bedrock_adapter import (
+            CACHE_POINT_PLACEMENTS, cache_point_allowed, recover_from_cache_point_rejection,
+        )
+        kwargs = self._nova_kwargs()
+        exc = Exception("ValidationException: This model doesn't support the cachePoint field. "
+                        "Remove cachePoint and try again.")
+        retry = recover_from_cache_point_rejection(exc, kwargs)
+        assert retry is not None
+        assert CACHE_POINT not in retry["toolConfig"]["tools"]
+        assert CACHE_POINT not in retry["system"]
+        assert all(CACHE_POINT not in m["content"] for m in retry["messages"])
+        model = kwargs["modelId"]
+        assert not any(cache_point_allowed(model, p) for p in CACHE_POINT_PLACEMENTS)
+        # Later turns build no markers at all for this model.
+        later = self._nova_kwargs()
+        assert CACHE_POINT not in later["toolConfig"]["tools"] and CACHE_POINT not in later["system"]
+        assert recover_from_cache_point_rejection(exc, retry) is None  # nothing left to strip
+
+    def test_section_by_section_rejections_settle_within_one_call(self):
+        # A model that rejects the marker in every section, one section per error, must not fail
+        # the call: each rejection strips one more section, at most once per placement.
+        from agent import bedrock_adapter
+        kwargs = self._nova_kwargs()
+        runtime = MagicMock()
+        ok = {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+              "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
+        runtime.converse.side_effect = [
+            Exception("Malformed input request: #/system/1: extraneous key [cachePoint] is not permitted"),
+            Exception("Malformed input request: #/messages/2/content/1: extraneous key [cachePoint] is not permitted"),
+            ok,
+        ]
+        first = Exception(NOVA_TOOLS_REJECTION)
+        result = bedrock_adapter.retry_without_rejected_cache_points(runtime.converse, kwargs, first)
+        assert result is ok
+        assert runtime.converse.call_count == 3
+        assert "cachePoint" not in str(runtime.converse.call_args.kwargs)
+
+    def test_section_retry_ignores_unrelated_errors(self):
+        from agent import bedrock_adapter
+        runtime = MagicMock()
+        assert bedrock_adapter.retry_without_rejected_cache_points(
+            runtime.converse, self._nova_kwargs(), Exception("ThrottlingException")) is None
+        runtime.converse.assert_not_called()
+
     def test_strip_removes_only_the_rejected_placement(self):
         from agent.bedrock_adapter import strip_cache_points
         kwargs = self._nova_kwargs()
@@ -1248,6 +1305,7 @@ class TestInferenceProfileContextLength:
     def setup_method(self):
         from agent import bedrock_adapter
         bedrock_adapter._inference_profile_model_cache.clear()
+        bedrock_adapter._inference_profile_failures.clear()
 
     def test_arn_resolves_wrapped_model_window_in_the_arn_region(self):
         # No region passed (agent/model_metadata.py::_resolve_bedrock_context_length passes none) and
@@ -1274,8 +1332,76 @@ class TestInferenceProfileContextLength:
                 caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
             assert get_bedrock_context_length(self.ARN, probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1 and self.ARN in warnings[0].getMessage()
-        assert "GetInferenceProfile" in warnings[0].getMessage()
+        window = [r for r in warnings if "GetInferenceProfile" in r.getMessage()]
+        assert len(window) == 1 and self.ARN in window[0].getMessage()
+        # The resolver also says, once, that it could not resolve the profile.
+        assert any("could not resolve inference profile" in r.getMessage() for r in warnings)
+
+    def test_failed_resolution_still_sends_cache_markers(self):
+        # Regression: a lookup that fails at process start (expired SSO
+        # token) must not turn prompt caching off. Markers go out from the first call, the lookup is
+        # retried after the backoff, and a success is cached.
+        from agent import bedrock_adapter
+        from agent.bedrock_adapter import build_converse_kwargs
+        client = MagicMock()
+        client.get_inference_profile.side_effect = [
+            Exception("Token has expired and refresh failed"),
+            {"models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}]},
+        ]
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"}]
+        clock = [1000.0]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                patch("agent.bedrock_adapter.time.monotonic", side_effect=lambda: clock[0]):
+            first = build_converse_kwargs(model=self.ARN, messages=messages)
+            assert first["system"][-1] == {"cachePoint": {"type": "default"}}
+            clock[0] += 10
+            build_converse_kwargs(model=self.ARN, messages=messages)
+            assert client.get_inference_profile.call_count == 1  # inside the backoff window
+            clock[0] += bedrock_adapter._INFERENCE_PROFILE_RETRY_SECONDS
+            later = build_converse_kwargs(model=self.ARN, messages=messages)
+            build_converse_kwargs(model=self.ARN, messages=messages)
+        assert later["system"][-1] == {"cachePoint": {"type": "default"}}
+        assert client.get_inference_profile.call_count == 2
+
+    def test_unresolved_profile_rejecting_cache_point_is_stripped_and_retried(self):
+        # The optimistic default is safe: if the unresolved profile wraps a model that refuses
+        # cachePoint, the existing self-heal strips the marker and the call still succeeds.
+        from agent.bedrock_adapter import build_converse_kwargs, recover_from_cache_point_rejection
+        client = MagicMock()
+        client.get_inference_profile.side_effect = Exception("AccessDeniedException")
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"}]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+            kwargs = build_converse_kwargs(model=self.ARN, messages=messages)
+        exc = Exception("ValidationException: #/system/1: extraneous key [cachePoint] is not permitted")
+        retry = recover_from_cache_point_rejection(exc, kwargs)
+        assert retry is not None
+        assert {"cachePoint": {"type": "default"}} not in retry["system"]
+
+    def test_unresolved_profile_of_non_caching_model_runs_uncached_after_one_retry(self):
+        # Review case on #142415: fail-open sends markers to a model behind the profile that takes
+        # none, with Bedrock's model-level wording. One stripped retry, then no markers again.
+        from agent import bedrock_adapter
+        client = MagicMock()
+        client.get_inference_profile.side_effect = Exception("AccessDeniedException")
+        runtime = MagicMock()
+        runtime.converse.side_effect = [
+            Exception("ValidationException: This model doesn't support the cachePoint field. "
+                      "Remove cachePoint and try again."),
+            {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+             "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+             "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}},
+        ]
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello"}, {"role": "user", "content": "Again"}]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=runtime):
+            first = bedrock_adapter.call_converse(region="us-west-2", model=self.ARN, messages=messages)
+            second = bedrock_adapter.call_converse(region="us-west-2", model=self.ARN, messages=messages)
+        assert first.choices[0].message.content == "ok" and second.choices[0].message.content == "ok"
+        assert runtime.converse.call_count == 3  # one rejected call, its retry, then a clean call
+        sent = runtime.converse.call_args_list[2].kwargs
+        assert "cachePoint" not in str(sent)
 
     def test_profile_wrapping_claude_keeps_prompt_cache_markers(self):
         # build_converse_kwargs gates cachePoint on the model id; the opaque profile ARN must be

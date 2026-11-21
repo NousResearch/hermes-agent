@@ -704,6 +704,65 @@ class TestToolSelection:
         """Return a list of (tool_name, description) tuples for mocking."""
         return [(n, f"description of {n}") for n in names]
 
+    @pytest.mark.parametrize("manifest_tools,prior_tools,expected_tools", [
+        pytest.param({}, None, None, id="unset-default"),
+        pytest.param({"default_enabled": []}, None, {"include": []}, id="empty-default"),
+        pytest.param({"default_enabled": ["read"]}, None, {"include": ["read"]}, id="explicit-default"),
+        pytest.param({"default_excluded": ["write*"]}, None, {"exclude": ["write*"]}, id="excluded-default"),
+        pytest.param({"default_enabled": []}, {"include": ["read"]}, {"include": ["read"]}, id="prior-include"),
+        pytest.param({"default_enabled": ["read"]}, {"include": []}, {"include": []}, id="prior-empty-include"),
+        pytest.param({"default_enabled": []}, {"exclude": ["write*"]}, {"exclude": ["write*"]}, id="prior-exclude"),
+        pytest.param({"default_enabled": []}, {"exclude": []}, {"exclude": []}, id="prior-empty-exclude"),
+    ])
+    def test_connection_card_preserves_tool_selection(
+        self, catalog_dir, monkeypatch, manifest_tools, prior_tools, expected_tools
+    ):
+        from hermes_cli import mcp_config
+        from hermes_cli.config import load_config, save_config
+        from tools.connectors.mcp import _CatalogBackend
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest(tools=manifest_tools))
+        if prior_tools is not None:
+            cfg = load_config()
+            cfg["mcp_servers"] = {"demo": {"command": "npx", "tools": prior_tools}}
+            save_config(cfg)
+        monkeypatch.setattr(mcp_config, "_probe_single_server", lambda name, cfg: [("read", ""), ("write", "")])
+
+        _CatalogBackend().install("demo", {})
+
+        server = load_config()["mcp_servers"]["demo"]
+        if expected_tools is None:
+            assert "tools" not in server
+        else:
+            assert server["tools"] == expected_tools
+
+    @pytest.mark.parametrize("probed", [None, [], [("tool_a", "Available tool")]])
+    @pytest.mark.parametrize("interactive", [False, True])
+    @pytest.mark.parametrize("default_enabled", [None, []])
+    def test_empty_default_is_distinct_from_unset(
+        self, catalog_dir, monkeypatch, probed, interactive, default_enabled
+    ):
+        """An explicit empty default must not become an unrestricted tool surface."""
+        import sys
+        import hermes_cli.curses_ui as ui
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            tools={"default_enabled": default_enabled},
+        ))
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: interactive)
+        monkeypatch.setattr(ui, "curses_checklist", lambda title, labels, selected: selected)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        if default_enabled is None:
+            assert "tools" not in server
+        else:
+            assert server["tools"] == {"include": []}
+
 
     def test_probe_fail_with_default_applies_directly(self, catalog_dir):
         body = _basic_manifest(

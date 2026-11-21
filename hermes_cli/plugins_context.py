@@ -413,6 +413,11 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import context_surface
         return context_surface(self._manager)
 
+    def live_sessions(self) -> list[dict]:
+        """Live CLI/TUI/Desktop/ACP sessions this process hosts for this plugin's profile (``plugin_session``)."""
+        from hermes_cli.plugin_session import live_sessions
+        return live_sessions(self._manager)
+
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
         place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""

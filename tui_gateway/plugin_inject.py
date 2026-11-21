@@ -66,6 +66,36 @@ def inject_tui_session_message(*, session_key: str, content: str, plugin_id: str
     return True
 
 
+def live_tui_sessions(home) -> list[dict]:
+    """``PluginContext.live_sessions`` rows for this host's live local sessions of profile *home*."""
+    from hermes_constants import hermes_home_key
+
+    surfaces = {"cli": "cli", "tui": "tui", "desktop": "desktop", "gui": "desktop", "acp": "acp"}
+    with _sessions_lock:
+        sessions = list(_sessions.values())
+    rows = []
+    for session in sessions:
+        try:
+            if session.get("lazy") or session.get("_closing") or session.get("_finalized"):
+                continue
+            surface = surfaces.get(_session_source(session))
+            if surface is None or hermes_home_key(session.get("profile_home") or _hermes_home) != hermes_home_key(home):
+                continue
+            if (live := _live_session_agent_db(session)) is None:
+                continue
+            agent, session_key, db = live
+            session_id = getattr(agent, "session_id", None) or session_key
+            row = db.get_session_list_row(session_id) or {}
+            if row.get("ended_at") is not None:
+                continue
+            rows.append({"session_key": session_key, "session_id": session_id, "title": row.get("title") or "",
+                         "cwd": str(session.get("cwd") or ""), "surface": surface,
+                         "busy": bool(session.get("running"))})
+        except Exception:  # a session closing under us is simply not live
+            continue
+    return rows
+
+
 def install_tui_message_injector(manager=None) -> None:
     """Publish this process's TUI host on *manager*, or the active profile's manager.
 

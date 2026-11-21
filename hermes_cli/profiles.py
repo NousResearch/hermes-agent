@@ -1769,7 +1769,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             _closed = close_stores_under(profile_dir)
             if _closed:
                 print(f"✓ Released {_closed} session database connection(s) held by this process")
-
         # The Desktop serve process routes its agent/errors logs for every profile through one
         # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
         # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
@@ -1778,11 +1777,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             _released_logs = release_profile_log_handlers(profile_dir)
             if _released_logs:
                 print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
-
         # 3. Remove wrapper script
         if wrapper_path and remove_wrapper_script(canon):
             print(f"✓ Removed {wrapper_path}")
-
         # 4. Remove profile directory
         remove_error: Exception | None = None
         try:
@@ -1795,7 +1792,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         except Exception as e:
             print(f"⚠ Could not remove {profile_dir}: {e}")
             remove_error = e
-
         # 5. Clear active_profile if it pointed to this profile
         _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
         if remove_error is not None:

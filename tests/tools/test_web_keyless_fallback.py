@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import requests
 from unittest.mock import patch
 
 import pytest
@@ -710,3 +711,151 @@ class TestKeylessFailover:
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == partial
         assert not called
+
+# ---------------------------------------------------------------------------
+# Transport-failure failover (#156380)
+# ---------------------------------------------------------------------------
+
+
+class TestKeylessTransportFailover:
+    """A DNS/connect/timeout failure is local to one endpoint, never to the
+    query — it must fail over like a rate limit. Classification is by
+    exception type, not message text."""
+
+    def _ok(self, vendor):
+        return {"success": True, "data": {"web": [{"url": f"https://{vendor}.example"}]}}
+
+    def _pin(self, monkeypatch, name):
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == name)
+
+    def _transport_searchers(self, monkeypatch, failing_vendor):
+        """Failing vendor raises requests.ConnectionError through the real
+        searchers' mcp_call path; everything else serves."""
+        import requests
+
+        def _raise(q, l):
+            try:
+                keyless_mcp.mcp_call("https://invalid.example", "web_search", {})
+            except keyless_mcp.KeylessMCPError as exc:
+                return {"success": False, "error": f"Keyless {failing_vendor.capitalize()} search failed: {exc}."}
+            raise AssertionError("unreachable")
+
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, failing_vendor, _raise)
+        monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(requests.ConnectionError("Failed to resolve 'invalid.example'")))
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("transport failed: HTTPSConnectionPool host='mcp.exa.ai' failed to resolve", True),
+            ("Keyless Exa search failed: transport failed: connection timed out", True),
+            ("Keyless Parallel extract failed: transport failed: connection refused", True),
+            ("HTTP 400: invalid query 'transport failed:'", False),
+            ("Keyless Exa search failed: HTTP 400: query contains 'transport failed:'", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_transport_tag_is_accepted_only_when_anchored(self, message, expected):
+        assert keyless_mcp._is_transport_failover_eligible(message) is expected
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (requests.ConnectionError("boom"), True),
+            (requests.Timeout("timed out"), True),
+            (requests.HTTPError("403"), False),
+            (RuntimeError("plain"), False),
+        ],
+    )
+    def test_transport_exception_classification(self, exc, expected):
+        assert keyless_mcp._is_transport_exception(exc) is expected
+
+    def test_transport_exception_via_cause_chain(self):
+        import requests
+
+        err = keyless_mcp.KeylessMCPError("request failed")
+        err.__cause__ = requests.ConnectionError("name resolution failed")
+        assert keyless_mcp._is_transport_exception(err) is True
+
+    def test_mcp_call_tags_transport_failures(self):
+        import requests
+
+        with patch.object(requests, "post", side_effect=requests.ConnectionError("Failed to resolve 'mcp.example'")):
+            with pytest.raises(keyless_mcp.KeylessMCPError, match="^transport failed: "):
+                keyless_mcp.mcp_call("https://mcp.example", "web_search", {})
+
+    def test_mcp_call_keeps_request_failed_prefix_for_other_errors(self):
+        import requests as _requests
+
+        err = _requests.HTTPError("weird transport-less failure")
+        with patch.object(_requests, "post", side_effect=err):
+            with pytest.raises(keyless_mcp.KeylessMCPError, match="^request failed: "):
+                keyless_mcp.mcp_call("https://mcp.example", "web_search", {})
+
+    @pytest.mark.usefixtures("authority_cwd_in_tmp")
+    def test_search_fails_over_on_transport_failure(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        self._transport_searchers(monkeypatch, "exa")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"))
+        out = keyless_mcp.search_with_failover("exa", "q", 3)
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "parallel"
+
+    @pytest.mark.usefixtures("authority_cwd_in_tmp")
+    def test_search_all_transport_failure_reports_ring(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        for vendor in keyless_mcp._KEYLESS_RING:
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: {
+                    "success": False,
+                    "error": f"Keyless {v.capitalize()} search failed: transport failed: failed to resolve.",
+                },
+            )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert "all keyless vendors unavailable" in out["error"]
+
+    @pytest.mark.usefixtures("authority_cwd_in_tmp")
+    def test_search_no_failover_when_transport_tag_is_quoted_not_anchored(self, monkeypatch):
+        # A terminal error that merely quotes the tag must stop the walk.
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "exa",
+            lambda q, l: {"success": False, "error": "HTTP 400: query contains 'transport failed:'"},
+        )
+        called = []
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "parallel",
+            lambda q, l: called.append(1) or self._ok("parallel"),
+        )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert not called
+
+    @pytest.mark.usefixtures("authority_cwd_in_tmp")
+    def test_extract_fails_over_when_all_urls_transport_failed(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        broken = [
+            {"url": u, "title": "", "content": "", "error": "Keyless Exa extract failed: transport failed: failed to resolve."}
+            for u in ("https://a", "https://b")
+        ]
+        good = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "B", "content": "y"},
+        ]
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "exa", lambda urls: broken)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "parallel", lambda urls: good)
+        out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
+        assert out == good
+
+    def test_extract_transport_tag_not_hardwired_into_message(self):
+        # The tag rides inside the standard vendor-hint message, unchanged shape.
+        msg = keyless_mcp._fail_msg("exa", "search", keyless_mcp.KeylessMCPError("plain"), other_backends=False)
+        assert "transport failed:" not in msg
+
+    def test_fail_msg_tags_transport_exception(self):
+        import requests
+
+        msg = keyless_mcp._fail_msg("exa", "search", requests.ConnectionError("failed to resolve"), other_backends=False)
+        assert "Keyless Exa search failed: transport failed: " in msg

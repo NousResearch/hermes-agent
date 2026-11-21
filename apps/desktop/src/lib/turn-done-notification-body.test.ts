@@ -18,6 +18,46 @@ describe('turnDoneNotificationBody', () => {
     expect(turnDoneNotificationBody('The build is green.')).toBe('The build is green.')
   })
 
+  it('renders Markdown as one plain-text preview without damaging literal punctuation or code', () => {
+    const cases = [
+      ['**Yep, fixed.** 🎉', 'Yep, fixed. 🎉'],
+      ['__Bold__, *italic*, _italic_, and ~~old~~.', 'Bold, italic, italic, and old.'],
+      [
+        '## Result\n> **Done**: `file_name.ts`\n- Read [the report](https://example.com).',
+        'Result Done: file_name.ts Read the report.'
+      ],
+      ['1. First\n2. Second\n\n---\n\nLast', 'First Second Last'],
+      ['Read [**the report**](https://example.com/a_(b) "Report").', 'Read the report.'],
+      ['Read [the report][result].\n\n[result]: https://example.com', 'Read the report.'],
+      ['![Build passed](https://example.com/badge.png)', 'Build passed'],
+      ['![Build passed][badge]\n\n[badge]: https://example.com/badge.png', 'Build passed'],
+      ['| Result | Status |\n| --- | --- |\n| Build | **Passed** |', 'Result Status Build Passed'],
+      ['First  \nsecond', 'First second'],
+      ['Done <!-- internal note -->**now**.', 'Done now.'],
+      ['```ts\nconst file_name = "**literal**"\n```', 'const file_name = "**literal**"'],
+      ['~~~sh\nls *.ts\n~~~', 'ls *.ts'],
+      ['Run `echo **literal**` and `` echo `code` ``.', 'Run echo **literal** and echo `code`.'],
+      ['Path /tmp/file_name.ts costs $5 * 2.', 'Path /tmp/file_name.ts costs $5 * 2.'],
+      ['Use *.ts files.', 'Use *.ts files.'],
+      ['Use **/*.ts files.', 'Use **/*.ts files.'],
+      ['Use `*.ts` and `**/*.ts`.', 'Use *.ts and **/*.ts.'],
+      ['Use \\*literal\\* and snake_case_name; 2 * 3 * 4 = 24.', 'Use *literal* and snake_case_name; 2 * 3 * 4 = 24.'],
+      ['Keep an unmatched * and **unfinished', 'Keep an unmatched * and **unfinished'],
+      ['**完成** — [報告](https://example.com)', '完成 — 報告'],
+      ['  First\n\n  second\tthird  ', 'First second third']
+    ]
+
+    expect(cases.map(([markdown]) => turnDoneNotificationBody(markdown))).toEqual(cases.map(([, text]) => text))
+  })
+
+  it('flattens the full reply before truncation and uses localized fallback for formatting-only replies', () => {
+    expect(turnDoneNotificationBody(`**${'a'.repeat(200)}**`)).toBe('a'.repeat(TURN_DONE_BODY_MAX))
+    expect(turnDoneNotificationBody(`[${'b'.repeat(200)}](https://example.com)`)).toBe('b'.repeat(TURN_DONE_BODY_MAX))
+    expect(turnDoneNotificationBody('## \n---')).toBe(TURN_DONE_BODY_FALLBACK)
+    expect(turnDoneNotificationBody('## \n---', 'メッセージが完了しました。')).toBe('メッセージが完了しました。')
+    expect(turnDoneNotificationBody('---', '   ')).toBe(TURN_DONE_BODY_FALLBACK)
+  })
+
   it('truncates long replies to 140 characters', () => {
     const reply = 'a'.repeat(200)
     expect(turnDoneNotificationBody(reply)).toBe('a'.repeat(TURN_DONE_BODY_MAX))

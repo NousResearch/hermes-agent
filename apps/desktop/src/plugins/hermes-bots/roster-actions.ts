@@ -10,14 +10,7 @@
 
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
-import {
-  $openBotChat,
-  $pendingBotOpen,
-  $selectedBot,
-  lastToastedPreview,
-  rosterWatermarks,
-  saveSelectedRosterBot
-} from './bot-state'
+import { $openBotChat, $pendingBotOpen, lastToastedPreview, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
 import { isStaleBotChatTile, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import type { BotChatOpenIntent } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
@@ -82,9 +75,13 @@ export function trackInboundActivity(roster: RosterRow[]) {
       continue
     }
 
-    // Activity in the exact bot owner the user is currently looking at is
-    // already visible — never badge the open chat or its same-named twin.
-    if ($selectedBot.get() === key) {
+    // Activity in the session the user is looking at is already visible —
+    // never badge the open chat. Visible means that session is the FOCUSED
+    // one: $selectedBot only scopes the Routines tile (it follows the live
+    // profile and roster clicks), so it says nothing about what is on screen.
+    // A same-named twin on another connection has different canonical ids and
+    // is still badged.
+    if (isBotChatFocused(bot, activity)) {
       refreshOpenBotChat(bot)
 
       continue
@@ -132,6 +129,25 @@ export function trackInboundActivity(roster: RosterRow[]) {
   }
 }
 
+/** True while the bot's canonical Bot Chat is the focused stored session —
+ *  or, when `activity` (the session the watermark followed) is passed, that
+ *  session: a turn in the regular session the user is typing in advances
+ *  last_session, and must not read as a delivery to the hidden Bot Chat. */
+function isBotChatFocused(bot: RosterRow, activity?: null | { id?: string; resolved_id?: string }): boolean {
+  const visibleIds = [
+    bot.canonical_session?.id,
+    bot.canonical_session?.resolved_id,
+    activity?.id,
+    activity?.resolved_id
+  ]
+    .filter(Boolean)
+    .map(String)
+
+  const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
+
+  return Boolean(focused) && visibleIds.includes(focused)
+}
+
 /** The open Bot Chat's canonical session moved on the gateway (a cron
  *  `bot-chat:` delivery, a teammate's `message_agent`, a group round, a CLI
  *  turn) — none of those arrive on this window's live stream, so the pane
@@ -147,10 +163,7 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  not a user gesture, so whatever route is showing stays showing (issue
  *  121874). */
 function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
-  const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
-  const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
-
-  if (!focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get())) {
+  if (!isBotChatFocused(bot) || (!allowWhileBusy && host.state.busy.get())) {
     return
   }
 

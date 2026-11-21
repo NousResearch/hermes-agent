@@ -14,13 +14,9 @@ const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
 // Health-monitor tuning for the continuous capture chain. A platform capture
 // failure (macOS PLAS IPC delegate error → StopSourceOnError, #119089) leaves
-// getUserMedia resolved but the PCM dead: ended track, halted callbacks, or
-// endless digital zeros. Without a watchdog the ear shows "listening" forever
+// getUserMedia resolved but the PCM dead: ended track or halted callbacks.
+// Without a watchdog the ear shows "listening" forever
 // and the gateway detector can never fire.
-/** -60 dBFS: live mic noise floors sit well above this; exact zeros do not. */
-const SILENCE_PEAK = 0.001
-/** ~8 s of digital zeros at 80 ms/frame before the ear is declared deaf. */
-const DEFAULT_SILENCE_FRAMES = 100
 const DEFAULT_STALL_TIMEOUT_MS = 3000
 const DEFAULT_MAX_FEED_FAILURES = 5
 
@@ -31,13 +27,11 @@ export interface ClientWakeCaptureOptions {
   frameLength?: number
   request: WakeFeedRequester
   /**
-   * Fatal capture-chain failures only (dead track, stalled graph, sustained
-   * silence, refused feeds). Isolated feed RPC blips are retried silently —
+   * Fatal capture-chain failures only (dead track, stalled graph, refused feeds).
+   * Isolated feed RPC blips are retried silently —
    * reporting every one would flap the ear on ordinary network jitter.
    */
   onError?: (error: Error) => void
-  /** Consecutive near-silent 16 kHz frames before the ear is declared deaf. */
-  silenceFramesThreshold?: number
   /** ms without an onaudioprocess callback before the graph is declared stalled. */
   stallTimeoutMs?: number
   /** Consecutive rejected/failed wake.feed calls before escalating. */
@@ -129,7 +123,6 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     throw new Error('microphone track unavailable for client wake capture')
   }
 
-  const silenceFramesThreshold = Math.max(1, Math.trunc(options.silenceFramesThreshold ?? DEFAULT_SILENCE_FRAMES))
   const stallTimeoutMs = Math.max(250, options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS)
   const maxFeedFailures = Math.max(1, Math.trunc(options.maxConsecutiveFeedFailures ?? DEFAULT_MAX_FEED_FAILURES))
 
@@ -144,7 +137,6 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   let pending = new Float32Array(0)
   let stopped = false
   let failed = false
-  let silentFrames = 0
   let feedFailures = 0
   let stallTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -325,36 +317,9 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
       const frame = merged.subarray(offset, offset + frameLength)
       offset += frameLength
 
-      // A dead capture chain delivers endless digital zeros. Live mics never
-      // do — their noise floor sits far above SILENCE_PEAK — so a long run of
-      // zeros means the detector is being fed silence, not speech (#119089).
-      let peak = 0
-
-      for (let i = 0; i < frame.length; i++) {
-        const abs = Math.abs(frame[i] ?? 0)
-
-        if (abs > peak) {
-          peak = abs
-        }
-      }
-
-      if (peak < SILENCE_PEAK) {
-        silentFrames += 1
-
-        if (silentFrames >= silenceFramesThreshold) {
-          fail(
-            new Error(
-              'client wake capture hears only silence — the microphone delivers no audio; check OS mic access and re-toggle the ear'
-            )
-          )
-
-          return
-        }
-
-        continue
-      }
-
-      silentFrames = 0
+      // Silence is valid PCM, including exact zeros from noise suppression.
+      // Track-ended and stalled-callback guards detect actual capture failures;
+      // audio level alone cannot distinguish a quiet room from a dead device.
       enqueueFrame(new Float32Array(frame))
     }
 

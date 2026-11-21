@@ -134,18 +134,26 @@ describe('startClientWakeCapture (issue #119089)', () => {
     expect(handle.active).toBe(true)
   })
 
-  it('reports sustained digital silence instead of staying deaf forever', async () => {
+  it.each([0, 0.0005])('keeps a live microphone armed through a quiet period at peak %s and resumes speech', async peak => {
     const onError = vi.fn()
-    const handle = await start({ onError, silenceFramesThreshold: 10 })
+    const request = vi.fn(async () => ({ fed: true }))
+    const handle = await start({ onError, request })
     handles.push(handle)
 
-    for (let i = 0; i < 10; i++) {
-      processor().emit(silentFrame())
+    // Noise suppression may emit exact zeros while the physical mic is live.
+    for (let i = 0; i < 150; i++) {
+      processor().emit(silentFrame().fill(peak))
     }
 
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(String(onError.mock.calls[0]?.[0])).toMatch(/silence/i)
-    expect(handle.active).toBe(false)
+    await flush()
+    expect(handle.active).toBe(true)
+    expect(onError).not.toHaveBeenCalled()
+
+    const beforeSpeech = request.mock.calls.length
+    processor().emit(toneFrame())
+    await flush()
+    expect(request.mock.calls.length).toBeGreaterThan(beforeSpeech)
+    expect(handle.active).toBe(true)
   })
 
   it('keeps listening through real audio with a quiet floor', async () => {

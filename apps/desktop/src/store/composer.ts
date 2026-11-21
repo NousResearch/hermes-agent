@@ -580,6 +580,11 @@ export function stashedDraftScopes(): string[] {
   return [...draftsBySession.keys()].filter(key => key !== NEW_SESSION_DRAFT_KEY)
 }
 
+/** Whether a session's stashed draft holds an attachment. Attachments are memory-only (a reload
+ *  restores only the text), so this is unsent work a reload would lose. */
+export const hasStashedAttachments = (): boolean =>
+  [...draftsBySession.values()].some(draft => draft.attachments.length > 0)
+
 /**
  * Move a stashed composer draft from one session key onto another.
  *

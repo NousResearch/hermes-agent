@@ -135,7 +135,7 @@ Common options:
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
 | `--format stream-json` | Emit structured JSONL for a `-q` / `--query` invocation. Implies `--quiet`; cannot be combined with `--tui`. |
-| `--image <path>` | Attach a local image to a single query. |
+| `--image <path>` | Attach a local image to the query; repeat the flag to attach several images in one request. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |

@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from cli import (
     HermesCLI,
     _collect_query_images,
@@ -65,6 +67,21 @@ class TestCollectQueryImages:
         assert message == "describe this"
         assert images == [img]
 
+
+    def test_collect_query_images_accepts_repeated_image_args(self, tmp_path):
+        first = _make_image(tmp_path / "a.png")
+        second = _make_image(tmp_path / "b.png")
+
+        message, images = _collect_query_images("describe these", [str(first), str(second)])
+
+        assert message == "describe these"
+        assert images == [first, second]
+
+    def test_collect_query_images_rejects_missing_path_in_list(self, tmp_path):
+        first = _make_image(tmp_path / "a.png")
+
+        with pytest.raises(ValueError, match="Image file not found"):
+            _collect_query_images("describe these", [str(first), str(tmp_path / "gone.png")])
 
     def test_collect_query_images_supports_tilde_paths(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

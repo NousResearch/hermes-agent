@@ -29,7 +29,7 @@ hermes [flags] [command]        (no subcommand = interactive chat)
 ```
 hermes chat [flags]
   -q, --query TEXT          Single query, non-interactive
-  --image PATH              Attach a local image to a single query
+  --image PATH              Attach a local image (repeat the flag for several)
   -Q, --quiet               Suppress banner, spinner, tool previews
   --checkpoints             Enable filesystem checkpoints (/rollback)
   --max-turns N             Cap tool-calling iterations

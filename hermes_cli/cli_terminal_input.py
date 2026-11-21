@@ -579,8 +579,11 @@ def _status_bar_visible_from_display_config(display_config: object) -> bool:
     return statusbar_config is not False
 
 
-def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
-    """Collect local image attachments for single-query CLI flows."""
+def _collect_query_images(query: str | None, image_arg: str | list[str] | None = None) -> tuple[str, list[Path]]:
+    """Collect local image attachments for single-query CLI flows.
+
+    ``image_arg`` is a single path or the list built by repeated ``--image`` flags.
+    """
     from cli import _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path
     message = query or ""
     images: list[Path] = []
@@ -591,10 +594,10 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
             images.append(dropped["path"])
             message = dropped["remainder"] or f"[User attached image: {dropped['path'].name}]"
 
-    if image_arg:
-        explicit_path = _resolve_attachment_path(image_arg)
+    for raw in [image_arg] if isinstance(image_arg, str) else (image_arg or []):
+        explicit_path = _resolve_attachment_path(raw)
         if explicit_path is None:
-            raise ValueError(f"Image file not found: {image_arg}")
+            raise ValueError(f"Image file not found: {raw}")
         if explicit_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             raise ValueError(f"Not a supported image file: {explicit_path}")
         images.append(explicit_path)

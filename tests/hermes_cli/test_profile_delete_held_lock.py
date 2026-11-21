@@ -127,3 +127,17 @@ def test_a_refused_delete_is_shown_as_delete_incomplete_until_retried(profile, m
     assert unfinished in capsys.readouterr().err
     profiles.delete_profile("owned-delete", yes=True)  # the retry finishes it
     assert not profile.exists() and not named_profile_delete_incomplete(profile)
+
+
+def test_delete_incomplete_checks_the_tombstone_before_probing_identity(tmp_path, monkeypatch):
+    """A colliding directory that is NOT tombstoned must never be probed for identity files: on Python
+    3.11-3.13 ``Path.is_file()`` re-raises a ``PermissionError`` from an unreadable directory, which would
+    replace the caller's "already exists" with a raw error (import, rename onto the name)."""
+    import hermes_constants
+    home = tmp_path / "profiles" / "locked"
+    home.mkdir(parents=True)
+
+    def unreadable(_home):
+        raise PermissionError(13, "Permission denied", str(_home / "config.yaml"))
+    monkeypatch.setattr(hermes_constants, "named_profile_has_identity", unreadable)
+    assert hermes_constants.named_profile_delete_incomplete(home) is False

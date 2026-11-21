@@ -85,6 +85,8 @@ export const zh: Translations = {
     openDocumentation: "在新标签页中打开文档",
     openNavigation: "打开导航",
     pluginNavSection: "插件",
+    sectionNav: "版块",
+    skipToContent: "跳到主要内容",
     sessionsActiveCount: "{count} 个活跃",
     statusOverview: "状态概览",
     system: "系统",

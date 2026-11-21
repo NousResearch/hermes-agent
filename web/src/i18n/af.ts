@@ -86,6 +86,8 @@ export const af: Translations = {
     openDocumentation: "Maak dokumentasie in 'n nuwe oortjie oop",
     openNavigation: "Maak navigasie oop",
     pluginNavSection: "Inproppe",
+    sectionNav: "Afdelings",
+    skipToContent: "Gaan na inhoud",
     sessionsActiveCount: "{count} aktief",
     statusOverview: "Statusoorsig",
     system: "Stelsel",

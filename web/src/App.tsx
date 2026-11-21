@@ -380,6 +380,8 @@ export default function App() {
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const sidebarNavRef = useRef<HTMLElement>(null);
+  const drawerWasOpenRef = useRef(false);
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -513,6 +515,22 @@ export default function App() {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
+  // Drawer focus handoff (T4.1): opening moves focus into the drawer's first
+  // link so keyboard users land inside the region they just opened; closing
+  // returns focus to the hamburger that opened it. Only an actual open→closed
+  // transition restores focus, so the initial mobile render never steals it.
+  useEffect(() => {
+    const wasOpen = drawerWasOpenRef.current;
+    drawerWasOpenRef.current = mobileOpen;
+    if (!isMobile) return;
+    if (mobileOpen) {
+      const firstLink = sidebarNavRef.current?.querySelector("a");
+      if (firstLink) firstLink.focus();
+    } else if (wasOpen) {
+      document.getElementById("nav-hamburger")?.focus();
+    }
+  }, [mobileOpen, isMobile]);
+
   return (
     <div
       data-layout-variant={layoutVariant}
@@ -544,6 +562,7 @@ export default function App() {
         <Button
           ghost
           size="icon"
+          id="nav-hamburger"
           onClick={() => setMobileOpen(true)}
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
@@ -586,6 +605,11 @@ export default function App() {
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
+            // A closed mobile drawer sits off-screen but stays tabbable;
+            // `inert` removes it from the tab order and the a11y tree until
+            // it is opened. On desktop the sidebar is the visible one, so it
+            // never goes inert.
+            inert={isMobile && !mobileOpen}
             className={cn(
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
               "border-r border-current/20",
@@ -655,8 +679,9 @@ export default function App() {
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
             <nav
+              ref={sidebarNavRef}
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
-              aria-label={t.app.navigation}
+              aria-label={t.app.sectionNav}
             >
               <ul className="flex flex-col">
                 {sidebarNav.coreItems.map((item) => (

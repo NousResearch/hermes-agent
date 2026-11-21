@@ -86,6 +86,8 @@ export const uk: Translations = {
     openDocumentation: "Відкрити документацію в новій вкладці",
     openNavigation: "Відкрити навігацію",
     pluginNavSection: "Плагіни",
+    sectionNav: "Розділи",
+    skipToContent: "Перейти до вмісту",
     sessionsActiveCount: "{count} активних",
     statusOverview: "Огляд стану",
     system: "Система",

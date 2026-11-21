@@ -86,6 +86,8 @@ export const ko: Translations = {
     openDocumentation: "새 탭에서 문서 열기",
     openNavigation: "내비게이션 열기",
     pluginNavSection: "플러그인",
+    sectionNav: "섹션",
+    skipToContent: "본문으로 건너뛰기",
     sessionsActiveCount: "{count}개 활성",
     statusOverview: "상태 개요",
     system: "시스템",

@@ -112,6 +112,11 @@ export interface Translations {
     openDocumentation: string;
     openNavigation: string;
     pluginNavSection: string;
+    /** Label for the sidebar's inner nav list — distinct from the `navigation`
+        landmark label so the two regions are not announced as duplicates. */
+    sectionNav: string;
+    /** Text of the skip link that jumps past the shell chrome to the page body. */
+    skipToContent: string;
     sessionsActiveCount: string;
     statusOverview: string;
     system: string;

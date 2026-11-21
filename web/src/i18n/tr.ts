@@ -86,6 +86,8 @@ export const tr: Translations = {
     openDocumentation: "Dokümantasyonu yeni sekmede aç",
     openNavigation: "Gezintiyi aç",
     pluginNavSection: "Eklentiler",
+    sectionNav: "Bölümler",
+    skipToContent: "İçeriğe geç",
     sessionsActiveCount: "{count} aktif",
     statusOverview: "Durum özeti",
     system: "Sistem",

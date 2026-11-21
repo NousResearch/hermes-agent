@@ -86,6 +86,8 @@ export const ru: Translations = {
     openDocumentation: "Открыть документацию в новой вкладке",
     openNavigation: "Открыть навигацию",
     pluginNavSection: "Плагины",
+    sectionNav: "Разделы",
+    skipToContent: "Перейти к содержимому",
     sessionsActiveCount: "{count} активн.",
     statusOverview: "Обзор статуса",
     system: "Система",

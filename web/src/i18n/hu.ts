@@ -86,6 +86,8 @@ export const hu: Translations = {
     openDocumentation: "Dokumentáció megnyitása új lapon",
     openNavigation: "Navigáció megnyitása",
     pluginNavSection: "Bővítmények",
+    sectionNav: "Szakaszok",
+    skipToContent: "Ugrás a tartalomra",
     sessionsActiveCount: "{count} aktív",
     statusOverview: "Állapot áttekintése",
     system: "Rendszer",

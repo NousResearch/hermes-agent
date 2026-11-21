@@ -93,6 +93,8 @@ export const en: Translations = {
     openDocumentation: "Open documentation in a new tab",
     openNavigation: "Open navigation",
     pluginNavSection: "Plugins",
+    sectionNav: "Sections",
+    skipToContent: "Skip to content",
     sessionsActiveCount: "{count} active",
     statusOverview: "Status overview",
     system: "System",

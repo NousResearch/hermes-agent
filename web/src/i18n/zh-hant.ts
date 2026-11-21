@@ -86,6 +86,8 @@ export const zhHant: Translations = {
     openDocumentation: "在新分頁開啟文件",
     openNavigation: "開啟導覽",
     pluginNavSection: "外掛",
+    sectionNav: "區塊",
+    skipToContent: "跳至主要內容",
     sessionsActiveCount: "{count} 個使用中",
     statusOverview: "狀態總覽",
     system: "系統",

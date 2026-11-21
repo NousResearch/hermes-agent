@@ -86,6 +86,8 @@ export const ga: Translations = {
     openDocumentation: "Oscail an doiciméadú i gcluaisín nua",
     openNavigation: "Oscail an nascleanúint",
     pluginNavSection: "Plugins",
+    sectionNav: "Réiteacht",
+    skipToContent: "Sealt go ábhar",
     sessionsActiveCount: "{count} gníomhach",
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",

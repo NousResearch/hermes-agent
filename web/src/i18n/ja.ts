@@ -86,6 +86,8 @@ export const ja: Translations = {
     openDocumentation: "ドキュメントを新しいタブで開く",
     openNavigation: "ナビゲーションを開く",
     pluginNavSection: "プラグイン",
+    sectionNav: "セクション",
+    skipToContent: "本文へ移動",
     sessionsActiveCount: "{count} 件アクティブ",
     statusOverview: "ステータス概要",
     system: "システム",

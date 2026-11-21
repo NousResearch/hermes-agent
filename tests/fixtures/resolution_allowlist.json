@@ -70,6 +70,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "agent/vault_backends/keepass.py",
+    "symbol": "find_cli",
+    "kind": "bare_which"
+  },
+  {
     "path": "apps/desktop/electron/fixtures/source-backend.py",
     "symbol": "main",
     "kind": "bare_which"

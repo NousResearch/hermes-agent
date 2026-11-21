@@ -553,6 +553,7 @@ def test_two_approvals_of_one_pending_write_apply_it_once(hermes_home, monkeypat
     nothing, and an approval that fails puts the record back in the queue."""
     import threading
     import hermes_cli.write_approval_commands as wac
+    from tools import skill_manager_tool as smt
     from tools import write_approval as wa
     rec = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe",
                                      "content": "---\nname: probe\ndescription: p\n---\n# body\n"},
@@ -560,7 +561,7 @@ def test_two_approvals_of_one_pending_write_apply_it_once(hermes_home, monkeypat
     wac.handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
     patch = wa.stage_write(wa.SKILLS, {"action": "patch", "name": "probe", "old_string": "# body",
                                        "new_string": "# body\nADDED-LINE"}, summary="patch", origin="foreground")
-    real, calls = wac._apply_one, []
+    real, calls = smt.apply_skill_pending, []
     first_in, second_done = threading.Event(), threading.Event()
 
     def held(*a, **k):  # the first apply stays open until the second approval has returned
@@ -569,7 +570,7 @@ def test_two_approvals_of_one_pending_write_apply_it_once(hermes_home, monkeypat
             first_in.set()
             second_done.wait(timeout=10)
         return real(*a, **k)
-    monkeypatch.setattr(wac, "_apply_one", held)
+    monkeypatch.setattr(smt, "apply_skill_pending", held)
     outs = []
     first = threading.Thread(target=lambda: outs.append(
         wac.handle_pending_subcommand(wa.SKILLS, ["approve", patch["id"]])))
@@ -585,21 +586,21 @@ def test_two_approvals_of_one_pending_write_apply_it_once(hermes_home, monkeypat
 
     failing = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe2", "content": "x"},
                              summary="create probe2", origin="foreground")
-    monkeypatch.setattr(wac, "_apply_one", lambda *a, **k: (False, "boom", {}))
+    monkeypatch.setattr(smt, "apply_skill_pending", lambda *a, **k: json.dumps({"success": False, "error": "boom"}))
     assert "boom" in wac.handle_pending_subcommand(wa.SKILLS, ["approve", failing["id"]])
     assert wa.get_pending(wa.SKILLS, failing["id"]) is not None
 
 
 def test_a_claim_left_by_a_crash_goes_back_to_the_queue(hermes_home):
-    """A process that dies between claim and finish leaves <id>.claimed: listing puts it back once it is
-    older than any real apply, and leaves a live claim alone."""
-    import time
+    """Listing distinguishes an abandoned pre-apply claim from a held one without using their ages."""
     from tools import write_approval as wa
     crashed, live = (wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": c},
                                     summary=c, origin="foreground") for c in ("one", "two"))
-    old, d = time.time() - wa._STALE_CLAIM_SECONDS - 60, wa._pending_dir(wa.MEMORY)
-    os.utime(d / f"{live['id']}.json", (old, old))                       # staged long ago, claimed now
-    assert wa.claim_pending(wa.MEMORY, crashed["id"]) and wa.claim_pending(wa.MEMORY, live["id"])
-    os.utime(d / f"{crashed['id']}.claimed", (old, old))
-    assert [r["id"] for r in wa.list_pending(wa.MEMORY)] == [crashed["id"]]
-    assert wa.claim_pending(wa.MEMORY, live["id"]) is None             # the live claim is still held
+    pending = wa._pending_path(wa.MEMORY, crashed["id"])
+    pending.replace(pending.with_suffix(".claimed"))
+    pending = wa._pending_path(wa.MEMORY, live["id"])
+    with wa._try_claim_lock(pending) as owned:
+        assert owned
+        assert wa._claim_pending(wa.MEMORY, live["id"]) is not None
+        assert [r["id"] for r in wa.list_pending(wa.MEMORY)] == [crashed["id"]]
+        assert pending.with_suffix(".claimed").is_file()

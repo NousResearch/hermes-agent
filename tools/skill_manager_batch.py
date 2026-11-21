@@ -166,10 +166,13 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
         # The dir predates the batch (adopted empty leftover): unlink exactly the files the
         # batch wrote there, then rmdir() the now-empty dirs up to and including the skill dir.
         # rmdir() fails on anything left, so a file that landed out-of-band survives.
+        unlink_error: OSError | None = None
         for rel in ("SKILL.md", *written):
             target = post_dir / rel
-            with suppress(OSError):
-                target.unlink()
+            try:
+                target.unlink(missing_ok=True)
+            except OSError as exc:
+                unlink_error = unlink_error or exc  # try the remaining files, but report partial rollback
             for parent in target.parents:
                 if parent == post_dir or not parent.is_relative_to(post_dir):
                     break
@@ -177,6 +180,8 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
                     parent.rmdir()
         with suppress(OSError):
             post_dir.rmdir()
+        if unlink_error is not None:
+            raise unlink_error
         return
     if not post_exists:
         shutil.copytree(snap, pre_dir)
@@ -246,7 +251,9 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         def _staging(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
+            # Replay has no caller's top-level default name. Persist what validation
+            # resolved for every operation, not bare aliases to that default.
+            return {"action": "batch", "operations": [{**op, "name": nm} for op, nm in zip(operations, names)]}, gist
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged
@@ -280,10 +287,12 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
                                   f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."),
                         "failed_index": i, "completed_before_failure": i}
+                    if rollback_failed:
+                        fail["rollback_failed"] = True
                     # Carry the failing op's teaching payload (patch's file_preview /
                     # fuzzy-match hints) through — without it the model recovers blind.
                     for k, v in parsed.items():
-                        if k not in ("success", "error") and v is not None:
+                        if k not in ("success", "error", "rollback_failed") and v is not None:
                             fail.setdefault(k, v)
                     return json.dumps(fail, ensure_ascii=False)
                 entry = {"name": names[i], "action": op["action"],

@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
-import json
 from typing import List, Optional
 
 from tools import write_approval as wa
+
+_NOT_PENDING = "no longer pending (already approved or rejected)"
 
 
 def _fmt_state(subsystem: str) -> str:
@@ -15,6 +16,20 @@ def _fmt_state(subsystem: str) -> str:
 
 
 def _fmt_pending_list(subsystem: str) -> str:
+    text = _fmt_queue(subsystem)
+    stuck = wa.list_needs_review(subsystem)
+    if not stuck:
+        return text
+    lines = [text, "", f"Needs review ({len(stuck)}): an approval stopped mid-write, so these may be partly applied:"]
+    for item in stuck:
+        lines.append(f"  {item['id']}  {item['summary']}")
+        lines.append(f"      {item['reason']}")
+    lines.append("")
+    lines.append(f"Check the files by hand, then clear one: /{subsystem} reject <id>  ('reject all' skips these)")
+    return "\n".join(lines)
+
+
+def _fmt_queue(subsystem: str) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
@@ -66,34 +81,34 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
         return _usage(subsystem)
     target = rest[0]
     records = wa.list_pending(subsystem)
-    if not records:
-        return f"No pending {subsystem} writes."
     if target.lower() == "all":
+        if not records:
+            return f"No pending {subsystem} writes."
         targets = list(records)
     else:
         rec = wa.get_pending(subsystem, target)
         if not rec:
-            return f"No pending {subsystem} write with id '{target}'."
+            if _needs_review(subsystem, target):
+                return (f"Write '{target}' needs review, so it won't be applied again. "
+                        f"Check the files, then clear it with /{subsystem} reject {target}.")
+            return _not_pending(subsystem, target)
         targets = [rec]
 
     applied, failed, overwritten, patched, removed = 0, [], [], [], []
     for listed in targets:
-        rec = wa.claim_pending(subsystem, listed["id"])  # one approver wins; the other sees it gone
-        if rec is None:
-            failed.append(f"{listed['id']}: no longer pending (already approved or rejected)")
+        pid = listed["id"]
+        # legacy_unchecked: a skill record staged without base revisions has nothing to check. The
+        # slash commands (CLI, gateway, TUI) still apply it, so records queued by an older version stay
+        # approvable. resolve_pending documents this exception; the plugin API always needs a preview.
+        r = wa.resolve_pending(subsystem, pid, "approve", memory_store=memory_store, legacy_unchecked=True)
+        if r["status"] != "applied":
+            failed.append(f"{pid}: {_NOT_PENDING if r['status'] == 'already_resolved' else r['reason']}")
             continue
-        ok, msg, result = False, "not applied", {}
-        try:
-            ok, msg, result = _apply_one(subsystem, rec, memory_store)
-        finally:
-            wa.finish_claim(subsystem, rec["id"], applied=ok)
-        if ok:
-            applied += 1
-            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
-            patched.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
-            removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
-        else:
-            failed.append(f"{rec['id']}: {msg}")
+        applied += 1
+        result = r["result"]
+        overwritten.extend(f"  {pid}: {text}" for text in _changed_entries(result, "replaced"))
+        patched.extend(f"  {pid}: {text}" for text in _changed_entries(result, "patched"))
+        removed.extend(f"  {pid}: {text}" for text in _changed_entries(result, "removed"))
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if overwritten:
@@ -114,6 +129,14 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
     return "\n".join(out)
 
 
+def _not_pending(subsystem: str, target: str) -> str:
+    return f"No pending {subsystem} write with id '{target}'."
+
+
+def _needs_review(subsystem: str, target: str) -> bool:
+    return any(item["id"] == target for item in wa.list_needs_review(subsystem))
+
+
 def _changed_entries(result: dict, kind: str) -> list[str]:
     """Full text of every entry a memory write changed, single-op or batch shape."""
     single = result.get(f"{kind}_entry")
@@ -132,33 +155,24 @@ def _matched_entries(payload) -> list[str]:
             for op in destructive_ops(payload)]
 
 
-def _apply_one(subsystem: str, rec, memory_store):
-    """``(ok, error, result)`` — *result* is the applier's full payload (empty on exceptions)."""
-    payload = rec.get("payload", {})
-    try:
-        if subsystem == wa.MEMORY:
-            if memory_store is None:
-                return False, "memory store unavailable", {}
-            from tools.memory_tool import apply_memory_pending
-            result = apply_memory_pending(payload, memory_store)
-        else:
-            from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload, origin=rec.get("origin", "foreground")))
-        return bool(result.get("success")), result.get("error", ""), result
-    except Exception as e:
-        return False, str(e), {}
-
-
 def _reject(subsystem: str, rest: list[str]) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
-    if target.lower() == "all":
-        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
+    if target.lower() == "all":  # the queue only: a write that needs review takes its explicit id
+        n = sum(1 for rec in wa.list_pending(subsystem)
+                if wa.resolve_pending(subsystem, rec["id"], "reject")["status"] == "rejected")
         return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
+    if wa.get_pending(subsystem, target) is None and not _needs_review(subsystem, target):
+        return _not_pending(subsystem, target)
+    r = wa.resolve_pending(subsystem, target, "reject", close_interrupted=True)
+    if r["status"] == "rejected" and r.get("warning"):
+        return f"Rejected {subsystem} write '{target}'. Warning: {r['warning']}"
+    if r["status"] == "rejected":
         return f"Rejected pending {subsystem} write '{target}'."
-    return f"No pending {subsystem} write with id '{target}'."
+    if r["status"] == "already_resolved":
+        return _not_pending(subsystem, target)
+    return f"Could not reject pending {subsystem} write '{target}': {r['reason']}"
 
 
 def _diff(rest: list[str]) -> str:

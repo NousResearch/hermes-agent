@@ -827,7 +827,7 @@ class CLIVoiceMixin:
         from cli import _BOLD, _RST, _cprint
         from tools.voice_mode import check_voice_requirements
 
-        reqs = check_voice_requirements()
+        reqs = check_voice_requirements(list_devices=True)
         _on, _off = t("cli.voice.state_on"), t("cli.voice.state_off")
         _cprint(f"\n{_BOLD}{t('cli.voice.status_title')}{_RST}")
         _cprint(t("cli.voice.label_mode", value=_on if self._voice_mode else _off))

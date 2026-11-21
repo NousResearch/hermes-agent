@@ -17,6 +17,10 @@ VOICE_DEFAULTS = {
     "record_key": "ctrl+b",
     "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
     "max_recording_seconds": 120,
+    # PortAudio device for CLI/TUI voice: an index or a name substring from `/voice devices`;
+    # null = system default. Wake word has its own wake_word.input_device.
+    "input_device": None,
+    "output_device": None,
     "auto_tts": False,
     "auto_tts_mode": "all",  # all (legacy) | voice_only (audio only after voice input)
     # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over

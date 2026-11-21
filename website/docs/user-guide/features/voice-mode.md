@@ -157,6 +157,18 @@ This loop continues until you press **Ctrl+B** during recording (exits continuou
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
 :::
 
+### Choosing the microphone and speaker
+
+By default voice mode uses the system default input and output devices. To pick others, run `/voice status`: it shows the devices in use and lists every audio device by number. Then set either device in `~/.hermes/config.yaml`:
+
+```yaml
+voice:
+  input_device: "USB Microphone"   # device number, or part of its name; null = system default
+  output_device: 3                 # used for beeps, the thinking sound and spoken replies
+```
+
+The setting covers push-to-talk recording, barge-in listening and the full-duplex listener, in the classic CLI and the TUI. Each one records at the device's own sample rate, so a microphone that refuses 16 kHz still works. If a configured name matches no device, `/voice status` shows `NOT FOUND` with the reason. The wake word has its own `wake_word.input_device`.
+
 ### Silence Detection
 
 Two-stage algorithm detects when you've finished speaking:

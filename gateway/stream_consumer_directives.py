@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from gateway.platforms.base import HTML_IMAGE_TAG_PATTERN, MD_IMAGE_TAG_PATTERN, BasePlatformAdapter
+from gateway.platforms.base_image_tags import find_images, remove_image_tags
 
 # A delivery directive still being typed on the open (last) line: "MEDIA:" the cleaner has not
 # stripped yet whose remainder can still become a path (MEDIA_TAG_CLEANUP_RE's openers: a quote,
@@ -24,9 +24,11 @@ _STREAM_FLAGS = ("[[audio_as_voice]]", "[[as_document]]")
 # after a word, closing bracket/quote or another "!"/"?"/"." streams on, because that is how prose
 # ends a sentence ("world!"), and holding it would keep every exclamation off the live draft.
 # Anything that leaves the tag's grammar (whitespace in the URL, ``<img alt``) ends the hold: that
-# text is never extracted, so it stays visible either way.
+# text is never extracted, so it stays visible either way. Trailing ``|`` bars, and a complete tag
+# right after opening bars, wait for a ``||![alt](url)||`` spoiler to close: it goes as one unit.
 _PENDING_IMAGE_RE = re.compile(
-    r"""!\[[^\]]*(?:\](?:\([^)\s]*)?)?\Z|(?<![\w)\]"'”’!?.*_~`])!\Z"""
+    r"""!\[[^\]]*(?:\](?:\([^)\s]*)?)?\Z|(?<![\w)\]"'”’!?.*_~`])!\Z|\|{1,3}[ \t]*\Z"""
+    r"""|\|\|[ \t]*!\[[^\]]*\]\([^)\s]*\)[ \t]*\Z"""
     r"""|<(?:i(?:m(?:g(?:\s+(?:s(?:r(?:c(?:=["']?[^\s"'<>]*["']?\s*/?)?)?)?)?)?)?)?)?\Z"""
     r"""|</(?:i(?:m(?:g)?)?)?\Z""")
 
@@ -36,18 +38,12 @@ def strip_image_tags_for_display(text: str) -> str:
 
     Each tag goes with up to two line breaks after it, and nothing else is trimmed
     or collapsed: an interim frame must stay a prefix of the next one, so text in front of the tag
-    (already shown) is never rewritten.
+    (already shown) is never rewritten. A marked tag that stays (not an image URL) shows as the
+    hidden link the final text carries.
     """
     if "![" not in text and "<img" not in text:
         return text
-    images, _ = BasePlatformAdapter.extract_images(text)
-    if not images:
-        return text
-    urls = {url for url, _ in images}
-    for pattern, url_group in ((MD_IMAGE_TAG_PATTERN, 2), (HTML_IMAGE_TAG_PATTERN, 1)):
-        text = re.sub(f"(?:{pattern})(?:\\r?\\n){{0,2}}",
-                      lambda m, g=url_group: "" if m.group(g) in urls else m.group(0), text)
-    return text
+    return remove_image_tags(text, {url for url, _ in find_images(text)}, trailing=r"(?:\r?\n){0,2}")
 
 
 def has_pending_media_directive(cleaned: str) -> bool:

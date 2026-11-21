@@ -148,10 +148,13 @@ class _FooterCaption(str):
 def caption_with_footer(adapter: Any, images: list, footer: str) -> tuple[list, bool]:
     """``(images, True)`` with ``footer`` on the last ``(url, alt)`` photo's caption when the
     adapter declares ``media_caption_limit`` and the caption fits it (UTF-16 units). Never on an
-    animation: a GIF goes out on its own path, whose failure the batch result does not list."""
+    animation: a GIF goes out on its own path, whose failure the batch result does not list. Never
+    on a spoiler image either: its caption is hidden with it."""
+    from gateway.platforms.base_image_tags import is_spoiler  # inline: the package __init__ imports base, which imports us
     limit = int(getattr(adapter, "media_caption_limit", 0) or 0)
     target = next((i for i in range(len(images) - 1, -1, -1)
-                   if not adapter._is_animation_url(images[i][0])), None) if footer and limit > 0 else None
+                   if not adapter._is_animation_url(images[i][0]) and not is_spoiler(images[i][1])),
+                  None) if footer and limit > 0 else None
     if target is None:
         return images, False
     url, alt = images[target]

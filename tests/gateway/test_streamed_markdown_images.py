@@ -187,6 +187,13 @@ async def _stream_frames(deltas):
     return [f.replace(cursor, "") if cursor else f for f in frames]
 
 
+def _assert_prefix_stable(frames):
+    """Each interim frame is a prefix of the next: text shown once is never taken back."""
+    interim = [f.rstrip() for f in frames[:-1]]
+    for prev, nxt in itertools.pairwise(interim):
+        assert nxt.startswith(prev), (prev, nxt)
+
+
 @pytest.mark.parametrize("deltas, final", [
     (["Here is the render.\n\n!", "[barrel ren", "der](https://exa", "mple.com/r/b", "arrel.png)",
       "\n\nWant another ", "angle?"], "Here is the render.\n\nWant another angle?"),
@@ -204,9 +211,7 @@ async def test_streamed_image_tag_never_shows_and_frames_stay_prefix_stable(delt
     assert frames, "nothing was streamed"
     for frame in frames:
         assert "!" not in frame and "example.com" not in frame and "](" not in frame, frame
-    interim = [f.rstrip() for f in frames[:-1]]
-    for prev, nxt in itertools.pairwise(interim):
-        assert nxt.startswith(prev), (prev, nxt)
+    _assert_prefix_stable(frames)
     assert frames[-1].strip() == final
 
 
@@ -227,3 +232,42 @@ async def test_queued_lane_sends_the_text_without_the_tag_and_the_image_once():
     assert adapter.send.await_args.args[1] == "Done."
     adapter.send_multiple_images.assert_awaited_once()
     assert adapter.send_multiple_images.await_args.kwargs["images"] == [("https://example.com/chart.png", "chart")]
+
+
+@pytest.mark.parametrize("deltas, final", [
+    (["Ending below.\n\n|", "|![The ending](https://exa", "mple.com/end.png)|", "|\n\nGood luck."],
+     "Ending below.\n\nGood luck."),
+    (["Ending: ||", " ![x](https://example.com/e.png) ", "|", "|", " done"], "Ending:  done"),
+])
+@pytest.mark.asyncio
+async def test_streamed_spoiler_image_never_shows_a_bar_or_its_url(deltas, final):
+    """A ``||![alt](url)||`` spoiler image goes as one unit: no frame shows its bars, alt or URL,
+    and frames stay prefix-stable (an opening ``||`` shown early could never be taken back)."""
+    frames = await _stream_frames(deltas)
+
+    assert frames, "nothing was streamed"
+    for frame in frames:
+        assert "|" not in frame and "example.com" not in frame and "](" not in frame, frame
+    _assert_prefix_stable(frames)
+    assert frames[-1].strip() == final
+
+
+@pytest.mark.asyncio
+async def test_streamed_spoiler_without_an_image_url_shows_only_the_hidden_link():
+    """The final text carries ``||[alt](<url>)||`` (see ``extract_images``); the stream must never
+    show the raw tag first (it would unfurl), and frames must stay prefix-stable."""
+    hidden = "||[the twist](<https://example.com/wiki/Twist>)||"
+    frames = await _stream_frames(
+        ["Read ||", "![the twist](https://exa", "mple.com/wiki/Twist)", "|", "| later."])
+
+    for frame in frames:
+        assert "![" not in frame and "](https" not in frame, frame
+    _assert_prefix_stable(frames)
+    assert frames[-1].strip() == f"Read {hidden} later."
+
+
+@pytest.mark.asyncio
+async def test_streamed_text_spoiler_still_streams():
+    frames = await _stream_frames(["It was ||", "Rosebud||", " all along."])
+
+    assert frames[-1].strip() == "It was ||Rosebud|| all along."

@@ -6679,7 +6679,7 @@ def _derive_forum_thread_name(message: str) -> str:
     """Derive a thread name from the first line of the message, capped at 100 chars."""
     first_line = message.strip().split("\n", 1)[0].strip()
     first_line = first_line.lstrip("#").strip()
-    if not first_line:
+    if not first_line or first_line.startswith("||"):  # a title is plain text: never show a spoiler
         first_line = t("platform.discord.forum.default_title")
     return first_line[:100]
 

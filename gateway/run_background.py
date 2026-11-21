@@ -8,6 +8,7 @@ from typing import Optional
 from agent.i18n import t
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base_image_tags import spoiler_kwargs
 from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")
@@ -146,6 +147,7 @@ class GatewayBackgroundMixin:
                 with suppress(Exception):
                     await adapter.send_image(
                         chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
+                        **spoiler_kwargs(adapter.send_image, alt_text),
                     )
             # Route each media file by type (voice bubble / video / image / document), as the
             # streaming + kanban paths do.

@@ -120,3 +120,52 @@ class TestDiscordToolPreviewFormatting:
         out = adapter.format_tool_preview(ToolPreview(visible, truncated=True))
 
         assert out == visible
+
+    def test_glob_preview_is_not_italicised(self):
+        """A search_files glob like ``*ConfigLoader*`` rendered as italics in the progress bubble."""
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+
+        assert adapter.format_tool_preview(ToolPreview("*ConfigLoader*")) == r"\*ConfigLoader\*"
+
+    def test_every_inline_formatting_character_is_escaped(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        text = r"my_var ~~x~~ `c` ||s|| [l] <@1> C:\tmp **b**"
+
+        assert adapter.format_tool_preview(ToolPreview(text)) == (
+            r"my\_var \~\~x\~\~ \`c\` \|\|s\|\| \[l\] \<@1> C:\\tmp \*\*b\*\*"
+        )
+
+    def test_bare_url_inside_a_preview_is_left_intact(self):
+        """Escaping inside a URL would break Discord's autolink target."""
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        text = "curl -s https://example.com/a_b*c | jq .name_x"
+
+        assert adapter.format_tool_preview(ToolPreview(text)) == (
+            r"curl -s https://example.com/a_b*c \| jq .name\_x"
+        )
+
+    def test_link_label_escapes_emphasis(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        preview = ToolPreview("https://example.com/*draft*_v2...", truncated=True,
+                              url="https://example.com/*draft*_v2/page")
+
+        assert adapter.format_tool_preview(preview).startswith(r"[example.com/\*draft\*\_v2...](")
+
+    def test_structured_tool_event_escapes_a_glob(self):
+        from gateway.stream_events import ToolCallChunk
+
+        adapter = _make_discord_adapter()
+        out = adapter.format_tool_event(
+            ToolCallChunk("search_files", preview="*ConfigLoader*", args={"pattern": "*ConfigLoader*"}),
+            mode="all", preview_max_len=40,
+        )
+
+        assert out is not None and r"\*ConfigLoader\*" in out

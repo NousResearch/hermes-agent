@@ -1023,7 +1023,8 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
+    gateway_lifecycle_block, locked_skill_block, reset_foreground_background_guard, self_repo_block,
+    trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import _cwd_fallback_note, finalize_foreground_result
@@ -1254,7 +1255,7 @@ _PROMOTED_NOTE = (
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],
-    background: bool, _host_local: bool,
+    background: bool, _host_local: bool, workdir: Optional[str] = None,
 ) -> _ExecPlan:
     """Resolve backend, env-cache key, image, cwd and timeout for one call.
 
@@ -1328,12 +1329,18 @@ def _plan_execution(
         # background=true does), so run it that way instead of spending a model turn on a resend.
         auto_bg = trailing_amp_background_command(command)
         if auto_bg is None:
-            guidance = _foreground_background_guidance(command)
+            guidance = _foreground_background_guidance(command, task_id, workdir)
             if guidance:
                 raise _Rejected(_error_json(guidance, status="error"))
+            # No counter reset for a compliant foreground call: an unrelated command is not
+            # evidence the model learned to background, and resetting here kept a model
+            # retrying `&` between other work from ever escalating.
             if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
                 promoted = timeout
     else:
+        # An explicit background=true call is itself the correct usage this
+        # guard is steering toward.
+        reset_foreground_background_guard(task_id)
         auto_bg = None
 
     return _ExecPlan(
@@ -1608,6 +1615,7 @@ def terminal_tool(
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
+            workdir=workdir,
         )
         auto_bg = getattr(plan, "auto_background_command", None)
         if auto_bg is not None:

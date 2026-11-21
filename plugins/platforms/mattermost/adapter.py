@@ -20,7 +20,7 @@ from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -123,6 +123,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        self._threads = ThreadParticipationTracker("mattermost")  # require_mention bypass
 
     def _is_configured_bot_user(self, user_id: str) -> bool:
         """Whether an inbound Mattermost sender is an explicitly configured peer bot.
@@ -524,10 +525,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", kind)
                 break
 
-    def _apply_channel_gating(self, channel_id: str, message_text: str) -> Optional[str]:
+    def _apply_channel_gating(self, channel_id: str, message_text: str, root_id: str = "") -> Optional[str]:
         """Mention-gate a non-DM post; return the cleaned text, or None to ignore it. allowed_channels is a
         whitelist checked first (@mentions elsewhere are ignored); require_mention (default true) is
-        bypassed in free_response_channels."""
+        bypassed in free_response_channels and, unless thread_require_mention is set, in threads the bot
+        already joined."""
         allowed_channels = _channel_id_set(_extra_or_secret(self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("Mattermost: ignoring message in non-allowed channel: %s", channel_id)
@@ -538,7 +540,10 @@ class MattermostAdapter(BasePlatformAdapter):
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
         mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
         has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
-        if require_mention and channel_id not in free_channels and not has_mention:
+        thread_require_mention = str(_extra_or_secret(self.config.extra, "thread_require_mention", "MATTERMOST_THREAD_REQUIRE_MENTION", "false", blank_is_unset=False)
+                                     ).lower() in {"true", "1", "yes"}
+        in_bot_thread = bool(root_id) and root_id in self._threads and not thread_require_mention
+        if require_mention and channel_id not in free_channels and not has_mention and not in_bot_thread:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
         if has_mention:  # strip the @mention so the agent sees clean input
@@ -596,13 +601,15 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
-            message_text = self._apply_channel_gating(channel_id, message_text)
+            message_text = self._apply_channel_gating(channel_id, message_text, post.get("root_id") or "")
             if message_text is None:
                 return
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
         thread_id = post.get("root_id") or None
         if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:
             thread_id = post_id
+        if thread_id and self._reply_mode == "thread" and not is_dm:
+            await self._threads.mark_async(thread_id)  # later replies here skip the mention gate
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()
         chat_type = _CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel")
@@ -749,6 +756,7 @@ def interactive_setup() -> None:
 
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_channels is a whitelist
     ("require_mention", "MATTERMOST_REQUIRE_MENTION", "lower"),
+    ("thread_require_mention", "MATTERMOST_THREAD_REQUIRE_MENTION", "lower"),
     ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "csv"),
     ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
 

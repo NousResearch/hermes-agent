@@ -187,6 +187,14 @@
       ]
     },
     {
+      "source": "plugins/index.md § Review staged memory and skill writes",
+      "entries": [
+        "tools.write_review_api:list_writes",
+        "tools.write_review_api:preview_write",
+        "tools.write_review_api:decide_write"
+      ]
+    },
+    {
       "source": "plugins/index.md § Read the skill catalog",
       "entries": [
         "tools.skills_tool:find_all_skills",

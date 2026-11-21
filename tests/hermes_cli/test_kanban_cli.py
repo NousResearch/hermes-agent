@@ -293,3 +293,46 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# diagnostics: positional task id (#157080)
+# ---------------------------------------------------------------------------
+
+
+def _diag_task(conn_title="diag target"):
+    with kbc.connect() as conn:
+        return kb.create_task(conn, title=conn_title, assignee="alice")
+
+
+@pytest.mark.parametrize("form", ["positional", "flag", "both_same"])
+def test_diagnostics_accepts_task_id_positionally_or_via_flag(kanban_home, form):
+    tid = _diag_task()
+    rest = {
+        "positional": f"diagnostics {tid} --json",
+        "flag": f"diagnostics --task {tid} --json",
+        "both_same": f"diagnostics {tid} --task {tid} --json",
+    }[form]
+    payload = json.loads(kc.run_slash(rest))
+    # One-task mode: no row for any other task, only the trailing allowlist row.
+    assert all(row["task_id"] in (tid, None) for row in payload)
+    assert payload[-1]["task_id"] is None
+
+
+def test_diagnostics_rejects_conflicting_task_ids(kanban_home):
+    tid = _diag_task()
+    out = kc.run_slash(f"diagnostics {tid} --task t_00000000")
+    assert "conflicting task ids" in out
+
+
+def test_diagnostics_unknown_short_id_names_expected_form(kanban_home):
+    _diag_task()
+    out = kc.run_slash("diagnostics 501ef6")
+    assert "no such task: 501ef6" in out
+    assert "t_xxxxxxxx" in out
+
+
+def test_diagnostics_unknown_full_id_keeps_plain_error(kanban_home):
+    out = kc.run_slash("diagnostics t_deadbeef")
+    assert "no such task: t_deadbeef" in out
+    assert "expected" not in out

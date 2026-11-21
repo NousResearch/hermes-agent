@@ -77,3 +77,13 @@ class TestReadFileBinaryDisclosure:
         p.write_bytes(b"\x00\x01\x02" * 500)
         result = json.loads(read_file_tool(str(p)))
         assert "unknown binary" in result.get("error", "")
+
+    def test_mostly_ascii_parquet_refused_by_extension(self, tmp_path, monkeypatch):
+        # A plain-encoded string column has no NUL in the first KB, so only the
+        # extension keeps read_file from paging the raw column bytes as text.
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        p = tmp_path / "users.parquet"
+        p.write_bytes(b"PAR1" + b"".join(f"user_{i:05d},a@example.com;".encode() for i in range(200)) + b"PAR1")
+        result = json.loads(read_file_tool(str(p)))
+        assert "content" not in result
+        assert "Cannot read binary file" in result.get("error", "")

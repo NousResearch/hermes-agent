@@ -485,6 +485,10 @@ class CoordinationRepository(SubagentLedger, Protocol):
         """Delete the conversation's row while it names ``holder``; idempotent; empty arguments do nothing."""
         ...
 
+    def session_turn_leases(self, *, session_id: SessionId) -> tuple[tuple[str, float], ...]:
+        """The conversation's lease rows as ``(holder, expires_at)`` pairs, oldest expiry first; an empty ``session_id`` is (). Read-only: a caller deciding whether a lost turn's owner can still be alive must see the row a dead holder left behind (no sweep, no reclaim), so a store failure is logged and returns ()."""
+        ...
+
     # ── hygiene streak ──
 
     def increment_hygiene_failure_streak(self, *, session_key: str) -> int:

@@ -315,6 +315,25 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             ).fetchone()
         return float(row[0]) if row else None
 
+    def session_turn_leases(self, *, session_id: SessionId) -> tuple[tuple[str, float], ...]:
+        """The conversation's lease rows as ``(holder, expires_at)`` pairs, oldest expiry first; an empty
+        ``session_id`` is (). Read-only, so unlike the claim no sweep runs: a caller deciding whether
+        a lost turn's owner can still be alive must see the row the dead holder left behind."""
+        if not session_id:
+            return ()
+        store = self._store.holder()
+        try:
+            with translated(), store._read_ctx() as conn:
+                rows = conn.execute(
+                    "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
+                    " ORDER BY expires_at",
+                    (_session_turn_lease_key_on_conn(store, conn, session_id),),
+                ).fetchall()
+        except Exception:
+            logger.warning("session_turn_leases read failed for %s", session_id, exc_info=True)
+            return ()
+        return tuple((row[0], float(row[1])) for row in rows)
+
     # ── hygiene streak ──────────────────────────────────────────────────────
 
     def increment_hygiene_failure_streak(self, *, session_key: str) -> int:

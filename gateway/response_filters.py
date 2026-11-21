@@ -76,13 +76,56 @@ def _canonical_silence_candidates(text: Any) -> tuple[str, ...]:
     return tuple(_canonical_silence_candidate(f) for f in forms)
 
 
+def _normalize_damaged_silence(text: str) -> str:
+    """Fold the damage providers actually produce without widening the marker set."""
+    folded = unicodedata.normalize("NFKC", text)
+    cleaned = "".join(
+        ch for ch in folded if not unicodedata.category(ch).startswith(("C", "M"))
+    )
+    collapsed = " ".join(cleaned.split())
+    if collapsed.startswith("[") and collapsed.endswith("]"):
+        collapsed = "[" + collapsed[1:-1].replace(" ", "") + "]"
+    return collapsed
+
+
+def _one_edit_from(left: str, right: str) -> bool:
+    """One insertion, deletion, substitution, or adjacent transposition."""
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) == len(right):
+        diffs = [i for i, (a, b) in enumerate(zip(left, right)) if a != b]
+        return len(diffs) == 1 or (
+            len(diffs) == 2
+            and diffs[1] == diffs[0] + 1
+            and left[diffs[0]] == right[diffs[1]]
+            and left[diffs[1]] == right[diffs[0]]
+        )
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+
+
 def is_intentional_silence_response(response: Any) -> bool:
     """True only when ``response`` is exactly a silence marker.
 
     Prose that merely mentions ``NO_REPLY`` must be delivered normally. A blank
     response is not silence either — that is the empty-response failure path.
+    A one-line marker that lost a letter, gained stray spacing or an invisible
+    character, or was truncated to ``[`` still means silence; anything with
+    extra words does not.
     """
-    return any(c in LIVE_GATEWAY_SILENT_MARKERS for c in _canonical_silence_candidates(response))
+    candidates = _canonical_silence_candidates(response)
+    if any(c in LIVE_GATEWAY_SILENT_MARKERS for c in candidates):
+        return True
+    for candidate in candidates:
+        normalized = _normalize_damaged_silence(candidate)
+        if normalized == "[" and any(m.startswith("[") for m in LIVE_GATEWAY_SILENT_MARKERS):
+            return True  # provider cut off a bracketed marker at the first token
+        if any(_one_edit_from(normalized, _normalize_damaged_silence(m))
+               for m in LIVE_GATEWAY_SILENT_MARKERS):
+            return True
+    return False
 
 
 def _split_trailing_line(text: str) -> tuple[str, str]:

@@ -27,9 +27,23 @@ def _serving(entries: list, endpoint_url: Optional[str], as_called: AsCalled = N
             if not (url := getattr(e, "runtime_base_url", None) or getattr(e, "base_url", None)) or norm(as_called(url)) == target]
 
 
+def refresh_scope(pending: list, chosen_id: Optional[str], endpoint_url: Optional[str] = None) -> list:
+    """The deferred single-use-token refreshes a selection may spend.
+
+    A proactive refresh rotates the entry's single-use refresh token (and a terminal error
+    quarantines it), so a selection refreshes only what it hands out: the chosen entry when
+    one was chosen, otherwise the single highest-priority pending candidate that serves the
+    endpoint, which the caller then re-selects. Unchosen fallbacks are left untouched.
+    """
+    if chosen_id is not None:
+        return [e for e in pending if getattr(e, "id", None) == chosen_id]
+    return sorted(_serving(pending, endpoint_url), key=lambda e: getattr(e, "priority", 0))[:1]
+
+
 class CredentialPoolSelectionMixin:
     def select(self, *, model: Optional[str] = None, endpoint_url: Optional[str] = None) -> Optional[PooledCredential]:
         entry, pending_refresh = self._select_under_lock(model=model, endpoint_url=endpoint_url)
+        pending_refresh = refresh_scope(pending_refresh, entry.id if entry is not None else None, endpoint_url)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.

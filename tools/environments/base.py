@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable
 
+from agent.memory_provider import spawn_context_thread
 from hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
@@ -891,10 +892,29 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
 
     # --- Shared helpers ---
     def __del__(self):
+        # A finalizer runs on whichever thread triggered the collection; in the gateway that is
+        # often the asyncio event loop. A backend that pulls files back on cleanup (``_sync_manager``)
+        # can block there for minutes: sync-back downloads the remote tree and waits on the
+        # profile-wide sync lock, which the idle reaper may hold for its own sync-back. The stalled
+        # loop then misses its liveness probes and the gateway exits 75. Hand that teardown to a
+        # daemon thread so the collecting thread never waits on it; other backends stay inline.
+        # (At interpreter shutdown the thread cannot start; cleanup is then skipped, see #68531.)
+        try:
+            if getattr(self, "_sync_manager", None) is not None:
+                spawn_context_thread(self._finalizer_cleanup,
+                                     name=f"hermes-env-finalize-{getattr(self, '_session_id', '')}").start()
+                return
+            self.cleanup()
+        # health: allow S110 -- a finalizer stays silent: at shutdown even logging may be gone
+        except Exception:  # health: allow BLE001 -- a finalizer must never raise
+            pass
+
+    def _finalizer_cleanup(self) -> None:
+        """``cleanup()`` for a garbage-collected environment, off the collecting thread."""
         try:
             self.cleanup()
         except Exception:
-            pass
+            logger.debug("deferred cleanup of a collected environment failed", exc_info=True)
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         """Rewrite sudo for an askpass helper or a piped password (untouched under NOPASSWD) and

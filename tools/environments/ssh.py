@@ -354,9 +354,13 @@ class SSHEnvironment(BaseEnvironment):
 
     def cleanup(self):
         self.stop_all_processes()
-        if self._sync_manager:
+        # Detach the sync manager before pulling back: a repeated cleanup() (the idle reaper tears
+        # the env down, then garbage collection runs ``__del__`` on the same object) must not
+        # download and re-apply the whole remote tree a second time.
+        sync_manager, self._sync_manager = getattr(self, "_sync_manager", None), None
+        if sync_manager:
             logger.info("SSH: syncing files from sandbox...")
-            self._sync_manager.sync_back()
+            sync_manager.sync_back()
         for socket in self._control_sockets():
             if not socket.exists():
                 continue

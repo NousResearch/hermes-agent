@@ -953,8 +953,8 @@ def _build_compact_banner() -> str:
     bar = "═" * w
     content_width = inner - 2
 
-    line1 = line1[:content_width].ljust(content_width)
-    line2 = version_line[:content_width].ljust(content_width)
+    line1 = _pad_cells(line1, content_width)
+    line2 = _pad_cells(version_line, content_width)
 
     return (
         f"\n[bold {border_color}]╔{bar}╗[/]\n"
@@ -989,6 +989,30 @@ def _clip_cells(text: str, limit: int) -> str:
             break
         out.append(ch)
     return "".join(out) + "…"
+
+
+def _pad_cells(line: str, width: int) -> str:
+    """``line`` padded with spaces to exactly ``width`` terminal cells (clipped when wider).
+
+    Char-based ``ljust`` mis-pads wide text: a 32-char / 45-cell CJK tagline padded to
+    80 chars lands 11 cells past the box border, so banner rows overshoot the terminal.
+    """
+    used = _cells(line)
+    if used >= width:
+        return _clip_cells(line, width)
+    return line + " " * (width - used)
+
+
+def _tail_cells(text: str, limit: int) -> str:
+    """The last ``limit`` terminal cells of ``text`` (char-slicing a CJK tail overshoots)."""
+    out, used = [], 0
+    for ch in reversed(text):
+        w = _cells(ch)
+        if used + w > limit:
+            break
+        out.append(ch)
+        used += w
+    return "".join(reversed(out))
 
 
 def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:

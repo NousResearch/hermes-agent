@@ -43,6 +43,18 @@ def _thinking_prefix() -> str:
     return f"  {t('cli.stream.thinking_label')} "
 
 
+def _prefix_cells() -> int:
+    """Width of ``_thinking_prefix()`` in terminal cells (the ja label is wider in cells than chars)."""
+    from hermes_cli.cli_render import _cells
+    return _cells(_thinking_prefix())
+
+
+def _tail_cells(text: str, limit: int) -> str:
+    """Last ``limit`` terminal cells of ``text`` (see ``cli_render._tail_cells``)."""
+    from hermes_cli.cli_render import _tail_cells as _rc
+    return _rc(text, limit)
+
+
 def _terminal_columns(default: int = 80) -> int:
     try:
         return shutil.get_terminal_size().columns
@@ -125,7 +137,7 @@ class CLIStreamMixin:
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
-        wrap_width = max(30, _terminal_columns() - len(_thinking_prefix()) - 2)
+        wrap_width = max(30, _terminal_columns() - _prefix_cells() - 2)
         paragraphs = []
         for paragraph in re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n")):
             compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
@@ -153,7 +165,7 @@ class CLIStreamMixin:
         buf = getattr(self, "_reasoning_preview_buf", "")
         if not buf:
             return
-        target_width = max(40, _terminal_columns() - len(_thinking_prefix()) - 4)
+        target_width = max(40, _terminal_columns() - _prefix_cells() - 4)
         flush_text = ""
         if force:
             flush_text, buf = buf, ""
@@ -529,7 +541,7 @@ class CLIStreamMixin:
             and not self._in_stream_table
             and not self._stream_buf.lstrip().startswith("|")
             and len(self._stream_buf) >= 80):
-            preview = self._stream_buf[-int(_STREAM_PARTIAL_PREVIEW_LEN):]
+            preview = _tail_cells(self._stream_buf, int(_STREAM_PARTIAL_PREVIEW_LEN))
             cut = preview.find(" ")
             if 0 < cut < len(preview) - 1:
                 preview = preview[cut + 1:]
@@ -814,10 +826,12 @@ class CLIStreamMixin:
             return self._show_tool_progress(event_type, function_name, preview, kwargs.get("percent"))
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_preview_max_len, tool_row_emoji
+            from hermes_cli.cli_render import _clip_cells
             label = preview or function_name
             _pl = get_tool_preview_max_len()
-            if _pl > 0 and len(label) > _pl:
-                label = label[:_pl - 3] + "..."
+            if _pl > 0:
+                # Cell-based clip: a CJK preview sliced by chars overshoots the spinner row.
+                label = _clip_cells(label, _pl)
             self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
             self.__dict__.setdefault("_running_tool_labels", {}).setdefault(function_name, []).append(self._spinner_text)
             self._tool_start_time = time.monotonic()

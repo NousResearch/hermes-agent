@@ -137,7 +137,9 @@ def _core_tool_names() -> frozenset[str]:
 
 # Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
 # their schema; once enabled they stay direct unless the deferral list names them.
-_DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys()
+# Home Assistant's four native tools are a direct control surface for voice/Assist;
+# hiding them behind discovery adds round trips to latency-sensitive requests.
+_DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys() | {"homeassistant"}
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit

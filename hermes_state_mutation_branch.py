@@ -49,28 +49,31 @@ def _child_policy(policy, child, prepared):
             'config_secret_ref': prepared['config_secret_ref']}
 
 
-def branch_in_transaction(db, conn, session_id, payload, prepared=None):
+def parent_receipt(conn, session_id):
+    """``(saved, target)``: the parent's local receipt and the physical session its transcript
+    lives in (after compression, the continuation)."""
     row = conn.execute('SELECT value FROM state_meta WHERE key=?',
                        (POLICY_PREFIX + session_id,)).fetchone()
     if row is None:
         raise RuntimeStoreError('runtime_coordination_required')
     saved = json.loads(row[0])
-    target = validate_local_lineage(conn, saved)
-    require_idle(db, conn, list({session_id, target}))
+    return saved, validate_local_lineage(conn, saved)
+
+
+def publish_child_route(db, conn, saved, target, child, policy):
+    """The child's session row, routing entry and identity under the parent's owning profile;
+    ``(route, entry, parent_row)``. The caller fills its transcript, then
+    :func:`publish_child_receipt`."""
     # Late: the routing entry/key are gateway types (the gateway imports this store at module level).
-    from gateway.session import SessionEntry, SessionSource
+    from gateway.session import SessionEntry, SessionSource, build_session_key
     from gateway.config import Platform
-    from hermes_state_keys import local_identity, profile_from_session_key
-    request_id = prepared['request_id'] if prepared else 'branch:' + uuid.uuid4().hex
-    child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
-    policy = _child_policy(saved['policy'], child, prepared)
+    from gateway.session_lifecycle import _now
+    from hermes_state_keys import profile_from_session_key
     # The child keeps the parent's owning profile: a served secondary's origin names it
     # (``local_source``), and restore compares the stored origin against that exactly.
     source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm',
                            profile=saved['entry']['origin'].get('profile'))
-    from gateway.session import build_session_key
     route = build_session_key(source, profile=profile_from_session_key(saved['route']))
-    from gateway.session_lifecycle import _now
     now = _now()
     entry = SessionEntry(route, child, now, now, origin=source, platform=Platform.LOCAL)
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
@@ -80,6 +83,30 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
         cwd=policy['cwd'], profile_name=parent['profile_name'])
     conn.execute('UPDATE sessions SET session_key=?,chat_id=?,origin_json=?,system_prompt_hash=? WHERE id=?',
                  (route, child, _json(source.to_dict()), parent['system_prompt_hash'], child))
+    return route, entry, parent
+
+
+def publish_child_receipt(conn, saved, session_id, child, route, entry, policy, request_id):
+    """The child's creation receipt and routing row: what restore serves it from."""
+    receipt = dict(profile_id=saved['profile_id'], principal_id=saved['principal_id'],
+                   request_id=request_id, session_id=child, route=route, entry=entry.to_dict(), policy=policy)
+    # The copied policy holds the parent's picks; the child's refresh must keep them as picks, not defaults.
+    # Always written: a receipt without it predates the field, and picks_on reads that one's lineage.
+    from hermes_state_mutation_prepared import picks_on
+    receipt['picks'] = sorted(picks_on(conn, session_id))
+    conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
+                 (route, _json(entry.to_dict()), entry.updated_at.timestamp()))
+    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (POLICY_PREFIX + child, _json(receipt)))
+
+
+def branch_in_transaction(db, conn, session_id, payload, prepared=None):
+    saved, target = parent_receipt(conn, session_id)
+    require_idle(db, conn, list({session_id, target}))
+    from hermes_state_keys import local_identity
+    request_id = prepared['request_id'] if prepared else 'branch:' + uuid.uuid4().hex
+    child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
+    policy = _child_policy(saved['policy'], child, prepared)
+    route, entry, parent = publish_child_route(db, conn, saved, target, child, policy)
     ids, tools = db._tail_rows_after_watermark(conn,
         'SELECT id,tool_calls FROM messages WHERE session_id=? AND active=1 AND id<=? ORDER BY id',
         [target, _branch_boundary(conn, target, payload.get('through_message_id'))])
@@ -92,13 +119,5 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
         # same rule as the legacy TUI /branch, so the child is its own titled sidebar row.
         db._set_session_title_in_transaction(conn, child, lineage_title_on_conn(conn, parent['title'] or 'branch'),
                                              source=db.TITLE_SOURCE_DERIVED)
-    receipt = dict(profile_id=saved['profile_id'], principal_id=saved['principal_id'],
-                   request_id=request_id, session_id=child, route=route, entry=entry.to_dict(), policy=policy)
-    # The copied policy holds the parent's picks; the child's refresh must keep them as picks, not defaults.
-    # Always written: a receipt without it predates the field, and picks_on reads that one's lineage.
-    from hermes_state_mutation_prepared import picks_on
-    receipt['picks'] = sorted(picks_on(conn, session_id))
-    conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
-                 (route, _json(entry.to_dict()), now.timestamp()))
-    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (POLICY_PREFIX + child, _json(receipt)))
+    publish_child_receipt(conn, saved, session_id, child, route, entry, policy, request_id)
     return {session_id}, {'branched_session_id': child, 'copied_messages': len(ids)}

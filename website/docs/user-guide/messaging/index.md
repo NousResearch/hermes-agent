@@ -14,6 +14,10 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](../../integrations/nous-portal.md) subscription bundles all of them.
 :::
 
+:::note Connecting Hermes Desktop
+The messaging gateway is not the backend Hermes Desktop connects to. Desktop talks to a `hermes serve` backend: the app runs its own locally, and the **Remote gateway** connection mode expects the URL of a `hermes serve` backend you run yourself. See [Connecting to a remote backend](../desktop.md#connecting-to-a-remote-backend). Desktop still shows the messaging status of the selected profile, as described below.
+:::
+
 ## Messaging status in Desktop and the dashboard
 
 Messaging status belongs to the selected profile on the selected machine. Credentials

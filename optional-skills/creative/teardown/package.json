@@ -1,0 +1,18 @@
+{
+  "name": "teardown",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An agent skill that builds interactive 3D simulators of real machines and records them to 60 fps video.",
+  "license": "MIT",
+  "scripts": {
+    "setup": "npm install && npx playwright install chromium",
+    "build": "node sims/build.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "esbuild": "0.28.1",
+    "playwright": "1.58.2",
+    "three": "0.186.1"
+  }
+}

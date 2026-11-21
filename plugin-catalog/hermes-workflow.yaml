@@ -1,7 +1,7 @@
 name: hermes-workflow
 title: Workflow Studio
 repo: https://github.com/SaM-0777/hermes-workflows
-sha: be11f2d5b2ecac6859822953458a4b4fd38be79c
+sha: ca137e9c8aaba5c42e7b249d2634938dbc81a721
 description: General-purpose visual workflow studio for designing, running, and iterating on multi-step agent and automation flows inside Hermes Desktop.
 maintainer: SaM-0777
 tier: community
@@ -32,6 +32,8 @@ capabilities:
     - add_workflow_edge
     - remove_workflow_edge
     - request_run_workflow
+    - check_workflow_runtime
+    - setup_workflow_runtime
   provides_hooks:
     - pre_tool_call
   provides_middleware: []

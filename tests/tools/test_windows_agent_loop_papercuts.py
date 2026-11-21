@@ -45,7 +45,7 @@ class TestShellHooksWindowsPaths:
 
     @pytest.mark.platforms("windows")
     def test_command_script_path_keeps_backslashes(self):
-        from agent.shell_hooks import _command_script_path
+        from agent.shell_hooks.consent import _command_script_path
 
         path = _command_script_path(r"C:\hooks\guard.py --strict")
         assert path == r"C:\hooks\guard.py"

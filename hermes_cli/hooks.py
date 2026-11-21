@@ -240,7 +240,7 @@ def _print_run_result(result: dict[str, Any]) -> None:
             text = (result.get(stream) or "").strip()
             if text:
                 print(f"      {stream}: {_truncate(text, 400)}")
-    # run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so it is available even
+    # run_once always sets ``parsed`` (agent/shell_hooks/runner.py::_evaluate_result), so it is available even
     # when the hook errored or timed out. A failing hook's decision is the one thing `hooks test` exists
     # to show — failed-open and failed-closed must not render identically (#115968).
     parsed = result.get("parsed")

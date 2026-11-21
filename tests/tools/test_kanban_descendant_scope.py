@@ -56,13 +56,14 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
     finally:
         terminal.cleanup()
     from agent.skill_preprocessing import run_inline_shell
-    from agent.shell_hooks import ShellHookSpec, _spawn
+    from agent.shell_hooks import ShellHookSpec
+    from agent.shell_hooks.spawn import spawn_hook
     from tools.code_execution_env import _build_child_env
     from tools.mcp_tool_config import _build_safe_env
 
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
     outputs = [result.get("output", ""), run_inline_shell(command, tmp_path, 45),
-               _spawn(ShellHookSpec(event="session:start", command=command, timeout=45), "{}")['stdout']]
+               spawn_hook(ShellHookSpec(event="session:start", command=command, timeout=45), "{}")['stdout']]
     child_envs = [
         _build_child_env(rpc_endpoint="fixture", rpc_token="fixture", tmpdir=str(tmp_path), child_python=sys.executable),
         _build_safe_env({"HERMES_HOME": os.environ["HERMES_HOME"]}),

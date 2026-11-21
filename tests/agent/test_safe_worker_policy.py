@@ -150,9 +150,9 @@ def test_safe_worker_never_discovers_or_invokes_customizations(tmp_path, mode):
         lifecycle._observe = lambda *a, **kw: mark("observer")
         lifecycle.invoke_hook("on_session_start")
         from agent import shell_hooks, outbound_webhooks
-        shell_hooks._spawn = lambda *a: (mark("shell") or {"returncode": 0, "stdout": "", "stderr": "", "error": None, "timed_out": False})
+        shell_hooks.runner.spawn_hook = lambda *a: (mark("shell") or {"returncode": 0, "stdout": "", "stderr": "", "error": None, "timed_out": False})
         outbound_webhooks._enqueue = lambda *a: mark("outbound")
-        shell_hooks._make_callback(shell_hooks.ShellHookSpec(event="on_session_start", command="inert"))()
+        shell_hooks.runner._make_callback(shell_hooks.ShellHookSpec(event="on_session_start", command="inert"))()
         outbound_webhooks._make_callback("on_session_start", outbound_webhooks.WebhookTarget(url="http://127.0.0.1/inert", events=["on_session_start"]))()
         if mode == "safe": assert not reads
         print(json.dumps({"events": events.read_text().splitlines() if events.exists() else [], "reads": reads, "injected": injected is not None}))

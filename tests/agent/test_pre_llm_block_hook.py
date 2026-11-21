@@ -172,4 +172,4 @@ def test_retry_and_undo_after_a_block_resubmit_the_typed_text(provider_url, tmp_
     ('{"context": "today is Friday"}', {"context": "today is Friday"}),
 ])
 def test_shell_hook_pre_llm_call_block_in_both_dialects(stdout, expected):
-    assert shell_hooks._parse_response("pre_llm_call", stdout) == expected
+    assert shell_hooks.wire._parse_response("pre_llm_call", stdout) == expected

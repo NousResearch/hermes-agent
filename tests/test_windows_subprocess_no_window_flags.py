@@ -169,7 +169,7 @@ def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
 
 @pytest.mark.platforms("windows")
 def test_shell_hooks_hide_hook_command_windows(monkeypatch):
-    """``platforms("windows")``: ``shell_hooks._spawn`` only adds ``creationflags``
+    """``platforms("windows")``: ``shell_hooks.spawn.spawn_hook`` only adds ``creationflags``
     under its module-level ``IS_WINDOWS``, so on Linux the flag patch was
     what created the thing being asserted."""
     from agent import shell_hooks
@@ -186,10 +186,10 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
         captured.append((cmd, kwargs))
         return FakeProc()
 
-    monkeypatch.setattr(shell_hooks, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(shell_hooks.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(shell_hooks.spawn, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(shell_hooks.spawn.subprocess, "Popen", fake_popen)
 
-    result = shell_hooks._spawn(
+    result = shell_hooks.spawn.spawn_hook(
         shell_hooks.ShellHookSpec(event="post_tool_call", command="hook-bin --flag"),
         "{}",
     )

@@ -27,7 +27,7 @@ def _approve(home: Path, command: str, approve: bool) -> None:
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(home))
     try:
-        shell_hooks._record_approval("pre_tool_call", command) if approve else shell_hooks.revoke(command)
+        shell_hooks.record_approval("pre_tool_call", command) if approve else shell_hooks.revoke(command)
     finally:
         reset_hermes_home_override(token)
 

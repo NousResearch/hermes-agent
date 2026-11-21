@@ -210,7 +210,7 @@ def test_a_fail_closed_host_hook_neither_runs_nor_blocks_a_hosted_tool(tmp_path)
     marker = tmp_path / "ran"
     spec = shell_hooks.ShellHookSpec(event="pre_tool_call", matcher="terminal", fail_closed=True,
                                      command=f"{shlex.quote(sys.executable)} -c 'open({str(marker)!r}, \"w\")'")
-    callback = shell_hooks._make_callback(spec)
+    callback = shell_hooks.runner._make_callback(spec)
     with bind_state(A):
         assert callback(tool_name="terminal", args={"command": "ls"}) is None
     assert not marker.exists()

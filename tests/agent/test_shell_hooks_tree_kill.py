@@ -1,7 +1,7 @@
 """Process-tree cleanup for timed-out shell hooks (port of openai/codex#37527).
 
 Timing out a shell hook must not leave descendant processes running after the
-hook itself is stopped. ``_spawn`` places the hook in its own process group on
+hook itself is stopped. ``spawn_hook`` places the hook in its own process group on
 POSIX (``process_group=0``) and, on timeout, ``kill_process_tree`` signals the
 whole group — gated on the child actually leading its own group so a
 shared-group spawn can never take down unrelated processes. Hooks that
@@ -21,7 +21,8 @@ import time
 
 import pytest
 
-from agent.shell_hooks import ShellHookSpec, _spawn
+from agent.shell_hooks import ShellHookSpec
+from agent.shell_hooks.spawn import spawn_hook
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX process-group semantics
 
@@ -77,7 +78,7 @@ def test_timeout_kills_descendants(tmp_path):
     script, marker = _write_forking_script(tmp_path, stall_after=True)
 
     t0 = time.monotonic()
-    r = _spawn(_spec(str(script), timeout=1), "{}")
+    r = spawn_hook(_spec(str(script), timeout=1), "{}")
     elapsed = time.monotonic() - t0
 
     assert r["timed_out"] is True
@@ -113,7 +114,7 @@ def test_successful_hook_preserves_detached_helpers(tmp_path):
         )
     )
 
-    r = _spawn(_spec(str(script), timeout=10), "{}")
+    r = spawn_hook(_spec(str(script), timeout=10), "{}")
     assert r["timed_out"] is False
     assert r["returncode"] == 0
 
@@ -131,7 +132,7 @@ def test_hook_child_leads_own_process_group(tmp_path):
     script.write_text("#!/usr/bin/env bash\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\"\n")
     script.chmod(0o755)
 
-    r = _spawn(_spec(str(script), timeout=10), "{}")
+    r = spawn_hook(_spec(str(script), timeout=10), "{}")
     assert r["returncode"] == 0
     pid, pgid = r["stdout"].split()
     assert pid == pgid, f"hook child pid={pid} does not lead its group pgid={pgid}"
@@ -146,7 +147,7 @@ def test_fast_path_contract_unchanged(tmp_path):
     )
     script.chmod(0o755)
 
-    r = _spawn(_spec(str(script), timeout=10), '{"tool_name": "terminal"}')
+    r = spawn_hook(_spec(str(script), timeout=10), '{"tool_name": "terminal"}')
     assert r["returncode"] == 3
     assert r["stdout"] == '{"tool_name": "terminal"}'
     assert "errline" in r["stderr"]
@@ -158,7 +159,7 @@ def test_interrupt_kills_hook_and_propagates(tmp_path):
     """Ctrl+C during a hook must reap the hook, then let KeyboardInterrupt through.
 
     The hook leads its own process group, so the terminal's SIGINT never
-    reaches it: only ``_spawn``'s own cleanup can stop it.
+    reaches it: only ``spawn_hook``'s own cleanup can stop it.
     """
     marker = tmp_path / "hook.pid"
     script = tmp_path / "hook.sh"
@@ -166,7 +167,7 @@ def test_interrupt_kills_hook_and_propagates(tmp_path):
     script.chmod(0o755)
 
     def interrupt_once_running():
-        """Interrupt only once the hook is up, so the signal lands inside _spawn."""
+        """Interrupt only once the hook is up, so the signal lands inside spawn_hook."""
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if marker.exists() and marker.read_text().strip():
@@ -177,7 +178,7 @@ def test_interrupt_kills_hook_and_propagates(tmp_path):
     interrupter = threading.Thread(target=interrupt_once_running, daemon=True)
     interrupter.start()
     with pytest.raises(KeyboardInterrupt):
-        _spawn(_spec(str(script), timeout=300), "{}")
+        spawn_hook(_spec(str(script), timeout=300), "{}")
     interrupter.join(timeout=5)
 
     hook_pid = _read_marker(marker)
@@ -191,6 +192,6 @@ def test_interrupt_kills_hook_and_propagates(tmp_path):
 
 
 def test_missing_command_still_fails_open():
-    r = _spawn(_spec("/nonexistent/hook-command-xyz", timeout=2), "{}")
+    r = spawn_hook(_spec("/nonexistent/hook-command-xyz", timeout=2), "{}")
     assert r["error"] == "command not found"
     assert r["returncode"] is None

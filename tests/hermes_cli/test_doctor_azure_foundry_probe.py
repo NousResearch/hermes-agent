@@ -59,3 +59,17 @@ def test_foundry_base_url_falls_back_to_config_and_404_stays_visible(monkeypatch
     assert calls[0][1] == _AZURE_BASE + "/v1/messages" and res.issues == []
     res, _ = _run_probe(monkeypatch, 404, base_url_in_env=True)
     assert "HTTP 404" in res.lines[0][2]
+
+
+def test_messages_probe_without_configured_model_uses_a_current_model(monkeypatch):
+    """No ``model.default``: the probe falls back to claude-sonnet-4-6, not the retiring claude-sonnet-4-5."""
+    bodies: list = []
+
+    def _post(url, headers=None, params=None, json=None, timeout=None):
+        bodies.append(json)
+        return httpx.Response(200, json={"id": "msg_1"})
+
+    monkeypatch.setattr(httpx, "post", _post)
+    monkeypatch.setattr(dc, "_model_cfg", lambda: {"provider": "azure-foundry", "base_url": _AZURE_BASE})
+    dc._anthropic_messages_probe(_AZURE_BASE, "k")
+    assert bodies[0]["model"] == "claude-sonnet-4-6"

@@ -35,6 +35,8 @@ CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
 DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
+MAX_SESSION_INSTRUCTIONS_LENGTH = 32768
+MAX_SESSION_VOICE_LENGTH = 128
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -144,14 +146,42 @@ def resolve_gpt_live_status() -> dict[str, Any]:
     }
 
 
-def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
+def validate_session_overrides(*, instructions: Optional[str] = None, voice: Optional[str] = None) -> None:
+    """Reject invalid call-local settings before resolving credentials or contacting a provider."""
+    for name, value, limit in (
+        ("instructions", instructions, MAX_SESSION_INSTRUCTIONS_LENGTH),
+        ("voice", voice, MAX_SESSION_VOICE_LENGTH),
+    ):
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"GPT-Live {name} must be a nonblank string")
+        if len(value) > limit:
+            raise ValueError(f"GPT-Live {name} must not exceed {limit} characters")
+    if voice is not None and (voice != voice.strip() or not voice.isprintable()):
+        raise ValueError("GPT-Live voice must be a printable name without surrounding spaces")
+
+
+def build_session_config(
+    history: Optional[list] = None, *, instructions: Optional[str] = None, voice: Optional[str] = None,
+) -> dict[str, Any]:
     """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
-    transport negotiates the audio format, so none is set)."""
+    transport negotiates the audio format, so none is set).
+
+    Call instructions append to the native persona and profile instructions; a call voice
+    replaces the profile voice for this session only. None leaves the profile setting intact.
+    """
+    validate_session_overrides(instructions=instructions, voice=voice)
     live = _live_section()
+    prompt = live_instructions(live)
+    if instructions is not None:
+        prompt = f"{prompt}\n\n{instructions}"
     config: dict[str, Any] = {
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
-        "instructions": live_instructions(live),
-        "audio": {"output": {"voice": str(live.get("voice") or DEFAULT_LIVE_VOICE)}},
+        "instructions": prompt,
+        "audio": {"output": {
+            "voice": voice if voice is not None else str(live.get("voice") or DEFAULT_LIVE_VOICE),
+        }},
         "delegation": {"type": "client"},
     }
     if history:
@@ -159,19 +189,23 @@ def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     return config
 
 
-def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dict[str, Any]:
+def create_webrtc_session(
+    sdp_offer: str, history: Optional[list] = None, *,
+    instructions: Optional[str] = None, voice: Optional[str] = None,
+) -> dict[str, Any]:
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",
-    "sdp": ...}}``. Raises ``ValueError`` for a missing key and ``RuntimeError`` (with the vendor
-    status/detail) for a rejected request.
+    "sdp": ...}}``. Raises ``ValueError`` for invalid call settings or a missing key and
+    ``RuntimeError`` (with the vendor status/detail) for a rejected request.
     """
+    session = build_session_config(history, instructions=instructions, voice=voice)
     live = _live_section()
     api_key, base_url = _resolve_credentials(live)
     if not api_key:
         raise ValueError("GPT-Live needs an OpenAI API key (OPENAI_API_KEY or voice.gpt_live.api_key)")
     body = json.dumps({
-        "session": build_session_config(history),
+        "session": session,
         "transport": {"type": "webrtc", "sdp": sdp_offer},
     }).encode("utf-8")
     req = urllib.request.Request(

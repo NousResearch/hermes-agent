@@ -1244,11 +1244,26 @@ def _cute_scroll(a: dict, _r) -> str:
     return _cute_row(f"{_SCROLL_ARROWS.get(direction, '↓')} ", "scroll", label)
 
 
+def _rubyish_command(cmd: str) -> bool:
+    # 💎 shows instead of 💻 when the terminal call is recognizably Ruby —
+    # mirrors the 🐍 shown for execute_code (Python).
+    stripped = cmd.lstrip()
+    if stripped.startswith("ruby "):
+        return True
+    # version managers, incl. `--` separators and version pins:
+    # `mise exec ruby@3.4 -- script.rb`, `mise x ruby`, `rbenv exec ruby`, ...
+    return bool(
+        re.search(r"(^|[;&|]\s*)ruby\b", cmd)
+        or re.search(r"\b(mise|rbenv|chruby|asdf)\s+(?:exec|x)\s+(?:--\s+)?ruby(?:@[^\s]+)?\b", cmd)
+        or re.search(r"\.rb\b", cmd)
+    )
+
+
 # Completion-line renderers: tool -> f(args, result) -> "┊ {emoji} {verb:9} {detail}" (duration appended by caller).
 _CUTE_LINES = {
     "web_search": lambda a, r: _cute_row("🔍", "search", _cute_trunc(a.get("query", ""))),
     "web_extract": _cute_web_extract,
-    "terminal": lambda a, r: _cute_row("💻", "terminal", _cute_trunc(build_tool_preview("terminal", a) or a.get("command", ""))),
+    "terminal": lambda a, r: _cute_row("💎" if _rubyish_command(str(a.get("command", ""))) else "💻", "terminal", _cute_trunc(build_tool_preview("terminal", a) or a.get("command", ""))),
     "process_manage": _cute_process_manage,
     "read_file": lambda a, r: _cute_row("📖", "read", _cute_trunc(build_tool_preview("read_file", a) or a.get("path", ""))),
     "write_file": lambda a, r: _cute_row("✍️ ", "write", _cute_path(a.get("path", ""))),

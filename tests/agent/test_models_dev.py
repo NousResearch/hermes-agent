@@ -1171,6 +1171,31 @@ class TestModelOverrides:
             ctx = lookup_models_dev_context("anthropic", "model-not-in-catalog")
         assert ctx == 77777
 
+    def test_context_lookup_can_refuse_the_fill_gap_default(self):
+        """A local-first caller needs None on a miss, so a generic _default cannot pass as a catalog answer."""
+        overrides = {
+            "anthropic": {
+                "_default": {"context_window": 77777},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            ctx = lookup_models_dev_context("anthropic", "model-not-in-catalog",
+                                            fill_gap_default=False)
+        assert ctx is None
+
+    def test_context_lookup_fill_gap_flag_keeps_catalog_answers(self):
+        overrides = {
+            "anthropic": {
+                "_default": {"context_window": 1000},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            ctx = lookup_models_dev_context("anthropic", "claude-opus-4-6",
+                                            fill_gap_default=False)
+        assert ctx == 1000000
+
     def test_context_lookup_default_does_not_clamp_catalog(self):
         """_default must not beat a catalog-known model's real context."""
         overrides = {

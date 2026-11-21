@@ -646,11 +646,14 @@ def _extract_context(entry: dict[str, Any]) -> Optional[int]:
     return _extract_limit(entry, "context")
 
 
-def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False) -> Optional[int]:
+def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False,
+                              fill_gap_default: bool = True) -> Optional[int]:
     """Context window in tokens for provider+model, or None if not found. An EXPLICIT ``model_overrides``
     entry wins over the catalog; ``_default`` fills the gap only when the catalog has no answer (the
     self-unblock path for wrong/missing context in models.dev). Catalog entries with context=0 are
     skipped in favour of later candidates. ``allow_network`` defaults to False — runs every turn.
+    ``fill_gap_default=False`` returns None on a catalog miss instead of the ``_default`` value, so a
+    caller can tell a real catalog answer from a generic default before it decides to probe.
 
     See #84482.
     """
@@ -662,7 +665,9 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
         return declared_ctx
     models = _get_provider_models(provider, allow_network=allow_network)
     catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model, provider=provider) if (ctx := _extract_context(entry))), None) if models is not None else None
-    return catalog_ctx if catalog_ctx is not None else _default_override_context(provider)
+    if catalog_ctx is not None:
+        return catalog_ctx
+    return _default_override_context(provider) if fill_gap_default else None
 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers

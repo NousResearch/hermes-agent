@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -153,6 +154,14 @@ def _is_connect_timeout(exc: BaseException) -> bool:
 # Disk L2 for local-endpoint probes so back-to-back CLI cold starts skip the waterfall.
 # Only SUCCESSFUL probes persist (a down server must not pin a negative verdict).
 _LOCAL_PROBE_DISK_TTL_SECONDS = 300.0
+
+# A custom endpoint that answers no context metadata costs the full probe waterfall (two bounded
+# HTTP deadlines, 30 s when the route is dead). The resolved fallback is cached so the next
+# session.create reads it locally instead of paying that waterfall again; the TTL keeps a real
+# endpoint change observable. A day, not an hour: the entry is a fallback for a model the local
+# catalog did not know, and a proxy's window changes rarely.
+# $HERMES_CONTEXT_FALLBACK_TTL_SECONDS overrides it.
+_CONTEXT_FALLBACK_TTL_SECONDS = 86400.0
 
 
 def _cache_file(name: str) -> Path:
@@ -723,8 +732,13 @@ def _localhost_to_ipv4(url: str) -> str:
     return re.sub(r"^(https?://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", url, count=1)
 
 
-def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
-    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
+def detect_local_server_type(base_url: str, api_key: str = "", *, timeout: float = 2.0) -> Optional[str]:
+    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached).
+
+    ``timeout`` bounds each request. A caller that only needs a yes/no before trusting a catalog
+    answer passes a short one: a proxy that answers a 404 header and then stalls the body must not
+    cost the full waterfall.
+    """
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
@@ -757,7 +771,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     )
     result: Optional[str] = None
     try:
-        with httpx.Client(timeout=2.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
+        with httpx.Client(timeout=timeout, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
             for name, urls, check in waterfall:
                 try:
                     for url in urls:
@@ -1126,6 +1140,75 @@ def _load_context_cache() -> dict[str, int]:
 def _context_cache_key(model: str, base_url: str) -> str:
     """Canonical ``model@base_url`` key; trailing slashes stripped so ``/v1`` and ``/v1/`` share one entry."""
     return f"{model}@{(base_url or '').rstrip('/')}"
+
+
+def _context_fallback_ttl_seconds() -> float:
+    """TTL for a resolved fallback (catalog/default) that no live probe confirmed."""
+    try:
+        return max(float(os.environ.get("HERMES_CONTEXT_FALLBACK_TTL_SECONDS", _CONTEXT_FALLBACK_TTL_SECONDS) or 0), 0.0)
+    except (TypeError, ValueError):
+        return _CONTEXT_FALLBACK_TTL_SECONDS
+
+
+def _context_fallback_cache_path() -> Path:
+    return _cache_file("context_fallback.json")
+
+
+def _context_fallback_get(model: str, base_url: str) -> Optional[int]:
+    """A fresh fallback context for this model@base_url, else None.
+
+    Only a fallback (catalog match or the 256K default) is stored here: a live or persisted
+    discovery already wins through the normal cache above, so this memo exists solely to stop
+    re-running a failed probe waterfall inside the TTL.
+    """
+    value = _ttl_memo_get(
+        _context_fallback_cache_path(), _context_cache_key(model, base_url),
+        _context_fallback_ttl_seconds(), ts_key="ts", value_key="value",
+    )
+    return value if type(value) is int and value > 0 else None
+
+
+def _context_fallback_put(model: str, base_url: str, value: int) -> None:
+    if type(value) is not int or value <= 0:
+        return
+    _ttl_memo_put(
+        _context_fallback_cache_path(), _context_cache_key(model, base_url), value,
+        _context_fallback_ttl_seconds(), ts_key="ts", value_key="value",
+        what="context fallback cache",
+    )
+
+
+def _local_catalog_context_length(model: str, provider: str) -> Optional[int]:
+    """A context window from local data only: the models.dev cache/overrides, then the hardcoded table.
+
+    ``fill_gap_default=False`` keeps a generic ``_default`` override out of the answer: only a real
+    catalog entry or an explicit override may short-circuit a live probe, because a default says
+    nothing about this endpoint's runtime window.
+    """
+    if not str(model or "").strip():
+        return None
+    with contextlib.suppress(Exception):
+        from agent.models_dev import lookup_models_dev_context
+        ctx = lookup_models_dev_context(provider, model, allow_network=False, fill_gap_default=False)
+        if ctx and ctx > 0:
+            return ctx
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    return hit[1] if hit else None
+
+
+def _answers_as_local_inference_server(base_url: str, api_key: str) -> bool:
+    """True when the endpoint identifies itself as Ollama / LM Studio / vLLM / llama.cpp.
+
+    A loopback URL alone is not local inference: a proxy bound to 127.0.0.1 (a model router) has
+    no runtime-specific window, so it should take the catalog answer instead of a probe waterfall.
+    """
+    if not is_local_endpoint(base_url):
+        # A public endpoint is not a local inference server: the catalog answer is the local-first
+        # choice, and probing it would reintroduce the startup cost this guard exists to remove.
+        return False
+    with contextlib.suppress(Exception):
+        return detect_local_server_type(base_url, api_key=api_key, timeout=0.5) is not None
+    return False
 
 
 @locked_context_cache
@@ -2047,7 +2130,26 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
 
 
 def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
-    """Steps 2-3 for a truly custom endpoint: /models, local probes, Ollama /api/show, catalog, default."""
+    """Steps 2-3 for a truly custom endpoint: local catalog, fallback memo, /models, local probes,
+    Ollama /api/show, hardcoded catalog, default."""
+    # A known model id answers from local data before the metadata waterfall: session.create must not
+    # pay a 30 s probe for a window the catalog already carries. A local inference server is the
+    # exception — Ollama/vLLM report a runtime-specific window that the catalog cannot know.
+    local_server = _answers_as_local_inference_server(base_url, api_key)
+    if not local_server:
+        local_catalog = _local_catalog_context_length(model, provider)
+        if local_catalog is not None:
+            logger.info("Using local catalog context length %s for model %r at %s (no metadata probe)",
+                        f"{local_catalog:,}", model, base_url)
+            return local_catalog
+    # A failing endpoint just paid the 30 s waterfall on the first session.create; answer the
+    # next one from the local fallback instead of probing a dead route again.
+    # A restarted local model server must supply its runtime window, even if an earlier
+    # unavailable-server attempt left a day-long default fallback in the memo.
+    cached_fallback = None if local_server else _context_fallback_get(model, base_url)
+    if cached_fallback is not None:
+        logger.debug("Using cached context fallback %s for %r at %s", f"{cached_fallback:,}", model, base_url)
+        return cached_fallback
     context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
     if context_length is not None:
         return context_length
@@ -2071,9 +2173,11 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
     if hit:
+        _context_fallback_put(model, base_url, hit[1])
         logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
         return hit[1]
     # Same silent-256K bug class as the step-9 fallback — warn here too.
+    _context_fallback_put(model, base_url, DEFAULT_FALLBACK_CONTEXT)
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 

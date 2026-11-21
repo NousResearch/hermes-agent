@@ -40,6 +40,13 @@ _LAUNCH_HEADROOM = 1 << 30
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
 # app, so budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
+# ...but not twice. A Windows driver for a full unified-memory APU already reports the machine
+# net of its firmware carve-out (a 128 GB Strix Halo adapter: 102 GiB of 127.1 installed, past
+# the same system-RAM gate the unified-pool quirk uses), and WDDM charges every allocation to
+# the commit limit — the guard launch_budget actually reads. Subtracting the UMA headroom a
+# second time refused a 94 GB quant this class of machine serves resident (issue #140507).
+# Adapters that are one slice of a smaller machine (Arc B390: 18 of 31.5) keep the headroom.
+_WDDM_HEADROOM_FRACTION = 0.02
 # llama-server's prompt cache: its own default size, and the smallest worth keeping. The cache holds
 # conversations the server switched away from (a background job, an earlier chat); without it each
 # switch re-reads the whole conversation.
@@ -411,8 +418,9 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
 
 
 def _uma_budget(base: int, total: int, *, gpu_name: str = "",
-                gpu_pci_id: int | None = None, lazy_reads: bool = True) -> HardwareBudget:
-    usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
+                gpu_pci_id: int | None = None, lazy_reads: bool = True,
+                headroom: float = _UMA_HEADROOM_FRACTION) -> HardwareBudget:
+    usable = max(0, int(base * (1 - headroom)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
                           gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
@@ -544,9 +552,17 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         # Windows lets an integrated GPU allocate (18 GB of 31.5 on an Arc B390). llama.cpp loads
         # lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand halved
         # prefill (#28160).
-        pool = min(ram_total, _windows_igpu_bytes(device) or ram_total)
+        igpu = _windows_igpu_bytes(device)
+        pool = min(ram_total, igpu or ram_total)
+        # An adapter covering most of RAM but not all of it (a Strix Halo: 102 GiB of 127.1) is the
+        # machine net of its firmware carve-out, and WDDM charges every allocation to the commit
+        # limit that launch_budget reads live — subtracting the UMA headroom off that number again
+        # refused a 94 GB quant this class of hardware serves resident (#140507).
+        headroom = (_WDDM_HEADROOM_FRACTION
+                    if igpu and int(ram_total * _POOL_RAM_FRACTION) <= igpu < ram_total
+                    else _UMA_HEADROOM_FRACTION)
         return _uma_budget(pool if planning else min(pool, ram_avail), pool,
-                           lazy_reads=gpu_class() not in ("amd", "intel"))
+                           lazy_reads=gpu_class() not in ("amd", "intel"), headroom=headroom)
 
     total, free, gpu_name, gpu_pci_id = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))

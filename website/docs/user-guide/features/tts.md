@@ -289,6 +289,34 @@ tts:
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
 
+### Discord attachment replies
+
+When automatic speech is enabled for a voice-message reply in Discord, Hermes
+sends the complete text first. It then generates audio in a separate worker and
+uploads it as a reply to that text, in the same thread. You can send another
+message while the audio is pending. `/agents` lists pending audio separately
+from active agent turns.
+
+Each Discord adapter allows at most two pending audio jobs across its chats.
+There is no waiting synthesis queue. When both slots are occupied, Hermes keeps
+the text reply and attempts one audio-skipped notice. Audio jobs run concurrently,
+so a later reply's audio can arrive before an earlier reply's audio. Files within
+one reply keep their synthesis order.
+
+Synthesis and upload share a 120-second deadline. A failure or deadline expiry
+keeps the text and attempts one notice anchored to it. The notice has its own
+five-second timeout and is not retried. If some audio files already uploaded,
+Hermes does not retract them. `/stop` cancels pending audio for that conversation,
+even after the text turn finished; session cancellation and gateway shutdown also
+cancel owned jobs and clean their temporary files. Cancellation cannot retract an
+upload Discord already accepted.
+
+This applies to attachment replies, not live Discord voice-channel playback.
+Live playback keeps its audio-before-text ordering. Other platforms and the
+runner's separate global voice-reply path keep their existing behavior. No new
+configuration is required, and the existing automatic-speech enablement rules
+are unchanged.
+
 ### Warm-up and unload via speech toggles (local engines)
 
 Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:

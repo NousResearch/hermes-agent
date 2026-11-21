@@ -36,6 +36,11 @@ export const isMacActionFallback = (
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
 
+/** Human-facing label for an `isAction` shortcut: `Cmd+K` on macOS, `Ctrl+K` elsewhere.
+ *  Hints rendered to the user must use this instead of naming a key, because `Alt+K`
+ *  is not bound on any platform (#148766). */
+export const actionShortcutLabel = (ch: string): string => `${isMac ? 'Cmd' : 'Ctrl'}+${ch.toUpperCase()}`
+
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 

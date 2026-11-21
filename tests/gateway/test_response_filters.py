@@ -35,6 +35,18 @@ def test_prose_mentioning_the_translated_sentinel_is_delivered():
     assert not is_autonomous_silence_response("the lane said 静默 mid-sentence and kept talking")
 
 
+def test_damaged_silence_markers_are_suppressed_without_swallowing_prose():
+    """One missing/swapped letter, stray spacing, invisible chars or a truncated '['."""
+    zwsp = "\u200b"
+    for marker in ("[", "[SLENT]", "[SLIENT]", "[ SILENT ]", f"[{zwsp}SILENT]", "[SİLENT]"):
+        assert is_intentional_silence_response(marker), marker
+        assert is_autonomous_silence_response(marker), marker
+    for text in ("[URGENT]", "[ALERT]", "[SILVER] price moved",
+                 "[SLENT] extra words", "status: [SILENT] was mentioned"):
+        assert not is_intentional_silence_response(text), text
+        assert not is_autonomous_silence_response(text), text
+
+
 def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variants():
     """A Chinese lane emits fullwidth brackets or a trailing ``。``; cron/webhook must suppress
     exactly what the interactive predicate suppresses, or the two lanes drift on the new tokens."""

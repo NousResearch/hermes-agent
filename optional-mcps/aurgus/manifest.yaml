@@ -1,0 +1,50 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aurgus
+description: >
+  Revenue-management controller for Controllers & CFOs — governed close automation
+  under ASC 606/705-20/340-40 with audit-defensible accruals, full lineage, and
+  auditor-ready exports. Free engagement start; real run on your data via OAuth.
+source: https://aurgus.com/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.aurgus.com/api/mcp
+
+auth:
+  type: oauth
+
+# Tool selection at install time:
+# Aurgus exposes 37 tools (5 free + 31 paid-gated). Free tools (begin, help,
+# release_notes, explain, request_real_run, aurgus) are always available.
+# Paid tools require OAuth + tenant. We leave `default_enabled` unset so the
+# install-time checklist starts with everything pre-checked — users prune what
+# they don't want.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - aurgus
+    - rebate
+    - close
+    - "ASC 606"
+    - revenue
+  hosts:
+    - aurgus.com
+    - mcp.aurgus.com
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Aurgus.
+  After auth, restart your Hermes session so the Aurgus tools are loaded.
+
+  Free tools (begin, help, release_notes, explain, request_real_run, aurgus)
+  work immediately without auth. Paid tools require a connected Aurgus account.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure aurgus

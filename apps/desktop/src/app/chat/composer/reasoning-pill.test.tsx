@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { PRIMARY_SESSION_VIEW, type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from '@/app/session/hooks/use-message-stream/utils'
+import { I18nProvider } from '@/i18n'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $activeSessionId,
@@ -52,6 +53,21 @@ afterEach(() => {
 })
 
 describe('ReasoningPill', () => {
+  it('uses the active locale for its visible reasoning level', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="de">
+        <SessionViewProvider value={tileView('high')}>
+          <ReasoningPill disabled={false} model={modelState()} />
+        </SessionViewProvider>
+      </I18nProvider>
+    )
+
+    const pill = screen.getByTestId('reasoning-pill')
+
+    expect(pill.textContent).toBe('Hoch')
+    expect(pill.getAttribute('aria-label')).toBe('Aufwand: Hoch')
+  })
+
   it('shows a clamped pick as what the route sends, never as a distinct level (#61634)', () => {
     // The gateway says this route clamps `ultra` to `max`: compact "Ultra→Max".
     const { unmount } = render(
@@ -169,7 +185,7 @@ describe('ReasoningPill', () => {
         )
       )
     })
-    expect(label()).toBe('Med')
+    expect(label()).toBe('Medium')
   })
 
   it('falls back to the profile default once the runtime reports the session has no pin of its own', () => {

@@ -1,0 +1,26 @@
+name: hermes-emotion
+repo: https://github.com/isKoge/hermes-emotion
+sha: 3cb0576631452533ed35eff4872f2bab7636f238
+description: >-
+  Give Hermes a mood that actually changes. Four axes (affection, security, arousal,
+  dominance) are folded into a deterministic 16-cell grid, each cell one short
+  first-person self-description; the injected block only changes when the cell does,
+  so the prompt prefix stays cache-friendly. When the state jumps, a small one-off
+  model call writes a new sentence group on a background thread and it lands on the
+  next turn — the turn itself is never blocked. Ships its own rule-based engine, so a
+  fresh install produces a changing mood with no configuration and no external score
+  source; `json`/`sqlite`/`manual` modes let another emotion engine feed it instead.
+  Everything stays on the local machine, and an unchanged state produces byte-identical
+  text.
+maintainer: isKoge
+tier: community
+category: general
+docs_url: https://github.com/isKoge/hermes-emotion#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

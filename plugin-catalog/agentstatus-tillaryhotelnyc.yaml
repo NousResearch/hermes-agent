@@ -1,0 +1,19 @@
+name: agentstatus-tillaryhotelnyc
+title: "Tillary hotel"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: ee1858f6ef938dd27fbac336ad181086001b315e
+subdir: plugins/tillaryhotelnyc
+version: "1.0.0"
+description: "Public MCP for Tillary hotel, hosted by AgentStatus at https://tillaryhotelnyc.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://tillaryhotelnyc.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

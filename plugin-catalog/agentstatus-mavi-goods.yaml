@@ -1,0 +1,19 @@
+name: agentstatus-mavi-goods
+title: "Coffee & Cacao, Upgraded | Mavi Goods"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 522e87ffe87c5c4ded8bc7a63bc9e6322c33c805
+subdir: plugins/mavi-goods
+version: "1.0.0"
+description: "Public MCP for Coffee & Cacao, Upgraded | Mavi Goods, hosted by AgentStatus at https://mavi-goods.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://mavi-goods.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

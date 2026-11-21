@@ -1,0 +1,19 @@
+name: agentstatus-the-woolshire
+title: "The Woolshire"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 1ba7da6c8f6d088dfb3d023896e7a73b53772765
+subdir: plugins/the-woolshire
+version: "1.0.0"
+description: "Public MCP for The Woolshire, hosted by AgentStatus at https://the-woolshire.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://the-woolshire.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

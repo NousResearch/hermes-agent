@@ -1,0 +1,19 @@
+name: agentstatus-field-company
+title: "Field Company"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 6c85a50b8c1e34b3bc4931a0e13e50fb32715ddb
+subdir: plugins/field-company
+version: "1.0.0"
+description: "Public MCP for Field Company, hosted by AgentStatus at https://field-company.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://field-company.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

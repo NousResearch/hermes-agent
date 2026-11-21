@@ -1,0 +1,19 @@
+name: agentstatus-gorilla-mind
+title: "Gorilla Mind"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: dd48ff632d3cee3717825aace76ddae34f33e848
+subdir: plugins/gorilla-mind
+version: "1.0.0"
+description: "Public MCP for Gorilla Mind, hosted by AgentStatus at https://gorilla-mind.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://gorilla-mind.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

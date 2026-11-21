@@ -1,0 +1,19 @@
+name: agentstatus-brooklynhotel-nyc
+title: "Brooklyn Hotels | Luxury NYC Hotels | The Brooklyn Hotel"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 5b5638292dcb31d77f53f6edfa4cc827f9ca4b1e
+subdir: plugins/brooklynhotel-nyc
+version: "1.0.0"
+description: "Public MCP for Brooklyn Hotels | Luxury NYC Hotels | The Brooklyn Hotel, hosted by AgentStatus at https://brooklynhotel-nyc.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://brooklynhotel-nyc.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,19 @@
+name: agentstatus-erda-organic
+title: "ERDA Organic"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: cad9ff2bdf6eb6b2c02ad1d467be35e65016cf48
+subdir: plugins/erda-organic
+version: "1.0.0"
+description: "Public MCP for ERDA Organic, hosted by AgentStatus at https://erda-organic.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://erda-organic.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

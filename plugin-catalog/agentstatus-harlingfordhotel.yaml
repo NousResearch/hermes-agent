@@ -1,0 +1,19 @@
+name: agentstatus-harlingfordhotel
+title: "The Harlingford - Harlingford Hotel London"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 6b5200c1b30f023e65978242daa40aabbf32b7f3
+subdir: plugins/harlingfordhotel
+version: "1.0.0"
+description: "Public MCP for The Harlingford - Harlingford Hotel London, hosted by AgentStatus at https://harlingfordhotel.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://harlingfordhotel.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

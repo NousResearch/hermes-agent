@@ -1,0 +1,19 @@
+name: agentstatus-primethorpepaving
+title: "primethorpepaving.co.uk"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 7109accd429808698ad2801f0a49a8c3c5c52047
+subdir: plugins/primethorpepaving
+version: "1.0.0"
+description: "Public MCP for primethorpepaving.co.uk, hosted by AgentStatus at https://primethorpepaving.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://primethorpepaving.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

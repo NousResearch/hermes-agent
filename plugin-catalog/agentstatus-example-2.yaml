@@ -1,0 +1,19 @@
+name: agentstatus-example-2
+title: "Example Domain"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 3cb12e346210c2705869664664accd2d3d4558a0
+subdir: plugins/example-2
+version: "1.0.0"
+description: "Public MCP for Example Domain, hosted by AgentStatus at https://example-2.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://example-2.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

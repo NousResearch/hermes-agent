@@ -704,6 +704,7 @@ profile and never shares with the default or any sibling:
 | Kanban workers and notifications for a profile's tasks | The assignee's `.env` + `config.yaml` (toolset pin, terminal backend, media policy, display language) | — |
 | `/loop` ticks, `background_process_notifications` gate, `notice_delivery`, background-process checkpoint recovery | The owning profile's `state.db` / `config.yaml` / `processes.json` | — |
 | Reply streaming (`streaming:` block: `enabled`, `transport`, edit pacing, cursor; also the `gateway.streaming` spelling) | The served profile's own `config.yaml`, loaded once at gateway start | The streaming default (off) — a profile with no `streaming:` block does not stream because the default profile does; enable it with `hermes -p <name> config set streaming.enabled true` |
+| Media caches (TTS replies and inbound audio in `cache/audio`, images, documents, videos, screenshots, tool-result spillover) and their hourly prune of files older than 24 hours | The profile's own home | — |
 
 What is **shared** by design: the process, its PID/lock and `gateway_state.json`
 (default home), the one HTTP listener, and the `profile_routes` table (declared

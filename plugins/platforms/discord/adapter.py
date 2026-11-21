@@ -1177,6 +1177,7 @@ from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
 from plugins.platforms.discord.adapter_command_sync import DiscordCommandSyncMixin, app_command_scopes
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
+from plugins.platforms.discord.adapter_thread_mention_gate import drops_unaddressed_thread_mention as _drops_unaddressed_thread_mention
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
@@ -1688,13 +1689,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                # A thread the bot joined is not someone else's conversation, and the other two
-                # ingress paths already exempt it: _dispatch_recovered_message() and
-                # _handle_message(). Admission runs on both and can veto what they admit, so
-                # without this a third-party mention in a bot thread is dropped here even though
-                # the same message with no mention at all is admitted. ``thread_require_mention``
-                # still gates multi-bot threads, inside _in_bot_thread().
-                if not self._in_bot_thread(message):
+                # A thread the bot joined is not someone else's conversation, and the other two ingress paths
+                # (_dispatch_recovered_message, _handle_message) already exempt it — so without the bot-thread
+                # arm a third-party mention there is dropped while the same message with no mention is admitted.
+                # thread_ignore_no_mention opts into that drop inside threads too (#142739); the predicate and its
+                # free-response / strict-mode exemptions live in adapter_thread_mention_gate.
+                if _drops_unaddressed_thread_mention(self, message) or not self._in_bot_thread(message):
                     parent_id = None
                     if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                         parent_id = str(message.channel.parent_id)
@@ -1706,7 +1706,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                         # tell it apart from the gateway never receiving the event.
                         logger.debug(
                             "[%s] admission: dropping message %s — mentions others, not self, "
-                            "not a bot thread, channel not free-response",
+                            "no free-response channel (or a bot thread with thread_ignore_no_mention)",
                             self.name, getattr(message, "id", "?"))
                         return False, False
         return True, role_authorized

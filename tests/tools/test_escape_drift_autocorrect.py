@@ -3,6 +3,9 @@
 Contract: a verified doubled anchor is corrected only for a backslash-free replacement;
 replacement backslashes require a clean resend and leave the file unchanged. Quote
 correction retains its separate checks, and ``note`` reports when a correction fired.
+A correction whose uncorrected anchor still matches through an escape-preserving
+strategy stands down: the file's genuinely escaped occurrence keeps the strategy
+chain's match/ambiguity semantics (#137428).
 """
 
 import json
@@ -192,3 +195,69 @@ class TestPatchEndToEnd:
         assert r["success"] is True
         assert r.get("note") is None
         assert f.read_text() == content.replace(old, new)
+
+
+# A file can hold the genuinely escaped anchor (whitespace drifted) and the
+# de-escaped text elsewhere: the correction must not silently prefer the
+# de-escaped occurrence, and the chain's ambiguity refusal must survive (#137428).
+_COMPETING_ESCAPED_ANCHOR = (
+    "def escaped():\n"
+    + r'    pattern  = r"\\d+"'
+    + "\n"
+    + "def plain():\n"
+    + r'    pattern = r"\d+"'
+    + "\n",
+    r'pattern = r"\\d+"',
+    "pattern = None",
+)
+
+
+def test_competing_escaped_occurrence_wins_over_correction():
+    from tools.fuzzy_match import fuzzy_find_and_replace
+
+    content, old, new = _COMPETING_ESCAPED_ANCHOR
+    out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+    assert err is None
+    assert count == 1 and strategy == "whitespace_normalized"
+    assert (
+        out
+        == "def escaped():\n    pattern = None\ndef plain():\n"
+        + r'    pattern = r"\d+"'
+        + "\n"
+    )
+
+
+def test_two_competing_escaped_occurrences_stay_ambiguous():
+    from tools.fuzzy_match import fuzzy_find_and_replace
+
+    content = (
+        "def e1():\n"
+        + r'    pattern  = r"\\d+"'
+        + "\n"
+        + "def e2():\n"
+        + r'    pattern   = r"\\d+"'
+        + "\n"
+        + "def plain():\n"
+        + r'    pattern = r"\d+"'
+        + "\n"
+    )
+    out, count, _strategy, err = fuzzy_find_and_replace(
+        content, _COMPETING_ESCAPED_ANCHOR[1], _COMPETING_ESCAPED_ANCHOR[2]
+    )
+    assert count == 0 and out == content
+    assert err is not None and err.startswith("Found 2 matches")
+
+
+def test_de_escaped_occurrence_is_not_edited_through_patch_tool(workdir):
+    content, old, new = _COMPETING_ESCAPED_ANCHOR
+    f = workdir / "g.py"
+    f.write_text(content)
+    r = _patch_tool(path=str(f), old_string=old, new_string=new, task_id="t-drift")
+    assert r["success"] is True
+    assert r.get("note") is None
+    assert (
+        f.read_text()
+        == "def escaped():\n    pattern = None\ndef plain():\n"
+        + r'    pattern = r"\d+"'
+        + "\n"
+    )

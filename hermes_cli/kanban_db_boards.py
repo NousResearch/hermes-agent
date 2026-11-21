@@ -189,9 +189,18 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
             project_id=prior_meta.get("project_id"),
             archived=True,
         )
+        # Scratch beside the home (``default_workspaces_root``) stays put on
+        # archive: task rows in the archived DB still point at it. Only a hard
+        # delete removes it, so re-creating the slug reuses that folder and a
+        # later hard delete of the new board clears both boards' scratch.
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     import shutil
     shutil.rmtree(d)
+    # The default scratch root lives outside the board dir, so delete it with
+    # the board. Never ``workspaces_root()``: a pin there names another root.
+    scratch_root = _kb.default_workspaces_root(normed)
+    if scratch_root.is_dir() and not scratch_root.is_symlink():
+        shutil.rmtree(scratch_root)
     return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

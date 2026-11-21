@@ -91,6 +91,14 @@ function showChat(stored = 'stored-1', runtime = 'rt-1') {
   $sessionStates.set({ [runtime]: createClientSessionState(stored) })
 }
 
+/** A host that can show notifications; resolves once main's answer is known. */
+function notifyingHost() {
+  const supported = Promise.resolve(true)
+  window.hermesDesktop = { notify: vi.fn(async () => true), notifySupported: () => supported } as never
+
+  return supported
+}
+
 const reports = (socket: Sock) => socket.sent.filter(frame => frame.method === 'client.activity').map(frame => frame.params!)
 
 let stop: (() => void) | null = null
@@ -117,6 +125,7 @@ afterEach(() => {
   $layoutTree.set(null)
   forgetSessionOwnerHintsForConnection('conn-a')
   window.location.hash = ''
+  delete (window as { hermesDesktop?: unknown }).hermesDesktop
   delete document.documentElement.dataset.hermesDesktopHost
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -220,8 +229,10 @@ describe('a reply counts as on screen only while the main chat is the tab in fro
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     $layoutTree.set(zone('session-tile:stored-2'))
     showChat()
+    const known = notifyingHost()
 
     stop = startPresenceReporter()
+    await known
     document.dispatchEvent(new Event('keydown'))
     await settle()
 
@@ -291,6 +302,7 @@ describe('can_alert by notification uses the check that sends the notification',
     const { gateway, socket } = await openGateway()
     $gateway.set(gateway)
     showChat()
+    notifyingHost()
 
     stop = startPresenceReporter()
     document.dispatchEvent(new Event('keydown'))

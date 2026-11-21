@@ -306,6 +306,9 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      /** Whether main can show an OS notification at all (`hermes:notify` answers false when not). Missing
+       *  on an older preload and in a browser. */
+      notifySupported?: () => Promise<boolean>
       /** Launch -> ready ms for the first caller per app launch, null afterwards. Absent on older shells. */
       claimStartupLatency?: () => Promise<null | number>
       requestMicrophoneAccess: () => Promise<boolean>

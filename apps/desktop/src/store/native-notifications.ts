@@ -232,13 +232,39 @@ function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotifi
   return prefs.enabled && prefs.kinds[kind] && !withinNativeNotifyBaseline() && shouldFire(kind, sessionId, global)
 }
 
-/** Whether this client's turn-done notification for `sessionId` would reach the user if the turn
- *  ended now: dispatch's own guards, and in a browser the live permission the browser bridge checks.
- *  The throttle is not predicted (asking must not spend it). */
+// Main's answer to whether it can show an OS notification, asked once per window (bridge); absent
+// until it arrives.
+const hostNotifySupported = new WeakMap<NonNullable<Window['hermesDesktop']>, boolean>()
+
+/** Whether the host could show a notification handed to it now. Not known yet counts as no. */
+function hostCanNotify(): boolean {
+  const bridge = window.hermesDesktop
+
+  if (!bridge?.notify) {
+    return false
+  }
+
+  if (isBrowserHostedDesktop()) {
+    return browserNotificationsAllowed()
+  }
+
+  if (!hostNotifySupported.has(bridge)) {
+    hostNotifySupported.set(bridge, false)
+    bridge.notifySupported?.().then(
+      supported => hostNotifySupported.set(bridge, supported === true),
+      () => undefined
+    )
+  }
+
+  return hostNotifySupported.get(bridge) === true
+}
+
+/** Whether this client's turn-done notification for `sessionId` passes every guard dispatch applies
+ *  before handing it to the host, and the host could show it: in a browser the live permission the
+ *  browser bridge checks, on Desktop main's OS notification support. The dispatch throttle is not
+ *  predicted (asking must not spend it), nor whether the OS then displays it. */
 export function turnDoneNotificationWouldFire(sessionId: string): boolean {
-  return (
-    nativeNotificationPasses({ kind: 'turnDone', sessionId }) && (!isBrowserHostedDesktop() || browserNotificationsAllowed())
-  )
+  return nativeNotificationPasses({ kind: 'turnDone', sessionId }) && hostCanNotify()
 }
 
 /** Returns true when the notification passed every guard and was handed to the

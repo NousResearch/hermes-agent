@@ -58,8 +58,9 @@ const cases = [
 describe('turnDoneNotificationWouldFire', () => {
   it.each(cases)(
     'Desktop: enabled %s, turnDone %s, quiet %s, focused %s, hidden %s, active %s agrees with dispatch',
-    (enabled, turnDone, quiet, focused, hidden, active) => {
-      desktopWindow.hermesDesktop = { notify: vi.fn(async () => true) } as unknown as Window['hermesDesktop']
+    async (enabled, turnDone, quiet, focused, hidden, active) => {
+      const supported = Promise.resolve(true)
+      desktopWindow.hermesDesktop = { notify: vi.fn(async () => true), notifySupported: () => supported } as unknown as Window['hermesDesktop']
       const sessionId = `session-${(counter += 1)}`
       setNativeNotifyEnabled(enabled)
       setNativeNotifyKind('turnDone', turnDone)
@@ -70,11 +71,47 @@ describe('turnDoneNotificationWouldFire', () => {
         markNativeNotifyBaseline()
       }
 
+      // Main's answer arrives once per window; ask once so it is known.
+      turnDoneNotificationWouldFire(sessionId)
+      await supported
       const predicted = turnDoneNotificationWouldFire(sessionId)
 
       expect(dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })).toBe(predicted)
     }
   )
+
+  it.each([
+    ['supported', true],
+    ['unsupported', false],
+    ['not known yet', false]
+  ] as const)('Desktop: host notifications %s -> %s', async (state, expected) => {
+    let answer = (_supported: boolean) => undefined as void
+    const reply = new Promise<boolean>(resolve => (answer = resolve))
+    const notifySupported = vi.fn(() => reply)
+    desktopWindow.hermesDesktop = { notify: vi.fn(async () => true), notifySupported } as unknown as Window['hermesDesktop']
+    const sessionId = `session-${(counter += 1)}`
+    setActiveSessionId(sessionId)
+    setWindow({ focused: false, hidden: true })
+
+    turnDoneNotificationWouldFire(sessionId)
+
+    if (state !== 'not known yet') {
+      answer(state === 'supported')
+      await reply
+    }
+
+    expect(turnDoneNotificationWouldFire(sessionId)).toBe(expected)
+    // Asked once per window, not once per prediction.
+    expect(notifySupported).toHaveBeenCalledTimes(1)
+  })
+
+  it('without a bridge nothing can show the notification', () => {
+    const sessionId = `session-${(counter += 1)}`
+    setActiveSessionId(sessionId)
+    setWindow({ focused: false, hidden: true })
+
+    expect(turnDoneNotificationWouldFire(sessionId)).toBe(false)
+  })
 
   it.each(['granted', 'denied', 'default'] as const)('Webapp: live permission %s agrees with what the browser shows', permission => {
     document.documentElement.dataset.hermesDesktopHost = 'browser'

@@ -396,6 +396,7 @@ describe('can_alert from this window', () => {
   ] as const
 
   afterEach(() => {
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
     delete document.documentElement.dataset.hermesDesktopHost
     vi.unstubAllGlobals()
     window.location.hash = ''
@@ -426,7 +427,11 @@ describe('can_alert from this window', () => {
     $selectedStoredSessionId.set('stored-1')
     $activeSessionId.set('s1')
     $sessionStates.set({ s1: createClientSessionState('stored-1') })
+    // The host can show notifications (Desktop: main says so; a browser asks its permission).
+    const supported = Promise.resolve(true)
+    window.hermesDesktop = { notify: vi.fn(async () => true), notifySupported: () => supported } as never
     const stop = startPresenceReporter()
+    await supported
 
     document.dispatchEvent(new Event('pointerdown'))
     await vi.advanceTimersByTimeAsync(0)

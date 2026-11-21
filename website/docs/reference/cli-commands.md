@@ -718,6 +718,7 @@ hermes auth                                              # Interactive wizard
 hermes auth list                                         # Show all pools
 hermes auth list openrouter                              # Show specific provider
 hermes auth add openrouter --api-key sk-or-v1-xxx        # Add API key
+hermes auth add openrouter --api-key sk-or-v1-xxx --no-verify  # Store without the live key check (offline/CI)
 hermes auth add openrouter --type oauth                  # Browser login (OpenRouter PKCE) mints a key for you
 hermes auth add anthropic --type oauth                   # Add OAuth credential
 hermes auth add openai-codex --type oauth --priority 0   # Add an account and try it first
@@ -730,6 +731,17 @@ hermes auth refresh openai-codex work                    # Refresh one OAuth cre
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
 ```
+
+`hermes auth add` with an API key makes one cheap authenticated call to the provider (`GET /models`, or the provider's key endpoint where `/models` is public) with a 10-second timeout before storing it:
+
+| Provider answer | Result |
+|---|---|
+| Accepted | Stored; prints `Verified` (and the detected mode where it matters, e.g. Anthropic Console API key vs OAuth token). |
+| 401 / 403 (rejected key) | Nothing stored; prints the provider's message and exits non-zero. |
+| 402 / out of credit | Stored but marked exhausted with a warning; `hermes auth reset <provider>` once funded. |
+| Network error, timeout, or no authenticated endpoint (e.g. Nous Portal, whose `/models` is public) | Stored with an `unverified` warning. |
+
+`--no-verify` skips the check for offline or CI use.
 
 Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, `logout`. Spotify login moved to the `spotify` catalog plugin's `hermes spotify login`. When called with no subcommand, launches the interactive management wizard.
 

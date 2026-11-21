@@ -13,7 +13,7 @@ from typing import Any, Callable
 import uuid
 
 from agent.credential_pool import (
-    AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
+    AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, FAILURE_REASON_BILLING, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
@@ -21,6 +21,7 @@ from agent.credential_pool import (
 from agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth_verify import KeyCheck, KeyCheckOutcome, verify_api_key
 from hermes_cli.auth_plugin_providers import (
     canonical_registry_rows, dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
@@ -132,6 +133,17 @@ def _provider_base_url(provider: str) -> str:
         return str(configured.get("base_url") or "").strip()
     pconfig = PROVIDER_REGISTRY.get(provider)
     return pconfig.inference_base_url if pconfig else ""
+
+
+def _provider_api_mode(provider: str) -> str:
+    """The configured transport of a ``providers:`` / ``custom_providers`` entry (canonical), else ""."""
+    from hermes_cli.config_providers import _canonical_api_mode
+    if provider.startswith(CUSTOM_POOL_PREFIX):
+        from agent.credential_pool import _get_custom_provider_config
+        entry = _get_custom_provider_config(provider) or {}
+    else:
+        entry = _configured_provider_entry(provider) or {}
+    return _canonical_api_mode(str(entry.get("api_mode") or entry.get("transport") or "")).lower()
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
@@ -382,12 +394,51 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
     if not label and sys.stdin.isatty():
         label = line_input(f"Label (optional, default: {default_label}): ").strip()
     label = label or default_label
+    base_url = _provider_base_url(provider)
+    check = None if getattr(args, "no_verify", False) else _verify_before_storing(provider, token, base_url)
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_API_KEY,
-        priority=0, source=SOURCE_MANUAL, access_token=token, base_url=_provider_base_url(provider))
+        priority=0, source=SOURCE_MANUAL, access_token=token, base_url=base_url,
+        **_billing_status_fields(check))
     entry = pool.add_entry(entry)
     print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
+    _report_key_check(provider, check)
     return entry
+
+
+def _verify_before_storing(provider: str, token: str, base_url: str) -> KeyCheck:
+    """One live call with the pasted key; a key the provider rejects is never stored."""
+    print(f"Checking the key with {provider}...", flush=True)
+    check = verify_api_key(provider, token, base_url, api_mode=_provider_api_mode(provider))
+    if check.outcome is KeyCheckOutcome.REJECTED:
+        mode = f" ({check.auth_mode})" if check.auth_mode else ""
+        raise SystemExit(
+            f"{provider} rejected this key{mode}: HTTP {check.status_code}: {check.detail}\n"
+            "Nothing was stored. Check the key, or pass --no-verify to store it without checking.")
+    return check
+
+
+def _billing_status_fields(check: KeyCheck | None) -> dict:
+    """Pool status for a key that authenticates but has no credit: benched until it's funded."""
+    if check is None or check.outcome is not KeyCheckOutcome.BILLING:
+        return {}
+    return {"last_status": STATUS_EXHAUSTED, "last_status_at": time.time(), "last_error_code": check.status_code,
+            "last_error_message": check.detail, "extra": {"failure_reason": FAILURE_REASON_BILLING}}
+
+
+def _report_key_check(provider: str, check: KeyCheck | None) -> None:
+    if check is None:
+        print("  Key not checked (--no-verify).")
+        return
+    mode = f" as {check.auth_mode}" if check.auth_mode else ""
+    if check.outcome is KeyCheckOutcome.OK:
+        print(f"  Verified: {provider} accepted the key{mode}.")
+    elif check.outcome is KeyCheckOutcome.BILLING:
+        print(f"  warning: {provider} accepted the key{mode} but reports no usable credit "
+              f"(HTTP {check.status_code}: {check.detail}). Marked exhausted; "
+              f"run `hermes auth reset {provider}` once the account is funded.", file=sys.stderr)
+    else:
+        print(f"  warning: key stored unverified: {check.detail}.", file=sys.stderr)
 
 
 def auth_add_command(args) -> None:

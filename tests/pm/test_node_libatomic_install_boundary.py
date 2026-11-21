@@ -117,3 +117,48 @@ def test_update_completion_installs_before_detaching(monkeypatch):
     _kind, argv, kw = calls[0]
     assert "install_before_lock" in " ".join(argv)
     assert "start_new_session" not in kw and kw.get("check") is False
+
+
+@pytest.mark.platforms("posix")
+def test_staged_repair_diagnoses_old_libstdcxx_without_touching_host(tmp_path, monkeypatch):
+    """Regression for #137491: when the staged Node binary fails on missing C++
+    ABI symbols (host libstdc++ older than the build's), the repair must NOT
+    attempt an unattended system-library upgrade. It diagnoses with an
+    actionable remedy instead, and never shells out to a package manager."""
+    node = tmp_path / "bin" / "node"
+    _node_script(
+        node,
+        "#!/bin/sh\n"
+        'echo "bin/node: _ZNSt5ctypeIcE2idE: symbol not found" >&2\n'
+        'echo "Error relocating bin/node: _ZNSt5ctypeIcE2idE: symbol not found" >&2\n'
+        "exit 127\n",
+    )
+    monkeypatch.setattr("pm.packages.current_target", lambda: "linux-x64")
+
+    package = Nodejs()
+    reason = package.verify(tmp_path, "linux-x64")
+    assert "symbol not found" in reason
+
+    def no_exec(*args, **kwargs):
+        raise AssertionError("repair must not exec anything for a libstdc++ failure")
+
+    monkeypatch.setattr("pm.packages.subprocess.run", no_exec)
+    kept_reason, remedy = package.repair_staged_verification(tmp_path, "linux-x64", reason)
+
+    assert kept_reason == reason  # unrepaired: the install still fails, loudly
+    assert "libstdc++" in remedy
+    assert "symbol" in remedy
+
+
+@pytest.mark.platforms("posix")
+def test_staged_repair_ignores_unrelated_probe_failures(tmp_path, monkeypatch):
+    """A --version probe failure with no loader-symptom must pass through
+    repair untouched (no invented remedy)."""
+    node = tmp_path / "bin" / "node"
+    _node_script(node, "#!/bin/sh\necho 'node: bad option' >&2\nexit 9\n")
+    monkeypatch.setattr("pm.packages.current_target", lambda: "linux-x64")
+
+    package = Nodejs()
+    reason = package.verify(tmp_path, "linux-x64")
+    assert reason
+    assert package.repair_staged_verification(tmp_path, "linux-x64", reason) == (reason, "")

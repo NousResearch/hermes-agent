@@ -44,10 +44,10 @@ function scaleOf(img: HTMLElement): number {
   return match ? parseFloat(match[1]) : 1
 }
 
-function translateX(img: HTMLElement): number {
-  const match = img.style.transform.match(/translate\(([-0-9.]+)px/)
+function translationOf(img: HTMLElement) {
+  const [, x = '0', y = '0'] = img.style.transform.match(/translate\(([-0-9.]+)px, ([-0-9.]+)px\)/) ?? []
 
-  return match ? parseFloat(match[1]) : 0
+  return { x: Number(x), y: Number(y) }
 }
 
 function percentageText(): string {
@@ -124,7 +124,128 @@ describe('ZoomableImage lightbox', () => {
     })
 
     expect(preventDefault).toHaveBeenCalled()
+    expect(scaleOf(img)).toBeCloseTo(Math.exp(0.2), 8)
+    expect(translationOf(img).x).toBeCloseTo((1 - scaleOf(img)) * 10)
+  })
+
+  it('keeps the same image point under the cursor across repeated off-center wheel updates', async () => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+    const bounds = new DOMRect(80, 70, 400, 300)
+    const clientX = 380
+    const clientY = 170
+    vi.spyOn(img.parentElement!, 'getBoundingClientRect').mockReturnValue(bounds)
+    // jsdom has no layout; model the transformed image bounds the browser would report after each commit.
+    vi.spyOn(img, 'getBoundingClientRect').mockImplementation(() => {
+      const { x, y } = translationOf(img)
+      const width = bounds.width * scaleOf(img)
+      const height = bounds.height * scaleOf(img)
+
+      return new DOMRect(
+        bounds.x + (bounds.width - width) / 2 + x,
+        bounds.y + (bounds.height - height) / 2 + y,
+        width,
+        height
+      )
+    })
+
+    for (let i = 0; i < 5; i++) {
+      await act(async () => fireEvent.wheel(img, { clientX, clientY, deltaY: -100 }))
+      const rect = img.getBoundingClientRect()
+      expect((clientX - rect.left) / rect.width).toBeCloseTo(0.75, 8)
+      expect((clientY - rect.top) / rect.height).toBeCloseTo(1 / 3, 8)
+    }
+
+    expect(scaleOf(img)).toBeCloseTo(Math.E, 8)
+  })
+
+  it('maps a 2× trackpad pinch to 200% and preserves smart zoom reset', async () => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+    const deltaY = (-100 * Math.log(2)) / 4
+
+    for (let i = 0; i < 4; i++) {
+      await act(async () => fireEvent.wheel(img, { ctrlKey: true, deltaMode: WheelEvent.DOM_DELTA_PIXEL, deltaY }))
+    }
+
+    expect(scaleOf(img)).toBeCloseTo(2, 8)
+    expect(percentageText()).toBe('200%')
+
+    await act(async () => fireEvent.wheel(img, { ctrlKey: true, deltaX: 0, deltaY: 0 }))
+    expect(percentageText()).toBe('100%')
+  })
+
+  it.each(['keyup', 'window blur'])('uses ordinary wheel zoom with Control held until %s', async release => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+
+    const wheel = (deltaY: number) =>
+      fireEvent.wheel(img, { ctrlKey: true, deltaMode: WheelEvent.DOM_DELTA_PIXEL, deltaY })
+
+    fireEvent.keyDown(img, { key: 'Control', ctrlKey: true })
+    await act(async () => wheel(-100))
+    expect(scaleOf(img)).toBeCloseTo(Math.exp(0.2), 8)
+
+    if (release === 'keyup') {
+      fireEvent.keyUp(img, { key: 'Control' })
+    } else {
+      fireEvent.blur(globalThis.window)
+    }
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /reset/i })))
+    await act(async () => wheel(-100 * Math.log(2)))
+    expect(percentageText()).toBe('200%')
+  })
+
+  it('makes small trackpad deltas add up to the same zoom as one larger delta', async () => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+    const wheel = (deltaY: number) => fireEvent.wheel(img, { deltaY })
+
+    await act(async () => wheel(-5))
     expect(scaleOf(img)).toBeGreaterThan(1)
+    expect(scaleOf(img)).toBeLessThan(1.05)
+
+    await act(async () => {
+      for (let i = 0; i < 7; i++) {
+        wheel(-5)
+      }
+    })
+    const trackpadScale = scaleOf(img)
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /reset/i })))
+    await act(async () => wheel(-40))
+    expect(scaleOf(img)).toBeCloseTo(trackpadScale, 8)
+  })
+
+  it('releases the zoom layer after the last gesture update without resetting the view', async () => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+    vi.useFakeTimers()
+
+    try {
+      await act(async () => fireEvent.wheel(img, { deltaY: -20 }))
+      expect(img.style.willChange).toBe('transform')
+
+      await act(async () => vi.advanceTimersByTime(100))
+      await act(async () => fireEvent.wheel(img, { deltaY: -20 }))
+      const scale = scaleOf(img)
+
+      await act(async () => vi.advanceTimersByTime(100))
+      expect(img.style.willChange).toBe('transform')
+
+      await act(async () => vi.advanceTimersByTime(100))
+      expect(img.style.willChange).toBe('')
+      expect(scaleOf(img)).toBe(scale)
+      expect(scale).toBeGreaterThan(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('zoom buttons update the zoom percentage', async () => {
@@ -172,7 +293,7 @@ describe('ZoomableImage lightbox', () => {
       fireEvent.pointerUp(img, { clientX: 60, clientY: 10, pointerId: 1 })
     })
 
-    expect(translateX(img)).not.toBe(0)
+    expect(translationOf(img).x).not.toBe(0)
     // A pan must NOT close the lightbox.
     expect(screen.getByRole('dialog')).toBeTruthy()
   })
@@ -251,7 +372,7 @@ describe('ZoomableImage lightbox', () => {
 
     // Scale is unchanged (no pinch zoom), and the image panned the expected 60px.
     expect(scaleOf(img)).toBeCloseTo(1.25, 5)
-    expect(translateX(img)).toBeCloseTo(60, 5)
+    expect(translationOf(img).x).toBeCloseTo(60, 5)
   })
 })
 

@@ -112,13 +112,16 @@ export function ImageLightbox({
   src: string
 }) {
   const openerRef = useRef<HTMLElement | null>(null)
+  const wheelOriginRef = useRef<HTMLDivElement>(null)
 
   // Shared pan/zoom mechanics (wheel zoom, drag pan, pinch) come from
   // useZoomPan — the same hook the diagram/artifact viewer uses, so there is a
   // single source of truth for this gesture math. `moved` lets us close the
   // lightbox on a clean click while leaving pans/pinches alone.
   const { moved, panning, ref, reset, scale, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLImageElement>({
-    enabled: open
+    compositeZoom: true,
+    enabled: open,
+    wheelOriginRef
   })
 
   // Reset zoom whenever the lightbox opens.
@@ -205,7 +208,7 @@ export function ImageLightbox({
         overlayClassName="bg-black/60"
         showCloseButton={false}
       >
-        <div className="group/lightbox relative inline-block">
+        <div className="group/lightbox relative inline-block" ref={wheelOriginRef}>
           <img
             alt={alt ?? ''}
             className={cn(

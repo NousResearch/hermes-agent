@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -19,6 +20,9 @@ def _fake_elevated(monkeypatch, tmp_path, elevated=True):
         return subprocess.CompletedProcess(argv, 0, sid_row if argv[0] == "whoami" else "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
+    # The fixture stands in for the non-propagating pywin32 writer, so the walk it drives is the
+    # streaming one — its availability probe has to be faked with it.
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: True)
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: elevated)
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32",
                         lambda path, *_a, **_k: granted.append(os.path.realpath(path)))
@@ -84,3 +88,33 @@ def test_repair_that_repaired_nothing_stays_owed(monkeypatch, tmp_path):
     (tmp_path / "home").symlink_to(tmp_path / "gone", target_is_directory=True)  # dangling
     with pytest.raises(RuntimeError, match="nothing was repaired"):
         maint.repair_windows_home_acl()
+
+
+def test_repair_defers_at_its_budget_instead_of_holding_the_next_launch(monkeypatch, tmp_path, capsys):
+    """#143124: the step sits in front of every later launch while it is owed, so a repair that
+    cannot finish in its window ends the step and hands over the command that finishes it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    for i in range(4):
+        (home / f"f{i}.bin").write_bytes(b"x")
+    _fake_elevated(monkeypatch, tmp_path)
+
+    def slow(*_args, **_kwargs):
+        time.sleep(0.02)
+
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", slow)
+
+    maint.repair_windows_home_acl(budget_s=0.01)  # returns: deferred, never raises
+
+    err = capsys.readouterr().err
+    assert "stopped at its" in err and "entries" in err
+    assert '/grant' in err and "/T /C /Q" in err
+
+
+def test_repair_without_a_budget_walks_the_whole_home(monkeypatch, tmp_path):
+    (tmp_path / "home").mkdir()
+    granted, _runs = _fake_elevated(monkeypatch, tmp_path)
+
+    maint.repair_windows_home_acl(budget_s=0)  # 0 = unbounded
+
+    assert granted == [str(tmp_path / "home")]

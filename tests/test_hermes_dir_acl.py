@@ -5,6 +5,7 @@ No test pretends to be on Windows: elevation is a host fact the functions take a
 process_is_elevated probe stands in for it on a production path), and only the native writer
 (``_grant_with_pywin32``) is replaced, to record what an elevated grant would have touched."""
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,43 @@ def test_tree_grant_is_a_noop_unelevated(tmp_path, monkeypatch):
     assert hermes_dir_acl.grant_tree_user_access(tmp_path) == (0, [], [])  # the probe off an elevated Windows host
 
 
+def test_tree_grant_streams_the_walk_and_honours_its_deadline(tmp_path, monkeypatch):
+    """#143124: the walk was list()ed into ~1.6 GB before the first grant. Consumed as it yields, a
+    deadline can stop it between entries, and the grant it already wrote stands."""
+    seen = []
+
+    def walk(_root, _skipped):
+        for i in range(5000):
+            seen.append(i)
+            yield tmp_path / f"e{i}", False
+
+    monkeypatch.setattr(hermes_dir_acl, "iter_tree_without_reparse_points", walk)
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda *_a, **_k: False)
+
+    with pytest.raises(hermes_dir_acl.AclGrantDeferred) as deferred:
+        hermes_dir_acl.grant_tree_user_access(
+            tmp_path, elevated=True, deadline=time.monotonic() - 1)
+
+    assert len(seen) == 1  # one yielded entry, not the whole tree materialised first
+    assert deferred.value.granted == 0
+
+
+def test_tree_grant_reports_progress_while_it_grants(tmp_path, monkeypatch):
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda *_a, **_k: False)
+    monkeypatch.setattr(hermes_dir_acl, "_TREE_GRANT_PROGRESS_EVERY", 2)
+    home = tmp_path / "progress-home"
+    home.mkdir()
+    (home / "a").write_text("x")
+    calls = []
+
+    granted, _skipped, _failed = hermes_dir_acl.grant_tree_user_access(
+        home, elevated=True, progress=lambda g, _s, _f: calls.append(g))
+
+    assert granted == 2 and calls == [2]  # the dir and the file
+
+
 @pytest.mark.parametrize("shape", ["symlink-only", "symlink-before-a-file", "hardlink-only", "nested-hardlink"])
 def test_icacls_fallback_refuses_any_link_in_the_subtree(tmp_path, monkeypatch, shape):
     """Review-9 (b): the prewalk checked inside the loop, so a link met after the last yield
@@ -341,6 +379,65 @@ def test_icacls_tree_fallback_walks_the_tree_once(tmp_path, monkeypatch):
     assert sorted(p.relative_to(home).as_posix() for p in calls) == clean
     assert sorted(p.relative_to(tmp_path).as_posix() for p in skipped) == ["home", "home/dirty", "home/dirty/jn"]
     assert failed == [] and granted == len(clean)
+
+
+def test_icacls_fallback_bounds_its_materialised_walk_by_the_deadline(tmp_path, monkeypatch):
+    """#145990 review (@AtlasOmnia): the fallback accepted *deadline* and ignored it — the link map
+    walk ran to completion before the first grant, so a home big enough to eat the whole budget in
+    that walk could still hold the update tail, and the next launch, hostage. It defers now, and
+    nothing has been written at that point so there is nothing to resume wrongly."""
+    seen = []
+
+    def walk(_root, _skipped):
+        for i in range(5000):
+            seen.append(i)
+            yield tmp_path / f"e{i}", False
+
+    monkeypatch.setattr(hermes_dir_acl, "iter_tree_without_reparse_points", walk)
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: False)
+    calls = []
+    monkeypatch.setattr(hermes_dir_acl.subprocess, "run", lambda argv, **_k: calls.append(argv))
+
+    with pytest.raises(hermes_dir_acl.AclGrantDeferred) as deferred:
+        hermes_dir_acl.grant_tree_user_access(
+            tmp_path, elevated=True, deadline=time.monotonic() - 1)
+
+    assert len(seen) == 1, "the walk stops at the deadline instead of materialising the whole tree"
+    assert calls == [], "no grant ran, so the deferral has nothing to keep"
+    assert deferred.value.granted == 0
+
+
+def test_icacls_fallback_bounds_its_grants_by_the_deadline(tmp_path, monkeypatch):
+    """The second stage is bounded too: the entries were walked inside the budget, then the budget
+    expires between grants — what was granted stands, the rest defers. Without this the fallback
+    could still spawn one icacls per entry for a 562k-entry home."""
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in ("f1", "f2", "f3"):
+        (home / name).write_text("x")
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", _no_pywin32)
+    monkeypatch.setattr(hermes_dir_acl, "_whoami_sid", lambda: "S-1-5-21-1-2-3-1001")
+    granted_paths = []
+    monkeypatch.setattr(hermes_dir_acl.subprocess, "run",
+                        lambda argv, **_k: granted_paths.append(Path(argv[1])))
+
+    class _Budget:
+        """monotonic() inside the budget for the first *inside* calls, past it from then on."""
+        def __init__(self, inside):
+            self.calls = 0
+            self.inside = inside
+
+        def monotonic(self):
+            self.calls += 1
+            return 0.0 if self.calls <= self.inside else 1_000.0
+
+    entries = list(hermes_dir_acl.iter_tree_without_reparse_points(home, []))
+    monkeypatch.setattr(hermes_dir_acl, "time", _Budget(inside=2))
+
+    with pytest.raises(hermes_dir_acl.AclGrantDeferred) as deferred:
+        hermes_dir_acl._grant_entries(home, str(home), entries, [], deadline=100.0)
+
+    assert deferred.value.granted == 2 and len(granted_paths) == 2
 
 
 def _no_pywin32(*_a, **_k):

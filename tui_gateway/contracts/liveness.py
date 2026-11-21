@@ -61,8 +61,9 @@ class ClientCapabilitiesResult(Result):
     #: one card per question. An older owner refuses the unknown key, so a client declares it only when
     #: this is true. (The legacy sidecar always asks the batch at once and is never sent the key.)
     canonical_clarify_batch: bool = False
-    #: This backend keeps ``client.activity`` reports. An older one refuses the method, so a client
-    #: reports only on a connection whose answer said this is true.
+    #: This connection keeps ``client.activity`` reports (false on one that keeps no presence, such as
+    #: stdio). An older backend refuses the method, so a client reports only on a connection whose
+    #: answer said this is true.
     client_activity: bool = False
 
 

@@ -107,3 +107,17 @@ async def test_a_transport_that_keeps_no_identity_ignores_the_hello(tmp_path, mo
         assert not hasattr(conn.transport, 'client_identity')
     finally:
         await conn.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_client_activity_is_advertised_only_where_reports_are_kept(tmp_path, monkeypatch):
+    """stdio keeps no presence, so it must not tell a client to send ``client.activity``."""
+    conn, connection, peer = await _hello_connection(tmp_path, monkeypatch)
+    try:
+        assert (await _request(connection, peer, 1, {'server_requests': True}))['result']['client_activity'] is True
+        assert not hasattr(conn.transport, 'client_presence')
+        reply = await _request(conn.connection, conn.transport, 2, {'server_requests': True})
+        assert reply['result']['client_activity'] is False, reply
+    finally:
+        await connection.close()
+        await conn.connection.close()

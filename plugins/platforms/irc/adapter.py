@@ -21,7 +21,7 @@ from gateway.platforms._shared import (
 )
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, strip_prose_markdown
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -35,8 +35,6 @@ _MARKDOWN_RULES = (
     (r"__(.+?)__", r"\1"),
     (r"\*(.+?)\*", r"\1"),  # italic
     (r"(?<!\w)_(.+?)_(?!\w)", r"\1"),
-    (r"`(.+?)`", r"\1"),  # inline code
-    (r"```\w*\n?", ""),  # code fences
     (r"!\[([^\]]*)\]\(([^)]+)\)", r"\2"),  # images → url (must precede links)
     (r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)"),  # links → text (url)
 )
@@ -236,10 +234,14 @@ class IRCAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
-        """Convert basic markdown to plain text for IRC."""
-        for pattern, repl in _MARKDOWN_RULES:
-            text = re.sub(pattern, repl, text)
-        return text
+        """Convert basic markdown to plain text for IRC; code keeps its literal payload."""
+
+        def strip(prose: str) -> str:
+            for pattern, repl in _MARKDOWN_RULES:
+                prose = re.sub(pattern, repl, prose)
+            return prose
+
+        return strip_prose_markdown(text, strip)
 
     async def _send_raw(self, line: str) -> None:
         """Send a raw IRC protocol line."""

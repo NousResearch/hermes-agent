@@ -420,14 +420,17 @@ def _render_code_block_element(element: dict[str, Any]) -> str:
 
 def _strip_markdown_to_plain_text(text: str) -> str:
     """Plain-text fallback: shared strip_markdown plus Feishu extras (blockquote, ~~, <u>, hr, CRLF)."""
-    from gateway.platforms.helpers import strip_markdown
-    plain = text.replace("\r\n", "\n")
-    plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
-    plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
-    plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
-    plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
-    plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
-    return strip_markdown(plain)
+    from gateway.platforms.helpers import strip_markdown, strip_prose_markdown
+
+    def strip(plain: str) -> str:
+        plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
+        plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
+        plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
+        plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
+        plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
+        return strip_markdown(plain)
+
+    return strip_prose_markdown(text.replace("\r\n", "\n"), strip)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:

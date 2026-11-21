@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional
 
 from agent.deadline import poll_until
+from hermes_cli.web_server_lifecycle import _process_start_marker
 from hermes_constants import get_hermes_home
 from tools.bot_desktop import placement
 
@@ -165,16 +166,31 @@ def _create_time(pid: int) -> Optional[float]:
         return None
 
 
-def _launcher_identity() -> Optional[tuple[int, float]]:
-    """``(pid, create_time)`` of the live launcher, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``:
-    a recycled pid with a different start time is somebody else's process and must never be reported as
-    ours nor killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
+def _launcher_identity() -> Optional[tuple[int, object]]:
+    """``(pid, token)`` of the live launcher, or None. ``launcher.pid`` holds ``"<pid> <token>"``:
+    a recycled pid with a different token is somebody else's process and must never be reported as
+    ours nor killed by :func:`stop`. The token is an opaque incarnation marker (the kernel's starttime
+    tick on Linux, the Windows creation time on ``nt``, or a ``ps`` start string elsewhere), so it
+    survives clock jumps that make the old wall-clock ``create_time`` comparison fail. Legacy files
+    hold ``"<pid> <create_time>"`` and are still accepted when the float matches within 0.01 s. The
+    pre-identity single-number format and non-numeric legacy stamps are treated as not running."""
     raw = _read(state_dir() / "launcher.pid")
-    pid_s, _, born_s = (raw or "").partition(" ")
-    if not pid_s.isdigit() or not born_s:
+    pid_s, _, token_s = (raw or "").partition(" ")
+    if not pid_s.isdigit() or not token_s:
         return None
     try:
-        pid, born = int(pid_s), float(born_s)
+        pid = int(pid_s)
+    except ValueError:
+        return None
+    if token_s.startswith("marker:"):
+        stored = token_s[len("marker:"):]
+        try:
+            live = _process_start_marker(pid)
+        except (OSError, ProcessLookupError):
+            return None
+        return (pid, stored) if stored == live and _pid_alive(pid) else None
+    try:
+        born = float(token_s)
     except ValueError:
         return None
     actual = _create_time(pid)
@@ -466,15 +482,17 @@ def idle_stop_seconds() -> float:
     return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
 
 
-def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
+def _idle_due(launcher: Optional[tuple[int, object]]) -> Optional[float]:
     """Idle seconds when the screen is due for the idle stop now, else None. ``launcher`` (``(pid,
-    create_time)``) limits it to that one screen: a replacement started since is never due."""
+    token)``) limits it to that one screen: a replacement started since is never due. The token is an
+    opaque incarnation marker compared by equality, so a clock jump cannot make the same screen look
+    like a replacement."""
     limit = idle_stop_seconds()
     if limit <= 0 or not is_running():
         return None
     if launcher is not None:
         current = _launcher_identity()
-        if current is None or current[0] != launcher[0] or abs(current[1] - launcher[1]) >= 0.01:
+        if current is None or current[0] != launcher[0] or current[1] != launcher[1]:
             return None
     idle = idle_seconds()
     if idle is None or idle < limit:
@@ -486,7 +504,7 @@ def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
     return idle
 
 
-def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
+def stop_if_idle(launcher: Optional[tuple[int, object]] = None) -> bool:
     """Stop this profile's screen when it has been idle past the limit and no human holds it (a human lease
     with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows, and at least ``HUMAN_LEASE_ABANDONED_MIN_S``,
     counts as abandoned). True when it was stopped. ``launcher`` names the screen the caller judges (the
@@ -825,8 +843,12 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True)  # detached-spawn: ok — per-profile screen, outlives its starter
         log.close()
-        born = _create_time(proc.pid)
-        (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
+        try:
+            marker = _process_start_marker(proc.pid)
+            (sd / "launcher.pid").write_text(f"{proc.pid} marker:{marker}", encoding="utf-8")
+        except (OSError, ProcessLookupError):
+            born = _create_time(proc.pid)
+            (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
 
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:

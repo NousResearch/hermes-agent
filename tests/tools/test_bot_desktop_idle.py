@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from tools.bot_desktop import lease, runtime
+from tools.bot_desktop import idle_watch, lease, runtime
 from tests.bot_desktop_lease import reset_lease
 
 
@@ -145,6 +145,45 @@ def test_idle_stop_disabled_by_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 0.0)
     _age(sd / "env", 10 ** 6)
     assert runtime.stop_if_idle() is False and stops == []
+
+
+def test_idle_due_matches_launcher_by_marker_not_clock(tmp_path, monkeypatch):
+    """_idle_due compares launcher identity tokens by equality so a clock jump cannot make the same
+    screen look like a replacement."""
+    sd = tmp_path / "bd"
+    sd.mkdir()
+    (sd / "env").write_text("DISPLAY=:20\n", encoding="utf-8")
+    monkeypatch.setattr(runtime, "state_dir", lambda: sd)
+    monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 600.0)
+    monkeypatch.setattr(runtime, "is_running", lambda: True)
+    monkeypatch.setattr(runtime, "idle_seconds", lambda: 900.0)
+    monkeypatch.setattr(runtime, "_process_start_marker", lambda pid: "linux:12345")
+    monkeypatch.setattr(runtime, "_pid_alive", lambda pid: pid == 4242)
+
+    (sd / "launcher.pid").write_text("4242 marker:linux:12345", encoding="utf-8")
+    identity = runtime._launcher_identity()
+    assert identity == (4242, "linux:12345")
+    assert runtime._idle_due(identity) == 900.0
+
+    (sd / "launcher.pid").write_text("4242 marker:linux:99999", encoding="utf-8")
+    assert runtime._idle_due(identity) is None
+
+
+def test_self_idle_watch_recognizes_the_launcher_marker(tmp_path, monkeypatch):
+    """The real idle-watch entry point must pass a marker, not psutil's drifting float, to _idle_due."""
+    sd, _ = _running(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, "is_running", lambda: True)
+    monkeypatch.setattr(runtime, "idle_seconds", lambda: 900.0)
+    monkeypatch.setattr(runtime, "_process_start_marker", lambda pid: "linux:12345")
+    monkeypatch.setattr(runtime, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(runtime, "_create_time", lambda pid: 9999999999.0)
+    monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.AGENT))
+    (sd / "launcher.pid").write_text("4242 marker:linux:12345", encoding="utf-8")
+
+    launcher = idle_watch._own_launcher(["4242"])
+    assert launcher == (4242, "linux:12345")
+    assert runtime._idle_due(launcher) == 900.0
+    assert runtime._idle_due(idle_watch._own_launcher(["9999"])) is None
 
 
 def test_an_infinite_idle_window_is_off_and_never_overflows_the_next_check(monkeypatch):

@@ -264,12 +264,15 @@ Xvnc "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
   -Log '*:stderr:30' 2> >(grep -v --line-buffered 'Could not resolve keysym' >&2) &
 XVNC_PID=$!
 trap 'kill "$XVNC_PID" 2>/dev/null || true' EXIT
-for _ in $(seq 1 100); do
-  xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
+# A probe that connects before Xvnc answers can block in connect() until the server replies,
+# and runtime.start() allows 15s before it declares the screen dead, so bound the whole wait.
+READY_BUDGET=$(( SECONDS + 8 ))
+while (( SECONDS < READY_BUDGET )); do
+  timeout 1 xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
   kill -0 "$XVNC_PID" 2>/dev/null || { echo "Xvnc exited during startup" >&2; exit 1; }
   sleep 0.1
 done
-xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || { echo "Xvnc did not become ready" >&2; exit 1; }
+timeout 5 xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || { echo "Xvnc did not become ready" >&2; exit 1; }
 
 setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool assume a known layout
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true
@@ -332,7 +335,8 @@ dbus-run-session -- bash -c '
     > "$HERMES_BD_ENV_FILE.tmp" && mv -f "$HERMES_BD_ENV_FILE.tmp" "$HERMES_BD_ENV_FILE"
   xfsettingsd --sm-client-disable --daemon 2>/dev/null || true
   xfwm4 --compositor=off --sm-client-disable &
-  for _ in $(seq 1 50); do xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break; sleep 0.1; done
+  WM_BUDGET=$(( SECONDS + 10 ))
+  while (( SECONDS < WM_BUDGET )); do timeout 1 xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break; sleep 0.1; done
   xfdesktop --sm-client-disable --disable-wm-check &
   exec xfce4-panel --sm-client-disable --disable-wm-check
 ' && rc=0 || rc=$?

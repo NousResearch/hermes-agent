@@ -79,6 +79,32 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+def test_marker_identity_is_clock_independent(tmp_path, monkeypatch):
+    """A kernel-derived marker record stays recognised even when psutil's wall-clock create_time has
+    drifted; a mismatched marker token reads as not running."""
+    import os
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "_process_start_marker", lambda pid: "linux:12345")
+    monkeypatch.setattr(runtime, "_pid_alive", lambda pid: pid == os.getpid())
+    pidfile = tmp_path / "launcher.pid"
+    pidfile.write_text(f"{os.getpid()} marker:linux:12345", encoding="utf-8")
+    monkeypatch.setattr(runtime, "_create_time", lambda _pid: 9999999999.0)  # wildly different wall clock
+    assert runtime._launcher_pid() == os.getpid()
+    pidfile.write_text(f"{os.getpid()} marker:linux:99999", encoding="utf-8")
+    assert runtime._launcher_pid() is None
+
+
+def test_legacy_float_identity_still_matches_on_create_time(tmp_path, monkeypatch):
+    """Old launcher.pid records without the marker prefix keep working when the create_time matches."""
+    import os
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    pidfile = tmp_path / "launcher.pid"
+    pidfile.write_text(f"{os.getpid()} {runtime._create_time(os.getpid())}", encoding="utf-8")
+    assert runtime._launcher_pid() == os.getpid()
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

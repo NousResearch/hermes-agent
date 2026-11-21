@@ -1,7 +1,7 @@
 """Producer-hook tests: _process_message_background records delivery
 obligations around the final send (gateway/platforms/base.py).
 
-Contract: obligation recorded (pending→attempting) BEFORE the send await,
+Contract: obligation recorded as attempting BEFORE the send await,
 delivered/failed by SendResult afterward; slash commands, ephemeral
 replies, and empty responses are never recorded; ledger failures never
 block the send.
@@ -9,6 +9,7 @@ block the send.
 
 import asyncio
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -174,7 +175,7 @@ class TestProducerHook:
         with patch(
             "gateway.delivery_ledger.record_obligation",
             side_effect=slow_record,
-        ), patch("gateway.delivery_ledger.mark_attempting"):
+        ):
             await asyncio.gather(_run(adapter, _event()), event_loop_witness())
 
         assert blocked_event_loop == []
@@ -186,8 +187,6 @@ class TestProducerHook:
         slow_delivered, event_loop_witness, blocked_event_loop = _blocking_probe()
 
         with patch("gateway.delivery_ledger.record_obligation"), patch(
-            "gateway.delivery_ledger.mark_attempting"
-        ), patch(
             "gateway.delivery_ledger.mark_delivered",
             side_effect=slow_delivered,
         ):
@@ -224,3 +223,51 @@ class TestProducerHook:
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is True
+
+
+@pytest.mark.parametrize("interrupted", [False, True], ids=["acknowledged", "interrupted-after-send"])
+@pytest.mark.asyncio
+async def test_initial_delivery_keeps_honest_recovery_when_a_state_update_fails(monkeypatch, interrupted):
+    """Regression for #147379: a failed follow-up write cannot leave a sent reply unmarked."""
+    from gateway.run_startup import GatewayStartupMixin
+
+    assert dl.sweep_recoverable() == []
+    _execute("""CREATE TRIGGER reject_initial_transition
+        BEFORE UPDATE OF state ON delivery_obligations
+        WHEN OLD.state = 'pending' AND NEW.state = 'attempting'
+             AND NEW.owner_pid IS OLD.owner_pid
+        BEGIN SELECT RAISE(FAIL, 'initial state update unavailable'); END""")
+
+    adapter = _Adapter()
+    send = adapter.send
+
+    async def accept_then_interrupt(*args, **kwargs):
+        result = await send(*args, **kwargs)
+        if interrupted and len(adapter.sent) == 1:
+            raise asyncio.CancelledError
+        return result
+
+    adapter.send = accept_then_interrupt
+    delivery = adapter.send_final_ledgered(
+        _event(), "agent:main:slack:channel:C1", "final answer", {}, reply_to=None)
+    if interrupted:
+        with pytest.raises(asyncio.CancelledError):
+            await delivery
+    else:
+        await delivery
+    assert adapter.sent == ["final answer"]
+
+    monkeypatch.setattr(dl, "_owner_alive", lambda *_args: False)
+    monkeypatch.setattr(dl, "_owner_stamp", lambda: (999999999, 1))
+    claimed = dl.sweep_recoverable(deliverable_platforms={"slack"})
+    boot = SimpleNamespace(
+        _obligation_adapter=AsyncMock(return_value=adapter),
+        _arm_flood_timers_for_waiting_rows=AsyncMock(),
+    )
+    await GatewayStartupMixin._redeliver_claimed_obligations(boot, claimed)
+
+    expected = ["final answer"]
+    if interrupted:
+        expected.append(dl.RECOVERED_MARKER + "final answer")
+    assert adapter.sent == expected
+    assert _rows()[0][1] == "delivered"

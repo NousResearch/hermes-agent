@@ -106,20 +106,20 @@ class DeliveryObligationVerbs:
         self._ledger_setup(_ensure_obligations_table)
         return self._ledger_read(read)
 
-    # Records a pending obligation owned by ``owner``, replacing a row with the same id, then prunes.
     def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str,
                                    thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
-                                   owner: OwnerStamp) -> None:
+                                   owner: OwnerStamp, start_attempt: bool = False) -> None:
         now, (pid, started) = time.time(), (owner.pid, owner.started_at)
+        state = "attempting" if start_attempt else "pending"
         def _do(conn):
             conn.execute(
                 """INSERT OR REPLACE INTO delivery_obligations
                    (obligation_id, session_key, platform, chat_id, thread_id,
                     content, state, attempts, created_at, updated_at,
                     owner_pid, owner_started_at, adapter_profile)
-                   VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
                 (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-                 content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+                 content, state, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
             _prune_unlocked(conn, now)
         with translated():
             self._obligation_write(_do)

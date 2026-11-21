@@ -53,7 +53,7 @@ async def record_final_obligation(adapter: Any, event: Any, session_key: str, te
         return None
     try:
         from gateway.delivery_ledger import (
-            compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
+            compute_obligation_id, ledger_enabled, record_obligation)
         if not await asyncio.to_thread(ledger_enabled):
             return None
         source = event.source
@@ -68,9 +68,8 @@ async def record_final_obligation(adapter: Any, event: Any, session_key: str, te
             record_obligation, obligation_id=obligation_id, session_key=session_key,
             platform=str(getattr(source.platform, "value", source.platform)),
             chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-            content=text_content,
+            content=text_content, start_attempt=True,
             adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-        await asyncio.to_thread(mark_attempting, obligation_id)
         return obligation_id
     except Exception:
         logger.debug("delivery ledger record failed", exc_info=True)

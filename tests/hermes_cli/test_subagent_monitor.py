@@ -17,7 +17,7 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
     assert dock.refresh(now=20)
     text = dock.dock_text(columns=32, rows=14)
     from prompt_toolkit.utils import get_cwidth
-    assert t('cli.subagents.count_live', count=8) in text and 'Ctrl+T' in text and 'read_file' in text
+    assert t('cli.subagents.pill_agents_other', count=8) in text and 'Ctrl+T' in text and 'read_file' in text
     assert 'SECRET' not in text
     assert len(text.splitlines()) <= 3
     assert all(get_cwidth(line) <= 32 for line in text.splitlines())
@@ -32,7 +32,8 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
         approval_widget=None, clarify_widget=None, spacer='spacer', status_bar='status',
         input_rule_top='top', image_bar=None, input_area='composer', input_rule_bot='bottom',
         voice_status_bar=None, completions_menu=None)
-    assert children.index('dock') < children.index('status') < children.index('composer')
+    # The footer sits under the composer, where Down from an empty prompt reaches it.
+    assert children.index('status') < children.index('composer') < children.index('dock')
 
 
 def test_monitor_controls_recheck_ownership_and_keep_selection(monkeypatch):

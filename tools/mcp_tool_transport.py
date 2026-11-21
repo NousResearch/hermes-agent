@@ -542,6 +542,16 @@ class MCPServerTransportMixin:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise
 
+    def _request_auth(self, url: str, config: dict):
+        """The httpx ``auth=`` for this attempt: OAuth, else a ``headers_command`` runner, else None."""
+        command = config.get("headers_command")
+        if command and self._auth_type == "oauth":
+            raise ValueError(f"MCP server '{self.name}': headers_command and auth: oauth are exclusive; pick one")
+        if command:
+            from tools.mcp_header_command import build_headers_command_auth
+            return build_headers_command_auth(_core.sdk_httpx(), self.name, command)
+        return self._build_oauth_auth(url, config)
+
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,
                        ssl_verify, client_cert, oauth_auth, strict_cfg_headers: bool):
         """``sse_client`` context manager for ``transport: sse`` entries."""
@@ -561,9 +571,11 @@ class MCPServerTransportMixin:
         # inert once a custom transport= is passed) and re-adds the proxy mounts that custom transport
         # would otherwise suppress. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
         _httpx_mod = _core.sdk_httpx()
+        _build_client = _make_redirect_header_stripper(
+            _httpx_mod, _httpx_mod.URL(url), credential_header_names=getattr(oauth_auth, "minted_names", frozenset()))
         def _sse_client_factory(headers=None, timeout=None, auth=None):
             inner_transport = _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
-            return _httpx_mod.AsyncClient(
+            return _build_client(
                 follow_redirects=True,
                 timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
                 transport=_make_mcp_body_cap_transport(_httpx_mod, inner_transport),
@@ -588,7 +600,8 @@ class MCPServerTransportMixin:
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
         httpx = _core.sdk_httpx()
         _build_client = _make_redirect_header_stripper(
-            httpx, httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+            httpx, httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names,
+            credential_header_names=getattr(oauth_auth, "minted_names", frozenset()))
         # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs
         # inert — and suppresses httpx's own proxy auto-detection, hence the explicit mounts=.
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
@@ -635,7 +648,7 @@ class MCPServerTransportMixin:
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
-                  self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
+                  self._request_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
             return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
         if self._sse_fallback:

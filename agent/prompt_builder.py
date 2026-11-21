@@ -805,7 +805,7 @@ _WINDOWS_BASH_SHELL_HINT = (
     "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
     # no-tmp: ok — tells the model what NOT to use
-    "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
+    "native tools, and prefer `$LOCALAPPDATA/Temp` or `$TMPDIR` for scratch files a native tool must read — never a bare `/tmp`. When "
     "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
@@ -909,6 +909,24 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _local_temp_hint() -> str:
+    """Honor user temp locations; only managed scratch carries the pruning policy."""
+    scratch = get_scratch_dir()
+    # An owned TMPDIR belongs to the launch profile; the served profile has its
+    # own scratch path. Otherwise honor the OS temp-variable precedence.
+    marker = os.environ.get("HERMES_SCRATCH_DIR", "")
+    inherited = (() if marker and os.environ.get("TMPDIR") == marker else
+                 tuple(value for name in ("TMPDIR", "TEMP", "TMP")
+                       if (value := os.environ.get(name, "")) != marker))
+    for candidate in (_tenv_read("TERMINAL_TEMP_DIR"), *inherited):
+        if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
+            if Path(candidate).resolve() != scratch.resolve():
+                return f"Temporary directory: {candidate} (write temporary files and probes here)"
+            break
+    return (f"Scratch directory: {scratch} (write temporary files and probes here; "
+            "entries idle for 24h are pruned)")
+
+
 def _local_host_hints() -> list[str]:
     """Host OS / home / cwd block for a local terminal backend (tools run on this host)."""
     import platform
@@ -924,11 +942,9 @@ def _local_host_hints() -> list[str]:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:
         pass
-    # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
-    # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
+    # Name the temp location so the model honors the user's volume choice for probes.
     try:
-        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
-                          "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
+        host_lines.append(_local_temp_hint())
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):

@@ -891,3 +891,57 @@ The CLI shows caching status at startup:
 ## Context Pressure Warnings
 
 Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+
+## Opt-in structured tool-result pruning
+
+`compression.structured_tool_pruning: true` selects a conservative deterministic
+projection for the built-in compressor. It is off by default and does not change
+system prompts, tools, routing, the LLM summary model or the compaction trigger.
+The config loader and Desktop/TUI next-turn reload both support it; removing the
+key restores the default.
+
+The initial supported format is the terminal tool's JSON result with an integer
+`exit_code` and string `output`. Adjacent byte-identical lines are represented as
+`output_runs` (`line`, including its line ending, and `repeat`) in a
+`hermes-terminal-line-runs-v1` projection. Every unique line and every other JSON
+field is retained. A failure followed by hundreds of identical heartbeat lines
+therefore keeps the failure, assertions and later restrictions rather than only
+its last output line. Ambiguous JSON (including duplicate keys or non-finite
+numbers), unknown tools, arbitrary read-file text and non-repetitive results stay
+whole. This mode also leaves image payloads and pressure-demoted tail bodies
+alone during this deterministic pass. Existing exact whole-result deduplication
+still applies; full LLM summarization is a separate, potentially lossy operation.
+
+A projection only proposes savings of at least 200 characters. The existing
+archive-before-commit, reclaim, regrowth, current-turn, parallel-round and CAS
+checks still decide whether it can be published. Its original is byte-verified
+on disk before the transcript points at it, and the ordinary worker `read_file`
+tool can recover it. Archive files are created owner-readable/writable only on
+POSIX; failures to archive retain the original. The policy does not infer which
+free-text instructions matter, and makes no promise of reducing non-repetitive
+context. A smaller serialized result is not a measurement of model quality or
+provider token billing.
+
+### Isolated local validation
+
+Run `scripts/run_tests.sh` from an independent source checkout outside a live
+Hermes home, using `HERMES_PYTHON` to name an already-installed test interpreter.
+A linked worktree whose common Git directory is inside the live home is not fully
+isolated: bootstrap recovery can inspect update journals in that common
+metadata. A standalone shallow clone has its own Git metadata and avoids both
+those reads and the live home's neighboring payload manifest. Do not weaken
+`tests/home_io_guard.py`, pre-import bootstrap outside the guard or copy private
+user files to make tests pass. Use the focused checks below; none need credentials
+or live providers:
+
+```bash
+scripts/run_tests.sh -j 2 tests/agent/test_structured_tool_pruning.py \
+  tests/agent/test_proactive_prune_archive.py \
+  tests/agent/test_proactive_prune_round_guards.py \
+  tests/agent/test_proactive_prune_restart_safety.py \
+  tests/agent/test_proactive_prune_config.py \
+  tests/tui_gateway/test_compression_config_hot_reload.py
+```
+
+Keep any live configuration unchanged until these checks and the deployment's
+own fixtures pass. This setting is not enabled by the tests or by creating a PR.

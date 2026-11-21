@@ -13,6 +13,8 @@ import logging
 import re
 from typing import Any, Optional
 
+from agent.tool_result_projection.projection import project_old_terminal_results
+
 logger = logging.getLogger("agent.context_compressor")
 # Reclaim gate on an already-expired provider cache: there is no cache break to amortize.
 _COLD_CACHE_MIN_RECLAIM_TOKENS = 16_000
@@ -92,6 +94,14 @@ class ProactivePruneMixin:
 
     # The host skips this prune for a session with no store row (batch runs): their originals live nowhere else.
     prune_needs_session_store = True
+
+    def _project_old_tool_result_bodies(self, messages, boundary, calls, min_chars, protected_skills):
+        if self.structured_tool_pruning:
+            return project_old_terminal_results(messages, boundary, min_chars)
+        return sum(
+            self._demote_tool_result_at(messages, i, calls, min_chars, protected_skills)
+            for i in range(max(0, boundary))
+        )
 
     def would_proactively_prune(self, current_tokens: int | None = None) -> bool:
         """Configured on AND above its trigger: the two state-free preconditions

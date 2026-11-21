@@ -754,7 +754,7 @@ DEFAULT_CONFIG = {
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
         # chat_completions | anthropic_messages | codex_responses.
         "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
-        "mcp": _aux(30),
+        "mcp": _aux(30), "dream": _aux(180),  # dream reads a week of conversations at once; cheap model recommended
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
             "enabled": True,

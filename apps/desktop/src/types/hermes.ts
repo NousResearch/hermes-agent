@@ -1516,6 +1516,16 @@ export interface LocalModelsStatus {
   models_dir: string
 }
 
+export interface LocalHardwareGpu {
+  /** Driver index (nvidia-smi), not a compacted list position. */
+  index: number
+  name: string
+  util_percent: number | null
+  vram_used_bytes: number | null
+  vram_total_bytes: number | null
+  vram_free_bytes: number | null
+}
+
 export interface LocalHardware {
   uma: boolean
   vram_total_bytes: number
@@ -1526,6 +1536,8 @@ export interface LocalHardware {
   gpu_name: string | null
   gpu_util_percent: number | null
   vram_used_bytes: number | null
+  /** Every NVIDIA adapter. Absent on older backends; the top-level GPU fields are then GPU 0. */
+  gpus?: LocalHardwareGpu[]
 }
 
 export interface LocalCatalogModel {

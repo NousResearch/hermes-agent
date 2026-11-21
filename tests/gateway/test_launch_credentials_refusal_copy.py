@@ -53,3 +53,24 @@ def test_cli_refusal_of_a_control_on_that_chat_names_new_chat():
     assert '/new' in text and 'model.api_key' in text, text
     assert refusal_text(GatewayRPCError('invalid_params', data={'field': 'toolsets', 'detail': 'bad'})) == \
         'invalid_params (toolsets: bad)'  # every other refusal reads as before
+
+
+def test_cli_refusal_text_renders_canonical_invalid_params_fields_list():
+    """Canonical RPC contract checks return ``data={'reason': 'invalid_params', 'fields': [...]}``
+    (``gateway/session_controls.py``), and ``gateway_client._bounded_error_data`` preserves bounded
+    scalar lists. ``refusal_text`` should name those fields instead of printing bare ``invalid_params``."""
+    from hermes_cli.cli_chat_error_copy import refusal_text
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    single = GatewayRPCError('invalid_params', code=4001, data={'reason': 'invalid_params', 'fields': ['source']})
+    assert refusal_text(single) == 'invalid_params (source)'
+
+    multi = GatewayRPCError(
+        'invalid_params',
+        code=4001,
+        data={'reason': 'invalid_params', 'fields': ['source', 'toolsets']},
+    )
+    assert refusal_text(multi) == 'invalid_params (source, toolsets)'
+
+    empty = GatewayRPCError('invalid_params', code=4001, data={'reason': 'invalid_params', 'fields': []})
+    assert refusal_text(empty) == 'invalid_params'

@@ -448,6 +448,11 @@ def _install_single_query_signal_handlers(cli):
             flush_before_hard_exit()
             _flush_logging_and_stdio()
             _kill_foreground_and_exit()
+        # A repeat Ctrl+C once _run_cleanup has started would abort session finalize / release
+        # mid-write; the armed exit watchdog already covers a wedged teardown.
+        import cli as _cli_mod
+        if _cli_mod._cleanup_done or getattr(cli, "_tui_shutting_down", False):
+            return
         raise KeyboardInterrupt()
     with suppress(Exception):  # restricted environments
         for _name in ("SIGINT", "SIGTERM", "SIGHUP"):

@@ -291,7 +291,24 @@ memory:
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
   prefetch_spill_enabled: false  # external recall stays intact unless explicitly enabled
+  per_user_profiles: false  # true = one USER.md per gateway user (see below)
 ```
+
+### Per-user profiles on a shared gateway
+
+When several people talk to the same bot (a Slack, Discord or Telegram gateway), the default single `USER.md` mixes everyone's preferences together, and whatever the agent learns about one person is injected into everyone else's system prompt. Set `memory.per_user_profiles: true` to give each authenticated speaker their own profile:
+
+| Who is talking | USER.md used |
+|---|---|
+| A gateway user (`user_id` from the platform) | `memories/users/<platform>-<user_id>/USER.md` |
+| You on this machine (CLI, TUI, local one-shots) | the shared `memories/USER.md` |
+| A session with no user identity (cron, scripts) | the shared `memories/USER.md` |
+
+- `MEMORY.md` (the agent's own notes) stays shared in every case.
+- The directory name is platform-qualified, so the same id on two platforms never shares a profile. Ids that are not plain lowercase letters, digits, `-` or `_` are stored as a readable slug plus a short hash of the exact id.
+- A user who has no profile yet starts with an empty one. They never fall back to the shared file, which would show them the operator's profile and let them edit it.
+- Writes staged for approval (`write_approval: true`, or a background-review deletion) remember whose profile they target. `/memory approve` applies them to that user's file, whoever approves.
+- Turning the option on does not move the existing shared `USER.md`. It stays the operator's profile.
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
 built-in stores off completely: the `memory` tool is dropped from the schema and

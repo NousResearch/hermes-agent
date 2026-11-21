@@ -214,11 +214,14 @@ class FileChangedSinceBackup(RuntimeError):
 
 @contextlib.contextmanager
 def _staged_copy(path: Path, expect: Optional[str], *, private: bool = False):
-    """A private (0600) copy of *path* beside it, yielded only when its bytes hash to *expect* (None: the
-    file must not exist), then given *path*'s own mode unless *private* (a copy that receives secrets stays
-    0600 until it is renamed). Removed again unless :func:`_publish` renamed it over *path*."""
-    from hermes_cli.gateway_migrate_backends_apply import write_private_file
-    staged = path.with_name(f".{path.name}.{os.getpid()}.migrate")
+    """A private (0600) copy of *path* in the home's ``backend_migration/`` folder (0700, created when missing),
+    yielded only when its bytes hash to *expect* (None: the file must not exist), then given *path*'s own mode
+    unless *private* (a copy that receives secrets stays 0600 until it is renamed). Removed again unless
+    :func:`_publish` renamed it over *path*. A copy a killed run leaves there is behind the folder's guards
+    (the Files routes, the agent's file tools, profile export), never loose in the home; the folder is on the
+    home's filesystem, so the rename stays one atomic step."""
+    from hermes_cli.gateway_migrate_backends_apply import _backup_folder, write_private_file
+    staged = _backup_folder(path.parent) / f"{path.name.lstrip('.')}.{os.getpid()}.migrate"
     try:
         data: Optional[bytes] = path.read_bytes()
     except FileNotFoundError:
@@ -236,6 +239,8 @@ def _staged_copy(path: Path, expect: Optional[str], *, private: bool = False):
         yield staged
     finally:
         staged.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            staged.with_name(f"{staged.name}.lock").unlink(missing_ok=True)  # the .env writer's lock file
 
 
 def _publish(staged: Path, path: Path) -> bytes:
@@ -244,6 +249,7 @@ def _publish(staged: Path, path: Path) -> bytes:
     data = staged.read_bytes()
     os.replace(staged, path)
     fsync_directory(path.parent)
+    fsync_directory(staged.parent)
     return data
 
 

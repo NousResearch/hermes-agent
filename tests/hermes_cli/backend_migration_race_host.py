@@ -11,7 +11,9 @@ background run as another real process of this module (its own session), inherit
 
 ``KILL_AFTER_PUBLISH=NAME``: right after the real rename of the staged ``NAME`` (``config.yaml`` or ``.env``)
 over the home's file, the run writes ``RACE_DIR/published-NAME`` and waits there, so the test can SIGKILL it
-at exactly that point (the crash tests). The pause lives only in this test module.
+at exactly that point (the crash tests). ``KILL_BEFORE_PUBLISH=NAME`` pauses the same way just before that
+rename (``RACE_DIR/staged-NAME``), while the staged copy holds the migration's writes. The pauses live only in
+this test module.
 """
 
 from __future__ import annotations
@@ -47,20 +49,25 @@ class RaceHost(FakeHost):
         return {"pid": proc.pid}
 
 
-def _pause_after_publish(name: str) -> None:
+def _pause_at_publish(name: str, *, before: bool) -> None:
     from tests.waiting import wait_until
     real_publish = host_module._publish
 
-    def publish_then_wait(staged, path):
+    def wait(marker: str) -> None:
+        race = Path(os.environ["RACE_DIR"])
+        (race / f"{marker}-{name}").write_text(str(os.getpid()), encoding="utf-8")
+        with contextlib.suppress(AssertionError):  # the test kills the process here
+            wait_until((race / "release").exists, timeout=120)
+
+    def publish_with_pause(staged, path):
+        if before and path.name == name:
+            wait("staged")
         data = real_publish(staged, path)
-        if path.name == name:
-            race = Path(os.environ["RACE_DIR"])
-            (race / f"published-{name}").write_text(str(os.getpid()), encoding="utf-8")
-            with contextlib.suppress(AssertionError):  # the test kills the process here
-                wait_until((race / "release").exists, timeout=120)
+        if not before and path.name == name:
+            wait("published")
         return data
 
-    host_module._publish = publish_then_wait
+    host_module._publish = publish_with_pause
 
 
 def main() -> None:
@@ -68,7 +75,9 @@ def main() -> None:
     engine.ROLLBACK_VERIFY_SECONDS = 0.0
     host_module.SystemHost = RaceHost
     if name := os.environ.get("KILL_AFTER_PUBLISH"):
-        _pause_after_publish(name)
+        _pause_at_publish(name, before=False)
+    if name := os.environ.get("KILL_BEFORE_PUBLISH"):
+        _pause_at_publish(name, before=True)
     sys.argv = ["hermes", *sys.argv[1:]]
     from hermes_cli.main import main as hermes_main
     hermes_main()

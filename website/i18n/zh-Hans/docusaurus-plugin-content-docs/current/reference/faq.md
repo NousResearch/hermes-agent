@@ -96,7 +96,7 @@ Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启�
 :::
 
 :::tip 本地模型超时问题
-Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 120s 提升至 1800s，禁用停滞流检测）。如果在非常大的上下文下仍然超时，请在 `.env` 中设置 `HERMES_STREAM_READ_TIMEOUT=1800`。详情请参阅[本地 LLM 指南](../guides/local-llm-on-mac.md#超时设置)。
+Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 120s 提升至 1800s，停滞流检测提升为有限的 900s）。如果在非常大的上下文下预填充较慢，仍触发停滞检测，请在 `config.yaml` 中设置 `agent.local_stream_stale_timeout`（例如 `1800`）。详情请参阅[本地 LLM 指南](../guides/local-llm-on-mac.md#超时设置)。
 :::
 
 ### 费用是多少？

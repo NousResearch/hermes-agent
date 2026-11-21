@@ -580,7 +580,9 @@ class MemoryStore:
         return self._batch(target, operations, commit=False)
 
     def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
-        from tools.memory_tool import _memory_target_error
+        from tools.memory_tool import _hoist_uniform_nested_target, _memory_target_error
+        # ``or target`` keeps the static ``str`` type; see tools/memory_tool.py.
+        target = _hoist_uniform_nested_target(target, operations) or target
         if target_error := _memory_target_error(self, target, operations):
             return target_error
         if not operations:

@@ -25,6 +25,49 @@ def _call(route, store, args):
     return json.loads(registry.dispatch("memory", args, store=store))
 
 
+@pytest.mark.parametrize("route", ["registry", "inline", "store"])
+@pytest.mark.parametrize("target", ["memory", "user"])
+def test_uniform_nested_target_hoists_when_top_level_is_missing(route, target):
+    """Drift repair: some providers set target inside EVERY operations[] item and
+    omit the top-level field. Every op agreeing on one store is unambiguous — the batch must
+    apply instead of erroring 'Missing required target'."""
+    store = MemoryStore()
+    store.load_from_disk()
+    for name in ("memory", "user"):
+        assert store.add(name, f"Existing {name} fact")["success"]
+    other = "user" if target == "memory" else "memory"
+    other_before = store._path_for(other).read_bytes()
+    args = {"operations": [
+        {"action": "patch", "content": f"Existing {target} fact EXTENDED",
+         "old_text": f"Existing {target} fact", "target": target},
+        {"action": "add", "content": "Hoisted fact", "target": target},
+    ]}
+    assert _call(route, store, args)["success"] is True
+    fresh = MemoryStore()
+    fresh.load_from_disk()
+    assert fresh._entries_for(target) == [f"Existing {target} fact EXTENDED", "Hoisted fact"]
+    assert store._path_for(other).read_bytes() == other_before
+
+
+@pytest.mark.parametrize("route", ["registry", "inline"])
+def test_conflicting_nested_targets_stay_rejected(route):
+    """Ops naming two different stores with no top-level target is a guess — stay rejected
+    (the store assignment is ambiguous, and one call still writes exactly one store)."""
+    store = MemoryStore()
+    store.load_from_disk()
+    for name in ("memory", "user"):
+        assert store.add(name, f"Existing {name} fact")["success"]
+    before = {t: store._path_for(t).read_bytes() for t in ("memory", "user")}
+    args = {"operations": [
+        {"action": "add", "content": "A fact", "target": "memory"},
+        {"action": "add", "content": "B fact", "target": "user"},
+    ]}
+    result = _call(route, store, args)
+    assert result["success"] is False, result
+    assert "target" in result["error"]
+    assert {t: store._path_for(t).read_bytes() for t in ("memory", "user")} == before
+
+
 @pytest.mark.parametrize("route", ["registry", "inline", "store", "replay"])
 @pytest.mark.parametrize("origin", ["direct", "foreground", "background_review"])
 @pytest.mark.parametrize("target_fields,nested_fields", [

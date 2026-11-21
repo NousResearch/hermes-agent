@@ -38,14 +38,24 @@ def _adopt_gateway_toolsets(cli, store):
         cli._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=names)}[/]")
 
 
+def _launch_route(cli):
+    """The model route this run's command line picked, as ``session.create`` policy: ``-m`` with the
+    provider it resolved to, or a typed ``--provider`` alone with that entry's default model (main's
+    #86978 pick), so the gateway does not open the profile's default route instead (#150748)."""
+    provider = getattr(cli, "_explicit_provider", None)
+    if getattr(cli, "_explicit_model_override", False):
+        model, provider = cli.model, (provider if provider not in {None, "", "auto"} else None)
+    elif getattr(cli, "_launch_provider", None):
+        model, provider = getattr(cli, "_launch_provider_model", None), cli._launch_provider
+    else:
+        model = provider = None
+    return {"model": model, "provider": provider, "base_url": getattr(cli, "_explicit_base_url", None)}
+
+
 def _gateway_launch(cli):
     """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
-    explicit_model = getattr(cli, "_explicit_model_override", False)
-    provider = getattr(cli, "_explicit_provider", None)
-    return {"model": cli.model if explicit_model else None,
-            "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
+    return {**_launch_route(cli),
             "api_key": getattr(cli, "_explicit_api_key", None),
-            "base_url": getattr(cli, "_explicit_base_url", None),
             # Only a typed -t; the gateway resolves the profile default and the coding posture (#138670).
             "toolsets": getattr(cli, "enabled_toolsets", None) if getattr(cli, "_explicit_toolsets", False) else None,
             "reasoning": getattr(cli, "_explicit_reasoning", None),
@@ -258,6 +268,9 @@ class CLIInitMixin:
         # Only a provider the command line chose is gateway launch policy: the config default is the
         # gateway's to resolve, and a resume compares launch policy against the session's frozen route.
         self._explicit_provider = _moa_provider_override or provider or _startup_provider_override or None
+        # A typed --provider is launch policy even without -m; "auto" is no pick.
+        self._launch_provider = provider if (provider or "").strip().lower() not in {"", "auto"} else None
+        self._launch_provider_model = None
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.
         # Explicit `-m` still wins. See #86978.
@@ -274,7 +287,7 @@ class CLIInitMixin:
                 _named_custom = None
             _provider_default = str((_named_custom or {}).get("model") or "").strip()
             if _provider_default:
-                self.model = _provider_default
+                self.model = self._launch_provider_model = _provider_default
                 self._model_is_default = False
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
@@ -294,6 +307,54 @@ class CLIInitMixin:
             from hermes_cli.auth import looks_like_openrouter_key
             _keys[1] = _keys[1] if looks_like_openrouter_key(_keys[1]) else None
         self.api_key = api_key or _keys[0] or _keys[1]
+        # Startup-level selection outlives session boundaries: --model/--provider
+        # describe how the process was launched, so /new and wake-word sessions
+        # reset TO them, not away from them (#74329). Stored resolved (not raw
+        # flags) so a bare --provider keeps its startup resolution; absent flags
+        # stay None so the boundary keeps re-deriving from config.yaml.
+        # A direct-alias --model is ALSO kept by name: the resolved id cannot
+        # recover the alias endpoint (foreign labels fail reverse lookup), so
+        # the boundary replays the name through the same alias path instead.
+        # The effective base_url is kept too (endpoint identity only) for plain
+        # --base-url and alias + mismatched --provider launches the switch pipeline
+        # cannot express; no api_key is stored — credentials re-resolve at the boundary.
+        # Invariant: the six _startup_* attrs below are always set together here.
+        # Contract: these constructor args ARE the launch selection (cli.py passes
+        # the --model/--provider flags; no internal caller passes a temporary
+        # model here — resume guards explicit -m via _explicit_model_override).
+        from hermes_cli.cli_session_mixin import _credential_fingerprint
+
+        # Compare credential identity without retaining another copy of the secret.
+        self._startup_api_key_fingerprint = (
+            _credential_fingerprint(self._explicit_api_key or self.api_key)
+            if model or provider else None)
+        if model or provider:
+            self._startup_model = self.model or None
+            self._startup_provider = self.requested_provider or None
+            # Only explicit/alias endpoints are pinned: self.base_url may still
+            # be the global config URL before lazy provider resolution.
+            self._startup_base_url = self._explicit_base_url or None
+            # A provider-only launch selects the named endpoint as well as its model.
+            # Keep the endpoint identity, not a credential, for /new comparison.
+            self._startup_named_endpoint = (
+                str((_named_custom or {}).get("base_url") or "").strip()
+                if not model and provider else "")
+            self._startup_provider_input = (provider or "").strip() or None
+            from hermes_cli import model_switch as _ms
+            _ms._ensure_direct_aliases()
+            _raw_flag = (model or "").strip().lower()
+            self._startup_model_input = (
+                _raw_flag if _raw_flag and _raw_flag in _ms.DIRECT_ALIASES else None)
+        else:
+            self._startup_model = None
+            self._startup_provider = None
+            self._startup_base_url = None
+            self._startup_named_endpoint = ""
+            self._startup_model_input = None
+            self._startup_provider_input = None
+        # The same launch route as gateway session.create policy (no key: the connection keeps the
+        # launch key). A gateway-backed /new reopens on it, as the thin client's /new reuses its launch.
+        self._startup_launch_route = {key: value for key, value in _launch_route(self).items() if value}
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""
@@ -478,9 +539,9 @@ class CLIInitMixin:
 
     def _new_session_id(self, now, *, branch_of=None, title=None):
         """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway
-        store it is a session the gateway created: /new is a fresh ``session.create`` on the profile's
-        default model (an explicit -m was for the previous session only) with the run's other launch
-        flags, /branch the child of
+        store it is a session the gateway created: /new is a fresh ``session.create`` on this run's launch
+        route (``-m`` / ``--provider`` / ``--base-url`` with its launch key, #74329) with the run's other
+        launch flags, /branch the child of
         ``session.mutate branch``. Before this CLI opened its gateway session (or off the gateway) it is
         main's local mint, which ``_ensure_gateway_session`` replaces on first use, as at startup."""
         from hermes_cli.gateway_session_store import GatewaySessionStore
@@ -501,6 +562,12 @@ class CLIInitMixin:
             return child
         # The run's other launch flags hold for every session it opens, as main's one AIAgent did across /new.
         launch = {key: value for key, value in _gateway_launch(self).items() if key not in _ROUTE_FLAGS}
+        # The startup route, not the ended session's: a /model --session switch never carries over.
+        # Its launch key rides only with it; a key-only launch reopens on the profile default (CLI-34).
+        if route := getattr(self, "_startup_launch_route", None):
+            launch.update(route)
+            if launch_key := getattr(store.connection, "launch_api_key", None):
+                launch["api_key"] = launch_key
         sid = through_owner_restart(self, store, lambda: store.create(launch, record_cwd=False))
         self.session_id = sid
         return sid

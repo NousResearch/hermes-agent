@@ -167,7 +167,7 @@ async def _usage(view, rest):
                        ("Total tokens", "total_tokens"), ("API calls", "api_calls")):
         lines.append(f"  {label}: {int(result.get(key) or 0):,}")
     if isinstance(result.get("estimated_cost_usd"), (int, float)):
-        lines.append(f"  Cost: ${result['estimated_cost_usd']:.4f}")
+        lines.append(f"  Cost: ${result['estimated_cost_usd']:.4f} (list-price estimate)")
     print("\n".join(lines))
 
 

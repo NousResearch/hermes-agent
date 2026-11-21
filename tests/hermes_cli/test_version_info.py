@@ -219,6 +219,29 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
 
 
+def test_git_tag_timeout_does_not_fall_back_to_calver(tmp_path, monkeypatch):
+    """A timed-out git tag probe must report 'unknown', never an older CalVer tag."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "tag"]:
+            raise subprocess.TimeoutExpired(cmd, timeout=3)
+        if cmd[:2] == ["git", "rev-parse"] and "--short=7" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abcdef1\n", stderr="")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="a" * 40 + "\n", stderr="")
+        if cmd[:2] == ["git", "describe"]:
+            raise AssertionError("_calver_release_version must not run when git tag timed out")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("hermes_cli.version_info.subprocess.run", fake_run)
+    info = _git_version_info(repo)
+
+    assert info.base_version == "unknown"
+    assert info.derived_version == "git.abcdef1"
+
+
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):
     """Sealed installs (the Nix wrapper) point HERMES_INSTALL_ROOT at the stamp dir."""
     stamp = {"commit": "e" * 40, "source": "nix", "distribution": "nix", "updateMechanism": "external"}

@@ -62,6 +62,14 @@ def launchd_seam(monkeypatch, tmp_path):
     return calls
 
 
+def test_launchd_reload_budget_covers_planned_restart(monkeypatch):
+    import hermes_cli.gateway_launchd as gateway_launchd
+
+    monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 2025.0)
+    monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+    assert gateway_launchd._launchd_reload_budget() == 2025.0
+
+
 def test_stale_plist_is_refreshed_before_any_kickstart(monkeypatch, launchd_seam):
     """The update-restart path must repair the definition, not revive a stale one."""
     refreshed = []

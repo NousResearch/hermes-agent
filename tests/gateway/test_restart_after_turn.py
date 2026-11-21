@@ -20,6 +20,13 @@ def test_parse_restart_after_turn_timeout_defaults_and_clamps():
     assert parse_restart_after_turn_timeout("120") == 120.0
 
 
+def test_restart_exit_wait_budget_covers_after_turn_drain_twice():
+    # When the after-turn deadline is longer than the chat drain, the planned stop
+    # retains that longer budget; the CLI observer must cover both phases.
+    budget = resolve_restart_exit_wait_budget(180, 1800, 30)
+    assert budget > 1800 + resolve_systemd_timeout_stop_sec(1800, 30)
+
+
 def test_restart_exit_wait_budget_outlasts_deferral_plus_stop_envelope():
     for chat, after_turn, cron in ((0, 0, 0), (0, 1800, 30), (2, 3, 80), (80, 3, 2), (180, 21600, 0)):
         # The observer must never give up before the supervisor's own stop deadline would.
@@ -27,6 +34,16 @@ def test_restart_exit_wait_budget_outlasts_deferral_plus_stop_envelope():
     # A non-finite drain waits indefinitely instead of crashing the integer envelope.
     assert resolve_restart_exit_wait_budget(float("inf"), 0, 0) == math.inf
     assert resolve_restart_exit_wait_budget(0, 0, float("inf")) == math.inf
+
+
+def test_unbounded_after_turn_preserves_infinite_restart_exit_budget():
+    # The configured "inf" value is accepted by the restart timeout parser.
+    # It must not flow into the integer-valued systemd stop envelope (int(inf)
+    # raises OverflowError) — an unbounded after-turn budget means the observer
+    # waits indefinitely, matching the non-finite drain contract above.
+    after_turn = parse_restart_after_turn_timeout("inf")
+    assert after_turn == math.inf
+    assert resolve_restart_exit_wait_budget(180, after_turn, 30) == math.inf
 
 
 def test_cli_restart_wait_covers_configured_cron_drain(tmp_path, monkeypatch):

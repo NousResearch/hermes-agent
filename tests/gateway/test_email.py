@@ -1438,6 +1438,95 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertTrue(ok, reason)
 
 
+class TestMultiHeaderAuthenticationResults(unittest.TestCase):
+    """iCloud stamps one Authentication-Results header per check, each with its own authserv-id. With a comma-separated
+    EMAIL_AUTHSERV_ID only the first (topmost, receiver-stamped) header per pinned id counts; anything else is
+    sender-controlled and must never vouch for the message."""
+
+    ICLOUD_IDS = "bimi.icloud.com,arc.icloud.com,dmarc.icloud.com,dkim-verifier.icloud.com,spf.icloud.com"
+    SENDER = "Deep Anandrao <deep.anandrao@gmail.com>"
+    # Sanitized from a real gmail.com -> icloud.com delivery: keys, signatures, IPs and ids are placeholders.
+    BIMI = "bimi.icloud.com; bimi=skipped reason=\"insufficient dmarc\" header.d=gmail.com"
+    ARC = "arc.icloud.com; arc=none"
+    DMARC_PASS = "dmarc.icloud.com; dmarc=pass header.from=gmail.com"
+    DMARC_FAIL = "dmarc.icloud.com; dmarc=fail header.from=gmail.com"
+    DKIM_PASS = ("dkim-verifier.icloud.com; dkim=pass (2048-bit key) header.d=gmail.com header.i=@gmail.com "
+                 "header.b=AbCdEfGh")
+    DKIM_FAIL = "dkim-verifier.icloud.com; dkim=fail (bad signature) header.d=gmail.com header.i=@gmail.com"
+    SPF_PASS = ("spf.icloud.com; spf=pass (spf.icloud.com: domain of deep.anandrao@gmail.com designates 203.0.113.5 "
+                "as permitted sender) smtp.mailfrom=deep.anandrao@gmail.com")
+    SPF_FAIL = ("spf.icloud.com; spf=fail (spf.icloud.com: domain of deep.anandrao@gmail.com does not designate "
+                "203.0.113.5 as permitted sender) smtp.mailfrom=deep.anandrao@gmail.com")
+    FORGED_DMARC = "dmarc.icloud.com; dmarc=pass header.from=gmail.com"
+
+    def _verify(self, auth_results, authserv_id=ICLOUD_IDS, sender=SENDER):
+        from plugins.platforms.email.adapter import _extract_email_address, _verify_sender_authentication
+        msg = MIMEText("body")
+        msg["From"] = sender
+        for ar in auth_results:
+            msg["Authentication-Results"] = ar
+        return _verify_sender_authentication(msg, _extract_email_address(sender), authserv_id=authserv_id.lower())
+
+    def test_icloud_multi_header_passes(self):
+        ok, reason = self._verify([self.BIMI, self.ARC, self.DMARC_PASS, self.DKIM_PASS, self.SPF_PASS])
+        self.assertTrue(ok, reason)
+
+    def test_icloud_multi_header_spf_and_dkim_only(self):
+        # No dmarc pass, but aligned SPF/DKIM from the pinned headers still authenticate.
+        ok, reason = self._verify([self.BIMI, self.ARC, self.DMARC_FAIL, self.DKIM_FAIL, self.SPF_PASS])
+        self.assertTrue(ok, reason)
+
+    def test_forged_duplicate_below_real_headers_is_ignored(self):
+        # Real dmarc header fails (and spf/dkim fail); sender-written duplicate below claims dmarc=pass.
+        real = [self.BIMI, self.ARC, self.DMARC_FAIL, self.DKIM_FAIL, self.SPF_FAIL]
+        ok, reason = self._verify(real)
+        self.assertFalse(ok, reason)
+        ok, reason = self._verify(real + [self.FORGED_DMARC])
+        self.assertFalse(ok, reason)
+
+    def test_forged_unpinned_authserv_id_is_ignored(self):
+        real = [self.BIMI, self.ARC, self.DMARC_FAIL, self.DKIM_FAIL, self.SPF_FAIL]
+        for forged in ("mx.google.com; dmarc=pass header.from=gmail.com",
+                       "evil.example; spf=pass smtp.mailfrom=deep.anandrao@gmail.com; dmarc=pass header.from=gmail.com",
+                       "icloud.com; dmarc=pass header.from=gmail.com",  # parent of a pinned id is not a pin
+                       "x.dmarc.icloud.com; dmarc=pass header.from=gmail.com"):
+            with self.subTest(forged=forged):
+                for headers in ([forged] + real, real + [forged]):  # topmost or below
+                    ok, reason = self._verify(headers)
+                    self.assertFalse(ok, reason)
+
+    def test_no_pinned_headers_fails_closed(self):
+        from plugins.platforms.email.adapter import _NO_AUTH_RESULTS_REASON
+        ok, reason = self._verify(["mx.google.com; dmarc=pass header.from=gmail.com; spf=pass smtp.mailfrom=gmail.com"])
+        self.assertFalse(ok, reason)
+        ok, reason = self._verify([])
+        self.assertEqual((ok, reason), (False, _NO_AUTH_RESULTS_REASON))
+
+    def test_pin_list_tolerates_whitespace_and_case(self):
+        ok, reason = self._verify([self.DMARC_PASS], authserv_id=" Bimi.iCloud.com , DMARC.icloud.com ,, ")
+        self.assertTrue(ok, reason)
+
+    def test_unpinned_but_genuine_headers_do_not_count(self):
+        # Only dmarc.icloud.com is pinned: a passing spf.icloud.com header must not rescue a failing dmarc.
+        ok, reason = self._verify([self.DMARC_FAIL, self.SPF_PASS], authserv_id="dmarc.icloud.com")
+        self.assertFalse(ok, reason)
+
+    def test_single_pinned_gmail_id_unchanged(self):
+        gmail = "mx.google.com"
+        for ar, expected in (
+            ("mx.google.com; dkim=pass header.i=@gmail.com header.s=20230601 header.b=AbCd; "
+             "spf=pass (google.com: domain of deep.anandrao@gmail.com designates 203.0.113.5 as permitted sender) "
+             "smtp.mailfrom=deep.anandrao@gmail.com; dmarc=pass (p=NONE sp=QUARANTINE dis=NONE) header.from=gmail.com",
+             True),
+            ("mx.google.com; dmarc=fail header.from=gmail.com; spf=fail smtp.mailfrom=deep.anandrao@gmail.com", False),
+            ("other.example; dmarc=pass header.from=gmail.com", False),
+        ):
+            with self.subTest(ar=ar):
+                ok, reason = self._verify([ar], authserv_id=gmail)
+                self.assertEqual(ok, expected, reason)
+
+
+
 def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands
     the whole cron payload to the email adapter, which sends it as a single message."""

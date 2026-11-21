@@ -255,7 +255,9 @@ def build_worktree_context_note(info: dict[str, str]) -> str:
         f"Your dedicated branch is: {info.get('branch')}\n"
         "All file edits and shell commands must happen inside this worktree directory (your "
         "terminal already starts there). Do NOT cd to the main repository checkout. Commit your "
-        "changes to your branch when done; the parent agent will review and merge your branch. If "
+        "changes to your branch when done; the parent agent will review and merge your branch. "
+        "Run your verification after your last commit and report that commit's SHA "
+        "(`git rev-parse HEAD`) as the commit you tested. If "
         "you make no commits and leave the tree clean, the worktree is discarded automatically; "
         "otherwise it is archived (restorable) and removed when you finish."
     )

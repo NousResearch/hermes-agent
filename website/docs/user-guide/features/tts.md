@@ -50,6 +50,7 @@ Convert text to speech with eleven providers:
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
+  normalize_loudness: false     # true = normalize every file to -16 LUFS with ffmpeg (see below)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
@@ -197,6 +198,14 @@ tts:
 ```
 
 Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally bypass the provider request limit.
+
+**Loudness normalization**: voices differ a lot in level, across providers and inside one
+voice library (some ElevenLabs library voices come out near -50 LUFS, barely audible on a
+phone). Set `tts.normalize_loudness: true` to run every generated file through an ffmpeg
+EBU R128 `loudnorm` pass (-16 LUFS integrated, -1.5 dBTP true peak), so voice notes play back at
+a consistent volume. It applies to every provider, including command and plugin providers,
+and re-encodes in the same container (Ogg/Opus stays a voice bubble). It is off by default and
+needs `ffmpeg`; without it the audio is delivered unchanged and a warning is logged.
 
 ### Telegram Voice Bubbles & ffmpeg
 

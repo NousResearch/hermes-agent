@@ -292,6 +292,57 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     return transcode_to_ogg_opus(mp3_path, bitrate="48k", timeout=30, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
 
+# --- Loudness normalization (opt-in: ``tts.normalize_loudness``) ---
+# Providers and voice libraries differ by tens of LU (some library voices land near -50 LUFS),
+# so one voice note is inaudible on a phone and the next is loud. Single-pass EBU R128 loudnorm
+# to -16 LUFS integrated / -1.5 dBTP, the usual target for speech on mobile.
+_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+# loudnorm resamples to 192 kHz internally, so each container pins its delivery codec and rate.
+_LOUDNORM_ENCODE_ARGS: dict[str, list[str]] = {
+    ".ogg": [*_OPUS_VOICE_ARGS, "-ar", "48000"],
+    ".opus": [*_OPUS_VOICE_ARGS, "-ar", "48000"],
+    ".mp3": ["-acodec", "libmp3lame", "-b:a", "128k", "-ar", "44100"],
+}
+_LOUDNORM_DEFAULT_ARGS = ["-ar", "48000"]
+
+
+def _normalize_loudness_enabled(tts_config: Any) -> bool:
+    """``tts.normalize_loudness`` as a bool (default off; YAML/str spellings accepted)."""
+    raw = tts_config.get("normalize_loudness") if isinstance(tts_config, dict) else None
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(raw) if isinstance(raw, (bool, int)) else False
+
+
+def _normalize_loudness(file_str: str, tts_config: Any) -> str:
+    """Re-encode *file_str* in place at a consistent loudness when ``tts.normalize_loudness`` is
+    on. Best effort: without ffmpeg, or when the pass fails, the original file is kept untouched.
+    Returns *file_str* either way."""
+    if not _normalize_loudness_enabled(tts_config):
+        return file_str
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.warning("tts.normalize_loudness is on but ffmpeg is not installed; "
+                       "delivering %s without loudness normalization", file_str)
+        return file_str
+    root, suffix = os.path.splitext(file_str)
+    tmp_path = f"{root}.loudnorm{suffix}"
+    encode = _LOUDNORM_ENCODE_ARGS.get(suffix.lower(), _LOUDNORM_DEFAULT_ARGS)
+    try:
+        result = _ffmpeg_run(ffmpeg, ["-i", file_str, "-af", _LOUDNORM_FILTER, *encode,
+                                      "-y", "-loglevel", "error", tmp_path], timeout=120)
+        if result.returncode != 0 or not os.path.getsize(tmp_path):
+            stderr = (result.stderr or b"").decode("utf-8", errors="ignore")[:300]
+            logger.warning("TTS loudness normalization failed for %s: %s", file_str, stderr)
+            _remove_quietly(tmp_path)
+            return file_str
+        os.replace(tmp_path, file_str)
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("TTS loudness normalization failed for %s", file_str, exc_info=True)
+        _remove_quietly(tmp_path)
+    return file_str
+
+
 # --- Container sniffing / repair ---
 # Several backends ignore the requested opus format (Edge/xAI emit MP3, Piper WAV, some
 # OpenAI-compatible servers ignore response_format="opus"), which breaks native voice bubbles:

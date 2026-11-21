@@ -179,7 +179,7 @@ export class JsonRpcGatewayClient {
     return false
   }
 
-  /** Which client this is, announced at each socket open (`JsonRpcRequestChannelOptions.clientIdentity`); none by default. */
+  /** Which client this is, announced once per connection on its first `gateway.ready` (`JsonRpcRequestChannelOptions.clientIdentity`); none by default. */
   protected clientIdentity(): CanonicalClientIdentity | null | Promise<CanonicalClientIdentity | null> {
     return null
   }

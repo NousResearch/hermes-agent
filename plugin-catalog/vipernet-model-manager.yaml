@@ -1,0 +1,121 @@
+# Entrada de catalogo do Vipernet Model Manager.
+#
+# Esta copia vive no repositorio do plugin para que o que se publica seja
+# versionado com o codigo. O ficheiro que se submete no PR e' este, tal como
+# esta' no commit de topo do `main`.
+#
+# DECISAO DO DONO (2026-11-07): o catalogo publico e' servido pelo repositorio
+# PUBLICO no GitHub (regra 2: URL https que qualquer pessoa clone). O Gitea
+# interno continua a ser onde o trabalho acontece; o `main` de la' e' empurrado
+# por push mirror para o `main` do GitHub, preservando o sha.
+#
+# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry,
+# 19 campos): o loader recusa `repo` sem https://, `sha` que nao seja 40 hex,
+# `tier` fora de official/verified/community e `category` fora de
+# desktop/memory/platform/web/tools/voice/automation/models/general. Verificado
+# com o parser do proprio core (`hermes_yaml`) — 19 campos, zero chaves
+# descartadas em silencio.
+#
+# ---------------------------------------------------------------------------
+# ESTADO MEDIDO 2026-11-08 20:40 WET
+# ---------------------------------------------------------------------------
+# Pin: `main` do repositorio do plugin depois do merge do PR #30, que leva a
+#   3.47.15. Desde o pin anterior (437304cf / 3.47.13):
+#   - 3.47.14 — correccao do ensaio sombra (A/B) para respeitar a superficie
+#     `cron` quando fixa uma entrada (antes o pin do turno roubava os passos
+#     subsequentes do mesmo turno). O bloco da superficie corria so quando
+#     `entrada is None or rota is None`; agora corre sempre (exceto marcador
+#     explicito do utilizador) e marca `pin: substituido_pela_superficie` nos
+#     passos reaproveitados. Prova medida: job de cron 20 passos, todos com
+#     `origem=superficie` e `mercury-3` (antes: passo 1 superficie, passos 2–13
+#     sombra com `nemotron-ultra-free`).
+#   - 3.47.15 — guarda cai por completo: a superficie ganha sempre a analise
+#     (salvo marcador explicito), com as tres saidas de excecao registadas
+#     (capacidade, rota morta ha pouco, modelo que declara nao servir a
+#     superficie). Prova medida no mesmo job: 20/20 passos superficie.
+#   Medido com chamadas reais, nao simuladas: `inception/mercury-3` responde
+#   200 em ~750 ms pela via `providers.inception/key_env`; `deepseek/
+#   deepseek-flash` continua 200; modelo inexistente devolve 400 com a lista
+#   que o provider aceita; provider desconhecido falha limpo.
+#   Regra 2 e regra 9 como abaixo; `hermes plugins validate` no pin responde
+#   `Validation passed` (16 verificacoes, `no core override`, security scan
+#   `safe`).
+#
+# Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
+#   Provado por clone anonimo, nao pelo auto-relato do espelho:
+#     env -i HOME=<vazio> GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone
+#       https://github.com/ptv1p3r/vipernet-model-manager  -> rc 0
+#   e o `main` do GitHub estava neste sha. Entrypoints no pin: `plugin.yaml`,
+#   `__init__.py`, `dashboard/manifest.json`, `README.md`.
+#
+# Regra 9 (so superficies publicas): OK, sem excecao. `seams.py` usa
+#   `agent.credential_pool.load_pool`, `agent.secret_scope.get_secret` e
+#   `hermes_cli.config.get_compatible_custom_providers` — todas na lista de
+#   superficies publicas do validador. `hermes plugins validate` responde
+#   `no core override` e nao assinala nenhum import nem chamada privada.
+#
+# Regra 10 (credenciais pela via do Hermes, nunca de ficheiros): a sonda de
+#   ligacao obtem a chave por `seams.resolver_provider` -> `secret_scope`
+#   (honra o perfil activo) e so cai para `os.environ` no caso de perfil unico
+#   (`UnscopedSecretError`), como o proprio core faz. Nao le `.env`, `auth.json`
+#   nem o login de outra ferramenta.
+#
+# Pagina de documentacao: e' construida a partir do `README.md` DESTE commit
+#   (`readme: true`), e a seccao «Public catalogue readiness» ja' diz o estado
+#   medido — nao ha ressalva pendente.
+#
+# `screenshots:` — tres capturas do painel, tiradas de uma instalacao viva e
+#   guardadas em `assets/`, servidas por `raw.githubusercontent.com` no sha do
+#   pin. O nome completo do dono sai substituido pelo handle publico
+#   (`proldan`) nas imagens, e a substituicao esta declarada nos dois README.
+#   As imagens sao as da 3.47.8: abrem no sha novo (os bytes sao os mesmos,
+#   `assets/` nao mudou desde entao) mas nao mostram o botao «Testar ligacao»
+#   nem o campo de provider em texto livre. Fica declarado — recapturar exige
+#   uma sessao com o painel a 3.47.15 em carga.
+#
+# NOTA DE CONSTRUCAO: o `sha` abaixo nao pode apontar para o commit que contem
+#   esta versao do ficheiro (um ficheiro nao se cita a si mesmo). Aponta para o
+#   `main` que ja' traz a 3.47.15; o commit que acrescenta esta versao da entrada
+#   difere desse pin apenas neste ficheiro.
+# ---------------------------------------------------------------------------
+
+name: vipernet-model-manager
+repo: https://github.com/ptv1p3r/vipernet-model-manager.git
+
+# Commit EXATO do catalogo, 40 hex — resolvido por `git ls-remote` no GitHub,
+# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 6884fb77.
+sha: "6884fb77a7270bbf426ad562f755a5086ef933f7"
+
+description: >-
+  Picks the provider and model for each turn from the profile's own catalog,
+  based on the kind of work detected in the message: declared task associations
+  first, then an automatic complexity analysis. Keeps the choice stable for the
+  whole session, records every decision in an append-only ledger and degrades to
+  the next route instead of failing when a route has no credential.
+
+maintainer: proldan
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: "3.47.15"
+title: Vipernet Model Manager
+readme: true
+
+# Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
+# de pin obriga a re-pinar as imagens (regra 4).
+screenshots:
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77a7270bbf426ad562f755a5086ef933f7/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77a7270bbf426ad562f755a5086ef933f7/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77a7270bbf426ad562f755a5086ef933f7/assets/03-registo.png
+
+# Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
+# confirma-as no pin (`declared hooks/middleware — matches registrations`).
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

@@ -7,16 +7,20 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { openRosterBot, openSession, prepareBotSource } = vi.hoisted(() => ({
+const { openRosterBot, openSession, prepareBotSource, notifyError, pluginCtx } = vi.hoisted(() => ({
   openRosterBot: vi.fn(async () => true),
   openSession: vi.fn(async () => undefined),
-  prepareBotSource: vi.fn(async () => undefined)
+  prepareBotSource: vi.fn(async () => undefined),
+  notifyError: vi.fn(),
+  // Null unless a test installs one — the plugin ctx is genuinely absent until
+  // register() runs, which is why the failure toast carries an English floor.
+  pluginCtx: { current: null as null | { i18n?: { t: (key: string) => string } } }
 }))
 
 vi.mock('@hermes/plugin-sdk', () => ({
   BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS: 60_000,
   haptic: () => undefined,
-  host: { openSession, notifyError: vi.fn() }
+  host: { openSession, notifyError }
 }))
 vi.mock('./bot-state', () => ({ saveSelectedRosterBot: () => undefined }))
 vi.mock('./canonical-chat', () => ({
@@ -30,6 +34,7 @@ vi.mock('./routing', () => ({
   botWorkspaceOwnerKey: () => 'bot:local::researcher',
   setBotsWorkspaceOwner: () => undefined
 }))
+vi.mock('./shared', () => ({ getPluginCtx: () => pluginCtx.current }))
 
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import type { RosterRow } from './types'
@@ -40,6 +45,8 @@ const bot = (last_session: RosterRow['last_session']) =>
 beforeEach(() => {
   openRosterBot.mockClear()
   openSession.mockClear()
+  notifyError.mockClear()
+  pluginCtx.current = null
 })
 
 describe('open recent session', () => {
@@ -76,5 +83,25 @@ describe('open recent session', () => {
 
     expect(openRosterBot).toHaveBeenCalledWith(row)
     expect(openSession).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failed open through notifyError with the English floor when no plugin ctx is installed', async () => {
+    openSession.mockRejectedValueOnce(new Error('gateway gone'))
+
+    await expect(openBotRecentSession(bot({ id: 'sess-9', title: 'Deploy notes', message_count: 4, last_active: 1 }))).resolves.toBe(false)
+
+    expect(notifyError).toHaveBeenCalledTimes(1)
+    const [, fallback] = notifyError.mock.calls[0] as unknown as [unknown, string]
+    expect(fallback).toBe('Could not open the recent session')
+  })
+
+  it('localizes the failure toast through the plugin i18n context when one is installed', async () => {
+    pluginCtx.current = { i18n: { t: (key: string) => (key === 'bot.openRecentSessionFailed' ? '无法打开最近会话' : key) } }
+    openSession.mockRejectedValueOnce(new Error('gateway gone'))
+
+    await expect(openBotRecentSession(bot({ id: 'sess-9', title: 'Deploy notes', message_count: 4, last_active: 1 }))).resolves.toBe(false)
+
+    const [, message] = notifyError.mock.calls[0] as unknown as [unknown, string]
+    expect(message).toBe('无法打开最近会话')
   })
 })

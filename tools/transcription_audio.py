@@ -180,6 +180,36 @@ def _convert_caf_to_wav(file_path: str, work_dir: str) -> Optional[str]:
     return None
 
 
+def _convert_audio_to_wav16k(file_path: str, work_dir: str) -> Optional[str]:
+    """Transcode any ffmpeg-decodable input to 16 kHz mono WAV.
+
+    Self-hosted OpenAI-compatible STT engines (phonon, whisper.cpp servers) decode a narrow
+    set — wav/flac/ogg/aiff/mp3 — and reject the AAC/.m4a an iPhone records or the webm a
+    browser captures, while ``SUPPORTED_FORMATS`` accepts all of them upstream. 16 kHz mono
+    is what those engines transcribe on anyway, so converting costs no accuracy and keeps
+    the upload small.
+    """
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        logger.warning("ffmpeg not found; cannot convert %s for a narrow-decoder STT engine", file_path)
+        return None
+    wav_path = os.path.join(work_dir, f"{Path(file_path).stem}.wav")
+    try:
+        _run_quiet(
+            [ffmpeg, "-v", "error", "-y", "-i", file_path, "-ar", "16000", "-ac", "1", wav_path],
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg conversion timed out for %s", file_path)
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.error("ffmpeg conversion failed for %s: %s", file_path, e)
+        return None
+    if not Path(wav_path).is_file() or Path(wav_path).stat().st_size == 0:
+        return None
+    return wav_path
+
+
 # ---- Cloud pre-upload silence trim --------------------------------------
 #
 # Local faster-whisper gets Silero VAD; cloud providers get the raw file, so silence

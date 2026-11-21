@@ -200,7 +200,26 @@ function storeFirstPath(
   const pathModule = pathModuleForPlatform(platform)
   const delimiter = delimiterForPlatform(platform)
   const hermesHome = resolveDesktopHermesHome({ home: homedir, env: currentEnv, platform })
-  const roots = [currentEnv?.HERMES_RUNTIME_DIR, pathModule.join(hermesHome, 'tools')].filter(Boolean)
+  let stampedRuntimeDir: string | null = null
+  try {
+    const stampCandidate = pathModule.join(hermesHome, 'hermes-agent', 'install-stamp.json')
+    if (fs.existsSync(stampCandidate)) {
+      const data = JSON.parse(fs.readFileSync(stampCandidate, 'utf8'))
+      if (data?.runtimeDir && typeof data.runtimeDir === 'string' && fs.existsSync(data.runtimeDir)) {
+        stampedRuntimeDir = data.runtimeDir
+      }
+    }
+  } catch {}
+  const systemDrive = platform === 'win32' ? (currentEnv?.SystemDrive || 'C:') : ''
+  const defaultDedicatedRuntime = platform === 'win32' && fs.existsSync(`${systemDrive}\\HermesRuntime`)
+    ? `${systemDrive}\\HermesRuntime`
+    : null
+  const roots = [
+    currentEnv?.HERMES_RUNTIME_DIR,
+    stampedRuntimeDir,
+    defaultDedicatedRuntime,
+    pathModule.join(hermesHome, 'tools')
+  ].filter(Boolean)
 
   const owned = (entry: string) =>
     roots.some(root => {

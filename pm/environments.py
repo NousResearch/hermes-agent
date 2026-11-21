@@ -246,7 +246,7 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
                 return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
             return Path(value).resolve() if value else _unstamped_store(root)
-    return get_default_hermes_root() / "tools"
+    return _unstamped_store(root)
 
 
 def _unstamped_store(project_root: Path) -> Path:
@@ -257,6 +257,37 @@ def _unstamped_store(project_root: Path) -> Path:
     with the home. The checkout's own launchers exec the owner's interpreter, so a borrowing
     launch resolves the same one (#123238).
     """
+    # 1. If an environment was already committed, check its pyvenv.cfg for home store
+    try:
+        comm = committed_venv(project_root)
+        if comm:
+            cfg = comm / "pyvenv.cfg"
+            if cfg.is_file():
+                for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.strip().startswith("home"):
+                        parts = line.split("=", 1)
+                        if len(parts) == 2:
+                            home_cand = Path(parts[1].strip()).resolve()
+                            cand_store = home_cand.parent
+                            if (cand_store / "facts.json").is_file():
+                                return cand_store
+    except Exception:
+        pass
+
+    # 2. Check HERMES_RUNTIME_DIR environment override if it has facts.json
+    override = os.environ.get("HERMES_RUNTIME_DIR")
+    if override:
+        cand = Path(override).resolve()
+        if (cand / "facts.json").is_file():
+            return cand
+
+    # 3. On Windows, check common dedicated runtime fallback (e.g. %SystemDrive%\HermesRuntime)
+    if sys.platform == "win32" or os.name == "nt":
+        system_drive = os.environ.get("SystemDrive", "C:")
+        cand = Path(f"{system_drive}\\HermesRuntime")
+        if (cand / "facts.json").is_file():
+            return cand
+
     return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
 
 

@@ -11,11 +11,11 @@ from hermes_cli.config_providers import _warn_once_per_provider, coerce_provider
 
 def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     """Canonicalize the ``model`` section at the single load/save chokepoint.
-    Root-level ``provider``/``base_url``/``context_length`` (older layouts) are moved under
-    ``model`` only when the corresponding ``model.*`` key is empty — never overriding. ``api_base``
-    (the OpenAI-SDK/LiteLLM name users reach for) is an alias for ``base_url``; the runtime reads
-    only ``model.base_url``. A dict-valued ``default``/``model``/``name`` is flattened so no reader
-    sees a nested dict, and the id is canonicalized to ``default``.
+    Root-level ``default_model``/``provider``/``base_url``/``context_length`` (older layouts) are
+    moved under ``model`` only when the corresponding ``model.*`` key is empty — never overriding.
+    ``api_base`` (the OpenAI-SDK/LiteLLM name users reach for) is an alias for ``base_url``; the
+    runtime reads only ``model.base_url``. A dict-valued ``default``/``model``/``name`` is flattened
+    so no reader sees a nested dict, and the id is canonicalized to ``default``.
 
     Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the intuitive name OpenAI-SDK /
     LiteLLM users reach for, and ``hermes config set`` blindly accepts any dotted key — so
@@ -40,7 +40,7 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
             model_in.get("api_base")
             or model_in.get("model") or model_in.get("name")
             or any(isinstance(model_in.get(k), dict) for k in ("default", "model", "name"))))
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length", "api_base"))
+    has_root = any(config.get(k) for k in ("default_model", "provider", "base_url", "context_length", "api_base"))
     if not has_root and not needs_model_work:
         return config
 
@@ -48,6 +48,9 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     model = config.get("model")
     model = dict(model) if isinstance(model, dict) else {"default": model} if model else {}
     config["model"] = model
+    if config.get("default_model") and not model.get("default"):
+        model["default"] = config["default_model"]
+    config.pop("default_model", None)
 
     # Flatten ``{provider: <p>, model: <m>}``. The nested provider wins over the merged default
     # ``"auto"`` (which runtime resolution treats as authoritative) but never over a configured one.

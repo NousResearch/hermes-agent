@@ -659,6 +659,21 @@ class TestRootLevelProviderOverride:
         assert result["model"]["provider"] == "correct-provider"
         assert "provider" not in result  # root key still cleaned up
 
+    def test_normalize_root_default_model_without_overriding_model_default(self):
+        """The root alias reaches the same canonical model key on every loader."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys({"default_model": "root-model"})
+        assert result["model"]["default"] == "root-model"
+        assert "default_model" not in result
+
+        result = _normalize_root_model_keys({
+            "default_model": "stale-root-model",
+            "model": {"default": "explicit-model"},
+        })
+        assert result["model"]["default"] == "explicit-model"
+        assert "default_model" not in result
+
 
 
 

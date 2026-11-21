@@ -1437,6 +1437,8 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
+host.revealPane(paneId)                    // bring a contributed pane on screen (user action)
+host.togglePane(paneId)                    // your own pane: on screen → fold it away, else reveal
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
                                            //   Calls made during register() are retired with the
                                            //   plugin; elsewhere prefer ctx.onEvent (always tracked)
@@ -1499,6 +1501,19 @@ registers while the Bots pane holds the sidebar tab and unregisters when the
 user tabs back to Sessions. Feature-detect on older desktops
 (`typeof host.paneVisibility === 'function'`) and fall back to
 always-registered behavior.
+
+`host.togglePane(paneId)` is the toggle behind a plugin's own shortcut or palette
+row. Like ⌘G for Review and ⌃` for the terminal, it asks the layout what is on
+screen rather than flipping a flag of its own. If the pane is on screen, it folds
+away the way its zone's **Minimize** does: the pane keeps its place in the
+layout and the plugin stays enabled. If the pane shares a zone with the
+conversation, the conversation takes the tab back instead. Otherwise the pane
+is revealed, exactly like `host.revealPane`. It only acts on panes a plugin
+contributed (`<pluginId>:<paneId>`). Panes the app owns, such as the
+conversation, Files or Review, are left alone. A hidden pane can unmount like
+any other, so keep state you want back in `ctx.storage`.
+Feature-detect on older desktops (`typeof host.togglePane === 'function'`) and
+fall back to `host.revealPane`.
 
 `host.profileRoutes()` inventories every registered source in the current connection
 registry. Connect-on-demand SSH sources expose a credential-free `default` seed

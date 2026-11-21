@@ -316,12 +316,16 @@ When it suspends its own machine under scale-to-zero, it starts one more
   reports, and it holds a machine-local lock for the URL while it does, so a host
   that runs one gateway per profile sends one stream of reports.
 - **Not passed on.** The URL, like `GATEWAY_RELAY_SLEEP_URL`, is removed from
-  the environment of every process the gateway starts (the terminal tool and
-  every other child) except a gateway it starts or restarts.
+  the environment of the processes the gateway starts for the agent (the
+  terminal tool, agent and delivery workers, credentialed helpers). A gateway it
+  starts or restarts keeps both, and so does `hermes update`, which restarts
+  gateways. A profile's own `GATEWAY_RELAY_SLEEP_URL` still wins for that
+  profile's gateway. A gateway started by hand from the terminal tool has
+  neither.
 - **Interval.** Two minutes with 10% jitter, unless the receiver sets another.
   A stored reply may carry `Report-Interval: <seconds>`, a positive whole
-  number; the gateway then reports at that interval, kept within 1 and 10
-  minutes, with the same jitter. A stored reply without a valid one sets the
+  number; the gateway then reports at that interval, kept within 60 and 600
+  seconds, with the same jitter. A stored reply without a valid one sets the
   interval back to two minutes, and the header on any other reply is ignored.
   The interval is held in memory only, never in a file, `config.yaml` or the
   environment: every gateway process starts at two minutes and sends its first

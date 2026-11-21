@@ -80,7 +80,7 @@ def profile_gateway_restart_env(home: Optional[str]) -> Optional[dict[str, str]]
     env["HERMES_HOME"] = str(target)
     apply_scratch_tmp_env(env)
     env.update((k, v) for k, v in build_profile_secret_scope(target).items() if v is not None)
-    return env  # built from os.environ, so the deployment's launch stamps are already here
+    return env
 
 
 def restart_watcher_env(run_argv: list[str], *, host: bool, home: Optional[str]) -> dict[str, str]:

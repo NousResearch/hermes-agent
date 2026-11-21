@@ -296,6 +296,8 @@ class CLIStatusBarMixin:
 
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
+        # display.show_cost (T2.5): the agent's own running estimate; no data -> no segment.
+        snapshot["cost_usd"] = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1022,7 +1024,7 @@ class CLIStatusBarMixin:
         """Ordered status-bar segments for one width tier (<52 / <76 / wide), each a list of
         ``(style, text)`` fragments. Shared by the plain-text and prompt_toolkit renderers so
         the two can never drift; ``styled`` selects the graphical context bar."""
-        from cli import format_token_count_compact
+        from cli import CLI_CONFIG, format_token_count_compact
         model_short = snapshot["model_short"]
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
@@ -1073,9 +1075,16 @@ class CLIStatusBarMixin:
                     ])
                 else:
                     segs.append([(bar_style, percent_label)])
-            cache = self._cache_hit_rate(snapshot, precision=1 if wide else 0)
-            if cache:
-                add("cache_hit", self._cache_hit_rate_style(cache[0]), cache[1])
+            # display.show_cache (T5.3): the ◎ segment ships by default; the knob hides it.
+            if CLI_CONFIG.get("display", {}).get("show_cache", True):
+                cache = self._cache_hit_rate(snapshot, precision=1 if wide else 0)
+                if cache:
+                    add("cache_hit", self._cache_hit_rate_style(cache[0]), cache[1])
+            # display.show_cost (T2.5): $ spent so far, only when there is real cost data.
+            if _ok("cost") and CLI_CONFIG.get("display", {}).get("show_cost", False):
+                cost = float(snapshot.get("cost_usd") or 0.0)
+                if cost > 0:
+                    add("cost", _DIM, f"${cost:.4f}")
             if wide:
                 for name, key, glyph in (
                     ("latency", "avg_latency_label", "◷"), ("tps", "avg_velocity_label", "↑")):

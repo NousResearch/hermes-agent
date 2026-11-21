@@ -13,6 +13,7 @@ inside the test, which overrides this fixture's value for that scope.
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -84,6 +85,24 @@ def _reset_session_context_vars():
     _reset_all()
 
 
+_CLAIM_LOCK = threading.Lock()
+
+
+def claim_stamp(store, session_id):
+    """The fence a real claim of *session_id* in *store* stamps (``owner_epoch``, ``generation``), claimed (and settled,
+    so the session can be claimed again) the way the owner's drain claims a cron fire: the owner execution seam fences
+    the run's writes by its row's stamp, so a stamp the store never issued would refuse them. Every claim keeps the
+    store's current epoch: beginning a new one is a takeover, which would fence out a concurrent run."""
+    with _CLAIM_LOCK:
+        epoch = store.runtime.current_epoch() or store.runtime.begin_epoch(instance_id="cron-owner")
+    store.admissions.admit(epoch=epoch, principal_id="cron-owner", session_id=session_id,
+                           request_id=f"claim-{uuid4().hex}", payload={"text": ""})
+    claimed = store.admissions.claim(epoch=epoch, session_id=session_id)
+    store.admissions.settle(epoch=epoch, admission_id=claimed.admission_id, generation=claimed.generation,
+                            outcome="completed")
+    return {"owner_epoch": claimed.owner_epoch, "generation": claimed.generation}
+
+
 def owner_execution_runner():
     """The production owner execution seam as a ``run_canonical_job`` replacement.
 
@@ -107,7 +126,8 @@ def owner_execution_runner():
                 source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
         request_id = execution_id or identity
         row = {"admission_id": identity, "request_id": request_id,
-               "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": extra_prompt or ""}}
+               "principal_id": "cron-owner", "payload": {"text": extra_prompt or ""},
+               **claim_stamp(store, ref.session_id)}
         policy = SimpleNamespace(request_json=json.dumps({
             "cron_job": job, "extra_prompt": extra_prompt, "request_id": request_id}))
 

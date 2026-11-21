@@ -2,6 +2,10 @@
 
 ``placement='profile'`` is the bound profile's ``state.db``: its writes go through the registered holder's ``_execute_write``, which always begins ``BEGIN IMMEDIATE``, with the hosted-room patience, and its reads through the holder's read path with the hosted-room lock wait. ``placement='shared'`` is the root ``shared-state.db`` of the install the bound store's folder belongs to; each write opens the file's connection (WAL, foreign keys, 10 s busy wait) under one lock per file per process and begins as main's transaction for the same verb begins: ``BEGIN IMMEDIATE`` when ``immediate``, else Python's implicit begin before the first data-changing statement; each read opens a connection that changes neither journal mode nor schema on a ready file. On a read-only store handle every write refuses with ``PermanentStoreError`` before any file is opened, and a shared read opens the file ``mode=ro``: a missing file is ``StoreUnavailable``, one whose steps are not current is refused, and neither is created or migrated.
 
+Every verb serves local profiles only: while a hosted scope is bound each refuses (``ScopePinRefused``) before it opens a file, the profile placement through the holder (``SQLiteStore.holder``), the shared one through ``SQLiteStore.require_open``, which ``path`` calls.
+
+A claimed turn's shared write is held to the turn's fence. The fence's counters (authority epoch, session generation) live in the profile's ``state.db``, not in ``shared-state.db``, so when (and only when) a claimed turn this store issued is bound (``_turn_fence.turn_fence_for`` of the profile holder is not ``None``) the shared transaction runs nested inside the profile holder's ``_execute_write``: the fence is checked in the profile store's ``BEGIN IMMEDIATE``, and a takeover, which writes the epoch on the profile store, cannot land between that check and the shared commit. A superseded turn's shared write publishes nothing. Outside a claimed turn the shared write takes no lock of the profile store. Lock order, which every path holding both keeps: the module-level preparation locks of the hosted-room families (``hosted_room_attachments._STARTED_LOCK``, ``hosted_room_policy._PREPARED_LOCK``), then the profile holder's writer lock and its ``BEGIN IMMEDIATE`` on ``state.db``, then this module's per-file lock and ``BEGIN IMMEDIATE`` on ``shared-state.db``. No path takes the profile store's write lock while holding the shared file's: a shared transaction's callback writes only its own connection, and the profile-placement import from the shared file (``import_fenced_rooms``) reads that file through a ``mode=ro`` connection inside the profile write, which waits for no write lock.
+
 A ``HostedFiles`` carries the schema steps its verbs run when they open the file: each step is a ``(ready, initialize)`` pair, and before the transaction every step whose ``ready`` is false runs ``initialize`` in its own ``BEGIN IMMEDIATE``, as main's hosted-room connections do. A read on a file whose steps are current writes nothing.
 """
 
@@ -11,14 +15,17 @@ import sqlite3
 import threading
 from contextlib import closing
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 from persistence import PermanentStoreError, StoreContention
+from persistence.core.fences import writing_turn
 from persistence.gateway.hosted_rooms import HostedPlacement
 from session_rules.hosted_rooms import _JOURNAL_MODE_LOCK_RETRIES
 from sqlite_support import open_db, read_only_db_uri
 
 from .._backend import SQLiteStore
+from .._holder import StoreHolder
+from .._turn_fence import turn_fence_for
 
 __all__ = ["HostedFiles", "SchemaStep", "file_identity", "shared_state_path"]
 
@@ -147,6 +154,39 @@ class HostedFiles:
             self._prepare_profile()
             return self._store.holder()._execute_write(fn, patience_s=HOSTED_PATIENCE_S)
         path = self.path(placement)
+        holder = self._claimed_turn_holder()
+        if holder is None:
+            return self._shared_write(path, fn, immediate=immediate)
+        outcome: list[Any] = []
+
+        def fenced(_profile_conn: sqlite3.Connection) -> None:
+            # Runs after the fence check, inside the profile store's BEGIN IMMEDIATE. The shared transaction's own
+            # failure is carried out, not raised here: the profile holder must not retry it, rewrite it as its own
+            # lock error, or quarantine its own file over the shared file's damage. Never run twice: a replay by the
+            # holder after the shared transaction committed would publish it again.
+            if outcome:
+                return
+            try:
+                outcome.append((True, self._shared_write(path, fn, immediate=immediate)))
+            except Exception as exc:  # health: allow BLE001 -- re-raised unchanged once the profile write ends
+                outcome.append((False, exc))
+
+        holder._execute_write(fenced, patience_s=HOSTED_PATIENCE_S)
+        ok, value = outcome[-1]
+        if not ok:
+            raise value
+        return value
+
+    def _claimed_turn_holder(self) -> Optional[StoreHolder]:
+        """The profile store's holder when a claimed turn this store issued is bound (its write must hold the turn's
+        fence), else ``None``. Outside any turn this costs one context-variable read and opens nothing."""
+        if writing_turn() is None:
+            return None
+        holder = self._store.holder()
+        return holder if turn_fence_for(holder) is not None else None
+
+    def _shared_write(self, path: Path, fn: Callable[[sqlite3.Connection], T], *, immediate: bool) -> T:
+        """One transaction on the shared file under this process's lock for it, as every shared write runs."""
         lock = _file_lock(path)
         if not lock.acquire(timeout=HOSTED_PATIENCE_S):
             raise StoreContention(f"another write in this process held {path} for {HOSTED_PATIENCE_S:g} s")

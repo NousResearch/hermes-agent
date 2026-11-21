@@ -316,7 +316,7 @@ async def execute(authority, ref, row, policy):
 
         from agent.runtime_scope import bind_turn, claim_fence
         with (_profile_runtime_scope(authority_persistence(authority).scope.profile_dir),
-              bind_turn(ref.session_id, row['admission_id'], claim_fence(row))):
+              bind_turn(ref.session_id, row['admission_id'], claim_fence(row), store=authority_persistence(authority).scope)):
             # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
             # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
             stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)

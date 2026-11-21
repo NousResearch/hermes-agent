@@ -23,14 +23,21 @@ def _owning_home(home):
             reset_hermes_home_override(token)
 
 
+# display_metadata flag on a ``hold_stream`` turn's published reply: its commentary items stay for
+# model replay, but the transform never saw them, so no history projection shows them.
+COMMENTARY_WITHHELD = "commentary_withheld"
+
+
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
-    """Use the same think stripping and secret redaction as live delivery."""
+    """Use the same think stripping, memory-context fence and secret redaction as live delivery."""
+    from agent.memory_context import fence_recalled_context
+
     if strip_thinking is None:
         from agent.agent_runtime_helpers import strip_think_blocks
 
         strip_thinking = lambda value: strip_think_blocks(None, value)
 
-    visible = strip_thinking(text).strip()
+    visible = fence_recalled_context(strip_thinking(text).strip())
     return redact_sensitive_text(visible) if visible else visible
 
 
@@ -57,20 +64,20 @@ def _phase_message_items(message: dict, phases: frozenset[str | None]) -> list[s
         normalized_phase = phase.strip().lower() if isinstance(phase, str) else None
         if normalized_phase not in phases or not isinstance(content, list):
             continue
+        # Keep whitespace-only parts, as live delivery does: a newline can make the next tag a block.
         text = "".join(
             part["text"]
             for part in content
             if isinstance(part, dict)
             and part.get("type") == "output_text"
             and isinstance(part.get("text"), str)
-            and part["text"].strip()
         ).strip()
         if text:
             result.append(text)
     return result
 
 
-def _commentary_items(message: dict) -> list[str]:
+def commentary_items(message: dict) -> list[str]:
     return _phase_message_items(message, frozenset({"commentary"}))
 
 
@@ -112,13 +119,13 @@ def _without_flattened_commentary(reasoning: str, commentary: list[str]) -> str:
 def _project_one(message: dict, *, enabled: bool) -> dict:
     if message.get("role") != "assistant" or message.get("display_kind") == "hidden":
         return message
-    raw = _commentary_items(message)
+    raw = commentary_items(message)
     if not raw:
         return message
     projected = dict(message)
     # A disabled profile must not recover raw sidecar text on the frontend.
     projected["display_commentary"] = []
-    if enabled:
+    if enabled and not (message.get("display_metadata") or {}).get(COMMENTARY_WITHHELD):
         projected["display_commentary"] = [
             part for text in raw if (part := visible_commentary(text))
         ]

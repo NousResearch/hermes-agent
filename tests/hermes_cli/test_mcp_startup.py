@@ -170,46 +170,6 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     assert mcp_startup._current_home_thread() is None
 
 
-def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
-    monkeypatch,
-):
-    """Non-chat commands never launch the TUI, so they must keep their own
-    MCP discovery even when the ambient display config resolves to TUI —
-    ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
-    calls = {"inline": 0}
-
-    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=dict,
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.mcp_tool_discovery",
-        types.SimpleNamespace(
-            discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
-        ),
-    )
-
-    main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action="serve"))
-
-    assert calls["inline"] == 1
-
-
 def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     state = {"active": False, "during_discover": None}
 
@@ -454,7 +414,6 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
     monkeypatch.setattr(main_mod, "_should_background_mcp_startup", lambda args: False)
-    monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
 

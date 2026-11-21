@@ -4,6 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence_assembly import close_stores_under, store_location
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 
@@ -13,7 +16,7 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
     from gateway.run import _profile_runtime_scope
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
 
@@ -27,8 +30,8 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
         _name, home = homes[1]
         authority = runner.session_authorities.for_home(home)
         assert authority is not runner.session_authority  # a secondary, never the launch authority
-        assert runner.session_store._routing_db.db_path != authority.db.db_path  # the bug's premise
-        actor = Principal('owner', authority.profile_id,
+        assert store_location(runner.session_store._routing_persistence.scope) != store_location(authority.persistence.scope)  # the bug's premise
+        actor = SessionActor('owner', authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
         with _profile_runtime_scope(home, {}):
             ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui',
@@ -47,18 +50,18 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
                 session_id=ref.session_id, request_id='delete', expected_revision=0,
                 expected_generation=0, operation='delete', payload={}))
         assert result.get('deleted_ids') == [ref.session_id]
-        assert authority.db.get_session(ref.session_id) is None
+        assert session_row(authority.persistence, ref.session_id) is None
         assert runner.session_store.lookup_by_session_id(ref.session_id) is None
         # The secondary's routes live in the launch home's shared index: the delete drops its
         # durable row there too, not only at the next whole-index save (a crash in between kept
         # a messaging route to a deleted session).
-        routing_db = runner.session_store._routing_db
-        assert not routing_db._read_all(
+        routing_db = runner.session_store._routing_persistence
+        assert not raw_holder(routing_db)._read_all(
             'SELECT session_key FROM gateway_routing WHERE json_extract(entry_json, ?) = ?',
             ('$.session_id', ref.session_id))
     finally:
         for a in list(getattr(runner, 'session_authorities', None) or []):
-            a.db.close()
+            close_stores_under(store_location(a.persistence.scope))
         for _, home in homes:
             process_ownership.release(home)
 
@@ -73,7 +76,7 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session import SessionEntry
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
 
@@ -86,7 +89,7 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
         await initialize_gateway_runtime(runner)
         _name, home = homes[1]
         authority = runner.session_authorities.for_home(home)
-        actor = Principal('owner', authority.profile_id,
+        actor = SessionActor('owner', authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
         store = runner.session_store
         key = 'agent:main:telegram:222'
@@ -102,12 +105,12 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
                 session_id=ref.session_id, request_id='delete', expected_revision=0,
                 expected_generation=0, operation='delete', payload={}))
             store._persist_routing_data(*stale)
-        routing_db = store._routing_db
-        assert key not in routing_db.load_gateway_routing_entries(scope=store._routing_scope())
-        assert authority.db.get_session(ref.session_id) is None
+        routing_db = store._routing_persistence
+        assert key not in routing_db.routing.load_routing_entries(routing_scope=store._routing_scope())
+        assert session_row(authority.persistence, ref.session_id) is None
     finally:
         for a in list(getattr(runner, 'session_authorities', None) or []):
-            a.db.close()
+            close_stores_under(store_location(a.persistence.scope))
         for _, home in homes:
             process_ownership.release(home)
 
@@ -137,20 +140,20 @@ def test_a_failed_shared_fence_fails_the_canonical_delete_not_the_prune(monkeypa
     delete refuses ``storage_unavailable`` (its exact retry repeats the fence); a bulk prune,
     which has no retry receipt, keeps its committed result and only logs."""
     from gateway.session_mutations import retire_live_sessions
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     for target in ('gateway.session_policy.release_launch_secrets',
                    'gateway.session_local_mcp.release_editor_mcp',
                    'gateway.session_worker_construct.release_session_prefill'):
         monkeypatch.setattr(target, lambda *a, **k: None)
 
-    def broken(ids):
+    def broken(ids, **_):
         raise OSError('disk gone')
     store = SimpleNamespace(retire_runtime_sessions=lambda ids: None, fence_retired_routes=broken,
-                            _routing_db=SimpleNamespace(db_path='/launch/state.db'))
+                            _routing_persistence=SimpleNamespace(scope='/launch'))
     authority = SimpleNamespace(runner=SimpleNamespace(session_store=store), profile_id='p',
-                                db=SimpleNamespace(db_path='/secondary/state.db'), sessions={})
-    with pytest.raises(RuntimeStoreError) as raised:
+                                persistence=SimpleNamespace(scope='/secondary'), sessions={})
+    with pytest.raises(AuthorityRefusal) as raised:
         retire_live_sessions(authority, ['gone'], require_fence=True)
     assert raised.value.reason == 'storage_unavailable'
     retire_live_sessions(authority, ['gone'])

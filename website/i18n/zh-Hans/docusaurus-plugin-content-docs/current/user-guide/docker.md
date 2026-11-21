@@ -176,7 +176,7 @@ Hermes 支持[多个 profile](../reference/profile-commands.md)——独立的 `
 
 每个通过 `hermes profile create <name>` 创建的 profile 都会获得：
 
-- 一个专用的 s6 服务槽位 `/run/service/gateway-<name>/`，运行时动态注册，无需重建镜像。
+- 一个专用的 s6 服务槽位 `/run/hermes-service/gateway-<name>/`，运行时动态注册，无需重建镜像。
 - 崩溃后的自动重启，由 `s6-supervise` 管理退避。
 - 每个 profile 独立的轮转日志：`${HERMES_HOME}/logs/gateways/<name>/current`。
 - 跨容器重启的状态持久化：启动协调器会读取该 profile 的 `gateway_state.json`，仅在上次记录状态为 `running` 时自动拉起。
@@ -283,7 +283,7 @@ docker run -d \
 - 预构建的 TUI/dashboard 和 Photon sidecar 依赖，以及 s6-overlay。
 
 Chromium 由 PM 准备，不使用 `npx playwright install`。
-实际可执行路径记录在 `/etc/hermes/agent-browser-executable-path`。
+实际可执行路径记录在 `/etc/hermes/chromium-executable-path`，Hermes 启动浏览器时读取该文件。
 `PLAYWRIGHT_BROWSERS_PATH` 指向 `/opt/hermes/tools`，不在数据卷内。
 
 所有镜像（包括不带 `-desktop` 后缀的标签）都携带完整 Chromium，而不是 Playwright
@@ -309,7 +309,7 @@ PID-1 路径先准备数据卷和配置，重建各 profile 的 gateway 服务�
 
 ### Per-profile gateway 监管 {#per-profile-gateway-supervision}
 
-在容器内，每个通过 `hermes profile create <name>` 创建的 profile 都会自动在 `/run/service/gateway-<name>/` 注册一个受 s6 监管的 gateway 服务。你在宿主机上运行的生命周期命令在此同样适用：
+在容器内，每个通过 `hermes profile create <name>` 创建的 profile 都会自动在 `/run/hermes-service/gateway-<name>/` 注册一个受 s6 监管的 gateway 服务。你在宿主机上运行的生命周期命令在此同样适用：
 
 ```sh
 hermes profile create coder            # 注册 gateway-coder s6 槽
@@ -326,7 +326,7 @@ hermes profile delete coder            # 拆除 s6 槽
 - `docker restart` 保留运行中的 gateway：cont-init 协调器读取 `$HERMES_HOME/profiles/<name>/gateway_state.json`，若上次记录状态为 `running` 则恢复该槽。已停止的 gateway 保持停止状态。
 - 各 profile 的 gateway 日志持久化于 `$HERMES_HOME/logs/gateways/<profile>/current`（由 `s6-log` 轮转），协调器的操作记录在每次启动时追加到 `$HERMES_HOME/logs/container-boot.log`。
 
-在容器内执行 `hermes status` 会显示 `Manager: s6 (container supervisor)`。使用 `/command/s6-svstat /run/service/gateway-<name>` 查看原始 supervisor 状态（注意 `/command/` 仅在监管树进程的 PATH 中；从 `docker exec` 调用时请传入绝对路径）。
+在容器内执行 `hermes status` 会显示 `Manager: s6 (container supervisor)`。使用 `/command/s6-svstat /run/hermes-service/gateway-<name>` 查看原始 supervisor 状态（注意 `/command/` 仅在监管树进程的 PATH 中；从 `docker exec` 调用时请传入绝对路径）。
 
 ## 升级
 
@@ -586,7 +586,7 @@ chmod -R 755 ~/.hermes
 
 ### 浏览器工具无法使用
 
-Playwright 需要共享内存。在 Docker run 命令中添加 `--shm-size=1g`：
+Chromium 需要共享内存。在 Docker run 命令中添加 `--shm-size=1g`：
 
 ```sh
 docker run -d \

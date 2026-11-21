@@ -1,0 +1,38 @@
+name: remesher
+title: Remesher
+repo: https://github.com/remesher/remesher
+sha: 5f48a067722e10f0c08d368698fc03b05855bb89
+subdir: integrations/hermes
+version: "0.2.1"
+description: >-
+  Bounded image-to-GLB jobs using an isolated Remesher CLI, with existing
+  ComfyUI/Comfy3D or native TRELLIS.2 and Pixal3D runtimes. Four Python SDK tools
+  provide health, generation, persistent job status and hashed GLB assets, plus a
+  setup/generation skill. Apache-2.0 for Remesher code; third-party terms remain separate.
+  Disclosure — reads selected local images and configured files, uploads images to
+  the configured ComfyUI server, launches local CLI subprocesses and detached
+  supervisors, optionally owns a GPU runtime, and stores inputs, logs and assets
+  in profile plugin data. Client/runtime installation and model downloads require
+  separate explicit opt-ins; no model weights are bundled. No credentials or
+  telemetry are required. No Desktop viewer or hosted service is included.
+maintainer: remesher
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+platforms: [linux]
+readme: true
+docs_url: https://github.com/remesher/remesher/blob/5f48a067722e10f0c08d368698fc03b05855bb89/integrations/hermes/README.md
+known_issues:
+  - Native inference tested on Linux ARM64 NVIDIA Spark only; macOS, Windows, CPU, MPS and ROCm inference are not certified.
+  - Requires Python 3.11+, a separately installed CLI and configured runtime/model files. Native quality settings are explicit resource-intensive opt-ins, not automatic defaults.
+  - Single-image quality remains provisional; no automatic background removal, manifold, watertightness or production-anatomy guarantee.
+  - One active job per profile; retention is manual and native runtime logs are not size-capped. Local timeout does not cancel work on an existing remote server.
+capabilities:
+  provides_tools:
+    - remesher_health
+    - remesher_generate
+    - remesher_job
+    - remesher_assets
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

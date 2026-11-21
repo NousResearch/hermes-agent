@@ -6,6 +6,10 @@ export const frSessionCommands = {
   undidOther: (count: string) => `${count} messages annulés — le message retiré est dans la zone de saisie`,
   retryNothing: 'rien à réessayer',
   retryUnsupported: '/retry : impossible de réessayer un contenu multimédia ou des parties inconnues',
+  busy: (command: string) =>
+    `session occupée — Hermes est encore en train de répondre. Arrêtez d’abord la réponse en cours (bouton Arrêter ou Ctrl+C dans un terminal), puis lancez /${command}.`,
+  busyCompressing: (command: string) =>
+    `session occupée — un /compress est en cours ; lancez /${command} quand il sera terminé.`,
   steerUsage: 'utilisation : /steer <prompt>',
   steerQueued: (preview: string) => `orientation en file — arrive après le prochain appel d’outil : « ${preview} »`,
   steerNoActiveTurn: (preview: string) => `aucun tour actif — mis en file pour le suivant : « ${preview} »`,

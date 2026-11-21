@@ -27,21 +27,35 @@ def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=Fal
     return _bootstrap(authority, ref, row, policy, scope), (authority, ref, row, policy, scope)
 
 
-@pytest.mark.parametrize('unattended', [False, True])
-def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monkeypatch, unattended):
+@pytest.mark.parametrize('finite, unattended', [(False, False), (True, False), (True, True)])
+def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monkeypatch, finite, unattended):
     from agent import managed_worker as worker
     from gateway.session_finite import finite_turn_required, unattended_turn
+    from hermes_scope import Fence, current_scope
     from tools.approval import _yolo_active, clear_session
-    frame, _ = assignment(tmp_path, monkeypatch, unattended=unattended)
-    observed, frames = [], []
+    frame, _ = assignment(tmp_path, monkeypatch, finite=finite, unattended=unattended)
+    frame['scope'].update(epoch=3, generation=8)  # distinct, so a swapped fence is caught
+    import hermes_cli.config
+    from agent.agent_init import _init_prompt_cache_config
+
+    monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
+    for key in ("HERMES_SESSION_SOURCE", "HERMES_SESSION_SOURCE_EXPLICIT", "HERMES_SINGLE_QUERY_SESSION"):
+        monkeypatch.delenv(key, raising=False)
+    observed, frames, scopes, cache_ttls, adaptive = [], [], [], [], []
 
     class Agent:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.platform = kwargs.get('platform')
+            self._anthropic_prompt_cache_policy = lambda: (True, True)
+            _init_prompt_cache_config(self)
+            cache_ttls.append(self._cache_ttl)
+            adaptive.append(self._cache_ttl_adaptive)
             self.session_prompt_tokens = 100
             self.session_completion_tokens = 20
         def run_conversation(self, text, **kwargs):
             observed.append((finite_turn_required(), unattended_turn(), _yolo_active()))
+            scopes.append(current_scope())
             self.kwargs['tool_start_callback']('call-1', 'read_file', {'path': 'report.txt'})
             self.kwargs['tool_complete_callback']('call-1', 'read_file', {'path': 'report.txt'},
                                                  '{"error":"file missing"}')
@@ -71,14 +85,18 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)
     monkeypatch.setattr(worker, 'retire_agent', lambda agent: None)
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
-    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
+    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 3})
     monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
     monkeypatch.setattr('run_agent.AIAgent', Agent)
     monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
     clear_session('managed-contract')  # the child owns a fresh approval registry
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: frames.append({'type': kind, **payload})))
-    assert observed == [(True, unattended, unattended)]
+    # Both start on 5m; only the person's (non-finite) chat is marked to move to 1h at its first pause.
+    assert cache_ttls == ['5m'] and adaptive == [not finite]
+    assert observed == [(finite, unattended, unattended)]
+    # The worker's one turn runs under the fence its owner claimed it with.
+    assert [(s.session, s.turn, s.fence) for s in scopes] == [('sid', 'x', Fence(3, 8))]
     receipt = next(f for f in frames if f['type'] == 'result')
     assert receipt['result']['completed'] is False
     assert receipt['result']['estimated_cost_usd'] == .02
@@ -144,12 +162,13 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
     class Worker:
         def __init__(self, process):
             self.stop = asyncio.Event()
+            self.stop_cause = None
         def interrupt(self):
             self.stop.set()
         async def next_frame(self, *args, **kwargs):
-            from hermes_state_runtime import RuntimeStoreError
+            from persistence.core.errors import AuthorityRefusal
             assert self.stop.is_set(), 'pending Stop was not adopted'
-            raise RuntimeStoreError('managed_worker_stopped')
+            raise AuthorityRefusal('managed_worker_stopped')
         def close(self): pass
     monkeypatch.setattr(managed, '_worker_env', env)
     monkeypatch.setattr(managed.subprocess, 'Popen', lambda *a, **k: object())

@@ -16,7 +16,16 @@ logger = logging.getLogger("tools.process_registry")
 
 
 def _entry_key(entry: dict[str, Any]) -> tuple:
-    return entry.get("session_id"), entry.get("owner_pid"), entry.get("owner_started_at")
+    return entry.get("session_id"), *_entry_writer(entry)
+
+
+def _entry_writer(entry: dict[str, Any]) -> tuple:
+    """``(pid, start time)`` of the process that wrote ``entry``. The writer is not always the
+    ``owner_pid`` gateway (a managed worker's jobs are its owner's); an entry written before the
+    writer was recorded names only that owner, with no start time."""
+    if "writer_pid" in entry:
+        return entry.get("writer_pid"), entry.get("writer_started_at")
+    return entry.get("owner_pid"), None
 
 
 def _written_by(entry: dict[str, Any], writer: dict[str, Any], *, lenient: bool = True) -> bool:
@@ -27,8 +36,8 @@ def _written_by(entry: dict[str, Any], writer: dict[str, Any], *, lenient: bool 
     does not, or that later process would erase the dead writer's recovery record."""
     from gateway.status import start_time_fingerprints_match
 
-    recorded, current = entry.get("owner_started_at"), writer["owner_started_at"]
-    if entry.get("owner_pid") != writer["owner_pid"]:
+    (pid, recorded), current = _entry_writer(entry), writer["writer_started_at"]
+    if pid != writer["writer_pid"]:
         return False
     if recorded is None or current is None:
         return lenient or recorded is current
@@ -45,19 +54,30 @@ class ProcessCheckpointMixin:
     def _checkpoint_writer(self, pid: Optional[int] = None) -> dict[str, Any]:
         """Identity of ``pid`` (default: this process) as stamped on its checkpoint entries."""
         pid = pid or os.getpid()
-        return {"owner_pid": pid, "owner_started_at": self._safe_host_start_time(pid)}
+        return {"writer_pid": pid, "writer_started_at": self._safe_host_start_time(pid)}
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, consumed=frozenset()):
         """Replace this process's entries in the checkpoint file atomically. Other writers'
         entries stay (a dead writer's wait for recovery) unless recovery ``consumed`` them."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
+        from tools.environments.sandbox_scope import hosted_scope
 
+        # A hosted caller only changes its own agent's records, which are never persisted here, so
+        # it has no host change to write: it neither takes the lock nor rewrites this host's file.
+        if hosted_scope() is not None:
+            return
+        from agent.runtime_session_store import is_worker_process
+        # Every interpreter on the home writes this file; ``hermes update --force`` sweeps only what
+        # the gateway it killed owns (update_cmd_force_stop): a managed worker's jobs are its owner's.
+        owner_pid = os.getppid() if is_worker_process() else os.getpid()  # windows-footgun: ok — getppid exists on Windows
         try:
             writer = self._checkpoint_writer()
             with self._lock:
                 entries = []
                 for s in self._running.values():
-                    if s.exited:
+                    # A hosted agent's process is not this host's to persist: its record (command,
+                    # cwd, owner) stays in memory, whoever triggers the write (scoped or not).
+                    if s.exited or s.sandbox_key:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -70,6 +90,7 @@ class ProcessCheckpointMixin:
                     # See #77484.
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
+                    entry["owner_pid"] = owner_pid
                     entries.append(entry)
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
@@ -117,6 +138,9 @@ class ProcessCheckpointMixin:
         )
         from tools.process_registry_output_log import adoptable_log
 
+        # This host adopts what a crashed predecessor left running, so the jobs it starts must
+        # survive its own crash for the next one: they stay out of the owner-death supervisor.
+        self._jobs_outlive_host = True
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
             return 0
@@ -128,7 +152,7 @@ class ProcessCheckpointMixin:
         unresolved_scope_entries: list[dict[str, Any]] = []
         writer, consumed = self._checkpoint_writer(), set()
         for entry in entries:
-            owner = entry.get("owner_pid")
+            owner, _ = _entry_writer(entry)
             if owner is None:
                 # Written before entries named their writer, which may be a CLI still running the
                 # job: adopting it would hand that job to this process's shutdown kill_all.
@@ -187,7 +211,7 @@ class ProcessCheckpointMixin:
             fields.update(
                 command=entry.get("command", "unknown"),
                 owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
-                started_at=entry.get("started_at", time.time()))
+                started_at=entry.get("started_at", time.time()), sandbox_key=entry.get("sandbox_key", ""))
             # detached: no Popen handle, but can report status + kill; a worker spawn's output log
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log

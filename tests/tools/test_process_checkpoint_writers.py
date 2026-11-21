@@ -113,14 +113,33 @@ def test_a_writer_on_a_recycled_pid_keeps_the_dead_writers_unfingerprinted_entri
     path = _checkpoint_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     orphan = {"session_id": "proc_dead_writer", "pid": 999999, "pid_scope": "host", "command": "sleep 600",
-              "owner_pid": os.getpid(), "owner_started_at": None}
+              "owner_pid": os.getpid(), "writer_pid": os.getpid(), "writer_started_at": None}
     path.write_text(json.dumps([orphan]), encoding="utf-8")
 
     registry = ProcessRegistry()
-    assert registry._checkpoint_writer()["owner_started_at"] is not None
+    assert registry._checkpoint_writer()["writer_started_at"] is not None
     registry._write_checkpoint()
 
     assert [e["session_id"] for e in json.loads(path.read_text(encoding="utf-8"))] == ["proc_dead_writer"]
+
+
+def test_a_managed_workers_entries_name_its_owner_yet_stay_its_own(monkeypatch):
+    """A managed worker's jobs are its owner's (``owner_pid``, what ``hermes update --force``
+    sweeps), yet the worker is their writer: its next checkpoint drops a job it no longer runs."""
+    from agent import runtime_session_store
+    from tools.process_registry import ProcessSession, _checkpoint_path
+
+    monkeypatch.setattr(runtime_session_store, "is_worker_process", lambda: True)
+    registry = ProcessRegistry()
+    registry._running["proc_worker_job"] = ProcessSession(
+        id="proc_worker_job", command="sleep 600", pid=os.getpid(), pid_scope="host", host_start_time=1.0)
+    registry._write_checkpoint()
+    [entry] = json.loads(_checkpoint_path().read_text(encoding="utf-8"))
+    assert (entry["owner_pid"], entry["writer_pid"]) == (os.getppid(), os.getpid())
+
+    registry._running.clear()
+    registry._write_checkpoint()
+    assert json.loads(_checkpoint_path().read_text(encoding="utf-8")) == []
 
 
 def test_detached_finish_never_replaces_the_producers_saved_result():

@@ -20,7 +20,7 @@ def test_owner_checkpoint_write_keeps_a_live_worker_handoff(tmp_path, monkeypatc
     from tools import process_registry as pr
     from tools.process_registry_output_log import output_dir
     checkpoint = tmp_path / 'processes.json'
-    monkeypatch.setattr(pr, 'CHECKPOINT_PATH', checkpoint)
+    monkeypatch.setattr(pr, '_checkpoint_path', lambda: checkpoint)
     logs = output_dir()
     logs.mkdir(parents=True)
     worker_proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdin=subprocess.DEVNULL)

@@ -54,7 +54,6 @@ def _make_runner():
     runner.session_store = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._background_tasks = set()
     runner._session_db = None
     runner._reasoning_config = None
@@ -73,7 +72,6 @@ def _clear_approval_state():
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
-    mod._pending.clear()
 
 
 def _wait_until(predicate, timeout=30.0, interval=0.02):

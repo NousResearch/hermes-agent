@@ -170,6 +170,8 @@ jobs:
           if [ -n "$INSTALL_REF" ]; then
             [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
             [ "$INSTALL_REF" != "$EXCLUDE_REF" ] || { echo "Candidate cannot be its own baseline" >&2; exit 1; }
+            git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null 2>&1 \
+              || git fetch --quiet --no-tags origin "+refs/tags/$INSTALL_REF:refs/tags/$INSTALL_REF"
             git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
             tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
           elif [ "$RELEASE_MODE" = true ]; then
@@ -233,7 +235,7 @@ jobs:
     name: Validate pinned bundle transitions
     # Bundled legs need dispatch-only manifests.
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       windows: ${{ steps.inputs.outputs.windows }}
       macos: ${{ steps.inputs.outputs.macos }}
@@ -243,13 +245,20 @@ jobs:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
+      # The repo's engines require the locked Node (>=26); the runner's system Node is older.
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache: false
+          cache-python: false
+          cache-node: false
       - id: inputs
         env:
           BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}
           BUNDLE_MACOS_MANIFEST: ${{ inputs.macos-bundle-manifest }}
           BUNDLE_ROUTE: ${{ inputs.route }}
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
+          pnpm install --frozen-lockfile --ignore-scripts
           node tests/install/e2e-assets/bundle-plan.mjs
 
   windows-bundled:

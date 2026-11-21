@@ -1,20 +1,23 @@
 """Exact execution results commit with settlement, before delivery/publication."""
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
-
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
-from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
-def record_unexecuted_failure(reply):
+def record_unexecuted_failure(reply, reason=None, error=None):
     """The admitted turn never ran because it failed (agent initialization raised, history
     unreadable): commit a failed result for the executing admission, so no surface settles it
-    ``completed`` with the apology as the turn's output. Returns ``reply`` unchanged."""
+    ``completed`` with the apology as the turn's output. A *reason* is stamped as the turn's
+    non-retryable failure code, so clients render that code's card. *error* replaces the reply
+    as the result's ``error`` (the raw cause a local client shows as its details line).
+    Returns ``reply`` unchanged."""
     captured = execution_result.get()
     if captured is not None and 'result' not in captured:
         captured['result'] = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
-                              'error': str(reply or 'The admitted turn failed.')}
+                              'error': str(error or reply or 'The admitted turn failed.')}
+        if reason:
+            from agent.turn_failure_copy import stamp_failure
+            stamp_failure(captured['result'], reason, False)
     return reply
 
 
@@ -40,9 +43,11 @@ def _redacted(value):
     return value
 
 
-def retain_result(db, *, epoch, row, result):
-    return settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-                                generation=row['generation'], outcome='completed', result=_redacted(result))
+def retain_result(store, *, epoch, row, result):
+    from gateway.session_authority import admission_row
+    return admission_row(store.admissions.settle(epoch=epoch, admission_id=row['admission_id'],
+                                                 generation=row['generation'], outcome='completed',
+                                                 result=_redacted(result)))
 
 
 def prepare_result(row, response, outcome, result=None):
@@ -59,71 +64,51 @@ def prepare_result(row, response, outcome, result=None):
         value['failed' if outcome == 'failed' else 'interrupted'] = True
         value['completed'] = False
     # Compact before redacting, so the walk covers this turn's output, not every earlier turn.
-    from hermes_state_terminal import compact_result
+    from session_rules.results import compact_result
     return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):
+def finish_result(store, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
+    `store` is the profile's storage interface handle.
     `result` is the exact structured result captured in-process; the managed
     worker path commits its own before this runs and is read back here.
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
     `transfers` are the queued steers handed to this claim; they settle in the same write.
     """
-    with db._read_ctx() as conn:
-        _epoch(conn, epoch)
-        current = _admission(conn, row['admission_id'])
-        if current['owner_epoch'] != epoch or current['generation'] != row['generation']:
-            raise RuntimeStoreError('stale_generation')
-        if current['status'] == 'terminal':
-            saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                                 (_RESULT_PREFIX + row['admission_id'],)).fetchone()
-            if saved is None:
-                raise RuntimeStoreError('storage_unavailable')
-            result = load_result(saved[0])
-            return dict(current), result['result'].get('final_response') or ''
+    from gateway.session_authority import admission_row
+    from persistence.authority.admissions import TurnBoundary
+    current = store.admissions.settled_result(admission_id=row['admission_id'], epoch=epoch,
+                                              generation=row['generation'])
+    if current.result is not None:
+        return admission_row(current.record), current.result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
-    settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers)
-    return settled, response
+    # A turn the owner's restart/stop interrupted: its reason commits as a Hermes transcript notice
+    # in this same write, so a viewer that reconnects after the restart reads why (#134889 GW-21);
+    # the live ``message.complete.warning`` carries the same copy. A retry that finds the row
+    # terminal returns above, so the notice is written once.
+    # A gateway-owned refusal (a message typed into a cron session) commits its explanation and
+    # error card as the transcript's failed-turn boundary in this same write too: the admission
+    # result is not history, so a reopened chat would otherwise show nothing about the refusal.
+    from gateway.session_settlement_recovery import gateway_refusal_boundary, owner_stop_notice
+    notice, display_metadata = owner_stop_notice(result, outcome, row), None
+    if notice is None and (refusal := gateway_refusal_boundary(result, outcome)) is not None:
+        notice, display_metadata = refusal
+    boundary = None if notice is None else TurnBoundary(
+        notice=notice, replace_after=row.get('transcript_mark'), display_metadata=display_metadata)
+    settled = store.admissions.settle(epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
+                                      outcome=outcome, result=stored, transfers=transfers, boundary=boundary)
+    return admission_row(settled), response
 
 
-def admission_result(db, admission_id):
-    with db._read_ctx() as conn:
-        row = _admission(conn, admission_id)
-        if row['status'] != 'terminal':
-            return None
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                             (_RESULT_PREFIX + admission_id,)).fetchone()
-        return load_result(saved[0]) if saved else None
-
-
-def close_discarded_turn(db, conn, row):
-    """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
-    own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
-
-    The lost input stays in the transcript for the user to resend, but an open ``user`` tail would be
-    merged into the follower's provider request by consecutive-user repair, re-sending the discarded
-    turn as context. A Hermes-authored boundary (``display_kind=failed_turn``, stripped of its type
-    before the wire) ends it. Its side effects are unknown, so the hedged copy. The boundary lands on
-    the CURRENT physical transcript (local reset/compression lineage tip), resolved on this
-    connection. Idempotent on the durable tail, like the gateway and core failed-turn closers.
-
-    A turn lost while parked on a tool (an approval or clarify prompt) ends on its assistant
-    ``tool_calls`` row with no result. That tail is open too: repair prunes the unanswered call,
-    drops the now-empty row and merges the discarded input into the follower's user turn, so it
-    gets the same boundary (merged onto the call row, whose calls are then pruned)."""
-    import time
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
-    from hermes_state_local_lineage import local_physical_target
-    from hermes_state_runtime import _canonical_chain
-    target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
-    tail = conn.execute("SELECT role, tool_calls FROM messages WHERE session_id=? AND active=1 "
-                        "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
-    if tail is None or not (tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]'))):
-        return False
-    db._append_messages_in_transaction(conn, target, [{
-        'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
-        'display_kind': FAILED_TURN_DISPLAY_KIND}])
-    return True
+def admission_result(store, admission_id, *, persistence=None):
+    """The stored result of a terminal admission, else None. *store* is the profile's storage interface
+    handle (*persistence*, when given, is used instead); a caller that passes only its ``state.db`` has
+    no handle to read through: ``StoreUnavailable``."""
+    store = persistence if persistence is not None else store
+    if not hasattr(store, 'admissions'):
+        from persistence.core.errors import StoreUnavailable
+        raise StoreUnavailable('no storage interface handle for the admission result')
+    saved = store.admissions.settled_result(admission_id=admission_id)
+    return None if saved is None else saved.result

@@ -74,7 +74,7 @@ Each tool can optionally provide a `check_fn` — a callable that returns `True`
 
 - **API key present** — e.g., `lambda: bool(os.environ.get("SERP_API_KEY"))` for web search
 - **Service running** — e.g., checking if the Honcho server is configured
-- **Binary installed** — e.g., verifying `playwright` is available for browser tools
+- **Dependency installed** — e.g., verifying `browser-harness` is importable for `browser_exec`
 
 When `registry.get_definitions()` builds the schema list for the model, it runs each tool's `check_fn()`:
 
@@ -115,7 +115,7 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 4. **Registry filtering** — the resolved tool name set is passed to `registry.get_definitions()`, which applies `check_fn` filtering and returns OpenAI-format schemas.
 
-5. **Dynamic schema patching** — after filtering, `execute_code` and `browser_navigate` schemas are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
+5. **Dynamic schema patching** — after filtering, schemas such as `execute_code`, `browser_cdp` and `delegate_task` are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 
 ### Legacy toolset names
 
@@ -212,10 +212,10 @@ The terminal system supports multiple backends:
 - local
 - docker
 - ssh
-- singularity
 - modal
 - daytona
 - vercel_sandbox
+- plugin backends registered through `ctx.register_terminal_environment_provider` (e.g. `singularity`)
 
 It also supports:
 
@@ -227,9 +227,12 @@ It also supports:
 `tools/process_registry_checkpoint.py` owns running-process checkpoints and
 PID-safe adoption. Every process on a profile (gateway, CLI, TUI, cron, one-shots)
 writes the same `processes.json`: each entry records its writer's PID and start-time
-fingerprint, a process replaces only its own entries under `processes.json.lock`,
-and recovery adopts only entries whose writer is gone. Entries without a writer
-(written by older versions) are dropped unadopted. Completed output is separate:
+fingerprint (`writer_pid`, `writer_started_at`; separate from `owner_pid`, the gateway
+`hermes update --force` sweeps for, which for a managed worker is its owner), a process
+replaces only its own entries under `processes.json.lock`, and recovery adopts only
+entries whose writer is gone. An entry with only an `owner_pid` (written by an older
+version) counts that process as its writer, with no start time; one with neither is
+dropped unadopted. Completed output is separate:
 `tools/process_registry_results.py` writes one atomic, redacted receipt per process
 under the profile's `logs/process-results/`. Producers cannot overwrite another
 parent's results by rewriting the shared PID checkpoint, and a recovered (detached)

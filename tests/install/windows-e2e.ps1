@@ -171,15 +171,16 @@ function Start-JourneyChat {
 }
 
 function Invoke-DesktopCheckpoint([string]$ChatPhase, [string]$Commit, [string]$Method) {
+    # Every checkpoint chats through the journey mock. Without it the smoke starts a private mock,
+    # and the detached gateway that checkpoint leaves running keeps that dead URL into later steps;
+    # the journey mock's URL file lets a later step's mock rebind the same port.
+    Start-JourneyChat
     $script:ChatFailure = $true
-    $prevEap = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        & $DriverNode (Join-Path $AssetsDir 'source-desktop-smoke.mjs') `
-            --root $InstallDir --home $HermesHome --user-data $env:HERMES_DESKTOP_USER_DATA_DIR `
-            --out $ProofRoot --phase $ChatPhase --expect-commit $Commit --desktop $script:ExpectedDesktop --method $Method
-        $chatExit = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $prevEap }
+    # The app must be able to detach its gateway, as from a user's launch (see Invoke-OutsideRunnerJob).
+    $chatExit = Invoke-OutsideRunnerJob "desktop-$ChatPhase" $WorkRoot $DriverNode @(
+        (Join-Path $AssetsDir 'source-desktop-smoke.mjs'),
+        '--root', $InstallDir, '--home', $HermesHome, '--user-data', $env:HERMES_DESKTOP_USER_DATA_DIR,
+        '--out', $ProofRoot, '--phase', $ChatPhase, '--expect-commit', $Commit, '--desktop', $script:ExpectedDesktop, '--method', $Method)
     if ($chatExit -ne 0) { throw "Mandatory desktop chat $ChatPhase failed (exit $chatExit)" }
     $script:ChatFailure = $false
 }
@@ -642,6 +643,19 @@ function Clear-HistoricalInstallerChurn {
     $content = @{}
     (Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "diff", "--numstat", "--ignore-cr-at-eol")) -split "\r?\n" |
         Where-Object { $_ } | ForEach-Object { $content[($_ -split "`t", 3)[2]] = $true }
+    # Installers before 679e9cd2943d ("stage hermes launchers in the managed
+    # binary dir, not the git checkout") copied the hermes/hermes-acp
+    # launchers into the checkout's bin\, untracked and unignored. That
+    # commit gitignores /bin/ and deliberately keeps the legacy copies (its
+    # update-tail migration only strips their PATH entry), so after the
+    # update they are ignored; only the OLD Desktop's pre-update check sees
+    # them. Exclude exactly those two paths, and only from such an OLD.
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    & $script:RealGitExe -C $RepoRoot merge-base --is-ancestor 679e9cd2943dddf59f50486c265a7ab110ad0f19 (Read-State).old 2>&1 | Out-Null
+    $ancestorExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    Assert-True ($ancestorExit -in 0, 1) "git merge-base --is-ancestor answered for the launcher-layout commit (exit $ancestorExit)"
+    $legacyLaunchers = if ($ancestorExit -eq 1) { @("? bin/hermes.exe", "? bin/hermes-acp.exe") } else { @() }
     $locks = @(); $other = @()
     foreach ($line in $lines) {
         $fields = $line -split " ", 9
@@ -651,6 +665,8 @@ function Clear-HistoricalInstallerChurn {
             $locks += $fields[8]
         } elseif ($line -eq "? .install_method") {
             Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value "/.install_method"
+        } elseif ($line -cin $legacyLaunchers) {
+            Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value ("/" + $line.Substring(2))
         } else {
             $other += $line
         }

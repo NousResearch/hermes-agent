@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 import shlex
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_cron_commands import cron_read
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,14 @@ _APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
 # Reports with no messaging handler: the classic CLI's own text, built by the owner for this
 # session (gateway/session_info_reads.py).
 _INFO_READS = frozenset({'toolsets', 'platforms'})
+# The classic CLI's own handler, run by the owner (gateway/session_cron_commands.py): the profile's cron store
+# belongs to the gateway whose ticker fires its jobs, so no client writes it. Bare ``/cron`` and ``list``
+# read; every other form (add/edit/pause/resume/run/remove) is a control that writes the store. A write runs
+# only on a connection that is not attached to the session: the classic CLI's command socket
+# (GatewayConnection.call_until), which waits with no deadline. A viewer's own connection (Ink, Desktop, ACP
+# send /cron there) answers its reads, prompts and interrupts one request at a time with a deadline, and a
+# /cron run lasts as long as its job, so it keeps main's refusal whichever surface created the session.
+_OWNER_COMMANDS = frozenset({'cron'})
 # Commands that move the session's goal/loop/heartbeat state: every viewer's cards repaint after them.
 _AUTOMATION_COMMANDS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat'})
 
@@ -50,13 +59,18 @@ _KANBAN_READS = frozenset({'', 'help', '--help', '-h', '?', 'list', 'ls', 'show'
                            'context', 'runs', 'log', 'diagnostics', 'diag'})
 
 
-def _first_token(arg):
-    """/kanban's verb as its handler parses it (shlex, hermes_cli/kanban.py ``run_slash``): an unclosed
-    quote can't run there either, so it is refused by name instead of failing as an internal error."""
+def _split(arg):
+    """``arg`` as a shlex-splitting handler parses it: an unclosed quote can't run there either, so it is
+    refused by name (before ``pre_command`` fires) instead of failing as an internal error."""
     try:
-        tokens = iter(shlex.split(arg) if arg.strip() else [])
+        return shlex.split(arg) if arg.strip() else []
     except ValueError as exc:
-        raise RuntimeStoreError('invalid_params', field='arg', detail=str(exc)) from None
+        raise AuthorityRefusal('invalid_params', field='arg', detail=str(exc)) from None
+
+
+def _first_token(arg):
+    """/kanban's verb as its handler parses it (shlex, hermes_cli/kanban.py ``run_slash``)."""
+    tokens = iter(_split(arg))
     for token in tokens:
         if token == '--board':
             next(tokens, None)
@@ -93,8 +107,35 @@ _CONTROL_ARGUMENTS = {
 }
 
 
+# The setting forms a local session cannot deliver: `/voice tts` asks the owner to voice every reply,
+# and a local session's audio plays only in its client. Read like the handler reads it (no shlex): an
+# unbalanced quote in any other `/voice` argument still reaches the handler.
+_REFUSED_ARGUMENTS = {
+    'voice': lambda arg: arg.strip().lower() == 'tts',
+}
+
+
+# What to use instead, for the client-local commands a shared-gateway session cannot run: they act
+# on the host's profiles, state snapshots, terminal or git checkout, which the gateway may not share
+# with the client. Rides the ``unsupported_command`` refusal as ``data.detail`` (the reason stays the
+# same, so shipped clients keep working); Ink and Desktop print it under the refusal.
+REFUSAL_HINTS = {
+    'export': 'Run `hermes profile export [name] -o <file>` in a terminal.',
+    'import': 'Run `hermes profile import <archive> [--name <name>]` in a terminal.',
+    'snapshot': 'Run `hermes backup --quick` in a terminal (restore: `hermes --cli`, then /snapshot restore).',
+    'handoff': 'Hand off from the classic CLI: `hermes --cli --resume <session>`, then /handoff <platform>.',
+    'hatch': 'Generate a pet from the classic CLI (`hermes --cli`, then /hatch), or use /pet to pick one.',
+    'worktree': 'Start in a fresh worktree with `hermes -w`, or use the classic CLI (`hermes --cli`).',
+    'palette': 'Type / to search commands (the composer completes and filters them).',
+}
+
+
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
+    if _REFUSED_ARGUMENTS.get(name, lambda _a: False)(arg):
+        return 'refused'
+    if name in _OWNER_COMMANDS:
+        return 'read' if cron_read(_split(arg)) is not None else 'control'  # main's /cron handler shlex-splits
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
             or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS
             or _CONTROL_ARGUMENTS.get(name, lambda _a: False)(arg)):
@@ -107,11 +148,11 @@ def command_verdict(name, arg=''):
 def _parse(params, dispatch):
     allowed = {'session_id', 'profile', 'name', 'arg'} if dispatch else {'session_id', 'profile', 'command'}
     if (set(params) - allowed or any(not isinstance(v, str) for v in params.values())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     text = params.get('name', '') if dispatch else params.get('command', '')
     parts = text.strip().lstrip('/').split(None, 1)
     if not parts or (dispatch and len(parts) != 1):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return parts[0], params.get('arg', '') if dispatch else (parts[1] if len(parts) > 1 else '')
 
 
@@ -122,16 +163,16 @@ def _resolve_alias(name, arg):
     seen = set()
     while resolve_command(name) is None and name in quick:
         if name in seen:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         seen.add(name)
         entry = quick[name]
         if not isinstance(entry, dict) or entry.get('type') not in {'alias', 'exec'}:
-            raise RuntimeStoreError('unsupported_command')
+            raise AuthorityRefusal('unsupported_command')
         if entry['type'] == 'exec':
             return name, arg
         target = entry.get('target')
         if not isinstance(target, str) or not target.strip():
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         parts = target.strip().lstrip('/').split(None, 1)
         name = parts[0]
         arg = ' '.join(p for p in (*parts[1:], arg) if p)
@@ -168,7 +209,7 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
         cwd = getattr(policy, 'cwd', None) or None
         if cwd is None or not await asyncio.to_thread(os.path.isdir, cwd):
             # Never fall back to the gateway's own folder: a relative command would act there.
-            raise RuntimeStoreError('cwd_unavailable')
+            raise AuthorityRefusal('cwd_unavailable')
         return await runner._hm_run_exec_quick_command(name, shell, cwd=cwd)
     # Plugin-only: the runner's quick commands are the launch profile's under multiplex, and this
     # session's own were already resolved above in its profile (``_resolve_alias``/``_runner_command``),
@@ -176,7 +217,7 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     from hermes_cli.plugins import get_plugin_command_handler
     handler = get_plugin_command_handler(shell)
     if handler is None:
-        raise RuntimeStoreError('unsupported_command')
+        raise AuthorityRefusal('unsupported_command')
     event = MessageEvent(text='/' + name + (' ' + arg if arg else ''), source=live.source)
     # The session's own entry, so HERMES_SESSION_ID is bound as on its turns: a background job
     # the handler starts records this session as its parent.
@@ -194,18 +235,19 @@ def _skill_directive(name, arg, route):
     stacked ``/skill-a /skill-b do X`` too: built here, so no client loads plugins to resolve one."""
     from agent.i18n import t
     from agent.skill_commands import (
-        build_skill_invocation_message, build_stacked_skill_invocation_message, describe_skill_invocation,
+        build_skill_invocation_message, build_stacked_skill_invocation_message,
         get_interactive_skill_commands, resolve_slash_key, split_stacked_skill_commands,
     )
+    from session_rules.turns import describe_skill_invocation
     skills = get_interactive_skill_commands()
     key = resolve_slash_key(name, skills)
     if key is None:
-        raise RuntimeStoreError('unsupported_command')
+        raise AuthorityRefusal('unsupported_command')
     extra, instruction = split_stacked_skill_commands(arg, interactive=True)
     stacked = build_stacked_skill_invocation_message([key, *extra], instruction, task_id=route) if extra else None
     message = stacked[0] if stacked else build_skill_invocation_message(key, arg, task_id=route)
     if not message:
-        raise RuntimeStoreError('command_unavailable')
+        raise AuthorityRefusal('command_unavailable')
     missing = stacked[2] if stacked else []
     return {'type': 'skill', 'name': ', '.join(stacked[1]) if stacked else skills[key]['name'], 'message': message,
             'display': describe_skill_invocation(message, separator=' '),
@@ -213,7 +255,7 @@ def _skill_directive(name, arg, route):
 
 
 async def _tui_read(authority, actor, ref, name, arg, before):
-    """Main's TUI sidecar text for a TUI session's /status, /context or /cron read, else None;
+    """Main's TUI sidecar text for a TUI session's /status or /context read, else None;
     ``before`` (its ``pre_command``) runs once the read is accepted."""
     from gateway.session_local import authorize_local_source
     from gateway.session_policy import policy_for_source
@@ -334,10 +376,10 @@ async def observe_command(connection, ref, params):
     authority.authorize(actor, ref, 'session:read')
     name, arg = _parse(params, True)
     if params.get('profile') and not profile_matches_home(params['profile'], Path(authority.profile_id)):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     definition = resolve_command(name)
     if definition is None:
-        raise RuntimeStoreError('unsupported_command')
+        raise AuthorityRefusal('unsupported_command')
     return {'queued': _pre_command(authority, ref, definition.name, name.lower(), arg) is not None}
 
 
@@ -360,13 +402,16 @@ def _session_workspace(runner, source):
     import json
     from agent.runtime_cwd import reset_session_cwd, set_session_cwd
     from gateway.session_policy import policy_for_source
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import reset_terminal_scope
     policy = policy_for_source(runner, source)
     if policy is None:
         yield
         return
+    from gateway.session_authorities import active_authority
     cwd_token = set_session_cwd(policy.cwd)
-    terminal_token = set_terminal_scope(json.loads(policy.terminal_json))
+    owner = getattr(active_authority(runner), 'profile_id', None)
+    terminal_token = bind_terminal_policy(json.loads(policy.terminal_json), profile_home=owner)
     try:
         yield
     finally:
@@ -382,7 +427,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     from hermes_cli.profiles import profile_matches_home
     home = Path(authority.profile_id)
     if params.get('profile') and not profile_matches_home(params['profile'], home):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
 
     from gateway.run import _profile_runtime_scope
     def resolve():
@@ -411,18 +456,25 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                   'session:approve' if canonical in _APPROVAL_COMMANDS else
                   'session:control' if definition or runner_command else 'session:submit')
     authority.authorize(actor, ref, capability)
-    if verdict == 'refused':
-        raise RuntimeStoreError('unsupported_command')
-    from gateway.session_local import authorize_local_source
     live = authority.sessions[ref.session_id]
+    if verdict == 'refused' or (verdict == 'control' and canonical in _OWNER_COMMANDS
+                                and ref.session_id in connection.subscriptions):
+        raise AuthorityRefusal('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
+    from gateway.session_history_mount import is_history_mount, read_only
+    if is_history_mount(live):
+        raise read_only()  # no policy or agent to run even a read command against
+    from gateway.session_local import authorize_local_source
     if authorize_local_source(authority.runner, live.source) is not True:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if capability != 'session:read':
         authority._require_admission_open()
-    if definition is not None and (canonical in _INFO_READS or authority._handle(ref).execution_state == 'idle'):
+    if definition is not None and (canonical in _INFO_READS or canonical in _OWNER_COMMANDS
+                                   or authority._handle(ref).execution_state == 'idle'):
         await before()  # mid-run the busy dispatcher fires it once it accepts the command (``BUSY_ACCEPTED``)
     if runner_command is not None:
-        with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+        from gateway.plugin_command_choice import viewer_choices
+        with (_profile_runtime_scope(home), _session_workspace(authority.runner, live.source),
+              viewer_choices(live, ref.session_id)):
             output = await _run_runner_command(authority.runner, live, name, arg, *runner_command)
         return {'type': 'exec', 'output': _text(output)}
     if definition is None:
@@ -434,6 +486,9 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if canonical in _INFO_READS:
         from gateway.session_info_reads import run_info_read
         return await run_info_read(authority, live, canonical)
+    if canonical in _OWNER_COMMANDS:
+        from gateway.session_cron_commands import run_cron
+        return await run_cron(authority, arg)
 
     from gateway.platforms.base import MessageEvent
     from gateway.session_command_sink import capture
@@ -454,6 +509,11 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                 prompt = event.text
         else:
             await before()
+            if canonical == 'reasoning':
+                from gateway.run_config_loaders import GatewayConfigLoadersMixin
+                from gateway.session_setting_commands import commit_reasoning_command
+                await commit_reasoning_command(authority, actor, ref,
+                                               *GatewayConfigLoadersMixin._parse_reasoning_command_args(arg))
             handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
     if canonical in _APPROVAL_COMMANDS:

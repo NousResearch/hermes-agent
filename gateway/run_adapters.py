@@ -49,6 +49,11 @@ _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the pri
 _SYSTEMD_BOOT_STEP_MARGIN_SECS = 30.0
 
 
+@contextlib.asynccontextmanager
+async def _async_nullcontext():
+    yield
+
+
 class _UnresolvedProfileHome:
     """A NAMED routed profile whose home does not resolve — never the same thing as ``None``
     ("this body is the launch profile's own work"). Overloading ``None`` for both let an inbound
@@ -846,7 +851,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
+            with self._default_root_adapter_scope():
+                adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -863,7 +869,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             carry_inbound_dedup(info.get("predecessor"), adapter)
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
-            success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
+            # Primary connect: bind the default root's scope so tasks started in connect() inherit it.
+            async with self._async_default_root_adapter_scope():
+                success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             if success:
                 await self._install_reconnected_adapter(platform, adapter)
             elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
@@ -1764,6 +1772,35 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 # claim never raises mid-unserve or mid-teardown.
                 return hashlib.sha256(("hermes-mux:" + val.strip()).encode("utf-8", "surrogatepass")).hexdigest()[:16]
         return None
+
+    def _default_root_adapter_scope(self):
+        """Scope for creating a PRIMARY (default-profile) adapter under multiplexing.
+
+        Plugin platforms read credentials in ``check_fn`` / ``validate_config`` / the factory via
+        ``get_secret``, which fails closed with no scope bound. Secondaries get their scope from
+        ``_profile_runtime_scope``; the primary adapter map belongs to the DEFAULT root (not
+        ``get_hermes_home()``, a named launcher's home), so bind that. No-op when not multiplexing.
+        """
+        if not self._multiplex_on():
+            return contextlib.nullcontext()
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_default_hermes_root
+        return _profile_runtime_scope(Path(get_default_hermes_root()))
+
+    def _async_default_root_adapter_scope(self):
+        """Async twin of :meth:`_default_root_adapter_scope` for the primary ``connect()`` paths.
+
+        Tasks a connect() starts (poll loops, watchers) copy the context at creation
+        (``asyncio.create_task`` / ``ensure_future``), so they inherit this scope and can call
+        ``get_secret`` later. The default root's ``.env`` is read via ``asyncio.to_thread`` so the
+        file read never blocks the event loop. The scope is reset on exit for the caller. Secondaries
+        must NOT use this: they connect inside their own profile scope.
+        """
+        if not self._multiplex_on():
+            return _async_nullcontext()
+        from gateway.run import _async_profile_runtime_scope
+        from hermes_constants import get_default_hermes_root
+        return _async_profile_runtime_scope(Path(get_default_hermes_root()))
 
     def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Create an adapter bound to this runner (every lifecycle path goes through here so

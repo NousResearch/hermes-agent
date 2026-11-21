@@ -40,6 +40,7 @@ describe('useMessageStream turn-end todo cleanup', () => {
 
   it('keeps a finished list on completion so its linger shows the final checkmarks', () => {
     mountStream()
+    setSessionTodos(SID, [todo('a', 'in_progress')])
     setSessionTodos(SID, [todo('a', 'completed')])
 
     complete()

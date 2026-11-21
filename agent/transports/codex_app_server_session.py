@@ -10,6 +10,7 @@ reader threads feed queues that this adapter polls, like the chat_completions lo
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -265,7 +266,11 @@ class CodexAppServerSession:
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
+            # codex 0.166+ checks turn/start against the provider the app-server was LAUNCHED with, so
+            # thread/start.modelProvider alone fails every turn with "This chat uses <id>, but your
+            # current provider is openai" (paradigmxyz/centaur#2236). The launch override carries it too.
+            extra = ["-c", f"model_provider={json.dumps(self._model_provider)}"] if self._model_provider else None
+            self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home, extra_args=extra)
             self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.

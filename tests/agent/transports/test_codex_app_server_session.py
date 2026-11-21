@@ -234,6 +234,19 @@ class TestLifecycle:
         # provider takes the bare slug, as openai-codex does.
         assert thread_start_params(provider="custom", requested_provider="openai", model="openai/gpt-5.4")["model"] == "gpt-5.4"
 
+    def test_named_provider_is_also_the_app_server_launch_provider(self):
+        """codex 0.166/0.167 reject turn/start when the thread's provider differs from the one the
+        app-server was launched with, so a named provider rides on the launch argv too; codex's own
+        provider launches without the override."""
+        launches: list = []
+
+        def factory(**kw):
+            launches.append(kw.get("extra_args"))
+            return FakeClient()
+        CodexAppServerSession(cwd="/tmp", client_factory=factory, model_provider="my-gateway").ensure_started()
+        CodexAppServerSession(cwd="/tmp", client_factory=factory).ensure_started()
+        assert launches == [["-c", 'model_provider="my-gateway"'], None]
+
     def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
         second ``thread/start``); when codex cannot hand it back the failure is typed and the NEXT

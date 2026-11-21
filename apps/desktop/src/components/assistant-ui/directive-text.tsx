@@ -3,7 +3,7 @@
 import type { Unstable_DirectiveFormatter, Unstable_DirectiveSegment, Unstable_TriggerItem } from '@assistant-ui/core'
 import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
 import type { FC } from 'react'
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, lazy, Suspense, useEffect, useMemo, useState } from 'react'
 
 import { isPastedContentPath } from '@/app/chat/composer/large-paste'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -582,11 +582,22 @@ const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ 
   </span>
 )
 
+/** The read-only paste reader. Loaded on first open — a transcript that never
+ *  shows a pasted chip must not pay for the dialog stack. */
+const PastedContentViewer = lazy(async () => ({
+  default: (await import('./pasted-content-viewer')).PastedContentViewer
+}))
+
 /** A directive reference in a sent message. A kind whose action declares an
  *  `href` (url) renders as a real anchor — every transcript link's gestures
  *  come from `ExternalLink` and the context-menu coordinator. An action
  *  without an `href` (a session, or an `onClick` override) stays a button;
- *  a kind with no action is an inert span. */
+ *  a kind with no action is an inert span.
+ *
+ *  A large paste is the one `file` ref with something to show: its chip opens
+ *  the text that was saved to disk instead of staying inert. Without that, the
+ *  click fell through to the bubble's edit composer, which only re-rendered
+ *  the ref itself — an empty box next to a "Pasted content" chip. */
 const DirectiveChip: FC<{
   type: string
   label: string
@@ -594,21 +605,23 @@ const DirectiveChip: FC<{
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
   const { t } = useI18n()
+  const [pastedOpen, setPastedOpen] = useState(false)
   // An `onClick` override is a bespoke activation, not the kind's link action —
   // an override must not turn its carrier into a link.
   const action = onClick ? undefined : DIRECTIVE_ACTIONS[type]
   const activate = onClick ?? (action ? () => action.run(id) : undefined)
   const href = action?.href?.(id)
+  const isPasted = type === 'file' && isPastedContentPath(id)
 
   const body = (
     <>
       <DirectiveIcon type={type} />
-      {type === 'file' && isPastedContentPath(id) ? t.desktop.pastedContent : label}
+      {isPasted ? t.desktop.pastedContent : label}
     </>
   )
 
   const props = {
-    ...refAttrs(type, cn('wrap-anywhere', activate && 'cursor-pointer')),
+    ...refAttrs(type, cn('wrap-anywhere', (activate || isPasted) && 'cursor-pointer')),
     'data-directive-id': id,
     'data-slot': 'aui_directive-chip',
     title: id
@@ -621,6 +634,35 @@ const DirectiveChip: FC<{
       <ExternalLink {...props} className="wrap-anywhere cursor-pointer" href={href}>
         {body}
       </ExternalLink>
+    )
+  }
+
+  // The bubble this chip usually sits in is itself a button, so the press must
+  // not reach it: without the stops the edit composer opens underneath the
+  // reader.
+  if (isPasted) {
+    return (
+      <>
+        <button
+          {...props}
+          aria-haspopup="dialog"
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            triggerHaptic('selection')
+            setPastedOpen(true)
+          }}
+          onPointerDown={event => event.stopPropagation()}
+          type="button"
+        >
+          {body}
+        </button>
+        {pastedOpen && (
+          <Suspense fallback={null}>
+            <PastedContentViewer onOpenChange={setPastedOpen} open path={id} />
+          </Suspense>
+        )}
+      </>
     )
   }
 

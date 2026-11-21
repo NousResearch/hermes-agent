@@ -1,5 +1,6 @@
 // Pure timeline helpers — no React/DOM; tested in thread-timeline-data.test.ts.
-import { PROCESS_NOTIFICATION_RE } from './content'
+
+import { PROCESS_NOTIFICATION_RE } from '@/lib/chat-messages/message-kind'
 
 export interface TimelineSourceMessage {
   id: string

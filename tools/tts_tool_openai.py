@@ -8,7 +8,11 @@ through :func:`_origin` at call time.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
+import re
+import time
 import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
@@ -18,7 +22,7 @@ from tools.tool_backend_helpers import (
     NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, nous_tool_gateway_unavailable_message,
     read_selection, resolve_openai_audio_api_key, selection_error)
 from tools.tts_tool_delivery import _origin, _section
-from tools.tts_tool_providers import _tts_response_format_from_path
+from tools.tts_tool_providers import _read_tts_response_bytes, _tts_response_format_from_path
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -78,6 +82,93 @@ def _has_openai_audio_backend() -> bool:
         return True
     except ValueError:
         return False
+
+
+# --- Per-call voice catalog (tts.openai.voice_selection) ---
+# Names reach the model's tool schema and the request body, so only plain identifiers pass.
+_VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
+_VOICE_LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_\-]{1,16}$")
+MAX_OPENAI_VOICES = 64
+VOICES_FETCH_TIMEOUT_SECONDS = 3
+VOICES_RESPONSE_LIMIT_BYTES = 256 * 1024
+_VOICES_CACHE_TTL_SECONDS = 300.0
+_VOICES_FAILURE_TTL_SECONDS = 30.0
+_voices_cache: dict[tuple, tuple[float, list[tuple[str, str]]]] = {}
+
+
+def _parse_voice_entries(payload: Any) -> list[tuple[str, str]]:
+    """``[(name, language)]`` from a voices listing: a bare list or ``{"voices"|"data": [...]}``,
+    each entry a name or ``{"id"|"voice_id"|"name": ..., "language"|"lang": ...}``. Entries whose
+    name is not a plain identifier are dropped; duplicates keep the first; capped at
+    :data:`MAX_OPENAI_VOICES`."""
+    if isinstance(payload, dict):
+        payload = payload.get("voices", payload.get("data"))
+    if not isinstance(payload, list):
+        return []
+    voices: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in payload:
+        if isinstance(item, dict):
+            name = item.get("id") or item.get("voice_id") or item.get("name")
+            language = item.get("language") or item.get("lang") or ""
+        else:
+            name, language = item, ""
+        if not isinstance(name, str) or not _VOICE_NAME_RE.match(name) or name in seen:
+            continue
+        if not isinstance(language, str) or not _VOICE_LANGUAGE_RE.match(language):
+            language = ""
+        seen.add(name)
+        voices.append((name, language))
+        if len(voices) >= MAX_OPENAI_VOICES:
+            break
+    return voices
+
+
+def _openai_voices_url(oai_config: dict[str, Any]) -> str:
+    """``tts.openai.voices_url``, else ``<tts.openai.base_url>/audio/voices``."""
+    url = oai_config.get("voices_url")
+    if url:
+        return str(url)
+    return f"{str(oai_config.get('base_url') or DEFAULT_OPENAI_BASE_URL).rstrip('/')}/audio/voices"
+
+
+def _fetch_openai_voices(url: str, api_key: Optional[str]) -> list[tuple[str, str]]:
+    import requests
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    response = requests.get(url, headers=headers, timeout=VOICES_FETCH_TIMEOUT_SECONDS, stream=True)
+    try:
+        response.raise_for_status()
+    except Exception:
+        with contextlib.suppress(Exception):
+            response.close()
+        raise
+    raw = _read_tts_response_bytes(response, label="TTS voices", limit=VOICES_RESPONSE_LIMIT_BYTES)
+    return _parse_voice_entries(json.loads(raw.decode("utf-8")))
+
+
+def openai_voice_catalog(oai_config: dict[str, Any]) -> list[tuple[str, str]]:
+    """Voices the model may pick with ``voice``: the static ``tts.openai.voices`` list when set,
+    else the server's listing at :func:`_openai_voices_url` (short timeout, cached; a failure
+    yields ``[]`` and is retried after a short back-off). Only ``tts.openai.api_key`` is sent."""
+    static = oai_config.get("voices")
+    if static is not None:
+        return _parse_voice_entries(static)
+    url = _openai_voices_url(oai_config)
+    api_key = oai_config.get("api_key") or None
+    key = (url, api_key)
+    now = time.monotonic()
+    cached = _voices_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return list(cached[1])
+    import requests
+    try:
+        voices = _fetch_openai_voices(url, api_key)
+        ttl = _VOICES_CACHE_TTL_SECONDS if voices else _VOICES_FAILURE_TTL_SECONDS
+    except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:  # HTTP, oversize, bad JSON
+        logger.warning("TTS: could not list voices from %s: %s", url, exc)
+        voices, ttl = [], _VOICES_FAILURE_TTL_SECONDS
+    _voices_cache[key] = (now + ttl, voices)
+    return list(voices)
 
 
 def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:

@@ -142,6 +142,16 @@ def test_computer_use_backend_set_is_what_the_selector_reads(hermes_home, capsys
     assert configured_backend_name() == "widget-driver"
 
 
+def test_tts_openai_voice_selection_set_is_what_the_tool_reads(hermes_home, capsys):
+    from tools.tts_tool import openai_voice_selection_active
+
+    set_config_value("tts.provider", "openai")
+    capsys.readouterr()
+    assert not _set_notice("tts.openai.voice_selection", "true", capsys)
+    assert openai_voice_selection_active()
+    assert not _set_notice("tts.openai.voices_url", "http://tts.local/v1/audio/voices", capsys)
+
+
 def test_plugin_config_keys_count_only_while_the_plugin_is_enabled(hermes_home, capsys):
     _plugin(hermes_home / "plugins", "widget-plugin", ["display.widget"])
 

@@ -297,11 +297,16 @@ export function fmtTokens(n: number): string {
     return String(Math.round(n))
   }
 
-  if (n < 10_000) {
+  // Thresholds sit below each boundary so rounding never prints "10.0k" or "1000k".
+  if (n < 9_950) {
     return `${(n / 1000).toFixed(1)}k`
   }
 
-  return `${Math.round(n / 1000)}k`
+  if (n < 999_500) {
+    return `${Math.round(n / 1000)}k`
+  }
+
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
 }
 
 /**

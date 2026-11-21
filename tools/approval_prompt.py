@@ -299,9 +299,9 @@ def request_elicitation_consent(message: str, description: str, *,
                                 remember_key: str | None = None) -> str:
     """Route an MCP elicitation request to the surface owning the active session:
     gateway sessions through ``_await_gateway_decision``, CLI/TUI through
-    ``prompt_dangerous_approval``. Always fails closed: a missing notify_cb in a
-    gateway session, timeouts, and exceptions map to ``"decline"`` so a server
-    treats them as "user did not approve" rather than retrying or hanging.
+    ``prompt_dangerous_approval``. Always fails closed: an unavailable prompt,
+    timeout, withdrawal, or dispatch failure returns ``"cancel"`` (no answer),
+    not ``"decline"`` (a refusal). Neither outcome authorizes the action.
     Returns ``"accept" | "decline" | "cancel"``.
 
     Without *remember_key* the consent covers one call, so every surface offers only
@@ -312,11 +312,11 @@ def request_elicitation_consent(message: str, description: str, *,
         session_key = _ctx.get_current_session_key()
     except Exception as exc:  # pragma: no cover -- defensive
         logger.warning("Elicitation consent: session lookup failed: %s", exc)
-        return "decline"
+        return "cancel"
     # A finite gateway turn (``chat -q`` / ``-z`` over the daemon) has no one to answer: parking the prompt
     # would detach the viewer mid-turn instead of failing closed like the in-process ``-q`` input() path.
     if _ctx._is_single_query_approval_context():
-        return "decline"
+        return "cancel"
     scoped = remember_key is not None
 
     # api_server is an unattended *platform* for the dangerous-command gate, but a live ``/v1/runs`` run
@@ -333,7 +333,7 @@ def request_elicitation_consent(message: str, description: str, *,
         if notify_cb is None:
             logger.warning("Elicitation requested in gateway session %s but no "
                            "notify_cb is registered — failing closed", session_key)
-            return "decline"
+            return "cancel"
         try:
             decision = _gw._await_gateway_decision(
                 session_key, notify_cb, {"command": message, "description": description,
@@ -342,18 +342,18 @@ def request_elicitation_consent(message: str, description: str, *,
                                          "allow_session": scoped, "allow_permanent": scoped}, surface=surface)
         except Exception as exc:
             logger.error("Elicitation gateway dispatch failed: %s", exc, exc_info=True)
-            return "decline"
+            return "cancel"
         if decision.get("notify_failed"):
-            return "decline"
+            return "cancel"
         if not decision.get("resolved") or decision.get("cancelled"):
             return "cancel"  # nobody answered (timeout / prompt withdrawn) — not a user refusal
-        return _remembered_consent(session_key, decision.get("choice"), remember_key, "decline")
+        return _remembered_consent(session_key, decision.get("choice"), remember_key, "cancel")
 
     # Nobody can answer a -q, cron or unattended-platform worker. A `hermes chat -q` turn still has the CLI's
     # panel callback registered, which would wait the full approval timeout before failing closed.
     if _ctx._no_user_can_answer():
-        logger.info("Elicitation consent (%s) declined: no user can answer in this session", surface)
-        return "decline"
+        logger.info("Elicitation consent (%s) unanswered: no user can answer in this session", surface)
+        return "cancel"
 
     # Same observer payload as the gateway branch (#131876); post fires in a finally so the
     # wait settles for observers on the early fail-closed return too.
@@ -370,7 +370,7 @@ def request_elicitation_consent(message: str, description: str, *,
         hook_choice = choice
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
-        return "decline"
+        return "cancel"
     finally:
         _ctx._fire_approval_hook("post_approval_response", **hook_kwargs, choice=hook_choice)
     return _remembered_consent(session_key, choice, remember_key, "cancel")  # timeout mirrors the gateway

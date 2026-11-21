@@ -85,7 +85,9 @@ percent-escapes (`electron/oauth-partition.ts`).
 Artifact iframes and the preview `<webview>` never drive the OS browser on their own
 (GHSA-9f4c-93c8-jc8g): `setWindowOpenHandler` denies everything, the webview has no `allowpopups`,
 and a guest `target="_blank"` link reaches `hermes:openExternal` only through the
-`persist:hermes-preview` guest preload's trusted-click bridge, `http:`/`https:` only. Widening the
+`persist:hermes-preview` guest preload's trusted-click bridge, `http:`/`https:` only. Even then it
+only reaches the OS browser from a local preview (loopback / `file:`); a remote page browsed in the
+in-app Browser navigates the guest itself (`routePreviewGuestLink`). Widening the
 partition key, the trusted-click gate or the scheme set reopens the advisory.
 
 ## Compatibility without carrying the past forever

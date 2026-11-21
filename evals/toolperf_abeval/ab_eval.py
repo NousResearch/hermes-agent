@@ -19,11 +19,12 @@ Usage:
 Environment:
   ABEVAL_ROOT    working/results root   (default: ./abeval-workspace)
   ABEVAL_HOME    HERMES_HOME for runs   (default: $ABEVAL_ROOT/home)
-                 Must be a configured Hermes home with credentials for the
+                 Must be a dedicated, idle Hermes home with credentials for the
                  models under test. See README.md for a minimal setup.
 
 Results append to $ABEVAL_ROOT/results/<model>/<arm>/meta.jsonl (resume-safe:
-completed run_ids are skipped). ATOF traces land beside the meta file.
+verified run_ids are skipped). ATOF traces land beside the meta file. Each
+batch owns one gateway and shared trace; wall time measures each chat invocation.
 
 This is the harness used for the August 2026 core-toolset performance batch
 (tracker: NousResearch/hermes-agent#77056).
@@ -36,7 +37,11 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
+
+import psutil
 
 ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
@@ -143,95 +148,431 @@ SUCCESS = {
 }
 
 
-def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
-    resdir = ROOT / "results" / model.replace("/", "_") / arm
-    resdir.mkdir(parents=True, exist_ok=True)
-    meta_path = resdir / "meta.jsonl"
-    done = set()
-    if meta_path.exists():
-        for line in meta_path.read_text(encoding="utf-8-sig").splitlines():
-            try:
-                done.add(json.loads(line)["run_id"])
-            except (ValueError, KeyError):
-                continue
-    for rep in range(reps):
-        for name, task in TASKS.items():
-            if only and name not in only:
-                continue
-            run_id = f"{name}-r{rep}"
-            if run_id in done:
-                continue  # resume support
-            work = ROOT / "runs" / model.replace("/", "_") / arm / run_id
-            work.mkdir(parents=True, exist_ok=True)
-            make_sandbox(work)
-            atof = resdir / f"{run_id}.atof.jsonl"
-            relay_config = work / "relay-plugins.toml"
-            relay_config.write_text(
-                f"""
-version = 1
-
+def write_relay_config(path: Path, atof: Path):
+    path.write_text(
+        f"""version = 1
 [[components]]
 kind = "observability"
 enabled = true
-
 [components.config]
-version = 3
-
+version = 4
 [components.config.atof]
 enabled = true
-
 [[components.config.atof.sinks]]
 type = "file"
 output_directory = {json.dumps(str(atof.parent))}
 filename = {json.dumps(atof.name)}
 mode = "overwrite"
-""".strip(),
-                encoding="utf-8",
+""",
+        encoding="utf-8",
+    )
+
+
+def wait_for_gateway(process, home: Path, timeout=60):
+    """Accept only our child or its interpreter worker (Windows venv launchers)."""
+    deadline = time.monotonic() + timeout
+    while process.poll() is None and time.monotonic() < deadline:
+        try:
+            state = json.loads(
+                (home / "gateway_state.json").read_text(encoding="utf-8")
             )
-            env = dict(os.environ)
-            env.update({
-                "PYTHONPATH": pythonpath,
-                "HERMES_HOME": str(HOME),
-                "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
-            })
-            q = task.replace("{WORK}", str(work))
-            t0 = time.time()
+        except (OSError, ValueError):
+            state = {}
+        if state.get("gateway_state") == "running":
             try:
-                p = subprocess.run(
-                    [sys.executable, "-m", "hermes_cli.main", "chat", "--query", q,
-                     "--quiet", "--max-turns", "30", "--accept-hooks", "--model", model],
-                    cwd=work, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=600, check=False)
-                out = (p.stdout or "").strip()
-                rc = p.returncode
-            except subprocess.TimeoutExpired:
-                out, rc = "", -9
-            dt = time.time() - t0
-            if rc != 0 and not out.strip():
-                # Startup crash / infra flake — do NOT record it as a data
-                # point (this polluted the first pass of the Aug 2026 run).
-                print(f"[{arm}/{model}] {run_id} INFRA-CRASH exit={rc} "
-                      f"{dt:.0f}s — not recorded, will retry on resume", flush=True)
+                launcher = psutil.Process(process.pid)
+                for owner in [launcher, *launcher.children(recursive=True)]:
+                    if owner.pid == state.get("pid") and owner.is_running():
+                        return owner
+            except psutil.NoSuchProcess:
+                break
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            pass
+    raise RuntimeError(
+        "Evaluation gateway did not become ready. ABEVAL_HOME must be a dedicated, "
+        "idle home; see this batch's gateway.log. No existing gateway was stopped."
+    )
+
+
+def kill_gateway_child(process, owner=None):
+    """Reap only the launched tree, including a worker left behind by its launcher."""
+    children = []
+    if process.poll() is None:
+        try:
+            children = psutil.Process(process.pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            pass
+    if owner is not None and owner.pid != process.pid and owner not in children:
+        children.append(owner)
+    for child in reversed(children):
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    # Let a launcher reap its interpreter before terminating the launcher itself.
+    _, alive = psutil.wait_procs(children, timeout=10)
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=10)
+    if alive:
+        raise RuntimeError("Evaluation gateway workers did not stop")
+
+
+@contextmanager
+def batch_gateway(env, work: Path):
+    # Keep the arm's code and Relay destination fixed for the whole batch. Never borrow
+    # a daemon that may have loaded another checkout or exporter configuration.
+    command = [
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+        "--quiet",
+        "--no-supervise",
+    ]
+    with (work / "gateway.log").open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log
+        )
+        owner = None
+        try:
+            owner = wait_for_gateway(process, Path(env["HERMES_HOME"]))
+            yield process
+            if process.poll() is not None:
+                raise RuntimeError(
+                    f"Evaluation gateway exited unexpectedly; see {work / 'gateway.log'}"
+                )
+        finally:
+            if process.poll() is None or (owner is not None and owner.is_running()):
+                try:
+                    if owner is not None:
+                        # Hermes' PID-bound stop marker is watched on every OS, including Windows.
+                        # Do not use `gateway stop`, which can act on an installed service.
+                        subprocess.run(
+                            [
+                                sys.executable,
+                                "-c",
+                                "import sys; from gateway.status import "
+                                "write_planned_stop_marker; sys.exit(0 if "
+                                "write_planned_stop_marker(int(sys.argv[1])) else 1)",
+                                str(owner.pid),
+                            ],
+                            cwd=work,
+                            env=env,
+                            stdout=log,
+                            stderr=log,
+                            check=True,
+                            timeout=15,
+                        )
+                    else:
+                        kill_gateway_child(process)
+                    process.wait(timeout=60)
+                    if owner is not None and owner.pid != process.pid:
+                        owner.wait(timeout=10)
+                    if owner is not None and process.returncode != 0:
+                        raise RuntimeError(
+                            "Evaluation gateway failed during shutdown; batch not recorded"
+                        )
+                except (
+                    OSError,
+                    subprocess.TimeoutExpired,
+                    subprocess.CalledProcessError,
+                    psutil.Error,
+                ):
+                    kill_gateway_child(process, owner)
+                    raise RuntimeError(
+                        "Evaluation gateway failed to flush and stop; batch not recorded"
+                    ) from None
+
+
+def recorded_scores(resdir: Path, model: str, arm: str):
+    meta_path = resdir / "meta.jsonl"
+    if not meta_path.exists():
+        return
+    for line in meta_path.read_text(encoding="utf-8-sig").splitlines():
+        record = json.loads(line)
+        if not record.get("session_uuid"):
+            raise ValueError(
+                f"Unverified trace metadata in {meta_path}; rerun in a fresh ABEVAL_ROOT"
+            )
+        work = ROOT / "runs" / model.replace("/", "_") / arm / record["run_id"]
+        score = score_run(
+            resdir / f"{record['run_id']}.atof.jsonl",
+            work=work,
+            session_uuid=record["session_uuid"],
+        )
+        yield record, score
+
+
+def wait_for_trace(atof: Path, work: Path, gateway, timeout=60):
+    # Chat's reply can precede auxiliary model calls and the exporter's final writes.
+    # Keep the owner alive until the evidence closes, then stop it and revalidate.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            read_trace(atof, work, None, shared=True)
+            return
+        except ValueError:
+            if time.monotonic() >= deadline:
+                raise
+        try:
+            gateway.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            continue
+        raise RuntimeError("Evaluation gateway exited before the trace completed")
+
+
+class IncompleteBatchError(RuntimeError):
+    """Some measurements are missing, but the owned gateway shut down cleanly."""
+
+
+def run_trial(work: Path, env, query: str, model: str):
+    started = time.monotonic()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "chat",
+            "--query",
+            query,
+            "--quiet",
+            "--max-turns",
+            "30",
+            "--accept-hooks",
+            "--model",
+            model,
+        ],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    (work / "chat.stdout").write_text(result.stdout or "", encoding="utf-8")
+    (work / "chat.stderr").write_text(result.stderr or "", encoding="utf-8")
+    # Interrupts stop the battery; ordinary task failures are still measurements.
+    if result.returncode < 0 or result.returncode in (130, 143, 0xC000013A):
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, output=result.stdout, stderr=result.stderr
+        )
+    return (result.stdout or "").strip(), elapsed, result.returncode
+
+
+def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
+    resdir = ROOT / "results" / model.replace("/", "_") / arm
+    resdir.mkdir(parents=True, exist_ok=True)
+    done = {record["run_id"] for record, _ in recorded_scores(resdir, model, arm)}
+    trials = [
+        (f"{name}-r{rep}", name, rep, task)
+        for rep in range(reps)
+        for name, task in TASKS.items()
+        if (not only or name in only) and f"{name}-r{rep}" not in done
+    ]
+    if not trials:
+        return
+    batch = resdir / "batches" / uuid4().hex
+    batch.mkdir(parents=True)
+    atof = batch / "trace.atof.jsonl"
+    relay_config = batch / "relay-plugins.toml"
+    write_relay_config(relay_config, atof)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(pythonpath).resolve()),
+        "HERMES_HOME": str(HOME),
+        # Existing CLI mechanism: honor this exact home even with a saved active profile.
+        "HERMES_GATEWAY_PROFILE_PIN": "1",
+        "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
+    }
+    completed = []
+    failure = None
+    missing = []
+    with batch_gateway(env, batch) as gateway:
+        for run_id, name, rep, task in trials:
+            work = ROOT / "runs" / model.replace("/", "_") / arm / run_id
+            work.mkdir(parents=True, exist_ok=True)
+            make_sandbox(work)
+            if gateway.poll() is not None:
+                raise RuntimeError(
+                    f"Evaluation gateway exited; see {batch / 'gateway.log'}"
+                )
+            try:
+                out, elapsed, rc = run_trial(
+                    work, env, task.replace("{WORK}", str(work)), model
+                )
+            except (
+                OSError,
+                subprocess.TimeoutExpired,
+                subprocess.CalledProcessError,
+            ) as exc:
+                failure = exc
+                break
+            if rc != 0 and not out:
+                message = f"{run_id} INFRA-CRASH exit={rc}; see {work / 'chat.stderr'}"
+                missing.append(message)
+                print(f"[{arm}/{model}] {message}", flush=True)
                 continue
-            rec = {"run_id": run_id, "task": name, "rep": rep, "arm": arm,
-                   "model": model, "wall_s": round(dt, 1), "exit": rc,
-                   "tail": "\n".join(out.splitlines()[-12:])}
-            with open(meta_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec) + "\n")
-            print(f"[{arm}/{model}] {run_id} {dt:.0f}s exit={rc}", flush=True)
+            rec = {
+                "run_id": run_id,
+                "task": name,
+                "rep": rep,
+                "arm": arm,
+                "model": model,
+                "wall_s": round(elapsed, 1),
+                "exit": rc,
+                "batch_id": batch.name,
+                "tail": "\n".join(out.splitlines()[-12:]),
+            }
+            completed.append((work, rec))
+            print(f"[{arm}/{model}] {run_id} {elapsed:.0f}s exit={rc}", flush=True)
+        # Auxiliary model calls may outlive a chat reply. Let them finish before stopping
+        # the owner; then re-read the flushed stream before publishing any scores.
+        # Missing evidence must not add a fresh waiting period for every trial.
+        trace_deadline = time.monotonic() + 60
+        for work, _ in completed:
+            try:
+                wait_for_trace(
+                    atof,
+                    work,
+                    gateway,
+                    timeout=max(0, trace_deadline - time.monotonic()),
+                )
+            except ValueError:
+                # Shutdown may flush the missing events. Judge each trial afterward,
+                # so one incomplete session cannot discard independent valid results.
+                pass
+    for work, record in completed:
+        try:
+            events, root = read_trace(atof, work, None, shared=True)
+        except ValueError as exc:
+            missing.append(f"{record['run_id']}: {exc}")
+            continue
+        trial_trace = resdir / f"{record['run_id']}.atof.jsonl"
+        staged = trial_trace.with_suffix(".tmp")
+        staged.write_text(
+            "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+        )
+        staged.replace(trial_trace)
+        record["session_uuid"] = root
+        with (resdir / "meta.jsonl").open("a", encoding="utf-8") as output:
+            output.write(json.dumps(record) + "\n")
+    if failure is not None:
+        raise failure
+    if missing:
+        raise IncompleteBatchError("Batch incomplete:\n" + "\n".join(missing))
 
 
-def score_run(atof: Path):
+def select_trial_events(events, atof: Path, work: Path):
+    starts = session_starts(events)
+    roots = {event["uuid"] for event in starts if isinstance(event.get("uuid"), str)}
+    if any(
+        not isinstance(event.get("propagation_root_uuid"), str)
+        or event["propagation_root_uuid"] not in roots
+        for event in events
+    ):
+        raise ValueError(f"Invalid trace {atof}: unassociated events")
+    matches = [
+        event
+        for event in starts
+        if isinstance(event.get("data"), dict) and event["data"].get("cwd") == str(work)
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Invalid trace {atof}: expected exactly one session for {work}"
+        )
+    return [
+        event
+        for event in events
+        if event["propagation_root_uuid"] == matches[0].get("uuid")
+    ]
+
+
+def session_starts(events):
+    return [
+        event
+        for event in events
+        if event.get("kind") == "scope"
+        and event.get("name") == "hermes.session"
+        and event.get("category") == "agent"
+        and event.get("scope_category") == "start"
+    ]
+
+
+def read_trace(
+    atof: Path, work: Path | None, session_uuid: str | None, *, shared=False
+):
+    try:
+        events = [
+            json.loads(line)
+            for line in atof.read_text(encoding="utf-8-sig").splitlines()
+        ]
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"Invalid trace {atof}: {exc}") from exc
+    if not events or any(not isinstance(event, dict) for event in events):
+        raise ValueError(f"Invalid trace {atof}: expected event objects")
+    if any(
+        not isinstance(event.get("kind"), str)
+        or (event.get("scope_category") is not None and event["kind"] != "scope")
+        for event in events
+    ):
+        raise ValueError(f"Invalid trace {atof}: malformed event kind")
+    if shared:
+        events = select_trial_events(events, atof, work)
+    starts = session_starts(events)
+    if len(starts) != 1 or not (root := starts[0].get("uuid")):
+        raise ValueError(f"Invalid trace {atof}: expected exactly one session")
+    if session_uuid is not None and root != session_uuid:
+        raise ValueError(f"Invalid trace {atof}: recorded session does not match")
+    session_data = starts[0].get("data")
+    if work is not None and (
+        not isinstance(session_data, dict) or session_data.get("cwd") != str(work)
+    ):
+        raise ValueError(
+            f"Invalid trace {atof}: session working directory does not match trial"
+        )
+    if any(event.get("propagation_root_uuid") != root for event in events):
+        raise ValueError(f"Invalid trace {atof}: mixed or unassociated events")
+    scope_events = [event for event in events if event.get("kind") == "scope"]
+    if any(
+        not all(
+            isinstance(event.get(key), str) and event[key]
+            for key in ("uuid", "category", "name")
+        )
+        or event.get("scope_category") not in ("start", "end")
+        or not isinstance(event.get("metadata", {}), dict)
+        for event in scope_events
+    ):
+        raise ValueError(f"Invalid trace {atof}: malformed scope")
+    scopes = {
+        phase: Counter(
+            (event["category"], event["uuid"], event["name"])
+            for event in scope_events
+            if event["scope_category"] == phase
+        )
+        for phase in ("start", "end")
+    }
+    if scopes["start"] != scopes["end"] or any(
+        count != 1 for count in scopes["start"].values()
+    ):
+        raise ValueError(f"Invalid trace {atof}: incomplete or duplicated scopes")
+    if not any(category == "llm" for category, _, _ in scopes["end"]):
+        raise ValueError(f"Invalid trace {atof}: no completed model calls")
+    return events, root
+
+
+def score_run(atof: Path, *, work: Path | None = None, session_uuid: str | None = None):
+    events, root = read_trace(atof, work, session_uuid)
     llm = tools = errs = retries = 0
     result_bytes = 0
     last_err_tool = None
-    if not atof.exists():
-        return None
-    for line in atof.read_text(encoding="utf-8-sig").splitlines():
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
+    for ev in events:
         k, c, sc = ev.get("kind"), ev.get("category"), ev.get("scope_category")
         if k == "scope" and c == "llm" and sc == "end":
             llm += 1
@@ -254,7 +595,8 @@ def score_run(atof: Path):
             else:
                 last_err_tool = None
     return {"llm": llm, "tools": tools, "errs": errs,
-            "retries": retries, "kb": result_bytes // 1024}
+            "retries": retries, "kb": result_bytes // 1024,
+            "session_uuid": root}
 
 
 def report(models):
@@ -263,12 +605,7 @@ def report(models):
         print(f"\n================ MODEL: {model} ================")
         table = {}
         for arm in ("baseline", "fixes"):
-            meta_path = mdir / arm / "meta.jsonl"
-            if not meta_path.exists():
-                continue
-            for line in meta_path.read_text(encoding="utf-8-sig").splitlines():
-                m = json.loads(line)
-                s = score_run(mdir / arm / f"{m['run_id']}.atof.jsonl") or {}
+            for m, s in recorded_scores(mdir / arm, model, arm):
                 work = ROOT / "runs" / model.replace("/", "_") / arm / m["run_id"]
                 try:
                     ok = SUCCESS[m["task"]](m.get("tail", ""), work)
@@ -288,13 +625,13 @@ def report(models):
                 if not rows:
                     continue
                 n = len(rows)
-                mean = lambda k: sum(r.get(k, 0) for r in rows) / n
+                mean = lambda k: sum(r[k] for r in rows) / n
                 okp = 100 * sum(r["ok"] for r in rows) / n
                 print(f"{task:20s} | {arm:8s} | {n:2d} {okp:3.0f}% "
                       f"{mean('llm'):5.1f} {mean('tools'):5.1f} {mean('errs'):5.1f} "
                       f"{mean('retries'):5.1f} {mean('kb'):5.0f} {mean('wall'):5.0f}s")
                 for k in ("llm", "tools", "errs", "retries", "kb"):
-                    agg[arm][k] += sum(r.get(k, 0) for r in rows)
+                    agg[arm][k] += sum(r[k] for r in rows)
                 agg[arm]["wall"] += sum(r["wall"] for r in rows)
                 agg[arm]["ok"] += sum(r["ok"] for r in rows)
                 aggn[arm] += n
@@ -318,7 +655,11 @@ if __name__ == "__main__":
         pythonpath = sys.argv[sys.argv.index("--pythonpath") + 1]
         only = (sys.argv[sys.argv.index("--only") + 1].split(",")
                 if "--only" in sys.argv else None)
-        run(arm, model, reps, pythonpath, only)
+        try:
+            run(arm, model, reps, pythonpath, only)
+        except IncompleteBatchError as exc:
+            print(exc, file=sys.stderr)
+            sys.exit(3)  # run_all.sh may continue only after a clean gateway shutdown.
     elif cmd == "report":
         models = sys.argv[sys.argv.index("--models") + 1].split(",")
         report(models)

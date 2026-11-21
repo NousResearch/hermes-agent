@@ -27,11 +27,23 @@ PY=${PYTHON:-python3}
 EVAL="$(cd "$(dirname "$0")" && pwd)/ab_eval.py"
 export ABEVAL_ROOT=${ABEVAL_ROOT:-$PWD/abeval-workspace}
 
+status=0
+run_batch() {
+  local batch_status=0
+  "$PY" "$EVAL" run "$@" || batch_status=$?
+  case "$batch_status" in
+    0) ;;
+    3) status=3 ;; # Missing measurements, but the gateway shut down cleanly.
+    *) return "$batch_status" ;; # Interrupts and lifecycle failures stop the battery.
+  esac
+}
+
 for model in "${MODELS[@]}"; do
   echo "=== $model / baseline ==="
-  "$PY" "$EVAL" run --arm baseline --model "$model" --reps "$REPS" --pythonpath "$BASE"
+  run_batch --arm baseline --model "$model" --reps "$REPS" --pythonpath "$BASE"
   echo "=== $model / fixes ==="
-  "$PY" "$EVAL" run --arm fixes --model "$model" --reps "$REPS" --pythonpath "$FIXES"
+  run_batch --arm fixes --model "$model" --reps "$REPS" --pythonpath "$FIXES"
 done
 echo "=== ALL RUNS DONE ==="
 "$PY" "$EVAL" report --models "$(IFS=,; echo "${MODELS[*]}")"
+exit "$status"

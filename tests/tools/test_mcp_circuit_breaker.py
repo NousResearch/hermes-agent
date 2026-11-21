@@ -610,3 +610,81 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)
+
+
+def _rpc_error(code: int, message: str):
+    class _Rejected(Exception):
+        def __init__(self):
+            super().__init__(message)
+            self.error = type("Err", (), {"code": code, "message": message})()
+
+    return _Rejected()
+
+
+def _drive_breaker(monkeypatch, tmp_path, exc_factory):
+    """Open the breaker with ``exc_factory()`` on every tools/call. Returns the open-breaker text."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    async def _call_tool_rejects(*a, **kw):
+        raise exc_factory()
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_rejects)
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "revise", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            json.loads(handler({}))
+        return json.loads(handler({}))["error"].lower()
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._server_errors_all_application.pop("srv", None)
+
+
+def test_parameter_rejection_does_not_say_unreachable(monkeypatch, tmp_path):
+    """A JSON-RPC -32602 is the server answering. The breaker must not call it down."""
+    tripped = _drive_breaker(
+        monkeypatch, tmp_path,
+        lambda: _rpc_error(-32602, "Invalid request parameters"),
+    )
+    assert "rejected" in tripped and "unreachable" not in tripped, tripped
+
+
+@pytest.mark.parametrize("code,message", [
+    # "connection closed" is claimed first by the session-expiry recoverer. Use a
+    # message that reaches _server_answered so the open breaker is the assertion.
+    (-32000, "MCP error -32000"),
+    (-32001, "Request timed out"),
+])
+def test_sdk_transport_codes_still_say_unreachable(monkeypatch, tmp_path, code, message):
+    """MCP SDK -32000/-32001 are local transport failures, not a server answer."""
+    tripped = _drive_breaker(monkeypatch, tmp_path, lambda: _rpc_error(code, message))
+    assert "unreachable" in tripped and "rejected" not in tripped, tripped
+
+
+def test_grouped_parameter_rejection_is_still_an_answer(monkeypatch, tmp_path):
+    """anyio wraps the server's -32602. The group itself is not a transport failure."""
+    def _grouped():
+        return ExceptionGroup("unhandled errors in a TaskGroup (1 sub-exception)", [
+            _rpc_error(-32602, "Invalid request parameters"),
+        ])
+
+    tripped = _drive_breaker(monkeypatch, tmp_path, _grouped)
+    assert "rejected" in tripped and "unreachable" not in tripped, tripped
+
+
+def test_grouped_timeout_stays_transport():
+    """A grouped SDK timeout must not count as the server answering."""
+    from tools.mcp_tool_errors import _server_answered
+
+    grouped = ExceptionGroup("unhandled errors in a TaskGroup (1 sub-exception)", [
+        _rpc_error(-32001, "Request timed out"),
+    ])
+    assert _server_answered(grouped) is False
+    assert _server_answered(_rpc_error(-32000, "Connection closed")) is False
+    assert _server_answered(_rpc_error(-32001, "Request timed out")) is False
+    assert _server_answered(_rpc_error(-32602, "Invalid params")) is True
+    assert _server_answered(_rpc_error(-32603, "Internal error")) is True
+    assert _server_answered(TimeoutError("connection closed")) is False

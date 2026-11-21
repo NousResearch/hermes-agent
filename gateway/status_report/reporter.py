@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
+from agent.async_utils import consume_detached_task_result
 from agent.runtime_scope import bind_state, scope_for_profile
 from gateway.status import acquire_scoped_lock
 from gateway.status_report.payload import ReportKind, build_report, read_status_source
@@ -85,9 +86,8 @@ class StatusReporter:
         self._last_kind: Optional[str] = None
         self._goodbyes: set[asyncio.Task] = set()
         self._pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        # The one lock confirmation in flight: every caller awaits it, and only it sets _is_sender.
         self._confirming: Optional[asyncio.Task[bool]] = None
-        self._stopped = False  # run() has ended and none has started since
+        self._stopped = False
 
     async def run(self, is_running: Callable[[], bool], *, tick: float = _TICK_S) -> None:
         """Poll until the gateway stops. The sleep between polls only bounds how soon a due report
@@ -105,8 +105,8 @@ class StatusReporter:
             self._stopped = True
             for task in list(self._goodbyes):  # a goodbye outliving the watcher would report for it
                 task.cancel()
-            # A confirmation still in flight would take the lock again after a release here: it sees
-            # _stopped and gives the lock back itself (_confirm).
+            # A confirmation in flight could take the lock again after a release here: _confirm
+            # sees _stopped and releases.
             if self._is_sender and (self._confirming is None or self._confirming.done()):
                 self._is_sender = False
                 self._give_back()
@@ -214,11 +214,12 @@ class StatusReporter:
         repaired. Confirming it each time matters because a stopped owner counts as gone: a sender
         that resumes after another gateway took its lock stands by instead of reporting beside it.
 
-        One confirmation at a time: a beat and a goodbye that both ask join the one in flight, and
-        a caller cancelled while it waits cancels only its own wait. Only that confirmation sets
-        ``_is_sender``, so a late answer can never overwrite a newer one."""
+        One confirmation at a time: a beat and a goodbye that both ask share its answer, so answers
+        cannot land out of order."""
         if self._confirming is None or self._confirming.done():
             self._confirming = asyncio.get_running_loop().create_task(self._confirm())
+            # Unread when every caller was cancelled, the loop would log the error's text.
+            self._confirming.add_done_callback(consume_detached_task_result)
         return await asyncio.shield(self._confirming)
 
     async def _confirm(self) -> bool:
@@ -226,15 +227,18 @@ class StatusReporter:
         try:
             acquired, _holder = await asyncio.shield(asyncio.wrap_future(taking))
         except asyncio.CancelledError:
-            # Callers wait through a shield, so only the loop's own shutdown cancels this: the
-            # thread gives back what it takes, as nothing on the loop will run again.
-            taking.add_done_callback(self._give_back_if_taken)
+            # Callers wait through a shield; this is the loop's shutdown, after which nothing on
+            # it runs, so the thread releases.
+            was_sender = self._is_sender
+            taking.add_done_callback(lambda done: self._give_back_if_held(done, was_sender))
             raise
-        except OSError:
+        except Exception as exc:  # health: allow BLE001 -- an unexpected error must not keep a stopped watcher's lock
+            if not (self._stopped or isinstance(exc, OSError)):
+                raise
             acquired = None
         if self._stopped:
-            # The watcher stopped while this was out (a gateway shutdown) and left the lock to it:
-            # given back if it is ours. A respawned watcher has cleared _stopped first.
+            # run() left the release to this (see its finally). A respawned watcher clears _stopped
+            # first and adopts the answer.
             if acquired or (acquired is None and self._is_sender):
                 self._give_back()
             self._is_sender = False
@@ -258,8 +262,10 @@ class StatusReporter:
     def _give_back(self) -> None:
         release_scoped_lock(_LOCK_SCOPE, self._target.url)
 
-    def _give_back_if_taken(self, taking: concurrent.futures.Future) -> None:
-        if not taking.cancelled() and taking.exception() is None and taking.result()[0]:
+    def _give_back_if_held(self, taking: concurrent.futures.Future, was_sender: bool) -> None:
+        """On the reporter's thread: the lock the confirmation took, or the one this sender held
+        (the confirmation failed, but the lock file is still ours)."""
+        if was_sender or (not taking.cancelled() and taking.exception() is None and taking.result()[0]):
             self._give_back()
 
     def _stand_by(self, level: int, why: str) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import gc
 import logging
 import os
 import stat
@@ -514,9 +515,8 @@ async def test_a_beat_and_a_goodbye_share_one_lock_confirmation(clock, monkeypat
 
 
 async def test_a_watcher_stopped_while_a_confirmation_is_out_gives_the_lock_back_once_it_is_done(clock, monkeypatch):
-    """run()'s cleanup leaves the lock to the confirmation in flight: it would take it again after a
-    release, so it gives it back itself, and a refusal or an unusable directory gives back the lock
-    a sender held."""
+    """run()'s cleanup leaves the release to the confirmation in flight, whether it takes the lock
+    again or finds the directory unusable."""
     entered, release = threading.Event(), threading.Event()
     answers = [None]
 
@@ -544,3 +544,88 @@ async def test_a_watcher_stopped_while_a_confirmation_is_out_gives_the_lock_back
         assert await asyncio.wait_for(waiting, timeout=5) is False
         assert not reporter._is_sender
         assert not list(gateway_status._get_lock_dir().glob("*.lock")), f"lock left after a stop ({answer!r})"
+
+
+async def test_a_confirmation_failing_after_the_watcher_stopped_still_gives_back_the_senders_lock(clock, monkeypatch):
+    """run()'s cleanup leaves the lock to the confirmation in flight, so whatever that one raises
+    (not only an unusable directory) it gives the sender's lock back."""
+    entered, release = threading.Event(), threading.Event()
+    failing = []
+
+    def take_the_lock(scope, identity):
+        if failing:
+            entered.set()
+            release.wait(timeout=5)
+            raise RuntimeError("an unexpected failure")
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    reporter = make_reporter(Receiver())
+    assert await reporter._become_sender() is True
+    failing.append(True)
+    waiting = asyncio.create_task(reporter._become_sender())
+    await async_wait_until(entered.is_set, timeout=5, what="the confirmation")
+    await reporter.run(lambda: False)
+    release.set()
+
+    assert await asyncio.wait_for(waiting, timeout=5) is False
+    assert not list(gateway_status._get_lock_dir().glob("*.lock")), "the sender's lock was kept"
+
+
+def test_a_sender_whose_confirmation_the_loop_cancels_gives_back_its_lock_even_if_the_thread_fails(monkeypatch):
+    """At shutdown the loop cancels the confirmation in flight; nothing on it runs again, so the
+    thread gives back the lock this sender held whatever the confirmation's own answer."""
+    entered, release = threading.Event(), threading.Event()
+    failing = []
+
+    def take_the_lock(scope, identity):
+        if failing:
+            entered.set()
+            release.wait(timeout=5)
+            raise OSError(errno.EROFS, "Read-only file system", FAULT_PATH)
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    reporter = make_reporter(Receiver())
+
+    async def confirm_and_shut_down():
+        assert await reporter._become_sender() is True
+        failing.append(True)
+        asyncio.get_running_loop().create_task(reporter._become_sender())
+        await asyncio.to_thread(entered.wait, 5)
+        # asyncio.run returns here and cancels the confirmation still in flight
+
+    asyncio.run(confirm_and_shut_down())
+    assert list(gateway_status._get_lock_dir().glob("*.lock")), "released before the thread was done"
+    release.set()
+    reporter._pool.shutdown(wait=True)
+    assert not list(gateway_status._get_lock_dir().glob("*.lock")), "the sender's lock was kept"
+
+
+async def test_a_confirmation_no_caller_waits_for_any_more_is_read_when_it_fails(clock, monkeypatch):
+    """Its callers all cancelled, a failed confirmation is read here: unread, the loop would log
+    the error with its text, where the reporter logs only its type."""
+    unread = []
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, context: unread.append(context["message"]))
+    entered, release = threading.Event(), threading.Event()
+
+    def take_the_lock(scope, identity):
+        entered.set()
+        release.wait(timeout=5)
+        raise RuntimeError(f"failed at {FAULT_PATH}")
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    reporter = make_reporter(Receiver())
+    waiting = asyncio.create_task(reporter._become_sender())
+    await async_wait_until(entered.is_set, timeout=5, what="the confirmation")
+    waiting.cancel()
+    await asyncio.wait({waiting}, timeout=5)
+    confirming = reporter._confirming
+    release.set()
+    await asyncio.wait({confirming}, timeout=5)
+    del confirming
+    reporter._confirming = None
+    gc.collect()
+
+    assert unread == []

@@ -455,7 +455,7 @@ def served_profile_child_env(
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
     ``hermes_subprocess_env`` snapshot. The deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) are
-    removed last, whatever *base* or the profile overlay carried; ``gateway_child_env`` keeps them."""
+    removed last, whatever *base* or the profile overlay carried."""
     return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials))
 
 
@@ -535,8 +535,8 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
 
 
 def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Child env for a gateway this process starts on *target_home*: what ``served_profile_child_env``
-    builds, with the deployment's launch stamps kept."""
+    """Child env for a gateway this process starts on *target_home*: that profile's environment,
+    with each launch stamp it lacks filled from *base* (``keep_deployment_stamps``)."""
     return keep_deployment_stamps(_profile_child_env(base, target_home, True), os.environ if base is None else base)
 
 

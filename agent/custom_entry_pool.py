@@ -289,8 +289,19 @@ def load_runtime_pool(
     match = (owner["name"], owner) if owner else custom_entry_for_endpoint(base_url, name)
     if name and match is None:
         return None  # a named identity off its entry's address has no pool to borrow (fail closed)
-    key = (_pool_keys_for_custom_entry(*match) or [""])[0] if match and (name or owner) else resolve_runtime_pool_key(provider, base_url)
-    return entry_scoped_pool(load_pool(key), key, match[1] if match else None, base_url) if key else None
+    entry_keys = _pool_keys_for_custom_entry(*match) if match else []
+    key = (entry_keys or [""])[0] if match and (name or owner) else resolve_runtime_pool_key(provider, base_url)
+    if not key:
+        return None
+    # The entry's rows may sit under its legacy ``custom:<name>`` key while the preferred slug exists
+    # empty; startup resolution takes the key that holds credentials, so every later rebind must too.
+    preferred = None
+    for candidate in dict.fromkeys([key, *entry_keys]):
+        pool = entry_scoped_pool(load_pool(candidate), candidate, match[1] if match else None, base_url)
+        if pool is not None and pool.has_credentials():
+            return pool
+        preferred = pool if candidate == key else preferred
+    return preferred
 
 
 def load_route_pool(provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None) -> Any:

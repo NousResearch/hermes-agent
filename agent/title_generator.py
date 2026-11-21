@@ -166,6 +166,13 @@ _MACHINE_PREFIXES = (
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
     "[System: The active model for this chat has changed to ",
+    # The CLI/gateway ``/model`` switch note (hermes_cli.cli_model_switch_mixin and
+    # gateway.slash_commands_model — keep in sync). Also persisted as role="user" for #48338
+    # reasons, so a switch before the first real message otherwise titles the session
+    # "[Note: model was just switched from deepseek-v4-flash to…" instead of the user's
+    # actual question — and the status bar's title slot renders that title verbatim.
+    # Prefix-matched, not equality: the ``--once`` variant inserts a sentence mid-note.
+    "[Note: model was just switched from ",
 )
 
 

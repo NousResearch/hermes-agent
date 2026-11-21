@@ -314,3 +314,30 @@ def test_profile_identity_is_scope_isolated(backend, scope_a, scope_b):
     assert store_a.profile_identity.purge_profile(NEW).gateway_routing == 2
     assert keys_of(backend, scope_b, OLD, "t1")["binding_key"] == profile_namespace(OLD) + f"{NS}:t1"
     assert store_b.profile_identity.purge_profile(OLD).telegram_dm_topic_bindings == 1
+
+
+def test_rekey_repins_the_receiving_bot_in_every_namespace(backend, scope_a):
+    """Regression for #155001: a route pinned to the renamed profile's bot keeps naming the old bot, so
+    every async completion on it is held as "not connected" forever. The pin follows the rename in the
+    old namespace AND on a chat that bot received for another profile; another bot's pin stays."""
+    store_a = backend.open(scope_a)
+    chats = {"own": (OLD, OLD), "routed": ("satellite", OLD), "other": ("satellite", BYSTANDER)}
+    for sid, (runtime, bot) in chats.items():
+        key = profile_namespace(runtime) + f"{NS}:{sid}"
+        store_a.sessions.create(NewSession(session_id=SessionId(sid), source=NS, session_key=key, profile_name=runtime,
+                                           origin={"profile": runtime}, transport_profile=bot))
+        store_a.routing.upsert_routing_entry(key, json.dumps({"session_key": key, "session_id": sid, "transport_profile": bot,
+                                                              "origin": {"platform": NS, "chat_id": sid, "profile": runtime}}), routing_scope=NS)
+    facts = store_a.profile_identity.rekey_profile(OLD, NEW).as_dict()
+    # CONTRACT: the routing payload and the session column follow the rename wherever they name the old bot.
+    routes = {json.loads(text)["session_id"]: (key, json.loads(text)["transport_profile"])
+              for key, text in store_a.routing.load_routing_entries(routing_scope=NS).items()}
+    assert routes == {
+        "own": (profile_namespace(NEW) + f"{NS}:own", NEW),
+        "routed": (profile_namespace("satellite") + f"{NS}:routed", NEW),
+        "other": (profile_namespace("satellite") + f"{NS}:other", BYSTANDER),
+    }
+    assert {sid: store_a.sessions.get(SessionId(sid)).transport_profile for sid in chats} == {"own": NEW, "routed": NEW, "other": BYSTANDER}
+    # CONTRACT: entries moved out of the namespace and pins rewritten are counted apart.
+    assert {key: facts.get(key) for key in ("sessions_transport_profile", "gateway_routing", "gateway_routing_transport_profile")} == {
+        "sessions_transport_profile": 2, "gateway_routing": 1, "gateway_routing_transport_profile": 2}

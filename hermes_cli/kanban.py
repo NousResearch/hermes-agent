@@ -156,7 +156,14 @@ def kanban_command(args: argparse.Namespace) -> int:
     # `boards …` manages board metadata and the current-board pointer itself, so it must ignore
     # the `--board` routing override (else `--board beta boards show` reports beta).
     if action == "boards":
-        return _dispatch_boards(args)
+        try:
+            return _dispatch_boards(args)
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            # #142435: a fenced worker's cross-board refusal raises ValueError
+            # from _board_path. Without this wrap it escaped kanban_command
+            # (the boards dispatch sits outside the handler try below) as a
+            # bare traceback instead of a `kanban: …` rc!=0 message.
+            return _err(f"kanban: {exc}")
 
     # `--board <slug>` pins HERMES_KANBAN_BOARD for the duration of this call so it inherits the
     # exact resolution the dispatcher uses for workers.

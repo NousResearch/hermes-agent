@@ -51,7 +51,7 @@ import {
   toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -68,11 +68,14 @@ import {
   $activeSessionId,
   $currentReasoningEffort,
   $defaultReasoningEffort,
+  $messagingSessions,
   $selectedStoredSessionId,
+  $sessions,
   markComposerSelectionManual,
   setCurrentReasoningEffort,
   setModelPickerOpen
 } from '@/store/session'
+import { $sessionDotStateById, nextAttentionSessionId } from '@/store/session-dot-state'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { reopenLastClosedTile } from '@/store/session-states'
 import {
@@ -329,6 +332,20 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.newWindow': () => void openNewWindow(),
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
+    'session.nextAttention': () => {
+      const target = nextAttentionSessionId(
+        $sessionDotStateById.get(),
+        $focusedStoredSessionId.get(),
+        $sessions.get(),
+        $messagingSessions.get()
+      )
+
+      if (target) {
+        goToSession(target)
+      } else {
+        notify({ durationMs: 2000, kind: 'info', message: translateNow('keybinds.nothingNeedsYou'), placement: 'default' })
+      }
+    },
     ...sessionSlotHandlers,
     ...tabSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,

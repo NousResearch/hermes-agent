@@ -555,6 +555,7 @@ export const en: Translations = {
     pressKey: 'Press a key…',
     set: 'set',
     conflictWith: label => `Also bound to “${label}”`,
+    nothingNeedsYou: 'Nothing needs you right now',
     categories: {
       composer: 'Composer',
       profiles: 'Profiles',
@@ -577,6 +578,7 @@ export const en: Translations = {
       'session.newTab': 'New session tab',
       'session.newWindow': 'New window',
       'session.next': 'Next session',
+      'session.nextAttention': 'Next session that needs you',
       'session.prev': 'Previous session',
       'session.slot.1': 'Switch to recent session 1',
       'session.slot.2': 'Switch to recent session 2',

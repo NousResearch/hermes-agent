@@ -344,6 +344,7 @@ export const zhOverrides = {
     pressKey: '请按下按键…',
     set: '设置',
     conflictWith: label => `已绑定到“${label}”`,
+    nothingNeedsYou: '目前没有需要你处理的会话',
     categories: {
       composer: '输入框',
       profiles: '配置',
@@ -366,6 +367,7 @@ export const zhOverrides = {
       'session.newTab': '新建会话标签',
       'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
+      'session.nextAttention': '下一个需要你的会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',
       'session.slot.2': '切换到最近会话 2',

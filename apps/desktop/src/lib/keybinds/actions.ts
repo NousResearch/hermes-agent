@@ -180,6 +180,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
   hostAction('session.next', 'session', ['ctrl+tab', 'ctrl+pagedown'], { mac: 'mod+ctrl+]', other: 'alt+]' }),
   hostAction('session.prev', 'session', ['ctrl+shift+tab', 'ctrl+pageup'], { mac: 'mod+ctrl+[', other: 'alt+[' }),
+  // ⌘⇧A — "a" for attention: open the next session waiting on you (an
+  // approval or question first, then a finished turn you have not read).
+  { id: 'session.nextAttention', category: 'session', defaults: ['mod+shift+a'] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },

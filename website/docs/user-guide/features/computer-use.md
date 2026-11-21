@@ -127,6 +127,15 @@ They cannot change after the runtime starts:
 | `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch |
 | `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts |
 
+The permission mode never changes which machine the driver runs on. With a
+sandboxed terminal (`docker`, `ssh`), the private `unrestricted` daemon runs
+inside the sandbox too, on the sandbox's own display, so `--yolo` or
+`approvals.mode: off` widens what the driver may do there without reaching the
+host. `bounded` mode is not available with a sandboxed terminal yet (the
+manifest is a host file the sandbox cannot see) and fails at session start
+instead of falling back to the host; use `bot_desktop.placement: gateway` to
+run it on the gateway host.
+
 Browser work — including pages in a signed-in profile — goes through the
 `browser` toolset (`browser_exec`), not `computer_use`. The former
 `computer_use.grant_existing_profile` opt-in was removed along with the typed

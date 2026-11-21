@@ -259,6 +259,16 @@ class TestClarifyBatchValidation:
              [{"question": "Anything?", "choices": []}])
         assert seen["q"][0]["choices"] is None
 
+    def test_structured_choice_error_shows_what_was_sent(self):
+        """#142215: dict choices stay an error (#127760), but the error echoes the
+        rejected element so the model can fix the shape instead of resending it."""
+        bad = {"label": "A", "description": "first"}
+        asked = []
+        result = _ask(lambda questions: asked.append(questions) or _reply({}),
+                      [{"question": "Pick?", "choices": [bad, "B"]}])
+        assert json.dumps(bad, ensure_ascii=False) in result["error"]
+        assert asked == []
+
     def test_over_limit_choice_is_rejected_at_the_source(self):
         """#124127: a choice longer than a surface renders is refused, not silently dropped downstream."""
         from tools.clarify_tool import MAX_CHOICE_CHARS

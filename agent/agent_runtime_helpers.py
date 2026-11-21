@@ -2034,13 +2034,13 @@ def switch_model(
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
+        from agent.inline_tool_executors import detached_hook_kwargs
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
             function_name, function_args, task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            middleware_trace=list(middleware_trace),
+            turn_id=getattr(agent, "_current_turn_id", "") or "", api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            middleware_trace=list(middleware_trace), **detached_hook_kwargs(agent),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
     except Exception:
@@ -2057,7 +2057,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
     from agent.inline_tool_executors import (
-        InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
+        InlineToolContext, apply_transform_tool_result, detached_hook_kwargs, emit_terminal_post_tool_call,
         resolve_invoke_tool_executor, tool_hook_ids
     )
     if not isinstance(function_args, dict):
@@ -2116,7 +2116,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                tool_request_middleware_trace=list(_tool_middleware_trace),
+                tool_request_middleware_trace=list(_tool_middleware_trace), **detached_hook_kwargs(agent),
             )
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True

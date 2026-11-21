@@ -673,10 +673,13 @@ class _CallIds:
     turn_id: Optional[str] = None
     api_request_id: Optional[str] = None
     conversation_id: Optional[str] = None  # compression-stable root (agent.prompt_cache_scope.conversation_id)
+    detached: bool = False  # call made by a detached fork (agent.inline_tool_executors.detached_hook_kwargs)
 
-    def hook_kwargs(self) -> dict[str, str]:
-        """Same fields with None -> "" (hook/middleware wire contract)."""
-        return {k: v or "" for k, v in asdict(self).items()}
+    def hook_kwargs(self) -> dict[str, Any]:
+        """Id fields with None -> "" (hook/middleware wire contract); ``detached`` only when True."""
+        fields = asdict(self)
+        detached = fields.pop("detached")
+        return {k: v or "" for k, v in fields.items()} | ({"detached": True} if detached else {})
 
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
@@ -703,6 +706,7 @@ def _emit_post_tool_call_hook(
     turn_id: Optional[str] = None, api_request_id: Optional[str] = None, duration_ms: int = 0,
     status: Optional[str] = None, error_type: Optional[str] = None, error_message: Optional[str] = None,
     middleware_trace: Optional[list[dict[str, Any]]] = None, conversation_id: Optional[str] = None,
+    detached: bool = False,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
@@ -716,7 +720,8 @@ def _emit_post_tool_call_hook(
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
         invoke_hook(
             "post_tool_call", tool_name=function_name, args=function_args, result=result,
-            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id).hook_kwargs(),
+            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id,
+                       detached).hook_kwargs(),
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
@@ -910,7 +915,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
-    conversation_id: Optional[str] = None,
+    conversation_id: Optional[str] = None, detached: bool = False,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -918,14 +923,15 @@ def handle_function_call(
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    bridge catalog to this session's grant (None = unrestricted). detached: the caller is a
+    detached fork; tool hooks get ``detached=True``.
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
-    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
+    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id, detached)
     start = time.monotonic()
     from tools.hosted_tool_policy import hosted_tool_refusal
     if refusal := hosted_tool_refusal(function_name):

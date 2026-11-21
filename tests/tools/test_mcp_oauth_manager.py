@@ -871,3 +871,43 @@ async def test_refresh_400_recovery_rejects_disk_pair_from_another_issuer(tmp_pa
     assert recovered is False
     assert provider.context.current_tokens is None
     assert (await storage.get_tokens()).refresh_token is None, "foreign refresh token must not survive on disk"
+
+
+def test_provider_keeps_reading_its_own_profile_tokens_without_the_discovering_context(tmp_path, monkeypatch):
+    """A provider built for a routed profile keeps resolving that profile's ``mcp-tokens/``.
+
+    The SDK's token reads and writes run on the MCP loop, which does not carry the discovering
+    profile's home override: a storage that resolves ``get_hermes_home()`` lazily therefore lands in
+    the gateway's own home, replays that home's stale pair and fails its refresh (#148324).
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    root = tmp_path / "root"
+    profile = root / "profiles" / "otter"
+    for home, access_token in ((root, "ROOT_STALE"), (profile, "PROFILE_LIVE")):
+        token = set_hermes_home_override(home)
+        try:
+            storage = HermesTokenStorage("notion")
+            storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+            storage._tokens_path().write_text(
+                f'{{"access_token":"{access_token}","token_type":"Bearer","expires_in":3600}}',
+                encoding="utf-8",
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+    manager = MCPOAuthManager()
+    token = set_hermes_home_override(profile)
+    try:
+        provider = manager.get_or_build_provider("notion", "https://mcp.example/mcp", {})
+    finally:
+        reset_hermes_home_override(token)
+
+    # The initial authentication runs on the MCP loop: no profile override is installed there.
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    asyncio.run(provider._initialize())
+
+    assert provider.context.current_tokens.access_token == "PROFILE_LIVE"
+    assert provider.context.storage._tokens_path() == profile / "mcp-tokens" / "notion.json"

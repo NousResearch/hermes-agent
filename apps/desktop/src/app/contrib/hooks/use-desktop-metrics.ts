@@ -8,22 +8,24 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { contributedRoutes } from '@/app/routes'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { $commandPaletteOpen } from '@/store/command-palette'
-import { $activeConnectionId } from '@/store/connections'
 import {
   bindDesktopMetrics,
   cancelPendingBackendDrop,
+  captureDesktopMetricsGate,
   noteInteraction,
   recordFeatureUse,
   recordFriction,
+  recordLongFrames,
   routeArea,
   setDesktopBotCount,
-  setDesktopMetricsGate,
   slowFrameBucket,
   tickDesktopMetrics,
   trackArea,
+  trackDesktopVisibleTime,
   trackFlow
 } from '@/store/desktop-metrics'
 import { $findInPage } from '@/store/find-in-page'
@@ -34,7 +36,6 @@ import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/p
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
 import {
-  $sharedMetricsConsent,
   readSharedMetricsConsent,
   type SharedMetricsConsent,
   sharedMetricsProfileRequester
@@ -55,7 +56,8 @@ function botCount(): number {
   return byConnection || $profiles.get().length
 }
 
-/** Long frames (Long Animation Frames where available, else long tasks) while the window is visible. */
+/** Long frames (Long Animation Frames where available, else long tasks) while the window is visible:
+ *  every one into the day's histogram, the 100 ms+ ones also as capped slow_frame friction. */
 function observeSlowFrames(): () => void {
   if (typeof PerformanceObserver === 'undefined') {
     return () => undefined
@@ -78,7 +80,11 @@ function observeSlowFrames(): () => void {
       return
     }
 
-    for (const entry of list.getEntries()) {
+    const entries = list.getEntries()
+
+    recordLongFrames(entries.map(entry => entry.duration))
+
+    for (const entry of entries) {
       const bucket = slowFrameBucket(entry.duration)
 
       if (bucket) {
@@ -107,8 +113,12 @@ export function useDesktopMetrics({
   pathname: string
   profile: string
 }): void {
-  const connectionId = useStore($activeConnectionId)
-  const profileKey = normalizeProfileKey(profile)
+  // Both halves from the request scope, which publishes them in one frame: the
+  // connection descriptor lags the profile through a switch, and pairing the
+  // two dialed the old gateway for the new profile (a stray remote backend).
+  const scope = useStore($apiRequestScope)
+  const connectionId = scope.connectionId
+  const profileKey = normalizeProfileKey(scope.profile ?? profile)
 
   // Pinned to the focused (connection, profile): never whichever session tile is focused.
   const request = useMemo(
@@ -131,16 +141,20 @@ export function useDesktopMetrics({
     }
 
     let cancelled = false
+    const profileScope = `${connectionId ?? ''}|${profileKey}`
 
-    const refresh = () =>
-      void readSharedMetricsConsent(request).then(consent => {
-        // An unreadable answer (older backend, flap) keeps the last known gate.
-        if (!cancelled && consent) {
-          setDesktopMetricsGate(gateFor(consent), consent.decided)
+    const refresh = () => {
+      void captureDesktopMetricsGate(profileScope).then(async applyGate => {
+        const consent = await readSharedMetricsConsent(request)
+
+        // A delayed withdrawal still revokes its original cohort after a switch or rename.
+        if (consent && (!cancelled || !consent.enabled)) {
+          await applyGate(gateFor(consent), consent.decided)
         }
       })
+    }
 
-    bindDesktopMetrics(request, `${connectionId ?? ''}|${profileKey}`)
+    bindDesktopMetrics(request, profileScope)
     refresh()
     window.addEventListener('focus', refresh)
 
@@ -150,18 +164,6 @@ export function useDesktopMetrics({
     }
   }, [connectionId, enabled, gatewayOpen, profileKey, request])
 
-  // A first-run answer or a Settings change lands in the consent atom.
-  useEffect(() => {
-    if (!enabled) {
-      return
-    }
-
-    return $sharedMetricsConsent.listen(consent => {
-      if (consent) {
-        setDesktopMetricsGate(gateFor(consent), consent.decided)
-      }
-    })
-  }, [enabled])
 
   useEffect(() => {
     const area = enabled
@@ -206,11 +208,8 @@ export function useDesktopMetrics({
       }
     })()
 
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        tickDesktopMetrics()
-      }
-    }
+    const stopVisibleTime = trackDesktopVisibleTime(DAY_TICK_MS + 60_000)
+    const onVisibility = () => tickDesktopMetrics()
 
     const stops = [
       $commandPaletteOpen.listen(overlay('command_palette')),
@@ -239,7 +238,8 @@ export function useDesktopMetrics({
     window.addEventListener('keydown', onInteraction, { capture: true, passive: true })
     window.addEventListener('wheel', onInteraction, { capture: true, passive: true })
     document.addEventListener('visibilitychange', onVisibility)
-    const tick = window.setInterval(() => tickDesktopMetrics(), DAY_TICK_MS)
+
+    const tick = window.setInterval(tickDesktopMetrics, DAY_TICK_MS)
 
     return () => {
       stops.forEach(stop => stop())
@@ -249,6 +249,7 @@ export function useDesktopMetrics({
       window.removeEventListener('wheel', onInteraction, { capture: true })
       document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(tick)
+      stopVisibleTime()
     }
   }, [enabled])
 }

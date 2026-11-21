@@ -50,6 +50,11 @@ vi.mock('@/hermes', async importOriginal => {
   return { ...actual, HermesGateway: FakeHermesGateway }
 })
 
+// A secondary's reopen does `await import('@/store/session-states')` (store/gateway.ts). Load that
+// graph at collection so the first reconnect test is not charged its cold transform, which times it
+// out on a loaded runner.
+import '@/store/session-states'
+
 import type * as HermesModule from '@/hermes'
 import type { HermesGateway } from '@/hermes'
 import {

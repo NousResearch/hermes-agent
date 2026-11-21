@@ -122,7 +122,6 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
@@ -183,7 +182,6 @@ class TestBusyInputModeQueueFifo:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         runner.adapters = {Platform.TELEGRAM: adapter}
         return runner, adapter
@@ -210,7 +208,7 @@ class TestBusyInputModeQueueFifo:
 
         # Head slot keeps the first; overflow keeps the rest in order.
         assert adapter._pending_messages[session_key].text == "one"
-        assert [e.text for e in runner._queued_events[session_key]] == [
+        assert [e.text for e in runner._session_state(session_key).conversation.queued_events] == [
             "two",
             "three",
             "four",
@@ -243,7 +241,7 @@ class TestBusyInputModeQueueFifo:
             session_key, self._media_event("/tmp/notes.pdf", "application/pdf", MessageType.DOCUMENT))
 
         assert adapter._pending_messages[session_key].media_urls == ["/tmp/v1.ogg"]
-        assert [e.media_urls for e in runner._queued_events[session_key]] == [
+        assert [e.media_urls for e in runner._session_state(session_key).conversation.queued_events] == [
             ["/tmp/v2.ogg"], ["/tmp/v3.ogg"], ["/tmp/clip.mp4"], ["/tmp/notes.pdf"],
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == 5

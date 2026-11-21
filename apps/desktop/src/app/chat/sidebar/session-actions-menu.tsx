@@ -49,6 +49,7 @@ import {
   $unreadFinishedSessionIds,
   applySessionTitle,
   markSessionRead,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -121,9 +122,13 @@ export async function renameSessionPreferringRpc(
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
+  // Messaging-platform rows (telegram, discord, …) live in the messaging
+  // slice, not recents — a recents-only lookup misses them and the rename
+  // falls through to the active gateway profile instead of the owning bot
+  // profile (#126732). Resolve across every sidebar slice.
   const resolvedProfile =
     (profile ?? '').trim() ||
-    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
     undefined
 
   const runtimeId = resolveRuntimeIdForStored(storedSessionId)
@@ -675,11 +680,20 @@ function DeleteSessionDialog({ open, onOpenChange, onConfirm, sessionTitle }: De
 }
 
 interface SessionActionsMenuProps
-  extends SessionActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
+  extends
+    SessionActions,
+    Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'onOpenChange' | 'open' | 'sideOffset'> {
   children: React.ReactNode
 }
 
-export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
+export function SessionActionsMenu({
+  children,
+  align = 'end',
+  onOpenChange,
+  open,
+  sideOffset = 6,
+  ...actions
+}: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
@@ -691,6 +705,8 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         contentClassName="w-40"
         items={renderItems}
         onCloseAutoFocus={onCloseAutoFocus}
+        onOpenChange={onOpenChange}
+        open={open}
         sideOffset={sideOffset}
       >
         {children}
@@ -763,8 +779,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
+      // Same all-slices resolution as above: a messaging row's rename must
+      // carry its owning bot profile, not the ambient gateway profile.
       const targetProfile =
-        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+        (profile ?? '').trim() || ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
 
       const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''

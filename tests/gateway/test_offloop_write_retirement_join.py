@@ -12,6 +12,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under, store_location
 
 
 def _owner(tmp_path, monkeypatch):
@@ -20,10 +21,9 @@ def _owner(tmp_path, monkeypatch):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
 
     async def handle(event):
         return 'ok'
@@ -32,8 +32,8 @@ def _owner(tmp_path, monkeypatch):
                              _handle_message=handle, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
-                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=db,
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
     runner.session_authority = authority
     return store, authority, AuthorityConnection(authority, object(), {'user_id': 'human'})
 
@@ -90,7 +90,7 @@ async def _acp_idle_exit(authority, owner, tmp_path, db):
 async def _claim_reopen(authority, owner, tmp_path, db):
     from gateway.session_contract import Submission
     ref = _local(authority, owner, tmp_path, 'cli')
-    db.end_session(ref.session_id, 'tui_shutdown')
+    db.sessions.end(ref.session_id, 'tui_shutdown')
     await authority.submit(owner.actor, Submission('first', ref, {'text': 'FIRST'}, 'queue'))
     return authority.sessions[ref.session_id].task
 
@@ -102,8 +102,8 @@ async def _create_title(authority, owner, tmp_path, db):
 
 
 CASES = [
-    ('acp-detach', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
-    ('acp-idle-exit', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_exit),
+    ('acp-detach', 'persistence.sqlite.authority._local', 'end_idle_local_session', _acp_detach),
+    ('acp-idle-exit', 'persistence.sqlite.authority._local', 'end_idle_local_session', _acp_idle_exit),
     ('claim-reopen', 'gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
     ('create-title', 'gateway.session_local_title', 'title_new_session', _create_title),
 ]
@@ -115,8 +115,8 @@ async def test_retirement_answers_true_only_once_its_off_loop_writes_ended(
         tmp_path, monkeypatch, case, module, name, drive):
     from gateway.run_runtime import _retire_profile_authority
     store, authority, owner = _owner(tmp_path, monkeypatch)
-    db = store._db
-    writer = _HeldWriter(str(db.db_path))
+    db = store.persistence
+    writer = _HeldWriter(str(store_location(db.scope)))
     writer.wrap(monkeypatch, module, name)
     task = None
     try:
@@ -140,9 +140,9 @@ async def test_retirement_answers_true_only_once_its_off_loop_writes_ended(
 async def test_close_gate_counts_a_detach_write_its_cancelled_ws_handler_left(tmp_path, monkeypatch, caplog):
     from gateway.run_runtime import managed_turn_count
     store, authority, owner = _owner(tmp_path, monkeypatch)
-    db = store._db
-    writer = _HeldWriter(str(db.db_path))
-    writer.wrap(monkeypatch, 'gateway.session_acp_lifecycle', 'end_idle_local_session')
+    db = store.persistence
+    writer = _HeldWriter(str(store_location(db.scope)))
+    writer.wrap(monkeypatch, 'persistence.sqlite.authority._local', 'end_idle_local_session')
     task = await _acp_detach(authority, owner, tmp_path, db)
     try:
         assert await asyncio.to_thread(writer.started.wait, 10)
@@ -150,7 +150,7 @@ async def test_close_gate_counts_a_detach_write_its_cancelled_ws_handler_left(tm
         await asyncio.gather(task, return_exceptions=True)
         live = managed_turn_count(authority.runner)
         if not live:
-            db.close()  # what the gate does when nothing is counted
+            close_stores_under(db.scope.profile_dir)  # what the gate does when nothing is counted
         caplog.set_level(logging.WARNING)
         writer.release()
         assert await asyncio.to_thread(writer.finished.wait, 30)

@@ -17,8 +17,18 @@ on:
 # Shared with Stable Release so publication never races a build. The requested
 # rerun waits as pending behind this job instead of deadlocking it: the
 # sequencer only confirms the new attempt is queued, never that it finished.
+# Concurrency applies before reconcile's if, so a run that will skip — every
+# Canary release completion, a successful stable run, or a non-dispatch/fork
+# workflow_run — gets a group of its own so it cannot displace a pending stable
+# run or queued rerun in the shared stable-release group.
 concurrency:
-  group: stable-release
+  group: >-
+    ${{ (github.event_name != 'workflow_run' ||
+    (github.event.workflow_run.conclusion != 'success' &&
+     github.event.workflow_run.event == 'workflow_dispatch' &&
+     github.event.workflow_run.head_repository.full_name == github.repository &&
+     !startsWith(github.event.workflow_run.display_title, 'Canary release ')))
+    && 'stable-release' || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -27,11 +37,18 @@ permissions:
 
 jobs:
   reconcile:
+    # A canary runs Stable Release too (titled "Canary release <tag>"); it has no stable draft
+    # or head to reconcile, and a red canary must never rerun its jobs from here.
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion != 'success' &&
        github.event.workflow_run.event == 'workflow_dispatch' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       !startsWith(github.event.workflow_run.display_title, 'Canary release '))
+    # imagetools needs no BuildKit, but it reads the current builder's buildkitd.toml
+    # registry config. Not useblacksmith/setup-docker-builder: its no-cache-key fallback marks
+    # docker.io `http = true`, Docker Hub 301s the plain-HTTP manifest PUT to HTTPS, Go replays
+    # it as a GET, and the commit 404s (v0.22.3 rc.1-rc.4).
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     environment: release-signing
@@ -47,7 +64,9 @@ jobs:
           toolchain: node
           cache-python: false
       - name: Set up Docker Buildx for ordered alias promotion
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker  # no builder: imagetools then reads no registry config
       - name: Log in to Docker Hub for ordered alias promotion
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -68,3 +87,5 @@ jobs:
           MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
           MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
           MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
+          # Repository variable; 'true' commits the draft held for Publish now.
+          MS_STORE_HOLD: ${{ vars.MS_STORE_HOLD }}

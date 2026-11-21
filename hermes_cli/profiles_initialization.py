@@ -1,7 +1,49 @@
 """Initial profile files, written on the staging tree before publication."""
 import contextlib
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
+
+
+def clone_staging_dir(profile_dir: Path) -> Path:
+    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
+    rename is atomic). A leftover from a crashed create is discarded."""
+    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
+    profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    if staging.is_symlink() or staging.is_file():
+        staging.unlink()
+    elif staging.is_dir():
+        shutil.rmtree(staging, ignore_errors=True)
+    return staging
+
+
+def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
+    """A create that fails after a --clone-all copy got its own keychain entry (``ref``, returned by
+    ``VaultStore.own_copied_key``) deletes exactly that entry; never one inferred from the source."""
+    if ref is not None:
+        from agent.vault_keychain import delete_key
+        delete_key(ref)
+
+
+def prepare_imported_tree(staged: Path) -> None:
+    """Make an extracted ``hermes profile import`` tree safe to publish; runs on the staging tree."""
+    from hermes_cli.config_backend import drop_other_access
+    from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+    # Remove foreign runtime state before publishing, including file-shaped roots.
+    # A failed removal must abort import rather than install a stale PM selection.
+    for child in staged.iterdir():
+        if child.name in PM_RUNTIME_ROOT_DIRS:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    # Extraction applied each archive member's mode: drop world access on config.yaml and make
+    # .env owner-only, as a clone and `hermes import` do (#59726).
+    drop_other_access(staged / "config.yaml")
+    env = staged / ".env"
+    if env.is_file() and not env.is_symlink():
+        os.chmod(env, 0o600)
 
 
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
@@ -19,6 +61,9 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
     # had no file until first write and the profile silently inherited shell API keys —
     # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
     _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+    # A clone's copy2/copytree carries the source config.yaml's mode, world bits included.
+    from hermes_cli.config_backend import drop_other_access
+    drop_other_access(profile_dir / "config.yaml")
 
     # Default SOUL.md to customize immediately (skipped when a clone already provided one).
     with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this

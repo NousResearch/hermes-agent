@@ -38,7 +38,7 @@ def _runner_with(adapters: dict):
     return patch("gateway.run._gateway_runner_ref", lambda: runner)
 
 
-def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default"):
+def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default", config=None):
     """A runner using the REAL GatewayAuthorizationMixin resolution ladder."""
     from gateway.authz_mixin import GatewayAuthorizationMixin
 
@@ -46,6 +46,8 @@ def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str
     runner.adapters = default
     runner._profile_adapters = profiles
     runner._active_profile_name = lambda: active_profile
+    if config is not None:
+        runner.config = config
     return patch("gateway.run._gateway_runner_ref", lambda: runner)
 
 
@@ -304,6 +306,90 @@ class TestMultiplexProfileRouting:
             result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
         assert result["error"] == "adapter_not_registered"
         default_adapter._set_reaction.assert_not_awaited()
+
+    def test_shared_bot_satellite_acts_only_on_routed_chats(self, tmp_path):
+        """A bot-less satellite borrows the primary bot only for a chat a route maps to it (#147602)."""
+        from gateway.config import GatewayConfig
+        from gateway.profile_routing import parse_profile_routes
+
+        actions = PlatformActions("p")
+        primary = _telegram_adapter()
+        cfg = GatewayConfig()
+        cfg.multiplex_profiles = True
+        cfg.profile_routes = parse_profile_routes(
+            [{"name": "sec-room", "platform": "telegram", "profile": "sec", "chat_id": "100"}])
+        with (
+            _grant(True),
+            _multiplex_runner_with(default={Platform.TELEGRAM: primary}, profiles={"sec": {}}, config=cfg),
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="sec"),
+            patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]),
+        ):
+            assert asyncio.run(actions.add_reaction("telegram", "100", "2", "x"))["ok"] is True
+            primary._set_reaction.reset_mock()
+            result = asyncio.run(actions.add_reaction("telegram", "200", "2", "x"))
+        assert result["error"] == "adapter_not_registered"
+        primary._set_reaction.assert_not_awaited()
+
+    def test_topic_routed_satellite_reacts_to_its_own_turn_message(self, tmp_path):
+        """A reaction names no thread, so on a topic-pinned route the turn's own message is matched in
+        the bound origin's topic; another message, or the same id in another chat, is not (#147602)."""
+        from gateway.config import GatewayConfig
+        from gateway.profile_routing import parse_profile_routes
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        actions = PlatformActions("p")
+        primary = _telegram_adapter()
+        slack = SimpleNamespace(platform=Platform.SLACK, is_connected=True)
+        cfg = GatewayConfig()
+        cfg.multiplex_profiles = True
+        cfg.profile_routes = parse_profile_routes([
+            {"name": "topic", "platform": "telegram", "profile": "sec", "chat_id": "100", "thread_id": "7"},
+            {"name": "elsewhere", "platform": "telegram", "profile": "sec", "chat_id": "200", "thread_id": "7"},
+            {"name": "other-platform", "platform": "slack", "profile": "sec", "chat_id": "100", "thread_id": "7"}])
+        tokens = set_session_vars(profile="sec", platform="telegram", chat_id="100", thread_id="7", message_id="2")
+        try:
+            with (
+                _grant(True),
+                _multiplex_runner_with(default={Platform.TELEGRAM: primary, Platform.SLACK: slack},
+                                       profiles={"sec": {}}, config=cfg),
+                patch("hermes_cli.profiles.get_active_profile_name", return_value="sec"),
+                patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]),
+            ):
+                own = asyncio.run(actions.add_reaction("telegram", "100", "2", "x"))
+                other_message = asyncio.run(actions.add_reaction("telegram", "100", "3", "x"))
+                other_chat = asyncio.run(actions.add_reaction("telegram", "200", "2", "x"))
+                other_platform = asyncio.run(actions.add_reaction("slack", "100", "2", "x"))
+        finally:
+            clear_session_vars(tokens)
+        assert own["ok"] is True
+        assert other_message["error"] == other_chat["error"] == other_platform["error"] == "adapter_not_registered"
+        primary._set_reaction.assert_awaited_once()
+
+    def test_shared_bot_satellite_cannot_rename_foreign_discord_thread(self, tmp_path):
+        """Discord renames by global thread id: a routed chat_id must not unlock an arbitrary thread
+        for a bot-less satellite; only a thread its route pins is renamable (#147602)."""
+        from gateway.config import GatewayConfig
+        from gateway.profile_routing import parse_profile_routes
+
+        actions = PlatformActions("p")
+        primary = _discord_adapter()
+        cfg = GatewayConfig()
+        cfg.multiplex_profiles = True
+        cfg.profile_routes = parse_profile_routes([
+            {"name": "d", "platform": "discord", "profile": "sec", "chat_id": "111"},
+            {"name": "dt", "platform": "discord", "profile": "sec", "chat_id": "111", "thread_id": "333"},
+        ])
+        with (
+            _grant(True),
+            _multiplex_runner_with(default={Platform.DISCORD: primary}, profiles={"sec": {}}, config=cfg),
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="sec"),
+            patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]),
+        ):
+            result = asyncio.run(actions.set_thread_title("discord", "111", "999", "pwned"))
+            assert result["ok"] is not True
+            primary.rename_thread.assert_not_awaited()
+            assert asyncio.run(actions.set_thread_title("discord", "111", "333", "ok"))["ok"] is True
+        primary.rename_thread.assert_awaited_once_with("333", "ok")
 
 
 class TestPluginContextWiring:

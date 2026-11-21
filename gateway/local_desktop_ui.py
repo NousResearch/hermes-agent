@@ -203,7 +203,7 @@ def _tour(turn, agent, payload) -> str:
 
 
 def _setup_beat(turn, agent, payload):
-    from agent.onboarding_flow import CARD_TIMEOUT_S
+    from session_rules.onboarding_flow import CARD_TIMEOUT_S
     return _ask_result(turn, agent, "setup_beat", payload, CARD_TIMEOUT_S)
 
 
@@ -214,7 +214,9 @@ def _ask(turn, agent, method, params, timeout):
     live = authority.sessions.get(session_id)
     if live is None:
         return ""
-    value = ask_viewer(live.event_stream, session_id, method, dict(params), timeout=timeout,
+    # Automatic window requests (reads, a preview click, the tour) are not handed to a reconnecting
+    # viewer again: a second delivery would repeat the action.
+    value = ask_viewer(live.event_stream, session_id, method, dict(params), timeout=timeout, replay=False,
                        cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 

@@ -1,0 +1,22 @@
+name: actvox
+title: ActVox
+repo: https://github.com/ActVox/actvox-plugins
+sha: 76e394d381c3cf56632d7fd6c91d442c68b181f2
+subdir: hermes
+version: "0.1.1"
+description: "Make Hermes a team member in an ActVox workspace: on a schedule it works the tasks people assign it and answers the comments that @mention it, and submits each task for a person's review. Skills actvox:actvox and actvox:actvox-inbox, a first-turn inbox line (pre_llm_call), /actvox inbox|status, and hermes actvox setup|install-gate. A cron pre-run gate wakes the agent only when the inbox has work, so an empty tick makes no model call. Disclosure — ActVox is reached only through the user's own actvox MCP server (ctx.call_mcp, needs plugins.entries.actvox.mcp_allowlist) and the user's own actvox CLI (the gate runs `actvox inbox --all --json`); on the first turn of every non-cron session the pre_llm_call hook calls the server's check_inbox (up to 5 s) and adds one line saying how many tasks and mentions wait; the plugin holds and reads no credential and sends no telemetry. `hermes actvox install-gate` writes one file, $HERMES_HOME/scripts/actvox-inbox-gate.py, only on that explicit command and never over a file it did not write; gate state lives in $HERMES_HOME/plugin-data/actvox/. No background work of its own: the cron job runs only after the user creates it, and from then on anyone who can assign Hermes a task or @mention it in your ActVox workspaces decides what an unattended agent run on your host works on, with that job's toolsets (dangerous commands follow approvals.cron_mode, deny by default). Unattended writes need the default trust: full on the actvox server."
+maintainer: ActVox
+tier: community
+category: automation
+docs_url: https://github.com/ActVox/actvox-plugins/tree/main/hermes
+requires_hermes: ">=0.22.5"
+readme: true
+platforms: []
+known_issues:
+  - "The inbox gate needs Node.js and the ActVox CLI (npm i -g @actvox/cli) on the gateway host."
+  - "With plugins.isolation: host, the `hermes actvox` terminal commands are not available."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

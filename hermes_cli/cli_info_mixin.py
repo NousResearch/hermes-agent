@@ -18,7 +18,7 @@ from typing import Any, NamedTuple
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -105,7 +105,7 @@ class BannerPlan(NamedTuple):
 def banner_plan(cli, console) -> BannerPlan:
     """The welcome banner's plan. The compact banner (``banner_kw`` None) is for a narrow terminal,
     ``display.compact``, or a gateway session with no snapshot yet."""
-    from agent.context_pin import is_context_pinned
+    from agent.context_pin import agent_context_marker
     from hermes_cli.gateway_tools_notify import gateway_store
     store = gateway_store(cli)
     inventory = store.banner_inventory() if store is not None else None
@@ -117,8 +117,7 @@ def banner_plan(cli, console) -> BannerPlan:
     return BannerPlan(store, inventory, ctx_len, dict(
         console=console, model=cli.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
         enabled_toolsets=cli.enabled_toolsets, session_id=cli.session_id, context_length=ctx_len,
-        provider=cli.provider,
-        context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None))))
+        provider=cli.provider, context_marker=agent_context_marker(agent) if agent is not None else ""))
 
 
 class CLIInfoMixin:
@@ -223,7 +222,8 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.process_transport import is_local_server
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -238,7 +238,7 @@ class CLIInfoMixin:
                 fix = t("cli.banner.fix_ollama", tokens=str(MINIMUM_CONTEXT_LENGTH))
             elif _port == 1234:
                 fix = t("cli.banner.fix_lm_studio")
-            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+            elif is_local_server(base_url, getattr(self, "provider", None)):  # llama.cpp / vLLM / any local server — not Ollama
                 fix = t("cli.banner.fix_local_server",
                         tokens_k=str(MINIMUM_CONTEXT_LENGTH // 1000), tokens=str(MINIMUM_CONTEXT_LENGTH))
             else:
@@ -279,7 +279,9 @@ class CLIInfoMixin:
         except Exception:
             return False
         agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
+        def route(field):
+            return getattr(agent, field, None) or getattr(self, field, None)
+        return model_supports_fast_mode(route("model"), provider=route("provider"), base_url=route("base_url"))
 
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
@@ -626,6 +628,43 @@ class CLIInfoMixin:
             return
         self._show_usage()
 
+    def _account_usage_view(self) -> tuple[list[str], list[str], bool, Any]:
+        """``(plan-limit lines, Nous section lines, nous_route, Nous dollar model or None)`` for `/usage`, from
+        one Nous account read. On a gateway session the owner answers for the route the session runs
+        (``session.account_usage``): this process's provider/base_url pair is not that route once /model or a
+        fallback moved the provider (the launch base_url stays). Off the gateway, the CLI's own route."""
+        from agent.billing_links import is_nous_inference_route
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            try:
+                view = connection.call("session.account_usage", session_id=self.session_id, timeout=25) or {}
+            except GatewayClientError:
+                return [], [], False, None  # a failed read says nothing about the route: no Nous CTA
+            from agent.billing_usage import usage_model_from_wire
+            return (list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True,
+                    usage_model_from_wire(view.get("nous_usage")))
+        from agent.account_usage_nous import nous_usage_view
+        provider, base_url = self._agent_or_self("provider") or "", self._agent_or_self("base_url") or ""
+        nous_route = is_nous_inference_route(provider, base_url)
+        nous_lines, usage = nous_usage_view(nous_route=nous_route,
+                                            credits_state=getattr(self.agent, "_credits_state", None) if self.agent else None)
+        return self._local_account_limit_lines(), nous_lines, nous_route, usage
+
+    def _print_usage_account_blocks(self) -> bool:
+        """`/usage`'s account blocks: the active provider's limits, then the Nous section whenever Nous is
+        signed in (its own heading off a Nous route), then the `/topup` CTA on a Nous route only. True if
+        anything printed."""
+        lines, nous_lines, nous_route, usage = self._account_usage_view()
+        shown = self._print_account_limits(lines)
+        if not nous_route:
+            return self._print_account_limits(nous_lines) or shown
+        # The Nous route keeps main's two-bar balance block and its call to action.
+        if self._print_nous_balance(usage, nous_lines):
+            self._print_usage_cta()
+            return True
+        return shown
+
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
         return (getattr(self.agent, name, None) if self.agent else None) or getattr(self, name, None)
@@ -726,10 +765,7 @@ class CLIInfoMixin:
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
             # plus on-disk credentials, so they render without a live agent too (#42904).
-            shown = self._print_account_limits()
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-            elif not shown:
+            if not self._print_usage_account_blocks():
                 print(fallback)
 
         if not self.agent:
@@ -776,16 +812,13 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        from agent.context_pin import context_pin_suffix
-        pin_suffix = context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))
+        from agent.context_pin import agent_context_suffix
+        pin_suffix = agent_context_suffix(agent)  # " (pinned)" / " (fallback)"
         print(f"  {t('cli.usage.label_current_context'):<17} {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%){pin_suffix}")
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
 
-        self._print_account_limits()
-
-        if self._print_nous_credits_block():
-            self._print_usage_cta()
+        self._print_usage_account_blocks()
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -794,33 +827,34 @@ class CLIInfoMixin:
         else:
             logging.getLogger().setLevel(logging.INFO)
 
-    def _print_account_limits(self) -> bool:
-        """Provider account limits block for `/usage`; True if anything printed.
-
-        Uses the live agent's route when present, else the CLI's own configured provider (the
-        TUI/Desktop slash-worker runs without an agent). Fetched off-thread with a hard timeout so
+    def _local_account_limit_lines(self) -> list[str]:
+        """This process's route's provider account limits: the live agent's, else the CLI's configured
+        provider (the TUI/Desktop slash-worker runs without an agent). Off-thread with a hard timeout so
         slow provider APIs don't hang the prompt; failures are non-fatal. Lazy import: pulls the
-        OpenAI SDK chain.
-        """
+        OpenAI SDK chain."""
         provider = self._agent_or_self("provider")
         if not provider:
-            return False
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
+            return []
+        from agent.account_usage import account_limit_lines
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
             try:
-                account_snapshot = _pool.submit(
-                    fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
+                return _pool.submit(
+                    account_limit_lines, provider, base_url=self._agent_or_self("base_url"),
                     api_key=self._agent_or_self("api_key"),
                 ).result(timeout=10.0)
-            except (concurrent.futures.TimeoutError, Exception):
-                account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if not account_lines:
+            except concurrent.futures.TimeoutError:
+                return []
+            except Exception:  # a provider's own fetch or render: /usage still prints the rest
+                logging.getLogger(__name__).debug("account limits for /usage failed", exc_info=True)
+                return []
+
+    def _print_account_limits(self, lines: list[str]) -> bool:
+        """The provider account limits block of `/usage`; True if anything printed."""
+        if not lines:
             return False
         print()
-        for line in account_lines:
-            print(line)
+        for line in lines:
+            print(f"  {line}")
         return True
 
     def _show_insights(self, command: str = "/insights"):
@@ -864,7 +898,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import hermes_yaml as _yaml
+        from hermes_cli.config_backend import config_version_or_none, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -873,19 +907,15 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not cfg_path.exists():
-            return
-        try:
-            sig = file_signature(cfg_path.stat())
-        except OSError:
+        sig = config_version_or_none(cfg_path)
+        if sig is None:
             return
         if sig == self._config_sig:
             return  # unchanged — fast path
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+            new_cfg = read_config_doc(cfg_path) or {}
         except Exception:
             return
 

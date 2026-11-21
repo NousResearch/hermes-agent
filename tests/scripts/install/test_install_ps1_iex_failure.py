@@ -15,18 +15,14 @@ INSTALLER = Path(__file__).resolve().parents[3] / "scripts" / "install.ps1"
 REFUSAL = "exists and is not a Hermes git checkout"
 
 
-def _failing_install_env(tmp_path):
+@pytest.fixture
+def _failing_install_env(tmp_path, pinned_git_store):
     """An occupied non-checkout makes the repository stage Fail before any
-    network or git call; a present pinned-git slot satisfies prerequisites."""
+    network or git call; a ready pinned Git satisfies prerequisites."""
     home = tmp_path / "home"
     (home / "hermes-agent").mkdir(parents=True)
     (home / "hermes-agent" / "user-file").write_text("preserve me", encoding="utf-8")
-    tools = tmp_path / "tools"
-    for arch in ("x64", "arm64"):
-        git = tools / f"git-2.53.0+3-win32-{arch}" / "cmd" / "git.exe"
-        git.parent.mkdir(parents=True)
-        git.write_bytes(b"")
-    return dict(os.environ, HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(tools))
+    return dict(os.environ, HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(pinned_git_store))
 
 
 def _powershell():
@@ -35,18 +31,18 @@ def _powershell():
     return powershell
 
 
-def test_failed_iex_install_reports_and_returns_to_the_callers_session(tmp_path):
+def test_failed_iex_install_reports_and_returns_to_the_callers_session(tmp_path, _failing_install_env):
     command = (f"iex (Get-Content -Raw -LiteralPath '{INSTALLER}'); "
                "Write-Output \"session alive: $LASTEXITCODE\"")
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-                            env=_failing_install_env(tmp_path), capture_output=True, text=True, timeout=60, check=False)
+                            env=_failing_install_env, capture_output=True, text=True, timeout=60, check=False)
     assert REFUSAL in result.stdout
     assert "session alive: 1" in result.stdout, result.stdout + result.stderr
     assert (tmp_path / "home" / "hermes-agent" / "user-file").read_text(encoding="utf-8") == "preserve me"
 
 
-def test_failed_file_install_still_exits_nonzero(tmp_path):
+def test_failed_file_install_still_exits_nonzero(_failing_install_env):
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER)],
-                            env=_failing_install_env(tmp_path), capture_output=True, text=True, timeout=60, check=False)
+                            env=_failing_install_env, capture_output=True, text=True, timeout=60, check=False)
     assert REFUSAL in result.stdout
     assert result.returncode == 1

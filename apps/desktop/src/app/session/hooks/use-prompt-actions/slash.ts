@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -7,6 +7,7 @@ import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
+import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -32,10 +33,12 @@ import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import {
   $activeGatewayProfile,
-  $newChatProfile,
   captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayProfile,
-  normalizeProfileKey
+  invalidateNewChatIntent,
+  normalizeProfileKey,
+  pinNewChatProfile
 } from '@/store/profile'
 import {
   $connection,
@@ -69,6 +72,7 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
+import { remoteBrowserManageRefusal } from './browser-manage-refusal'
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
@@ -266,7 +270,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         return false
       }
 
-      const submissionId = options?.submission_id ?? crypto.randomUUID()
+      const submissionId = options?.submission_id ?? randomUuid()
 
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
@@ -922,7 +926,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const usage = { ...result?.usage, ...result?.info?.usage }
 
             if (Object.keys(usage).length && activeSessionIdRef.current === sessionId) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
+              setCurrentUsage(current => mergeUsage(current, usage))
             }
 
             if (result?.info?.title !== undefined) {
@@ -1021,10 +1025,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const result = await requestGateway<{ value?: string }>('config.set', params)
+            const result = await requestGateway<{ status?: string; value?: string }>('config.set', params)
+            const value = result.value || params.value
 
             applyReasoningSlashResult(result.value)
-            renderSlashOutput(`reasoning: ${result.value || params.value}`)
+            // Typed while a reply streams: the owner applies the level from the next turn.
+            renderSlashOutput(
+              result.status === 'deferred'
+                ? translateNow('shell.modelMenu.pickDeferred', value)
+                : `reasoning: ${value}`
+            )
           } catch (err) {
             if (isMissingRpcMethod(err)) {
               await runExec(ctx)
@@ -1162,8 +1172,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
+          invalidateNewChatIntent()
+          let intent = currentNewChatIntent()
+
           try {
             const { profiles } = await getProfiles()
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             const match = profiles.find(profile => profile.name === target)
 
             if (!match) {
@@ -1176,16 +1194,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
+            const key = pinNewChatProfile(match.name)
+            intent = currentNewChatIntent()
             await ensureGatewayProfile(key)
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             // Capture the source the swap landed on (null on the v1 profile path)
             // so the draft's owner matches the socket that will mint it.
             captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
-            notifyError(err, copy.setProfileFailed)
+            if (intent === currentNewChatIntent()) {
+              notifyError(err, copy.setProfileFailed)
+            }
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {
@@ -1314,8 +1338,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // gateway host, mirroring the TUI's browser.manage RPC. It mutates
         // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
         // meaningful when that process runs on this machine, so those two are
-        // gated to local connections. `status` and `use [off]` (the profile's
-        // browser.backend, applied to new chats) are right on any backend.
+        // gated to local connections. `status` is right on any backend.
         browser: async ctx => {
           const resolved = await withSlashOutput(ctx)
 
@@ -1327,26 +1350,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
           const cmdAction = rawAction.toLowerCase()
 
-          if (!['connect', 'disconnect', 'status', 'use'].includes(cmdAction)) {
+          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
             renderSlashOutput(
-              'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml'
+              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
             )
 
             return
           }
 
           if ((cmdAction === 'connect' || cmdAction === 'disconnect') && $connection.get()?.mode === 'remote') {
-            renderSlashOutput(
-              '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
-            )
-
-            return
-          }
-
-          const mode = cmdAction === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
-
-          if (mode && mode !== 'on' && mode !== 'off') {
-            renderSlashOutput('usage: /browser use [off]')
+            renderSlashOutput(remoteBrowserManageRefusal(cmdAction))
 
             return
           }
@@ -1361,24 +1374,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const result = await requestGateway<BrowserManageResponse>('browser.manage', {
               action: cmdAction,
               session_id: sessionId,
-              ...(url && { url }),
-              ...(mode && { enabled: mode === 'on' })
+              ...(url && { url })
             })
 
             // Without a streamed session subscription, the gateway bundles its
             // progress lines into `messages` — flush them inline.
             result?.messages?.forEach(message => renderSlashOutput(message))
-
-            if (cmdAction === 'use') {
-              renderSlashOutput(
-                mode === 'on'
-                  ? 'Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0'
-                  : 'Browser Use mode disabled — built-in browser tools restored'
-              )
-              renderSlashOutput('applies to new chats — this one keeps its current tools (/new to start one)')
-
-              return
-            }
 
             if (cmdAction === 'status') {
               renderSlashOutput(
@@ -1386,10 +1387,6 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                   ? `browser connected: ${result.url || '(url unavailable)'}`
                   : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
               )
-
-              if (result?.browser_use) {
-                renderSlashOutput('Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)')
-              }
 
               return
             }

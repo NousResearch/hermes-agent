@@ -74,11 +74,12 @@ const RELAY_DRAIN_INTERVAL_MS = 30_000
 
 const route = (
   id: string,
-  options: { mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
+  options: { bot?: true; mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
 ): ProfileRoute => ({
   connectionId: id,
   mode: options.mode ?? 'remote',
   ...(options.primary === true ? { primary: true } : {}),
+  ...(options.bot === true ? { bot: true } : {}),
   profile: options.profile ?? 'default',
   targetProfile: options.profile ?? 'default'
 })
@@ -393,6 +394,41 @@ describe('relay-route socket retention (#93594)', () => {
       }
     ])
     expect(pins).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('keeps a bot-hosting non-primary local in the peer set (#137618)', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('local', { mode: 'local', bot: true })
+    ])
+    const pins = trackRetention()
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list'
+        ? { profiles: [{ name: 'default' }] }
+        : { envelopes: [] }
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    // Both gateways are polled for agents and receive each other's roster
+    // rows — the bot on "This device" stays reachable through the relay.
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+
+    expect(syncs.map(call => call.connectionId).sort()).toEqual(['local', 'remote-primary'])
+    expect(syncs.find(call => call.connectionId === 'remote-primary')?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'local', profile: 'default' })
+    ])
+    expect(syncs.find(call => call.connectionId === 'local')?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'remote-primary', profile: 'default' })
+    ])
+    expect(pins.map(pin => pin.route.connectionId).sort()).toEqual(['local', 'remote-primary'])
 
     stopBotRelay()
   })

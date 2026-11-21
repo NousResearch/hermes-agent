@@ -205,6 +205,24 @@ class TestTerminalSchema:
         assert cut.endswith("Reply from mini:\ntail]")
         assert "cut" not in format_process_notification(base)
 
+    @pytest.mark.parametrize("evt_type", ["completion", "heartbeat", "watch_match"])
+    def test_long_command_is_shown_as_start_and_end(self, evt_type):
+        """A huge command line is not repeated in full on every notice; its start and end survive."""
+        from tools.process_registry_notifications import format_process_notification
+        cmd = "START_MARK " + "x" * 5000 + " END_MARK"
+        text = format_process_notification({"type": evt_type, "session_id": "proc_long", "command": cmd,
+                                            "exit_code": 0, "output": "done", "pattern": "done"})
+        line = next(ln for ln in text.splitlines() if ln.startswith("Command: "))
+        assert line.startswith("Command: START_MARK") and line.endswith("END_MARK")
+        assert "chars omitted" in line and len(line) < 800 and len(text) < 1200
+
+    def test_short_command_is_unchanged(self):
+        from tools.process_registry_notifications import format_process_notification
+        cmd = "pytest tests/ -q " + "-k foo " * 40
+        text = format_process_notification({"type": "completion", "session_id": "p", "command": cmd,
+                                            "exit_code": 0, "output": "ok"})
+        assert f"Command: {cmd}\n" in text
+
 
 # =========================================================================
 # Code execution blocked params

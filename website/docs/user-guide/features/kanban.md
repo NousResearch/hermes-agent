@@ -47,10 +47,12 @@ The eight canonical collaboration patterns are catalogued in [Collaboration patt
 
 ## PR completion contracts
 
-Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
-`https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
-accepts the same `completion_contract`. Use `local-only` for intentionally local
-work; existing and undeclared cards retain that default. Prose URLs are not policy.
+Declare PR work at creation with an actual repository, for example
+`--completion-contract NousResearch/hermes-agent` (or an exact
+`https://github.com/NousResearch/hermes-agent/pull/123` URL for existing work).
+`kanban_create` accepts the same `completion_contract`. Use `local-only` for
+intentionally local work; existing and undeclared cards retain that default.
+Prose URLs are not policy.
 
 After publishing, pass `metadata.published_pr` to completion. The first matching
 URL binds the card permanently; retries cannot substitute a green sibling PR.

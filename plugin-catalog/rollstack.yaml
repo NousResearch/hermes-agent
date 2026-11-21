@@ -1,0 +1,38 @@
+name: rollstack
+title: Rollstack
+repo: https://github.com/Rollstack/skills
+sha: 9aeb65628cb94adf8c709db8aa091a5d81a37bc1
+description: >-
+  Build polished presentations using AI, with advanced charts and data connections built in.
+  Rollstack's hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic client registration and
+  PKCE) comes with eleven workflow skills. Portable Agent Plugins v1 package (plugin.json + mcp.json
+  + skills/). Disclosure — hosted-only connector: Hermes runs no code from the package, and the
+  repository's pi/ and dsh/ folders are for other agents and are not loaded by Hermes. Every tool
+  call goes to Rollstack's MCP server at api.rollstack.com, signed in as
+  the user with their Rollstack account, which they must already have. Report names, slide content,
+  the data behind slides, schedules, and the names and email addresses of workspace members and
+  report recipients are pulled into the session context, and so reach the user's model provider.
+  Tools create and change reports, slides, schedules and sharing, and can send report emails. The
+  package declares the server untrusted, so Hermes asks the user before every write-capable call;
+  sending an email and deleting a report also wait for the user to confirm them in Rollstack. The tool list
+  comes from Rollstack's server at run time, so the pinned commit doesn't cover it. Hermes stores and
+  refreshes the OAuth tokens. OAuth must be enabled with
+  `hermes mcp add rollstack --url https://api.rollstack.com/public/v1/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401. That command writes a config.yaml entry that replaces the
+  package's, trust included, so sign-in also runs
+  `hermes config set mcp_servers.rollstack.trust untrusted` to keep the approval prompts.
+maintainer: Rollstack
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Rollstack/skills/blob/9aeb65628cb94adf8c709db8aa091a5d81a37bc1/README.md
+version: "1.3.6"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add rollstack --url https://api.rollstack.com/public/v1/mcp --auth oauth --connect-timeout 300"
+  - "Then keep Hermes asking before write calls, which the sign-in entry would otherwise drop: hermes config set mcp_servers.rollstack.trust untrusted"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -265,6 +265,24 @@ describe('advanceScan (incremental scanner)', () => {
   })
 })
 
+describe('inline ```code``` lines', () => {
+  it('stay prose: later paragraphs still settle and render outside a code block', () => {
+    // A backtick fence's info string cannot contain a backtick, so this first
+    // line is an inline code span, not an unclosed fence swallowing the reply.
+    const text = '```npm test``` runs the suite.\n\nThen **check** the output.\n\n```\nreal code\n```\n\nafter'
+    const state = createScanState()
+
+    advanceScan(text, state)
+
+    expect(state.blocks.slice(0, 2)).toEqual(['```npm test``` runs the suite.\n\n', 'Then **check** the output.\n\n'])
+
+    const rendered = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text })).join('\n')
+
+    expect(rendered).toContain('Then check the output.')
+    expect(rendered).not.toContain('**check**')
+  })
+})
+
 describe('StreamingMd rendering equivalence', () => {
   it('settled blocks + tail render identically to one combined Md', () => {
     const state = createScanState()

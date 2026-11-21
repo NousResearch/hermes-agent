@@ -57,7 +57,8 @@ const renderMath = (text: string): ReactNode => {
   return out
 }
 
-const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
+// A backtick fence's info string cannot contain a backtick, so "```a``` is inline" is a code span.
+const FENCE_RE = /^\s*(`{3,}(?![^`]*`)|~{3,})(.*)$/
 const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
 const HR_RE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+\s*)?$/

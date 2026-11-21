@@ -337,7 +337,7 @@ function maskQuotedAndCodeSpans(value: string): string {
       continue
     }
 
-    const opened = line.match(/^\s*(`{3,}|~{3,})/)
+    const opened = line.match(/^\s*(`{3,}(?![^`]*`)|~{3,})/)
 
     if (opened) {
       fence = opened[1]

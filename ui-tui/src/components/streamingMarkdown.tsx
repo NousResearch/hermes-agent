@@ -61,7 +61,8 @@ export const createScanState = (): StreamScanState => ({
 // fence; `$$` / `\[` open display math unless the line also closes it; closers
 // count only against a pending opener; math inside an open code fence is inert.
 const applyLine = (state: StreamScanState, line: string) => {
-  if (/^(?:`{3,}|~{3,})/.test(line)) {
+  // "```a``` is inline" is a code span, not a fence (no backtick in a backtick fence's info string).
+  if (/^(?:`{3,}(?![^`]*`)|~{3,})/.test(line)) {
     state.codeOpen = !state.codeOpen
 
     return

@@ -305,7 +305,7 @@ export const estimateRows = (text: string, w: number, compact = false) => {
 
   for (const raw of text.split('\n')) {
     const line = stripAnsi(raw)
-    const maybeFence = line.match(/^\s*(`{3,}|~{3,})(.*)$/)
+    const maybeFence = line.match(/^\s*(`{3,}(?![^`]*`)|~{3,})(.*)$/)
 
     if (maybeFence) {
       const marker = maybeFence[1]!

@@ -1,0 +1,18 @@
+name: termalin
+title: Termalin
+repo: https://github.com/termalinapp/termalin-plugin
+sha: 6c7ae6452d3f11c9bb73bf7fc7e04d3659e1c052
+version: "1.2.0"
+description: "Termalin's hosted MCP server (Streamable HTTP at https://termal.in/mcp, OAuth sign-in with your Termalin account, no keys in config): SSH, SFTP, databases and monitoring for your own Linux servers, keyless. Run commands and background jobs, read and write files, query Postgres, MySQL and other databases, read metrics, alerts and pending security updates on the servers you enrolled through the Termalin Connector, without handing the agent an SSH key. Package is configuration plus five skills (plugin.json, mcp.json, skills/), no local code. Disclosure: hosted-only connector; every tool call goes to termal.in, which forwards it to the user's own servers through their Connector. Needs a Termalin account with the Pro plan or its 14-day trial. Write tools (ssh_exec, sftp_write, job_start, data_query with writes, backups, web links) change the user's servers, so the package marks the server untrusted and Hermes asks before they run; a per-server policy in the Termalin account (full, allowlist, read-only) applies on top. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Termalin
+tier: community
+category: tools
+docs_url: https://termal.in/mcp/
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -54,6 +54,7 @@ export const chromeEn = {
     undoRedo: 'undo / redo input edits',
     deleteWord: 'delete word',
     killLine: 'kill to line start / end (repeat across lines)',
+    yank: 'paste back the last cut (press again for older cuts)',
     jumpWord: 'jump word',
     lineStartEnd: 'start / end of line',
     newline: 'insert newline',

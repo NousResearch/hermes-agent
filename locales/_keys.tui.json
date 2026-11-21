@@ -406,6 +406,7 @@
   "hints.sessionSwitcher",
   "hints.shell",
   "hints.undoRedo",
+  "hints.yank",
   "hubs.agentControls.loadingTranscript",
   "hubs.agentControls.notQueued",
   "hubs.agentControls.notQueuedError",

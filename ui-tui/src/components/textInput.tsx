@@ -4,6 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
+import { applyYank, isKillChord, KillRing, removedText, type YankState } from '../domain/killRing.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
@@ -502,6 +503,57 @@ export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: 
 }
 
 /**
+ * Where Home / End / Left / Right put the caret, or null when the key is not one of them.
+ *
+ * These four always end the keystroke, so the caller needs one decision from them: resolve the
+ * target column here, `moveCursor` it there. Extracted verbatim from the composer's key handler.
+ */
+export function resolveCursorMotion(
+  k: Key,
+  opts: {
+    actionEnd: boolean
+    actionHome: boolean
+    clearSel: () => void
+    cursor: number
+    range: null | { end: number; start: number }
+    value: string
+    wordMod: boolean
+  }
+): null | number {
+  const { actionEnd, actionHome, clearSel, cursor, range, value, wordMod } = opts
+
+  if (actionHome) {
+    return 0
+  }
+
+  if (actionEnd) {
+    return value.length
+  }
+
+  if (k.leftArrow) {
+    if (range && !wordMod && !k.shift) {
+      clearSel()
+
+      return range.start
+    }
+
+    return wordMod ? wordLeft(value, cursor) : prevPos(value, cursor)
+  }
+
+  if (k.rightArrow) {
+    if (range && !wordMod && !k.shift) {
+      clearSel()
+
+      return range.end
+    }
+
+    return wordMod ? wordRight(value, cursor) : nextPos(value, cursor)
+  }
+
+  return null
+}
+
+/**
  * Pure computation for the fast-echo backspace bypass: given the
  * current value/cursor (already validated by `canFastBackspaceShape`),
  * returns what the new value/cursor should be, the exact stdout write
@@ -852,6 +904,9 @@ export function TextInput({
   const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
+  // Killed text plus where the last yank landed — readline's kill ring and yank-pop state.
+  const killRing = useRef(new KillRing())
+  const lastYank = useRef<null | YankState>(null)
 
   const cbChange = useRef(onChange)
   const cbSubmit = useRef(onSubmit)
@@ -1430,6 +1485,19 @@ export function TextInput({
     cbSubmit.current?.(text)
   }
 
+  /**
+   * Alt+Y: readline `yank`, and `yank-pop` when it follows a yank. Ctrl+Y is redo in the TUI and
+   * stays that way, so the paste-back chord is Alt+Y (unbound until now).
+   */
+  const yank = () => {
+    const result = applyYank(killRing.current, vRef.current, curRef.current, lastYank.current)
+
+    if (result) {
+      lastYank.current = result.next
+      commit(result.value, result.cursor)
+    }
+  }
+
   // Holds keys while a submit is pending. The replay goes through this gate too, so a replayed
   // Enter queues the keys after it until its own submit has been answered.
   const queueAfterSubmit = (handler: InputHandler): InputHandler =>
@@ -1531,6 +1599,15 @@ export function TextInput({
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
 
+      const killStroke = isKillChord(inp, {
+        deleting: delFwd || k.backspace,
+        deleteToStart: actionDeleteToStart,
+        deleteWord: actionDeleteWord,
+        killToEnd: actionKillToEnd,
+        lineKill: isLineKillModifier(k),
+        wordMod
+      })
+
       const isPrintableInput =
         !event.isControlChord &&
         (event.keypress.isPasted || inp.length > 0) &&
@@ -1544,6 +1621,10 @@ export function TextInput({
         return swap(undo, redo)
       }
 
+      if (k.meta && inp.toLowerCase() === 'y') {
+        return yank()
+      }
+
       // Extended-key terminals (kitty CSI-u / modifyOtherKeys) deliver a shifted
       // letter as its uppercase char, so Cmd+Shift+Z arrives as inp 'Z' — match
       // case-insensitively like the copy/paste chords above.
@@ -1555,39 +1636,15 @@ export function TextInput({
         return selectAll()
       }
 
-      if (actionHome) {
-        c = 0
-        moveCursor(c, k.shift)
+      const motion = resolveCursorMotion(k, { actionEnd, actionHome, clearSel, cursor: c, range, value: v, wordMod })
+
+      if (motion !== null) {
+        moveCursor(motion, k.shift)
 
         return
-      } else if (actionEnd) {
-        c = v.length
-        moveCursor(c, k.shift)
+      }
 
-        return
-      } else if (k.leftArrow) {
-        if (range && !wordMod && !k.shift) {
-          clearSel()
-          c = range.start
-        } else {
-          c = wordMod ? wordLeft(v, c) : prevPos(v, c)
-        }
-
-        moveCursor(c, k.shift)
-
-        return
-      } else if (k.rightArrow) {
-        if (range && !wordMod && !k.shift) {
-          clearSel()
-          c = range.end
-        } else {
-          c = wordMod ? wordRight(v, c) : nextPos(v, c)
-        }
-
-        moveCursor(c, k.shift)
-
-        return
-      } else if (wordMod && inp === 'b') {
+      if (wordMod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
       } else if (wordMod && inp === 'f') {
@@ -1775,6 +1832,10 @@ export function TextInput({
         }
       } else {
         return
+      }
+
+      if (killStroke) {
+        killRing.current.push(removedText(vRef.current, v, curRef.current, c))
       }
 
       commit(v, c)

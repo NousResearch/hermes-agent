@@ -387,6 +387,11 @@ def read_page(store, target, order, after, limit, *, profile_home, inline_images
         def project(taken):
             entries = _entries(rows, handoffs, items[:taken])
             shown = [row for kind, row in entries if kind == ROW_KIND_MESSAGE]
+            # Compaction replaces physical rows, not message occurrences. Publish the same
+            # durable ids the cursor uses, or a client appends carried commentary again.
+            durable = {row['_row_id']: key[1] for row, key in zip(rows, keys)}
+            entries = [(kind, {**row, '_row_id': durable[row['_row_id']]})
+                       if kind == ROW_KIND_MESSAGE else (kind, row) for kind, row in entries]
             return project_entries(entries, lambda marked: display_projection(
                 _call_context(store, shown, segments) + marked, profile_home, image_urls=inline_images))
         projected, taken = _fit(project, roles, latest, _take(roles, latest, limit))

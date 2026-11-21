@@ -348,6 +348,13 @@ def migrate_loop_to_session(old_session_id: str, new_session_id: str, *, reason:
         if state is None or state.status == "cleared" or load_loop(new_session_id) is not None:
             return False
         save_loop(new_session_id, state)
+        # save_loop swallows set_meta failures; archive the parent only once the child copy reads back (#149594).
+        if load_loop(new_session_id) is None:
+            logger.warning(
+                "LoopManager: child write for %s not confirmed — keeping the loop active on %s (%s)",
+                new_session_id, old_session_id, reason or "rotation",
+            )
+            return False
         clear_loop(old_session_id)
         logger.debug(
             "LoopManager: migrated loop %s -> %s (%s)",

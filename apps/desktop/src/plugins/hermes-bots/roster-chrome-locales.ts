@@ -112,4 +112,15 @@ export const ROSTER_CHROME = {
     currentGateway: "البوابة الحالية",
     hidden: "مخفي"
   },
+  'it': {
+    title: "Bot",
+    toastsOn: "Avvisi di attività attivi — clicca per silenziarli",
+    toastsOff: "Avvisi di attività disattivati — clicca per attivarli",
+    newMenu: "Nuovo…",
+    filter: "Filtra l'elenco",
+    filtersActive: count => `Filtra l'elenco, ${count} attiv${count === 1 ? 'o' : 'i'}`,
+    allGateways: "Tutti i gateway",
+    currentGateway: "Gateway corrente",
+    hidden: "Nascosti"
+  }
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, RosterChromeMessages>

@@ -40,7 +40,7 @@ describe('desktop i18n languages', () => {
   it('falls back to English for empty or unsupported values', () => {
     expect(normalizeLocale(null)).toBe(DEFAULT_LOCALE)
     expect(normalizeLocale('')).toBe(DEFAULT_LOCALE)
-    expect(normalizeLocale('it')).toBe(DEFAULT_LOCALE)
+    expect(normalizeLocale('xx')).toBe(DEFAULT_LOCALE)
   })
 
   it('distinguishes exact locale ids from supported config aliases', () => {
@@ -49,7 +49,7 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('ru-RU')).toBe(true)
     expect(isSupportedLocaleValue('de-DE')).toBe(true)
-    expect(isSupportedLocaleValue('it')).toBe(false)
+    expect(isSupportedLocaleValue('xx')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
@@ -59,6 +59,7 @@ describe('desktop i18n languages', () => {
     expect(isLocale('fr')).toBe(true)
     expect(isLocale('de')).toBe(true)
     expect(isLocale('es')).toBe(true)
+    expect(isLocale('it')).toBe(true)
   })
 
   it('round-trips every picker option through its display.language value to a registered catalog', () => {

@@ -292,4 +292,33 @@ export const GROUP_CHAT_CHROME = {
     activityHeld: "متوقف مؤقتًا بأمرك — أشر إليه أو اطلب الاستئناف",
     activityStopped: "أوقف محادثة المجموعة — الأدوار المتبقية متوقفة مؤقتًا"
   },
+  'it': {
+    createAndJoin: "Crea e unisciti",
+    deleting: "Eliminazione…",
+    deletedLabel: "Eliminato",
+    hideHandle: "Nascondi l’handle completo",
+    showHandle: "Mostra l’handle completo",
+    replyTo: name => `Rispondi a ${name}`,
+    ownAnswerPlaceholder: "Oppure scrivi la tua risposta…",
+    answerPlaceholder: "Scrivi la tua risposta…",
+    sending: "Invio…",
+    answer: "Rispondi",
+    activityUnknown: "ha eseguito un’azione",
+    activityBot: "Un bot",
+    activitySlotWait: "non ha potuto avviarsi — troppi bot in esecuzione",
+    activityUserQueued: "Tu hai inviato un messaggio",
+    activityUserStopped: "Tu hai arrestato la chat di gruppo — i turni rimanenti sono in pausa",
+    activityQueued: "ha inviato un messaggio",
+    activityWorking: "sta lavorando…",
+    activityReplied: "ha risposto",
+    activityPassed: "ha passato",
+    activityTimedOut: "ha impiegato troppo tempo",
+    activityFailed: "ha incontrato un errore",
+    activityCancelled: "turno interrotto da un messaggio più recente",
+    activitySettled: "turno concluso",
+    activityCapped: "turno fermato al limite di giri o messaggi",
+    activityDelivered: "ha consegnato una risposta in ritardo",
+    activityHeld: "è in pausa (l’hai fermato tu) — @menzionalo o scrivi riprendi per sbloccarlo",
+    activityStopped: "ha arrestato la chat di gruppo — i turni rimanenti sono in pausa"
+  }
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, GroupChatChromeMessages>

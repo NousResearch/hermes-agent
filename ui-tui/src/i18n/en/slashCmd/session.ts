@@ -14,7 +14,7 @@ export const slashCmdSessionEn = {
     },
     btw: {
       answering: (taskId: string) => `btw ${taskId} — answering from a conversation snapshot`,
-      usage: '/btw <question>'
+      usage: '/btw <question>  (--explore <task> · --threads · --promote [id] · --stop <id>)'
     },
     busy: {
       mode: (mode: string) => `busy input mode: ${mode}`,

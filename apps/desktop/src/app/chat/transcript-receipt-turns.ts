@@ -108,10 +108,19 @@ const pageReplyRows = (page: ChatMessage[]): Set<number> =>
  * address only the rows that were stored (agent/persisted_turn_receipt.py): when the final answer
  * failed to store, the turn's last stored row is a tool row and the window's bubble is the only copy
  * of the answer. Proven by a complete receipt, by the page painting the turn's last stored row as
- * reply text, or by a stopped turn (everything it produced before the stop is stored).
+ * reply text, by a stopped turn (everything it produced before the stop is stored), or by a bubble
+ * with no text of its own.
  */
 function pageHoldsTheReply(message: ChatMessage, last: number, replyRows: Set<number>): boolean {
-  return Boolean(message.persistedTurn?.complete || message.interrupted) || replyRows.has(last)
+  return (
+    Boolean(message.persistedTurn?.complete || message.interrupted) ||
+    replyRows.has(last) ||
+    // Nothing of this bubble lives only in the window when it carries no text: a turn interrupted
+    // before any output ends on the `hidden` marker row the page never paints, so the page also
+    // draws its tool rows and the live copy is a duplicate. A bubble that does carry text is the
+    // answer the page may have failed to store — that one stays the window's.
+    !message.parts.some(part => part.type === 'text' && part.text.trim() !== '')
+  )
 }
 
 /** Window indices of the receipt turn ending at `end` that the page holds whole. */

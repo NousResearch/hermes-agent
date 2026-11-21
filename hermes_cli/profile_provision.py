@@ -257,11 +257,17 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))
     if request.mirror_credentials:
-        # A clone's logins come from its source; a fresh profile's from the launch profile.
+        # A clone's logins come from its source; a fresh profile's from the launch profile. A source that
+        # can't be read now copies no logins, never the launch profile's (another account's): sharing the
+        # root's store leaves the profile reading the root's, as any profile without its own auth.json does.
         auth_home = step("logins source", lambda: _logins_home(
             None if request.fresh else profiles._resolve_clone_source(request.clone_from)))
+        share_auth = request.share_auth or auth_home is None
+        if auth_home is None:
+            from hermes_constants import get_default_hermes_root
+            auth_home = get_default_hermes_root()
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
-            path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels,
+            path, result.mirrored, share_auth=share_auth, clone_channels=request.clone_channels,
             auth_home=auth_home), default=())
         if kept_root and not _is_root(auth_home):
             # A named source's own subscription logins can't be copied (single-use refresh

@@ -1878,6 +1878,19 @@ export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/run
  *  `SESSION_ROW_AREAS.leading` / `.trailing` to decorate sidebar session rows
  *  (the props carry the row's stored session id). */
 export { SESSION_ROW_AREAS, type SessionRowSlotContribution, type SessionRowSlotProps } from '@/lib/session-row-slots'
+
+/** Custom-endpoint editor seam (`customEndpoint.form`): augment the Settings ▸
+ *  Providers ▸ Custom Endpoints editor (e.g. "also create on other profiles").
+ *  Core keeps the fields, validation and save path; contributions receive a
+ *  read-only draft snapshot (`hasApiKey`, never the key value) and the last
+ *  successful save. */
+export {
+  CUSTOM_ENDPOINT_FORM_AREA,
+  type CustomEndpointFormContribution,
+  type CustomEndpointFormDraft,
+  type CustomEndpointFormProps,
+  type CustomEndpointSaved
+} from '@/lib/custom-endpoint-form'
 /** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
  *  same origin, same auth resolution as chat. */
 export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'

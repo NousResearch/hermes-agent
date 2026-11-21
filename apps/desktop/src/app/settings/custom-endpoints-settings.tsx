@@ -14,6 +14,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import type { CustomEndpointSaved } from '@/lib/custom-endpoint-form'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
@@ -27,6 +28,7 @@ import type {
 } from '@/types/hermes'
 
 import { ComboboxInput } from './combobox-input'
+import { CustomEndpointFormSlot } from './custom-endpoint-form-slot'
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 
@@ -125,6 +127,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [deleting, setDeleting] = useState<string | null>(null)
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
+  const [lastSaved, setLastSaved] = useState<CustomEndpointSaved | null>(null)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
   // Alias metadata from the last Test; the backend resolves a picked alias to its
   // canonical model + reasoning effort on Save (#93622).
@@ -195,6 +198,14 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       if (saved) {
         setForm(formFromEndpoint(saved))
         setDiscoveredModels(saved.models)
+        setLastSaved({
+          id: saved.id,
+          name: saved.name,
+          base_url: saved.base_url,
+          model: saved.model,
+          has_api_key: saved.has_api_key,
+          savedAt: Date.now()
+        })
       }
 
       if (saved && saved.is_current) {
@@ -495,6 +506,22 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 {ce.fields.discoverModels}
               </label>
             </div>
+            <CustomEndpointFormSlot
+              profile={scopeProfile ?? null}
+              draft={{
+                id: form.id,
+                name: form.name,
+                baseUrl: form.baseUrl,
+                model: form.model,
+                apiMode: form.apiMode,
+                contextLength: form.contextLength,
+                makeDefault: form.makeDefault,
+                discoverModels: form.discoverModels,
+                hasApiKey: Boolean(form.apiKey.trim())
+              }}
+              saved={lastSaved}
+              saving={saving}
+            />
             <div className="flex flex-wrap gap-2">
               <Button
                 disabled={testing || !form.baseUrl.trim()}
@@ -514,6 +541,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                   setForm(EMPTY_FORM)
                   setDiscoveredModels([])
                   setDiscoveredDetails([])
+                  setLastSaved(null)
                 }}
                 type="button"
                 variant="ghost"

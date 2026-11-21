@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 
-import type { GatewayTicketPurpose } from './local-gateway'
+import { type GatewayTicketPurpose, GatewayTicketTimeoutError } from './local-gateway'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 interface TicketEndpoint {
@@ -54,6 +54,21 @@ interface PendingTicket {
   timer: ReturnType<typeof setTimeout>
 }
 
+/** How long the helper may leave a request unanswered before it is retired as hung. */
+const TICKET_REPLY_TIMEOUT_MS = 10_000
+/** A deadline that fires this late timed a stalled main event loop (or a suspended machine), not the helper. */
+const TICKET_LATE_FIRE_MS = 1_000
+/** After such a stall the helper gets this long, on a running loop, to have its reply read. */
+const TICKET_STALL_GRACE_MS = 2_000
+/** This many requests running out in a row, with no reply from the helper between them, show a hung
+ *  helper rather than one slow request: it is retired and whatever still waits fails with it. */
+const TICKET_HUNG_AFTER_TIMEOUTS = 2
+
+/** An open app mints on every REST call, and its steady pollers leave the helper idle just
+ *  under 30 s at a time: a 30 s idle kill raced that poll every minute, and any renderer long
+ *  task that delayed it cost a cold helper start. The helper idles out once the app is quiet. */
+const TICKET_HELPER_IDLE_MS = 5 * 60_000
+
 const bridges = new Map<string, TicketBridge>()
 let bridgeGeneration = 0
 
@@ -65,6 +80,10 @@ class TicketBridge {
   private output = ''
   private idleTimer?: ReturnType<typeof setTimeout>
   private closed = false
+  /** Requests that ran out while the helper was kept: their replies, if they come, are dropped. */
+  private abandoned = new Set<number>()
+  /** Requests that ran out since the helper last replied. */
+  private silentTimeouts = 0
 
   constructor(command: string, cwd: string, env: NodeJS.ProcessEnv, private key: string) {
     this.child = spawn(command, ['-P', '-u', '-c', TICKET_SCRIPT], hiddenWindowsChildOptions({
@@ -93,11 +112,61 @@ class TicketBridge {
 
  return }
 
-      const timer = setTimeout(() => this.dispose(), 10_000)
-      this.pending.set(id, { resolve, reject, timer })
+      this.pending.set(id, { resolve, reject, timer: this.deadline(id, TICKET_REPLY_TIMEOUT_MS) })
       // Private stdin carries identity as data. EOF also retires the helper if Desktop exits.
       this.child.stdin.write(request)
     })
+  }
+
+  private deadline(id: number, ms: number): ReturnType<typeof setTimeout> {
+    const due = performance.now() + ms
+
+    return setTimeout(() => this.expire(id, due), ms)
+  }
+
+  // A deadline is a verdict on the helper only once its pipe has been read. When the main
+  // process stalls past it, the overdue timer runs before the event loop polls I/O, so a reply
+  // that arrived during the stall is still unread: retiring the helper then failed every
+  // pending request (and the next mint paid a cold interpreter start) although it had answered.
+  private expire(id: number, due: number): void {
+    const waiter = this.pending.get(id)
+
+    if (!waiter || this.closed) { return }
+
+    if (performance.now() - due > TICKET_LATE_FIRE_MS) {
+      waiter.timer = this.deadline(id, TICKET_STALL_GRACE_MS)
+
+      return
+    }
+
+    // setImmediate runs after the poll phase: whatever the pipe already holds is delivered first.
+    setImmediate(() => this.timeOut(id))
+  }
+
+  // The verdict is on this request alone. The helper answers in order, so one that is slow on this
+  // request has not shown anything about the ones behind it: they keep their own deadlines and the
+  // helper that may yet answer them stays. Only a helper that lets request after request run out
+  // without a word is hung, and is retired.
+  private timeOut(id: number): void {
+    const waiter = this.pending.get(id)
+
+    if (!waiter || this.closed) { return }
+
+    if (++this.silentTimeouts >= TICKET_HUNG_AFTER_TIMEOUTS) { this.dispose(new GatewayTicketTimeoutError());
+
+ return }
+
+    this.pending.delete(id)
+    this.abandoned.add(id)
+    waiter.reject(new GatewayTicketTimeoutError())
+    this.idleWhenQuiet()
+  }
+
+  private idleWhenQuiet(): void {
+    if (!this.pending.size) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = setTimeout(() => this.dispose(), TICKET_HELPER_IDLE_MS)
+    }
   }
 
   private receive(data: string): void {
@@ -115,6 +184,13 @@ class TicketBridge {
 
       try {
         const reply = JSON.parse(line)
+
+        // Any well-formed line is the helper at work, whichever request it answers.
+        this.silentTimeouts = 0
+
+        // The answer to a request that already ran out: nobody waits for it.
+        if (this.abandoned.delete(reply.id)) { continue }
+
         const waiter = this.pending.get(reply.id)
 
         if (!waiter) { this.dispose();
@@ -132,10 +208,11 @@ class TicketBridge {
  return }
     }
 
-    if (!this.pending.size) { this.idleTimer = setTimeout(() => this.dispose(), 30_000) }
+    this.idleWhenQuiet()
   }
 
-  dispose(): void {
+  /** `failure`: what every pending mint rejects with (a hung helper's is a timeout, not a dead owner). */
+  dispose(failure?: Error): void {
     if (this.closed) { return }
     this.closed = true
     clearTimeout(this.idleTimer)
@@ -144,7 +221,7 @@ class TicketBridge {
 
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer)
-      waiter.reject(new Error('Gateway ticket bootstrap failed'))
+      waiter.reject(failure ?? new Error('Gateway ticket bootstrap failed'))
     }
 
     this.pending.clear()

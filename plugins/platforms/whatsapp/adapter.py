@@ -1148,8 +1148,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Disconnecting (external bridge left running)")
         else:
             try:
-                self._terminate_bridge(force=False)
-                await asyncio.sleep(1)
+                # Windows: the bridge has no window, so taskkill without /F can only refuse it (exit 128) or
+                # hang until its timeout, past the gateway's disconnect budget. Stop it with /F straight away.
+                if not _IS_WINDOWS:
+                    self._terminate_bridge(force=False)
+                    await asyncio.sleep(1)
                 if self._bridge_process.poll() is None:
                     self._terminate_bridge(force=True)
                     # SIGKILL/taskkill /F still takes a moment to be visible to poll(): an in-process
@@ -1158,16 +1161,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         await asyncio.to_thread(self._bridge_process.wait, _SIGTERM_GRACE_S)
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
+                logger.warning("[%s] Error stopping bridge: %s", self.name, e)
             if not _IS_WINDOWS and self._bridge_process.poll() is not None:
                 # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
                 # (POSIX only: Windows has no supervised group, and its stop path stays as on main.)
                 release_process_group_once_empty(self._bridge_process.pid, timeout=0)
-        if self._bridge_process or not getattr(self, "_runtime_status_platform_key", ""):
+        # A bridge that outlived the stop stays owned and keeps bridge.pid: a later disconnect() retries
+        # the stop, and the next connect() can only reap it by that record.
+        bridge_running = self._bridge_process is not None and self._bridge_process.returncode is None
+        if not bridge_running and (self._bridge_process or not getattr(self, "_runtime_status_platform_key", "")):
             _unlink_quietly(self._session_path / "bridge.pid")
         await cancel_task(self._poll_task)
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
-        self._poll_task = self._http_session = self._bridge_process = None
+        self._poll_task = self._http_session = None
+        if not bridge_running:
+            self._bridge_process = None
         self._release_platform_lock()
         self._mark_disconnected()
         self._close_bridge_log()

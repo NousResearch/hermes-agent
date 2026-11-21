@@ -87,6 +87,19 @@ app included, already has it. Where PM has no Chromium build (Android/Termux,
 musl Linux), Hermes uses a system `chromium` on `PATH` instead.
 Other optional tools use their feature-specific installation paths.
 
+On musl Linux (Alpine) one Python dependency has no prebuilt package and is
+compiled during the install: `google-re2`, the regular-expression engine. Install
+a C++ compiler and the RE2 and Abseil headers first:
+
+```bash
+apk add build-base re2-dev abseil-cpp-dev
+```
+
+The build takes a few seconds. PM uses its own Python, so no Python headers
+package is needed. Without the packages the install stops and names them.
+Keep them installed: an update that moves the pinned version compiles the
+module again.
+
 A new install lands on the latest stable release, the channel `hermes update`
 follows from then on (see [Updating](./updating.md)). To install the tip of
 `main` instead, pass `--channel main` on POSIX or `-Channel main` on Windows

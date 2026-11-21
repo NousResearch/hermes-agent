@@ -142,3 +142,48 @@ jobs:
         if: ${{ !startsWith(matrix.target.label, 'linux-') }}
         shell: bash
         run: bash scripts/smoke-payload.sh build/agent-payload
+
+  # google-re2 (the engine behind hermes_re) publishes no musllinux wheel: on musl PM builds its
+  # sdist against the distribution's RE2 and Abseil, with the pybind11 that pyproject's
+  # [tool.uv.extra-build-dependencies] adds. No other lane compiles it, so this one runs the PM
+  # phases the setup-pm action runs (scripts/ci/setup_toolchain.py) inside Alpine and imports the
+  # extension module. `docker run` passes none of the runner's variables on, and it must stay so
+  # for GITHUB_ACTIONS: with it set, the sdist's setup.py runs a bazel build instead.
+  musl-source-build:
+    name: musl source build (Alpine)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    env:
+      # Pinned by digest so a tag move cannot change what the lane builds against.
+      HERMES_ALPINE_IMAGE_REF: "alpine:3.23@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2"
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Pull the Alpine image
+        uses: ./.github/actions/retry
+        with:
+          command: docker pull -q "$HERMES_ALPINE_IMAGE_REF"
+
+      # The checkout is mounted read-only and copied: PM state, the environment and anything a
+      # build writes stay inside the container, and the copy is owned by the container's user.
+      - name: Build the core environment through PM and import the engine
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" "$HERMES_ALPINE_IMAGE_REF" sh -euc '
+            apk add --no-cache bash git python3 build-base re2-dev abseil-cpp-dev
+            cp -R /src /work
+            cd /work
+            git config --global --add safe.directory /work
+            mkdir -p /pm
+            export GITHUB_OUTPUT=/pm/output GITHUB_ENV=/pm/env GITHUB_PATH=/pm/path
+            : > "$GITHUB_OUTPUT"; : > "$GITHUB_ENV"; : > "$GITHUB_PATH"
+            load_env() { set -a; . "$GITHUB_ENV"; set +a; }
+            python3 -S scripts/ci/setup_toolchain.py prepare --toolchain python --extras "[]" --packages "" --home /pm/home
+            load_env
+            python3 -S scripts/ci/setup_toolchain.py install --toolchain python --packages "" --home "$HERMES_HOME"
+            load_env
+            "$HERMES_PYTHON" -S scripts/ci/setup_toolchain.py dependencies --toolchain python --extras "[]" --home "$HERMES_HOME"
+            load_env
+            "$HERMES_PYTHON" -c "from re2 import _re2; print(_re2.RE2)"
+          '

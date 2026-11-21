@@ -310,6 +310,15 @@ as `-pthread`, and defaults `AR` to the host's `ar`. A `CC`, `CXX`, `LDSHARED`,
 `LDCXXSHARED` or `AR` you set yourself wins. With no compiler at all, a source
 build fails with a hint to install one (`sudo apt install build-essential`).
 
+On musl Linux `google-re2` (the regular-expression engine, a core dependency) has
+no wheel, so PM compiles its source distribution when it builds an environment.
+It links the system RE2 and Abseil: install `build-base re2-dev abseil-cpp-dev`
+on Alpine first. The build needs pybind11, which the source distribution does
+not declare; `[tool.uv.extra-build-dependencies]` in `pyproject.toml` supplies
+the pinned version, and plugin workspaces inherit it. uv does not record that
+build requirement in `uv.lock`. A build that stops on a missing `re2/` or `absl/`
+header fails with a hint naming the three packages.
+
 Clone the repository and select your branch before preparing dependencies:
 
 ```bash

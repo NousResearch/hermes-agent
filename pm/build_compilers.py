@@ -39,6 +39,10 @@ _COMPILER_NAME = re.compile(r"(?:clang(?:\+\+)?|g?cc|g\+\+|c\+\+)(?:-[\d.]+)?")
 _COMPILER_REMEDY = ("{what}: install a C/C++ compiler (Debian/Ubuntu/WSL: `sudo apt install build-essential`; "
                     "Fedora: `sudo dnf install gcc gcc-c++`; macOS: `xcode-select --install`) "
                     "or point CC/CXX at one, then retry")
+# google-re2 has no musl wheel: its sdist compiles against the system RE2 and Abseil headers.
+_MISSING_RE2_HEADER = re.compile(r"fatal error: (?:re2|absl)/")
+_RE2_HEADER_REMEDY = ("the google-re2 build needs the RE2 and Abseil headers: install them with a C++ "
+                      "compiler (Alpine: `apk add build-base re2-dev abseil-cpp-dev`), then retry")
 
 
 @functools.lru_cache(maxsize=None)  # noqa: UP033 -- functools.cache is 3.9+; the bootstrap runner can be older
@@ -88,11 +92,14 @@ def pinned_build_defaults(python: Path, env: Mapping[str, str]) -> dict[str, str
 
 
 def missing_compiler_remedy(output: str) -> str:
-    """The install hint for a build that failed because no compiler exists, else ''."""
+    """The install hint for a build that failed because no compiler exists, or because the
+    RE2/Abseil headers google-re2 compiles against are missing, else ''."""
     for pattern in _MISSING_COMPILER:
         for match in pattern.finditer(output):
             if not match.groups():
                 return _COMPILER_REMEDY.format(what="this package compiles native code and no compiler was found")
             if _COMPILER_NAME.fullmatch(Path(match.group(1)).name):
                 return _COMPILER_REMEDY.format(what=f"the build needs `{match.group(1)}`, which is not on PATH")
+    if _MISSING_RE2_HEADER.search(output):
+        return _RE2_HEADER_REMEDY
     return ""

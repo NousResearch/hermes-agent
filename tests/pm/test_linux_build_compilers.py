@@ -113,3 +113,21 @@ def test_build_failure_without_any_compiler_names_the_install(tmp_path):
     ran = missing.replace("[Errno 2] No such file or directory: 'clang++'",
                           "command '/usr/bin/gcc' failed with exit code 1")
     assert "build-essential" not in classify_uv_failure("pip", 1, ran).remedy
+
+
+def test_build_failure_on_missing_re2_headers_names_the_packages():
+    from pm.environment import BuildFailure, classify_uv_failure
+
+    # The compiler ran; the header google-re2's sdist includes is not installed (Alpine without re2-dev).
+    missing = ("error: Failed to build `google-re2==1.1.20251105`\n  ├─▶ The build backend returned an error\n"
+               "  ╰─▶ Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)\n"
+               "      _re2.cc:21:10: fatal error: re2/filtered_re2.h: No such file or directory\n"
+               "      error: command '/usr/bin/g++' failed with exit code 1\n")
+    failure = classify_uv_failure("pip", 1, missing)
+    assert isinstance(failure, BuildFailure)
+    assert all(package in failure.remedy for package in ("build-base", "re2-dev", "abseil-cpp-dev"))
+    abseil = missing.replace("re2/filtered_re2.h", "absl/strings/string_view.h")
+    assert "abseil-cpp-dev" in classify_uv_failure("pip", 1, abseil).remedy
+    # Any other missing header is a source error this hint does not explain.
+    other = missing.replace("re2/filtered_re2.h", "pybind11/buffer_info.h")
+    assert "re2-dev" not in classify_uv_failure("pip", 1, other).remedy

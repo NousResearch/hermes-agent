@@ -197,6 +197,62 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_accepts_json_object_string_metadata(worker_env):
+    """#157209: flat key/value tool-call formats send ``metadata`` as a JSON
+    object string; the transition must store the parsed object, not reject it."""
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "shipped the metadata coercion",
+        "metadata": '{"files": 2, "area": "kanban"}',
+    }))
+
+    assert out["ok"] is True, out
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {"files": 2, "area": "kanban"}
+
+
+def test_request_review_accepts_json_object_string_metadata(monkeypatch, worker_env, tmp_path):
+    """Same shape on the review hand-off, where the rejection used to cost the
+    real summary and leave the worker experimenting with the transition tool."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
+    with kbc.connect() as conn:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
+
+    out = json.loads(kt._handle_request_review({
+        "summary": "ready for review",
+        "reviewer": "verifier",
+        "metadata": '{"files": 3}',
+    }))
+
+    assert out["ok"] is True, out
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert (task.status, task.assignee) == ("review", "verifier")
+
+
+@pytest.mark.parametrize("bad", ['["not", "an", "object"]', "not json at all", "null", "7"])
+def test_metadata_json_string_non_object_still_rejected(worker_env, bad):
+    """Only a JSON *object* is accepted; every other shape keeps the old error."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({"summary": "done", "metadata": bad}))
+
+    assert "metadata must be an object/dict" in out.get("error", ""), out
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

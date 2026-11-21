@@ -7,7 +7,9 @@ PhotonAdapter.send() with pacing, code fence state preservation, and turn-final 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import queue
 from typing import Any, Callable, List, Optional
 
@@ -55,7 +57,7 @@ class BubbleStreamConsumer:
         )
         self._inbound_queue: queue.Queue = queue.Queue()
         self._finished = False
-        self._delivered_bubbles: List[str] = []
+        self._delivered_bubbles: list[str] = []
 
     @property
     def final_content_delivered(self) -> bool:
@@ -82,8 +84,54 @@ class BubbleStreamConsumer:
         if hasattr(self.adapter, "send_typing"):
             try:
                 await self.adapter.send_typing(self.chat_id)
-            except Exception:
+            except (OSError, RuntimeError):  # health: allow S110 -- non-fatal typing heartbeat
                 pass
+
+    async def _send_media_bubble(self, text: str) -> dict[str, Any]:
+        """Dispatch image or file attachments to platform adapter."""
+        if text.startswith("IMAGE:"):
+            try:
+                data = json.loads(text[len("IMAGE:"):])
+                img_path = data.get("path") or ""
+                caption = data.get("caption") or ""
+                delay = float(data.get("delay", 1.5))
+                is_valid_img = await asyncio.to_thread(lambda p: os.path.isfile(p) and os.path.getsize(p) > 500, img_path)
+                if hasattr(self.adapter, "send_image_file") and is_valid_img:
+                    logger.info("[BubbleStreamConsumer] Delivering image %s to %s", img_path, self.chat_id)
+                    res = await self.adapter.send_image_file(self.chat_id, img_path, caption=caption)
+                    self.media_already_delivered = True
+                    await self._send_typing_heartbeat()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
+                elif hasattr(self.adapter, "send_image") and img_path and (img_path.startswith("http://") or img_path.startswith("https://")):
+                    logger.info("[BubbleStreamConsumer] Delivering image URL %s to %s", img_path, self.chat_id)
+                    res = await self.adapter.send_image(self.chat_id, img_path, caption=caption)
+                    self.media_already_delivered = True
+                    await self._send_typing_heartbeat()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
+                else:
+                    logger.warning("[BubbleStreamConsumer] Image not found or invalid URL: %s, skipping safely", img_path)
+                    return {"ok": True}
+            except Exception as e:  # health: allow BLE001 -- non-fatal media send failure
+                logger.warning("[BubbleStreamConsumer] Delivering image failed (soft): %s", e, exc_info=True)
+            return {"ok": True}
+
+        if text.startswith("FILE:"):
+            file_path = text[len("FILE:"):].strip()
+            file_exists = await asyncio.to_thread(os.path.exists, file_path)
+            if hasattr(self.adapter, "send_document") and file_exists:
+                file_name = os.path.basename(file_path)
+                logger.info("[BubbleStreamConsumer] Delivering document %s (%s) to %s", file_path, file_name, self.chat_id)
+                try:
+                    res = await self.adapter.send_document(self.chat_id, file_path, file_name=file_name)
+                except TypeError:
+                    res = await self.adapter.send_document(self.chat_id, file_path)
+                self.media_already_delivered = True
+                return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
+        return {"ok": True}
 
     async def _send_bubble(self, text: str) -> Any:
         """Send an individual bubble or tapback reaction through the platform adapter."""
@@ -96,11 +144,8 @@ class BubbleStreamConsumer:
                 )
                 try:
                     await self.adapter.add_reaction(self.chat_id, emoji, message_id=self.reply_to)
-                except Exception as e:
-                    logger.warning("[BubbleStreamConsumer] add_reaction failed (soft): %s", e)
-            # Crucial: Always return ok=True for tapback so that even if Apple rejects reacting
-            # to a specific item (e.g. unreactable content), it is counted as delivered and
-            # the fallback sender never blasts the raw <tapback> tag as text to iMessage.
+                except Exception as e:  # health: allow BLE001 -- non-fatal tapback failure
+                    logger.warning("[BubbleStreamConsumer] add_reaction failed (soft): %s", e, exc_info=True)
             return {"ok": True}
 
         if text.startswith("POLL:"):
@@ -116,8 +161,8 @@ class BubbleStreamConsumer:
                     )
                     res = await self.adapter._sidecar_send_poll(self.chat_id, title, options)
                     return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
-            except Exception as e:
-                logger.warning("[BubbleStreamConsumer] _sidecar_send_poll failed (soft): %s", e)
+            except Exception as e:  # health: allow BLE001 -- non-fatal poll delivery fallback
+                logger.warning("[BubbleStreamConsumer] _sidecar_send_poll failed (soft): %s", e, exc_info=True)
             return {"ok": True}
 
         if text.startswith("EFFECT:"):
@@ -131,61 +176,12 @@ class BubbleStreamConsumer:
                     res = await self.adapter._sidecar_send_effect(self.chat_id, eff_text, eff)
                     return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
                 return await self.adapter.send(self.chat_id, eff_text, reply_to=self.reply_to, metadata=self.metadata)
-            except Exception as e:
-                logger.warning("[BubbleStreamConsumer] _sidecar_send_effect failed (soft): %s", e)
+            except Exception as e:  # health: allow BLE001 -- non-fatal effect delivery fallback
+                logger.warning("[BubbleStreamConsumer] _sidecar_send_effect failed (soft): %s", e, exc_info=True)
             return {"ok": True}
 
-        if text.startswith("IMAGE:"):
-            import json, os, asyncio
-            try:
-                data = json.loads(text[len("IMAGE:"):])
-                img_path = data.get("path") or ""
-                caption = data.get("caption") or ""
-                delay = float(data.get("delay", 1.5))
-                if hasattr(self.adapter, "send_image_file") and os.path.isfile(img_path) and os.path.getsize(img_path) > 500:
-                    logger.info("[BubbleStreamConsumer] Delivering image %s to %s", img_path, self.chat_id)
-                    res = await self.adapter.send_image_file(self.chat_id, img_path, caption=caption)
-                    self.media_already_delivered = True
-                    if hasattr(self.adapter, "send_typing"):
-                        try:
-                            await self.adapter.send_typing(self.chat_id)
-                        except Exception:
-                            pass
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                    return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
-                elif hasattr(self.adapter, "send_image") and img_path and (img_path.startswith("http://") or img_path.startswith("https://")):
-                    logger.info("[BubbleStreamConsumer] Delivering image URL %s to %s", img_path, self.chat_id)
-                    res = await self.adapter.send_image(self.chat_id, img_path, caption=caption)
-                    self.media_already_delivered = True
-                    if hasattr(self.adapter, "send_typing"):
-                        try:
-                            await self.adapter.send_typing(self.chat_id)
-                        except Exception:
-                            pass
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                    return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
-                else:
-                    logger.warning("[BubbleStreamConsumer] Image not found or invalid URL: %s, skipping safely", img_path)
-                    return {"ok": True}
-            except Exception as e:
-                logger.warning("[BubbleStreamConsumer] Delivering image failed (soft): %s", e)
-            return {"ok": True}
-
-        if text.startswith("FILE:"):
-            import os
-            file_path = text[len("FILE:"):].strip()
-            if hasattr(self.adapter, "send_document") and os.path.exists(file_path):
-                file_name = os.path.basename(file_path)
-                logger.info("[BubbleStreamConsumer] Delivering document %s (%s) to %s", file_path, file_name, self.chat_id)
-                try:
-                    res = await self.adapter.send_document(self.chat_id, file_path, file_name=file_name)
-                except TypeError:
-                    res = await self.adapter.send_document(self.chat_id, file_path)
-                self.media_already_delivered = True
-                return {"ok": getattr(res, "success", True), "message_id": getattr(res, "message_id", None)}
-            return {"ok": True}
+        if text.startswith(("IMAGE:", "FILE:")):
+            return await self._send_media_bubble(text)
 
         return await self.adapter.send(
             self.chat_id,
@@ -251,8 +247,8 @@ class BubbleStreamConsumer:
                 await self._bubble_queue.finish_stream()
                 try:
                     await self._bubble_queue.wait_finished(timeout=25.0)
-                except Exception as e:
-                    logger.warning("[BubbleStreamConsumer] wait_finished error: %s", e)
+                except Exception as e:  # health: allow BLE001 -- non-fatal queue wait timeout
+                    logger.warning("[BubbleStreamConsumer] wait_finished error: %s", e, exc_info=True)
                 finally:
                     # Update delivery confirmation flags for turn suppression
                     if self._bubble_queue.sent_count > 0 or self._bubble_queue.unknown_delivery_count > 0:

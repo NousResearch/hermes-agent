@@ -562,23 +562,16 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 _adapter.pause_typing_for_chat(_chat_id)
         # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
         # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-        _adapter_supports_bubble_stream = bool(getattr(adapter, "SUPPORTS_BUBBLE_STREAMING", False))
-        if not _adapter_supports_edit and not _adapter_supports_native_stream and not _adapter_supports_bubble_stream and on_missing_cursor == "raise":
+        _can_stream = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) or getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) or getattr(adapter, "SUPPORTS_BUBBLE_STREAMING", False)
+        if not _can_stream and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")
+        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
         # Some Matrix clients render the cursor as tofu: stream text, no cursor.
         if source.platform == Platform.MATRIX:
             _effective_cursor = ""
         # Fresh-final applies to Telegram only (others edit in place cheaply).
-        # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit / edit-timestamp-stays-stale problem. (Ported from
-        # openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM else 0.0
-        )
+        _fresh_final_secs = float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0) if source.platform == Platform.TELEGRAM else 0.0
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor,
@@ -621,10 +614,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 return None
             if getattr(_adapter, "SUPPORTS_BUBBLE_STREAMING", False):
                 from gateway.bubble_stream_consumer import BubbleStreamConsumer
-                return BubbleStreamConsumer(
-                    adapter=_adapter, chat_id=source.chat_id, reply_to=event_message_id,
-                    run_still_current=_run_still_current, metadata=_thread_metadata,
-                )
+                return BubbleStreamConsumer(adapter=_adapter, chat_id=source.chat_id, reply_to=event_message_id,
+                                            run_still_current=_run_still_current, metadata=_thread_metadata)
             _consumer_cfg, _pause_typing_before_finalize = self._build_stream_consumer_config(
                 source, _scfg, _adapter, on_missing_cursor="fallback",
             )

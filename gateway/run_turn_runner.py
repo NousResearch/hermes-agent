@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
@@ -515,6 +515,55 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return send, release
 
     @staticmethod
+    def _format_bubble_tool_hint(tool_name: str, tool_args: Optional[dict[str, Any]] = None) -> str:
+        args = tool_args or {}
+        if tool_name == "web_search":
+            return f"正在搜索「{args.get('query', '')}」..."
+        if tool_name == "terminal":
+            cmd = args.get("command", "")
+            if "schedule" in cmd:
+                return "正在翻看日程课表..."
+            if "git" in cmd:
+                return "正在检查代码仓库..."
+            return f"正在执行命令「{cmd[:20]}」..."
+        if tool_name == "read_file":
+            import os
+            path = args.get("path", "")
+            fname = os.path.basename(path) if path else ""
+            return f"正在查阅 {fname}..."
+        if tool_name == "web_extract":
+            return "正在浏览网页内容..."
+        return f"正在执行 {tool_name}..."
+
+    @staticmethod
+    def _wrap_bubble_tool_callbacks(
+        on_start: Optional[Callable[..., Any]],
+        on_complete: Optional[Callable[..., Any]],
+        stream_consumer: Any,
+        debounce_s: float = 2.5,
+    ) -> tuple[Callable[..., Any], Callable[..., Any]]:
+        timers: dict[str, threading.Timer] = {}
+
+        def _wrapped_start(call_id: str, tool_name: str, tool_args: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+            if stream_consumer and hasattr(stream_consumer, "on_commentary"):
+                hint = TurnRunner._format_bubble_tool_hint(tool_name, tool_args)
+                t = threading.Timer(debounce_s, stream_consumer.on_commentary, args=[hint])
+                t.daemon = True
+                timers[call_id] = t
+                t.start()
+            if on_start:
+                return on_start(call_id, tool_name, tool_args, *args, **kwargs)
+
+        def _wrapped_complete(call_id: str, *args: Any, **kwargs: Any) -> Any:
+            t = timers.pop(call_id, None)
+            if t:
+                t.cancel()
+            if on_complete:
+                return on_complete(call_id, *args, **kwargs)
+
+        return _wrapped_start, _wrapped_complete
+
+    @staticmethod
     def _merge_turn_request_overrides(agent, turn_route) -> None:
         """Merge, never overwrite: init-time request overrides (e.g. a custom provider's extra_body)
         must survive every reused-agent turn. Drop only the PREVIOUS turn's routing overrides before
@@ -548,6 +597,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if self._approval_owner is not None:
             agent.tool_start_callback = self.combined_tool_start_callback
             agent.tool_complete_callback = self.combined_tool_complete_callback
+        sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
+        if sc and hasattr(sc, "on_commentary"):
+            agent.tool_start_callback, agent.tool_complete_callback = self._wrap_bubble_tool_callbacks(
+                agent.tool_start_callback, agent.tool_complete_callback, sc
+            )
         agent.step_callback = ctx._step_callback_sync if (ctx._hooks_ref.loaded_hooks or self._approval_owner is not None) else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None

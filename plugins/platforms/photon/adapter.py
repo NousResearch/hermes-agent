@@ -1300,6 +1300,94 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Outbound ------------------------------------------------------------------
 
+    async def _dispatch_image_bubble(self, chat_id: str, b: str) -> SendResult:
+        try:
+            data = json.loads(b[len("IMAGE:"):])
+            img_path = data.get("path") or ""
+            caption = data.get("caption") or ""
+            delay = float(data.get("delay", 1.5))
+            file_exists = await asyncio.to_thread(os.path.exists, img_path)
+            if hasattr(self, "send_image_file") and file_exists:
+                logger.info("[photon] Delivering card/image %s to %s", img_path, chat_id)
+                res = await self.send_image_file(chat_id, img_path, caption=caption)
+                if not res.success:
+                    return res
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                return res
+            elif hasattr(self, "send_image") and img_path:
+                res = await self.send_image(chat_id, img_path, caption=caption)
+                if not res.success:
+                    return res
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                return res
+        except Exception as e:  # health: allow BLE001 -- non-fatal image bubble dispatch fallback
+            logger.warning("[photon] failed to dispatch IMAGE bubble: %s", e, exc_info=True)
+        return SendResult(success=True)
+
+    async def _dispatch_single_bubble(self, chat_id: str, b: str) -> SendResult:
+        """Dispatch a single structured or plain bubble to Photon sidecar."""
+        if b.startswith("IMAGE:"):
+            return await self._dispatch_image_bubble(chat_id, b)
+
+        elif b.startswith("FILE:"):
+            file_path = b[len("FILE:"):].strip()
+            file_exists = await asyncio.to_thread(os.path.exists, file_path)
+            if hasattr(self, "send_document") and file_exists:
+                logger.info("[photon] Delivering document %s to %s", file_path, chat_id)
+                try:
+                    file_name = os.path.basename(file_path)
+                    res = await self.send_document(chat_id, file_path, file_name=file_name)
+                except TypeError:
+                    res = await self.send_document(chat_id, file_path)
+                if not res.success:
+                    return res
+                await asyncio.sleep(0.400)
+                return res
+
+        elif b.startswith("POLL:"):
+            try:
+                data = json.loads(b[len("POLL:"):])
+                title = data.get("title") or "请选择"
+                options = data.get("options") or []
+                if hasattr(self, "_sidecar_send_poll"):
+                    res = await self._sidecar_send_poll(chat_id, title, options)
+                    if not res.success:
+                        return res
+                    await asyncio.sleep(0.400)
+                    return res
+            except Exception as e:  # health: allow BLE001 -- sidecar poll payload parsing error
+                logger.warning("[photon] failed to dispatch POLL bubble: %s", e, exc_info=True)
+
+        elif b.startswith("EFFECT:"):
+            try:
+                data = json.loads(b[len("EFFECT:"):])
+                eff = data.get("effect") or "confetti"
+                eff_text = data.get("text") or ""
+                if hasattr(self, "_sidecar_send_effect"):
+                    res = await self._sidecar_send_effect(chat_id, eff_text, eff)
+                    if not res.success:
+                        return res
+                    await asyncio.sleep(0.400)
+                    return res
+            except Exception as e:  # health: allow BLE001 -- sidecar effect payload parsing error
+                logger.warning("[photon] failed to dispatch EFFECT bubble: %s", e, exc_info=True)
+
+        res = await self._sidecar_send(chat_id, b)
+        if not res.success:
+            return res
+        await asyncio.sleep(0.400)
+        return res
+
+    async def _dispatch_bubbles_sequential(self, chat_id: str, bubbles: list[str]) -> SendResult:
+        last_res = SendResult(success=True)
+        for b in bubbles:
+            last_res = await self._dispatch_single_bubble(chat_id, b)
+            if not last_res.success:
+                return last_res
+        return last_res
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
         formatted = self.format_message(content)
@@ -1321,81 +1409,8 @@ class PhotonAdapter(BasePlatformAdapter):
             parser = BubbleParser(paragraph_fallback=False)
             bubbles = [b for b in (parser.feed(formatted) + parser.finish()) if not b.startswith("TAPBACK:")]
             if bubbles:
-                import json
-                last_res = SendResult(success=True)
-                for b in bubbles:
-                    if b.startswith("IMAGE:"):
-                        try:
-                            data = json.loads(b[len("IMAGE:"):])
-                            img_path = data.get("path") or ""
-                            caption = data.get("caption") or ""
-                            delay = float(data.get("delay", 1.5))
-                            if hasattr(self, "send_image_file") and os.path.exists(img_path):
-                                logger.info("[photon] Delivering card/image %s to %s", img_path, chat_id)
-                                last_res = await self.send_image_file(chat_id, img_path, caption=caption)
-                                if not last_res.success:
-                                    return last_res
-                                if delay > 0:
-                                    await asyncio.sleep(delay)
-                                continue
-                            elif hasattr(self, "send_image") and img_path:
-                                last_res = await self.send_image(chat_id, img_path, caption=caption)
-                                if not last_res.success:
-                                    return last_res
-                                if delay > 0:
-                                    await asyncio.sleep(delay)
-                                continue
-                        except Exception as e:
-                            logger.warning("[photon] failed to dispatch IMAGE bubble: %s", e)
+                return await self._dispatch_bubbles_sequential(chat_id, bubbles)
 
-                    if b.startswith("FILE:"):
-                        file_path = b[len("FILE:"):].strip()
-                        if hasattr(self, "send_document") and os.path.exists(file_path):
-                            logger.info("[photon] Delivering document %s to %s", file_path, chat_id)
-                            try:
-                                file_name = os.path.basename(file_path)
-                                last_res = await self.send_document(chat_id, file_path, file_name=file_name)
-                            except TypeError:
-                                last_res = await self.send_document(chat_id, file_path)
-                            if not last_res.success:
-                                return last_res
-                            await asyncio.sleep(0.400)
-                            continue
-
-                    if b.startswith("POLL:"):
-                        try:
-                            data = json.loads(b[len("POLL:"):])
-                            title = data.get("title") or "请选择"
-                            options = data.get("options") or []
-                            if hasattr(self, "_sidecar_send_poll"):
-                                last_res = await self._sidecar_send_poll(chat_id, title, options)
-                                if not last_res.success:
-                                    return last_res
-                                await asyncio.sleep(0.400)
-                                continue
-                        except Exception as e:
-                            logger.warning("[photon] failed to dispatch POLL bubble: %s", e)
-
-                    if b.startswith("EFFECT:"):
-                        try:
-                            data = json.loads(b[len("EFFECT:"):])
-                            eff = data.get("effect") or "confetti"
-                            eff_text = data.get("text") or ""
-                            if hasattr(self, "_sidecar_send_effect"):
-                                last_res = await self._sidecar_send_effect(chat_id, eff_text, eff)
-                                if not last_res.success:
-                                    return last_res
-                                await asyncio.sleep(0.400)
-                                continue
-                        except Exception as e:
-                            logger.warning("[photon] failed to dispatch EFFECT bubble: %s", e)
-
-                    last_res = await self._sidecar_send(chat_id, b)
-                    if not last_res.success:
-                        return last_res
-                    await asyncio.sleep(0.400)
-                return last_res
-            return SendResult(success=True)
         return await self._sidecar_send(chat_id, formatted)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -1748,7 +1763,7 @@ def _cache_inbound_attachment(content: dict[str, Any], name: str, mime: str, *,
                     suffix = ".jpg"
                     mime = "image/jpeg"
                 except Exception as conv_exc:
-                    logger.warning("[photon] failed to convert HEIC image to JPEG: %s", conv_exc)
+                    logger.warning("[photon] failed to convert HEIC image to JPEG: %s", conv_exc, exc_info=True)
             ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
             try:
                 return cache_image_from_bytes(raw, ext)

@@ -19,13 +19,51 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
-from urllib.parse import quote, quote_plus
+import logging
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import quote, quote_plus, urlsplit, urlunsplit
+
+logger = logging.getLogger(__name__)
+
+
+def _get_base_scratch_dir() -> Path:
+    try:
+        from hermes_constants import get_scratch_dir
+        return get_scratch_dir(prune=False)
+    except Exception:  # health: allow BLE001 -- fallback when hermes_constants is uninitialized
+        import tempfile
+        return Path(tempfile.gettempdir()) / "hermes_scratch"
 
 
 class BubbleParser:
     """Parses incremental LLM streaming deltas into discrete, Markdown-balanced bubbles."""
+
+    @staticmethod
+    def _render_card_image(card_type: str, attrs: dict[str, str], body: str = "") -> Optional[str]:
+        try:
+            if card_type == "weather":
+                from gateway.visual_card_renderer import render_weather_card_to_image
+                return render_weather_card_to_image(attrs, body=body)
+            elif card_type == "movie":
+                from gateway.visual_card_renderer import render_movie_card_to_image
+                return render_movie_card_to_image(attrs, body=body)
+            elif card_type == "word":
+                from gateway.visual_card_renderer import render_word_card_to_image
+                return render_word_card_to_image(attrs, body=body)
+        except (ImportError, OSError, ValueError):  # health: allow S110 -- optional card renderer fallback
+            return None
+        return None
+
+    @staticmethod
+    def _render_sheet_image(body: str, title: str = "", subtitle: str = "") -> Optional[str]:
+        try:
+            from gateway.visual_sheet_renderer import render_markdown_table_to_image
+            return render_markdown_table_to_image(body, title=title, subtitle=subtitle)
+        except (ImportError, OSError, ValueError):  # health: allow S110 -- optional sheet renderer fallback
+            return None
+
 
     _OPEN_TAG = "<bubble>"
     _CLOSE_TAG = "</bubble>"
@@ -274,7 +312,7 @@ class BubbleParser:
         self._pending_effect: Optional[str] = None
         self._has_emitted_map: bool = False
         self._has_emitted_poll: bool = False
-        self._cheat_sheet_options: List[str] = []
+        self._cheat_sheet_options: list[str] = []
         self._cheat_sheet_title: str = ""
         self._has_emitted_weather: bool = False
         self._has_emitted_movie: bool = False
@@ -302,12 +340,12 @@ class BubbleParser:
         lower = raw.lower()
         return cls._EMOJI_NAME_MAP.get(lower, raw)
 
-    def feed(self, delta: str) -> List[str]:
+    def feed(self, delta: str) -> list[str]:
         """Feed a streaming chunk/delta and return list of fully ready bubbles."""
         self._buffer += delta
         return self._extract_ready_bubbles(is_finish=False)
 
-    def finish(self, exception_occurred: bool = False) -> List[str]:
+    def finish(self, exception_occurred: bool = False) -> list[str]:
         """Finalize parsing at the end of streaming or upon exception."""
         ready = self._extract_ready_bubbles(is_finish=True)
         if exception_occurred:
@@ -348,10 +386,17 @@ class BubbleParser:
                 else:
                     ready.extend(self._emit_bubble(rem))
 
-        # Auto-poll guardrail disabled: polls should be organic and contextual,
-        # never forcefully injected on every comparison cheat sheet.
-        # if not self._has_emitted_poll and self._cheat_sheet_options and not exception_occurred:
-        #     ...
+        # Auto-poll guardrail: when a comparison cheat sheet is emitted without an explicit poll, synthesize one
+        if not self._has_emitted_poll and self._cheat_sheet_options:
+            title_text = self._cheat_sheet_title or ""
+            if "自驾" in title_text or "路线" in title_text:
+                poll_title = "想先看哪条路线的行程细节？"
+            elif "方案" in title_text or "对比" in title_text:
+                poll_title = f"你更想了解哪个{title_text}？" if title_text else "你更想了解哪个方案？"
+            else:
+                poll_title = "你更想了解哪一项？"
+            payload = json.dumps({"title": poll_title, "options": self._cheat_sheet_options}, ensure_ascii=False)
+            ready.append(f"POLL:{payload}")
 
         # Reset cross-turn parser state
         self._in_code_block = False
@@ -386,7 +431,7 @@ class BubbleParser:
     )
 
     @classmethod
-    def _extract_options_from_table(cls, body: str, title: str = "") -> List[str]:
+    def _extract_options_from_table(cls, body: str, title: str = "") -> list[str]:
         lines = [line.strip() for line in body.strip().splitlines() if line.strip()]
         data_lines = []
         for l in lines:
@@ -521,21 +566,26 @@ class BubbleParser:
             from urllib.parse import unquote
             p = unquote(p[7:].strip())
 
-        meme_dir = r"D:\Hermes Works\Fun_Memes"
-        cache_dir = r"D:\Hermes Works\cache"
+        cand_dirs = []
+        try:
+            from hermes_constants import get_hermes_home
+            cand_dirs.append(str(get_hermes_home() / "cache"))
+            cand_dirs.append(str(get_hermes_home() / "memes"))
+        except (ImportError, AttributeError):  # health: allow S110 -- optional hermes home fallback
+            pass
+
         if not os.path.isabs(p) and not p.startswith(('http://', 'https://')):
-            cand_meme = os.path.join(meme_dir, p)
-            cand_cache = os.path.join(cache_dir, p)
-            if os.path.exists(cand_meme):
-                p = cand_meme
-            elif os.path.exists(cand_meme + ".gif"):
-                p = cand_meme + ".gif"
-            elif os.path.exists(cand_meme + ".png"):
-                p = cand_meme + ".png"
-            elif os.path.exists(cand_cache):
-                p = cand_cache
-            elif os.path.exists(cand_cache + ".png"):
-                p = cand_cache + ".png"
+            for c_dir in cand_dirs:
+                cand = os.path.join(c_dir, p)
+                if os.path.exists(cand):
+                    p = cand
+                    break
+                elif os.path.exists(cand + ".gif"):
+                    p = cand + ".gif"
+                    break
+                elif os.path.exists(cand + ".png"):
+                    p = cand + ".png"
+                    break
 
         if not p.startswith(('http://', 'https://')):
             p = os.path.normpath(p)
@@ -589,15 +639,15 @@ class BubbleParser:
         safe_name = re.sub(r'[\\/:*?"<>|\r\n\t]+', '', clean_name).strip()
         safe_name = re.sub(r'\s+', ' ', safe_name)
         safe_name = safe_name[:40].strip(' ._') or "联系人"
-        scratch_dir = os.path.expanduser(r"~\AppData\Local\hermes\cache\contacts")
+        scratch_dir = os.path.join(str(_get_base_scratch_dir()), "contacts")
         target_dir = os.path.join(scratch_dir, h)
         try:
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, f"{safe_name}.vcf")
-            with open(file_path, "w", encoding="utf-8-sig") as fp:
+            with open(file_path, "w", encoding="utf-8") as fp:
                 fp.write(vcf_content)
             return file_path
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     @staticmethod
@@ -641,15 +691,15 @@ class BubbleParser:
         safe_name = re.sub(r'[\\/:*?"<>|\r\n\t]+', '', clean_title).strip()
         safe_name = re.sub(r'\s+', ' ', safe_name)
         safe_name = safe_name[:40].strip(' ._') or "地图定位"
-        scratch_dir = os.path.expanduser(r"~\AppData\Local\hermes\cache\scratch\locations")
+        scratch_dir = os.path.join(str(_get_base_scratch_dir()), "locations")
         target_dir = os.path.join(scratch_dir, h)
         try:
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, f"{safe_name}.loc.vcf")
-            with open(file_path, "w", encoding="utf-8-sig") as fp:
+            with open(file_path, "w", encoding="utf-8") as fp:
                 fp.write(vcf_content)
             return file_path
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     @staticmethod
@@ -658,7 +708,7 @@ class BubbleParser:
             s = s.strip()
             try:
                 return datetime.fromisoformat(s)
-            except Exception:
+            except (ValueError, TypeError):  # health: allow S110 -- ISO-8601 fallback to format table
                 pass
             formats = [
                 "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
@@ -684,16 +734,16 @@ class BubbleParser:
 
         fmt_ics = "%Y%m%dT%H%M%S"
         if dt_start.tzinfo is not None:
-            start_ics = dt_start.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            start_ics = dt_start.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
         else:
             start_ics = dt_start.strftime(fmt_ics)
 
         if dt_end.tzinfo is not None:
-            end_ics = dt_end.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            end_ics = dt_end.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
         else:
             end_ics = dt_end.strftime(fmt_ics)
 
-        now_ics = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        now_ics = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         uid = f"{uuid.uuid4().hex[:12]}@hermes-calendar"
 
         def escape_ics(val: str) -> str:
@@ -733,15 +783,15 @@ class BubbleParser:
         safe_name = re.sub(r'[\\/:*?"<>|\r\n\t]+', '', clean_title).strip()
         safe_name = re.sub(r'\s+', ' ', safe_name)
         safe_name = safe_name[:40].strip(' ._') or "日程"
-        scratch_dir = os.path.expanduser(r"~\AppData\Local\hermes\cache\scratch\events")
+        scratch_dir = os.path.join(str(_get_base_scratch_dir()), "events")
         target_dir = os.path.join(scratch_dir, h)
         try:
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, f"{safe_name}.ics")
-            with open(file_path, "w", encoding="utf-8-sig") as fp:
+            with open(file_path, "w", encoding="utf-8") as fp:
                 fp.write(ics_content)
             return file_path
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     def _is_inside_code_block(self, text: str) -> bool:
@@ -759,7 +809,7 @@ class BubbleParser:
             raw = m.group(0).strip()
             if not any(ord(c) > 127 for c in raw) and " " not in raw:
                 return raw
-            from urllib.parse import urlsplit, parse_qsl, quote, urlunsplit
+            from urllib.parse import parse_qsl
             try:
                 parsed = urlsplit(raw)
                 if not parsed.query:
@@ -767,7 +817,7 @@ class BubbleParser:
                 pairs = parse_qsl(parsed.query, keep_blank_values=True)
                 encoded_query = "&".join(f"{quote(k)}={quote(v, safe=',+')}" for k, v in pairs)
                 return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, encoded_query, parsed.fragment))
-            except Exception:
+            except (ValueError, KeyError, AttributeError):
                 return raw
         return re.sub(r'(?:(?:shortcuts|maps|mobilenotes)://|https?://(?:maps\.apple\.com|maps\.google\.com|(?:music|podcasts)\.apple\.com)/)[^\r\n<>\'\"()]+', _sub, text)
 
@@ -784,7 +834,7 @@ class BubbleParser:
             clean = f"{base}/tr{rest}"
         return cls._encode_custom_schemes(clean).strip()
 
-    def _split_standalone_urls(self, text: str) -> List[str]:
+    def _split_standalone_urls(self, text: str) -> list[str]:
         """Split text so bare URLs (or markdown links) become their own discrete bubbles for iMessage Rich Link Previews."""
         if not self.isolate_urls or "```" in text or self._in_code_block:
             return [text]
@@ -801,7 +851,7 @@ class BubbleParser:
 
         expanded = self._MD_LINK_RE.sub(_expand_md, text)
 
-        parts: List[str] = []
+        parts: list[str] = []
         last_idx = 0
 
         for m in self._BARE_URL_RE.finditer(expanded):
@@ -836,13 +886,13 @@ class BubbleParser:
 
         return parts or [text]
 
-    def _offload_code_blocks(self, text: str) -> List[str]:
+    def _offload_code_blocks(self, text: str) -> list[str]:
         """If a bubble contains a large code block (>15 lines), offload it to a scratch file attachment."""
         matches = list(self._CODE_BLOCK_RE.finditer(text))
         if not matches:
             return [text]
 
-        file_items: List[str] = []
+        file_items: list[str] = []
         replaced = text
         for m in reversed(matches):
             lang = (m.group("lang") or "txt").strip()
@@ -851,7 +901,7 @@ class BubbleParser:
             if len(lines) > 15:
                 h = hashlib.sha256(code.encode("utf-8")).hexdigest()[:8]
                 ext = self._EXT_MAP.get(lang.lower(), "txt")
-                scratch_dir = os.path.expanduser(r"~\AppData\Local\hermes\cache\scratch")
+                scratch_dir = os.path.join(str(_get_base_scratch_dir()), "scratch")
                 try:
                     os.makedirs(scratch_dir, exist_ok=True)
                     filename = f"snippet_{h}.{ext}"
@@ -865,16 +915,16 @@ class BubbleParser:
                     start, end = m.span()
                     replaced = replaced[:start] + sub + replaced[end:]
                     file_items.append(f"FILE:{file_path}")
-                except Exception:
-                    pass
+                except (OSError, ValueError) as exc:
+                    logger.debug("Code offload failed: %s", exc)
 
         return [replaced] + file_items
 
-    def _process_embedded_spoilers(self, text: str) -> List[str]:
+    def _process_embedded_spoilers(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._SPOILER_RE.finditer(text):
             start, end = m.span()
@@ -891,11 +941,11 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_effects(self, text: str) -> List[str]:
+    def _process_embedded_effects(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._EFFECT_RE.finditer(text):
             start, end = m.span()
@@ -932,11 +982,11 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_calendars(self, text: str) -> List[str]:
+    def _process_embedded_calendars(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._CALENDAR_RE.finditer(text):
             start, end = m.span()
@@ -1002,11 +1052,11 @@ class BubbleParser:
         qs = "&".join(f"{k}={quote(v, safe=',+')}" for k, v in params)
         return f"https://maps.apple.com/place?{qs}"
 
-    def _process_embedded_maps(self, text: str) -> List[str]:
+    def _process_embedded_maps(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._MAP_RE.finditer(text):
             start, end = m.span()
@@ -1038,11 +1088,11 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_contacts(self, text: str) -> List[str]:
+    def _process_embedded_contacts(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._CONTACT_RE.finditer(text):
             start, end = m.span()
@@ -1071,7 +1121,7 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _extract_raw_markdown_table(self, text: str) -> Optional[Tuple[str, str, str]]:
+    def _extract_raw_markdown_table(self, text: str) -> Optional[tuple[str, str, str]]:
         """If text contains a markdown table (>=3 lines with pipes), return (pre, table_block, post)."""
         lines = text.splitlines(keepends=True)
         start_idx = None
@@ -1100,14 +1150,14 @@ class BubbleParser:
             return pre, table, post
         return None
 
-    def _process_embedded_cheat_sheets(self, text: str) -> List[str]:
+    def _process_embedded_cheat_sheets(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
         has_weather_in_text = bool(self._WEATHER_RE.search(text))
 
         if self._CHEAT_SHEET_RE.search(text):
-            results: List[str] = []
+            results: list[str] = []
             last_idx = 0
             for m in self._CHEAT_SHEET_RE.finditer(text):
                 start, end = m.span()
@@ -1125,12 +1175,7 @@ class BubbleParser:
                     last_idx = end
                     continue
 
-                png_path = None
-                try:
-                    from gateway.visual_sheet_renderer import render_markdown_table_to_image
-                    png_path = render_markdown_table_to_image(body, title=title, subtitle=subtitle)
-                except Exception as render_err:
-                    pass
+                png_path = self._render_sheet_image(body, title=title, subtitle=subtitle)
 
                 if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
                     payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
@@ -1162,15 +1207,10 @@ class BubbleParser:
                             title = cleaned
                             break
 
-                png_path = None
-                try:
-                    from gateway.visual_sheet_renderer import render_markdown_table_to_image
-                    png_path = render_markdown_table_to_image(table_block, title=title)
-                except Exception:
-                    pass
+                png_path = self._render_sheet_image(table_block, title=title)
 
                 if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    results: List[str] = []
+                    results: list[str] = []
                     if pre:
                         results.append(pre)
                     payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
@@ -1183,14 +1223,14 @@ class BubbleParser:
 
         return [text]
 
-    def _process_embedded_weather(self, text: str) -> List[str]:
+    def _process_embedded_weather(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
         if not self._WEATHER_RE.search(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._WEATHER_RE.finditer(text):
             self._has_emitted_weather = True
@@ -1202,12 +1242,7 @@ class BubbleParser:
             attrs = self._parse_tag_attrs(attrs_str)
             body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
 
-            png_path = None
-            try:
-                from gateway.visual_card_renderer import render_weather_card_to_image
-                png_path = render_weather_card_to_image(attrs, body=body)
-            except Exception:
-                pass
+            png_path = self._render_card_image("weather", attrs, body=body)
 
             if png_path:
                 payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
@@ -1221,14 +1256,14 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_movies(self, text: str) -> List[str]:
+    def _process_embedded_movies(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
         if not self._MOVIE_RE.search(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._MOVIE_RE.finditer(text):
             start, end = m.span()
@@ -1239,12 +1274,7 @@ class BubbleParser:
             attrs = self._parse_tag_attrs(attrs_str)
             body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
 
-            png_path = None
-            try:
-                from gateway.visual_card_renderer import render_movie_card_to_image
-                png_path = render_movie_card_to_image(attrs, body=body)
-            except Exception:
-                pass
+            png_path = self._render_card_image("movie", attrs, body=body)
 
             if png_path:
                 payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
@@ -1258,14 +1288,14 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_words(self, text: str) -> List[str]:
+    def _process_embedded_words(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
         if not self._WORD_RE.search(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._WORD_RE.finditer(text):
             start, end = m.span()
@@ -1276,12 +1306,7 @@ class BubbleParser:
             attrs = self._parse_tag_attrs(attrs_str)
             body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
 
-            png_path = None
-            try:
-                from gateway.visual_card_renderer import render_word_card_to_image
-                png_path = render_word_card_to_image(attrs, body=body)
-            except Exception:
-                pass
+            png_path = self._render_card_image("word", attrs, body=body)
 
             if png_path:
                 payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
@@ -1295,11 +1320,11 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_images(self, text: str) -> List[str]:
+    def _process_embedded_images(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._IMAGE_TAG_RE.finditer(text):
             start, end = m.span()
@@ -1325,14 +1350,14 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _process_embedded_media_directives(self, text: str) -> List[str]:
+    def _process_embedded_media_directives(self, text: str) -> list[str]:
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
         if not self._MEDIA_DIRECTIVE_RE.search(text):
             return [text]
 
-        results: List[str] = []
+        results: list[str] = []
         last_idx = 0
         for m in self._MEDIA_DIRECTIVE_RE.finditer(text):
             pre_str = m.group("pre") or ""
@@ -1389,100 +1414,54 @@ class BubbleParser:
 
         return self._ACTION_RE.sub(_sub_action, text)
 
-    def _emit_bubble(self, raw_text: str) -> List[str]:
+    def _apply_pipeline(self, items: list[str], transform_fn) -> list[str]:
+        out: list[str] = []
+        for it in items:
+            if it.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
+                out.append(it)
+            else:
+                out.extend(transform_fn(it))
+        return out
+
+    def _emit_bubble(self, raw_text: str) -> list[str]:
         """Balance fences, offload large code blocks, unpack embedded effects/spoilers/cards, and isolate URLs."""
         balanced = self._balance_and_track_fences(raw_text)
         balanced = self._encode_custom_schemes(balanced)
-        offloaded = self._offload_code_blocks(balanced)
-        results: List[str] = []
-        for item in offloaded:
-            if item.startswith("FILE:") or item.startswith("TAPBACK:") or item.startswith("POLL:") or item.startswith("EFFECT:") or item.startswith("IMAGE:"):
+        current = self._offload_code_blocks(balanced)
+
+        transforms = (
+            self._process_embedded_effects,
+            self._process_embedded_spoilers,
+            self._process_embedded_calendars,
+            self._process_embedded_maps,
+            self._process_embedded_contacts,
+            self._process_embedded_cheat_sheets,
+            self._process_embedded_weather,
+            self._process_embedded_movies,
+            self._process_embedded_words,
+            self._process_embedded_images,
+            self._process_embedded_media_directives,
+        )
+        for fn in transforms:
+            current = self._apply_pipeline(current, fn)
+
+        results: list[str] = []
+        for item in current:
+            if item.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
                 results.append(item)
                 continue
-
-            stage1 = self._process_embedded_effects(item)
-            stage2: List[str] = []
-            for s1 in stage1:
-                if s1.startswith("EFFECT:") or s1.startswith("IMAGE:"):
-                    stage2.append(s1)
+            act_processed = self._process_embedded_actions(item)
+            for sub in self._split_standalone_urls(act_processed):
+                if sub.startswith(("http://", "https://", "maps://", "shortcuts://")):
+                    results.append(sub)
                 else:
-                    stage2.extend(self._process_embedded_spoilers(s1))
-            stage3: List[str] = []
-            for s2 in stage2:
-                if s2.startswith("EFFECT:") or s2.startswith("FILE:") or s2.startswith("IMAGE:"):
-                    stage3.append(s2)
-                else:
-                    stage3.extend(self._process_embedded_calendars(s2))
-            stage4: List[str] = []
-            for s3 in stage3:
-                if s3.startswith("EFFECT:") or s3.startswith("FILE:") or s3.startswith("IMAGE:"):
-                    stage4.append(s3)
-                else:
-                    stage4.extend(self._process_embedded_maps(s3))
-            stage5: List[str] = []
-            for s4 in stage4:
-                if s4.startswith("EFFECT:") or s4.startswith("FILE:") or s4.startswith("IMAGE:"):
-                    stage5.append(s4)
-                else:
-                    stage5.extend(self._process_embedded_contacts(s4))
-            stage6: List[str] = []
-            for s5 in stage5:
-                if s5.startswith("EFFECT:") or s5.startswith("FILE:") or s5.startswith("IMAGE:"):
-                    stage6.append(s5)
-                else:
-                    stage6.extend(self._process_embedded_cheat_sheets(s5))
-            stage6b: List[str] = []
-            for s6 in stage6:
-                if s6.startswith("EFFECT:") or s6.startswith("FILE:") or s6.startswith("IMAGE:"):
-                    stage6b.append(s6)
-                else:
-                    stage6b.extend(self._process_embedded_weather(s6))
-            stage6c: List[str] = []
-            for s6b in stage6b:
-                if s6b.startswith("EFFECT:") or s6b.startswith("FILE:") or s6b.startswith("IMAGE:"):
-                    stage6c.append(s6b)
-                else:
-                    stage6c.extend(self._process_embedded_movies(s6b))
-            stage6d: List[str] = []
-            for s6c in stage6c:
-                if s6c.startswith("EFFECT:") or s6c.startswith("FILE:") or s6c.startswith("IMAGE:"):
-                    stage6d.append(s6c)
-                else:
-                    stage6d.extend(self._process_embedded_words(s6c))
-            stage7: List[str] = []
-            for s6d in stage6d:
-                if s6d.startswith("EFFECT:") or s6d.startswith("FILE:") or s6d.startswith("IMAGE:"):
-                    stage7.append(s6d)
-                else:
-                    stage7.extend(self._process_embedded_images(s6d))
-            stage7b: List[str] = []
-            for s7 in stage7:
-                if s7.startswith("EFFECT:") or s7.startswith("FILE:") or s7.startswith("IMAGE:"):
-                    stage7b.append(s7)
-                else:
-                    stage7b.extend(self._process_embedded_media_directives(s7))
-            stage8: List[str] = []
-            for s7b in stage7b:
-                if s7b.startswith("EFFECT:") or s7b.startswith("FILE:") or s7b.startswith("IMAGE:"):
-                    stage8.append(s7b)
-                else:
-                    stage8.append(self._process_embedded_actions(s7b))
-
-            for s8 in stage8:
-                if s8.startswith("FILE:") or s8.startswith("TAPBACK:") or s8.startswith("POLL:") or s8.startswith("EFFECT:") or s8.startswith("IMAGE:"):
-                    results.append(s8)
-                else:
-                    for item in self._split_standalone_urls(s8):
-                        if item.startswith("http://") or item.startswith("https://") or item.startswith("maps://") or item.startswith("shortcuts://"):
-                            results.append(item)
-                        else:
-                            cleaned = self._prune_robotic_boilerplate(item)
-                            if cleaned:
-                                results.append(cleaned)
+                    cleaned = self._prune_robotic_boilerplate(sub)
+                    if cleaned:
+                        results.append(cleaned)
 
         if self._pending_effect and results:
             for i, res in enumerate(results):
-                if not (res.startswith("FILE:") or res.startswith("TAPBACK:") or res.startswith("POLL:") or res.startswith("EFFECT:")):
+                if not res.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
                     payload = json.dumps({"effect": self._pending_effect, "text": res}, ensure_ascii=False)
                     results[i] = f"EFFECT:{payload}"
                     self._pending_effect = None
@@ -1490,129 +1469,417 @@ class BubbleParser:
 
         return results
 
-    def _extract_ready_bubbles(self, is_finish: bool = False) -> List[str]:
+        return results
+
+    def _handle_tapback(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        attr1 = c_obj.group(1)
+        body = c_obj.group(2)
+        attr2 = c_obj.group(3)
+        clean_emoji = self._normalize_tapback_emoji(attr1 or body or attr2 or "")
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if clean_emoji:
+            bubbles.append(f"TAPBACK:{clean_emoji}")
+        return bubbles
+
+    def _handle_poll(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        self._has_emitted_poll = True
+        _start, end = c_obj.span()
+        attr_title = c_obj.group("attr_title")
+        body = c_obj.group("body") or ""
+        opt_matches = re.findall(r'<option>(.*?)</option>', body, re.IGNORECASE | re.DOTALL)
+        if opt_matches:
+            options = [o.strip() for o in opt_matches if o.strip()]
+        elif "|" in body:
+            options = [o.strip() for o in body.split("|") if o.strip()]
+        else:
+            options = [line.strip().lstrip("1234567890.-*• ") for line in body.splitlines() if line.strip()]
+        title = (attr_title or "").strip() or "请选择"
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if options:
+            payload = json.dumps({"title": title, "options": options}, ensure_ascii=False)
+            bubbles.append(f"POLL:{payload}")
+        return bubbles
+
+    def _handle_calendar(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        title = attrs.get("title") or attrs.get("summary") or attrs.get("name") or "新日程"
+        start_str = attrs.get("start") or attrs.get("time") or attrs.get("date") or attrs.get("start_time") or ""
+        end_str = attrs.get("end") or attrs.get("end_time") or ""
+        location = attrs.get("location") or attrs.get("loc") or attrs.get("place") or attrs.get("address") or ""
+        description = attrs.get("description") or attrs.get("desc") or attrs.get("notes") or attrs.get("note") or ""
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if body:
+            bubbles.extend(self._emit_bubble(body))
+        ics_path = self._generate_ics(title, start_str, end_str, location, description)
+        if ics_path:
+            bubbles.append(f"FILE:{ics_path}")
+        return bubbles
+
+    def _handle_map(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        coord = attrs.get("coordinate") or attrs.get("coords") or attrs.get("ll") or attrs.get("coord") or attrs.get("location") or ""
+        if not coord and attrs.get("lat") and (attrs.get("lon") or attrs.get("lng") or attrs.get("long")):
+            coord = f"{attrs['lat']},{attrs.get('lon') or attrs.get('lng') or attrs.get('long')}"
+        name = attrs.get("name") or attrs.get("title") or attrs.get("query") or attrs.get("q") or body or "地图定位"
+        address = attrs.get("address") or attrs.get("addr") or ""
+        query = attrs.get("query") or attrs.get("q") or ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        maps_url = self._build_apple_maps_url(name=name, coordinate=coord, address=address, query=query)
+        if body and body != name:
+            bubbles.extend(self._emit_bubble(body))
+        bubbles.append(maps_url)
+        self._has_emitted_map = True
+        return bubbles
+
+    def _handle_effect(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        colon_eff = c_obj.group("colon_eff") if "colon_eff" in c_obj.groupdict() else None
+        prefix_colon = c_obj.group("prefix_colon") if "prefix_colon" in c_obj.groupdict() else None
+        prefix_name = c_obj.group("prefix_name") if "prefix_name" in c_obj.groupdict() else None
+        prefix_type = c_obj.group("prefix_type") if "prefix_type" in c_obj.groupdict() else None
+        prefix_bare = c_obj.group("prefix_bare") if "prefix_bare" in c_obj.groupdict() else None
+        attrs_str = c_obj.group("attrs") if "attrs" in c_obj.groupdict() else None
+        eff_name = colon_eff or prefix_colon or prefix_name or prefix_type or prefix_bare
+        if not eff_name:
+            attrs = self._parse_tag_attrs(attrs_str or "")
+            eff_name = attrs.get("name") or attrs.get("type") or "confetti"
+        eff_name = self._EFFECT_ALIAS_MAP.get(eff_name.lower(), eff_name.lower())
+        eff_text = (c_obj.group("text") or "").strip() if "text" in c_obj.groupdict() and c_obj.group("text") else ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if eff_text:
+            payload = json.dumps({"effect": eff_name, "text": eff_text}, ensure_ascii=False)
+            bubbles.append(f"EFFECT:{payload}")
+        else:
+            self._pending_effect = eff_name
+        return bubbles
+
+    def _handle_spoiler(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        spoiler_content = (c_obj.group("text") or c_obj.group("pipe_text") or "").strip()
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if spoiler_content:
+            payload = json.dumps({"effect": "invisible", "text": spoiler_content}, ensure_ascii=False)
+            bubbles.append(f"EFFECT:{payload}")
+        return bubbles
+
+    def _handle_apple_maps_url(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        raw_url = c_obj.group(0).rstrip(self._TRAILING_PUNCT)
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean and not has_bubble_tags:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if not (self._has_emitted_map or "<map" in self._buffer) and raw_url:
+            clean_maps = self._encode_custom_schemes(raw_url).strip()
+            bubbles.append(clean_maps)
+        return bubbles
+
+    def _handle_shortcuts_url(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        raw_url = c_obj.group(0).rstrip(self._TRAILING_PUNCT)
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean and not has_bubble_tags:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if raw_url:
+            clean_sc = self._encode_custom_schemes(raw_url).strip()
+            bubbles.append(clean_sc)
+        return bubbles
+
+    def _handle_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        action_text = c_obj.group(0)
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean and not has_bubble_tags:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        processed = self._process_embedded_actions(action_text)
+        if processed:
+            bubbles.extend(self._emit_bubble(processed))
+        return bubbles
+
+    def _handle_apple_music_url(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        raw_url = c_obj.group(0).rstrip(self._TRAILING_PUNCT)
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean and not has_bubble_tags:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if not ("/search?" in raw_url or "/search/" in raw_url) and raw_url:
+            clean_music = self._normalize_apple_media_url(raw_url).strip()
+            bubbles.append(clean_music)
+        return bubbles
+
+    def _handle_contact(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        name = attrs.get("name") or attrs.get("fn") or attrs.get("title") or body or "联系人"
+        phone = attrs.get("phone") or attrs.get("tel") or attrs.get("mobile") or ""
+        email = attrs.get("email") or attrs.get("mail") or ""
+        org = attrs.get("org") or attrs.get("company") or attrs.get("organization") or ""
+        title = attrs.get("title") or attrs.get("role") or attrs.get("position") or ""
+        address = attrs.get("address") or attrs.get("addr") or attrs.get("location") or ""
+        note = attrs.get("note") or attrs.get("desc") or attrs.get("description") or ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if body:
+            bubbles.extend(self._emit_bubble(body))
+        vcf_path = self._generate_vcf(name, phone, email, org, title, address, note)
+        if vcf_path:
+            bubbles.append(f"FILE:{vcf_path}")
+        return bubbles
+
+    def _handle_cheat_sheet(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        title = attrs.get("title") or "速查清单"
+        subtitle = attrs.get("subtitle") or ""
+        body = (c_obj.group("body") or "").strip()
+        has_weather_in_buffer = bool(self._WEATHER_RE.search(self._buffer))
+        is_weather_dup = (self._has_emitted_weather or has_weather_in_buffer) and self._is_weather_content(title, body)
+        if not is_weather_dup:
+            extracted_opts = self._extract_options_from_table(body, title=title)
+            if 2 <= len(extracted_opts) <= 4:
+                self._cheat_sheet_options = extracted_opts
+                self._cheat_sheet_title = title
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        if is_weather_dup:
+            return bubbles
+        png_path = self._render_sheet_image(body, title=title, subtitle=subtitle)
+        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
+            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
+            bubbles.append(f"IMAGE:{payload}")
+        elif body:
+            bubbles.extend(self._emit_bubble(body))
+        return bubbles
+
+    def _handle_weather(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        self._has_emitted_weather = True
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        png_path = self._render_card_image("weather", attrs, body=body)
+        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
+            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
+            bubbles.append(f"IMAGE:{payload}")
+        elif body:
+            bubbles.extend(self._emit_bubble(body))
+        return bubbles
+
+    def _handle_movie(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        self._has_emitted_movie = True
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        png_path = self._render_card_image("movie", attrs, body=body)
+        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
+            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
+            bubbles.append(f"IMAGE:{payload}")
+        elif body:
+            bubbles.extend(self._emit_bubble(body))
+        return bubbles
+
+    def _handle_word(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        self._has_emitted_word = True
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        png_path = self._render_card_image("word", attrs, body=body)
+        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
+            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
+            bubbles.append(f"IMAGE:{payload}")
+        elif body:
+            bubbles.extend(self._emit_bubble(body))
+        return bubbles
+
+    def _handle_media_directive(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        m_match, _tag_start, tag_end = c_obj
+        raw_path = m_match.group("qpath") or m_match.group("sqpath") or m_match.group("btpath") or m_match.group("path") or ""
+        self._buffer = self._buffer[tag_end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        norm_item = self._resolve_media_directive(raw_path)
+        if norm_item:
+            bubbles.append(norm_item)
+        return bubbles
+
+    def _handle_image(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        img_path = attrs.get("path") or attrs.get("src") or attrs.get("url") or attrs.get("name") or body or ""
+        caption = attrs.get("caption") or attrs.get("title") or ""
+        try:
+            delay = float(attrs.get("delay", 1.5))
+        except (ValueError, TypeError):
+            delay = 1.5
+        self._buffer = self._buffer[end:]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        norm_item = self._resolve_media_directive(img_path, caption=caption, delay=delay)
+        if norm_item:
+            bubbles.append(norm_item)
+        return bubbles
+
+    def _handle_sep_marker(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
+        self._buffer = self._buffer[c_obj + len(self._SEP_MARKER):]
+        bubbles = []
+        if pre_clean:
+            bubbles.extend(self._emit_bubble(pre_clean))
+        return bubbles
+
+    def _handle_bubble_open(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> Optional[list[str]]:
+        close_idx = self._find_matching_bubble_close(self._buffer, c_obj)
+        if close_idx != -1:
+            bubble_raw = self._buffer[c_obj + len(self._OPEN_TAG):close_idx].strip()
+            self._buffer = self._buffer[close_idx + len(self._CLOSE_TAG):]
+            is_uri_or_action = bool(re.search(r'[a-zA-Z0-9_\-\.]+:[^\s]+', pre_clean))
+            bubbles = []
+            if pre_clean and (not has_bubble_tags or is_uri_or_action):
+                bubbles.extend(self._emit_bubble(pre_clean))
+            if bubble_raw:
+                bubbles.extend(self._emit_bubble(bubble_raw))
+            return bubbles
+        return None
+
+    def _find_candidate_tags(self, is_finish: bool) -> list[tuple[int, str, Any]]:
+        candidates = []
+        checks = [
+            (self._TAPBACK_RE, "tapback"),
+            (self._POLL_RE, "poll"),
+            (self._CALENDAR_RE, "calendar"),
+            (self._MAP_RE, "map"),
+            (self._EFFECT_RE, "effect"),
+            (self._SPOILER_RE, "spoiler"),
+            (self._ACTION_RE, "action"),
+            (self._CONTACT_RE, "contact"),
+            (self._CHEAT_SHEET_RE, "cheat_sheet"),
+            (self._WEATHER_RE, "weather"),
+            (self._MOVIE_RE, "movie"),
+            (self._WORD_RE, "word"),
+            (self._IMAGE_TAG_RE, "image"),
+        ]
+        for regex, tag_name in checks:
+            m = regex.search(self._buffer)
+            if m and not self._is_inside_code_block(self._buffer[:m.start()]):
+                candidates.append((m.start(), tag_name, m))
+
+        for regex, tag_name in [
+            (self._APPLE_MAPS_URL_RE, "apple_maps_url"),
+            (self._SHORTCUTS_URL_RE, "shortcuts_url"),
+            (self._APPLE_MUSIC_URL_RE, "apple_music_url"),
+        ]:
+            m = regex.search(self._buffer)
+            if m and not self._is_inside_code_block(self._buffer[:m.start()]):
+                if m.end() < len(self._buffer) or is_finish:
+                    candidates.append((m.start(), tag_name, m))
+
+        m_media = self._MEDIA_DIRECTIVE_RE.search(self._buffer)
+        if m_media:
+            pre_str = m_media.group("pre") or ""
+            t_start = m_media.start() + len(pre_str)
+            t_end = m_media.end()
+            if not self._is_inside_code_block(self._buffer[:t_start]):
+                if t_end < len(self._buffer) or is_finish or self._buffer.endswith(('\n', '\r', '<', '>')):
+                    candidates.append((t_start, "media_directive", (m_media, t_start, t_end)))
+
+        open_idx = self._buffer.find(self._OPEN_TAG)
+        if open_idx != -1 and open_idx >= 2 and self._buffer[open_idx-2:open_idx+len(self._OPEN_TAG)+2] == self._SEP_MARKER:
+            open_idx = -1
+        if open_idx != -1 and not self._is_inside_code_block(self._buffer[:open_idx]):
+            candidates.append((open_idx, "bubble_open", open_idx))
+
+        sep_idx = self._buffer.find(self._SEP_MARKER)
+        if sep_idx != -1 and not self._is_inside_code_block(self._buffer[:sep_idx]):
+            candidates.append((sep_idx, "sep_marker", sep_idx))
+
+        return candidates
+
+    def _extract_ready_bubbles(self, is_finish: bool = False) -> list[str]:
         """Extract complete bubbles delimited by tags with chronological ordering and nesting-aware boundaries."""
-        bubbles: List[str] = []
+        bubbles: list[str] = []
+        handlers = {
+            "tapback": self._handle_tapback,
+            "poll": self._handle_poll,
+            "calendar": self._handle_calendar,
+            "map": self._handle_map,
+            "effect": self._handle_effect,
+            "spoiler": self._handle_spoiler,
+            "apple_maps_url": self._handle_apple_maps_url,
+            "shortcuts_url": self._handle_shortcuts_url,
+            "action": self._handle_action,
+            "apple_music_url": self._handle_apple_music_url,
+            "contact": self._handle_contact,
+            "cheat_sheet": self._handle_cheat_sheet,
+            "weather": self._handle_weather,
+            "movie": self._handle_movie,
+            "word": self._handle_word,
+            "media_directive": self._handle_media_directive,
+            "image": self._handle_image,
+            "sep_marker": self._handle_sep_marker,
+            "bubble_open": self._handle_bubble_open,
+        }
 
         while True:
-            candidates = []
-
-            # 1. Tapback
-            m_tap = self._TAPBACK_RE.search(self._buffer)
-            if m_tap and not self._is_inside_code_block(self._buffer[:m_tap.start()]):
-                candidates.append((m_tap.start(), "tapback", m_tap))
-
-            # 2. Poll
-            m_poll = self._POLL_RE.search(self._buffer)
-            if m_poll and not self._is_inside_code_block(self._buffer[:m_poll.start()]):
-                candidates.append((m_poll.start(), "poll", m_poll))
-
-            # 3. Calendar
-            m_cal = self._CALENDAR_RE.search(self._buffer)
-            if m_cal and not self._is_inside_code_block(self._buffer[:m_cal.start()]):
-                candidates.append((m_cal.start(), "calendar", m_cal))
-
-            # 4. Map
-            m_map = self._MAP_RE.search(self._buffer)
-            if m_map and not self._is_inside_code_block(self._buffer[:m_map.start()]):
-                candidates.append((m_map.start(), "map", m_map))
-
-            # 5. Effect
-            m_eff = self._EFFECT_RE.search(self._buffer)
-            if m_eff and not self._is_inside_code_block(self._buffer[:m_eff.start()]):
-                candidates.append((m_eff.start(), "effect", m_eff))
-
-            # 6. Spoiler
-            m_spoil = self._SPOILER_RE.search(self._buffer)
-            if m_spoil and not self._is_inside_code_block(self._buffer[:m_spoil.start()]):
-                candidates.append((m_spoil.start(), "spoiler", m_spoil))
-
-            # 7. Apple Maps bare URL
-            m_map_url = self._APPLE_MAPS_URL_RE.search(self._buffer)
-            if m_map_url and not self._is_inside_code_block(self._buffer[:m_map_url.start()]):
-                # If URL ends at buffer boundary without trailing whitespace, wait unless finish
-                if m_map_url.end() < len(self._buffer) or is_finish:
-                    candidates.append((m_map_url.start(), "apple_maps_url", m_map_url))
-
-            # 7b. Shortcuts bare URL
-            m_sc_url = self._SHORTCUTS_URL_RE.search(self._buffer)
-            if m_sc_url and not self._is_inside_code_block(self._buffer[:m_sc_url.start()]):
-                if m_sc_url.end() < len(self._buffer) or is_finish:
-                    candidates.append((m_sc_url.start(), "shortcuts_url", m_sc_url))
-
-            # 7c. Action Tag
-            m_act = self._ACTION_RE.search(self._buffer)
-            if m_act and not self._is_inside_code_block(self._buffer[:m_act.start()]):
-                candidates.append((m_act.start(), "action", m_act))
-
-            # 7d. Apple Music / Podcasts bare URL
-            m_music_url = self._APPLE_MUSIC_URL_RE.search(self._buffer)
-            if m_music_url and not self._is_inside_code_block(self._buffer[:m_music_url.start()]):
-                if m_music_url.end() < len(self._buffer) or is_finish:
-                    candidates.append((m_music_url.start(), "apple_music_url", m_music_url))
-
-            # 8. Contact Card
-            m_contact = self._CONTACT_RE.search(self._buffer)
-            if m_contact and not self._is_inside_code_block(self._buffer[:m_contact.start()]):
-                candidates.append((m_contact.start(), "contact", m_contact))
-
-            # 9. Cheat Sheet / Visual Table
-            m_sheet = self._CHEAT_SHEET_RE.search(self._buffer)
-            if m_sheet and not self._is_inside_code_block(self._buffer[:m_sheet.start()]):
-                candidates.append((m_sheet.start(), "cheat_sheet", m_sheet))
-
-            # 9b. Weather Capsule
-            m_weather = self._WEATHER_RE.search(self._buffer)
-            if m_weather and not self._is_inside_code_block(self._buffer[:m_weather.start()]):
-                candidates.append((m_weather.start(), "weather", m_weather))
-
-            # 9c. Movie Review Dossier
-            m_movie = self._MOVIE_RE.search(self._buffer)
-            if m_movie and not self._is_inside_code_block(self._buffer[:m_movie.start()]):
-                candidates.append((m_movie.start(), "movie", m_movie))
-
-            # 9d. English Word / Lexicon Card
-            m_word = self._WORD_RE.search(self._buffer)
-            if m_word and not self._is_inside_code_block(self._buffer[:m_word.start()]):
-                candidates.append((m_word.start(), "word", m_word))
-
-            # 10. Image Tag
-            m_img = self._IMAGE_TAG_RE.search(self._buffer)
-            if m_img and not self._is_inside_code_block(self._buffer[:m_img.start()]):
-                candidates.append((m_img.start(), "image", m_img))
-
-            # 10b. Media directive (MEDIA: / IMAGE: / FILE:)
-            m_media = self._MEDIA_DIRECTIVE_RE.search(self._buffer)
-            if m_media:
-                pre_str = m_media.group("pre") or ""
-                tag_start = m_media.start() + len(pre_str)
-                tag_end = m_media.end()
-                if not self._is_inside_code_block(self._buffer[:tag_start]):
-                    if tag_end < len(self._buffer) or is_finish or self._buffer.endswith(('\n', '\r', '<', '>')):
-                        candidates.append((tag_start, "media_directive", (m_media, tag_start, tag_end)))
-
-            # 11. Bubble open tag
-            open_idx = self._buffer.find(self._OPEN_TAG)
-            if open_idx != -1 and open_idx >= 2 and self._buffer[open_idx-2:open_idx+len(self._OPEN_TAG)+2] == self._SEP_MARKER:
-                open_idx = -1
-            if open_idx != -1 and not self._is_inside_code_block(self._buffer[:open_idx]):
-                candidates.append((open_idx, "bubble_open", open_idx))
-
-            # 9. Sep marker
-            sep_idx = self._buffer.find(self._SEP_MARKER)
-            if sep_idx != -1 and not self._is_inside_code_block(self._buffer[:sep_idx]):
-                candidates.append((sep_idx, "sep_marker", sep_idx))
-
+            candidates = self._find_candidate_tags(is_finish)
             if not candidates:
-                # Paragraph fallback if no tags exist
                 if self.paragraph_fallback:
                     if re.search(r'</?[a-zA-Z]{0,10}$', self._buffer) or re.search(r'<{1,3}[a-zA-Z]{0,10}$', self._buffer):
                         break
-                    # Strip leading newlines if buffer starts with them
                     stripped = self._buffer.lstrip("\r\n")
                     if len(stripped) < len(self._buffer):
                         self._buffer = stripped
-
                     nl_idx = self._buffer.find("\n\n")
                     if nl_idx != -1:
                         pre_nl = self._buffer[:nl_idx]
@@ -1624,371 +1891,17 @@ class BubbleParser:
                                 continue
                 break
 
-            # Pick the earliest candidate in chronological document order
             candidates.sort(key=lambda c: c[0])
             start_pos, c_type, c_obj = candidates[0]
-
             pre = self._buffer[:start_pos]
             has_bubble_tags = (self._OPEN_TAG in self._buffer) or (self._SEP_MARKER in self._buffer)
             pre_clean = pre.strip()
 
-            if c_type == "tapback":
-                start, end = c_obj.span()
-                attr1 = c_obj.group(1)
-                body = c_obj.group(2)
-                attr2 = c_obj.group(3)
-                clean_emoji = self._normalize_tapback_emoji(attr1 or body or attr2 or "")
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                if clean_emoji:
-                    bubbles.append(f"TAPBACK:{clean_emoji}")
-                continue
-
-            elif c_type == "poll":
-                self._has_emitted_poll = True
-                start, end = c_obj.span()
-                attr_title = c_obj.group("attr_title")
-                body = c_obj.group("body") or ""
-                opt_matches = re.findall(r'<option>(.*?)</option>', body, re.IGNORECASE | re.DOTALL)
-                if opt_matches:
-                    options = [o.strip() for o in opt_matches if o.strip()]
-                elif "|" in body:
-                    options = [o.strip() for o in body.split("|") if o.strip()]
-                else:
-                    options = [line.strip().lstrip("1234567890.-*• ") for line in body.splitlines() if line.strip()]
-                title = (attr_title or "").strip() or "请选择"
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                if options:
-                    payload = json.dumps({"title": title, "options": options}, ensure_ascii=False)
-                    bubbles.append(f"POLL:{payload}")
-                continue
-
-            elif c_type == "calendar":
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                title = attrs.get("title") or attrs.get("summary") or attrs.get("name") or "新日程"
-                start_str = attrs.get("start") or attrs.get("time") or attrs.get("date") or attrs.get("start_time") or ""
-                end_str = attrs.get("end") or attrs.get("end_time") or ""
-                location = attrs.get("location") or attrs.get("loc") or attrs.get("place") or attrs.get("address") or ""
-                description = attrs.get("description") or attrs.get("desc") or attrs.get("notes") or attrs.get("note") or ""
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                if body:
-                    bubbles.extend(self._emit_bubble(body))
-                ics_path = self._generate_ics(title, start_str, end_str, location, description)
-                if ics_path:
-                    bubbles.append(f"FILE:{ics_path}")
-                continue
-
-            elif c_type == "map":
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-                coord = attrs.get("coordinate") or attrs.get("coords") or attrs.get("ll") or attrs.get("coord") or attrs.get("location") or ""
-                if not coord and attrs.get("lat") and (attrs.get("lon") or attrs.get("lng") or attrs.get("long")):
-                    coord = f"{attrs['lat']},{attrs.get('lon') or attrs.get('lng') or attrs.get('long')}"
-                name = attrs.get("name") or attrs.get("title") or attrs.get("query") or attrs.get("q") or body or "地图定位"
-                address = attrs.get("address") or attrs.get("addr") or ""
-                query = attrs.get("query") or attrs.get("q") or ""
-
-                self._buffer = self._buffer[end:]
-
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                maps_url = self._build_apple_maps_url(name=name, coordinate=coord, address=address, query=query)
-
-                if body and body != name:
-                    bubbles.extend(self._emit_bubble(body))
-                bubbles.append(maps_url)
-                self._has_emitted_map = True
-                continue
-
-            elif c_type == "effect":
-                start, end = c_obj.span()
-                colon_eff = c_obj.group("colon_eff") if "colon_eff" in c_obj.groupdict() else None
-                prefix_colon = c_obj.group("prefix_colon") if "prefix_colon" in c_obj.groupdict() else None
-                prefix_name = c_obj.group("prefix_name") if "prefix_name" in c_obj.groupdict() else None
-                prefix_type = c_obj.group("prefix_type") if "prefix_type" in c_obj.groupdict() else None
-                prefix_bare = c_obj.group("prefix_bare") if "prefix_bare" in c_obj.groupdict() else None
-                attrs_str = c_obj.group("attrs") if "attrs" in c_obj.groupdict() else None
-
-                eff_name = colon_eff or prefix_colon or prefix_name or prefix_type or prefix_bare
-                if not eff_name:
-                    attrs = self._parse_tag_attrs(attrs_str or "")
-                    eff_name = attrs.get("name") or attrs.get("type") or "confetti"
-                eff_name = self._EFFECT_ALIAS_MAP.get(eff_name.lower(), eff_name.lower())
-                eff_text = (c_obj.group("text") or "").strip() if "text" in c_obj.groupdict() and c_obj.group("text") else ""
-
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                if eff_text:
-                    payload = json.dumps({"effect": eff_name, "text": eff_text}, ensure_ascii=False)
-                    bubbles.append(f"EFFECT:{payload}")
-                else:
-                    self._pending_effect = eff_name
-                continue
-
-            elif c_type == "spoiler":
-                start, end = c_obj.span()
-                spoiler_content = (c_obj.group("text") or c_obj.group("pipe_text") or "").strip()
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                if spoiler_content:
-                    payload = json.dumps({"effect": "invisible", "text": spoiler_content}, ensure_ascii=False)
-                    bubbles.append(f"EFFECT:{payload}")
-                continue
-
-            elif c_type == "apple_maps_url":
-                start, end = c_obj.span()
-                raw_url = c_obj.group(0).rstrip(self._TRAILING_PUNCT)
-                self._buffer = self._buffer[end:]
-                if pre_clean and not has_bubble_tags:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                # If a map card was already emitted in this session turn, or if <map is pending in buffer, discard duplicate bare link!
-                if self._has_emitted_map or "<map" in self._buffer:
-                    continue
-                if raw_url:
-                    clean_maps = self._encode_custom_schemes(raw_url).strip()
-                    bubbles.append(clean_maps)
-                continue
-
-            elif c_type == "shortcuts_url":
-                start, end = c_obj.span()
-                raw_url = c_obj.group(0).rstrip(self._TRAILING_PUNCT)
-                self._buffer = self._buffer[end:]
-                if pre_clean and not has_bubble_tags:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                if raw_url:
-                    clean_sc = self._encode_custom_schemes(raw_url).strip()
-                    bubbles.append(clean_sc)
-                continue
-
-            elif c_type == "action":
-                start, end = c_obj.span()
-                action_text = c_obj.group(0)
-                self._buffer = self._buffer[end:]
-                if pre_clean and not has_bubble_tags:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                processed = self._process_embedded_actions(action_text)
-                if processed:
-                    bubbles.extend(self._emit_bubble(processed))
-                continue
-
-            elif c_type == "apple_music_url":
-                start, end = c_obj.span()
-                raw_url = c_obj.group(0).rstrip(self._TRAILING_PUNCT)
-                self._buffer = self._buffer[end:]
-                if pre_clean and not has_bubble_tags:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                # Search URLs do not render player cards in iMessage; discard them
-                if "/search?" in raw_url or "/search/" in raw_url:
-                    continue
-                if raw_url:
-                    clean_music = self._normalize_apple_media_url(raw_url).strip()
-                    bubbles.append(clean_music)
-                continue
-
-            elif c_type == "contact":
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-                name = attrs.get("name") or attrs.get("fn") or attrs.get("title") or body or "联系人"
-                phone = attrs.get("phone") or attrs.get("tel") or attrs.get("mobile") or ""
-                email = attrs.get("email") or attrs.get("mail") or ""
-                org = attrs.get("org") or attrs.get("company") or attrs.get("organization") or ""
-                title = attrs.get("title") or attrs.get("role") or attrs.get("position") or ""
-                address = attrs.get("address") or attrs.get("addr") or attrs.get("location") or ""
-                note = attrs.get("note") or attrs.get("desc") or attrs.get("description") or ""
-
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                if body:
-                    bubbles.extend(self._emit_bubble(body))
-                vcf_path = self._generate_vcf(name, phone, email, org, title, address, note)
-                if vcf_path:
-                    bubbles.append(f"FILE:{vcf_path}")
-                continue
-
-            elif c_type == "cheat_sheet":
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                title = attrs.get("title") or "速查清单"
-                subtitle = attrs.get("subtitle") or ""
-                body = (c_obj.group("body") or "").strip()
-
-                has_weather_in_buffer = bool(self._WEATHER_RE.search(self._buffer))
-                is_weather_dup = (self._has_emitted_weather or has_weather_in_buffer) and self._is_weather_content(title, body)
-
-                if not is_weather_dup:
-                    extracted_opts = self._extract_options_from_table(body, title=title)
-                    if 2 <= len(extracted_opts) <= 4:
-                        self._cheat_sheet_options = extracted_opts
-                        self._cheat_sheet_title = title
-
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                if is_weather_dup:
-                    continue
-
-                png_path = None
-                try:
-                    from gateway.visual_sheet_renderer import render_markdown_table_to_image
-                    png_path = render_markdown_table_to_image(body, title=title, subtitle=subtitle)
-                except Exception:
-                    pass
-
-                if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                    bubbles.append(f"IMAGE:{payload}")
-                else:
-                    if body:
-                        bubbles.extend(self._emit_bubble(body))
-                continue
-
-            elif c_type == "weather":
-                self._has_emitted_weather = True
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                png_path = None
-                try:
-                    from gateway.visual_card_renderer import render_weather_card_to_image
-                    png_path = render_weather_card_to_image(attrs, body=body)
-                except Exception:
-                    pass
-
-                if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                    bubbles.append(f"IMAGE:{payload}")
-                else:
-                    if body:
-                        bubbles.extend(self._emit_bubble(body))
-                continue
-
-            elif c_type == "movie":
-                self._has_emitted_movie = True
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                png_path = None
-                try:
-                    from gateway.visual_card_renderer import render_movie_card_to_image
-                    png_path = render_movie_card_to_image(attrs, body=body)
-                except Exception:
-                    pass
-
-                if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                    bubbles.append(f"IMAGE:{payload}")
-                else:
-                    if body:
-                        bubbles.extend(self._emit_bubble(body))
-                continue
-
-            elif c_type == "word":
-                self._has_emitted_word = True
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                png_path = None
-                try:
-                    from gateway.visual_card_renderer import render_word_card_to_image
-                    png_path = render_word_card_to_image(attrs, body=body)
-                except Exception:
-                    pass
-
-                if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                    bubbles.append(f"IMAGE:{payload}")
-                else:
-                    if body:
-                        bubbles.extend(self._emit_bubble(body))
-                continue
-
-            elif c_type == "media_directive":
-                m_match, tag_start, tag_end = c_obj
-                raw_path = m_match.group("qpath") or m_match.group("sqpath") or m_match.group("btpath") or m_match.group("path") or ""
-                self._buffer = self._buffer[tag_end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                norm_item = self._resolve_media_directive(raw_path)
-                if norm_item:
-                    bubbles.append(norm_item)
-                continue
-
-            elif c_type == "image":
-                start, end = c_obj.span()
-                attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-                attrs = self._parse_tag_attrs(attrs_str)
-                body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-                img_path = attrs.get("path") or attrs.get("src") or attrs.get("url") or attrs.get("name") or body or ""
-                caption = attrs.get("caption") or attrs.get("title") or ""
-                try:
-                    delay = float(attrs.get("delay", 1.5))
-                except (ValueError, TypeError):
-                    delay = 1.5
-
-                self._buffer = self._buffer[end:]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-
-                norm_item = self._resolve_media_directive(img_path, caption=caption, delay=delay)
-                if norm_item:
-                    bubbles.append(norm_item)
-                continue
-
-            elif c_type == "sep_marker":
-                self._buffer = self._buffer[c_obj + len(self._SEP_MARKER):]
-                if pre_clean:
-                    bubbles.extend(self._emit_bubble(pre_clean))
-                continue
-
-            elif c_type == "bubble_open":
-                close_idx = self._find_matching_bubble_close(self._buffer, c_obj)
-                if close_idx != -1:
-                    bubble_raw = self._buffer[c_obj + len(self._OPEN_TAG):close_idx].strip()
-                    self._buffer = self._buffer[close_idx + len(self._CLOSE_TAG):]
-                    is_uri_or_action = bool(re.search(r'[a-zA-Z0-9_\-\.]+:[^\s]+', pre_clean))
-                    if pre_clean and (not has_bubble_tags or is_uri_or_action):
-                        bubbles.extend(self._emit_bubble(pre_clean))
-                    if bubble_raw:
-                        bubbles.extend(self._emit_bubble(bubble_raw))
-                    continue
-                # Bubble open tag arrived, wait for stream to provide closing tag
-                break
+            handler = handlers.get(c_type)
+            if handler:
+                res = handler(c_obj, pre_clean, has_bubble_tags)
+                if res is None:  # open tag waiting for close
+                    break
+                bubbles.extend(res)
 
         return bubbles

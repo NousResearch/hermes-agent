@@ -83,7 +83,7 @@ class BubbleRecord:
     def status(self, val: BubbleDeliveryState) -> None:
         self.state = val
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "index": self.index,
             "text": self.text,
@@ -112,6 +112,7 @@ class ChatPacer:
         self._last_send_finish_time: float = 0.0
         self._last_text: Optional[str] = None
         self._last_bubble_interval: float = min_interval_s
+        self._typing_tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
 
     @property
@@ -217,15 +218,17 @@ class ChatPacer:
                 # If pacing delay is substantial (> 0.45s), pulse typing indicator
                 if remaining > 0.450 and on_typing is not None and not (cancel_event and cancel_event.is_set()):
                     try:
-                        asyncio.create_task(on_typing())
-                    except Exception:
+                        t = asyncio.create_task(on_typing())
+                        self._typing_tasks.add(t)
+                        t.add_done_callback(self._typing_tasks.discard)
+                    except (OSError, RuntimeError):  # health: allow S110 -- non-fatal typing trigger
                         pass
 
                 if cancel_event is not None:
                     try:
                         await asyncio.wait_for(cancel_event.wait(), timeout=remaining)
                         return False
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                 else:
                     await asyncio.sleep(remaining)
@@ -234,7 +237,7 @@ class ChatPacer:
 
 class ChatPacerRegistry:
     """Adapter/Process-wide registry for shared ChatPacer instances."""
-    _pacers: Dict[str, ChatPacer] = {}
+    _pacers: dict[str, ChatPacer] = {}
     _lock = asyncio.Lock()
 
     @classmethod
@@ -276,7 +279,7 @@ class StreamingBubbleQueue:
         self.typing_func = typing_func
 
         self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=maxsize)
-        self._records: List[BubbleRecord] = []
+        self._records: list[BubbleRecord] = []
         self._state: QueueState = QueueState.IDLE
 
         self._cancel_event = asyncio.Event()
@@ -284,8 +287,8 @@ class StreamingBubbleQueue:
         self._worker_task: Optional[asyncio.Task] = None
 
         # Task Tracking Mechanisms (Phase 2.3 Hardened)
-        self._in_flight_tasks: Set[asyncio.Task] = set()
-        self._task_to_record: Dict[asyncio.Task, BubbleRecord] = {}
+        self._in_flight_tasks: set[asyncio.Task] = set()
+        self._task_to_record: dict[asyncio.Task, BubbleRecord] = {}
         self._current_in_flight_task: Optional[asyncio.Task] = None
 
         self._cancel_reason: Optional[str] = None
@@ -294,11 +297,11 @@ class StreamingBubbleQueue:
         self._circuit_breaker_reason: Optional[str] = None
 
     @property
-    def records(self) -> List[BubbleRecord]:
+    def records(self) -> list[BubbleRecord]:
         return list(self._records)
 
     @property
-    def bubbles_history(self) -> List[BubbleRecord]:
+    def bubbles_history(self) -> list[BubbleRecord]:
         return list(self._records)
 
     @property
@@ -338,7 +341,7 @@ class StreamingBubbleQueue:
         return CallableInt(sum(1 for r in self._records if r.state == BubbleDeliveryState.CANCELLED))
 
     @property
-    def delivered_message_ids(self) -> List[str]:
+    def delivered_message_ids(self) -> list[str]:
         return [r.message_id for r in self._records if r.state == BubbleDeliveryState.SENT and r.message_id]
 
     def has_in_flight_task(self) -> bool:
@@ -373,7 +376,7 @@ class StreamingBubbleQueue:
             else:
                 await self._queue.put(record)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             record.state = BubbleDeliveryState.FAILED
             record.error = "Backpressure timeout: queue remained full"
             return False
@@ -394,7 +397,7 @@ class StreamingBubbleQueue:
                 await self._worker_task
             await self.wait_in_flight(timeout=5.0)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     async def cancel(self, reason: str = "user_cancelled") -> None:
@@ -417,18 +420,18 @@ class StreamingBubbleQueue:
         # 2. Wake up worker if it was waiting on empty queue
         try:
             self._queue.put_nowait(_SHUTDOWN_SENTINEL)
-        except (asyncio.QueueFull, Exception):
+        except (asyncio.QueueFull, RuntimeError):  # health: allow S110 -- non-fatal sentinel insertion on cancel
             pass
 
         # 3. Wait for worker task to settle gracefully without leaking
         if self._worker_task and not self._worker_task.done():
             try:
                 await asyncio.wait_for(asyncio.shield(self._worker_task), timeout=self.in_flight_timeout_s + 0.5)
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, OSError, RuntimeError):
                 self._worker_task.cancel()
                 try:
                     await self._worker_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, OSError, RuntimeError):  # health: allow S110 -- worker shutdown absorption
                     pass
 
         self._finished_event.set()
@@ -443,7 +446,7 @@ class StreamingBubbleQueue:
                 await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
             else:
                 await asyncio.gather(*tasks, return_exceptions=True)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
 
     async def close(self, drain: bool = True, wait_in_flight_timeout: float = 5.0) -> None:
@@ -480,7 +483,7 @@ class StreamingBubbleQueue:
         if self._circuit_consecutive_failures >= self.circuit_breaker_threshold:
             self._trip_circuit_breaker(f"Consecutive failures: {self._circuit_consecutive_failures}")
 
-    async def _invoke_send(self, text: str) -> Dict[str, Any]:
+    async def _invoke_send(self, text: str) -> dict[str, Any]:
         """Adapt send_func regardless of signature or return type (SendResult / dict)."""
         try:
             sig = inspect.signature(self.send_func)
@@ -557,7 +560,7 @@ class StreamingBubbleQueue:
                             f"reconciled to SENT with msg_id={registered_record.message_id}"
                         )
             except Exception as e:
-                logger.error(f"Error inspecting completed network task result: {e}")
+                logger.error(f"Error inspecting completed network task result: {e}", exc_info=True)
 
         task.add_done_callback(_on_done)
 
@@ -566,7 +569,7 @@ class StreamingBubbleQueue:
         if self.typing_func:
             try:
                 await self.typing_func()
-            except Exception:
+            except (OSError, RuntimeError):  # health: allow S110 -- non-fatal typing trigger
                 pass
 
     async def _worker_loop(self) -> None:
@@ -626,7 +629,7 @@ class StreamingBubbleQueue:
                         record.state = BubbleDeliveryState.FAILED
                         record.error = res.get("error", "Send returned failure") if isinstance(res, dict) else "Send failed"
                         self._handle_failure(record.error)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     record.send_finished_at = time.monotonic()
                     self.pacer.update_finish_time(record.send_finished_at, last_text=record.text)
                     record.state = BubbleDeliveryState.UNKNOWN_DELIVERY
@@ -639,11 +642,12 @@ class StreamingBubbleQueue:
                     record.error = "In-flight delivery unconfirmed: CancelledError"
                     self._trip_circuit_breaker("Network ambiguity: CancelledError")
                     raise
-                except Exception as e:
+                except Exception as e:  # health: allow BLE001 -- deliberate catch-all boundary for bubble delivery isolation
                     record.send_finished_at = time.monotonic()
                     self.pacer.update_finish_time(record.send_finished_at)
                     record.state = BubbleDeliveryState.UNKNOWN_DELIVERY
                     record.error = f"Network invocation exception: {e}"
+                    logger.warning("[StreamingBubbleQueue] bubble delivery error: %s", e, exc_info=True)
                     self._handle_failure(str(e))
                 finally:
                     self._queue.task_done()

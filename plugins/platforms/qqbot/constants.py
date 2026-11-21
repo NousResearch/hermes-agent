@@ -27,8 +27,13 @@ ONBOARD_POLL_INTERVAL = 2.0  # seconds between poll_bind_result calls
 ONBOARD_API_TIMEOUT = 10.0
 
 MAX_MESSAGE_LENGTH = 4000
-DEDUP_WINDOW_SECONDS = 300
-DEDUP_MAX_SIZE = 1000
+# A re-delivery that outlives the dedup window is processed as a new message, so the same
+# message gets answered twice. QQ re-delivers a message id well past 300s (observed ~825s
+# after the original), so the window has to cover the platform's retransmit tail rather
+# than a single turn. The cache stays bounded by DEDUP_MAX_SIZE, not by the window, so a
+# generous window costs memory only up to that cap.
+DEDUP_WINDOW_SECONDS = 3600
+DEDUP_MAX_SIZE = 2000
 
 # QQ Bot message types / file media types
 MSG_TYPE_TEXT = 0

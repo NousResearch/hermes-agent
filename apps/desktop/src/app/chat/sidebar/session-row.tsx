@@ -23,7 +23,7 @@ import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
-import { coarseElapsed } from '@/lib/time'
+import { $timestampHourCycle, coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
@@ -152,6 +152,7 @@ function SidebarSessionRowImpl({
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
+  const hourCycle = useStore($timestampHourCycle)
   const fmt = t.sidebar
 
   const details = sessionRowDetails(session, {
@@ -162,7 +163,7 @@ function SidebarSessionRowImpl({
   const timestamp = session.last_active || session.started_at
   const age = formatAge(timestamp, r)
   const timestampDate = new Date(timestamp * 1000)
-  const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread)
+  const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread, hourCycle)
   const handleLabel = `Reorder ${title}`
   // Opt-in row metadata from the sidebar's filter menu. Read from the store
   // rather than threaded as props: the subscription re-renders past the memo

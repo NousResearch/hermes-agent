@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 // Canonical time/date formatting. Shared `Intl` instances (created once, not
 // per-render) + relative-time helpers. Every surface that shows a timestamp or
 // an age pulls from here so the rendered strings stay consistent app-wide.
@@ -8,22 +10,112 @@ export const HOUR = 3_600_000
 export const DAY = 86_400_000
 
 // ── Absolute date/time formatters ──────────────────────────────────────────
-// `hh:mm` clock (thread today/yesterday lines).
-export const fmtClock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+export type ClockHourCycle = 'h12' | 'h23'
 
-// Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
-export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-  month: 'short'
-})
+export const $timestampHourCycle = atom<ClockHourCycle | undefined>(undefined)
 
-// Medium date + short time (command center session detail).
-export const fmtDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+function createClockFormatters(hourCycle?: ClockHourCycle) {
+  const clock = hourCycle ? { hourCycle } : {}
 
-// Weekday + full date + clock (message time tooltips).
-export const fmtFullDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short' })
+  return {
+    // `hh:mm` clock (thread today/yesterday lines).
+    clock: new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', ...clock }),
+    // Medium date + short time (command center session detail).
+    dateTime: new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', ...clock }),
+    // Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
+    dayTime: new Intl.DateTimeFormat(undefined, {
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      month: 'short',
+      ...clock
+    }),
+    // Weekday + full date + clock (message time tooltips).
+    fullDateTime: new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short', ...clock }),
+    // Full local date + millisecond clock (timeline title tooltips).
+    preciseDateTime: new Intl.DateTimeFormat(undefined, {
+      day: 'numeric',
+      fractionalSecondDigits: 3,
+      hour: 'numeric',
+      minute: '2-digit',
+      month: 'short',
+      second: '2-digit',
+      year: 'numeric',
+      ...clock
+    }),
+    // Millisecond-precise local clock for transcript activity boundaries.
+    timelineClock: new Intl.DateTimeFormat(undefined, {
+      fractionalSecondDigits: 3,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      ...clock
+    })
+  }
+}
+
+type ClockFormatters = ReturnType<typeof createClockFormatters>
+
+const clockFormatterCache = new Map<'locale' | ClockHourCycle, ClockFormatters>()
+
+function clockFormatters(hourCycle?: ClockHourCycle): ClockFormatters {
+  const key = hourCycle ?? 'locale'
+  const cached = clockFormatterCache.get(key)
+
+  if (cached) {
+    return cached
+  }
+
+  const created = createClockFormatters(hourCycle)
+
+  clockFormatterCache.set(key, created)
+
+  return created
+}
+
+let clocks = clockFormatters()
+
+export let fmtClock = clocks.clock
+export let fmtDateTime = clocks.dateTime
+export let fmtDayTime = clocks.dayTime
+export let fmtFullDateTime = clocks.fullDateTime
+export let fmtPreciseDateTime = clocks.preciseDateTime
+export let fmtTimelineClock = clocks.timelineClock
+
+export function formatFullDateTime(value: Date | number, hourCycle = $timestampHourCycle.get()): string {
+  return clockFormatters(hourCycle).fullDateTime.format(value)
+}
+
+export function formatPreciseDateTime(value: Date | number, hourCycle = $timestampHourCycle.get()): string {
+  return clockFormatters(hourCycle).preciseDateTime.format(value)
+}
+
+export function formatClock(value: Date | number, hourCycle = $timestampHourCycle.get()): string {
+  return clockFormatters(hourCycle).clock.format(value)
+}
+
+export function formatDayTime(value: Date | number, hourCycle = $timestampHourCycle.get()): string {
+  return clockFormatters(hourCycle).dayTime.format(value)
+}
+
+export function formatTimelineClock(value: Date | number, hourCycle = $timestampHourCycle.get()): string {
+  return clockFormatters(hourCycle).timelineClock.format(value)
+}
+
+/** Keep Desktop clocks consistent with the CLI/TUI `display.timestamp_format`. */
+export function setTimestampFormatFromConfig(value: unknown): void {
+  const directive = typeof value === 'string' ? value.replaceAll('%%', '').match(/%(?:E|O)?([HI])/)?.[1] : undefined
+  const hourCycle = directive === 'H' ? 'h23' : directive === 'I' ? 'h12' : undefined
+
+  clocks = clockFormatters(hourCycle)
+  fmtClock = clocks.clock
+  fmtDateTime = clocks.dateTime
+  fmtDayTime = clocks.dayTime
+  fmtFullDateTime = clocks.fullDateTime
+  fmtPreciseDateTime = clocks.preciseDateTime
+  fmtTimelineClock = clocks.timelineClock
+  $timestampHourCycle.set(hourCycle)
+}
 
 // Date only, "5 Jun 2026" (starmap tooltip).
 export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })

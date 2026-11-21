@@ -179,3 +179,103 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+
+class TestSharedImageFallbackCache:
+    def test_reuses_description_across_agent_instances(self):
+        import json
+        from unittest.mock import AsyncMock
+
+        from agent.vision_message_prep import (
+            _SHARED_IMAGE_FALLBACK_CACHE,
+            _SHARED_IMAGE_FALLBACK_CACHE_LOCK,
+        )
+
+        with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+            _SHARED_IMAGE_FALLBACK_CACHE.clear()
+        try:
+            a1 = _make_agent()
+            a2 = _make_agent()
+            url = "data:image/png;base64,c2hhcmVkdGVzdA=="
+
+            mock_vision = AsyncMock(return_value=json.dumps({"analysis": "Red button on toolbar"}))
+            with patch("tools.vision_tools.vision_analyze_tool", mock_vision):
+                note1 = a1._describe_image_for_anthropic_fallback(url, "user")
+                note2 = a2._describe_image_for_anthropic_fallback(url, "user")
+
+            assert mock_vision.await_count == 1
+            assert note1 == note2
+            assert "Red button on toolbar" in note2
+
+            # Different role gets its own role-labeled note instead of reusing "user".
+            with patch("tools.vision_tools.vision_analyze_tool", mock_vision):
+                note_assistant = a2._describe_image_for_anthropic_fallback(url, "assistant")
+            assert mock_vision.await_count == 2
+            assert "The assistant attached an image" in note_assistant
+        finally:
+            with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+                _SHARED_IMAGE_FALLBACK_CACHE.clear()
+
+    def test_failed_analysis_is_not_cached_globally(self):
+        import json
+        from unittest.mock import AsyncMock
+
+        from agent.vision_message_prep import (
+            _SHARED_IMAGE_FALLBACK_CACHE,
+            _SHARED_IMAGE_FALLBACK_CACHE_LOCK,
+        )
+
+        with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+            _SHARED_IMAGE_FALLBACK_CACHE.clear()
+        try:
+            a1 = _make_agent()
+            a2 = _make_agent()
+            url = "data:image/png;base64,FAILTEST"
+
+            mock_vision = AsyncMock(side_effect=[
+                RuntimeError("temporary outage"),
+                json.dumps({"analysis": "Recovered description"}),
+            ])
+            with patch("tools.vision_tools.vision_analyze_tool", mock_vision):
+                note1 = a1._describe_image_for_anthropic_fallback(url, "user")
+                note2 = a2._describe_image_for_anthropic_fallback(url, "user")
+
+            assert mock_vision.await_count == 2
+            assert "Image analysis failed" in note1
+            assert "Recovered description" in note2
+        finally:
+            with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+                _SHARED_IMAGE_FALLBACK_CACHE.clear()
+
+
+    def test_failure_is_retried_by_same_agent(self):
+        """A transient vision outage must not poison a long-lived agent's image cache."""
+        import json
+        from unittest.mock import AsyncMock
+
+        from agent.vision_message_prep import (
+            _SHARED_IMAGE_FALLBACK_CACHE,
+            _SHARED_IMAGE_FALLBACK_CACHE_LOCK,
+        )
+
+        with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+            _SHARED_IMAGE_FALLBACK_CACHE.clear()
+        try:
+            agent = _make_agent()
+            url = "https://example.invalid/retry-after-outage.png"
+            vision = AsyncMock(side_effect=[
+                RuntimeError("temporary outage"),
+                json.dumps({"analysis": "Recovered description"}),
+            ])
+
+            with patch("tools.vision_tools.vision_analyze_tool", vision):
+                failed = agent._describe_image_for_anthropic_fallback(url, "user")
+                recovered = agent._describe_image_for_anthropic_fallback(url, "user")
+                cached = agent._describe_image_for_anthropic_fallback(url, "user")
+
+            assert "Image analysis failed" in failed
+            assert "Recovered description" in recovered
+            assert cached == recovered
+            assert vision.await_count == 2
+        finally:
+            with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+                _SHARED_IMAGE_FALLBACK_CACHE.clear()

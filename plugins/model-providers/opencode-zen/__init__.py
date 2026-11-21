@@ -43,6 +43,12 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+def _is_glm_5_3_model(model: str | None) -> bool:
+    """GLM-5.3 across alias spellings (glm-5.3 / glm-5-3 / glm-5p3)."""
+    m = _flat_model_name(model)
+    return any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
+
+
 def _classify_go_error(error, *, status_code, message, **_):
     """Go answers 429 for two different walls. ``GoUsageLimitError`` is the key's plan window
     (5-hour/weekly/monthly) and must bench the key; the built-in pipeline already does that.
@@ -109,6 +115,17 @@ class OpenCodeGoProfile(ProviderProfile):
                 return {}, {}
             clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
             return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
+        if _is_glm_5_3_model(model):
+            # GLM-5.3: always-thinking (``disabled`` 400s upstream, #85890) with a graded
+            # low..max knob (#91789); a disable ask maps to its lightest tier — dropping the
+            # field instead would leave the relay's max default (more thinking than asked).
+            if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+                return {}, {"reasoning_effort": "low"}
+            effort = re_.requested_effort(reasoning_config)
+            if effort is None or effort == "none":
+                return {}, {}
+            clamped = re_.clamp_effort(effort, re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES)
+            return {}, {"reasoning_effort": clamped if clamped in re_.GLM53_EFFORTS else "low"}
         if _flat_model_name(model).startswith("kimi-k2"):
             if not isinstance(reasoning_config, dict):
                 return {}, {}

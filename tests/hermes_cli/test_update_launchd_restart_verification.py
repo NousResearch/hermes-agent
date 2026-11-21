@@ -65,6 +65,18 @@ def _no_detached_fallback(monkeypatch):
         gateway_cli, "_launchd_unsupported_marker_exists", lambda: False
     )
 
+@pytest.fixture(autouse=True)
+def _not_inside_a_supervised_gateway(monkeypatch):
+    """The fake launchctl reports pid 4242, a real pid on the host.
+
+    When it happens to be an ancestor of the test worker (the CI runner's own
+    tree), the update takes the "restart handed to the gateway I run inside"
+    branch and skips verification, so the verdict depends on the machine.
+    """
+    monkeypatch.setattr(
+        gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
+    )
+
 def _supervision_returning(*results):
     """Fake ``_launchctl_supervised_pid`` yielding ``results`` in order.
 

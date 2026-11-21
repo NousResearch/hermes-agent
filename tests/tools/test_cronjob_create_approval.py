@@ -57,6 +57,9 @@ def _local(iso):
     ("once", 1, {"repeat": "3", "skill": "maps"}),
     # The job saves the first run the card showed, however long the answer takes (one-shot and recurring).
     ("once", 1, {"schedule": "in 2h", "repeat": None}), ("once", 1, {"schedule": "every 2h"}),
+    # An answer arriving after the first run the card showed (salch-cred): stale, nothing saved, never
+    # an error after consent and never a different time than the one approved.
+    ("once", 0, {"schedule": "in 1m", "repeat": None}), ("once", 0, {"schedule": "every 2m"}),
 ])
 def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch, answer, saved, extra):
     asked = _asking(monkeypatch, answer, late="schedule" in extra)
@@ -65,6 +68,9 @@ def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch
     assert len(cron_store.load_jobs()) == saved
     # The schedule card, not the command card, on every surface that draws one.
     assert len(asked) == 1 and asked[0][0] == "schedule"
+    if not saved:
+        assert result.get("declined") is True
+        return
     if "schedule" in extra:
         job = cron_store.load_jobs()[0]
         assert _local(job["next_run_at"]) in asked[0][1]
@@ -93,7 +99,7 @@ def test_a_create_that_cannot_save_never_asks(cron_store, monkeypatch, extra):
     ({"name": None}, "Remind the user to drink a glass of water."),
     # Paused: the card says it will not run, never a first run.
     ({"paused": True}, "created paused"),
-    ({"deliver": "telegram:12345"}, "delivers to telegram:12345"),
+    ({"deliver": "telegram:12345"}, "results go to telegram:12345"),
     ({"monitor": "https://example.com/price"}, "checks URL https://example.com/price first"),
 ])
 def test_the_card_shows_the_job_that_is_saved(cron_store, monkeypatch, extra, shown):
@@ -105,6 +111,19 @@ def test_the_card_shows_the_job_that_is_saved(cron_store, monkeypatch, extra, sh
         assert "first run" not in asked[0][1]
     if "name" in extra:
         assert f'Schedule "{cron_store.load_jobs()[0]["name"]}"' in asked[0][1]
+
+
+def test_the_card_says_who_sees_the_result(cron_store, monkeypatch):
+    """Same job, different audience: the card text differs (ctaylor86), failures named when they diverge."""
+    shown = []
+    for extra in ({}, {"deliver": "telegram:-100123"}, {"deliver": "local", "failure_deliver": "telegram"}):
+        asked = _asking(monkeypatch, "deny")
+        registry.dispatch("cronjob_manage", {**_CREATE, **extra})
+        shown.append(asked[0][1])
+    assert "results go to " in shown[0]
+    assert "results go to telegram:-100123" in shown[1]
+    assert "failure notices go to telegram (home channel)" in shown[2]
+    assert len(set(shown)) == 3
 
 
 def test_an_iso_one_shot_with_a_zone_shows_when_it_actually_fires(cron_store, monkeypatch):

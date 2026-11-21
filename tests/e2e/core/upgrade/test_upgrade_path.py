@@ -331,7 +331,12 @@ def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
         "#!/bin/sh\n"
         # `git remote get-url` expands insteadOf before the updater classifies a
         # fork. Report the configured official URL; only transport is redirected.
-        f'if [ "$1" = remote ] && [ "$2" = get-url ] && [ "$3" = origin ]; then printf "%s\\n" "{OFFICIAL_URL}"; exit 0; fi\n'
+        # Matched anywhere in argv: the updater's git runner puts `-c` options first.
+        'p2=""; p1=""\n'
+        'for a in "$@"; do\n'
+        f'  if [ "$p2" = remote ] && [ "$p1" = get-url ] && [ "$a" = origin ]; then printf "%s\\n" "{OFFICIAL_URL}"; exit 0; fi\n'
+        '  p2="$p1"; p1="$a"\n'
+        'done\n'
         f'if [ -f "{leg_root}/arm-pull" ] && echo " $* " | grep -q " merge --ff-only "; then\n'
         f'  rm -f "{leg_root}/arm-pull"\n'
         # Model a SIGKILL half-way through the fast-forward: git writes the tree in index order,

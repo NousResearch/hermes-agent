@@ -37,7 +37,8 @@ _MAX_ANCHOR_MATCHES = 8
 
 # ``is_runaway_repetition``: a multi-line partial must be mostly copies of a few lines. Batch-style
 # output (distinct INSERT rows, similar table rows) shares long prefixes and trips the window
-# scan, but every line is distinct; a loop re-emits the same line(s).
+# scan, but every line is distinct; a loop re-emits the same line(s). A loop that never emits a
+# newline fills one line instead, so that line is judged on its own.
 _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 
 # The finish_reason="stop" path discards a COMPLETED answer, so it only aborts at runaway scale:
@@ -143,7 +144,8 @@ def is_runaway_repetition(text: str) -> bool:
 
     An interrupt checkpoint DROPS the partial when this fires, so a legitimately repetitive but
     correct reply (distinct batch rows) must not qualify: repeated windows have to dominate AND,
-    when the text has line structure, at most half of its non-empty lines may be distinct.
+    when the text has line structure, at most half of its non-empty lines may be distinct, unless
+    one line holding at least half of the text is itself an exact periodic loop.
     """
     if not is_repetition_dominated(text):
         return False
@@ -151,7 +153,20 @@ def is_runaway_repetition(text: str) -> bool:
     lines = [line for line in lines if line]
     if len(lines) < _MIN_REPEAT_COUNT:
         return True  # no line structure to judge by: a dominated single-line loop
+    if _newline_free_loop_dominates(text, lines):
+        return True
     return len(set(lines)) <= len(lines) * _RUNAWAY_DISTINCT_LINE_RATIO
+
+
+def _newline_free_loop_dominates(text: str, lines: list[str]) -> bool:
+    """True when one line holds at least half of ``text`` and is an exact periodic run.
+
+    The distinct lines written before such a loop began are not batch rows, so they must not veto
+    the cut. Exact periodicity (not the window count) keeps one long line of records that differ
+    only by an id, such as minified JSON, out of it.
+    """
+    longest = max(lines, key=len)
+    return len(longest) >= len(text) * _DOMINANCE_RATIO and _periodic_run_dominated(longest, len(longest))
 
 
 def _line_repetition_dominated(text: str, n: int) -> bool:

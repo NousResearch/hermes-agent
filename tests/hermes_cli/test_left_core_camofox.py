@@ -139,7 +139,7 @@ def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
     assert "Camofox browser backend moved out of core" in said[0]
 
     config = _config(home)
-    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
+    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox", "browser-vault"]
     assert config["agent"]["disabled_toolsets"] == ["memory", "browser"]
     known = config["known_plugin_toolsets"]
     assert "camofox" in known["discord"] and "camofox" in known["webhook"]
@@ -151,6 +151,98 @@ def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
     for platform in ("discord", "webhook"):
         enabled = _resolved(home, platform, monkeypatch)
         assert "camofox" not in enabled and "browser" not in enabled, platform
+
+
+@pytest.mark.parametrize("browser_was_disabled", [False, True], ids=["enabled", "legacy-opt-out"])
+def test_camofox_explicit_browser_selection_preserves_vault_intent(tmp_path, monkeypatch, browser_was_disabled):
+    """Regression for #152409: splitting the browser toolset cannot erase an explicitly
+    selected browser's vault or turn a pre-migration browser opt-out back on."""
+    home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n", config={
+        "_config_version": 51,
+        "browser": {"cloud_provider": "camofox"},
+        "platform_toolsets": {"cli": ["terminal", "browser", "file"]},
+        "agent": {"disabled_toolsets": ["browser"] if browser_was_disabled else []},
+    })
+    assert _boot(home, monkeypatch) == ["camofox"]
+    config = _config(home)
+    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox", "browser-vault"]
+    assert ("browser-vault" in config["agent"]["disabled_toolsets"]) is browser_was_disabled
+
+    from model_tools import _select_tool_names
+    names = _select_tool_names(
+        sorted(_resolved(home, "cli", monkeypatch)),
+        config["agent"]["disabled_toolsets"], quiet_mode=True,
+    )
+    assert ("browser_vault" in names) is not browser_was_disabled
+    assert names.isdisjoint({"browser_exec", "browser_cdp", "browser_dialog"})
+
+
+@pytest.mark.parametrize(("saved", "want_vault"), [
+    (None, True),                              # no saved list: default composite carries browser_vault
+    (["hermes-cli"], True),                    # composite: _HERMES_CORE_TOOLS carries browser_vault
+    ([], False),                               # explicit empty selection: nothing is enabled
+    (["terminal", "file"], False),             # explicit browser-free selection stays browser-free
+], ids=["default", "composite", "explicit-empty", "explicit-browser-free"])
+def test_camofox_migration_resolves_vault_separately(tmp_path, monkeypatch, saved, want_vault):
+    """Regression for #152409: after the Camofox left-core migration disables `browser`, a profile
+    keeps `browser_vault` (its own `browser-vault` toolset, carried by the default composite and
+    platform bundles through _HERMES_CORE_TOOLS) while browser_exec/browser_cdp/browser_dialog stay
+    off. Explicit saved selections never gain capabilities they did not previously select."""
+    home = _home(tmp_path, env=_SPLIT_ENV, config={"_config_version": 51, "browser": {"cloud_provider": "camofox"}})
+    if saved is not None:
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 51,
+            "browser": {"cloud_provider": "camofox"},
+            "platform_toolsets": {"cli": saved},
+        }), encoding="utf-8")
+    assert _boot(home, monkeypatch) == ["camofox"]
+
+    from model_tools import _select_tool_names
+
+    disabled = _config(home)["agent"]["disabled_toolsets"]
+    assert "browser" in disabled
+    names = _select_tool_names(
+        sorted(_resolved(home, "cli", monkeypatch)),
+        disabled,
+        quiet_mode=True,
+    )
+
+    assert ("browser_vault" in names) is want_vault
+    assert names.isdisjoint({"browser_exec", "browser_cdp", "browser_dialog"})
+
+
+@pytest.mark.parametrize("saved", [None, ["hermes-cli"]], ids=["no-saved-list", "composite"])
+def test_already_migrated_camofox_home_keeps_vault_without_replaying_conversion(tmp_path, monkeypatch, saved):
+    """A home that already ran the v52 conversion (config stamped, markers recorded, plugin present,
+    `browser` disabled) selects browser_vault after the toolset split without any further conversion:
+    toolset membership is resolved at runtime, so the fix reaches already-migrated composite homes."""
+    config = {
+        "_config_version": DEFAULT_CONFIG["_config_version"],
+        "browser": {"cloud_provider": "camofox"},
+        "agent": {"disabled_toolsets": ["browser"]},
+        "_left_core_used": ["camofox"],
+        "_left_core_scoped": ["camofox"],
+        "_left_core_installed": ["camofox"],
+    }
+    if saved is not None:
+        config["platform_toolsets"] = {"cli": saved}
+    home = _home(tmp_path, env=_SPLIT_ENV, config=config)
+    (home / "plugins" / "camofox").mkdir(parents=True)
+    before = _config(home)
+
+    assert _boot(home, monkeypatch) == []  # already converted and installed: nothing to do
+    assert _config(home) == before
+
+    from model_tools import _select_tool_names
+
+    disabled = _config(home)["agent"]["disabled_toolsets"]
+    names = _select_tool_names(
+        sorted(_resolved(home, "cli", monkeypatch)),
+        disabled,
+        quiet_mode=True,
+    )
+    assert "browser_vault" in names
+    assert names.isdisjoint({"browser_exec", "browser_cdp", "browser_dialog"})
 
 
 def _boot(home: Path, monkeypatch, said: list | None = None) -> list[str]:
@@ -173,11 +265,14 @@ def test_globally_disabled_browsing_stays_off_after_the_conversion(tmp_path, mon
     assert _boot(home, monkeypatch) == ["camofox"]
     config = _config(home)
     if saved is not None:
-        assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
-    assert set(config["agent"]["disabled_toolsets"]) == {"browser", "camofox"}
+        assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox", "browser-vault"]
+    assert set(config["agent"]["disabled_toolsets"]) == {"browser", "camofox", "browser-vault"}
+    from model_tools import _select_tool_names
     for platform in ("cli", "telegram"):
         enabled = _resolved(home, platform, monkeypatch)
         assert "camofox" not in enabled and "browser" not in enabled, platform
+        names = _select_tool_names(sorted(enabled), config["agent"]["disabled_toolsets"], quiet_mode=True)
+        assert "browser_vault" not in names, platform
 
 
 def test_conversion_is_never_undone(tmp_path):
@@ -226,7 +321,7 @@ def test_homes_are_islands_a_b_c_a(tmp_path):
     assert calls == [("a", "camofox"), ("c", "camofox")]
     assert (b / "config.yaml").read_bytes() == b_before
     assert not (b / "plugins").exists()
-    assert _config(a)["platform_toolsets"]["cli"] == ["camofox"]
+    assert _config(a)["platform_toolsets"]["cli"] == ["camofox", "browser-vault"]
     assert _config(c)["agent"]["disabled_toolsets"] == ["browser"]
 
 
@@ -254,7 +349,7 @@ def test_upgrade_converts_after_the_config_step(tmp_path, monkeypatch):
     calls = []
     assert lcm.migrate_home(home, install=_installer(home, calls), say=lambda _m: None) == ["camofox"]
     config = _config(home)
-    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
+    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox", "browser-vault"]
     assert config["agent"]["disabled_toolsets"] == ["browser"]
 
 
@@ -321,7 +416,7 @@ def test_a_plain_save_stamping_an_unversioned_camofox_home_keeps_its_conversion(
     assert _config(home)["_config_version"] == DEFAULT_CONFIG["_config_version"]
     calls = []
     assert lcm.migrate_home(home, install=_installer(home, calls), say=lambda _m: None) == ["camofox"]
-    assert _config(home)["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
+    assert _config(home)["platform_toolsets"]["cli"] == ["terminal", "file", "camofox", "browser-vault"]
 
 
 def test_a_stamped_camofox_home_without_the_plugin_is_told_where_it_went(tmp_path, monkeypatch):

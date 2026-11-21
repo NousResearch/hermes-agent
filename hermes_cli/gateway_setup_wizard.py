@@ -447,7 +447,14 @@ def _wizard_platform_loop() -> None:
 
         platforms = _gw()._all_platforms()
         menu_items = [f"{p['emoji']} {p['label']}  ({_platform_status(p)})" for p in platforms] + ["Done"]
-        choice = _gw().prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
+        # Default to the first platform, not "Done". A plain Enter used to confirm "Done",
+        # print "Skipped (keeping current)" and exit with no platform configured — the
+        # "run setup, setup says run setup" loop in #43598. A cancel (ESC / non-TTY) still
+        # maps back to Done so an unattended run never configures a platform by accident.
+        choice = _gw().prompt_choice(
+            "Select a platform to configure:", menu_items, 0,
+            cancel_returns=len(menu_items) - 1,
+        )
         if choice == len(platforms):
             break
         _gw()._configure_platform(platforms[choice])
@@ -550,6 +557,9 @@ def gateway_setup():
         _gw()._wizard_post_setup()
     else:
         print()
-        _gw().print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
+        _gw().print_info(
+            "No platforms configured. Re-run 'hermes gateway setup' and choose a platform by number "
+            "(or use the arrow keys) to configure one."
+        )
 
     print()

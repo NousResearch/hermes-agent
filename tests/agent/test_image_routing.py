@@ -660,7 +660,7 @@ class TestCodexContextVariantVisionLookup:
 
         seen = []
 
-        def fake_caps(provider, model, allow_network=False):
+        def fake_caps(provider, model, allow_network=False, config=None):
             seen.append(model)
             return SimpleNamespace(supports_vision=True) if model == "gpt-5.6-sol" else None
 
@@ -670,3 +670,83 @@ class TestCodexContextVariantVisionLookup:
         # Ineligible alias: looked up verbatim, no capability gained.
         assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
         assert seen[-1] == "gpt-5.5-900k"
+
+
+class TestNamedCustomProviderCatalogLookup:
+    """Issue #143347: a named custom provider is canonicalized to ``custom`` before the vision
+    probes run, so the models.dev catalog must retry under the requested name — where its
+    ``catalog_provider`` alias resolves — instead of leaving catalogued models text-only."""
+
+    CFG = {"providers": {"openrouter-fast": {"catalog_provider": "openrouter"}}}
+
+    @staticmethod
+    def _caps_by_provider(monkeypatch, verdict_by_provider):
+        """Patch the catalog lookup to record (provider, config) per call; unknown providers
+        resolve to None so the canonicalized ``custom`` leg behaves like the real catalog."""
+        from types import SimpleNamespace
+        from agent import models_dev
+
+        seen = []
+
+        def fake_caps(provider, model, allow_network=False, config=None):
+            seen.append((provider, config))
+            verdict = verdict_by_provider.get(provider)
+            return SimpleNamespace(supports_vision=verdict) if verdict is not None else None
+
+        monkeypatch.setattr(models_dev, "get_model_capabilities", fake_caps)
+        return seen
+
+    def test_canonicalized_custom_retries_under_requested_name(self, monkeypatch):
+        from agent import image_routing
+
+        seen = self._caps_by_provider(monkeypatch, {"openrouter-fast": True})
+        assert image_routing._lookup_supports_vision(
+            "custom", "z-ai/glm-5.3-flash", self.CFG, requested_provider="openrouter-fast",
+        ) is True
+        assert [p for p, _ in seen] == ["custom", "openrouter-fast"]
+
+    def test_catalog_lookup_receives_session_config(self, monkeypatch):
+        from agent import image_routing
+
+        seen = self._caps_by_provider(monkeypatch, {"openrouter-fast": True})
+        image_routing._lookup_supports_vision(
+            "custom", "z-ai/glm-5.3-flash", self.CFG, requested_provider="openrouter-fast",
+        )
+        assert all(config is self.CFG for _, config in seen)
+
+    def test_no_retry_when_first_lookup_resolves(self, monkeypatch):
+        from agent import image_routing
+
+        seen = self._caps_by_provider(monkeypatch, {"custom": False})
+        assert image_routing._lookup_supports_vision(
+            "custom", "z-ai/glm-5.3-flash", self.CFG, requested_provider="openrouter-fast",
+        ) is False
+        assert [p for p, _ in seen] == ["custom"]
+
+    def test_no_retry_when_requested_name_matches_provider(self, monkeypatch):
+        from agent import image_routing
+
+        seen = self._caps_by_provider(monkeypatch, {})
+        assert image_routing._lookup_supports_vision(
+            "custom", "z-ai/glm-5.3-flash", self.CFG, requested_provider="custom",
+        ) is None
+        assert [p for p, _ in seen] == ["custom"]
+
+    def test_runtime_borrowed_identity_reaches_catalog_probe(self, monkeypatch):
+        """A real gateway turn passes no explicit ``requested_provider``; the runtime-borrowed
+        identity must reach the catalog probe the same way."""
+        from agent import image_routing
+
+        seen = self._caps_by_provider(monkeypatch, {"openrouter-fast": True})
+        runtime = {"provider": "custom", "model": "z-ai/glm-5.3-flash", "requested_provider": "openrouter-fast"}
+        monkeypatch.setattr(image_routing, "_runtime_main", lambda key: runtime.get(key, ""))
+        assert image_routing._lookup_supports_vision("custom", "z-ai/glm-5.3-flash", self.CFG) is True
+        assert [p for p, _ in seen] == ["custom", "openrouter-fast"]
+
+    def test_decide_image_input_mode_routes_native(self, monkeypatch):
+        from agent import image_routing
+
+        self._caps_by_provider(monkeypatch, {"openrouter-fast": True})
+        assert image_routing.decide_image_input_mode(
+            "custom", "z-ai/glm-5.3-flash", self.CFG, requested_provider="openrouter-fast",
+        ) == "native"

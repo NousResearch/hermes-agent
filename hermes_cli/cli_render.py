@@ -641,12 +641,16 @@ def _output_history_rows(limit: int, columns: int, painted: bool):
 
 
 def _ansi_with_raw(text: str, raw: str = ""):
-    """``ANSI(text)``, then *raw* as one zero-width fragment prompt_toolkit writes verbatim."""
+    """``ANSI(text)``, then *raw* as one zero-width fragment prompt_toolkit writes verbatim.
+
+    A ``FormattedText``, not a plain list: ``prompt_toolkit.print_formatted_text`` prints a plain
+    list as its ``repr`` (#157632).
+    """
     from cli import _PT_ANSI
     if not raw:
         return _PT_ANSI(text)
-    from prompt_toolkit.formatted_text import to_formatted_text
-    return [*to_formatted_text(_PT_ANSI(text)), ("[ZeroWidthEscape]", raw)]
+    from prompt_toolkit.formatted_text import FormattedText, to_formatted_text
+    return FormattedText([*to_formatted_text(_PT_ANSI(text)), ("[ZeroWidthEscape]", raw)])
 
 
 def _pt_print_ansi(text: str, raw: str = "") -> None:

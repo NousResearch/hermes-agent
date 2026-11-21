@@ -264,3 +264,29 @@ def test_a_profile_hook_leaves_the_at_prefix_to_the_profiles_own_load(hosted_hom
     # The host child reports its own os.getpid() in the hello handshake. On Windows, Popen.pid is the
     # venv launcher's pid, not the interpreter's, so it can't be compared with a pid the plugin returns.
     assert expanded == str(host.info["pid"])
+
+
+@pytest.mark.platforms("any")
+def test_overlapping_transient_hosts_get_their_own_scopes(hosted_home):
+    """Two hook loads of one profile at once must not share registry slots: each throwaway manager has
+    its own scope, and neither is the profile's shared scope."""
+    from hermes_cli.plugin_isolation import transient_plugin_host
+
+    shared = plugins_mod.get_plugin_manager().scope_key
+    with transient_plugin_host() as first, transient_plugin_host() as second:
+        assert len({first.scope_key, second.scope_key, shared}) == 3
+        assert first.home_path == second.home_path == plugins_mod.get_plugin_manager().home_path
+
+
+@pytest.mark.platforms("any")
+def test_a_transient_host_whose_channel_closed_is_still_stopped(hosted_home):
+    """A host whose channel closed (its child may still run) is not ``alive``: teardown must stop it anyway."""
+    from hermes_cli.plugin_isolation import transient_plugin_host
+
+    with transient_plugin_host() as manager:
+        host = manager._plugin_host()
+        host.ensure_started()
+        proc = host._proc
+        host._channel.close("test: channel lost")
+        assert not host.alive and proc.poll() is None
+    assert proc.poll() is not None

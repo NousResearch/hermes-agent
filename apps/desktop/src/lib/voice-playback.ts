@@ -239,9 +239,12 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   let finished = false
   let settled = false
   let started = false
+  let failed = false
   const queue: string[] = []
   let synthesizing = false
-  let playing: HTMLAudioElement | null = null
+  let ready: ArrayBuffer | null = null
+  let playing: { audio: HTMLAudioElement; url: string } | null = null
+  const abort = new AbortController()
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -251,6 +254,13 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   // (#91991).
   const stop = () => settle(started ? 'done' : 'fallback')
 
+  const cleanupPlayback = (playback: { audio: HTMLAudioElement; url: string }) => {
+    playback.audio.pause()
+    playback.audio.src = ''
+    playback.audio.load()
+    URL.revokeObjectURL(playback.url)
+  }
+
   const done = new Promise<'done' | 'fallback'>(resolve => {
     settle = value => {
       if (settled) {
@@ -259,10 +269,12 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
       settled = true
       liveStops.delete(stop)
+      abort.abort()
+      queue.length = 0
+      ready = null
 
       if (playing) {
-        playing.pause()
-        playing.src = ''
+        cleanupPlayback(playing)
         playing = null
       }
 
@@ -272,71 +284,90 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
   liveStops.add(stop)
 
-  const pump = async () => {
-    if (synthesizing || settled) {
+  const startPlayback = (bytes: ArrayBuffer) => {
+    if (settled) {
       return
     }
 
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+    const audio = new Audio(url)
+    const playback = { audio, url }
+    playing = playback
+
+    const finishPlayback = () => {
+      if (playing !== playback) {
+        return
+      }
+
+      cleanupPlayback(playback)
+      playing = null
+      drive()
+    }
+
+    const failPlayback = () => {
+      if (playing !== playback) {
+        return
+      }
+
+      settle(started ? 'done' : 'fallback')
+    }
+
+    audio.addEventListener('ended', finishPlayback, { once: true })
+    audio.addEventListener('error', failPlayback, { once: true })
+
+    started = true
+    setVoicePlaybackState(currentState('speaking', options))
+    void audio.play().catch(failPlayback)
+
+    // The current segment is now playing, so use that time to prepare exactly
+    // one following segment. Playback remains strictly FIFO.
+    drive()
+  }
+
+  const startSynthesis = (sentence: string) => {
     synthesizing = true
 
-    try {
-      while (queue.length > 0 && !settled) {
-        const sentence = queue.shift()!
-
-        let bytes: ArrayBuffer
-
-        try {
-          bytes = await synthesizeSpeechClientDirect(tts, sentence)
-        } catch {
-          // Provider rejected mid-reply. Nothing played yet → let the caller
-          // fall back to the relay with the full text. Mid-playback → treat
-          // what played as the playback (replaying would stutter).
-          settle(started ? 'done' : 'fallback')
-
-          return
+    void synthesizeSpeechClientDirect(tts, sentence, { signal: abort.signal })
+      .then(bytes => {
+        if (!settled && !failed) {
+          ready = bytes
         }
-
-        if (settled) {
-          return
+      })
+      .catch(() => {
+        if (!settled && !abort.signal.aborted) {
+          failed = true
+          queue.length = 0
         }
+      })
+      .finally(() => {
+        synthesizing = false
+        drive()
+      })
+  }
 
-        if (!started) {
-          started = true
-          setVoicePlaybackState(currentState('speaking', options))
-        }
+  function drive() {
+    if (settled) {
+      return
+    }
 
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+    if (!playing && ready) {
+      const bytes = ready
+      ready = null
+      startPlayback(bytes)
+    }
 
-        try {
-          await new Promise<void>((resolve, reject) => {
-            const audio = new Audio(url)
-            playing = audio
-            audio.addEventListener('ended', () => resolve(), { once: true })
-            audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
-            void audio.play().catch(reject)
-          })
-        } catch {
-          settle(started ? 'done' : 'fallback')
+    if (!failed && !synthesizing && ready === null && queue.length > 0) {
+      startSynthesis(queue.shift()!)
+    }
 
-          return
-        } finally {
-          playing = null
-          URL.revokeObjectURL(url)
-        }
-      }
-
-      if (finished && queue.length === 0 && !settled) {
-        settle(started ? 'done' : 'fallback')
-      }
-    } finally {
-      synthesizing = false
-
-      // Deltas that arrived while the last sentence was playing.
-      if (!settled && queue.length > 0) {
-        void pump()
-      } else if (!settled && finished && queue.length === 0) {
-        settle(started ? 'done' : 'fallback')
-      }
+    if (
+      (finished || failed) &&
+      !playing &&
+      !synthesizing &&
+      ready === null &&
+      queue.length === 0
+    ) {
+      settle(started ? 'done' : 'fallback')
     }
   }
 
@@ -355,15 +386,15 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         }
       }
 
-      void pump()
-    } else if (flush && finished && queue.length === 0 && !synthesizing) {
-      settle(started ? 'done' : 'fallback')
+      drive()
+    } else if (flush && finished) {
+      drive()
     }
   }
 
   return {
     append: text => {
-      if (text && !finished && !settled) {
+      if (text && !finished && !settled && !failed) {
         buffer += text
         ingest(false)
       }
@@ -377,6 +408,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
       if (!finished && !settled) {
         finished = true
         ingest(true)
+        drive()
       }
     },
     done

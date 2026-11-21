@@ -1,0 +1,17 @@
+name: lumoauth
+repo: https://github.com/lumoauth/hermes
+sha: f3a90f40ed616d4015fdd16b081b55f93ba7f82e
+description: Checks every tool call outside the model, against rules kept in LumoAuth, and allows it, asks a person or blocks it.
+maintainer: LumoAuth
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://docs.lumoauth.dev/agents/personal-agents
+version: "0.1.1"
+title: LumoAuth Guard
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, post_approval_response, post_api_request, on_session_start]
+  provides_middleware: []
+  requires_env: []

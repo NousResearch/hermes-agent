@@ -61,6 +61,25 @@ def masked_secret_prompt(prompt: str, *, mask: str = "*") -> str:
         return getpass.getpass(prompt)
 
 
+STDIN_SECRET = "-"
+
+
+def resolve_secret_arg(value: str | None, prompt: str | None = None) -> str:
+    """Resolve a secret-taking CLI flag without forcing the secret onto the command line.
+
+    ``-`` reads the first line of stdin (``--key - < keyfile``, ``pass show x | hermes …``), so
+    the value never shows in ``ps`` or shell history. A literal value is still accepted for
+    scripts. With no value and a ``prompt``, an interactive terminal gets a masked prompt; off
+    a terminal the result is ``""`` and the caller reports the missing secret.
+    """
+    value = (value or "").strip()
+    if value == STDIN_SECRET:
+        return sys.stdin.readline().strip()
+    if value or not prompt or not _stream_is_tty(sys.stdin):
+        return value
+    return masked_secret_prompt(prompt).strip()
+
+
 def _stream_is_tty(stream) -> bool:
     try:
         return bool(stream.isatty())

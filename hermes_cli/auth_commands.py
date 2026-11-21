@@ -24,7 +24,7 @@ from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
     canonical_registry_rows, dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.secret_prompt import masked_secret_prompt, resolve_secret_arg
 
 
 # Providers that support OAuth login in addition to API keys.
@@ -373,7 +373,7 @@ def _unsuppress_provider_sources(provider: str) -> None:
 
 
 def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
-    token = ((getattr(args, "api_key", None) or "").strip()
+    token = (resolve_secret_arg(getattr(args, "api_key", None))
              or masked_secret_prompt("Paste your API key: ").strip())
     if not token:
         raise SystemExit("No API key provided.")

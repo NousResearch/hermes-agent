@@ -52,9 +52,8 @@ secret. `hermes gateway enroll` redeems a **single-use enrollment token**
 with your gateway config) for that secret:
 
 ```bash
-hermes gateway enroll \
-  --token <enrollment-token> \
-  --connector-url wss://connector.example.com/relay
+hermes gateway enroll --connector-url wss://connector.example.com/relay
+# prompts (masked) for the enrollment token; in scripts: --token - < token-file
 ```
 
 What it does:

@@ -1452,8 +1452,20 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
-    """Assign/reassign; raises RuntimeError while the task is running under a claim."""
+def assign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    reset_breaker: bool = False,
+) -> bool:
+    """Assign/reassign; raises RuntimeError while the task is running under a claim.
+
+    ``reset_breaker`` must be requested explicitly: a plain assignment used to
+    clear ``consecutive_failures``, which silently released a breaker-blocked
+    card into ``recompute_ready``'s promotion on the next dispatch tick and
+    spawned a worker nobody asked for (run 658, 2026-11-12).
+    """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
@@ -1467,11 +1479,18 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 "Wait for completion or reclaim the stale lock first."
             )
         if row["assignee"] != profile:
-            # The failure streak is per task/profile; a new profile starts fresh.
-            conn.execute(
-                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
-                "last_failure_error = NULL WHERE id = ?", (profile, task_id),
-            )
+            # The failure streak is per task/profile and is only cleared when the
+            # operator asks for it: resetting it on a plain handoff rearms a
+            # breaker-blocked card (see ``reset_breaker`` above).
+            if reset_breaker:
+                conn.execute(
+                    "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                    "last_failure_error = NULL WHERE id = ?", (profile, task_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id),
+                )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         # ``from`` lets the respawn guard tell a real handoff (dev→closer) from
@@ -2089,7 +2108,11 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     )
                 _append_event(
                     conn, task_id, "promoted",
-                    {"status": resume_status} if resume_status != "ready" else None,
+                    {
+                        "status": resume_status,
+                        "prev_status": cur_status,
+                        "cause": "recompute_ready",
+                    },
                 )
                 promoted += 1
     return promoted
@@ -2510,7 +2533,7 @@ def reclaim_task(
 
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
-    reason: Optional[str] = None,
+    reason: Optional[str] = None, reset_breaker: bool = False,
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
     ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
@@ -2519,7 +2542,7 @@ def reassign_task(
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return assign_task(conn, task_id, profile, reset_breaker=reset_breaker)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.

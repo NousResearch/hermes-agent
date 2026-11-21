@@ -333,6 +333,22 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def forget_results_after_compaction(self) -> None:
+        """Drop no-progress memory that points at results a context compaction just evicted.
+
+        A long unattended turn (e.g. a kanban worker) can span many compactions. Compaction prunes
+        earlier tool results (skill_view bodies become SKILL_PRUNED), so re-reading them afterwards is
+        progress, not a loop. Without this reset the per-turn idempotent_no_progress count kept growing
+        across compactions and the Nth legitimate re-load hit idempotent_no_progress_block, halting the
+        turn before the worker could report its result. Failure counters and per-turn caps are kept.
+        """
+        self._no_progress.clear()
+        self._identical_streak_sig = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        self._call_history.clear()
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision

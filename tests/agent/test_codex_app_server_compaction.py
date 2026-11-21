@@ -321,3 +321,30 @@ def test_successful_codex_compaction_arms_no_cooldown():
     )
 
     assert agent.context_compressor.recorded == []
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_codex_compaction_resets_guardrail_only_after_success(failure):
+    """Native Codex compacts remotely without changing Hermes' local transcript."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    result = (TurnResult(error="compact failed") if failure
+              else TurnResult(thread_id="thread-1", turn_id="compact-turn-1"))
+    agent = DummyAgent(result)
+    guard = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="cron"))
+    agent._tool_guardrails = guard
+    args = {"name": "report"}
+    result_body = '{"success": true, "name": "report", "content": "instructions"}'
+    for _ in range(5):
+        assert guard.before_call("skill_view", args).allows_execution
+        guard.after_call("skill_view", args, result_body, failed=False)
+    assert guard.before_call("skill_view", args).code == "idempotent_no_progress_block"
+
+    messages = [{"role": "user", "content": "hi"}]
+    returned, _ = compress_context(
+        agent, messages, "system", approx_tokens=100000, task_id="test", force=True
+    )
+
+    assert returned is messages
+    assert agent._codex_session.calls == 1
+    assert guard.before_call("skill_view", args).allows_execution is (not failure)

@@ -315,15 +315,16 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 
 
 def _cron_guidance(agent: Any) -> Optional[str]:
-    """Proactive-scheduling line when the session can create jobs (directly or through the tool_call bridge).
-    Withheld wherever nobody can answer the approval card (cron runs, ``-q`` one-shots including kanban
-    workers, unattended platforms): there a create would be saved unseen, so nothing should urge one. The
+    """Proactive-scheduling line when the session can create jobs (directly or through the tool_call bridge)
+    AND a new job would be shown on a "Schedule this job?" card first. Withheld wherever the gate would save
+    unseen (``tools.approval.schedule_card_skip_reason``: approvals off or already granted, cron runs,
+    ``-q`` one-shots, kanban workers, unattended platforms), so nothing urges a job nobody reviews. The
     bridged case reads the toolset selection and the tool's own check, never the built definitions: building
     them runs dynamic schema hooks that load plugins, which a safe-mode worker must never read."""
     from agent.oneshot_footprint import agent_is_oneshot
-    from tools.approval_context import _UNATTENDED_APPROVAL_PLATFORMS
-    platform = getattr(agent, "platform", None)
-    if platform == "cron" or platform in _UNATTENDED_APPROVAL_PLATFORMS or agent_is_oneshot(agent):
+    from tools.approval import schedule_card_skip_reason
+    if agent_is_oneshot(agent) or schedule_card_skip_reason(platform=getattr(agent, "platform", None),
+                                                            session_key=""):
         return None
     names = agent.valid_tool_names
     if "cronjob_manage" not in names:

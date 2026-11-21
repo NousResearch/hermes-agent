@@ -15,6 +15,30 @@ from agent.usage_pricing import normalize_usage
 _SENSITIVE_HOOK_KEYS = {"api_key", "authorization", "proxy_authorization", "cookie", "set_cookie"}
 
 
+def response_impact(response: Any) -> Optional[dict[str, Any]]:
+    """The optional top-level ``impact`` object some OpenAI-compatible gateways attach to a
+    completion (energy / emissions / inference time per call), or None.
+
+    Read-only: the OpenAI SDK keeps unknown response fields as pydantic extras, and the streaming
+    path copies the final chunk's onto its reassembled response. Only a plain dict is accepted (no
+    schema is assumed beyond that) and it is size-capped, so a malformed value can never reach an
+    observer or break the hot path.
+    """
+    if response is None:
+        return None
+    if isinstance(response, dict):
+        value = response.get("impact")
+    else:
+        value = getattr(response, "impact", None)
+        if value is None:
+            extra = getattr(response, "model_extra", None)
+            value = extra.get("impact") if isinstance(extra, dict) else None
+    if not isinstance(value, dict) or not value:
+        return None
+    capped = ApiRequestHooksMixin._hook_jsonable(value, max_depth=4, max_string=200, max_sequence=32)
+    return capped if isinstance(capped, dict) else None
+
+
 def _model_dump(value: Any) -> Any:
     """``value.model_dump(mode="json")`` with graceful degradation for older pydantic signatures.
 
@@ -157,6 +181,7 @@ class ApiRequestHooksMixin:
                     "tool_calls": tool_calls,
                 },
                 "usage": self._usage_summary_for_api_request_hook(response),
+                "impact": response_impact(response),
             }
         )
 

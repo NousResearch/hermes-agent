@@ -1,0 +1,26 @@
+name: smart-home
+repo: https://github.com/luojiesi/hermes-smart-home
+sha: e6b80bc5a1fc02134c0b185ec4606e9b9489f574
+description: Control home devices from chat. Tesla vehicles (Fleet API), TP-Link Tapo switches/plugs, LG webOS
+  TVs, Sonos speakers and Rheem EcoNet water heaters; each tool appears only when its SDK and config are present.
+maintainer: luojiesi
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/luojiesi/hermes-smart-home#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - tesla
+    - tapo
+    - lgtv
+    - sonos
+    - rheem
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TAPO_EMAIL
+    - TAPO_PASSWORD
+    - RHEEM_EMAIL
+    - RHEEM_PASSWORD

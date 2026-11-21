@@ -294,3 +294,33 @@ def test_rerun_marks_partial_clone_packs_when_the_fetch_crashes(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (install / "README").read_text() == "two"
     assert all(p.with_suffix(".promisor").exists() for p in packs)
+
+
+def test_signalled_stage_removes_its_staging_directory(tmp_path):
+    origin = _origin(tmp_path / "origin")
+    wrapper_bin = tmp_path / "bin"
+    wrapper_bin.mkdir()
+    fake_git = wrapper_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "clone" ]; then\n'
+        "  kill -TERM 0\n"
+        "  sleep 30\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n'
+    )
+    fake_git.chmod(0o755)
+    env = {"HERMES_REPO_URL": origin.as_posix(), "PATH": f"{wrapper_bin}:{os.environ['PATH']}"}
+    res = _run(tmp_path, "run_stage repository", env=env, start_new_session=True)
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert list(tmp_path.glob(".hermes-clone-*")) == []
+
+
+def test_inherited_clone_staged_dir_env_is_not_deleted(tmp_path):
+    unrelated = tmp_path / "keep-me"
+    unrelated.mkdir()
+    (unrelated / "file.txt").write_text("important\n")
+    env = {"CLONE_STAGED_DIR": unrelated.as_posix()}
+    _run(tmp_path, "run_stage no-such-stage", env=env)
+    assert unrelated.exists()
+    assert (unrelated / "file.txt").read_text() == "important\n"

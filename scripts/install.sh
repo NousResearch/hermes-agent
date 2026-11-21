@@ -42,6 +42,7 @@ INSTALL_RUN_ID=""
 FAILURE_CLASS=""
 INSTALL_SIGNAL=""
 INSTALL_IN_STAGE=false
+CLONE_STAGED_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -472,6 +473,10 @@ json_frame() {
 
 stage_result() {
     local code="$1" ok=false reason="${STAGE_REASON:-}"
+    if [ -n "${CLONE_STAGED_DIR:-}" ]; then
+        rm -rf "$CLONE_STAGED_DIR"
+        CLONE_STAGED_DIR=""
+    fi
     if [ "$code" -eq 0 ]; then
         ok=true
     else
@@ -911,6 +916,7 @@ stage_repository() {
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
         staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone" filesystem_error
+        CLONE_STAGED_DIR="$staged"
         for attempt in 1 2 3; do
             # Blobless: every commit, tree and release tag (runtime identity is
             # the nearest reachable release; --commit pins and branch switches
@@ -976,6 +982,7 @@ stage_repository() {
             fail "cannot publish cloned checkout" filesystem_error
         fi
         rmdir "$staged"
+        CLONE_STAGED_DIR=""
         # A treeless checkout must never write a commit-graph: over a graph with
         # changed-path data that lazy-fetches the trees of every unseen commit, in a
         # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with

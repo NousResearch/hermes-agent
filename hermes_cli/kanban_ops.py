@@ -59,12 +59,17 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
+    # kanban.max_in_progress_per_profile, kanban.max_spawn and
+    # kanban.dispatch_stale_timeout_seconds with the same semantics as the
+    # gateway dispatch path.
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        try:
+            stale_timeout_seconds = max(int(_kanban_cfg.get("dispatch_stale_timeout_seconds") or 0), 0)
+        except (TypeError, ValueError):
+            stale_timeout_seconds = 0
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
@@ -81,6 +86,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        stale_timeout_seconds = 0
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -88,6 +94,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+            stale_timeout_seconds=stale_timeout_seconds,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )

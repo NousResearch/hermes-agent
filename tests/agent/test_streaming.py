@@ -1295,6 +1295,53 @@ class TestAnthropicStreamCallbacks:
         assert "old_tool" not in "".join(getattr(b, "text", "") for b in response.content)
         assert not any("old_tool" in t for t in emitted)
 
+    @pytest.mark.parametrize(
+        ("is_oauth", "wire_name", "expected"),
+        [
+            # OAuth routes send every tool as ``mcp__<name>``; the display must show the registered name.
+            (True, "mcp__write_file", "write_file"),
+            # API-key routes send names untouched, so a real ``mcp__`` MCP tool name is never rewritten.
+            (False, "mcp__write_file", "mcp__write_file"),
+            (False, "write_file", "write_file"),
+        ],
+    )
+    def test_anthropic_stream_tool_name_matches_registered_name(self, is_oauth, wire_name, expected):
+        """#156040: the tool-started display and the partial-stream warning use the same tool name
+        ``normalize_response`` dispatches under, not the OAuth wire name."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = is_oauth
+        agent._interrupt_requested = False
+        started = []
+        agent.tool_gen_callback = started.append
+        agent.stream_delta_callback = lambda _text: None
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: _AnthropicEventStream(
+            [
+                SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Writing.")),
+                SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="tool_use", name=wire_name)),
+            ],
+            ConnectionError("connection dropped"),
+        )
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+
+        response = agent._interruptible_streaming_api_call(
+            {"model": agent.model, "tools": [{"name": wire_name, "input_schema": {"type": "object"}}]})
+
+        assert started and set(started) == {expected}
+        stub_text = "".join(getattr(b, "text", "") for b in response.content)
+        assert f"({expected})" in stub_text
+
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
         self, mock_replace, monkeypatch,

@@ -727,8 +727,44 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
 - If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. A profile that has no Bot Chat yet gets one created on first delivery. If the target profile's gateway is not running, the run is recorded `delivery_failed` with the reason (the output stays in `hermes cron runs`; it is not redelivered automatically) and cron never starts its own Bot Chat turn.
-- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative for the turn itself. For an agent job the send rides the gateway delivery queue, and once the gateway has handed it to the bot the run settles to `ok` (accepted, not answered) while `last_delivery_queued` keeps the receipt; a refused hand-off settles to `delivery_failed`. Script-only (`no_agent`) Bot Chat deliveries stay `delivery_queued`: cron never rewrites that history when the bot's turn later completes.
+- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative for the turn itself. SQL-backed Bot Chat deliveries remain pending and unclaimable after handoff; only confirmed authority completion can settle them as delivered. Outcome lookup and gateway housekeeping resolve the retained receipt back to the original execution, including imported digest-keyed rows. Non-SQL direct deliveries retain their historical queued status; inspect the authority receipt for completion.
 - Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
+
+### Opt-in durable Bot Chat admission
+
+`cron.bot_chat_durable_pending: true` enables the profile-local SQLite outbox for
+bare own-profile `bot-chat` producers, including script-only (`no_agent`) output
+and crash/failure notifications (default: off). These admissions require a real
+`execution_id`. Agent-job deliveries already use the canonical SQL queue;
+the flag never nests another queue row inside an existing SQL dispatch.
+A matching gateway must run the queue housekeeping drain.
+
+The final redacted name and output are committed before transport in a minimal,
+source/destination-pinned envelope. Only a typed pre-dial refusal or the reviewed
+structured gateway `runtime_draining` refusal can restore that same owner to
+pending. Delays are 30, 60, 120, 240, then 300 seconds, subject to housekeeping
+cadence. After twelve refusals the row remains parked with `next_attempt_at=NULL`
+for operator inspection. Mixed-target SQL rows never retry the whole send.
+
+Execution is **authority-only**: no cron CLI fallback or second writer is started.
+Producer timeouts, uncertain failures and abandoned claims never automatically
+replay. The authority's separate, upstream derived-identity inference retry policy
+is unchanged. Mailbox acceptance is not inference completion: a handed-off row
+is parked without replay material, with its receipt link retained until completion.
+Suppression is a terminal no-send disposition that survives notification-policy changes.
+
+Disabling the flag or failing to read configuration stops new opt-in SQL admissions,
+not existing owners. Clean-upstream full-job rows and approved minimal/digest rows
+are recognized on consumption. Old claimed/settled/ambiguous JSON owners fence new
+writers; losing exclusive JSON creation never grants permission to transport or
+rewrite the winner. Cron receipt references must be exactly 64 lowercase hex digits;
+the independent live-delivery protocol retains its own broader identifier contract.
+
+Do not rerun a job to drain a pending report: that creates a new execution. Do not
+roll back to a consumer that does not understand these rows while any remain.
+Terminal replay payloads are scrubbed; bounded JSON receipt retention and SQL
+collision/tombstone retention do not establish permanent exactly-once delivery
+beyond retained identity evidence.
 
 ### Routing intent (`all`)
 

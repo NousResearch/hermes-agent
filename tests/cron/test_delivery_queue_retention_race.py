@@ -20,7 +20,7 @@ def test_enqueue_during_retention_never_recreates_delivered_request(tmp_path, mo
     class InterleavedConnection(sqlite3.Connection):
         def execute(self, sql, parameters=()):
             cursor = super().execute(sql, parameters)
-            if sql.startswith("SELECT terminal_status, finished_at FROM delivery_tombstones"):
+            if sql.startswith("SELECT terminal_status, finished_at") and "FROM delivery_tombstones" in sql:
                 # Pause after the real tombstone lookup, before enqueue can
                 # INSERT. A separate process exercises SQLite's actual lock
                 # boundary rather than the module's process-local RLock.

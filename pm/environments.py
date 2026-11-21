@@ -14,7 +14,7 @@ import re
 import shlex
 from pathlib import Path
 
-from hermes_constants import get_default_hermes_root, project_venv_dir
+from hermes_constants import project_venv_dir
 
 
 def install_key(project_root: Path) -> str:
@@ -24,10 +24,14 @@ def install_key(project_root: Path) -> str:
 
 def dependency_home_root() -> Path:
     """Scope dependency state like a process launched in the active home."""
-    from hermes_constants import get_default_hermes_root, get_hermes_home_override
+    from hermes_constants import get_default_hermes_root, get_hermes_home_override, sudo_invoker_default_home
 
     override = get_hermes_home_override()
-    return get_default_hermes_root(home=override) if override else get_default_hermes_root()
+    if override:
+        return get_default_hermes_root(home=override)
+    # sudo strips HERMES_HOME and sets HOME=/root; the state belongs to the invoking user.
+    sudo_home = None if os.environ.get("HERMES_HOME", "").strip() else sudo_invoker_default_home()
+    return get_default_hermes_root(home=sudo_home) if sudo_home is not None else get_default_hermes_root()
 
 
 def installs_root() -> Path:
@@ -246,7 +250,7 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
                 return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
             return Path(value).resolve() if value else _unstamped_store(root)
-    return get_default_hermes_root() / "tools"
+    return dependency_home_root() / "tools"
 
 
 def _unstamped_store(project_root: Path) -> Path:
@@ -257,7 +261,7 @@ def _unstamped_store(project_root: Path) -> Path:
     with the home. The checkout's own launchers exec the owner's interpreter, so a borrowing
     launch resolves the same one (#123238).
     """
-    return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
+    return (owning_home_root(project_root) or dependency_home_root()) / "tools"
 
 
 def flush_before_selecting() -> None:

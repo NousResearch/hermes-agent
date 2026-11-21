@@ -255,29 +255,45 @@ from hermes_cli import plugin_session
 
 
 def register(ctx):
-    ctx.register_hook("post_llm_call", lambda **kw: {"client": plugin_session.turn_client(),
-                                                     "viewers": plugin_session.session_viewers()})
+    ctx.register_hook("post_llm_call", lambda **kw: {
+        "module": [plugin_session.turn_client(), plugin_session.session_viewers()],
+        "ctx": [ctx.turn_client(), ctx.session_viewers()]})
 '''
 
 
+@pytest.mark.asyncio
 @pytest.mark.platforms('any')  # the host is a child process
-def test_a_hosted_plugin_reads_no_client_or_viewers_and_does_not_fail(tmp_path, monkeypatch):
-    """``plugins.isolation: host``: the plugin's own process has no turn context and no gateway."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+async def test_a_hosted_plugin_reads_the_turn_through_ctx_and_nothing_at_module_level(tmp_path, monkeypatch):
+    """``plugins.isolation: host``: the plugin's own process has no turn context and no gateway, so
+    the module-level accessors answer ``None`` / ``[]`` there and do not fail. ``ctx.turn_client()``
+    and ``ctx.session_viewers()`` call back into the gateway in the calling hook's context: they answer
+    for that turn, and for no session when the caller has none bound."""
+    import contextvars
+
+    from gateway.session_context import clear_session_vars
     from gateway.session_surface import surface_turn_scope
     from hermes_cli.plugins import PluginManager
-    _home_with_plugins(tmp_path, monkeypatch, {'hostedturn': HOSTED_TURN_PLUGIN}, isolation='host')
+    _authority, client = await _served_session(tmp_path, monkeypatch)
+    _home_with_plugins(tmp_path / 'plugins', monkeypatch, {'hostedturn': HOSTED_TURN_PLUGIN}, isolation='host')
     manager = PluginManager()
     manager.discover_and_load()
-    tokens = set_session_vars(platform='local', chat_id='s', session_key='agent:main:local:dm:s', session_id='s')
+
+    def turn():
+        tokens = _local_turn_vars()
+        try:
+            with surface_turn_scope({'client': DESKTOP}):
+                return manager.invoke_hook('post_llm_call', session_id='agent-s')
+        finally:
+            clear_session_vars(tokens)
     try:
         assert manager._plugins['hostedturn'].error is None
-        with surface_turn_scope({'client': DESKTOP}):
-            assert manager.invoke_hook('post_llm_call', session_id='s') == [{'client': None, 'viewers': []}]
+        assert await asyncio.to_thread(turn) == [{'module': [None, []], 'ctx': [DESKTOP, [_DESKTOP_VIEWER]]}]
+        unbound = await asyncio.to_thread(contextvars.Context().run, manager.invoke_hook, 'post_llm_call')
+        assert unbound == [{'module': [None, []], 'ctx': [None, []]}]
     finally:
-        clear_session_vars(tokens)
         manager.unload()
         manager._plugin_host().shutdown()
+        await client.connection.close()
 
 
 async def _served_session(tmp_path, monkeypatch):

@@ -30,6 +30,7 @@ async function mountKeybinds(inTerminal = false) {
 
   const deps = {
     archiveSelectedSession: vi.fn(),
+    isActiveRunBusy: () => false,
     openNewSessionTab: vi.fn(),
     requestGateway: vi.fn(),
     startFreshSession: vi.fn(),

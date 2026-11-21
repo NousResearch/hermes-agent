@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "Gebruiker"
     install_hint: "Voer `hermes setup` uit om Telegram-ondersteuning te installeer."
   slack:
+    unauthorized_mention_notice: "Ek is nie hier vir jou geaktiveer nie, so ek kan nie op jou vermelding antwoord nie. Vra die persoon wat my bestuur vir toegang."
     approval:
       fallback_text: "⚠️ Opdraggoedkeuring vereis: {command}"
       resolved_once: "✅ Eenmalig goedgekeur deur {user}"

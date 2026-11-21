@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "Utente"
     install_hint: "Esegui `hermes setup` per installare il supporto Telegram."
   slack:
+    unauthorized_mention_notice: "Qui non sono abilitato per te, quindi non posso rispondere alla tua menzione. Chiedi l'accesso a chi mi gestisce."
     approval:
       fallback_text: "⚠️ Richiesta approvazione del comando: {command}"
       resolved_once: "✅ Approvato una volta da {user}"

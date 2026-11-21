@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "ユーザー"
     install_hint: "`hermes setup` を実行して Telegram サポートをインストールしてください。"
   slack:
+    unauthorized_mention_notice: "ここではあなた向けに有効化されていないため、メンションに応答できません。管理者にアクセスを依頼してください。"
     approval:
       fallback_text: "⚠️ コマンドの承認が必要です: {command}"
       resolved_once: "✅ {user} が一度だけ承認"

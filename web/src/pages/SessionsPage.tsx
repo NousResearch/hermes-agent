@@ -369,7 +369,10 @@ function MessageList({
     const timer = setTimeout(() => {
       const hit = containerRef.current?.querySelector("[data-search-hit]");
       if (hit) {
-        hit.scrollIntoView({ behavior: "smooth", block: "center" });
+        // T4.3: honour prefers-reduced-motion — jump instantly instead of
+        // gliding, the same contract the CSS block in index.css enforces.
+        const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        hit.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
       }
     }, 50);
     return () => clearTimeout(timer);

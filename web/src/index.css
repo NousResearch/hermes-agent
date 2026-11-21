@@ -253,3 +253,19 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+/* prefers-reduced-motion (T4.3) — the drawer slide, toast entrances, tooltip
+   fades, and spinner pulses all animate; users who ask for reduced motion get
+   none of them. Component-level smooth scrolls are gated in JS (see
+   SessionsPage's search-hit scroll), since scroll-behavior alone does not
+   affect scrollIntoView({behavior:"smooth"}). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    transition-delay: 0ms !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+

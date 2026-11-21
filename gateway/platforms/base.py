@@ -2179,10 +2179,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Invoke plugin-registered native handler factories (``ctx.register_platform_handler``)
         with ``(native, adapter)``; adapters call this from ``connect()`` once the native
         client exists and :meth:`rewire_plugin_handlers` re-runs it for plugins loaded later.
-        Idempotent per native client: a factory is keyed by ``(plugin, qualname)`` and skipped once
-        wired on this ``native`` (a force re-discovery hands back NEW function objects for the same
-        plugin, so identity alone would double-register). Each factory is isolated so a bad plugin
-        can't block connecting."""
+        Idempotent per native client: a factory is keyed by its function object and skipped once
+        wired on this native. Repeated loaded events carrying the SAME factory object do not
+        re-register. A force re-discovery re-imports the plugin and hands back a NEW function object
+        (same name/qualname is irrelevant): that new object must run so the recreated plugin's
+        handlers take effect. Each factory is isolated so a bad plugin can't block connecting."""
         try:
             from hermes_cli.plugins import get_plugin_manager
             factories = get_plugin_manager().get_platform_handler_factories(
@@ -2195,7 +2196,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._plugin_handler_native = native
             self._plugin_handlers_wired = set()
         for factory, plugin_name in factories:
-            key = (plugin_name, getattr(factory, "__qualname__", None) or repr(factory))
+            # Key on the factory object itself, not (plugin, qualname): a forced
+            # re-discovery re-imports the plugin and produces a NEW function object with
+            # the same name/qualname, whose registration must actually run. The same
+            # object across repeated loaded events stays idempotent (identity comparison).
+            key = (plugin_name, factory)
             if key in self._plugin_handlers_wired:
                 continue
             try:

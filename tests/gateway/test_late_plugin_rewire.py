@@ -3,8 +3,9 @@
 Invariants (each red on base):
 * ``PluginManager.on_plugin_loaded`` fires after a discovery pass with an activation summary per plugin
   (what is live now vs deferred), through the real discovery path.
-* ``rewire_plugin_handlers()`` is idempotent: a factory runs once per native client, however often
-  the loaded event fires (a force re-discovery hands back NEW factory objects for the same plugin).
+* ``rewire_plugin_handlers()`` is idempotent per factory object: repeated loaded events carrying the same
+  factory run it once per native client, while a force re-discovery hands back NEW factory objects that
+  must each run so the recreated plugin's handlers take effect.
 * Telegram: a late plugin handler is hoisted ahead of core's catch-all ``filters.COMMAND`` handler.
 * Slack: a late ``register_slack_action_handler`` registers one Bolt listener, never two.
 * The runner subscribes at boot and re-wires every live adapter on the loop.
@@ -77,13 +78,14 @@ def test_rewire_is_idempotent_per_native_client():
         adapter._wire_plugin_handlers("app-1")
         adapter.rewire_plugin_handlers()
         adapter.rewire_plugin_handlers()
-        assert calls == ["app-1"]
-        # A force re-discovery re-registers a NEW factory object for the same plugin: still once.
+        assert calls == ["app-1"]  # same factory object, repeated events: once
+        # A force re-discovery re-registers a NEW factory object for the same plugin:
+        # it must run so the recreated plugin's handlers actually take effect.
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
             adapter.rewire_plugin_handlers()
-        assert calls == ["app-1"]
+        assert calls == ["app-1", "app-1"]
         adapter._wire_plugin_handlers("app-2")  # rebuilt native client: wired again, once
-        assert calls == ["app-1", "app-2"]
+        assert calls == ["app-1", "app-1", "app-2"]
 
 
 class _PtbApp:

@@ -94,6 +94,9 @@ class SideThread:
     tool_calls: list[str] = field(default_factory=list)
     progress: list[str] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)
+    # The completed conversation the thread forked from (its trimmed snapshot): what a side chat
+    # opened from it (``/btw --open``) starts with.
+    context: list[dict[str, Any]] = field(default_factory=list)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
     _fork: Any = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -316,6 +319,8 @@ def run_side_exploration(
         set_thread_tool_whitelist(set(usable), deny_msg_fmt=_DENY_FMT.format(tools=tools_text))
         note(f"exploring with {tools_text}")
         replayed = _digest_history(snapshot) if routed else snapshot
+        with thread._lock:
+            thread.context = snapshot
         with bind_turn_secret_capture(_bg_review_skip_secret):
             result = fork.run_conversation(
                 user_message=f"{_EXPLORE_PROMPT.format(tools=tools_text)}\n\nSide task: {thread.task}",
@@ -428,6 +433,44 @@ class ThreadCommandResult:
 
     text: str
     prompt: str = ""
+    # ``open``: ``{title, messages}`` the client creates the side chat session from, and the line a
+    # surface that cannot dock a second chat (CLI, TUI, messaging) shows instead of ``text``.
+    side_chat: Optional[dict[str, Any]] = None
+    fallback_text: str = ""
+
+    def reply(self) -> dict[str, Any]:
+        """The RPC reply for ``prompt.btw``: only the fields this result carries."""
+        out: dict[str, Any] = {"text": self.text}
+        if self.prompt:
+            out["prompt"] = self.prompt
+        if self.side_chat is not None:
+            out["side_chat"], out["fallback_text"] = self.side_chat, self.fallback_text
+        return out
+
+
+def side_chat_seed(thread: SideThread) -> dict[str, Any]:
+    """A finished thread as the seed of a child session the user can keep talking to: the
+    conversation it forked from (visible user/assistant text only, consecutive same-role rows
+    merged so roles alternate), then the side task and its report. ``session.create`` seeds take
+    text rows, so the thread's own tool calls arrive summarized in the report's footer."""
+    from agent.background_review import _msg_text
+
+    rows: list[dict[str, str]] = []
+
+    def add(role: str, text: str) -> None:
+        if rows and rows[-1]["role"] == role:
+            rows[-1]["content"] += "\n\n" + text
+        else:
+            rows.append({"role": role, "content": text})
+
+    for msg in thread.context:
+        if isinstance(msg, dict) and msg.get("role") in {"user", "assistant"}:
+            if text := _msg_text(msg).strip():
+                add(msg["role"], text)
+    add("user", f"/btw --explore {thread.task}")
+    footer = " · ".join(part for part in (thread.thread_id, _tool_tally(thread.tool_calls)) if part)
+    add("assistant", f"{thread.answer}\n\n— {footer}")
+    return {"title": f"btw: {task_preview(thread.task, 48)}", "messages": rows}
 
 
 def run_thread_command(session_id: str, request: BtwRequest) -> ThreadCommandResult:
@@ -437,13 +480,13 @@ def run_thread_command(session_id: str, request: BtwRequest) -> ThreadCommandRes
 
     if request.action == "list":
         return ThreadCommandResult(format_thread_list(list_threads(session_id)))
-    if request.action not in {"stop", "promote"}:
+    if request.action not in {"stop", "promote", "open"}:
         raise ValueError(f"not a thread command: {request.action}")
     thread = find_thread(session_id, request.ref)
     if thread is None:
         if request.ref:
             return ThreadCommandResult(t("side_thread.not_found", ref=request.ref))
-        if request.action == "promote":
+        if request.action in {"promote", "open"}:
             return ThreadCommandResult(t("side_thread.none_finished"))
         return ThreadCommandResult(format_thread_list(list_threads(session_id)))
     if request.action == "stop":
@@ -453,6 +496,10 @@ def run_thread_command(session_id: str, request: BtwRequest) -> ThreadCommandRes
         return ThreadCommandResult(t("side_thread.still_running", thread_id=thread.thread_id))
     if not thread.answer:
         return ThreadCommandResult(t("side_thread.no_report", thread_id=thread.thread_id))
+    if request.action == "open":
+        return ThreadCommandResult(t("side_thread.opened", thread_id=thread.thread_id),
+                                   side_chat=side_chat_seed(thread),
+                                   fallback_text=t("side_thread.open_unsupported", thread_id=thread.thread_id))
     return ThreadCommandResult(t("side_thread.promoted", thread_id=thread.thread_id),
                                build_promotion_prompt(thread, request.text))
 
@@ -461,9 +508,9 @@ def run_thread_command(session_id: str, request: BtwRequest) -> ThreadCommandRes
 
 @dataclass(frozen=True)
 class BtwRequest:
-    """``action``: ``ask`` (the classic tool-less question), ``explore``, ``list``, ``stop`` or
-    ``promote``. ``text`` is the question/task (explore, ask) or the promotion note; ``ref`` names
-    a thread (stop, promote)."""
+    """``action``: ``ask`` (the classic tool-less question), ``explore``, ``list``, ``stop``,
+    ``promote`` or ``open``. ``text`` is the question/task (explore, ask) or the promotion note;
+    ``ref`` names a thread (stop, promote, open)."""
 
     action: str
     text: str = ""
@@ -475,6 +522,7 @@ _BTW_FLAGS = {
     "--threads": "list", "--list": "list",
     "--stop": "stop",
     "--promote": "promote", "-p": "promote",
+    "--open": "open", "-o": "open",
 }
 
 
@@ -489,7 +537,7 @@ def parse_btw_args(raw: str) -> BtwRequest:
     rest = rest.strip()
     if action is None:
         return BtwRequest("ask", text)
-    if action in {"stop", "promote"}:
+    if action in {"stop", "promote", "open"}:
         ref, _, note = rest.partition(" ")
         if ref and not _looks_like_thread_ref(ref):
             # ``/btw --promote focus on the tests`` = promote the latest, with a note.

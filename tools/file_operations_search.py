@@ -498,8 +498,9 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
 
 def _path_order_key(path: str) -> list[str]:
     """``rg --sort=path`` order: entries compared one path component at a time, so ``a/b``
-    sorts before ``a-c`` (a plain string sort puts ``-`` before ``/``)."""
-    return path.replace("\\", "/").split("/")
+    sorts before ``a-c`` (a plain string sort puts ``-`` before ``/``). A backslash is a
+    separator only on Windows; on POSIX it is a legal filename character."""
+    return (path.replace("\\", "/") if os.name == "nt" else path).split("/")
 
 
 def _posix_roots(roots: list[str]) -> bool:

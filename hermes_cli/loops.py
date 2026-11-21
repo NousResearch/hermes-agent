@@ -28,6 +28,9 @@ DEFAULT_MAX_TICKS = 100
 # ceiling, snap back to the floor on any change.
 DEFAULT_SELF_PACED_FLOOR_SECONDS = 60
 DEFAULT_SELF_PACED_CEILING_SECONDS = 15 * 60
+# Hard cap on the self-paced ceiling: stays under the 1h prompt-cache lifetime so an idle
+# backoff tick lands while the cache is still warm instead of rewriting it every time.
+MAX_SELF_PACED_CEILING_SECONDS = 55 * 60
 
 # Completion sentinel the wakeup prompt teaches the agent to emit.
 LOOP_COMPLETE_MARKER = "LOOP_COMPLETE"
@@ -169,7 +172,8 @@ def self_paced_floor_seconds() -> int:
 
 def self_paced_ceiling_seconds() -> int:
     floor = self_paced_floor_seconds()
-    return _config_int("self_paced_ceiling_seconds", max(floor, DEFAULT_SELF_PACED_CEILING_SECONDS), floor)
+    ceiling = _config_int("self_paced_ceiling_seconds", max(floor, DEFAULT_SELF_PACED_CEILING_SECONDS), floor)
+    return min(ceiling, max(floor, MAX_SELF_PACED_CEILING_SECONDS))
 
 
 @dataclass

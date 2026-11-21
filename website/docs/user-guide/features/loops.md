@@ -117,8 +117,10 @@ loops:
   min_interval_seconds: 30       # floor for fixed intervals
   max_ticks: 100                 # backstop budget (0 = unlimited)
   self_paced_floor_seconds: 60   # self-paced starting cadence
-  self_paced_ceiling_seconds: 900  # self-paced max backoff
+  self_paced_ceiling_seconds: 900  # self-paced max backoff (capped at 3300 = 55m)
 ```
+
+The self-paced ceiling is capped at 55 minutes so an idle backoff tick lands while the 1h prompt cache is still warm; a wakeup an hour or more apart misses it and rewrites the whole cached prompt every tick. Fixed intervals run on your clock and are not adjusted — if you want an hourly loop to stay cached, use `/loop 55m` rather than `/loop 1h`.
 
 The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` routing overrides (provider, model) apply to loop conditions too.
 

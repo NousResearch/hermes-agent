@@ -347,6 +347,15 @@ _active_skin_name: str = "default"
 # are per profile, and the relay display name / TUI skin payload are read under each profile's
 # override — one module slot would be last-writer-wins across profiles. Unscoped keeps the module slot.
 _active_skin_by_home: dict[str, tuple[str, SkinConfig]] = {}
+# Parsed skins, keyed by ``_skin_cache_key``. Every gateway websocket connect resolves the skin
+# (``tui_gateway.change_watcher.resolve_skin`` → ``init_skin_from_config`` → ``set_active_skin`` →
+# ``load_skin``), and a themed user skin costs ~0.8 ms there: the file read plus a fresh ruamel
+# ``YAML()`` per call, re-parsed for a connection that only wants to know which colors to paint.
+# Reuse the built config until the file's stat moves. A handful of named skins, so the map is
+# bounded by FIFO eviction.
+_skin_cache: dict[tuple, SkinConfig] = {}
+_SKIN_CACHE_MAX = 64
+
 
 
 def _routed_home_key() -> Optional[str]:
@@ -421,13 +430,45 @@ def list_skins() -> list[dict[str, str]]:
     return result
 
 
+def _skin_cache_key(name: str, user_file: Path) -> Optional[tuple]:
+    """Cache key for ``load_skin(name)``, or None when a hit could serve pre-edit content.
+
+    Built-ins key on the name alone: their definitions are module constants, so nothing can change
+    under the process. User files key on path, mtime, size, inode and ctime. Inode/ctime also detect
+    atomic replacements that preserve mtime and size. A file whose mtime is too fresh to rule out a same-tick
+    rewrite after the stat — filesystem timestamps tick in ~4 ms steps, whole seconds on some
+    mounts — gets no key at all and the caller re-reads, as git does for a racily-clean index entry.
+    """
+    from utils import mtime_is_racy
+
+    try:
+        st = user_file.stat()
+    except OSError:
+        return (name,)
+    if mtime_is_racy(st.st_mtime_ns):
+        return None
+    return (name, str(user_file), st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+
+
 def load_skin(name: str) -> SkinConfig:
-    """Load a skin by name: user skins first, then built-in, then default."""
+    """Load a skin by name: user skins first, then built-in, then default.
+
+    Cached on the skin file's metadata: a repeated load of an unchanged skin reuses
+    the parsed config, while an edited file misses and is read again (see ``_skin_cache_key``).
+    """
     user_file = _skins_dir() / f"{name}.yaml"
+    key = _skin_cache_key(name, user_file)
+    if key is not None and (cached := _skin_cache.get(key)) is not None:
+        return cached
     data = _load_skin_from_yaml(user_file) if user_file.is_file() else None
     if not data and name not in _BUILTIN_SKINS:
         logger.warning("Skin '%s' not found, using default", name)
-    return _build_skin_config(data or _BUILTIN_SKINS.get(name) or _BUILTIN_SKINS["default"])
+    skin = _build_skin_config(data or _BUILTIN_SKINS.get(name) or _BUILTIN_SKINS["default"])
+    if key is not None:
+        if len(_skin_cache) >= _SKIN_CACHE_MAX:
+            _skin_cache.pop(next(iter(_skin_cache)), None)  # FIFO: insertion-ordered
+        _skin_cache[key] = skin
+    return skin
 
 
 def get_active_skin() -> SkinConfig:

@@ -432,7 +432,12 @@ def sync_skills(quiet: bool = False) -> dict:
         elif dest.exists():
             _update_existing_skill(st, skill_name, skill_src, dest, bundled_hash)
         else:
-            st.skipped += 1  # in manifest but not on disk — user deleted it
+            # Essentials are the agent's own operating manual: a missing copy is damage,
+            # not a user decision — reseed it instead of honouring the "deleted" state.
+            if skill_name in ESSENTIAL_SKILLS:
+                _install_new_skill(st, skill_name, skill_src, dest, bundled_hash)
+            else:
+                st.skipped += 1  # in manifest but not on disk — user deleted it
     # Clean manifest entries for skills removed upstream once no copy is left. A dropped built-in still
     # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
     # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills

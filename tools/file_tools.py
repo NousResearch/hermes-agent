@@ -40,7 +40,7 @@ from tools.file_tools_read_tracking import (
     _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
     _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
-    _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
+    _patch_failure_tracker, _programmatic_read, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
@@ -419,7 +419,7 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str, *, line_numbers: bool = True) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -483,11 +483,17 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     lines = extracted_text.splitlines()
     total_lines = len(lines)
     end_line = offset + limit - 1
-    page_text = "\n".join(lines[offset - 1:end_line])
+    # Keep a terminator for every selected line, including a final blank line.
+    window = lines[offset - 1:end_line]
+    page_text = "".join(line + "\n" for line in window)
     max_line_length = get_max_line_length()
-    truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
+    truncated_lines = any(len(line) > max_line_length for line in window)
+    if line_numbers and page_text:
+        page_text = file_ops._add_line_numbers(page_text, offset)
+    elif truncated_lines:
+        page_text = file_ops._clamp_read_file_lines(page_text)
     result_dict = {
-        "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+        "content": page_text,
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
@@ -635,7 +641,7 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
         return None, True
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", *, line_numbers: bool = True) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -683,7 +689,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, line_numbers=line_numbers)
         if extracted is not None:
             return extracted
 
@@ -711,7 +717,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        read_kwargs = {} if line_numbers else {"line_numbers": False}
+        result = file_ops.read_file(
+            resolved_str if _file_ops_uses_host_paths(file_ops) else path,
+            offset, limit, **read_kwargs)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -784,6 +793,31 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def _read_file_programmatic(
+    path: str,
+    offset: int = 1,
+    limit: int = DEFAULT_READ_LIMIT,
+    task_id: str = "default",
+) -> str:
+    """Return stable raw ``read_file`` data for execute_code RPC callers."""
+    result = read_file_tool(
+        path=path,
+        offset=offset,
+        limit=limit,
+        task_id=task_id,
+        line_numbers=False,
+    )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return tool_error("read_file returned an invalid programmatic result", content="", success=False)
+    if not isinstance(payload, dict):
+        return tool_error("read_file returned an invalid programmatic result", content="", success=False)
+    payload.setdefault("content", "")
+    payload.setdefault("success", not (payload.get("error") or payload.get("is_binary")))
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
@@ -1345,7 +1379,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    read = _read_file_programmatic if _programmatic_read.get() else read_file_tool
+    return read(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", DEFAULT_READ_LIMIT),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

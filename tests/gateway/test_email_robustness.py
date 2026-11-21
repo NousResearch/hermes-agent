@@ -50,7 +50,12 @@ class TestImapResponseGuard(unittest.TestCase):
             if command == "search":
                 return ("OK", [uids])
             if command == "fetch":
-                if "BODY.PEEK" in args[1]:
+                # The full-body fetch is (BODY.PEEK[]) and the pre-authorization preflight is
+                # (BODY.PEEK[HEADER.FIELDS ...]), so both now contain "BODY.PEEK": match the
+                # full-body spec exactly, or the preflight branch swallows the body responses.
+                if args[1] == "(BODY.PEEK[])":
+                    return next(fetch_iter)
+                if "BODY.PEEK[HEADER.FIELDS" in args[1]:
                     return ("OK", [(args[0], _raw_email())])
                 return next(fetch_iter)
             return ("NO", [])
@@ -104,6 +109,48 @@ class TestTransportSecurity(unittest.TestCase):
         # verification stays ON unless explicitly opted out
         self.assertTrue(adapter._imap_tls_verify)
         self.assertTrue(adapter._smtp_tls_verify)
+
+
+class TestSeenUidTrim(unittest.TestCase):
+    """The seen-UID trim must never forget a UID the server can still deliver again.
+
+    ``_trim_seen_uids`` used to keep the highest half of UIDs by count and justify forgetting
+    the rest with "UNSEEN prevents re-delivery". That held only because the dispatch fetch
+    (RFC822) set ``\\Seen`` server-side; under ``(BODY.PEEK[])`` a dispatched message keeps its
+    UNSEEN flag, so the in-memory set is the only thing stopping the next ``search UNSEEN``
+    from re-dispatching it.
+    """
+
+    def _adapter_over_cap(self):
+        adapter = _make_adapter()
+        adapter._seen_uids_max = 4  # a small cap keeps the assertion readable
+        adapter._seen_uids = {b"1", b"2", b"3", b"4", b"5", b"6"}
+        return adapter
+
+    def _imap_reporting_seen(self, seen):
+        imap = MagicMock()
+        imap.uid.return_value = ("OK", [b" ".join(seen)])
+        return imap
+
+    def test_unseen_uids_are_kept_even_over_the_cap(self):
+        """Only 5 and 6 are ``\\Seen``, so 1-4 stay reachable and must be remembered."""
+        adapter = self._adapter_over_cap()
+        adapter._trim_seen_uids(self._imap_reporting_seen([b"5", b"6"]))
+        self.assertEqual(adapter._seen_uids, {b"1", b"2", b"3", b"4"})
+
+    def test_seen_uids_are_forgotten(self):
+        """A ``\\Seen`` message can never come back from ``search UNSEEN``: real dead weight."""
+        adapter = self._adapter_over_cap()
+        adapter._trim_seen_uids(self._imap_reporting_seen([b"1", b"2", b"3", b"4"]))
+        self.assertEqual(adapter._seen_uids, {b"5", b"6"})
+
+    def test_an_unanswerable_probe_forgets_nothing(self):
+        """When the server will not say what is ``\\Seen``, keeping memory beats losing mail."""
+        adapter = self._adapter_over_cap()
+        imap = MagicMock()
+        imap.uid.return_value = ("NO", [None])
+        adapter._trim_seen_uids(imap)
+        self.assertEqual(adapter._seen_uids, {b"1", b"2", b"3", b"4", b"5", b"6"})
 
 
 if __name__ == "__main__":

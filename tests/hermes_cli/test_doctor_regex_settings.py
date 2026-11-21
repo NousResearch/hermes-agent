@@ -50,7 +50,8 @@ def test_refused_and_inexact_patterns_are_named_with_their_consequence_and_refus
 
     assert status == 1  # a refused pattern is a manual issue, like the other upcoming-change notices
     assert "regex setting(s) the RE2 engine will refuse" in out
-    assert "hooks.pre_tool_call matcher of /opt/guard.sh: '^(?!mcp_).*' is not a valid RE2 pattern" in out
+    assert "hooks.pre_tool_call[0] matcher: '^(?!mcp_).*' is not a valid RE2 pattern" in out
+    assert "/opt/guard.sh" not in out  # a hook command can carry a token; doctor output gets pasted into issues
     assert "every tool call blocked" in out
     assert "MATRIX_IGNORE_USER_PATTERNS: " in out and "the Matrix adapter will not start" in out
     assert "webhook subscription 'deploys' filter regex" in out and "requests get 404" in out
@@ -88,13 +89,14 @@ def test_an_outbound_webhook_is_named_by_its_index_never_by_any_part_of_its_url(
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         "hooks:\n  outbound:\n    - url: https://hooks.example.com/services/T0/B0/tok3n\n"
+        "      name: relay-tok3n\n"
         "      events: [post_tool_call]\n      matcher: \"x(?=y)z\"\n", encoding="utf-8")
 
     status, out = _doctor(monkeypatch, capsys)
 
     assert status == 1
-    assert "hooks.outbound[0] matcher of unnamed target: 'x(?=y)z' is not a valid RE2 pattern" in out
-    assert "tok3n" not in out and "hooks.example.com" not in out
+    assert "hooks.outbound[0] matcher: 'x(?=y)z' is not a valid RE2 pattern" in out
+    assert "tok3n" not in out and "hooks.example.com" not in out  # neither the URL nor the target's name
 
 
 @pytest.mark.parametrize("label, key, env, adapter_reads", [

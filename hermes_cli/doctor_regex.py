@@ -65,9 +65,13 @@ def _hook_matchers(blocking: bool) -> Callable[[Inputs], Iterator[tuple[str, str
     as the runtime decides it) or only stops the hook."""
     def read(inputs: Inputs) -> Iterator[tuple[str, str]]:
         from agent.shell_hooks import _BLOCKING_EVENTS, iter_configured_hooks
-        for spec in iter_configured_hooks(inputs.config):
-            if spec.matcher and bool(spec.fail_closed and spec.event in _BLOCKING_EVENTS) is blocking:
-                yield f"hooks.{spec.event} matcher of {spec.command}", spec.matcher
+        hooks = inputs.config.get("hooks")
+        for event, entries in (hooks.items() if isinstance(hooks, dict) else ()):
+            for index, entry in enumerate(entries if isinstance(entries, list) else ()):
+                # One entry at a time so the label carries its index; never the command, which can carry a token.
+                for spec in iter_configured_hooks({"hooks": {event: [entry]}}):
+                    if spec.matcher and bool(spec.fail_closed and spec.event in _BLOCKING_EVENTS) is blocking:
+                        yield f"hooks.{spec.event}[{index}] matcher", spec.matcher
     return read
 
 
@@ -77,11 +81,11 @@ def _outbound_matchers(inputs: Inputs) -> Iterator[tuple[str, str]]:
     entries = hooks.get("outbound") if isinstance(hooks, dict) else None
     for index, entry in enumerate(entries if isinstance(entries, list) else ()):
         # The product's parser, one entry at a time, so the label carries the entry's index in hooks.outbound
-        # (as the parser's own warnings do). Never any part of the URL: a webhook URL, host included, can
-        # carry its token.
+        # (as the parser's own warnings do). No other config value: a webhook URL, host included, can carry
+        # its token, and doctor output gets pasted into issues.
         for target in iter_configured_targets({"hooks": {"outbound": [entry]}}):
             if target.matcher:
-                yield f"hooks.outbound[{index}] matcher of {target.name or 'unnamed target'}", target.matcher
+                yield f"hooks.outbound[{index}] matcher", target.matcher
 
 
 def _route_regexes(kind: str, routes: object) -> Iterator[tuple[str, str]]:

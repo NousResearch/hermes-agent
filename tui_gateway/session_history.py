@@ -238,6 +238,7 @@ def _is_display_hidden_marker(role: str | None, text: str) -> bool:
 
 def _skill_scaffold_projection(content_text: str) -> str:
     """The invocation a slash-skill-expanded turn came from, else "" — UIs render ``/work fix the leak``."""
+    from agent.skill_commands import describe_skill_invocation
     return describe_skill_invocation(content_text, separator=" ") or ""
 
 

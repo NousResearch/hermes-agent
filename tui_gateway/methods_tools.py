@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
+from .session_history import _skill_scaffold_projection
 
 _registry = HandlerRegistry()
 method = _registry.method

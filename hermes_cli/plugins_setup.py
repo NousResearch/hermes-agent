@@ -111,10 +111,14 @@ def _prepare_dependencies(path):
 
 
 def _invoke(path, action, home, *, revision=""):
+    from tools.environments.local import build_subprocess_env
+
     timeout = DESCRIBE_TIMEOUT if action == "describe" else RUN_TIMEOUT
+    # Trusted plugin code: keep the inherited env (secrets included), pin it to the target home.
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False, extra={"HERMES_HOME": str(home)})
     with subprocess.Popen(
         [_setup_python(), "-I", "-B", "-c", _RUNNER, str(path), action, str(home), revision],
-        cwd=path.parent, env={**os.environ, "HERMES_HOME": str(home)},
+        cwd=path.parent, env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         # detached-spawn: ok — awaited setup run; its timeout kills the whole group (killpg below)
         encoding="utf-8", start_new_session=os.name != "nt",

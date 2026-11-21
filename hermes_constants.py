@@ -222,6 +222,25 @@ def get_hermes_home() -> Path:
 _HOME_KEY_CACHE: dict[str, str] = {}
 
 
+def strip_extended_length_prefix(path: str) -> str:
+    r"""Drop a Windows extended-length prefix: ``\\?\C:\x`` -> ``C:\x`` and
+    ``\\?\UNC\server\share`` -> ``\\server\share``.
+
+    ``ntpath.realpath`` keeps the prefix when its input had one and strips it otherwise, so
+    without this the same directory resolves to two spellings (and two keys or pipe names).
+    Other paths are returned unchanged.
+    """
+    if path[:8].upper() == "\\\\?\\UNC\\":
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _home_key_of(resolved: Path) -> str:
+    return os.path.normcase(strip_extended_length_prefix(str(resolved)))
+
+
 def hermes_home_key(path: str | Path | None = None) -> str:
     """Stable registry key for a Hermes home/profile dir.
 
@@ -242,8 +261,8 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     except OSError:
         # Not on disk yet: lenient resolve, not stored, so the real answer is
         # picked up once the directory appears.
-        return os.path.normcase(str(expanded.resolve(strict=False)))
-    key = os.path.normcase(str(resolved))
+        return _home_key_of(expanded.resolve(strict=False))
+    key = _home_key_of(resolved)
     _HOME_KEY_CACHE[raw] = key
     return key
 

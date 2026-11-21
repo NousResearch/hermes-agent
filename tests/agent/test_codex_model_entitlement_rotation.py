@@ -116,3 +116,28 @@ def test_a_plan_limit_benches_only_the_refused_model_until_its_reset(pool):
     assert first.last_status is None
     assert set(first.model_cooldowns) == {MODEL} and abs(first.model_cooldowns[MODEL] - reset) < 2
     assert pool.select(model=OTHER_MODEL).id == "cred-0"
+
+
+def test_other_model_bench_does_not_block_429_rotation(pool):
+    """A bench on model X must not stop a 429 on model Y from rotating to the healthy entry.
+
+    The mid-turn 429 path re-selects while it knows the model; an unscoped re-select treats
+    every model bench as blocking and reports an empty pool while the other entry is idle.
+    """
+    for i, tok in enumerate(TOKENS):
+        pool.mark_exhausted_and_rotate(
+            status_code=400, api_key_hint=tok, credential_id=f"cred-{i}",
+            failure_reason="model_entitlement", model=OTHER_MODEL,
+        )
+    assert all(set(e.model_cooldowns) == {OTHER_MODEL} for e in pool.entries())
+    assert pool.select(model=MODEL).id == "cred-0"
+    assert pool.has_available(model=MODEL)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429, api_key_hint=TOKENS[0], credential_id="cred-0",
+        failure_reason="rate_limit", model=MODEL,
+        error_context={"reason": "usage_limit_reached", "reset_at": time.time() + 3600},
+    )
+    assert next_entry is not None and next_entry.id == "cred-1"
+    # The healthy entry stays selectable for the requested model; the bench on the other model is intact.
+    assert set(next_entry.model_cooldowns) == {OTHER_MODEL}

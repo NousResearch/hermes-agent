@@ -1,6 +1,7 @@
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -39,6 +40,8 @@ interface UseZoomPanOptions {
   enabled?: boolean
   maxScale?: number
   minScale?: number
+  // Stable wheel origin when the event target itself carries the transform.
+  wheelOriginRef?: RefObject<HTMLElement | null>
 }
 
 /**
@@ -56,7 +59,7 @@ interface UseZoomPanOptions {
  * click, so callers can gate click-to-dismiss on it.
  */
 export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoomPanOptions = {}) {
-  const { compositeZoom = false, enabled = true, minScale = MIN_SCALE, maxScale = MAX_SCALE } = options
+  const { compositeZoom = false, enabled = true, minScale = MIN_SCALE, maxScale = MAX_SCALE, wheelOriginRef } = options
   const clamp = useCallback((scale: number) => Math.min(maxScale, Math.max(minScale, scale)), [minScale, maxScale])
 
   const ref = useRef<T>(null)
@@ -243,12 +246,18 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
         delta *= node.clientHeight
       }
 
-      const rect = node.getBoundingClientRect()
+      const rect = (wheelOriginRef?.current ?? node).getBoundingClientRect()
       const cx = event.clientX - rect.left - rect.width / 2
       const cy = event.clientY - rect.top - rect.height / 2
 
+      // Chromium encodes touchpad pinch scale as a pixel-mode Ctrl+wheel delta of -100 * ln(scale).
+      const factor =
+        deltaMode === WheelEvent.DOM_DELTA_PIXEL && event.ctrlKey
+          ? Math.exp(-delta / 100)
+          : Math.exp(-delta * WHEEL_ZOOM_SPEED)
+
       promoteForZoom(node)
-      zoomAt(Math.exp(-delta * WHEEL_ZOOM_SPEED), cx, cy)
+      zoomAt(factor, cx, cy)
     }
 
     node.addEventListener('wheel', onWheel, { passive: false })
@@ -262,7 +271,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
         node.style.removeProperty('will-change')
       }
     }
-  }, [enabled, node, promoteForZoom, reset, zoomAt])
+  }, [enabled, node, promoteForZoom, reset, wheelOriginRef, zoomAt])
 
   const endPan = useCallback(() => {
     drag.current = null

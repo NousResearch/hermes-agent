@@ -17,6 +17,7 @@ from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
     host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
+from hermes_constants import parse_reasoning_effort
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
@@ -187,6 +188,7 @@ class DirectAlias(NamedTuple):
     base_url: str
     api_key: str = ""
     key_env: str = ""
+    reasoning_effort: str | bool | None = None
 
 
 # Built-in direct aliases (extended via config.yaml model_aliases:)
@@ -225,7 +227,7 @@ def _load_direct_aliases(cfg: Optional[dict] = None) -> dict[str, DirectAlias]:
                     merged[name.strip().lower()] = DirectAlias(
                         model=entry.get("model", ""), provider=entry.get("provider", "custom"),
                         base_url=entry.get("base_url", ""), api_key=_clean(entry.get("api_key", "")),
-                        key_env=_clean(entry.get("key_env", "")))
+                        key_env=_clean(entry.get("key_env", "")), reasoning_effort=entry.get("reasoning_effort"))
 
         model_section = cfg.get("model", {})
         simple_aliases = model_section.get("aliases") if isinstance(model_section, dict) else None
@@ -242,7 +244,7 @@ def _load_direct_aliases(cfg: Optional[dict] = None) -> dict[str, DirectAlias]:
                             model=model, provider=_clean(value.get("provider")) or current_provider or "custom",
                             base_url=_clean(value.get("base_url", "")),
                             api_key=_clean(value.get("api_key", "")),
-                            key_env=_clean(value.get("key_env", "")))
+                            key_env=_clean(value.get("key_env", "")), reasoning_effort=value.get("reasoning_effort"))
                 elif isinstance(value, str) and value.strip():
                     val = value.strip()
                     provider, model = val.split("/", 1) if "/" in val else (current_provider, val)
@@ -462,7 +464,7 @@ class ModelSwitchResult:
     # account and model, so their switch output is unchanged.
     usage_notice: str = ""
     provider_label: str = ""
-    resolved_via_alias: str = ""
+    resolved_via_alias: str = ""; reasoning_config: Optional[dict] = None  # the alias's bundled effort
     capabilities: Optional[ModelCapabilities] = None
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
@@ -634,7 +636,6 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
         errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
     if parsed.reasoning_effort:
-        from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
     if parsed.model_input.strip().lower() == MODEL_SWITCH_RESET_TOKEN and (
@@ -1228,7 +1229,7 @@ class _Switch:
     custom_providers: Optional[list]
     new_model: str = ""
     target_provider: str = ""
-    resolved_alias: str = ""
+    resolved_alias: str = ""; alias_reasoning: Optional[dict] = None
     alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
@@ -1635,10 +1636,11 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     else:
         _creds_for_current_provider(st)
 
-    # Direct alias override: use the alias's exact base_url if set.
+    # Direct alias override: its exact base_url, and its effort read now (another profile's switch may reload the cache).
     if st.resolved_alias:
         _ensure_direct_aliases()
         da = DIRECT_ALIASES.get(st.resolved_alias)
+        st.alias_reasoning = parse_reasoning_effort(getattr(da, "reasoning_effort", None))
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
             st.alias_endpoint_applied = True
@@ -1793,6 +1795,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     except Exception:
         request_overrides = None
     return ModelSwitchResult(
+        reasoning_config=st.alias_reasoning,
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",

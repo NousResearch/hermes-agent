@@ -67,6 +67,9 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
 
     NAME = "openai-native"
     DISPLAY_NAME = "OpenAI Native Web Search (Codex Responses)"
+    # Explicit selection activates a transport-level tool swap; it cannot service a
+    # client-side tool call, so generic client-side backend discovery must skip it.
+    AUTODETECT = False
 
     def is_available(self) -> bool:
         return has_codex_credentials()

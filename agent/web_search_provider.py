@@ -65,6 +65,11 @@ class WebSearchProvider(ProviderBase):
     """Abstract base class for a web search/extract backend: implement :meth:`is_available`
     and at least one of :meth:`search` / :meth:`extract`; the ``supports_*`` flags route each capability."""
 
+    # False keeps the provider out of availability-based autodetect (the registry fallback
+    # and the legacy ladder): only an explicit ``web.*backend`` selection activates it. For
+    # marker providers that cannot service a client-side tool call (a transport-level swap).
+    AUTODETECT: bool = True
+
     @abc.abstractmethod
     def is_available(self) -> bool:
         """True when this provider can service calls. Cheap check only (env var, importable

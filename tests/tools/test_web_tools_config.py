@@ -357,6 +357,22 @@ class TestBackendSelection:
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
+    def test_fallback_skips_openai_native_marker_with_codex_credentials(self):
+        """Codex OAuth makes the marker discoverable, but never able to service a
+        client-side call, so an unconfigured backend must fall through to the
+        normal default ladder instead of selecting it."""
+        from plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
+        from tools.web_tools import _get_backend
+
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._list_registered_web_providers",
+                   return_value=[OpenAINativeWebSearchProvider()]), \
+             patch("plugins.web.openai_native.provider.has_codex_credentials", return_value=True), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+            assert _get_backend() == "firecrawl"
+
     def test_invalid_config_is_returned_verbatim(self):
         """Strict selection: web.backend=nonexistent is returned as-is so the
         dispatch path raises the honest selection-naming error — never
@@ -1001,6 +1017,105 @@ class TestSiblingProvidersEnvResolution:
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""
+
+
+def _plugin_search_provider():
+    """A third-party plugin provider that keeps the default ``AUTODETECT = True``."""
+    from agent.web_search_provider import WebSearchProvider
+
+    class _Plugin(WebSearchProvider):
+        @property
+        def name(self):
+            return "test-plugin-search"
+
+        def is_available(self):
+            return True
+
+        def search(self, query, limit=5):
+            return {"success": True, "data": {"web": [{"title": "t", "url": "https://example.com"}]}}
+
+    return _Plugin()
+
+
+@pytest.fixture
+def _registry_with(monkeypatch, tmp_path):
+    """Swap the web registry for exactly *providers* in a never-configured home with Codex
+    OAuth, no keyed/keyless/ddgs/gateway backend; the real registry, gate, transport and
+    dispatcher run against it."""
+    from agent import web_search_registry as registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with registry._lock:
+        saved = dict(registry._providers)
+        registry._providers.clear()
+    patches = [
+        patch("plugins.web.openai_native.provider.has_codex_credentials", return_value=True),
+        patch("tools.web_tools._ensure_web_plugins_loaded", lambda: None),
+        patch("tools.web_tools._ddgs_package_importable", return_value=False),
+        patch("tools.web_tools._is_tool_gateway_ready", return_value=False),
+        patch("agent.web_search_registry._keyless_tier_enabled", return_value=False),
+    ]
+    for p in patches:
+        p.start()
+
+    def _install(*providers):
+        for provider in providers:
+            registry.register_provider(provider)
+        return registry
+
+    try:
+        yield _install
+    finally:
+        for p in reversed(patches):
+            p.stop()
+        with registry._lock:
+            registry._providers.clear()
+            registry._providers.update(saved)
+
+
+def test_registry_autodetect_never_selects_autodetect_false_marker(_registry_with):
+    """openai-native (``AUTODETECT = False``) is available with Codex OAuth but cannot service a
+    client-side call: unconfigured, it must not become the active provider, light the web tools,
+    trigger the Codex built-in swap, or receive a ``web_search`` dispatch."""
+    from agent.transports.codex import _openai_prefers_native_web_search
+    from plugins.web.openai_native.provider import _UNSUPPORTED_MSG, OpenAINativeWebSearchProvider
+    from tools.web_tools import check_web_api_key, web_search_tool
+
+    registry = _registry_with(OpenAINativeWebSearchProvider())
+    assert registry.get_active_search_provider() is None
+    assert check_web_api_key() is False
+    assert _openai_prefers_native_web_search() is False
+    result = json.loads(web_search_tool("hermes agent"))
+    assert result["success"] is False
+    assert _UNSUPPORTED_MSG not in result["error"]
+
+
+def test_marker_does_not_shadow_autodetected_plugin_provider(_registry_with):
+    """A default ``AUTODETECT = True`` plugin provider stays the sole eligible pick even when the
+    marker is also registered and available, and web_search dispatches to it."""
+    from agent.transports.codex import _openai_prefers_native_web_search
+    from plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
+    from tools.web_tools import check_web_api_key, web_search_tool
+
+    plugin = _plugin_search_provider()
+    registry = _registry_with(OpenAINativeWebSearchProvider(), plugin)
+    assert registry.get_active_search_provider() is plugin
+    assert check_web_api_key() is True
+    assert _openai_prefers_native_web_search() is False
+    result = json.loads(web_search_tool("hermes agent"))
+    assert result["data"]["web"][0]["url"] == "https://example.com"
+
+
+def test_explicit_openai_native_selection_still_activates_marker(_registry_with, tmp_path):
+    """``AUTODETECT = False`` only removes autodetection: an explicit
+    ``web.search_backend: openai-native`` still resolves and drives the Codex swap."""
+    from agent.transports.codex import _openai_prefers_native_web_search
+    from plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
+
+    (tmp_path / "config.yaml").write_text("web:\n  search_backend: openai-native\n", encoding="utf-8")
+    registry = _registry_with(OpenAINativeWebSearchProvider())
+    assert registry.get_active_search_provider().name == "openai-native"
+    assert _openai_prefers_native_web_search() is True
 
 
 def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeypatch, tmp_path):

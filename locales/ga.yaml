@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Rith /rollback chun seicphointí a liostú agus ceann a athchóiriú."
     more: "+{count} eile"
+
+side_thread:
+  started: "🔭 Taiscéaladh taoibh {thread_id}: \"{preview}\"\nAg taiscéaladh le huirlisí taobh leis an obair reatha. Taispeánann /btw --threads é; stopann /btw --stop {thread_id} é."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ Theip ar thaiscéaladh taoibh {thread_id}: \"{preview}\"\n{error}"
+  promote_hint: "Tabhair isteach sa chomhrá seo é le /btw --promote {thread_id}"
+  list_header: "Taiscéalaí taoibh:"
+  list_empty: "Níl aon taiscéaladh taoibh sa chomhrá seo fós. Tosaigh ceann le /btw --explore <tasc>."
+  list_hint: "Tabhair ceann críochnaithe isteach sa chomhrá seo le /btw --promote <id> [nóta]."
+  promoted: "⤴ Taiscéaladh taoibh {thread_id} á thabhairt isteach sa chomhrá."
+  not_found: "Níl aon taiscéaladh taoibh anseo a mheaitseálann \"{ref}\". Liostaíonn /btw --threads iad."
+  none_finished: "Níl aon taiscéaladh taoibh críochnaithe le tabhairt isteach fós. Liostaíonn /btw --threads iad."
+  stopping: "⏹ Taiscéaladh taoibh {thread_id} á stopadh."
+  already_finished: "Tá taiscéaladh taoibh {thread_id} críochnaithe cheana."
+  still_running: "Tá taiscéaladh taoibh {thread_id} fós ag rith. Fan lena thuarascáil, nó stop é le /btw --stop {thread_id}."
+  no_report: "Níl aon tuarascáil ag taiscéaladh taoibh {thread_id} le tabhairt isteach."
+  no_agent: "❌ Teastaíonn comhrá beo ó thaiscéaladh taoibh. Seol teachtaireacht ar dtús."
+  provider: "❌ Níl taiscéaladh taoibh ar fáil leis an tsamhail seo: ritheann a soláthraí a huirlisí féin."
+  too_many: "❌ Tá {count} taiscéaladh taoibh ag rith cheana. Stop ceann le /btw --stop <id>."
+  usage: "Fiosraíonn /btw --explore <tasc> le huirlisí i snáithe taoibh; liostaíonn /btw --threads na snáitheanna taoibh; tugann /btw --promote [id] [nóta] tuarascáil isteach sa chomhrá seo; stopann /btw --stop <id> ceann acu."

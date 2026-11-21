@@ -4336,3 +4336,23 @@ shared:
   undo_rollback:
     list: "↶ Fichiers modifiés dans les tours annulés : {files}. Lancez /rollback pour lister les checkpoints et en restaurer un."
     more: "+{count} de plus"
+
+side_thread:
+  started: "🔭 Exploration annexe {thread_id} : \"{preview}\"\nExploration avec des outils à côté du travail en cours. /btw --threads l'affiche ; /btw --stop {thread_id} l'arrête."
+  report: "🔭 /btw {thread_id} : \"{preview}\"\n\n{report}"
+  failed: "❌ L'exploration annexe {thread_id} a échoué : \"{preview}\"\n{error}"
+  promote_hint: "Intégrez-la à cette conversation avec /btw --promote {thread_id}"
+  list_header: "Explorations annexes :"
+  list_empty: "Aucune exploration annexe dans cette conversation pour l'instant. Lancez-en une avec /btw --explore <tâche>."
+  list_hint: "Intégrez une exploration terminée à cette conversation avec /btw --promote <id> [note]."
+  promoted: "⤴ Intégration de l'exploration annexe {thread_id} à la conversation."
+  not_found: "Aucune exploration annexe ne correspond à \"{ref}\" ici. /btw --threads les liste."
+  none_finished: "Aucune exploration annexe terminée à intégrer pour l'instant. /btw --threads les liste."
+  stopping: "⏹ Arrêt de l'exploration annexe {thread_id}."
+  already_finished: "L'exploration annexe {thread_id} est déjà terminée."
+  still_running: "L'exploration annexe {thread_id} est toujours en cours. Attendez son rapport ou arrêtez-la avec /btw --stop {thread_id}."
+  no_report: "L'exploration annexe {thread_id} n'a aucun rapport à intégrer."
+  no_agent: "❌ Une exploration annexe nécessite une conversation active. Envoyez d'abord un message."
+  provider: "❌ L'exploration annexe n'est pas disponible avec ce modèle : son fournisseur exécute ses propres outils."
+  too_many: "❌ {count} explorations annexes sont déjà en cours. Arrêtez-en une avec /btw --stop <id>."
+  usage: "/btw --explore <tâche> enquête avec des outils dans un fil annexe ; /btw --threads liste les fils annexes ; /btw --promote [id] [note] intègre un rapport à cette conversation ; /btw --stop <id> en arrête un."

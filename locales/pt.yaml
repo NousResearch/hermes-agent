@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ Arquivos alterados nos turnos desfeitos: {files}. Execute /rollback para listar os checkpoints e restaurar um."
     more: "+{count} mais"
+
+side_thread:
+  started: "🔭 Exploração paralela {thread_id}: \"{preview}\"\nExplorando com ferramentas ao lado do trabalho atual. /btw --threads a mostra; /btw --stop {thread_id} a encerra."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ A exploração paralela {thread_id} falhou: \"{preview}\"\n{error}"
+  promote_hint: "Traga-a para esta conversa com /btw --promote {thread_id}"
+  list_header: "Explorações paralelas:"
+  list_empty: "Ainda não há explorações paralelas nesta conversa. Inicie uma com /btw --explore <tarefa>."
+  list_hint: "Traga uma exploração concluída para esta conversa com /btw --promote <id> [nota]."
+  promoted: "⤴ Trazendo a exploração paralela {thread_id} para a conversa."
+  not_found: "Nenhuma exploração paralela corresponde a \"{ref}\" aqui. /btw --threads as lista."
+  none_finished: "Ainda não há exploração paralela concluída para trazer. /btw --threads as lista."
+  stopping: "⏹ Parando a exploração paralela {thread_id}."
+  already_finished: "A exploração paralela {thread_id} já terminou."
+  still_running: "A exploração paralela {thread_id} ainda está em andamento. Aguarde o relatório ou pare-a com /btw --stop {thread_id}."
+  no_report: "A exploração paralela {thread_id} não tem relatório para trazer."
+  no_agent: "❌ Uma exploração paralela precisa de uma conversa ativa. Envie uma mensagem primeiro."
+  provider: "❌ A exploração paralela não está disponível com este modelo: o provedor dele executa as próprias ferramentas."
+  too_many: "❌ Já há {count} explorações paralelas em andamento. Pare uma com /btw --stop <id>."
+  usage: "/btw --explore <tarefa> investiga com ferramentas em uma thread paralela; /btw --threads lista as threads paralelas; /btw --promote [id] [nota] traz um relatório para esta conversa; /btw --stop <id> para uma."

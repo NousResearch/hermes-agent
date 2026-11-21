@@ -4031,3 +4031,23 @@ shared:
   undo_rollback:
     list: "↶ A visszavont körökben módosított fájlok: {files}. Futtasd a /rollback parancsot az ellenőrzőpontok listázásához és egy visszaállításához."
     more: "+{count} további"
+
+side_thread:
+  started: "🔭 Mellékfelderítés {thread_id}: \"{preview}\"\nEszközökkel vizsgálódik a folyamatban lévő munka mellett. A /btw --threads megmutatja; a /btw --stop {thread_id} leállítja."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ A(z) {thread_id} mellékfelderítés sikertelen: \"{preview}\"\n{error}"
+  promote_hint: "Hozd be ebbe a beszélgetésbe: /btw --promote {thread_id}"
+  list_header: "Mellékfelderítések:"
+  list_empty: "Ebben a beszélgetésben még nincs mellékfelderítés. Indíts egyet: /btw --explore <feladat>."
+  list_hint: "Egy befejezett felderítést így hozhatsz be ebbe a beszélgetésbe: /btw --promote <id> [megjegyzés]."
+  promoted: "⤴ A(z) {thread_id} mellékfelderítés behozása a beszélgetésbe."
+  not_found: "Itt egyetlen mellékfelderítés sem egyezik ezzel: \"{ref}\". A /btw --threads kilistázza őket."
+  none_finished: "Még nincs behozható befejezett mellékfelderítés. A /btw --threads kilistázza őket."
+  stopping: "⏹ A(z) {thread_id} mellékfelderítés leállítása."
+  already_finished: "A(z) {thread_id} mellékfelderítés már befejeződött."
+  still_running: "A(z) {thread_id} mellékfelderítés még fut. Várd meg a jelentését, vagy állítsd le: /btw --stop {thread_id}."
+  no_report: "A(z) {thread_id} mellékfelderítésnek nincs behozható jelentése."
+  no_agent: "❌ A mellékfelderítéshez folyamatban lévő beszélgetés kell. Előbb küldj egy üzenetet."
+  provider: "❌ A mellékfelderítés ezzel a modellel nem érhető el: a szolgáltatója saját eszközöket futtat."
+  too_many: "❌ Már {count} mellékfelderítés fut. Állíts le egyet: /btw --stop <id>."
+  usage: "A /btw --explore <feladat> eszközökkel vizsgálódik egy mellékszálon; a /btw --threads listázza a mellékszálakat; a /btw --promote [id] [megjegyzés] behoz egy jelentést ebbe a beszélgetésbe; a /btw --stop <id> leállít egyet."

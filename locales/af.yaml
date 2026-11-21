@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
     more: "+{count} meer"
+
+side_thread:
+  started: "🔭 Syverkenning {thread_id}: \"{preview}\"\nVerken met gereedskap langs die huidige werk. /btw --threads wys dit; /btw --stop {thread_id} stop dit."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ Syverkenning {thread_id} het misluk: \"{preview}\"\n{error}"
+  promote_hint: "Bring dit in hierdie gesprek met /btw --promote {thread_id}"
+  list_header: "Syverkennings:"
+  list_empty: "Nog geen syverkennings in hierdie gesprek nie. Begin een met /btw --explore <taak>."
+  list_hint: "Bring 'n voltooide een in hierdie gesprek met /btw --promote <id> [nota]."
+  promoted: "⤴ Bring syverkenning {thread_id} in die gesprek."
+  not_found: "Geen syverkenning pas hier by \"{ref}\" nie. /btw --threads lys hulle."
+  none_finished: "Nog geen voltooide syverkenning om in te bring nie. /btw --threads lys hulle."
+  stopping: "⏹ Stop syverkenning {thread_id}."
+  already_finished: "Syverkenning {thread_id} is reeds klaar."
+  still_running: "Syverkenning {thread_id} loop nog. Wag vir sy verslag, of stop dit met /btw --stop {thread_id}."
+  no_report: "Syverkenning {thread_id} het geen verslag om in te bring nie."
+  no_agent: "❌ 'n Syverkenning het 'n lopende gesprek nodig. Stuur eers 'n boodskap."
+  provider: "❌ Syverkenning is nie beskikbaar met hierdie model nie: sy verskaffer voer sy eie gereedskap uit."
+  too_many: "❌ {count} syverkennings loop reeds. Stop een met /btw --stop <id>."
+  usage: "/btw --explore <taak> ondersoek met gereedskap in 'n sydraad; /btw --threads lys sydrade; /btw --promote [id] [nota] bring 'n verslag in hierdie gesprek; /btw --stop <id> stop een."

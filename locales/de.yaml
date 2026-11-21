@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ In den rückgängig gemachten Turns geänderte Dateien: {files}. Führe /rollback aus, um Checkpoints aufzulisten und einen wiederherzustellen."
     more: "+{count} weitere"
+
+side_thread:
+  started: "🔭 Nebenerkundung {thread_id}: \"{preview}\"\nErkundet mit Tools neben der laufenden Arbeit. /btw --threads zeigt sie an; /btw --stop {thread_id} beendet sie."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ Nebenerkundung {thread_id} fehlgeschlagen: \"{preview}\"\n{error}"
+  promote_hint: "Mit /btw --promote {thread_id} in diese Konversation übernehmen"
+  list_header: "Nebenerkundungen:"
+  list_empty: "Noch keine Nebenerkundungen in dieser Konversation. Starte eine mit /btw --explore <Aufgabe>."
+  list_hint: "Übernimm eine abgeschlossene mit /btw --promote <id> [Notiz] in diese Konversation."
+  promoted: "⤴ Nebenerkundung {thread_id} wird in die Konversation übernommen."
+  not_found: "Keine Nebenerkundung passt hier zu \"{ref}\". /btw --threads listet sie auf."
+  none_finished: "Noch keine abgeschlossene Nebenerkundung zum Übernehmen. /btw --threads listet sie auf."
+  stopping: "⏹ Nebenerkundung {thread_id} wird gestoppt."
+  already_finished: "Nebenerkundung {thread_id} ist bereits abgeschlossen."
+  still_running: "Nebenerkundung {thread_id} läuft noch. Warte auf ihren Bericht oder stoppe sie mit /btw --stop {thread_id}."
+  no_report: "Nebenerkundung {thread_id} hat keinen Bericht zum Übernehmen."
+  no_agent: "❌ Eine Nebenerkundung braucht eine laufende Konversation. Sende zuerst eine Nachricht."
+  provider: "❌ Nebenerkundung ist mit diesem Modell nicht verfügbar: Sein Anbieter führt eigene Tools aus."
+  too_many: "❌ Es laufen bereits {count} Nebenerkundungen. Stoppe eine mit /btw --stop <id>."
+  usage: "/btw --explore <Aufgabe> untersucht mit Tools in einem Nebenstrang; /btw --threads listet Nebenstränge; /btw --promote [id] [Notiz] übernimmt einen Bericht in diese Konversation; /btw --stop <id> stoppt einen."

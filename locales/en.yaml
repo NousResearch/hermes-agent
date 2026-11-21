@@ -4130,3 +4130,24 @@ shared:
   undo_rollback:
     list: "↶ Files changed in the undone turns: {files}. Run /rollback to see checkpoints and restore them."
     more: "+{count} more"
+
+# /btw --explore side exploration threads (agent/side_thread.py).
+side_thread:
+  started: "🔭 Side exploration {thread_id}: \"{preview}\"\nExploring with tools beside the current work. /btw --threads shows it; /btw --stop {thread_id} ends it."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ Side exploration {thread_id} failed: \"{preview}\"\n{error}"
+  promote_hint: "Bring it into this conversation with /btw --promote {thread_id}"
+  list_header: "Side explorations:"
+  list_empty: "No side explorations in this conversation yet. Start one with /btw --explore <task>."
+  list_hint: "Bring a finished one into this conversation with /btw --promote <id> [note]."
+  promoted: "⤴ Bringing side exploration {thread_id} into the conversation."
+  not_found: "No side exploration matches \"{ref}\" here. /btw --threads lists them."
+  none_finished: "No finished side exploration to bring in yet. /btw --threads lists them."
+  stopping: "⏹ Stopping side exploration {thread_id}."
+  already_finished: "Side exploration {thread_id} has already finished."
+  still_running: "Side exploration {thread_id} is still running. Wait for its report, or stop it with /btw --stop {thread_id}."
+  no_report: "Side exploration {thread_id} has no report to bring in."
+  no_agent: "❌ A side exploration needs a live conversation. Send a message first."
+  provider: "❌ Side exploration is unavailable with this model: its provider runs its own tools."
+  too_many: "❌ {count} side explorations are already running. Stop one with /btw --stop <id>."
+  usage: "/btw --explore <task> investigates with tools in a side thread; /btw --threads lists side threads; /btw --promote [id] [note] brings a report into this conversation; /btw --stop <id> stops one."

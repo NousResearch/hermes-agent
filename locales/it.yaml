@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ File modificati nei turni annullati: {files}. Esegui /rollback per elencare i checkpoint e ripristinarne uno."
     more: "+{count} altri"
+
+side_thread:
+  started: "🔭 Esplorazione laterale {thread_id}: \"{preview}\"\nEsplora con gli strumenti accanto al lavoro in corso. /btw --threads la mostra; /btw --stop {thread_id} la ferma."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ Esplorazione laterale {thread_id} non riuscita: \"{preview}\"\n{error}"
+  promote_hint: "Portala in questa conversazione con /btw --promote {thread_id}"
+  list_header: "Esplorazioni laterali:"
+  list_empty: "Ancora nessuna esplorazione laterale in questa conversazione. Avviane una con /btw --explore <attività>."
+  list_hint: "Porta un'esplorazione conclusa in questa conversazione con /btw --promote <id> [nota]."
+  promoted: "⤴ Porto l'esplorazione laterale {thread_id} nella conversazione."
+  not_found: "Nessuna esplorazione laterale corrisponde a \"{ref}\" qui. /btw --threads le elenca."
+  none_finished: "Ancora nessuna esplorazione laterale conclusa da portare. /btw --threads le elenca."
+  stopping: "⏹ Interrompo l'esplorazione laterale {thread_id}."
+  already_finished: "L'esplorazione laterale {thread_id} è già conclusa."
+  still_running: "L'esplorazione laterale {thread_id} è ancora in corso. Attendi il suo resoconto o fermala con /btw --stop {thread_id}."
+  no_report: "L'esplorazione laterale {thread_id} non ha un resoconto da portare."
+  no_agent: "❌ Un'esplorazione laterale richiede una conversazione attiva. Invia prima un messaggio."
+  provider: "❌ L'esplorazione laterale non è disponibile con questo modello: il suo provider esegue i propri strumenti."
+  too_many: "❌ Sono già in corso {count} esplorazioni laterali. Fermane una con /btw --stop <id>."
+  usage: "/btw --explore <attività> indaga con gli strumenti in un thread laterale; /btw --threads elenca i thread laterali; /btw --promote [id] [nota] porta un resoconto in questa conversazione; /btw --stop <id> ne ferma uno."

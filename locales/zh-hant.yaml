@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ 已復原回合中變更的檔案：{files}。執行 /rollback 列出檢查點並還原其中一個。"
     more: "另外 {count} 個"
+
+side_thread:
+  started: "🔭 側線探索 {thread_id}：「{preview}」\n正在與目前工作並行使用工具探索。/btw --threads 可查看；/btw --stop {thread_id} 可停止。"
+  report: "🔭 /btw {thread_id}：「{preview}」\n\n{report}"
+  failed: "❌ 側線探索 {thread_id} 失敗：「{preview}」\n{error}"
+  promote_hint: "用 /btw --promote {thread_id} 將其帶入此對話"
+  list_header: "側線探索："
+  list_empty: "此對話中還沒有側線探索。用 /btw --explore <任務> 開始一個。"
+  list_hint: "用 /btw --promote <id> [備註] 將已完成的探索帶入此對話。"
+  promoted: "⤴ 正在將側線探索 {thread_id} 帶入對話。"
+  not_found: "這裡沒有與「{ref}」相符的側線探索。/btw --threads 可列出它們。"
+  none_finished: "還沒有可帶入的已完成側線探索。/btw --threads 可列出它們。"
+  stopping: "⏹ 正在停止側線探索 {thread_id}。"
+  already_finished: "側線探索 {thread_id} 已經結束。"
+  still_running: "側線探索 {thread_id} 仍在執行。請等待其報告，或用 /btw --stop {thread_id} 停止它。"
+  no_report: "側線探索 {thread_id} 沒有可帶入的報告。"
+  no_agent: "❌ 側線探索需要一個進行中的對話。請先傳送一則訊息。"
+  provider: "❌ 此模型無法使用側線探索：其提供者會執行自己的工具。"
+  too_many: "❌ 已有 {count} 個側線探索在執行。用 /btw --stop <id> 停止一個。"
+  usage: "/btw --explore <任務> 在側線中使用工具調查；/btw --threads 列出側線；/btw --promote [id] [備註] 將報告帶入此對話；/btw --stop <id> 停止一個。"

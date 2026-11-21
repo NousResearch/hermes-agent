@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ Geri alınan turlarda değişen dosyalar: {files}. Kontrol noktalarını listelemek ve birini geri yüklemek için /rollback çalıştırın."
     more: "+{count} daha"
+
+side_thread:
+  started: "🔭 Yan keşif {thread_id}: \"{preview}\"\nMevcut işin yanında araçlarla keşfediliyor. /btw --threads gösterir; /btw --stop {thread_id} durdurur."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ Yan keşif {thread_id} başarısız oldu: \"{preview}\"\n{error}"
+  promote_hint: "/btw --promote {thread_id} ile bu sohbete aktar"
+  list_header: "Yan keşifler:"
+  list_empty: "Bu sohbette henüz yan keşif yok. /btw --explore <görev> ile bir tane başlat."
+  list_hint: "Biten bir keşfi /btw --promote <id> [not] ile bu sohbete aktar."
+  promoted: "⤴ Yan keşif {thread_id} sohbete aktarılıyor."
+  not_found: "Burada \"{ref}\" ile eşleşen yan keşif yok. /btw --threads hepsini listeler."
+  none_finished: "Aktarılacak bitmiş bir yan keşif henüz yok. /btw --threads hepsini listeler."
+  stopping: "⏹ Yan keşif {thread_id} durduruluyor."
+  already_finished: "Yan keşif {thread_id} zaten bitti."
+  still_running: "Yan keşif {thread_id} hâlâ çalışıyor. Raporunu bekle ya da /btw --stop {thread_id} ile durdur."
+  no_report: "Yan keşif {thread_id} için aktarılacak rapor yok."
+  no_agent: "❌ Yan keşif için devam eden bir sohbet gerekir. Önce bir mesaj gönder."
+  provider: "❌ Yan keşif bu modelle kullanılamaz: sağlayıcısı kendi araçlarını çalıştırıyor."
+  too_many: "❌ Zaten {count} yan keşif çalışıyor. /btw --stop <id> ile birini durdur."
+  usage: "/btw --explore <görev> bir yan iş parçacığında araçlarla araştırır; /btw --threads yan iş parçacıklarını listeler; /btw --promote [id] [not] bir raporu bu sohbete aktarır; /btw --stop <id> birini durdurur."

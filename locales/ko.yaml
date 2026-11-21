@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ 취소한 턴에서 변경된 파일: {files}. /rollback 으로 체크포인트 목록을 보고 하나를 복원하세요."
     more: "외 {count}개"
+
+side_thread:
+  started: "🔭 사이드 탐색 {thread_id}: \"{preview}\"\n현재 작업과 나란히 도구로 탐색하고 있어요. /btw --threads로 확인하고 /btw --stop {thread_id}로 멈출 수 있어요."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ 사이드 탐색 {thread_id} 실패: \"{preview}\"\n{error}"
+  promote_hint: "/btw --promote {thread_id}로 이 대화에 가져올 수 있어요"
+  list_header: "사이드 탐색:"
+  list_empty: "이 대화에는 아직 사이드 탐색이 없어요. /btw --explore <작업>으로 시작하세요."
+  list_hint: "끝난 탐색은 /btw --promote <id> [메모]로 이 대화에 가져올 수 있어요."
+  promoted: "⤴ 사이드 탐색 {thread_id}을(를) 대화로 가져올게요."
+  not_found: "여기에는 \"{ref}\"와(과) 일치하는 사이드 탐색이 없어요. /btw --threads로 목록을 볼 수 있어요."
+  none_finished: "아직 가져올 끝난 사이드 탐색이 없어요. /btw --threads로 목록을 볼 수 있어요."
+  stopping: "⏹ 사이드 탐색 {thread_id}을(를) 멈출게요."
+  already_finished: "사이드 탐색 {thread_id}은(는) 이미 끝났어요."
+  still_running: "사이드 탐색 {thread_id}이(가) 아직 실행 중이에요. 보고서를 기다리거나 /btw --stop {thread_id}로 멈추세요."
+  no_report: "사이드 탐색 {thread_id}에는 가져올 보고서가 없어요."
+  no_agent: "❌ 사이드 탐색에는 진행 중인 대화가 필요해요. 먼저 메시지를 보내세요."
+  provider: "❌ 이 모델에서는 사이드 탐색을 쓸 수 없어요: 공급자가 자체 도구를 실행해요."
+  too_many: "❌ 이미 사이드 탐색 {count}개가 실행 중이에요. /btw --stop <id>로 하나를 멈추세요."
+  usage: "/btw --explore <작업>은 사이드 스레드에서 도구로 조사해요. /btw --threads는 사이드 스레드 목록을, /btw --promote [id] [메모]는 보고서를 이 대화로 가져오고, /btw --stop <id>는 하나를 멈춰요."

@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ 取り消したターンで変更されたファイル: {files}。/rollback でチェックポイントを一覧表示し、1 つを復元してください。"
     more: "ほか {count} 件"
+
+side_thread:
+  started: "🔭 サイド探索 {thread_id}: 「{preview}」\n現在の作業と並行してツールで探索しています。/btw --threads で表示、/btw --stop {thread_id} で停止します。"
+  report: "🔭 /btw {thread_id}: 「{preview}」\n\n{report}"
+  failed: "❌ サイド探索 {thread_id} が失敗しました: 「{preview}」\n{error}"
+  promote_hint: "/btw --promote {thread_id} でこの会話に取り込めます"
+  list_header: "サイド探索:"
+  list_empty: "この会話にはまだサイド探索がありません。/btw --explore <タスク> で開始できます。"
+  list_hint: "完了した探索は /btw --promote <id> [メモ] でこの会話に取り込めます。"
+  promoted: "⤴ サイド探索 {thread_id} を会話に取り込みます。"
+  not_found: "「{ref}」に一致するサイド探索はありません。/btw --threads で一覧を表示します。"
+  none_finished: "取り込める完了済みのサイド探索はまだありません。/btw --threads で一覧を表示します。"
+  stopping: "⏹ サイド探索 {thread_id} を停止します。"
+  already_finished: "サイド探索 {thread_id} はすでに完了しています。"
+  still_running: "サイド探索 {thread_id} はまだ実行中です。レポートを待つか、/btw --stop {thread_id} で停止してください。"
+  no_report: "サイド探索 {thread_id} には取り込めるレポートがありません。"
+  no_agent: "❌ サイド探索には進行中の会話が必要です。まずメッセージを送ってください。"
+  provider: "❌ このモデルではサイド探索を使えません: プロバイダーが独自のツールを実行します。"
+  too_many: "❌ すでに {count} 件のサイド探索が実行中です。/btw --stop <id> で 1 件停止してください。"
+  usage: "/btw --explore <タスク> はサイドスレッドでツールを使って調査します。/btw --threads でサイドスレッドを一覧表示、/btw --promote [id] [メモ] でレポートをこの会話に取り込み、/btw --stop <id> で停止します。"

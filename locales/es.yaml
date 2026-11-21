@@ -4014,3 +4014,23 @@ shared:
   undo_rollback:
     list: "↶ Archivos cambiados en los turnos deshechos: {files}. Ejecuta /rollback para listar los checkpoints y restaurar uno."
     more: "+{count} más"
+
+side_thread:
+  started: "🔭 Exploración lateral {thread_id}: \"{preview}\"\nExplorando con herramientas junto al trabajo actual. /btw --threads la muestra; /btw --stop {thread_id} la detiene."
+  report: "🔭 /btw {thread_id}: \"{preview}\"\n\n{report}"
+  failed: "❌ La exploración lateral {thread_id} falló: \"{preview}\"\n{error}"
+  promote_hint: "Tráela a esta conversación con /btw --promote {thread_id}"
+  list_header: "Exploraciones laterales:"
+  list_empty: "Aún no hay exploraciones laterales en esta conversación. Inicia una con /btw --explore <tarea>."
+  list_hint: "Trae una terminada a esta conversación con /btw --promote <id> [nota]."
+  promoted: "⤴ Trayendo la exploración lateral {thread_id} a la conversación."
+  not_found: "Ninguna exploración lateral coincide con \"{ref}\" aquí. /btw --threads las lista."
+  none_finished: "Aún no hay ninguna exploración lateral terminada para traer. /btw --threads las lista."
+  stopping: "⏹ Deteniendo la exploración lateral {thread_id}."
+  already_finished: "La exploración lateral {thread_id} ya terminó."
+  still_running: "La exploración lateral {thread_id} sigue en curso. Espera su informe o detenla con /btw --stop {thread_id}."
+  no_report: "La exploración lateral {thread_id} no tiene informe que traer."
+  no_agent: "❌ Una exploración lateral necesita una conversación activa. Envía un mensaje primero."
+  provider: "❌ La exploración lateral no está disponible con este modelo: su proveedor ejecuta sus propias herramientas."
+  too_many: "❌ Ya hay {count} exploraciones laterales en curso. Detén una con /btw --stop <id>."
+  usage: "/btw --explore <tarea> investiga con herramientas en un hilo lateral; /btw --threads lista los hilos laterales; /btw --promote [id] [nota] trae un informe a esta conversación; /btw --stop <id> detiene uno."

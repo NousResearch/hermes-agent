@@ -523,3 +523,93 @@ def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_contai
             assert terminal_tool._resolve_container_task_id("parent-task") == "profile:coder"
     finally:
         clear_session_vars(tokens)
+
+
+_PROFILE_DISABLED = ["code_execution", "tts", "session_search", "connections"]
+
+
+def _toolset_parent(disabled=None):
+    parent = _parent()
+    parent.enabled_toolsets = ["terminal", "file", "web", "code_execution", "tts", "session_search", "connections"]
+    parent.disabled_toolsets = disabled
+    return parent
+
+
+def test_profile_child_drops_the_target_profiles_disabled_toolsets_on_top_of_the_parents(two_profiles):
+    """The routed profile's ``agent.disabled_toolsets`` binds its child: a toolset that profile disables never
+    reaches it through the launching parent's grant, and the parent's own disabled list still applies."""
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    _, coder = two_profiles
+    _set_config(coder, agent={"disabled_toolsets": _PROFILE_DISABLED})
+    parent = _toolset_parent(disabled=["web"])
+    _, built = _build(_route_to_task_route({"profile": "coder"}, parent, {}), parent)
+    assert set(_PROFILE_DISABLED) | {"web"} <= set(built["disabled_toolsets"])
+    assert set(built["enabled_toolsets"]) <= set(parent.enabled_toolsets)
+
+
+def test_profile_child_reaches_no_disabled_tool_directly_or_through_tool_search(two_profiles, monkeypatch):
+    """The disabled toolsets leave the direct tools, the tool_search catalog, hosted connector search and the
+    connector call gate (``connections`` off means no ``connectors__*`` tool), not just the direct list."""
+    import model_tools
+    from types import SimpleNamespace
+
+    from agent.agent_init import _load_tools
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    _, coder = two_profiles
+    _set_config(coder, agent={"disabled_toolsets": _PROFILE_DISABLED})
+    parent = _toolset_parent()
+    _, built = _build(_route_to_task_route({"profile": "coder"}, parent, {}), parent)
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    hosted = MagicMock(return_value=([[]], None))
+    monkeypatch.setattr("tools.tool_search.connector_entries_by_group", hosted)
+    enabled, disabled = built["enabled_toolsets"], built["disabled_toolsets"]
+    agent = SimpleNamespace(quiet_mode=True, platform="subagent", enabled_toolsets=enabled, disabled_toolsets=disabled)
+    _load_tools(agent, enabled, disabled)
+    found = json.loads(model_tools.handle_function_call(
+        "tool_search", {"queries": ["execute python code speech session search"]},
+        enabled_toolsets=agent.enabled_toolsets, disabled_toolsets=agent.disabled_toolsets))
+    connector = json.loads(model_tools.handle_function_call(
+        "connectors__notes__LIST_ITEMS", {},
+        enabled_toolsets=agent.enabled_toolsets, disabled_toolsets=agent.disabled_toolsets))
+
+    surface = json.dumps(agent.tools) + json.dumps(found)
+    for tool in ("execute_code", "text_to_speech", "session_search", "manage_connections"):
+        assert tool not in surface
+    assert not hosted.called
+    assert "not available" in connector.get("error", "")
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('agent:\n  disabled_toolsets: \'["tts", "session_search"]\'\n', {"tts", "session_search"}),  # CLI config-set form
+    ("agent: [unclosed\n", set()),
+    ("agent: null\n", set()),
+])
+def test_profile_child_reads_any_form_of_the_target_profiles_disabled_toolsets_without_failing(
+        two_profiles, raw, expected):
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    _, coder = two_profiles
+    parent = _toolset_parent(disabled=["web"])
+    route = _route_to_task_route({"profile": "coder"}, parent, {})
+    (coder / "config.yaml").write_text(raw, encoding="utf-8")
+    _, built = _build(route, parent)
+    assert expected | {"web"} <= set(built["disabled_toolsets"])
+    assert not ({"tts", "session_search"} - expected) & set(built["disabled_toolsets"])
+
+
+def test_unrouted_child_keeps_the_parents_disabled_toolsets_only(two_profiles):
+    """Without a profile route the parent's session state is the whole grant: the launch profile's config is not
+    re-read over it (a session started with an explicit toolset override keeps that override)."""
+    from tools.delegate_tool import _build_child_agent
+
+    launch, _ = two_profiles
+    _set_config(launch, agent={"disabled_toolsets": ["tts"]})
+    parent = _toolset_parent(disabled=["web"])
+    built = {}
+    with patch("run_agent.AIAgent", side_effect=lambda **kw: built.update(kw) or MagicMock(session_id="child-1")):
+        _build_child_agent(task_index=0, goal="plain child", context=None, toolsets=None, model=None,
+                           max_iterations=5, task_count=1, parent_agent=parent)
+    assert "web" in built["disabled_toolsets"] and "tts" not in built["disabled_toolsets"]

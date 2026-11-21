@@ -61,20 +61,4 @@ def describe_language(lang: str, *, pack: dict | None, overlay: bool, surfaces: 
     return {"id": lang, "endonym": endonym, "rtl": rtl, "source": source, "surfaces": list(surfaces)}
 
 
-def language_options() -> list[LanguageOption]:
-    """``[{"id", "endonym", "rtl", "source", "surfaces"}, ...]`` for every supported language, ``en`` first then sorted
-    by id — the list ``i18n.languages`` serves and every switcher renders (endonym only, no flags)."""
-    from agent import i18n, i18n_layers
-    from hermes_constants import get_hermes_home
-
-    home = get_hermes_home()
-    overlay_langs = i18n_layers.overlay_languages(home)
-    surfaces = i18n.language_surfaces(str(home))
-    return [
-        describe_language(lang, pack=i18n_layers.pack_info(lang), overlay=lang in overlay_langs,
-                          surfaces=surfaces.get(lang, ()))
-        for lang in i18n.supported_languages()
-    ]
-
-
-__all__ = ["BUNDLED_LANGUAGE_INFO", "LanguageOption", "describe_language", "language_options"]
+__all__ = ["BUNDLED_LANGUAGE_INFO", "LanguageOption", "describe_language"]

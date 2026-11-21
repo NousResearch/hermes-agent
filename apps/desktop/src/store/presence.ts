@@ -148,6 +148,9 @@ export function createPresenceReporter(deps: PresenceReporterDeps): PresenceRepo
   let pendingEvaluate: ReturnType<typeof setTimeout> | null = null
   let wakeAskedAt = Number.NEGATIVE_INFINITY
   const told = new Map<PresenceChannel, Statement>()
+  // The newest statement each connection accepted, with its send order: what it holds after a failure.
+  const confirmed = new Map<PresenceChannel, { order: number; statement: Statement }>()
+  let sent = 0
   // Connections already told `away` in this lock/suspend episode.
   const awayTold = new Set<PresenceChannel>()
 
@@ -164,34 +167,48 @@ export function createPresenceReporter(deps: PresenceReporterDeps): PresenceRepo
     })
   }
 
+  const forget = (channel: PresenceChannel) => {
+    told.delete(channel)
+    confirmed.delete(channel)
+  }
+
   // Checked at the moment of sending, never queued: a connection that is not ready drops the report,
   // and the next evaluation after it is ready sends a fresh one.
   const send = (channel: PresenceChannel, params: ClientActivityParams, statement: Statement) => {
     if (!usable(channel)) {
-      told.delete(channel)
+      forget(channel)
 
       return
     }
 
-    const previous = told.get(channel)
+    const order = (sent += 1)
     told.set(channel, statement)
     // A refused or failed report must never reach the user or the connection. It was not told,
-    // though: the statement before it stands, and the next evaluation sends this one again. Only
-    // while it is still the newest statement for this connection, so a late failure cannot
-    // undo a later report.
-    channel.request('client.activity', { ...params }).catch(() => {
-      if (told.get(channel) !== statement) {
-        return
-      }
+    // though: the connection holds the newest statement it accepted (an older one still in flight
+    // or failed is not that), and the next evaluation corrects it again. Only while the failed one
+    // is still the newest statement, so a late failure cannot undo a later report.
+    channel.request('client.activity', { ...params }).then(
+      () => {
+        if ((confirmed.get(channel)?.order ?? 0) < order) {
+          confirmed.set(channel, { order, statement })
+        }
+      },
+      () => {
+        if (told.get(channel) !== statement) {
+          return
+        }
 
-      if (previous) {
-        told.set(channel, previous)
-      } else {
-        told.delete(channel)
-      }
+        const held = confirmed.get(channel)?.statement
 
-      awayTold.delete(channel)
-    })
+        if (held) {
+          told.set(channel, held)
+        } else {
+          told.delete(channel)
+        }
+
+        awayTold.delete(channel)
+      }
+    )
   }
 
   // An empty list withdraws everything this connection holds without claiming any input.
@@ -261,7 +278,7 @@ export function createPresenceReporter(deps: PresenceReporterDeps): PresenceRepo
 
     for (const channel of told.keys()) {
       if (!usable(channel)) {
-        told.delete(channel)
+        forget(channel)
       }
     }
 
@@ -369,6 +386,9 @@ export function createPresenceReporter(deps: PresenceReporterDeps): PresenceRepo
       for (const statement of told.values()) {
         statement.at = Number.NEGATIVE_INFINITY
       }
+
+      // A reopened connection holds nothing it accepted before.
+      confirmed.clear()
     },
     stop: () => {
       stopped = true

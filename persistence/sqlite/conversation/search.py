@@ -67,13 +67,15 @@ class SQLiteSessionSearch:
         exclude_sources: Optional[Sequence[str]] = None, role_filter: Optional[Sequence[str]] = None,
         limit: int = 20, offset: int = 0, sort: SearchSort = SearchSort.RELEVANCE, include_inactive: bool = False,
         fields: Optional[Collection[str]] = None, after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+        session_ids: Optional[Sequence[str]] = None, compacted_in_session: Optional[str] = None,
     ) -> tuple[SearchHit, ...]:
         holder = self._store.holder()
         with refusals(holder):
             matches = search_messages(holder,
                 query, source_filter=_optional_list(source_filter), exclude_sources=_optional_list(exclude_sources),
                 role_filter=_optional_list(role_filter), limit=limit, offset=offset, sort=_SORT[sort],
-                include_inactive=include_inactive, fields=fields, after_ts=after_ts, before_ts=before_ts)
+                include_inactive=include_inactive, fields=fields, after_ts=after_ts, before_ts=before_ts,
+                session_ids=_optional_list(session_ids), compacted_in_session=compacted_in_session)
         return tuple(_hit(match) for match in matches)
 
     def search_index_rebuild_status(self) -> Optional[SearchIndexRebuildStatus]:

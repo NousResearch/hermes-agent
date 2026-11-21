@@ -179,16 +179,31 @@ def _search_select_sql(snippet_sql: str, from_sql: str, where: list[str], order_
         """
 
 
+# A rewound row whose text survives nowhere else: compaction replaced it with a rewritten copy (same uid, different
+# content; a demoted tool result's stub), live or archived by a later compaction. Undo rows and verbatim carried
+# copies have no such twin.
+SUPERSEDED_ORIGINAL_SQL = (
+    "(m.active = 0 AND m.compacted = 0 AND m.message_uid IS NOT NULL AND EXISTS ("
+    "SELECT 1 FROM messages twin WHERE twin.session_id = m.session_id AND twin.message_uid = m.message_uid "
+    "AND twin.id <> m.id AND (twin.active = 1 OR twin.compacted = 1) AND twin.content IS NOT m.content))")
+
+
 def _search_filter_clauses(
     where: list[str], params: list, *, include_inactive: bool, source_filter: Optional[list[str]],
     exclude_sources: Optional[list[str]], role_filter: Optional[list[str]],
-    after_ts: Optional[int] = None, before_ts: Optional[int] = None) -> None:
+    after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+    session_ids: Optional[list[str]] = None, compacted_in_session: Optional[str] = None) -> None:
     """Append the visibility/source/role/session-start predicates every search route shares. Live
     rows (active=1) AND compaction-archived rows (compacted=1) are discoverable; only
     rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
-    ``sessions.started_at`` (inclusive / exclusive) inside the query so LIMIT cannot be
-    filled by out-of-window hits."""
-    if not include_inactive:
+    ``sessions.started_at`` (inclusive / exclusive) and ``session_ids`` scopes to those
+    sessions, both inside the query so LIMIT cannot be filled by out-of-scope hits. ``compacted_in_session``
+    keeps only that session's rows that left its live transcript: compaction-archived rows plus
+    superseded originals (``SUPERSEDED_ORIGINAL_SQL``)."""
+    if compacted_in_session is not None:
+        where.append(f"m.session_id = ? AND (m.compacted = 1 OR {SUPERSEDED_ORIGINAL_SQL})")
+        params.append(compacted_in_session)
+    elif not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")
     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
     where.append("COALESCE(m.display_kind, '') <> 'hidden'")
@@ -207,6 +222,9 @@ def _search_filter_clauses(
     if before_ts is not None:
         where.append("s.started_at < ?")
         params.append(int(before_ts))
+    if session_ids is not None:
+        where.append(f"m.session_id IN ({','.join('?' for _ in session_ids) or 'NULL'})")
+        params.extend(session_ids)
 
 
 _SEARCH_MESSAGE_RESULT_FIELDS = (
@@ -658,7 +676,8 @@ def search_messages(
     holder: StoreHolder, query: str, source_filter: list[str] | None = None, exclude_sources: list[str] | None = None,
     role_filter: list[str] | None = None, limit: int = 20, offset: int = 0, sort: str | None = None,
     include_inactive: bool = False, fields: Optional[Collection[str]] = None,
-    after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+    after_ts: Optional[int] = None, before_ts: Optional[int] = None, session_ids: Optional[list[str]] = None,
+    compacted_in_session: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """:meth:`_search_messages_impl` plus one log line per slow search with the routing
     path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
@@ -668,7 +687,8 @@ def search_messages(
         rows = _search_messages_impl(holder,
             query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
             limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
-            after_ts=after_ts, before_ts=before_ts)
+            after_ts=after_ts, before_ts=before_ts, session_ids=session_ids,
+            compacted_in_session=compacted_in_session)
         return rows
     finally:
         elapsed_ms = (time.time() - started) * 1000.0
@@ -694,7 +714,8 @@ def _search_messages_impl(
     holder: StoreHolder, query: str, source_filter: list[str] | None = None, exclude_sources: list[str] | None = None,
     role_filter: list[str] | None = None, limit: int = 20, offset: int = 0, sort: str | None = None,
     include_inactive: bool = False, fields: Optional[Collection[str]] = None,
-    after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+    after_ts: Optional[int] = None, before_ts: Optional[int] = None, session_ids: Optional[list[str]] = None,
+    compacted_in_session: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
     Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
@@ -702,7 +723,8 @@ def _search_messages_impl(
     CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
     by default; compaction-archived rows ARE included; ``include_inactive`` = every row.
     ``after_ts``/``before_ts`` bound ``sessions.started_at`` on every route (FTS5, CJK,
-    trigram, LIKE fallback, unindexed-gap supplement)."""
+    trigram, LIKE fallback, unindexed-gap supplement); so does ``session_ids`` (search
+    inside those sessions only)."""
     result_fields = _search_message_fields(fields)
     if not query or not query.strip():
         return []
@@ -711,7 +733,8 @@ def _search_messages_impl(
         return []
     filters = dict(include_inactive=include_inactive, source_filter=source_filter,
                    exclude_sources=exclude_sources, role_filter=role_filter,
-                   after_ts=after_ts, before_ts=before_ts)
+                   after_ts=after_ts, before_ts=before_ts, session_ids=session_ids,
+                   compacted_in_session=compacted_in_session)
     # New oversized tool results index only a bounded prefix; an explicit tool-role search is the
     # opt-in full-body path and scans canonical rows via LIKE.
     if role_filter and "tool" in role_filter:
@@ -803,7 +826,7 @@ def _search_cjk(holder: StoreHolder, query: str, wants_unindexed_rows: bool, rou
     like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
     like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
     filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
-                                     "after_ts", "before_ts")}
+                                     "after_ts", "before_ts", "session_ids", "compacted_in_session")}
     _search_filter_clauses(like_where, like_params, **filters)
     # instr() for the snippet uses the first search token.
     return _like_rows(holder, like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],

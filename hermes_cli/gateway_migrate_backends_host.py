@@ -69,6 +69,54 @@ def plist_environment(path: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
 
 
+def unit_text_environment(text: str) -> tuple[dict[str, str], Optional[str]]:
+    """The ``Environment=`` assignments of a unit file's *text*, with systemd's quoting undone (``"..."``,
+    backslash escapes, ``%%``), and why they cannot be read (None when they can): a specifier is not resolved."""
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("Environment="):
+            continue
+        try:
+            tokens = shlex.split(line[len("Environment="):])
+        except ValueError:
+            return env, f"its line {line[:60]!r} cannot be read"
+        for token in tokens:
+            if "%" in token.replace("%%", ""):
+                return env, f"its Environment={token.split('=', 1)[0]} holds a systemd specifier"
+            name, sep, value = token.partition("=")
+            if sep:
+                env[name] = value.replace("%%", "%")
+    return env, None
+
+
+def _future_gateway_environment(kind: str) -> tuple[dict[str, str], Optional[str]]:
+    """The environment of the gateway service ``hermes gateway install`` would write for this home, and why it
+    cannot be told: a systemd user unit gets the user manager's environment, then the ``Environment=`` lines
+    of :func:`hermes_cli.gateway.generate_systemd_unit`; a LaunchAgent the ``EnvironmentVariables`` of
+    :func:`hermes_cli.gateway_launchd.generate_launchd_plist`."""
+    service = "the gateway service `hermes gateway install` would write"
+    if kind == "launchd":
+        import plistlib
+        from hermes_cli.gateway_launchd import generate_launchd_plist
+        try:
+            env = plistlib.loads(generate_launchd_plist().encode("utf-8")).get("EnvironmentVariables")
+        except Exception as exc:  # any failure leaves the environment unknown
+            return {}, f"{service} cannot be generated here ({type(exc).__name__})"
+        return {str(k): str(v) for k, v in (env or {}).items()}, None
+    from hermes_cli import gateway as gw
+    manager = _systemctl("user", ["show-environment"])
+    if manager.returncode != 0:
+        return {}, f"systemctl --user show-environment failed, so the environment of {service} is unknown"
+    env = _env_tokens(" ".join(shlex.quote(line) for line in (manager.stdout or "").splitlines()))
+    try:
+        written, problem = unit_text_environment(gw.generate_systemd_unit())
+    except Exception as exc:  # any failure leaves the environment unknown
+        return env, f"{service} cannot be generated here ({type(exc).__name__})"
+    if problem:
+        return env, f"{service}: {problem}"
+    return {**env, **written}, None
+
+
 def parse_show(stdout: str) -> dict[str, str]:
     return dict(line.split("=", 1) for line in (stdout or "").splitlines() if "=" in line)
 
@@ -648,15 +696,18 @@ class SystemHost:
     def gateway_environment(self) -> tuple[dict[str, str], Optional[str]]:
         """The environment the gateway's service starts with, before it loads the home's ``.env`` (values stay
         in memory), and why it cannot be told (None when it can): a systemd user service gets the user
-        manager's environment, then its unit's ``Environment=`` and ``EnvironmentFile=`` (one ``gateway install``
-        has yet to write has the manager's alone); a LaunchAgent its plist's ``EnvironmentVariables``."""
+        manager's environment, then its unit's ``Environment=`` and ``EnvironmentFile=``; a LaunchAgent its
+        plist's ``EnvironmentVariables``. One not installed yet (a first move installs it) gets what
+        ``hermes gateway install`` would write: :func:`_future_gateway_environment`."""
         from hermes_cli import gateway as gw
         kind = self.gateway_kind()
         if kind == "systemd":
+            if not gw.get_systemd_unit_path(system=False).exists():
+                return _future_gateway_environment("systemd")
             return self.unit_environment(gw.get_service_name(), "user")
         if kind == "launchd":
             path = gw.get_launchd_plist_path()
-            return (plist_environment(str(path)) if path.exists() else {}), None
+            return (plist_environment(str(path)), None) if path.exists() else _future_gateway_environment("launchd")
         return {}, "the gateway does not run as a service of this machine's service manager"
 
     def gateway_state(self) -> dict:

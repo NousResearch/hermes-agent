@@ -491,7 +491,9 @@ take: the same bind and port (loopback stays loopback, a wildcard stays a wildca
 stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
 copied into `.env` (names only; values are never printed; one `.env` already sets is not copied, and a
 `.env` line that sets a sign-in setting as a `${VAR}` template reading a VAR from outside the `.env` blocks
-the move when the gateway's service would not start with the value VAR has for the old backend, or when
+the move when the gateway's service would not start with the value VAR has for the old backend (a gateway
+service not installed yet is judged as `hermes gateway install` would write it: the user manager's
+environment plus the unit's `Environment=` lines, or the LaunchAgent's variables), or when
 the old unit's `env` launcher sets VAR: put the literal value in `.env`, or set VAR where the gateway
 runs), the public URL it would copy into
 `webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the

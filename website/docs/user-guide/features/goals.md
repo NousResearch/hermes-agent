@@ -232,7 +232,15 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+  # What the agent's questions (the clarify tool) do while a goal is
+  # active: "block" (default) waits for your answer, "skip" answers at
+  # once with no response so the agent decides and keeps going.
+  clarify: block
 ```
+
+### Questions during a goal
+
+By default a clarify question asked mid-goal waits for you like any other question, up to `agent.clarify_timeout`, and the loop sits idle meanwhile. Set `goals.clarify: skip` when you start goals and walk away. The question is not shown; the agent gets an `undelivered` result telling it to pick the best option, state the assumption in its reply and keep working. Questions outside an active goal (paused, done, or no goal) still wait for you. A goal the agent can't finish without you still pauses through the judge's `blocked` verdict, so you answer once at the end instead of mid-run.
 
 ### Choosing the judge model
 

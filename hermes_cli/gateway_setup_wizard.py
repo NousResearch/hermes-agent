@@ -51,6 +51,12 @@ _PLATFORMS = [
              "help": "off = flat channel messages, thread = replies nest under your message."},
         ],
     },
+    {
+        # A browser surface, not a chat channel: wizard-only row (no registry entry, so it
+        # never appears as a delivery target). Status reads webapp.*; setup runs the guided
+        # publishing flow (local mDNS or HTTPS domain), shared with `hermes webapp setup`.
+        "key": "desktop", "label": "Hermes Desktop (browser)", "emoji": "🖥️", "token_var": "",
+    },
 ]
 
 
@@ -101,6 +107,14 @@ def _platform_status(platform: dict) -> str:
             configured = False
         return "configured" if configured else "not configured"
 
+    if platform.get("key") == "desktop":
+        # Config-backed surface: configured once the gateway's webapp is enabled.
+        try:
+            from gateway.webapp_listener import webapp_settings
+            from hermes_cli.webapp_access import gateway_home
+            return "configured" if webapp_settings(gateway_home()).enabled else "not configured"
+        except Exception:  # health: allow BLE001 -- status probe must never raise into the menu
+            return "not configured"
     token_var = platform.get("token_var", "")
     if not token_var:
         return "not configured"
@@ -324,6 +338,9 @@ def _setup_standard_platform(platform: dict):
 def _builtin_setup_fn(key: str):
     """Resolve a built-in platform's setup function; late-bound to dodge the hermes_cli.setup cycle."""
     from hermes_cli import setup as _s
+    if key == "desktop":
+        from hermes_cli.webapp_publish.flow import interactive_setup
+        return interactive_setup
     return {
         # telegram/discord/slack/whatsapp/dingtalk/feishu/wecom setup_fns come from their plugins.
         "webhooks": _gw().setup_platforms._setup_webhooks,

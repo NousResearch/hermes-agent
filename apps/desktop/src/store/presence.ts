@@ -20,7 +20,7 @@ import type { PresenceSnapshot } from '../../electron/presence'
 
 import { $browserNotificationPermission } from './browser-notification-permission'
 import { $gateway } from './gateway'
-import { $nativeNotifyPrefs, turnDoneNotificationWouldFire } from './native-notifications'
+import { $nativeNotifyPrefs, readHostNotifySupport, turnDoneNotificationWouldFire } from './native-notifications'
 import { mainChatShowing, mainChatShowingStores, presenceView } from './presence-view'
 import { $activeSessionId, $gatewayState, $selectedStoredSessionId } from './session'
 import { $sessionStates } from './session-states'
@@ -437,6 +437,10 @@ export function startPresenceReporter(): () => void {
   })
 
   const onView = () => reporter.refresh()
+  let stopped = false
+  // Main's answer about OS notifications decides can_alert in a background window: ask now, not at
+  // the first blur, and read presence again once it is in.
+  void readHostNotifySupport()?.then(() => !stopped && onView())
   const boundStored = () => $sessionStates.get()[$activeSessionId.get() ?? '']?.storedSessionId
   let boundStoredId = boundStored()
   let chatShowing = mainChatShowing()
@@ -486,6 +490,7 @@ export function startPresenceReporter(): () => void {
   windowReporter = reporter
 
   return () => {
+    stopped = true
     offs.forEach(off => off())
     window.removeEventListener('hashchange', onView)
     window.removeEventListener('focus', onView)

@@ -232,9 +232,33 @@ function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotifi
   return prefs.enabled && prefs.kinds[kind] && !withinNativeNotifyBaseline() && shouldFire(kind, sessionId, global)
 }
 
-// Main's answer to whether it can show an OS notification, asked once per window (bridge); absent
+// Main's answer to whether it can show an OS notification, asked once per window (bridge); false
 // until it arrives.
-const hostNotifySupported = new WeakMap<NonNullable<Window['hermesDesktop']>, boolean>()
+const hostNotifySupport = new WeakMap<NonNullable<Window['hermesDesktop']>, { known: Promise<void>; supported: boolean }>()
+
+/** Ask main, once per window, whether it can show OS notifications. Resolves when the answer is in
+ *  (never rejects); undefined where there is nothing to ask (no bridge, or a browser, which checks
+ *  its permission live). */
+export function readHostNotifySupport(): Promise<void> | undefined {
+  const bridge = window.hermesDesktop
+
+  if (!bridge?.notify || isBrowserHostedDesktop()) {
+    return undefined
+  }
+
+  let entry = hostNotifySupport.get(bridge)
+
+  if (!entry) {
+    const created = { known: Promise.resolve(), supported: false }
+    created.known = (bridge.notifySupported?.() ?? Promise.resolve(false)).then(
+      supported => void (created.supported = supported === true),
+      () => undefined
+    )
+    hostNotifySupport.set(bridge, (entry = created))
+  }
+
+  return entry.known
+}
 
 /** Whether the host could show a notification handed to it now. Not known yet counts as no. */
 function hostCanNotify(): boolean {
@@ -248,15 +272,9 @@ function hostCanNotify(): boolean {
     return browserNotificationsAllowed()
   }
 
-  if (!hostNotifySupported.has(bridge)) {
-    hostNotifySupported.set(bridge, false)
-    bridge.notifySupported?.().then(
-      supported => hostNotifySupported.set(bridge, supported === true),
-      () => undefined
-    )
-  }
+  void readHostNotifySupport()
 
-  return hostNotifySupported.get(bridge) === true
+  return hostNotifySupport.get(bridge)?.supported === true
 }
 
 /** Whether this client's turn-done notification for `sessionId` passes every guard dispatch applies

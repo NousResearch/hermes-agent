@@ -66,8 +66,33 @@ class TestMiniMaxModelValidation:
         assert "MiniMax-M2.7" in result["message"]
 
     # -------------------------------------------------------------------------
-    # Test 3: A completely unknown model is accepted (not rejected) with a warning
+    # Test 3: An id MiniMax does not list is accepted with a warning, unless it is another vendor's
     # -------------------------------------------------------------------------
+    @pytest.mark.parametrize("name", ["MiniMax-M3.1-Flash", "minimaxai/MiniMax-M2", "abab6.5s-chat"])
+    def test_unlisted_minimax_or_unclassified_id_is_soft_accepted(self, name):
+        result = validate_requested_model(name, "minimax")
+        assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert "cannot verify" in result["message"]
+
+    @pytest.mark.parametrize("provider", ["minimax", "minimax-cn"])
+    def test_other_vendor_id_is_rejected_with_the_provider_to_use(self, provider, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "test-kimi-key")
+        result = validate_requested_model("kimi-k3.1-pro", provider)
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "doesn't look like a MiniMax model" in result["message"]
+        assert "/model kimi-k3.1-pro --provider kimi-coding" in result["message"]
+
+    def test_other_vendor_without_a_dedicated_provider_gets_the_generic_hint(self):
+        result = validate_requested_model("qwen3.5-4b", "minimax")
+        assert result["accepted"] is False
+        assert "--provider <slug>" in result["message"]
+
+    def test_custom_base_url_keeps_the_soft_accept(self):
+        # MINIMAX_BASE_URL pointed at the user's own proxy: it may front other vendors' models.
+        result = validate_requested_model("kimi-k3.1-pro", "minimax", base_url="https://proxy.example.com/anthropic")
+        assert result["accepted"] is True
 
     # -------------------------------------------------------------------------
     # Test 4: Verify catalog path is used (probe_api_models returns None)

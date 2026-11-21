@@ -83,9 +83,10 @@ def resolve(frame, *, session_ok=lambda session_id, events: True, answered=None)
     ``session_ok(session_id, events)`` lets the caller refuse an answer from a connection not entitled
     to that session: the caller's own authority must own ``events``, the stream the request was sent on
     (session ids are only unique per profile, and ``_open`` is process-wide). ``answered(session_id)``
-    runs, before the waiter wakes, when the frame is a person's answer to a card: a result (not an
-    error, so no decline) to a request a reconnecting viewer is handed again (not an automatic window
-    request: reads, a preview click, the tour, a theme apply)."""
+    runs, before the waiter wakes, when the frame is a result (not an error, so no decline; a skip or
+    cancel result counts) to a request a reconnecting viewer is handed again (not an automatic window
+    request: reads, a preview click, the tour, a theme apply). A failure in it is logged and changes
+    nothing about the settlement."""
     with _lock:
         pending = _open.get(frame["id"])
         if pending is None or not session_ok(pending.session_id, pending.events):

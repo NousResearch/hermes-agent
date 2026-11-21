@@ -52,8 +52,9 @@ The same label also names the connection, not just one session: after its
 `client.capabilities {"client": {...}}` as a call of its own, once per connection and again after
 every reconnect, and ignores an error reply (an older owner refuses the unknown param for that
 call only). An owner listing `client-identity-v1` in `runtime.describe` capabilities keeps it for
-the connection's life; a malformed label answers `4001` and leaves the earlier one in place. The
-Desktop app sends `hermes-desktop` / `desktop` and the Webapp `hermes-webapp` / `webapp`.
+the connection's life; a malformed label leaves the earlier one in place and answers `4001` (an
+unknown key in it `4000`, like any unknown param). The Desktop app sends `hermes-desktop` /
+`desktop` and the Webapp `hermes-webapp` / `webapp`.
 
 An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`
 on a connection that keeps presence (a WebSocket; stdio answers `false`), and only then does a

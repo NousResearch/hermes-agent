@@ -1,3 +1,5 @@
+# health: allow FILE_LINES -- the vision route keeps one entry point; its two capability helpers already moved to
+# agent/image_routing.py, and a package split of this 8.2k-line client is its own refactor, not part of a screening fix.
 """Shared auxiliary client router for side tasks (compression, search, vision, ...).
 
 Text auto chain: main provider+model → OpenRouter → Nous Portal → custom endpoint →
@@ -27,6 +29,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from agent.local_prompt_progress import (
     PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
 from agent import auxiliary_call_outcome, auxiliary_error_policy as aux_errors
+from agent.image_routing import vision_incapable_candidate_note, vision_model_reports_text_only
 from agent.error_classifier import (
     FailoverReason,
     UNSUPPORTED_PARAM_MARKERS,
@@ -4210,6 +4213,11 @@ def _try_configured_fallback_chain(
             _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url, model=fb_model_raw)
             tried.append(f"fallback_chain[{i}]({fb_provider}) (unhealthy)")
             continue
+        vision_skip = vision_incapable_candidate_note(
+            task, fb_provider, fb_model_raw, f"fallback_chain[{i}]({fb_provider})")
+        if vision_skip:
+            tried.append(vision_skip)
+            continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
         try:
@@ -4302,6 +4310,10 @@ def _try_main_fallback_chain(
         if _is_provider_unhealthy(fb_norm, fb_base_url, fb_model):
             _log_skip_unhealthy(fb_norm, task, base_url=fb_base_url, model=fb_model)
             tried.append(f"{label} (unhealthy)")
+            continue
+        vision_skip = vision_incapable_candidate_note(task, fb_provider, fb_model, label)
+        if vision_skip:
+            tried.append(vision_skip)
             continue
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
@@ -5490,7 +5502,28 @@ def resolve_vision_provider_client(
 
     Direct endpoint overrides beat provider selection; explicit providers may force
     experimental backends; auto mode only tries backends known to work.
+
+    A model the catalog reports as text-only is refused (client ``None``) so callers fall through
+    instead of spending a request the provider answers with a hard 400.
     """
+    resolved_provider, client, final_model = _resolve_vision_backend_unchecked(
+        provider=provider, model=model, base_url=base_url, api_key=api_key,
+        async_mode=async_mode, main_runtime=main_runtime,
+    )
+    if client is not None and vision_model_reports_text_only(resolved_provider, final_model):
+        logger.warning(
+            "Auxiliary vision: refusing %s/%s — catalog reports text-only; image input would hard-400",
+            resolved_provider, final_model)
+        return resolved_provider, None, None
+    return resolved_provider, client, final_model
+
+
+def _resolve_vision_backend_unchecked(
+    provider: Optional[str] = None, model: Optional[str] = None, *, base_url: Optional[str] = None,
+    api_key: Optional[str] = None, async_mode: bool = False,
+    main_runtime: Optional[dict[str, Any]] = None,
+) -> tuple[Optional[str], Optional[Any], Optional[str]]:
+    """Backend resolution for :func:`resolve_vision_provider_client` without the text-only gate."""
     runtime = _normalize_main_runtime(main_runtime)
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key

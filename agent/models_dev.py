@@ -231,7 +231,10 @@ def _profile_alias_models_dev_id(name: str, *, config: Optional[dict[str, Any]] 
     consumer (image routing, reasoning, context window) read those models as unknown. Only fills a miss:
     exact ids and a configured ``catalog_provider`` keep precedence, ``custom:`` routes are never resolved,
     and a user-defined provider of the same name is never re-pointed at a vendor catalog."""
-    if not name or name.lower().startswith("custom") or _is_named_custom_provider(name, config=config):
+    low = (name or "").strip().lower()
+    if not low or low == "custom" or low.startswith("custom:"):
+        return None  # the bare custom route and custom:<route>, never a name like "customai"
+    if _is_named_custom_provider(name, config=config):
         return None
     try:
         from providers import get_provider_profile

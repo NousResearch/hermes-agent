@@ -50,12 +50,13 @@ def registry(monkeypatch):
 
     monkeypatch.setattr(models_dev, "_registry_models", registry_models)
     providers.register_provider(ProviderProfile(
-        name="fixture-provider", aliases=("fixture-alias", "fixture-other"), models_dev_id="fixture-mdev"))
+        name="fixture-provider", aliases=("fixture-alias", "fixture-other", "customai"),
+        models_dev_id="fixture-mdev"))
     providers.register_provider(ProviderProfile(name="bare-provider", aliases=("bare-alias",)))
     return seen
 
 
-@pytest.mark.parametrize("name", ["fixture-provider", "fixture-alias", "fixture-other"])
+@pytest.mark.parametrize("name", ["fixture-provider", "fixture-alias", "fixture-other", "customai"])
 def test_profile_name_and_aliases_read_the_same_catalog(registry, name):
     caps = models_dev.get_model_capabilities(name, "seer-1", config=NO_CONFIG)
     assert caps is not None
@@ -75,7 +76,8 @@ def test_alias_session_routes_images_natively(registry, monkeypatch):
     assert decide_image_input_mode("fixture-alias", "not-in-catalog", cfg) == "text"
 
 
-@pytest.mark.parametrize("name", ["", "no-such-provider", "FIXTURE-ALIAS", "custom:fixture-alias", "custom",
+@pytest.mark.parametrize("name", ["", "no-such-provider", "FIXTURE-ALIAS", "custom:fixture-alias",
+                                  "Custom:customai", "custom",
                                   "bare-alias", "bare-provider"])
 def test_edge_names_stay_unknown(registry, name):
     assert models_dev._models_dev_id(name, config=NO_CONFIG) is None

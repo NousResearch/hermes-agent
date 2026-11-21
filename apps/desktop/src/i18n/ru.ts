@@ -799,6 +799,7 @@ export const ruOverrides = {
         maxIterations: 'Лимит ходов субагента',
         maxConcurrentChildren: 'Параллельные субагенты',
         childTimeoutSeconds: 'Тайм-аут субагента',
+        autoResume: 'Автоматически возобновлять работу субагентов',
         reasoningEffort: 'Глубина рассуждений субагента'
       },
       updates: {

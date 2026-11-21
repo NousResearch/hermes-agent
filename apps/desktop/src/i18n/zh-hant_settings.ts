@@ -615,6 +615,7 @@ export const zhHantSettings = {
         maxIterations: '子代理輪次上限',
         maxConcurrentChildren: '平行子代理',
         childTimeoutSeconds: '子代理逾時',
+        autoResume: '自動繼續執行子代理',
         reasoningEffort: '子代理推理強度'
       },
       updates: {

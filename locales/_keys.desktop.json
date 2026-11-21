@@ -3450,6 +3450,7 @@
     "settings.fieldLabels.compression.targetRatio",
     "settings.fieldLabels.compression.threshold",
     "settings.fieldLabels.context.engine",
+    "settings.fieldLabels.delegation.autoResume",
     "settings.fieldLabels.delegation.childTimeoutSeconds",
     "settings.fieldLabels.delegation.maxConcurrentChildren",
     "settings.fieldLabels.delegation.maxIterations",

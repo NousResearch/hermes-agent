@@ -824,6 +824,7 @@ export const jaOverrides = {
         maxIterations: 'サブエージェントターン上限',
         maxConcurrentChildren: '並列サブエージェント',
         childTimeoutSeconds: 'サブエージェントタイムアウト',
+        autoResume: 'サブエージェントを自動的に再開',
         reasoningEffort: 'サブエージェント推論強度'
       },
       updates: {

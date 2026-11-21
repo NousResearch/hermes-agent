@@ -167,6 +167,36 @@ describe('writeClipboardText', () => {
     expect(stdin.end).toHaveBeenCalledWith('hello world')
   })
 
+  it('runs pbcopy and pbpaste in a UTF-8 locale whatever the inherited one', async () => {
+    // Under LC_ALL=C (or LANG unset) pbcopy stored UTF-8 CJK/emoji as MacRoman mojibake and
+    // pbpaste read them back as '?': the child's locale must name the charset of the text.
+    const inherited = { LC_ALL: 'C', PATH: '/usr/bin' }
+    const utf8 = /\.utf-?8$/i
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      unref: vi.fn(),
+      stdin: { end: vi.fn() }
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(writeClipboardText('日本語 😀', 'darwin', start as any, inherited)).resolves.toBe(true)
+    expect(start.mock.calls[0][2].env.LC_ALL).toMatch(utf8)
+    expect(start.mock.calls[0][2].env.PATH).toBe('/usr/bin')
+
+    const run = vi.fn().mockResolvedValue({ stdout: '日本語 😀' })
+
+    await expect(readClipboardText('darwin', run as any, inherited)).resolves.toBe('日本語 😀')
+    expect(run.mock.calls[0][2].env.LC_ALL).toMatch(utf8)
+  })
+
   it('returns false when pbcopy fails', async () => {
     const child = {
       once: vi.fn((event: string, cb: () => void) => {

@@ -32,8 +32,10 @@ def task_model(task, config) -> tuple[str, bool]:
              if identity.startswith('custom:') else None) or {}
     if str(entry.get('model') or '').strip():
         return str(entry['model']).strip(), False
+    if identity == 'auto':
+        return '', False
     base_url = _route_base_url(identity, held, entry)
-    if identity == 'auto' or (base_url and _self_hosted(base_url)):
+    if base_url and _self_hosted(base_url):
         return '', False
     model = '' if entry else get_default_model_for_provider(identity)
     return model, not model and not get_fallback_chain(config)
@@ -48,21 +50,22 @@ def _route_base_url(identity, held, entry) -> str:
     if entry:
         return base_url
     if identity not in ('custom', 'openrouter'):
-        return base_url or _builtin_base_url(identity, get_secret_str)
-    if not base_url and str(held.get('provider') or '').strip().lower() in _LLAMACPP_ALIASES:
-        return 'http://127.0.0.1'  # the managed llama.cpp server on this host (_resolve_llamacpp_runtime)
+        return _builtin_base_url(identity, base_url, get_secret_str)
+    if str(held.get('provider') or '').strip().lower() in _LLAMACPP_ALIASES:
+        return 'http://127.0.0.1'  # the managed llama.cpp server, whatever model.base_url says (_resolve_llamacpp_runtime)
     return (get_secret_str('CUSTOM_BASE_URL').strip() or base_url
             or get_secret_str('OPENROUTER_BASE_URL').strip())
 
 
-def _builtin_base_url(identity, get_secret_str) -> str:
-    """Where a built-in provider runs with no ``model.base_url``: its scoped ``*_BASE_URL``, else its registry
-    default (``_api_key_provider_runtime``; ``provider: openai`` reads ``OPENAI_BASE_URL``, ``expand_direct_api_alias``)."""
+def _builtin_base_url(identity, base_url, get_secret_str) -> str:
+    """Where a built-in provider's turn goes: its scoped ``*_BASE_URL`` ahead of ``model.base_url`` (the env-seeded
+    credential pool and ``expand_direct_api_alias`` both take it first), then its registry default."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
     pconfig = PROVIDER_REGISTRY.get(identity)
     env_var = getattr(pconfig, 'base_url_env_var', '') or ('OPENAI_BASE_URL' if identity in _DIRECT_API_BASE_URLS else '')
-    return (get_secret_str(env_var).strip() if env_var else '') or getattr(pconfig, 'inference_base_url', '')
+    return ((get_secret_str(env_var).strip() if env_var else '') or base_url
+            or getattr(pconfig, 'inference_base_url', ''))
 
 
 def _self_hosted(base_url) -> bool:

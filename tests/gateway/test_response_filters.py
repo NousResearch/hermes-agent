@@ -109,11 +109,9 @@ def test_padding_on_bracketed_prose_is_still_delivered():
     assert not is_autonomous_silence_response("the tag [ SILENT ] means quiet")
     assert not is_intentional_silence_response("[ no changes ] is what the watcher printed")
     assert not is_autonomous_silence_response("[ no changes ] is what the watcher printed")
-    assert not is_intentional_silence_response("[ SILENT")  # half a marker is not a marker
-    assert not is_autonomous_silence_response("[ SILENT")
+    assert not is_intentional_silence_response("[ SILENT")  # half a marker is not a marker in chat
     assert not is_intentional_silence_response("SILENT ]")
     assert not is_autonomous_silence_response("a status update [ SILENT ] for this tick")
-
 
 
 def test_code_formatted_sentinel_is_autonomous_silence():
@@ -142,3 +140,37 @@ def test_code_spanned_sentinel_mentioned_mid_body_is_delivered():
 def test_interactive_exact_rule_is_unchanged_for_code_spans():
     """Only the loose autonomous lane peels code formatting."""
     assert not is_intentional_silence_response("`[SILENT]`")
+
+
+# Whole replies that are a damaged ``[SILENT]``: the six real leaks from a 265-reply cron replay
+# (PR #158289 thread) plus the shapes the salvaged PRs reported. Each one reached the user's chat.
+_DAMAGED_SILENT_REPLIES = (
+    "[", "[\n", "[S", "[SIL", "[SILEN",  # provider cut the reply off mid-marker
+    "[SILENT", "[silent", "[SILENT\n",  # dropped closing bracket (#85214, #51445)
+    "[SLENT]", "[SLIENT]", "[SILNET]", "[SILENTT]", "[SIILENT]", "[SILEMT]", "[SLENT", "[ SLIENT ]",
+    "[ SILENT ]", "[SILENT ]", "[ SILENT]", "[  SILENT\t]", "[\n\nSILENT]", "[\nSILENT\n]",
+    "  [SILENT]  \n",
+    "[\u200bSILENT]", "\ufeff[SLENT]", "[SIL\u200bENT]",
+    "[ＳＩＬＥＮＴ]", "［SILENT］",  # fullwidth, folded by NFKC
+    "[S\u0130LENT]",  # dotted capital I
+    "`[SLIENT]`", "```\n[SLENT]\n```", "**[ SILENT ]**", "[SILENT].",
+)
+
+# Real content that merely looks bracketed or mentions the marker: always delivered.
+_MUST_DELIVER_REPLIES = (
+    "[URGENT]", "[ALERT]", "[SILVER] price moved", "[SLENT] extra words", "[SILVER]", "[SILENCE]",
+    "[SILENTLY]", "[LENT]", "[SIGNAL]", "[TALENT]", "[CLIENT]", "[SILENT-mode] rollout finished",
+    "[SILENT No changes detected", "[SLIENT] 2 deals moved", "[ SILVER", "[ok]", "[]", "[ ]",
+    "S", "SLENT", "Silent retry succeeded", "Nothing new [SLENT] but here is the digest",
+    "Reply with `[SILENT]` when there is nothing new.", "Price up 3%\n\n[SILVER]",
+    "Built a helper where --silent-empty emits [SILENT] when empty.",
+    "[\n\nSILVER moved 3%]", "\u200b\ufeff", "",
+)
+
+
+def test_damaged_silent_marker_corpus_never_reaches_the_chat_while_real_text_does():
+    """A whole autonomous reply within one letter edit of ``[SILENT]`` (or cut off mid-marker) is
+    silence; any reply with a second word, or a bracketed word two edits away, is delivered."""
+    leaked = [r for r in _DAMAGED_SILENT_REPLIES if not is_autonomous_silence_response(r)]
+    swallowed = [r for r in _MUST_DELIVER_REPLIES if is_autonomous_silence_response(r)]
+    assert (leaked, swallowed) == ([], [])

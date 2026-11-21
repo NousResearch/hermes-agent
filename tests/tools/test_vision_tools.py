@@ -711,7 +711,10 @@ class TestErrorClassification:
         from hermes_logging import DEFAULT_LOG_DETAIL_LIMIT
 
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        # Must be a decodable PNG: image prep now rejects an unrecognized
+        # source before the API call, so a header stub never reaches the
+        # HTTP error this test is about.
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         # Simulate openai.APIStatusError carrying a Cloudflare HTML page.
         huge_body = "<html>" + ("challenge-page" * 50_000) + "</html>"

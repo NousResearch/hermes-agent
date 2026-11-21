@@ -2,6 +2,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
 import { Check, ChevronRight, Terminal } from '@/lib/icons'
 import { PROVIDER_DISPLAY_NAMES } from '@/lib/model-status-label'
+import { connectedCredentialLine } from '@/lib/provider-credential-copy'
 import type { OAuthProvider } from '@/types/hermes'
 
 // Titles live in PROVIDER_DISPLAY_NAMES (shared with the model pill); this is
@@ -150,7 +151,9 @@ export function ProviderRow({
           </span>
           {freeTier ? <FreeTierTag /> : loggedIn ? <ConnectedTag /> : null}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {connectedCredentialLine(provider.status, t.onboarding.flowSubtitles[provider.flow])}
+        </p>
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </RowButton>

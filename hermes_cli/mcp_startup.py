@@ -16,6 +16,9 @@ _mcp_discovery_lock = threading.Lock()
 # profile instead of the first profile to build an agent claiming the slot for everybody (#67605).
 # A single-profile process has exactly one key, so behaviour is the old single-slot form.
 _mcp_discovery_started: set[str] = set()
+# Homes whose zero-``mcp_servers`` gate already logged once: the notice is for the human reading
+# that profile's log, so repeating it on every agent build would be noise (#138622).
+_mcp_discovery_no_config_logged: set[str] = set()
 _mcp_discovery_thread: dict[str, threading.Thread] = {}
 _mcp_discovery_deferred: Optional[threading.Timer] = None
 # Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
@@ -122,9 +125,24 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             _mcp_discovery_started.discard(home_key)
             _mcp_discovery_thread.pop(home_key, None)
 
-        _mcp_discovery_started.add(home_key)
         if not _has_configured_mcp_servers():
+            # #138622: a served profile with no ``mcp_servers`` of its own used to bare-return
+            # here — zero MCP tools with no log line in its own log, and the home was left in
+            # ``_mcp_discovery_started`` so a later build logged a bogus "retrying discovery
+            # thread". Say so once, and leave the home unmarked so a later ``hermes mcp add``
+            # starts discovery through the normal path.
+            if home_key not in _mcp_discovery_no_config_logged:
+                _mcp_discovery_no_config_logged.add(home_key)
+                if _mcp_discovery_started - {home_key}:
+                    logger.warning(
+                        "No mcp_servers configured for this profile; servers shared by other "
+                        "profiles of this backend are not visible here (0 MCP tools)"
+                    )
+                else:
+                    logger.info("No mcp_servers configured for this profile; skipping MCP discovery")
             return
+
+        _mcp_discovery_started.add(home_key)
 
         # Bare threads start from an empty context: run discovery under a copy of the caller's, so
         # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)

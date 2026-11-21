@@ -57,7 +57,7 @@ def retry_recovered_local_server(agent) -> bool:
     endless retries; across turns, a local server that crashed or fell behind and has since
     recovered gets the user's next message instead of an instant error. The router answers
     ``/health`` even while its model is stuck, so one more stale attempt shuts the breaker again."""
-    from agent.chat_completion_helpers import _stale_streak
+    from agent.chat_completion_stale import _stale_streak
 
     giveup, streak = stale_giveup(), _stale_streak(agent)
     if giveup <= 0 or streak < giveup or not _streams_llamacpp(agent) or not _local_server_answers(agent):

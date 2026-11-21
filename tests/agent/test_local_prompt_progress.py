@@ -233,17 +233,17 @@ class TestPromptProgressNotice:
 
 class TestLocalStaleBreakerReset:
     def test_healthy_local_server_gets_one_attempt(self):
-        from agent import chat_completion_helpers as helpers
+        from agent import chat_completion_stale as stale
         from agent import chat_completion_local as h
 
         agent = SimpleNamespace(_consecutive_stale_streams=5)
         with patch.object(h, "_streams_llamacpp", return_value=True), \
                 patch.object(h, "_local_server_answers", return_value=True):
             assert h.retry_recovered_local_server(agent) is True
-        helpers._check_stale_giveup(agent)  # the next call goes through
-        helpers._bump_stale_streak(agent)  # ...and one more stale attempt shuts the breaker
+        stale._check_stale_giveup(agent)  # the next call goes through
+        stale._bump_stale_streak(agent)  # ...and one more stale attempt shuts the breaker
         with pytest.raises(RuntimeError, match="unresponsive"):
-            helpers._check_stale_giveup(agent)
+            stale._check_stale_giveup(agent)
 
     def test_closed_breaker_skips_the_health_check(self):
         from agent import chat_completion_local as h

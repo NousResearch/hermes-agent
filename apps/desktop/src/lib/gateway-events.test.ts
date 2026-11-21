@@ -3,22 +3,22 @@ import { describe, expect, it } from 'vitest'
 import { approvalReplaySessionId, gatewayEventRequiresSessionId, resolveGatewayEventSessionId } from './gateway-events'
 
 describe('gateway event routing', () => {
-  it('rehydrates pending approvals on reconnect ready and resumed session info', () => {
-    expect(approvalReplaySessionId('gateway.ready', 'active-1', null)).toBe('active-1')
-    expect(approvalReplaySessionId('session.info', 'active-1', 'routed-1')).toBe('routed-1')
-    expect(approvalReplaySessionId('message.delta', 'active-1', 'routed-1')).toBeNull()
+  it('rehydrates pending approvals after session rebind, not socket readiness', () => {
+    expect(approvalReplaySessionId('gateway.ready', 'active-1')).toBeNull()
+    expect(approvalReplaySessionId('session.info', 'routed-1')).toBe('routed-1')
+    expect(approvalReplaySessionId('message.delta', 'routed-1')).toBeNull()
   })
 
   it('does not replay against an active runtime the gateway already reported gone', () => {
     const isGone = (sid: string) => sid === 'dead-1'
 
     // Unscoped fan-out attributed to a dead active session: skip.
-    expect(approvalReplaySessionId('session.info', 'dead-1', 'dead-1', { explicit: false, isGone })).toBeNull()
-    expect(approvalReplaySessionId('gateway.ready', 'dead-1', null, { explicit: false, isGone })).toBeNull()
+    expect(approvalReplaySessionId('session.info', 'dead-1', { explicit: false, isGone })).toBeNull()
+    expect(approvalReplaySessionId('gateway.ready', 'dead-1', { explicit: false, isGone })).toBeNull()
     // A live active session still replays.
-    expect(approvalReplaySessionId('session.info', 'live-1', 'live-1', { explicit: false, isGone })).toBe('live-1')
+    expect(approvalReplaySessionId('session.info', 'live-1', { explicit: false, isGone })).toBe('live-1')
     // An explicitly scoped frame is the runtime speaking for itself — never skipped.
-    expect(approvalReplaySessionId('session.info', 'dead-1', 'dead-1', { explicit: true, isGone })).toBe('dead-1')
+    expect(approvalReplaySessionId('session.info', 'dead-1', { explicit: true, isGone })).toBe('dead-1')
   })
 
   it('drops only unscoped subagent events (genuinely background work)', () => {

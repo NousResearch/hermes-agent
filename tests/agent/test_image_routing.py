@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 from agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
     _lookup_supports_vision,
+    _probe_model_name,
     _should_probe_ollama_vision,
     _supports_vision_override,
     build_native_content_parts,
@@ -43,6 +46,30 @@ class TestCoerceMode:
 
 
 
+
+
+class TestModelNameVisionProbe:
+    """Open-weight vision ids no catalog lists (local quants, HF repo ids) attach images natively."""
+
+    @pytest.mark.parametrize("model,expected", [
+        ("Qwen/Qwen2.5-VL-72B-Instruct-AWQ", True), ("qwen2.5vl:7b", True), ("qwen3-vl:8b", True),
+        ("Qwen/QVQ-72B-Preview", True), ("meta-llama/Llama-3.2-11B-Vision-Instruct", True),
+        ("llama3.2-vision:11b", True), ("meta-llama/Llama-4-Scout-17B-16E-Instruct", True),
+        ("llama4:16x17b", True), ("llava:13b", True), ("mistralai/Pixtral-12B-2409", True),
+        ("mistral-small3.2:24b", True), ("Qwen/Qwen2.5-Omni-7B", True),
+        ("llama3.2:3b", None), ("meta-llama/Llama-3.1-8B-Instruct", None), ("devstral:24b", None),
+        ("mistralai/Mistral-Small-24B-Instruct-2501", None), ("qwen2.5-coder:32b", None), ("envision-7b", None),
+    ])
+    def test_name_verdict(self, model, expected):
+        assert _probe_model_name("custom", model, {}) is expected
+
+    def test_known_verdicts_win_and_unknown_vision_id_goes_native(self):
+        vl, text = "Qwen/Qwen2.5-VL-7B-Instruct", "meta-llama/Llama-3.1-8B-Instruct"
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", vl, {}) == "native"
+            assert decide_image_input_mode("custom", text, {}) == "text"
+        with patch("agent.models_dev.get_model_capabilities", return_value=MagicMock(supports_vision=False)):
+            assert decide_image_input_mode("custom", vl, {}) == "text"
 
 
 # ─── decide_image_input_mode ─────────────────────────────────────────────────

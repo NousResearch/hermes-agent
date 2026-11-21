@@ -925,6 +925,18 @@ def _sanitize_cell_spill(kernel: SessionKernel, cell_spill: str) -> str:
         return ""
 
 
+def _cell_raised_memory_error(traceback_text: str) -> bool:
+    """True when a cell's final exception is MemoryError (not merely mentioned in its body).
+
+    A MemoryError can leave multi-GB buffers referenced by the runner's GLOBALS; unlike
+    an ordinary exception, keeping that session kernel alive can stall the host.
+    """
+    tail = traceback_text.rstrip().splitlines()
+    if not tail:
+        return False
+    return tail[-1].split(":", 1)[0].strip() == "MemoryError"
+
+
 def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
@@ -998,6 +1010,14 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
         trace = clean(str(payload.get("traceback", "")))
         result.update(status="error", exit_code=1, error=trace or "Cell raised an exception.",
                       output=_with_stderr(stdout_text, cell_stderr + trace) if (cell_stderr or trace) else stdout_text)
+        if _cell_raised_memory_error(trace):
+            # Ordinary exceptions keep the kernel (state persists across cells), but a
+            # MemoryError leaves multi-GB buffers in GLOBALS for the idle reaper (30 min).
+            _REGISTRY.discard(key, kernel)
+            result["kernel"]["ended"] = True
+            result["warning"] = " ".join(filter(None, [result.get("warning"),
+                "Out of memory: the session kernel was killed and its state was lost; "
+                "the next execute_code call starts a fresh kernel."]))
         hint = _sandbox_failure_hint(trace, enabled_tools=sandbox_tools)
         if hint:
             result["hint"] = hint

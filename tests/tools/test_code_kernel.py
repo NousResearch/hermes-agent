@@ -96,6 +96,20 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertIn("7", after["output"])
         self.assertEqual(after["kernel"]["reused"], True)
 
+    def test_memory_error_kills_the_kernel_and_reports_state_loss(self):
+        """A MemoryError must free the multi-GB runner immediately; ordinary errors keep state."""
+        with _kernel_config():
+            _run("oom_holder = 'keep me'")
+            oom = _run("raise MemoryError('simulated OOM')")
+            self.assertEqual(oom["status"], "error", oom)
+            self.assertIn("MemoryError", oom["error"])
+            self.assertTrue(oom["kernel"]["ended"], oom)
+            self.assertIn("kernel was killed", oom["warning"])
+            after = _run("print(oom_holder)")
+        self.assertEqual(after["status"], "error", after)
+        self.assertIn("NameError", after["error"])
+        self.assertEqual(after["kernel"]["reused"], False)
+
     def test_imports_persist(self):
         with _kernel_config():
             _run("import json as _j")

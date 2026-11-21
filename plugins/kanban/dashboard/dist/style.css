@@ -48,7 +48,8 @@
  * so the pill renders consistently even when a theme forgets to set
  * ``--color-foreground`` (pre-existing safeguard from #18576).
  */
-.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
+.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *),
+.hermes-kanban-drawer .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
   background: color-mix(in srgb, currentColor 8%, transparent) !important;
 }
 /* Tighten contrast on the drawer-specific payload class — it lives on
@@ -334,62 +335,55 @@
   width: 36rem;
 }
 
-/* ---- Drawer (task detail side panel) --------------------------------- */
+/* ---- Task modal (task detail) ------------------------------------------ */
 
-.hermes-kanban-drawer-shade {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 60;
-  display: flex;
-  justify-content: flex-end;
-}
-
+/* The panel is the SDK DialogContent (Radix): it owns the overlay, focus
+   trap, Esc and outside-click dismissal, and sits above the mobile top bar
+   (z-50 over the shell's z-40), so no header offset hack is needed. Plugin
+   CSS is unlayered, so these rules win over the primitive's Tailwind
+   utilities (max-w-md, grid, uppercase title). Sized to its content up to
+   the desktop modal's cap (apps/desktop drawer.tsx, eb3116ccba). */
 .hermes-kanban-drawer {
-  width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
-  height: 100vh;
-  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
-     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
-     100vh on browsers without dvh support. */
-  height: 100dvh;
-  max-height: 100dvh;
-  background: var(--color-card);
-  border-left: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.35);
-  animation: hermes-kanban-drawer-in 180ms ease-out;
-}
-
-@keyframes hermes-kanban-drawer-in {
-  from { transform: translateX(100%); opacity: 0.3; }
-  to   { transform: translateX(0);    opacity: 1; }
+  width: min(62rem, 94vw);
+  max-width: none;
+  max-height: min(84vh, 54rem);
+  /* dvh excludes the mobile browser's collapsing chrome. */
+  max-height: min(84dvh, 54rem);
+  overflow: hidden;
+  background: var(--color-card);
+  /* The portal sits outside the board tree, so set the text colour the
+     board would otherwise have inherited. */
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
 }
 
 .hermes-kanban-drawer-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.6rem 0.8rem;
-  /* Honor the top safe-area inset (notch) so the task id / close button are
-     not clipped on mobile. */
-  padding-top: max(0.6rem, env(safe-area-inset-top));
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem 0.6rem;
   border-bottom: 1px solid var(--color-border);
-  font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
-   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
-   viewport top, so its header would sit behind that bar. Push the header down
-   by the bar height (3.5rem) plus the top safe-area inset. */
-@media (max-width: 1023px) {
-  .hermes-kanban-drawer-head {
-    padding-top: calc(3.5rem + env(safe-area-inset-top));
-  }
+.hermes-kanban-drawer-head-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.hermes-kanban-drawer-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
 }
 
 .hermes-kanban-drawer-close {
   appearance: none;
+  margin-left: auto;
   background: transparent;
   border: 0;
   color: var(--color-muted-foreground);
@@ -399,6 +393,21 @@
   padding: 0 0.25rem;
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+/* The "…" menu takes the push-right slot; the close button follows it. */
+.hermes-kanban-task-actions { margin-left: auto; }
+.hermes-kanban-task-actions + .hermes-kanban-drawer-close { margin-left: 0; }
+
+.hermes-kanban-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* Attachment download trigger — styled as a link, rendered as a <button>
    so the click handler can fetch with the session token (#35338). */
@@ -419,25 +428,92 @@
 }
 .hermes-kanban-attachment-link:hover { text-decoration: underline; }
 
+/* Two columns like the desktop modal: content on the left, a fixed-width
+   property sidebar on the right (desktop: w-64 aside with a left rule).
+   Each column scrolls on its own inside the capped modal height. */
 .hermes-kanban-drawer-body {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.hermes-kanban-drawer-main,
+.hermes-kanban-drawer-side {
+  min-height: 0;
   overflow-y: auto;
-  padding: 0.9rem;
-  /* When no comment row is rendered (loading / error states), the scrolling
-     body is the bottom-most element — extend its bottom padding past the
-     mobile browser chrome so the last content stays readable. */
-  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+  padding: 0.9rem 1rem;
 }
 
+.hermes-kanban-drawer-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hermes-kanban-drawer-side {
+  flex: 0 0 17rem;
+  border-left: 1px solid var(--color-border);
+}
+
+/* Narrow viewports (the dashboard is used on phones): stack the sidebar
+   under the content and let the whole body scroll as one column. */
+@media (max-width: 767px) {
+  .hermes-kanban-drawer-body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .hermes-kanban-drawer-main,
+  .hermes-kanban-drawer-side {
+    overflow-y: visible;
+    flex: 0 0 auto;
+  }
+  .hermes-kanban-drawer-side {
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+}
+
+/* In the 17rem sidebar the dependency "add" select takes the slack and its
+   "+ parent" / "+ child" button keeps to one line. */
+.hermes-kanban-drawer-side .hermes-kanban-deps-row > [role="combobox"],
+.hermes-kanban-drawer-side .hermes-kanban-deps-row > div:has(> [role="combobox"]) {
+  /* basis 0, so the parent and child "add" rows split the width the same
+     way whatever their placeholder says. */
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* Chip rows: the "Parents:" / "Children:" label sits on the first chip's
+   line rather than centred on a wrapped stack. */
+.hermes-kanban-deps-row:has(> .hermes-kanban-deps-chips) {
+  align-items: baseline;
+}
+.hermes-kanban-drawer-side .hermes-kanban-deps-row > button {
+  flex: 0 0 auto;
+  /* Same width for "+ parent" and "+ child", so both selects match. */
+  min-width: 5.5rem;
+  width: 5.5rem;
+  white-space: nowrap;
+}
+/* "Add" rows: select and button share one height. */
+.hermes-kanban-deps-row:not(:has(> .hermes-kanban-deps-chips)) {
+  align-items: stretch;
+}
+.hermes-kanban-deps-row:not(:has(> .hermes-kanban-deps-chips)) > * {
+  height: auto;
+}
+
+/* DialogTitle ships display-type caps; the task title reads as prose. */
 .hermes-kanban-drawer-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  margin: 0;
+  font-family: inherit;
   font-size: 1rem;
   font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: normal;
+  text-transform: none;
+  overflow-wrap: anywhere;
 }
 
 .hermes-kanban-drawer-meta {
@@ -450,18 +526,65 @@
   border-radius: var(--radius-sm, 0.25rem);
 }
 
+/* One label column for every row (static and editable alike): the label
+   never shrinks, so long values (a workspace path, a skills list) no longer
+   push it narrower and rag the value column. */
 .hermes-kanban-meta-row {
   display: flex;
+  align-items: baseline;
   gap: 0.5rem;
+  min-height: 1.6rem;
+  padding: 0.1rem 0;
   font-size: 0.8rem;
+  line-height: 1.35;
 }
 .hermes-kanban-meta-label {
-  width: 92px;
+  flex: 0 0 5.5rem;
   color: var(--color-muted-foreground);
 }
 .hermes-kanban-meta-value {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-foreground);
-  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.hermes-kanban-meta-row > input,
+.hermes-kanban-meta-row > div {
+  min-width: 0;
+}
+
+.hermes-kanban-workspace {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+.hermes-kanban-workspace-path {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  width: 100%;
+}
+.hermes-kanban-workspace-path code {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Break at the <wbr> after each "/"; only a single over-long segment
+     falls back to breaking anywhere. */
+  word-break: normal;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+  overflow-wrap: anywhere;
+}
+.hermes-kanban-workspace-path .hermes-kanban-edit-link {
+  flex: 0 0 auto;
+}
+/* The board card's P-badge is sized for a dense card; in the property list
+   it reads at the size of the other values. */
+.hermes-kanban-meta-value .hermes-kanban-priority {
+  font-size: 0.7rem !important;
+  padding: 0.05rem 0.35rem !important;
 }
 
 .hermes-kanban-actions {
@@ -527,6 +650,30 @@
   color: var(--color-muted-foreground);
 }
 
+/* Estimate: the result line reads like a sidebar value; the rationale and the
+   "makes a model call" note sit a step quieter. */
+.hermes-kanban-estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.hermes-kanban-estimate-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.hermes-kanban-estimate-value {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-foreground);
+}
+.hermes-kanban-estimate-note {
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+}
+
 .hermes-kanban-pre {
   margin: 0;
   padding: 0.5rem 0.6rem;
@@ -554,6 +701,12 @@
   gap: 0.5rem;
   font-size: 0.7rem;
 }
+.hermes-kanban-child-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--color-muted-foreground);
+}
 .hermes-kanban-comment-author {
   font-weight: 600;
   color: var(--color-foreground);
@@ -574,6 +727,7 @@
   min-width: 6rem;
 }
 .hermes-kanban-event-payload {
+  font-size: inherit;
   color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -600,6 +754,45 @@
   /* Keep the comment input clear of the mobile browser nav bar / home
      indicator by extending the bottom padding with the safe-area inset. */
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
+}
+
+.hermes-kanban-comment-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The textarea wears the SDK Input's classes (index.js); this only makes it
+   grow with its content and keeps text clear of the inset send button. */
+.hermes-kanban-comment-field textarea {
+  display: block;
+  min-height: 2.25rem;
+  height: auto;
+  max-height: 10rem;
+  field-sizing: content;
+  resize: none;
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+  padding-right: 2.5rem;
+  line-height: 1.4;
+}
+.hermes-kanban-comment-send {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+}
+
+/* Running task: the live-delivery note on the left, "Requeue with note"
+   (comment + reclaim) on the right. */
+.hermes-kanban-comment-requeue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.75rem 0.55rem;
+  margin-top: -0.2rem;
+}
+.hermes-kanban-comment-requeue > button {
+  flex: 0 0 auto;
 }
 
 .hermes-kanban-count {
@@ -690,6 +883,8 @@
   gap: 0.3rem;
   flex-wrap: wrap;
   flex: 1;
+  /* Let long chip titles truncate instead of widening the row. */
+  min-width: 0;
 }
 .hermes-kanban-deps-empty {
   font-size: 0.7rem;
@@ -704,10 +899,32 @@
   background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  /* Titles read as prose, not ids. */
+  font-family: inherit;
   font-size: 0.68rem;
   color: var(--color-foreground);
+  /* A long title truncates inside the sidebar instead of widening it. */
+  max-width: 100%;
+  min-width: 0;
 }
+.hermes-kanban-dep-chip .hermes-kanban-dot {
+  flex: 0 0 auto;
+}
+.hermes-kanban-dep-chip-open {
+  appearance: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.hermes-kanban-dep-chip-open:hover { text-decoration: underline; }
 .hermes-kanban-dep-chip-x {
   appearance: none;
   background: transparent;
@@ -805,9 +1022,11 @@
 .hermes-kanban-md h3 { font-size: 0.88rem; }
 .hermes-kanban-md h4 { font-size: 0.82rem; }
 .hermes-kanban-md ul {
-  margin: 0.25rem 0 0.25rem 1.1rem;
-  padding: 0;
+  margin: 0.25rem 0;
+  padding-left: 1.1rem;
+  list-style: disc outside;
 }
+.hermes-kanban-md li::marker { color: var(--color-muted-foreground); }
 .hermes-kanban-md li { margin: 0.1rem 0; }
 .hermes-kanban-md a {
   color: var(--color-ring);
@@ -829,7 +1048,8 @@
  * UA default on <code> elements — otherwise themes that don't set
  * --color-foreground leave code text rendering near-black on dark themes
  * (see issue #18576). */
-.hermes-kanban pre.hermes-kanban-md-code {
+.hermes-kanban pre.hermes-kanban-md-code,
+.hermes-kanban-drawer pre.hermes-kanban-md-code {
   margin: 0.35rem 0;
   padding: 0.5rem 0.6rem;
   /* Higher specificity (``.hermes-kanban pre.hermes-kanban-md-code`` vs
@@ -1439,7 +1659,7 @@
 }
 .hermes-kanban-diag-detail {
   font-size: 0.8125rem;
-  color: var(--color-foreground, #ccc);
+  color: var(--color-foreground);
   line-height: 1.4;
 }
 .hermes-kanban-diag-data {
@@ -1608,4 +1828,36 @@
 
 .hermes-kanban-trash-label {
   font-weight: 500;
+}
+
+/* ---- Activity feed tabs (comments / events / runs) ------------------ */
+
+/* SDK Tabs lay out with gap-4; tighten to the section rhythm. */
+.hermes-kanban-feed-tabs {
+  gap: 0.6rem;
+}
+/* The strip spans the column and scrolls sideways on phones rather than
+   wrapping the triggers. */
+.hermes-kanban-feed-tablist {
+  display: flex;
+  /* The SDK list is a fixed h-9 with centred triggers, which floats the
+     active underline above the rule; size to the triggers instead. */
+  height: auto;
+  align-items: flex-end;
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+/* Triggers keep the SDK's own type and colours; they only stay on one line
+   and the first sits flush with the column edge like the headings around it. */
+.hermes-kanban-feed-tablist > button {
+  flex: 0 0 auto;
+}
+.hermes-kanban-feed-tablist > button:first-child {
+  padding-left: 0;
+}
+.hermes-kanban-feed-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }

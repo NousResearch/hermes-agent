@@ -198,7 +198,7 @@ const _MEDIA_PATH_BARE = '[^\\s`"]+'
 
 // Sentence punctuation that can trail a bare capture when the tag sits in
 // prose (`open MEDIA:/tmp/a.pdf.`).
-const _MEDIA_TRAILING_PUNCTUATION = '.,;:!?'
+const _MEDIA_TRAILING_PUNCTUATION = '.,;:!?*'
 
 /**
  * Whether a capture can name a real deliverable: a path separator, or a dot

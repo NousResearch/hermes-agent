@@ -415,7 +415,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
     if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
         try:
             from agent.memory_provider import spawn_context_thread
-            spawn_context_thread(_speak_text_with_barge, name="voice-tts-fallback", args=(raw,)).start()
+            session_id = getattr(session.get("agent"), "session_id", None) or session.get("session_key") or ""
+            spawn_context_thread(_speak_text_with_barge, name="voice-tts-fallback", args=(raw, session_id)).start()
         except ImportError:
             logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
         except Exception as e:

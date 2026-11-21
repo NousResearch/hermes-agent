@@ -271,7 +271,8 @@ class CLIChatTurnMixin:
 
             turn.tts_thread = threading.Thread(
                 target=stream_tts_to_speaker, args=(turn.text_queue, turn.stop_event, self._voice_tts_done),
-                kwargs={"display_callback": None if self.streaming_enabled else display_callback},
+                kwargs={"display_callback": None if self.streaming_enabled else display_callback,
+                        "session_id": getattr(self, "session_id", None) or "", "platform": "cli"},
                 daemon=True,
             )
             turn.tts_thread.start()

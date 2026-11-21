@@ -29,5 +29,6 @@ export interface CatalogInstallTranslations {
   serverNotConnected: (server: string, reason: string) => string
   notEnabled: string
   missingEnv: (names: string) => string
+  updatePending: (name: string) => string
   alreadyInstalled: string
 }

@@ -20,7 +20,7 @@ import {
   dropPageRowsOfStoppedTurns,
   dropReceiptTurnsThePageHolds
 } from '@/app/chat/transcript-receipt-turns'
-import { isLocalPendingReply, transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
+import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
@@ -300,21 +300,15 @@ interface StoredRowSlot {
   leading: ChatMessage[]
 }
 
-/** A running turn has no receipt yet. When the page stores its send, its live prompt and stream are left to the
- *  pending-turn reconcile every caller runs next, which pairs them with the stored copies. */
+/** A running turn has no receipt yet. When the page stores its send, drop that live prompt and
+ *  everything trailing it from the grafted window so the pending-turn reconcilers every caller
+ *  runs next see the same boundary as the short-chat path and re-attach live streams and queued
+ *  follow-ups in order. */
 function withoutLiveTurnsThePageStores(trailing: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
   const stored = new Set(page.flatMap(message => (message.submissionId ? [`user-${message.submissionId}`] : [])))
-  let held = false
+  const start = trailing.findIndex(message => message.role === 'user' && stored.has(message.id))
 
-  return trailing.filter(message => {
-    if (message.role === 'user') {
-      held = stored.has(message.id)
-
-      return !held
-    }
-
-    return !(held && isLocalPendingReply(message))
-  })
+  return start < 0 ? trailing : trailing.slice(0, start)
 }
 
 /**

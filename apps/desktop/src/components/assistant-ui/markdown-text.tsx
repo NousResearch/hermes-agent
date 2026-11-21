@@ -27,6 +27,7 @@ import { defaultRemarkPlugins } from 'streamdown'
 import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { RemoteMediaGate } from '@/components/chat/remote-media-gate'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -57,6 +58,7 @@ import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { TOOL_MEDIA_RENDERER_AREA } from '@/lib/tool-media-renderers'
 import { remarkTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
+import { isRemoteMediaUrl } from '@/store/remote-media'
 import { useForcedTextDirection } from '@/store/text-direction'
 
 import { ArtifactCard } from './artifact-card'
@@ -424,8 +426,22 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
   const rawSrc = typeof props.src === 'string' ? props.src : ''
   const kind = rawSrc ? mediaKind(rawSrc) : 'file'
 
+  // Remote media in a reply is fetched the moment it renders; under the "ask"
+  // privacy mode it waits for a click instead (#130873).
+  if (isRemoteMediaUrl(rawSrc)) {
+    return (
+      <RemoteMediaGate alt={String(props.alt || '')} src={rawSrc}>
+        {renderMarkdownMedia(kind, props)}
+      </RemoteMediaGate>
+    )
+  }
+
+  return renderMarkdownMedia(kind, props)
+}
+
+function renderMarkdownMedia(kind: ReturnType<typeof mediaKind>, props: ComponentProps<'img'>) {
   if (kind === 'video' || kind === 'audio') {
-    return <MediaAttachment path={rawSrc} />
+    return <MediaAttachment path={typeof props.src === 'string' ? props.src : ''} />
   }
 
   return <MarkdownImageContent {...props} />

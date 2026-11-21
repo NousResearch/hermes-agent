@@ -141,6 +141,11 @@ export const SETTINGS_MANIFEST = {
       'reasoningCollapsed'
     ),
     embeds: appearanceSetting('chat-display', ['external content', 'privacy'], 'embeds'),
+    remoteMedia: appearanceSetting(
+      'chat-display',
+      ['external content', 'privacy', 'images', 'tracking', 'remote', 'load'],
+      'remoteMedia'
+    ),
     pet: {
       subpage: 'pet',
       keywords: ['pet', 'mascot', 'petdex', 'companion', 'buddy'],

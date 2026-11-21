@@ -18,7 +18,6 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
-import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import {
   $interfaceMode,
   $modeShadowed,
@@ -79,6 +78,7 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
+import { ChatPrivacySettings } from './chat-privacy-settings'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
@@ -426,8 +426,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const chatTextScale = useStore($chatTextScale)
-  const embedMode = useStore($embedMode)
-  const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const fileBrowserShadowed = useStore($modeShadowed('fileBrowserOpen'))
@@ -537,12 +535,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     id,
     label: a.textDirection[id]
   })) satisfies readonly { id: TextDirection; label: string }[]
-
-  const embedOptions = [
-    { id: 'ask', label: a.embedsAsk },
-    { id: 'always', label: a.embedsAlways },
-    { id: 'off', label: a.embedsOff }
-  ] as const satisfies readonly { id: EmbedMode; label: string }[]
 
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
 
@@ -1060,30 +1052,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('chat-display') && (
-            <ListRow
-              action={
-                <SegmentedControl
-                  onChange={id => {
-                    triggerHaptic('selection')
-                    setEmbedMode(id)
-                  }}
-                  options={embedOptions}
-                  value={embedMode}
-                />
-              }
-              below={
-                embedAllowed.length > 0 && (
-                  <RowFootnoteAction onClick={clearEmbedAllowed}>
-                    {a.embedsReset(embedAllowed.length)}
-                  </RowFootnoteAction>
-                )
-              }
-              description={a.embedsDesc}
-              id={settingElementId(ids.embeds)}
-              title={a.embedsTitle}
-            />
-          )}
+          {show('chat-display') && <ChatPrivacySettings />}
         </div>
       </div>
 

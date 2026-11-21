@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
+import { setRemoteMediaMode } from '@/store/remote-media'
 import { $connection } from '@/store/session'
 
 import { MarkdownImage, MarkdownTextContent, MessageTextContent } from './markdown-text'
@@ -136,6 +137,30 @@ describe('MarkdownTextContent remote images', () => {
 // video/audio sources to the proper <video>/<audio> element.
 describe('MarkdownImage media routing', () => {
   afterEach(cleanup)
+
+  it.each([
+    ['image', 'https://evil.example/beacon.png', 'img'],
+    ['video', 'https://evil.example/beacon.mp4', 'video'],
+    ['audio', 'https://evil.example/beacon.mp3', 'audio']
+  ] as const)('under "ask", a remote %s waits for a click before mounting', async (_label, src, tag) => {
+    setRemoteMediaMode('ask')
+
+    try {
+      const { container } = render(<MarkdownImage alt="remote media" src={src} />)
+
+      expect(container.querySelector('img, video, audio')).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Load from evil.example' }))
+      await waitFor(() => expect(container.querySelector(tag)).not.toBeNull())
+    } finally {
+      setRemoteMediaMode('always')
+    }
+  })
+
+  it('loads a remote image at once in the default mode', () => {
+    const { container } = render(<MarkdownImage alt="remote media" src="https://example.com/chart.png" />)
+
+    expect(container.querySelector('[data-slot="aui_remote-media-gate"]')).toBeNull()
+  })
 
   it('renders a <video> (not a broken <img>) for a video source', async () => {
     const { container } = render(<MarkdownImage alt="clip" src="file:///tmp/clip.mp4" />)

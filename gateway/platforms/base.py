@@ -3886,6 +3886,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
         if self._drop_unresolved(event):
             return
+        # Phase 2 guardrail (14 Nov 2026): block-tier intake hold, env-gated,
+        # default inert. screen() never raises; True = held (no turn runs).
+        from gateway.guardrail import guardrail_enabled, screen as guardrail_screen
+        if guardrail_enabled() and await guardrail_screen(self, event):
+            return
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         # Explicitly routed events already name their destination; recovering a
         # different topic would redirect them and yield before the session claim.

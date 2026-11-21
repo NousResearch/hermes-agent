@@ -136,6 +136,11 @@ def _deliver(authority, session_id, generation, agent, admission_id, text):
 
 async def steer_queued(connection, ref, params):
     authority, admission_id = connection.authority, params['admission_id']
+    # W1 desktop intake screen: no gate here. The canonical steer
+    # contract carries NO text (CanonicalSteerQueuedParams = profile,
+    # session_id, admission_id) - the transfer delivers the queued
+    # row's already-screened payload text, so there is nothing new to
+    # screen (review F3: an earlier gate here was dead code).
     authority.authorize(connection.actor, ref, 'session:control')
     receipt, row = await _queued(connection, ref, admission_id)
     if steer_replayed(row):

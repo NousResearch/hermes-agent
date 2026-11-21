@@ -34,9 +34,9 @@ it.each(['audio', 'video'])('leaves native %s focus with the media controls unti
   const focusin = vi.fn()
   surface.addEventListener('focusin', focusin)
 
-  // Moving directly from a blurred composer to the native controls queues
-  // composer retries before the same pointer gesture gives media focus.
-  media.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', buttons: 0, clientX: 50, clientY: 61 }))
+  // An explicit composer request queues retries before the media control takes
+  // focus. Those older retries must not close its native controls menu.
+  focusComposerInput(editor)
   expect(globalThis.document.activeElement).toBe(editor)
   focusin.mockClear()
   media.focus()
@@ -44,7 +44,9 @@ it.each(['audio', 'video'])('leaves native %s focus with the media controls unti
   expect(focusin).toHaveBeenCalledTimes(1)
   vi.runAllTimers()
   expect(globalThis.document.activeElement).toBe(media)
-  media.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', buttons: 0, clientX: 52, clientY: 63 }))
+  media.dispatchEvent(
+    new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', buttons: 0, clientX: 52, clientY: 63 })
+  )
   expect(globalThis.document.activeElement).toBe(media)
 
   focusComposerInput(editor)

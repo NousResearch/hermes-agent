@@ -857,6 +857,8 @@ export interface Translations extends NoticeTranslations {
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      focusFollowsMouseTitle: string
+      focusFollowsMouseDesc: string
       fileBrowserTitle: string
       fileBrowserDesc: string
       vibeHeartsTitle: string

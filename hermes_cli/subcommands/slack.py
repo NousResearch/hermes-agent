@@ -51,4 +51,9 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         "app_home_opened + message.im) instead of the legacy assistant_view "
         "experience. This changes Slack's app messaging surface and cannot "
         "be reversed in Slack after applying the manifest.")
+    slack_manifest.add_argument(
+        "--code-channels", action="store_true",
+        help="With --agent-view: enable Slack Code channels (features.code_channels, the "
+        "code_channels:manage scope and the agent_session_stopped event). Pair with "
+        "platforms.slack.extra.code_channels: true.")
     slack_parser.set_defaults(func=cmd_slack)

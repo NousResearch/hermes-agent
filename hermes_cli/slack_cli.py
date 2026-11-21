@@ -12,7 +12,8 @@ SLACK_LONG_DESCRIPTION_MAX_CHARACTERS = 4000
 
 def _build_full_manifest(
     bot_name: str, bot_description: str, include_assistant: bool = True,
-    messaging_experience: str | None = None, long_description: str | None = None) -> dict:
+    messaging_experience: str | None = None, long_description: str | None = None,
+    code_channels: bool = False) -> dict:
     """Build a full Slack manifest: display info + slash list from ``COMMAND_REGISTRY``.
 
     Other sections (OAuth scopes, socket mode) are sensible Hermes defaults, tweakable in the Slack
@@ -24,6 +25,8 @@ def _build_full_manifest(
     messaging_experience = str(messaging_experience).strip().lower()
     if messaging_experience not in {"assistant", "agent", "none"}:
         raise ValueError("messaging_experience must be one of: assistant, agent, none")
+    if code_channels and messaging_experience != "agent":
+        raise ValueError("Slack Code channels need the Agent messaging experience (--agent-view)")
 
     features = {
         "app_home": {
@@ -52,6 +55,13 @@ def _build_full_manifest(
         # Slack includes current viewing context in Agent DM events only after this subscription
         # is enabled; the adapter uses it to preserve the referred channel across the agent turn.
         bot_events.extend(["app_context_changed", "app_home_opened"])
+        if code_channels:
+            # Slack Code channels (platforms.slack.extra.code_channels): the Stop button arrives as
+            # agent_session_stopped. A new scope, so Slack asks for a reinstall: opt-in only.
+            features["code_channels"] = {"enabled": True}
+            bot_scopes.append("code_channels:manage")
+            if "agent_session_stopped" not in bot_events:
+                bot_events.append("agent_session_stopped")
 
     bot_scopes.sort()
     bot_events.sort()
@@ -106,6 +116,9 @@ def slack_manifest_command(args) -> int:
         if n > SLACK_LONG_DESCRIPTION_MAX_CHARACTERS:
             return fail(f"long description must be at most "
                         f"{SLACK_LONG_DESCRIPTION_MAX_CHARACTERS} characters (got {n})")
+    code_channels = bool(getattr(args, "code_channels", False))
+    if code_channels and not getattr(args, "agent_view", False):
+        return fail("--code-channels needs --agent-view (Slack Code channels are an Agent feature)")
     if getattr(args, "agent_view", False):
         messaging_experience = "agent"
     elif getattr(args, "no_assistant", False):
@@ -119,7 +132,7 @@ def slack_manifest_command(args) -> int:
     else:
         manifest = _build_full_manifest(
             name, description, messaging_experience=messaging_experience,
-            long_description=long_description)
+            long_description=long_description, code_channels=code_channels)
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 
     write_target = getattr(args, "write", None)

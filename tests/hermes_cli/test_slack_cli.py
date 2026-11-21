@@ -122,6 +122,22 @@ class TestSlackFullManifest:
 
 
 
+    def test_code_channels_are_opt_in_on_the_agent_manifest(self):
+        plain = _build_full_manifest("Hermes", "Your Hermes agent on Slack", messaging_experience="agent")
+        manifest = _build_full_manifest(
+            "Hermes", "Your Hermes agent on Slack", messaging_experience="agent", code_channels=True)
+
+        assert "code_channels" not in plain["features"]
+        assert "code_channels:manage" not in plain["oauth_config"]["scopes"]["bot"]
+        assert manifest["features"]["code_channels"] == {"enabled": True}
+        assert {"assistant:write", "code_channels:manage"} <= set(manifest["oauth_config"]["scopes"]["bot"])
+        assert "agent_session_stopped" in manifest["settings"]["event_subscriptions"]["bot_events"]
+
+    def test_code_channels_flag_needs_agent_view(self, capsys):
+        args = argparse.Namespace(code_channels=True, agent_view=False)
+        assert slack_manifest_command(args) == 2
+        assert "--agent-view" in capsys.readouterr().err
+
     def test_assistant_features_remain_enabled(self):
         manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
 

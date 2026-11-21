@@ -67,6 +67,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_vault_code import SlackVaultCodeMixin
+    from .code_channels import SlackCodeChannels
     from .adapter_image_batch import collect_image_uploads
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
@@ -81,6 +82,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
+    from code_channels import SlackCodeChannels  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
 
 
@@ -1612,24 +1614,14 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             ("file_change", _noop), ("reaction_added", _reaction(False)),
             ("reaction_removed", _reaction(True)),
             ("assistant_thread_started", self._handle_assistant_thread_lifecycle_event),
-            ("assistant_thread_context_changed", self._handle_assistant_thread_lifecycle_event)):
+            ("assistant_thread_context_changed", self._handle_assistant_thread_lifecycle_event),
+            ("agent_session_stopped", self._code_channels.on_session_stopped)):
             self._app.event(event_type)(_listener_for(handler))
         # Catch-all ack: unacked envelopes count as failures and past 95%/60-min Slack disables
         # Event Subscriptions (ALL inbound). Registered AFTER all named handlers (first match wins).
-        # Catch-all no-op ack for any other subscribed event type that Hermes has no listener for (e.g.
-        # user_change, user_huddle_changed, member_joined_channel, channel_archive, pin_added, etc.). Two
-        # reasons this must exist (issues #6572 and the Event Subscriptions auto-disable failure mode): 1.
-        # Correctness at scale: without a matching listener, slack-bolt returns HTTP 404 for every unhandled
-        # event envelope and never sends the Socket Mode ack. When the app is subscribed to high-volume
-        # events (user_change fires on every presence/status change for the whole org), the flood of
-        # un-acked 404s pushes Slack's failure rate past its 95%/60-min threshold and Slack auto-disables
-        # the app's Event Subscriptions — silently killing ALL inbound delivery until manually re-enabled.
-        # 2. Noise: each unhandled envelope also logs a slack_bolt "Unhandled request" WARNING, flooding
-        # gateway logs in busy channels. Registered AFTER every named handler: bolt dispatches to the first
-        # matching listener, so the named handlers above always win and this only fires for truly unhandled
-        # types. The envelope is acked with 200, keeping the failure rate near 0% regardless of which events
-        # the Slack app manifest subscribes to. A debug line preserves visibility into unknown event types
-        # without per-message WARNING noise.
+        # Without it bolt answers 404 and never acks any other subscribed type (user_change fires on
+        # every presence change org-wide), and logs an "Unhandled request" WARNING per envelope
+        # (#6572); a debug line keeps unknown types visible.
         @self._app.event(re.compile(r".*"))
         async def handle_unhandled_event(event, body, logger):
             logger.debug(
@@ -2695,7 +2687,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         Needs assistant:write or chat:write scope; auto-clears on reply."""
         if self._suppressed_ignored(chat_id, "typing/status in", level=logging.DEBUG):
             return
-        if not self._app:
+        if not self._app or await self._code_channels.show_working(chat_id, metadata):
             return
         thread_ts = None
         if metadata:
@@ -2710,12 +2702,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         _status_started: Optional[float] = None
         if status_key:
             # Keep the first start time across _keep_typing refreshes so long turns show elapsed
-            # time; stored in the status entry so it shares eviction/stop_typing cleanup.
-            # Heartbeat (#45702): preserve the first refresh's start time across _keep_typing refreshes so a
-            # long turn surfaces elapsed time ("still working… (2m03s)") instead of a static "is
-            # thinking..." that reads as stuck — which is what provokes mid-turn "you there?" pings. Stored
-            # inside the tracked status entry so it shares the existing bounds/eviction and is dropped by
-            # stop_typing with the rest of the status state.
+            # time (#45702); stored in the status entry so it shares eviction/stop_typing cleanup.
             _prev_entry = self._active_status_threads.get(status_key)
             if isinstance(_prev_entry, dict):
                 _status_started = _prev_entry.get("started")
@@ -2755,6 +2742,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
+        await self._code_channels.turn_ended(chat_id, metadata)
         if self._suppressed_ignored(chat_id, "status clear in", level=logging.DEBUG):
             self._active_status_threads.pop(chat_id, None)
             return
@@ -2872,7 +2860,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
     ) -> Optional[str]:
         """thread_ts for an API call: metadata thread_id (parent ts) over reply_to (may be a child
-        ts). With ``reply_in_thread: false`` top-level messages get flat replies."""
+        ts). With ``reply_in_thread: false`` (or in a Slack Code channel) top-level messages get flat replies."""
+        if self._code_channels.reply_is_flat(reply_to, metadata):
+            return None
         # Inbound sets metadata.thread_id to the message's own ts for top-level messages
         # (session keying), so thread_id == reply_to means a synthetic thread → reply flat.
         if not self.config.extra.get("reply_in_thread", True):
@@ -4370,6 +4360,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             return thread_ts
         if event.get("_hermes_no_thread_response"):
             return event.get("thread_ts") or None
+        if self._code_channels.is_top_level(event, ts):
+            return None  # a Slack Code channel is one session; a user-started thread keeps its own
         # Reaction handoff into a configured target channel (#45265): the response should be a new top-level
         # message in the target channel, never a thread under the synthetic ts (which is the reaction's
         # event_ts — not a real message there).
@@ -4379,10 +4371,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # thread root (c) top-level, reply_in_thread=false → scope one session across the whole channel so
         # context accumulates across messages (#15421 bug 1)
         event_thread_ts_raw = event.get("thread_ts")
-        # Align with ``is_thread_reply`` below — a ``thread_ts == ts`` payload (some thread-root shapes) is
-        # not a real reply and must not prevent the shared-session path from taking effect. Matching the
-        # same invariant here keeps the two branches in sync even if Slack introduces new payload variants
-        # (Copilot on #15464).
+        # Align with ``is_thread_reply`` below: a ``thread_ts == ts`` payload (some thread-root shapes) is
+        # not a real reply and must not block the shared-session path (Copilot on #15464).
         if event_thread_ts_raw and event_thread_ts_raw != ts:
             return event_thread_ts_raw
         if self.config.extra.get("reply_in_thread", True):
@@ -4488,6 +4478,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
+        await self._code_channels.note_inbound(event or {}, payload)
         _ts = str((event or {}).get("ts") or "")
         # getattr: bare test doubles (object.__new__) may lack the map.
         _claims = getattr(self, "_processed_message_ts", None)
@@ -4551,10 +4542,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             event = self._normalize_changed_message(event)
             if event is None:
                 return None
-        # Socket Mode redelivers after reconnects. Scope by workspace: ts is only unique per team.
-        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777) Scope the dedup id by
-        # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
-        # the same ts must not suppress each other.
+        # Socket Mode redelivers after reconnects (#4777). Scope by workspace: ts is only unique per team.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         dedup_team_id = self._event_team_id(event, payload, install_set=getattr(self, "_team_clients", None))
         if getattr(self, "_team_clients", None) and not dedup_team_id:
@@ -4821,7 +4809,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             # the gateway as a person and escape the bot loop guard. Cached by _peer_bot_drop.
             is_bot=self._event_declares_bot_sender(event) or await self._resolve_user_is_bot(
                 user_id, chat_id=channel_id, team_id=team_id))
-        source.shared_session = event.get("channel_type") == "mpim"  # a group DM keys "dm" but is shared
+        # A group DM keys "dm" but is shared; so is a code channel (build_source marked it).
+        source.shared_session = source.shared_session or event.get("channel_type") == "mpim"
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.
@@ -6212,6 +6201,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_id)
         if rejected and not is_dm:
             return
+        await self._code_channels.recognise(channel_id, team_id)  # before the source: shared key
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
@@ -6524,8 +6514,17 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         match = text and re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
         return bool(match) and match.group(1) not in self_uids
 
+    @functools.cached_property
+    def _code_channels(self) -> SlackCodeChannels:  # lazy: bare test doubles (object.__new__) get one too
+        return SlackCodeChannels(self)
+
+    def build_source(self, *args: Any, **kwargs: Any) -> Any:
+        return self._code_channels.share(super().build_source(*args, **kwargs))
+
     def _slack_is_free_channel(self, channel_id: str) -> bool:
-        """Does ``channel_id`` admit messages without an @mention?"""
+        """Does ``channel_id`` admit messages without an @mention? A code channel always does."""
+        if self._code_channels.is_code_channel(channel_id):
+            return True
         return channel_id not in self._slack_require_mention_channels() and (
             channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
 

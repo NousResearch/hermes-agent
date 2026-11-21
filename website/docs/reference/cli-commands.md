@@ -505,6 +505,7 @@ reinstall if scopes or slash commands changed.
 | `--long-description TEXT` | unset | Set `display_information.long_description` inline (175–4,000 characters). Incompatible with `--slashes-only`. |
 | `--long-description-file PATH` | unset | Read the long description from a UTF-8 text file, preserving its contents exactly. Mutually exclusive with `--long-description` and incompatible with `--slashes-only`. |
 | `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
+| `--code-channels` | off | With `--agent-view`: enable [Slack Code channels](../user-guide/messaging/slack.md#slack-code-channels) (`features.code_channels`, the `code_channels:manage` scope, the `agent_session_stopped` event). Pair with `platforms.slack.extra.code_channels: true`. |
 
 Run `hermes slack manifest --write` again after `hermes update` to pick
 up any new commands.

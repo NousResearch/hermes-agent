@@ -101,6 +101,37 @@ class _DeadlineSocket(socket.socket):
             view = view[sent:]
 
 
+def _bind_deadline_to_socket(sock, deadline: float):  # noqa: ANN001,ANN201
+    """Bind EVERY blocking operation on *sock* to the absolute remaining budget.
+
+    ``ssl.SSLSocket`` is a different object from the raw ``_DeadlineSocket``
+    handed to ``wrap_socket()``; its encrypted reads go through SSL-level
+    methods, so the raw subclass overrides alone are not sufficient. Instance
+    wrappers refresh both the socket and SSL timeouts before each operation.
+    """
+    original = {
+        name: getattr(sock, name)
+        for name in ("recv", "recv_into", "send", "sendall", "read", "readinto")
+        if getattr(sock, name, None) is not None
+    }
+
+    def _refresh() -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _DeadlineExceeded()
+        sock.settimeout(remaining)
+
+    def _wrap(name, call):
+        def wrapped(*args, **kwargs):  # noqa: ANN002,ANN003,ANN201
+            _refresh()
+            return call(*args, **kwargs)
+        return wrapped
+
+    for name, call in original.items():
+        setattr(sock, name, _wrap(name, call))
+    return sock
+
+
 def _bounded_getaddrinfo(host: str, port: int, deadline: float):
     """Resolve under the remaining aggregate budget; refuse before connecting on timeout.
 
@@ -145,8 +176,11 @@ class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
         raw.connect(sockaddr)
         # Always build the verifying default context here so the TLS handshake
         # is owned by the deadline path (and is never weakened by caller state).
+        # The handshake itself is driven explicitly so its reads are covered.
         context = ssl.create_default_context()
-        tls = context.wrap_socket(raw, server_hostname=self.host)
+        tls = context.wrap_socket(raw, server_hostname=self.host, do_handshake_on_connect=False)
+        _bind_deadline_to_socket(tls, self.deadline)
+        tls.do_handshake()
         self.sock = tls
         self._tls_established = True
 

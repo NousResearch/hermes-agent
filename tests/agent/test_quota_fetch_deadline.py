@@ -230,7 +230,7 @@ def test_tls_handshake_delay_is_bounded(monkeypatch):
     # A handshake that consumes the socket's remaining timeout must be cut off
     # by the same aggregate budget, not allowed to run for multiple seconds.
     class _FakeContext:
-        def wrap_socket(self, sock, server_hostname=None):
+        def wrap_socket(self, sock, server_hostname=None, **kwargs):
             end = time.monotonic() + (sock.gettimeout() or 0)
             while time.monotonic() < end:
                 time.sleep(0.02)

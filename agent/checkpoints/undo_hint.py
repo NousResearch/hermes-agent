@@ -67,7 +67,7 @@ def _span_base_tree(mgr, abs_dir: str, since: float) -> Optional[str]:
     if not (store / "HEAD").exists():
         return None
     ok, out, _ = cm._run_git(["log", cm._ref_name(cm._project_hash(abs_dir)), "--format=%T|%at",
-                              "-n", str(mgr.max_snapshots)], store, abs_dir, allowed_returncodes={128, 129})
+                              *cm._log_limit(mgr.max_snapshots)], store, abs_dir, allowed_returncodes={128, 129})
     rows = [(tree, int(epoch)) for tree, _, epoch in (line.partition("|") for line in (out.splitlines() if ok else []))
             if tree and epoch.isdigit()]  # newest first
     if not any(epoch >= math.floor(since) for _tree, epoch in rows):

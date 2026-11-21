@@ -103,9 +103,11 @@ class Pruner:
             self._mark_gc_pending()
 
     def trim(self, ref: str, keep_count: int) -> None:
-        """Snapshot-count budget on the checkpoint-take path: rewrites the ref, defers the gc."""
+        """Snapshot-count budget on the checkpoint-take path: rewrites the ref, defers the gc.
+        ``keep_count <= 0`` is an unlimited budget: the ref is left untouched."""
+        if keep_count <= 0:
+            return
         commits = self._commits(ref)
-        keep_count = max(1, keep_count)
         if len(commits) > keep_count:
             self._rewrite(ref, commits, commits[-keep_count:], gc=False)
 

@@ -440,10 +440,10 @@ from gateway.platforms.helpers import fence_state_after, reply_file_off, try_rep
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
-from gateway.platforms.base_exec_approval import (
-    approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
+from gateway.platforms.base_exec_approval import (  # approval_kind(_scope) / is_schedule_kind / ea_key / ea_t: published to adapters
+    approval_expired_text, approval_kind, is_schedule_kind, approval_timeout_seconds, approval_kind_scope, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
-    card_shows_whole_command, render_exec_approval)
+    card_shows_whole_command, render_exec_approval, ExecApprovalPrompt)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -1542,28 +1542,6 @@ def coerce_plaintext_gateway_command(event: MessageEvent) -> None:
             return
         if any(pattern.match(text) for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS):
             event.text = "/restart"
-
-
-@dataclass
-class ExecApprovalPrompt:
-    """One exec-approval prompt, ready for a platform to render natively (see
-    ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
-    with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
-    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
-    ``danger`` / ``""``."""
-    chat_id: str
-    session_key: str
-    text: str
-    actions: list[tuple[str, str, str]]
-    command: str
-    description: str
-    smart_denied: bool
-    metadata: Optional[dict[str, Any]] = None
-    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
-
-    @property
-    def choices(self) -> list[str]:
-        return [choice for _, choice, _ in self.actions]
 
 
 @dataclass
@@ -2761,7 +2739,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             actions = [row for row in actions if row[1] == "deny"]
         return await self._send_exec_approval_prompt(ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
-            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))
+            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions, kind=approval_kind()))
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""

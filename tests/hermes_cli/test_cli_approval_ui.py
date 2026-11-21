@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import cli as cli_module
 from agent.i18n import t
 from cli import HermesCLI
+from tests.waiting import wait_until
 
 
 class _FakeBuffer:
@@ -93,6 +94,62 @@ class TestCliApprovalUi:
         cli._approval_state["response_queue"].put("deny")
         thread.join(timeout=2)
         assert result["value"] == "deny"
+
+    def test_schedule_card_shows_the_job_not_the_synthetic_command(self):
+        """kind=schedule draws a schedule card whose body is the description; command cards are unchanged."""
+        import shutil as _shutil
+
+        synthetic = "<cronjob_manage> (schedule a new job)"
+        description = 'Schedule "water" (every 2h, first run 10:00 AM PST, forever): remind me to drink water'
+
+        def _render(**kw):
+            cli = _make_cli_stub()
+            thread = threading.Thread(
+                target=cli._approval_callback, args=(synthetic + " " * 80, description), kwargs=kw, daemon=True)
+            thread.start()
+            wait_until(lambda: cli._approval_state is not None, what="the approval panel")
+            with patch("cli.shutil.get_terminal_size", return_value=_shutil.os.terminal_size((100, 40))):
+                rendered = "".join(text for _style, text in cli._get_approval_display_fragments())
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+            return rendered
+
+        schedule = _render(kind="schedule")
+        assert t("cli.tui.approval_title_schedule") in schedule
+        assert synthetic not in schedule and t("cli.tui.approval_view") not in schedule
+        assert "remind me to drink water" in schedule
+        for key in ("approval_schedule_once", "approval_schedule_session", "approval_schedule_always",
+                    "approval_deny"):
+            assert t(f"cli.tui.{key}") in schedule
+
+        edit = _render(kind="schedule_edit", allow_session=False, allow_permanent=False)
+        assert t("cli.tui.approval_title_schedule_edit") in edit and synthetic not in edit
+        assert t("cli.tui.approval_schedule_session") not in edit
+
+        command = _render()
+        assert t("cli.tui.approval_title") in command and synthetic in command
+        assert t("cli.tui.approval_once") in command and t("cli.tui.approval_view") in command
+
+    def test_a_cut_schedule_card_printed_the_job_above(self):
+        """A short pane cuts even a one-line job; whenever the panel says "full job printed above", the
+        whole job really went to scrollback first (100x18, a 380-char job on one line)."""
+        import shutil as _shutil
+
+        job = 'Schedule "trip" (once at 09:00): ' + "pack the bags and check the train times " * 9
+        assert len(job) >= 380 and "\n" not in job
+        printed = []
+        cli = _make_cli_stub()
+        with patch("cli.shutil.get_terminal_size", return_value=_shutil.os.terminal_size((100, 18))), \
+                patch("cli._cprint", side_effect=printed.append):
+            thread = threading.Thread(target=cli._approval_callback, args=("<cronjob_manage>", job),
+                                      kwargs={"kind": "schedule"}, daemon=True)
+            thread.start()
+            wait_until(lambda: cli._approval_state is not None, what="the approval panel")
+            rendered = "".join(text for _style, text in cli._get_approval_display_fragments())
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+        assert t("cli.tui.approval_schedule_truncated") in rendered
+        assert any(job in line for line in printed), printed
 
     def test_session_less_gate_offers_only_once_and_deny(self):
         """A gate that re-asks every time must not advertise a session scope.

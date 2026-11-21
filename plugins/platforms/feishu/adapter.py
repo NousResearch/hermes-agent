@@ -86,6 +86,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
+from gateway.platforms.base import ea_t
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error, env_proxy_for_redaction,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
@@ -1753,8 +1754,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             logger.debug("[Feishu] Failed to delete message %s", message_id, exc_info=True)
             return False
 
-    # Template attrs for the shared _format_exec_approval core. The card
-    # header carries the title, so the text core starts at the code fence.
+    # Template attrs for the shared _format_exec_approval core. The card header carries the title, so the text starts at the fence.
     _EA_HEADER = ""
     _EA_CMD_BUDGET = 3000
 
@@ -1771,9 +1771,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     @property
     def _EA_ACTION_LABELS(self) -> dict[str, str]:
-        return {"once": "✅ " + t("gateway.exec_approval.action_once"),
-                "session": "✅ " + t("platform.feishu.approval.action_session"),
-                "always": "✅ " + t("platform.feishu.approval.action_always"),
+        return {"once": "✅ " + ea_t("gateway.exec_approval.action_once"),
+                "session": "✅ " + ea_t("platform.feishu.approval.action_session"),
+                "always": "✅ " + ea_t("platform.feishu.approval.action_always"),
                 "deny": "❌ " + t("gateway.exec_approval.action_deny")}
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
 
@@ -1788,7 +1788,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                 _card_button(label, style or "default",
                              {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
-            card = _card(f"⚠️ {t('gateway.exec_approval.header')}", "orange", prompt.text, actions=actions)
+            card = _card(f"⚠️ {ea_t('gateway.exec_approval.header')}", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,

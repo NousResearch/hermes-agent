@@ -303,7 +303,37 @@ export const zhHantAssistant = {
       alwaysTitle: '一律允許此指令？',
       alwaysDescription: pattern =>
         `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Hermes 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
-      alwaysAllow: '一律允許'
+      alwaysAllow: '一律允許',
+      deny: '拒絕',
+      allow: '允許',
+      allowHint: '直到關閉沙箱',
+      denyReason: '拒絕原因',
+      denyReasonPlaceholder: '告訴 Hermes 原因（選填）',
+      access: {
+        title: '資料夾存取',
+        readOnly: '唯讀',
+        readWrite: '讀寫',
+        alwaysTitle: '一律允許此資料夾？',
+        alwaysDescription: '此資料夾將加入此設定檔的沙箱。Hermes 在任何對話中都不會再詢問。'
+      },
+      network: {
+        title: '網站存取',
+        alwaysTitle: '一律允許此網站？',
+        alwaysDescription: '此網站將加入此設定檔的允許網站。Hermes 在任何對話中都不會再詢問。'
+      },
+      schedule: {
+        title: '排定此工作？',
+        allowSession: '在此對話中允許',
+        alwaysAllowMenu: '一律允許新工作…',
+        alwaysTitle: '一律允許新的排程工作？',
+        alwaysDescription:
+          'Hermes 將不經詢問直接建立排程工作。從 config.yaml 的 command_allowlist 移除 cron_create 即可重新開啟詢問。',
+        timedOutSystemLine:
+          '審核已逾時 — 工作未建立。請讓 Hermes 再試一次，或在 設定 → 安全 → 審核逾時 中提高上限。',
+        editTitle: '修改此工作？',
+        editTimedOutSystemLine:
+          '審核已逾時 — 工作未修改。請讓 Hermes 再試一次，或在 設定 → 安全 → 審核逾時 中提高上限。'
+      }
     },
     clarify: {
       notReady: '澄清請求尚未就緒',

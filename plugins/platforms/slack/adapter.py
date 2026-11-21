@@ -39,6 +39,7 @@ if str(_checkout_root) not in sys.path:
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
+from gateway.platforms.base import approval_expired_text, approval_kind_scope, ea_t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
@@ -1063,6 +1064,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: dict[Any, bool] = {}
         self._approval_request_ids: dict[Any, str] = {}  # same key → tools.approval request id
+        self._approval_kinds: dict[Any, str] = {}  # same key → card kind, when not a command
         self._clarify_resolved: dict[Any, bool] = {}
         # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
@@ -5047,13 +5049,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    # The fence uses the base's own-line opener/closer: a fence touching the command's own backticks
-    # would merge into one longer run.
-    # Resolved per call (not at class-body time) so the active language applies; the budget
+    # The fence uses the base's own-line opener/closer: a fence touching the command's own backticks would merge into
+    # one longer run. Resolved per call (not at class-body time) so the active language applies; the budget
     # below measures ``len()`` of these resolved strings against the 3000-char section cap.
     @property
     def _EA_HEADER(self) -> str:
-        return f":warning: *{t('gateway.exec_approval.header')}*\n"
+        return f":warning: *{ea_t('gateway.exec_approval.header')}*\n"
 
     @property
     def _EA_SMART_DENY_LINE(self) -> str:
@@ -5077,15 +5078,19 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
                 {"type": "actions", "elements": actions}]
-            return t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
+            return ea_t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
 
         result = await self._send_interactive_prompt(
             prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
             resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
-        if result.success and prompt.request_id:  # keyed like the double-click guard
-            key = self._workspace_message_marker(self._metadata_team_id(prompt.metadata), result.message_id)
-            self._approval_request_ids[key] = prompt.request_id
-            self._trim_oldest_dict_entries(self._approval_request_ids, self._APPROVAL_RESOLVED_MAX)
+        if not result.success:
+            return result
+        key = self._workspace_message_marker(self._metadata_team_id(prompt.metadata), result.message_id)
+        for store, value in ((self._approval_request_ids, prompt.request_id),  # keyed like the double-click guard
+                             (self._approval_kinds, prompt.kind if prompt.kind != "command" else None)):
+            if value:
+                store[key] = value
+                self._trim_oldest_dict_entries(store, self._APPROVAL_RESOLVED_MAX)
         return result
 
     async def send_slash_confirm(
@@ -5743,6 +5748,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         if self._approval_resolved.pop(approval_key, True):  # double-click guard (atomic pop)
             return
         request_id = self._approval_request_ids.pop(approval_key, None)
+        kind = self._approval_kinds.pop(approval_key, "command")
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
@@ -5755,12 +5761,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0
-        decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
-        if not count:
-            decision_text = t("platform.shared.approval_expired")
+        with approval_kind_scope(kind):  # the click runs outside the send's binding: rebuild as the card was sent
+            decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
+            if not count:
+                decision_text = approval_expired_text("platform.shared.approval_expired")
+            body = self._section_text(message).replace(self._ea_deadline_line(), "")
         await self._finalize_interactive_message(
-            channel_id, msg_ts, self._section_text(message).replace(self._ea_deadline_line(), ""), decision_text,
-            "Command approval request", "approval", team_id or None)
+            channel_id, msg_ts, body, decision_text, "Command approval request", "approval", team_id or None)
 
     async def _update_clarify_message(
         self, channel_id: str, msg_ts: str, question_text: str, decision_text: str) -> None:

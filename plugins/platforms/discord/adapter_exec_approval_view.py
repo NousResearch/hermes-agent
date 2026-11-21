@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from agent.i18n import t
+from gateway.platforms.base import ea_key
 from plugins.platforms.discord.adapter_config_readers import _read_discord_prompt_timeout
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,9 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             # The platform block: its admins answer any approval even with require_admin off (approval_actor).
             self.approval_extra = approval_extra
             self._localize_buttons(
-                allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
-                allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
+                allow_once=ea_key("gateway.exec_approval.action_once"),
+                allow_session=ea_key("gateway.exec_approval.action_session"),
+                allow_always=ea_key("gateway.exec_approval.action_always"), deny="gateway.exec_approval.action_deny")
             if smart_denied or not allow_session:
                 self.remove_item(self.allow_session)
                 self.remove_item(self.allow_always)

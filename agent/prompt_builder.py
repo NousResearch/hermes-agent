@@ -260,6 +260,16 @@ SESSION_SEARCH_GUIDANCE = (
 # (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
+# cronjob_manage is deferred behind tool_search by default, so its schema's proactive guidance is unseen until a
+# model describes it; without this line frontier models only OFFERED to schedule ("I can set up a reminder if you
+# like"). "Instead of offering" is the load-bearing clause: the approval prompt already is the user's yes/no.
+CRON_PROACTIVE_GUIDANCE = (
+    "Be proactive with cronjob_manage: when the user mentions something time-bound or worth watching (a trip, "
+    "appointment, deadline, habit, a reply they owe, a price or page to re-check), create a job that would help "
+    "without waiting to be asked, usually a one-shot or a few runs, then tell the user in one line what you "
+    "scheduled. Here each new job is shown to the user on an approval card before it is saved."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "

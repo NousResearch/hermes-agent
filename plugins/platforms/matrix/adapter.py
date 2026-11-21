@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.i18n import t
+from gateway.platforms.base import ea_t
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
@@ -1491,13 +1492,12 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, video_path, "m.video", caption, reply_to, metadata=metadata)
 
-    # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
-    # the smart-deny/scope wording lives in the reaction legend below).
+    # Shared _format_exec_approval core attrs (header + fence + reason; smart-deny/scope wording is in the legend below).
     _EA_CMD_BUDGET = 2000
 
     @property
     def _EA_HEADER(self) -> str:
-        return f"⚠️ **{t('gateway.exec_approval.header')}**\n"
+        return f"⚠️ **{ea_t('gateway.exec_approval.header')}**\n"
 
     async def _send_reaction_prompt(
         self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
@@ -1537,7 +1537,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not prompt.smart_denied:
             tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
         # A Deny-only card (command not shown in full) must not tell the user how to approve it.
-        hint = f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n" if "once" in choices else ""
+        hint = f"{ea_t(self._EA_TYPED_HINT_KEYS[tier])}\n\n" if "once" in choices else ""
         text = (
             f"{prompt.text}\n\n{hint}"
             f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))

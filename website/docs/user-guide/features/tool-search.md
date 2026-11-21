@@ -5,24 +5,31 @@ sidebar_position: 95
 
 # Tool Search
 
-When you have many MCP servers or non-core plugin tools attached to a
-session, their JSON schemas can consume a substantial fraction of the
-context window on every turn — even when only a few of them are relevant
-to what the user actually asked for.
+When you have many MCP servers attached to a session, their JSON schemas
+can consume a substantial fraction of the context window on every turn —
+even when only a few of them are relevant to what the user actually asked
+for.
 
 **Tool Search** is Hermes' opt-in progressive-disclosure layer for that
-problem. When activated, MCP and plugin tools are replaced in the
-model-visible tools array by three bridge tools, and the model loads each
-specific tool's schema on demand.
+problem. When activated, MCP tools (and any tool you name in `defer`) are
+replaced in the model-visible tools array by three bridge tools, and the
+model loads each specific tool's schema on demand.
 
-:::info Built-in tools and explicit deferral
+:::info Built-in and plugin tools stay eager
 Hermes keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
 `patch`, `search_files`, `todo`, `memory`, `browser_*`, `web_search`,
 `web_extract`, `clarify`, `execute_code`, `delegate_task`, and the rest of
 `_HERMES_CORE_TOOLS`) loaded directly by default. Cold, event-triggered built-ins
 may be deferred when they are named in `tools.tool_search.defer`; the shipped
 curated list covers tools such as `computer_use`, `session_search`, and selected
-desktop helpers. MCP and non-core plugin tools remain eligible automatically.
+desktop helpers. MCP tools remain eligible automatically.
+
+**Plugin-provided tools are never deferred by default.** A plugin registers a
+handful of tools for this installation, and a tool missing from the model's
+array is a capability the model does not have: search is a lexical guess that
+can miss it (measured — a query asking for a chart returned `matches: []` while
+the chart tool was connected). Name a plugin tool in `defer` if you do want it
+behind the bridge; it is then indexed and returned like any other deferred tool.
 An explicit `defer` list replaces the curated list, and `defer: []` keeps every
 tool eager.
 :::
@@ -70,7 +77,10 @@ names only, while the shared `tools` map holds each matched tool's
 description and required parameter names once. Queries are stemmed, so
 "issues" finds `create_issue`. Each query group that returns no matches
 includes an `available_sources` summary of the connected servers so a lexical
-miss is not mistaken for a missing capability.
+miss is not mistaken for a missing capability. A group that could only be
+filled from a *name-word* near match instead carries `confidence: "low"` with
+a hint to confirm the tool via `tool_describe` — the model is told a near miss
+is not the capability it asked for.
 `tool_describe` resolves every requested name in one call; unknown names
 are reported in `not_found` without failing the rest of the batch.
 
@@ -86,7 +96,8 @@ same checks instead of failing as an unknown tool.
 ## When does it activate?
 
 Tool Search uses **tiered disclosure**: the presence of *any* deferred
-tool (MCP/plugin or explicitly named built-in) activates the bridge; what
+tool (an MCP tool or an explicitly named built-in/plugin tool) activates the
+bridge; what
 scales with catalog size is how much of the catalog stays visible, not whether
 schemas defer.
 
@@ -136,7 +147,7 @@ shipped curated set; the runtime fallback uses the same value.
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
-| `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `defer` | Curated list | Tool names replaced by the bridge by default. The list may name any tool — a cold built-in, an MCP tool, or a plugin tool you choose to defer; an explicit list replaces it, and `[]` disables deferral for every tool. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.
@@ -166,7 +177,8 @@ gateway. They are
 never registered locally: `tool_search` sends each query to the gateway, adds
 the gateway's hits to the local catalog as documents (tagged
 `source: "connectors"`, named `connectors__<connector>__<tool>`), and ranks
-both with the same BM25 pass and the same rarest-token rule, so `limit`
+both with the same BM25 pass and the same rarest-token rule (and the same
+name-only second chance for a long query that admits nothing), so `limit`
 caps the group as a whole and a connector tool that answers the query is
 never pushed out by local tools that share one word with it. The gateway
 call is bounded at 30 seconds; a slow or dark gateway degrades to local
@@ -287,15 +299,19 @@ to any progressive-disclosure design, not specific to this implementation:
 - **Retrieval:** BM25 over tokenized tool name, source name (the MCP
   server or plugin toolset the tool belongs to, so searching `"linear"`
   finds that server's tools even when a tool's own name doesn't carry
-  the service), description, and parameter names, with Snowball
-  stemming (English) applied to both the index and the query so
-  morphological variants match ("issues" finds `create_issue`). A tool is
-  a result only if it contains the query's rarest token (the one in the
-  fewest tool documents, so the word that names the intent: `gmail`,
-  `github`, `incident`, not `send` or `create`). A query whose rarest
-  token appears in no tool returns an empty group with the connected
-  sources and a retry hint, instead of `limit` tools that share one
-  common word.
+  the service), description, and parameter names. Tokenization is
+  Unicode (`[^\W_]+`), so a catalog described in Ukrainian is searchable
+  in Ukrainian ("графік" finds a tool whose description says "графік");
+  Snowball stemming is English-only, applied to both the index and the
+  query so English morphological variants match ("issues" finds
+  `create_issue`), and non-ASCII tokens are matched verbatim — word forms
+  in other languages must match as written, since no non-English
+  morphology is applied. A tool is a result only if it contains the
+  query's rarest token (the one in the fewest tool documents, so the word
+  that names the intent: `gmail`, `github`, `incident`, not `send` or
+  `create`). A query whose rarest token appears in no tool returns an
+  empty group with the connected sources and a retry hint, instead of
+  `limit` tools that share one common word.
 - **Relevance floor:** a tool must match at least half of a query's
   *answerable* terms (terms present anywhere in the catalog) before it
   is offered — sharing one incidental word with a long query is not a
@@ -304,6 +320,19 @@ to any progressive-disclosure design, not specific to this implementation:
   forever. The floor only engages from four answerable terms up, so
   short queries like "list issues" keep full recall, and an exact
   tool-name query always matches.
+- **Second chance for long queries (marked low confidence):** when that
+  strict pass admits nothing on a long query (four or more distinct
+  words), the query is retried against tool *names* only: tools whose
+  name contains one of the query's words and that still clear the
+  coverage floor are returned, ranked by the strength of the name match.
+  That is how "create image chart plot file" reaches `render_chart` when
+  no tool says "plot". The group carries `confidence: "low"` plus a hint
+  to confirm the tool with `tool_describe` first. Short queries stay
+  strict — a one- or two-word query whose word no tool carries gets the
+  empty group and the retry hint, because there the unknown word is the
+  whole intent. The flag is a warning, not a filter: on a small catalog
+  where a name word is the only overlap, a near miss can still be a weak
+  fit, which is exactly what the label says.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

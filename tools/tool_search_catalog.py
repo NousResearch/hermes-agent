@@ -35,7 +35,11 @@ class CatalogEntry:
     _tokens: list[str] = field(default_factory=list)  # pre-tokenized for BM25
 
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+# Unicode word characters minus the underscore (``[^\W_]``): letters and digits in any script.
+# The index and the query share this pattern, so a catalog described in Ukrainian is
+# searchable in Ukrainian — the ASCII-only class this replaced tokenized ``графік`` to
+# nothing, and indexed a Ukrainian description without its words.
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _thread_local = threading.local()
 
 
@@ -43,15 +47,23 @@ _thread_local = threading.local()
 def _stem(token: str) -> str:
     """Stem one token, memoized across stateless catalog rebuilds. Snowball stemmers carry
     mutable parsing state and bridge dispatch runs on parallel tool-call threads, so the
-    stemmer is one-per-thread, created lazily."""
+    stemmer is one-per-thread, created lazily.
+
+    English only: the Snowball English stemmer mangles other scripts (``графік`` -> ``граф``,
+    ``charts`` -/-> anything useful in Cyrillic), so a non-ASCII token is matched verbatim.
+    Index and query still share the same vocabulary, which is what recall needs; morphology
+    in non-English catalogs is out of scope here."""
+    if not token.isascii():
+        return token
     if getattr(_thread_local, "stemmer", None) is None:
         _thread_local.stemmer = snowballstemmer.stemmer("english")
     return _thread_local.stemmer.stemWord(token)
 
 
 def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens, Snowball-stemmed (English); shared by the index and
-    query paths so "issues" matches ``create_issue``."""
+    """Lowercase Unicode word tokens, Snowball-stemmed when ASCII (English); shared by the
+    index and query paths so "issues" matches ``create_issue`` and ``графік`` matches a
+    Ukrainian description."""
     return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)] if text else []
 
 
@@ -142,15 +154,18 @@ def _corpus_stats(catalog: list[CatalogEntry]) -> _CorpusStats:
     return doc_lengths, avg_dl, dict(doc_freq), len(catalog)
 
 
+def _idf(token: str, doc_freq: dict[str, int], n_docs: int) -> float:
+    """BM25 inverse document frequency of one token under this catalog."""
+    df = doc_freq.get(token, 0)
+    return math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+
+
 def _gate_token(query_tokens: list[str], doc_freq: dict[str, int], n_docs: int) -> str:
     """The query token with the highest IDF: the word that names the intent. ``send``,
     ``read``, ``create`` sit in dozens of tool documents and separate nothing; ``gmail``,
     ``github``, ``incident`` sit in a few and separate everything. A document without this
     token answered a different question, however many common tokens it shares."""
-    def _idf(token: str) -> float:
-        df = doc_freq.get(token, 0)
-        return math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
-    return max(query_tokens, key=_idf)
+    return max(query_tokens, key=lambda token: _idf(token, doc_freq, n_docs))
 
 
 # Relevance floor. The rarest-token gate stops queries whose intent word no tool carries; it
@@ -173,19 +188,75 @@ def _required_term_coverage(answerable_term_count: int) -> int:
     return math.ceil(answerable_term_count * MIN_QUERY_TERM_COVERAGE)
 
 
+# Second chance. The gate is strict on purpose — an unknown intent word means "no such
+# capability here" — but it also refuses a LONG natural-language query whose intent word is a
+# synonym the catalog does not carry (measured live, 2026-11-06: "create image chart plot file"
+# -> ``matches: []`` while ``render_chart`` carried ``chart``/``imag``). When the strict pass
+# admits nothing on a long query, documents whose NAME carries one of the query's words are
+# offered instead, still subject to the coverage floor, and the caller flags them
+# low-confidence so a near miss is never read as an exact capability. Queries shorter than the
+# coverage engagement floor (four distinct words) stay strict: with one or two content words
+# there is nothing to triangulate, and an unknown word there IS the intent ("create zzzz
+# issue" keeps returning the empty group plus retry hint).
+MIN_SECOND_CHANCE_QUERY_TOKENS = MIN_ANSWERABLE_TERMS_FOR_COVERAGE
+
+
+def _name_tokens(entry: CatalogEntry) -> set[str]:
+    """Tokens of the tool NAME alone (``render_chart`` -> {render, chart}). The second chance
+    matches these, never the description: a name word is what the tool claims to be, a
+    description word is a hint."""
+    return set(_tokenize(re.sub(r"[_.:-]", " ", entry.name.removeprefix("mcp__"))))
+
+
+def _rank(query_tokens: list[str], entries: list[CatalogEntry], corpus_stats: _CorpusStats,
+          exact_name: str, limit: int,
+          name_evidence: Optional[dict[str, float]] = None) -> list[CatalogEntry]:
+    """Entries by BM25 (an exact tool-name query first, then score), truncated to ``limit``.
+
+    ``name_evidence`` (second-chance ranking) maps a tool name to the IDF of the rarest query
+    word its NAME carries: the second chance exists to find a name match, so the strongest name
+    evidence leads and BM25 only breaks ties among equally-named candidates.
+    """
+    scored = []
+    for entry in entries:
+        exact = entry.name.lower() == exact_name
+        score = float("inf") if exact else _bm25_score(
+            query_tokens, entry._tokens, *corpus_stats)
+        key = (exact, (name_evidence or {}).get(entry.name, 0.0), score)
+        scored.append((key, entry))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [e for _, e in scored[:limit]]
+
+
 def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
                    corpus_stats: Optional[_CorpusStats] = None) -> list[CatalogEntry]:
-    """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
+    """Top-``limit`` catalog entries for ``query``. Thin wrapper over
+    :func:`search_catalog_with_confidence` for callers that do not need the confidence flag."""
+    return search_catalog_with_confidence(catalog, query, limit, corpus_stats=corpus_stats)[0]
 
-    Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
-    BM25 is additive over the tokens a document shares with the query, so on a large catalog
-    ``score > 0`` admits one-token matches and fills every slot with them (measured: "send
-    gmail email" returned 5 incident tools that only shared ``email``). A token no document
-    carries admits nothing; the caller's empty-group hint tells the model to retry without it.
-    Long queries additionally need :func:`_required_term_coverage` of their answerable terms."""
-    query_tokens = _tokenize(query) if catalog and limit > 0 else []
+
+def search_catalog_with_confidence(
+        catalog: list[CatalogEntry], query: str, limit: int = 5, *,
+        corpus_stats: Optional[_CorpusStats] = None) -> tuple[list[CatalogEntry], bool]:
+    """Top-``limit`` entries for ``query`` plus whether they came from the second-chance pass.
+
+    The strict pass admits by the query's rarest token (:func:`_gate_token`), not by
+    ``score > 0``: BM25 is additive over the tokens a document shares with the query, so on a
+    large catalog ``score > 0`` admits one-token matches and fills every slot with them
+    (measured: "send gmail email" returned 5 incident tools that only shared ``email``). A
+    token no document carries admits nothing; the caller's empty-group hint tells the model to
+    retry without it. Long queries additionally need :func:`_required_term_coverage` of their
+    answerable terms.
+
+    When the strict pass admits nothing and the query is long, the second chance admits
+    documents whose NAME carries one of the query's words and that still clear the coverage
+    floor; those come back with the confidence flag True so the caller can mark them.
+    """
+    if not catalog or limit <= 0:
+        return [], False
+    query_tokens = _tokenize(query)
     if not query_tokens:
-        return []
+        return [], False
     corpus_stats = corpus_stats or _corpus_stats(catalog)
     doc_freq = corpus_stats[2]
     gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
@@ -193,19 +264,36 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
     required_terms = _required_term_coverage(len(answerable))
     exact_name = query.strip().lower()
 
+    def _covers(tokens: set[str]) -> bool:
+        return sum(1 for t in answerable if t in tokens) >= required_terms
+
     def _admitted(entry: CatalogEntry) -> bool:
         """Carries the intent word AND enough of the answerable terms (exact name is exempt)."""
         if entry.name.lower() == exact_name:
             return True
         tokens = set(entry._tokens)
-        return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
+        return gate in tokens and _covers(tokens)
 
-    scored = [
-        (float("inf") if entry.name.lower() == exact_name
-         else _bm25_score(query_tokens, entry._tokens, *corpus_stats), entry)
-        for entry in catalog if _admitted(entry)]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [e for _, e in scored[:limit]]
+    hits = _rank(query_tokens, [e for e in catalog if _admitted(e)], corpus_stats,
+                 exact_name, limit)
+    if hits:
+        return hits, False
+
+    unique = set(query_tokens)
+    if len(unique) < MIN_SECOND_CHANCE_QUERY_TOKENS:
+        return [], False
+    n_docs = corpus_stats[3]
+    near: list[CatalogEntry] = []
+    evidence: dict[str, float] = {}
+    for entry in catalog:
+        matched = _name_tokens(entry) & unique
+        if not matched or not _covers(set(entry._tokens)):
+            continue
+        near.append(entry)
+        evidence[entry.name] = max(_idf(t, doc_freq, n_docs) for t in matched)
+    if not near:
+        return [], False
+    return _rank(query_tokens, near, corpus_stats, exact_name, limit, evidence), True
 
 
 # Sentence end: ., !, ? followed by whitespace/EOS, not inside e.g./i.e./etc.

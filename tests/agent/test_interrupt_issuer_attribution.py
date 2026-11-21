@@ -232,3 +232,52 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         assert interrupt_skip_wording(agent) == "Turn aborted — guard {x}"
     finally:
         set_interrupt(False)
+
+
+def _drain_session_stream(agent, interrupt_message: str) -> None:
+    """Run the session-stream drain against a bare agent, the way the server does."""
+    import asyncio
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from gateway.platforms.api_server import APIServerAdapter
+
+    server = SimpleNamespace(_active_run_agents={"run1": agent})
+    asyncio.run(APIServerAdapter._drain_session_stream_task_on_disconnect(
+        cast(Any, server), "run1", cast(Any, SimpleNamespace(done=lambda: True)),
+        interrupt_message=interrupt_message, shield_wait=False))
+
+
+def test_session_stream_disconnect_names_the_client_as_the_issuer():
+    """A client that drops the SSE stream is not the user: the turn must name the client.
+
+    The session-stream drain interrupts the agent with a MESSAGE, so without an explicit
+    ``tool_reason`` the producer is booked as ``_REASON_NEW_MESSAGE`` and the turn's exit reason
+    says ``interrupted_by_user`` (#84207). The sibling SSE path already names its issuer this way.
+    """
+    agent = _bare_agent()
+    try:
+        _drain_session_stream(agent, "SSE client disconnected")
+        assert interrupt_issuer(agent) == "sse_client_disconnected"
+        # The tool-cancel notice must not claim the user asked for it.
+        assert "sse client disconnected" in interrupt_skip_wording(agent)
+    finally:
+        set_interrupt(False)
+
+
+def test_session_stream_task_cancel_is_its_own_issuer():
+    """The drain's two producers are distinct events and must not collapse into one label.
+
+    A dropped connection is the client leaving; a cancelled task is the server stopping the
+    turn. Neither is a user stop, and neither may be reported as the other.
+    """
+    for message, expected in (
+        ("SSE client disconnected", "sse_client_disconnected"),
+        ("SSE task cancelled", "sse_task_cancelled"),
+    ):
+        agent = _bare_agent()
+        try:
+            _drain_session_stream(agent, message)
+            assert interrupt_issuer(agent) == expected
+        finally:
+            set_interrupt(False)

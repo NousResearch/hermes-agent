@@ -319,6 +319,20 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_zai_429_usage_limit_will_reset_at_wording_stays_rate_limit(self):
+        """Z.ai GLM Coding Plan words its 5-hour window reset as "will reset at"
+        (timestamp in UTC+8, no timezone marker). Future-tense reset wording is
+        still a reset signal: rate_limit with backoff, not a terminal billing wall."""
+        e = MockAPIError(
+            "Usage limit reached for 5 hour. Your limit will reset at 2026-11-16 21:12:07",
+            status_code=429,
+        )
+
+        result = classify_api_error(e, provider="zai", model="glm-5.3")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     @pytest.mark.parametrize(
         ("reset_field", "reset_value"),
         [

@@ -1,0 +1,22 @@
+name: hermes-bots-console
+repo: https://github.com/vellxw/hermes-bots-console
+sha: 5bf328c4da61e813d5dd592b89e26390afee38cb
+description: "Hermes Bot Command: dashboard plugin for managing bot profiles, native groups, turbo policies, and live profile-scoped desktop viewers. Adds a Bots tab to the Hermes Dashboard with per-bot chat, roster, groups, and isolated desktop control via noVNC/RFB. Profile-isolated displays with lazy lifecycle and human lease hand-back."
+maintainer: vellxw
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/vellxw/hermes-bots-console#readme
+version: "0.5.0-rc.1"
+image: https://raw.githubusercontent.com/vellxw/hermes-bots-console/5bf328c4da61e813d5dd592b89e26390afee38cb/docs/demo.svg
+platforms: []
+capabilities:
+  provides_tools:
+    - dashboard_roster
+    - bot_chat
+    - native_groups
+    - profile_scoped_turbo
+    - isolated_desktop_viewer
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

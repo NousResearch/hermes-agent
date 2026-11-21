@@ -262,6 +262,29 @@ class TestOpenAIClientConfig:
         assert "language" not in kwargs
 
 
+class TestDirectOpenaiCredentialsExpandVars:
+    def test_config_api_key_env_reference_is_expanded(self, monkeypatch):
+        """A ${VAR} api_key in the STT config resolves against the process
+        environment instead of being sent literally."""
+        from tools.transcription_cloud import _direct_openai_credentials
+
+        monkeypatch.setenv("HERMES_STT_TEST_KEY", "expanded-key")
+        assert _direct_openai_credentials(
+            "${HERMES_STT_TEST_KEY}", "https://api.openai.com/v1"
+        ) == ("expanded-key", "https://api.openai.com/v1")
+
+    def test_unset_env_reference_is_left_as_written(self, monkeypatch):
+        """An unresolvable ${VAR} passes through unchanged: expandvars keeps
+        unknown references, so a typo stays visible instead of becoming an
+        empty key."""
+        from tools.transcription_cloud import _direct_openai_credentials
+
+        monkeypatch.delenv("HERMES_STT_MISSING_KEY", raising=False)
+        assert _direct_openai_credentials(
+            "${HERMES_STT_MISSING_KEY}", "https://api.openai.com/v1"
+        ) == ("${HERMES_STT_MISSING_KEY}", "https://api.openai.com/v1")
+
+
 # ============================================================================
 # _transcribe_openai — additional tests
 # ============================================================================

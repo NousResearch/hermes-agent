@@ -18,8 +18,9 @@ python -m pm.build_env --source . --out .venv --group dev --group test
 
 This is a fresh build, not an in-place sync. If the disposable output exists,
 stop its processes and intentionally remove it before regeneration. The runner
-clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
-fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
+clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. The
+runner does not discover this output: from a non-activated shell, set
+`HERMES_PYTHON` to its interpreter (e.g. `.venv/bin/python`).
 
 ```bash
 scripts/run_tests.sh                                    # full suite

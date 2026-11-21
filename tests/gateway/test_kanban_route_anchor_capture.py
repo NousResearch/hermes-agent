@@ -42,5 +42,27 @@ def test_slash_subscription_keeps_the_routed_source_owner(tmp_path, monkeypatch)
     with kbc.connect() as conn:
         sub = kbn.list_notify_subs(conn, task)[0]
     assert sub["notifier_profile"] == source.profile
+    assert sub["event_kinds"] is None
     assert all(sub["delivery_metadata"][key] == getattr(source, key)
                for key in ("scope_id", "parent_chat_id"))
+
+
+def test_slash_subscription_honours_auto_subscribe_events(tmp_path, monkeypatch):
+    import asyncio
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"kanban": {"auto_subscribe_events": list(kbn.FAILURE_ALERT_EVENT_KINDS)}})
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "default"
+    source = SessionSource(platform=Platform.DISCORD, chat_id="post", chat_type="thread",
+                           thread_id="post", scope_id="guild", parent_chat_id="parent", profile="yuki")
+    with kbc.connect() as conn:
+        task = kb.create_task(conn, title="scheduled maintenance")
+    assert asyncio.run(runner._kanban_auto_subscribe(MessageEvent(text="/kanban create", source=source), task, None))
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, task)[0]
+    assert sub["delivery_mode"] == "notify+wake"
+    assert sub["event_kinds"] == list(kbn.FAILURE_ALERT_EVENT_KINDS)

@@ -10,6 +10,8 @@ from persistence.core.errors import AuthorityRefusal
 from ._runtime import _epoch, _json, replay_mutation_receipt
 
 DEFERRED_PICK_PREFIX = 'gateway.deferred_pick.v1.'
+DEFERRED_GLOBAL_PUBLICATION_PREFIX = 'gateway.deferred_global_publication.v1.'
+GLOBAL_MODEL_SELECTION_KEY = 'gateway.global_model_selection.v1'
 
 
 def local_snapshot(holder, conn, session_id):
@@ -67,8 +69,62 @@ def model_in_transaction(holder, conn, session_id, payload, prepared):
         conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
     else:
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json({'reasoning': level}), key))
-    return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation,
-                                  **({'effort': payload['reasoning']} if 'reasoning' in payload else {})}
+    projection = {'model': model, 'provider': config['provider'], 'execution_generation': generation,
+                  **({'effort': payload['reasoning']} if 'reasoning' in payload else {})}
+    if payload.get('scope') == 'global':
+        # The receipt and the profile-wide fence commit together; publication can then be repaired on retry.
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                     (GLOBAL_MODEL_SELECTION_KEY, json.dumps([session_id, generation])))
+        projection['global_selection'] = {key: config.get(key) for key in ('default', 'provider', 'base_url', 'api_mode')}
+    return {session_id, target}, projection
+
+
+def deferred_global_request(conn, session_id, principal_id, request_id, operation, payload):
+    """Capture the original request before its application consumes the deferred slot."""
+    if operation != 'model' or payload.get('scope') != 'global':
+        return None
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?', (DEFERRED_PICK_PREFIX + session_id,)).fetchone()
+    pick = json.loads(row[0]) if row else {}
+    if (pick.get('principal_id') == principal_id and pick.get('application_id') == request_id
+            and pick.get('payload') == payload):
+        return {'principal_id': principal_id, 'request_id': pick['request_id']}
+    return None
+
+
+def record_deferred_global_publication(conn, session_id, request, receipt_key, generation):
+    """A durable link to the application receipt, committed beside that receipt and its fence."""
+    if request is None:
+        return
+    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                 (DEFERRED_GLOBAL_PUBLICATION_PREFIX + session_id,
+                  _json({**request, 'receipt_key': receipt_key, 'generation': generation})))
+
+
+def deferred_global_model_result(holder, session_id, request):
+    with holder._read_ctx() as conn:
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                           (DEFERRED_GLOBAL_PUBLICATION_PREFIX + session_id,)).fetchone()
+        if row is None:
+            return None
+        pending = json.loads(row[0])
+        if request is not None and (pending['principal_id'], pending['request_id']) != (request.principal_id, request.request_id):
+            return None
+        receipt = conn.execute('SELECT value FROM state_meta WHERE key=?', (pending['receipt_key'],)).fetchone()
+        return json.loads(receipt[0])['result']
+
+
+def finish_deferred_global_model_publication(holder, epoch, session_id, generation):
+    def write(conn):
+        _epoch(conn, epoch)
+        conn.execute("DELETE FROM state_meta WHERE key=? AND json_extract(value, '$.generation')=?",
+                     (DEFERRED_GLOBAL_PUBLICATION_PREFIX + session_id, generation))
+    holder._execute_write(write)
+
+
+def is_latest_global_model_selection(holder, session_id, generation):
+    with holder._read_ctx() as conn:
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (GLOBAL_MODEL_SELECTION_KEY,)).fetchone()
+    return row is not None and json.loads(row[0]) == [session_id, generation]
 
 
 def reasoning_in_transaction(holder, conn, session_id, payload, prepared):

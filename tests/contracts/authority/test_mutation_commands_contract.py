@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from persistence import AuthorityRefusal, CapabilityUnsupported, FenceStale, ProofRejected, StaleFenceKind
@@ -12,6 +14,7 @@ from persistence.conversation.sessions import NewSession
 
 VALID = [
     ("model", {"model": "gpt", "provider": "openai", "reasoning": "high"}, rt.ModelPick("gpt", provider="openai", reasoning="high")),
+    ("model", {"model": "gpt", "scope": "global"}, rt.ModelPick("gpt", scope="global")),
     ("branch", {"title": "b", "through_message_id": 3, "mcp_servers": {"fingerprint": "f"}}, rt.Branch(title="b", through_message_id=3, mcp_servers_fingerprint="f")),
     ("reasoning", {"effort": None}, rt.ReasoningPick(None)),
     ("reasoning", {"effort": "XHigh"}, rt.ReasoningPick("XHigh")),
@@ -30,6 +33,8 @@ VALID = [
 
 INVALID = [
     ("model", {"model": " "}), ("model", {"model": "m", "reasoning": "hgih"}), ("model", {"model": "m", "extra": "x"}),
+    ("model", {"model": "m", "scope": "session"}), ("model", {"model": "m", "scope": ""}),
+    ("model", {"model": "m", "scope": None}), ("model", {"model": "m", "scope": True}),
     ("branch", {"through_message_id": 0}), ("branch", {"mcp_servers": {"fingerprint": 1}}), ("reasoning", {"effort": "loud"}),
     ("workspace", {"cwd": "  "}), ("edit_policy", {"policy": "never"}), ("compress", {"keep_last": 2}), ("compress", {"preview": 1}),
     ("delete", {"x": 1}), ("import", {"sessions": {}}), ("rewind", {"target_message_id": True}), ("rename", {"title": 1}),
@@ -83,6 +88,60 @@ def test_model_commits_the_prepared_policy_and_supersedes_a_deferred_pick(backen
     outcome = _commit(store, epoch, sid, rt.ModelPick("m2"), {"policy": policy}, expected_generation=0)
     assert {k: outcome.result[k] for k in ("model", "provider", "execution_generation")} == {"model": "m2", "provider": "p2", "execution_generation": 1}
     assert store.sessions.get(sid).model == "m2" and store.runtime.deferred_pick(sid) is None
+
+
+def test_global_model_selection_fence_is_profile_wide_and_survives_local_picks_and_replay(backend, scope_a, scope_b):
+    store = backend.open(scope_a)
+    epoch = store.runtime.begin_epoch(instance_id="instance-global")
+    sid = _local(store)
+    other_sid = _local(store, "create-2")
+    assert not store.runtime.is_latest_global_model_selection(session_id=sid, generation=0)
+    selected = {"default": "m2", "provider": "p2", "base_url": "https://example.invalid/v1", "api_mode": "responses"}
+    policy = {"model": "m2", "config_json": json.dumps({"model": {**selected, "api_key": "private"}}), "cwd": "/w"}
+    command = rt.ModelPick("m2", scope="global")
+    outcome = _commit(store, epoch, sid, command, {"policy": policy}, request_id="global", expected_generation=0)
+    assert outcome.result["global_selection"] == selected
+    assert store.runtime.is_latest_global_model_selection(session_id=sid, generation=1)
+    assert not store.runtime.is_latest_global_model_selection(session_id=other_sid, generation=1)
+    assert not store.runtime.is_latest_global_model_selection(session_id=sid, generation=0)
+
+    local = _commit(store, epoch, sid, rt.ModelPick("local"), {"policy": {**policy, "model": "local"}},
+                    request_id="local", expected_generation=1)
+    assert "global_selection" not in local.result
+    assert store.sessions.get(sid).runtime_generation == 2
+    assert store.runtime.is_latest_global_model_selection(session_id=sid, generation=1)
+    assert not store.runtime.is_latest_global_model_selection(session_id=sid, generation=2)
+    retry = dict(principal_id="p", session_id=sid, request_id="global", expected_revision=0,
+                 expected_generation=0, command=command, owner=None)
+    replay = store.runtime.mutate(epoch, **retry)
+    assert replay.replayed and replay.result == outcome.result
+    assert store.sessions.get(sid).runtime_generation == 2
+
+    # Refused writes do not move the fence or acquire a repairable receipt.
+    with pytest.raises(FenceStale):
+        store.runtime.mutate(epoch, **{**retry, "request_id": "stale"})
+    assert not store.runtime.has_mutation_receipt("p", sid, "stale")
+    assert store.runtime.is_latest_global_model_selection(session_id=sid, generation=1)
+
+    # Another profile's global selection cannot supersede this profile's fence.
+    foreign = backend.open(scope_b)
+    foreign_epoch = foreign.runtime.begin_epoch(instance_id="foreign-global")
+    foreign_sid = _local(foreign)
+    _commit(foreign, foreign_epoch, foreign_sid, command, {"policy": policy}, expected_generation=0)
+    assert store.runtime.is_latest_global_model_selection(session_id=sid, generation=1)
+
+    newer = _commit(store, epoch, other_sid, rt.ModelPick("newer", scope="global"),
+                    {"policy": {**policy, "model": "newer"}}, request_id="newer", expected_generation=0)
+    assert newer.result["execution_generation"] == 1  # same generation, different session
+    assert not store.runtime.is_latest_global_model_selection(session_id=sid, generation=1)
+    assert store.runtime.is_latest_global_model_selection(session_id=other_sid, generation=1)
+    if backend.capabilities.reopen_durability:
+        backend.reopen()
+    replay = store.runtime.mutate(epoch, **retry)
+    assert replay.replayed and replay.result == outcome.result
+    assert not store.runtime.is_latest_global_model_selection(session_id=sid, generation=1)
+    assert store.runtime.is_latest_global_model_selection(session_id=other_sid, generation=1)
+    assert foreign.runtime.is_latest_global_model_selection(session_id=foreign_sid, generation=1)
 
 
 def test_prepared_commits_refuse_without_a_snapshot_or_after_it_moved(backend, scope_a):

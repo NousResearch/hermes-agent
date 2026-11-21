@@ -32,6 +32,7 @@ from .bindings import binding_text
 
 #: Meta key prefixes of the deferred-pick slot and of a viewer close.
 DEFERRED_PICK_PREFIX = "gateway.deferred_pick.v1."
+GLOBAL_MODEL_SELECTION_KEY = "gateway.global_model_selection.v1"
 VIEWER_CLOSE_PREFIX = "gateway.viewer_close.v1:"
 
 
@@ -211,8 +212,12 @@ def _model(repo: Any, session_id: str, payload: Mapping[str, Any], prepared: Pre
         meta.pop(key, None)
     else:
         meta[key] = canonical_json({"reasoning": level})
-    return {session_id, snapshot.target}, {"model": model, "provider": config["provider"], "execution_generation": generation,
-                                           **({"effort": payload["reasoning"]} if "reasoning" in payload else {})}
+    projection = {"model": model, "provider": config["provider"], "execution_generation": generation,
+                  **({"effort": payload["reasoning"]} if "reasoning" in payload else {})}
+    if payload.get("scope") == "global":
+        meta[GLOBAL_MODEL_SELECTION_KEY] = json.dumps([session_id, generation])
+        projection["global_selection"] = {key: config.get(key) for key in ("default", "provider", "base_url", "api_mode")}
+    return {session_id, snapshot.target}, projection
 
 
 def _reasoning(repo: Any, session_id: str, payload: Mapping[str, Any], prepared: PreparedMutation | None) -> tuple[set[str], dict[str, Any]]:

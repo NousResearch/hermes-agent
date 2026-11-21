@@ -197,7 +197,23 @@ def _runtime_owns_authority(authority) -> bool:
     return getattr(runner, 'session_authority', None) is authority
 
 
+def global_model_selection_lock(authority):
+    """One profile's commits, config writes and deferred publication repairs share this lock."""
+    lock = getattr(authority, '_global_model_selection_lock', None)
+    if lock is None:
+        lock = authority._global_model_selection_lock = asyncio.Lock()
+    return lock
+
+
 async def write_mutation(authority, ref, params, editor_servers, *, principal_id, history=None, commit_lock=None):
+    lock = (global_model_selection_lock(authority) if params['operation'] == 'model'
+            and isinstance(params['payload'], dict) and params['payload'].get('scope') == 'global' else nullcontext())
+    async with lock:
+        return await _write_mutation(authority, ref, params, editor_servers, principal_id=principal_id,
+                                     history=history, commit_lock=commit_lock)
+
+
+async def _write_mutation(authority, ref, params, editor_servers, *, principal_id, history=None, commit_lock=None):
     """The writer phase of ``session.mutate``, and of the admission-start editor MCP re-freeze
     (``refreeze_editor_mcp``): fenced prepare, the receipt commit, then its runtime projections.
     The caller authorized the change and holds the session's locks; this takes neither. *history* is the
@@ -295,7 +311,8 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                     from gateway.session_mutation_compress import finish_compress_engine
                     await finish_compress_engine(authority, prepared, result if applied else None)
         try:
-            await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
+            await _project_result(authority, ref, live, params, result, editor_servers,
+                                  principal_id=principal_id, applied=applied)
         finally:
             # The receipt is committed: a failed projection must not swallow the hook, and an exact
             # retry (applied=False) never refires it.
@@ -310,10 +327,32 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
     return result
 
 
-async def _project_result(authority, ref, live, params, result, editor_servers, *, applied):
-    """A committed receipt's projections, under the writer's commit lock. They are idempotent reads
-    of the committed receipt, so exact retries repeat them (like delete's retirement); only the
-    one-shot event is fenced."""
+async def _project_result(authority, ref, live, params, result, editor_servers, *, principal_id, applied):
+    """Publish a committed selection even when its independent config projection fails."""
+    global_pick = params['operation'] == 'model' and params['payload'].get('scope') == 'global'
+    if global_pick and result.get('status') == 'deferred':
+        # The original immutable response stays deferred. Only its committed application's
+        # unfinished config publication is repaired; never reapply the old session policy.
+        from gateway.session_deferred_pick import repair_global_publication
+        from persistence.authority.runtime import PinnedIdentity
+        await repair_global_publication(authority, ref, request=PinnedIdentity(principal_id, params['request_id']),
+                                        locked=True)
+        return
+    try:
+        if 'global_selection' in result:
+            from gateway.session_mutation_model import persist_global_selection
+            await asyncio.to_thread(persist_global_selection, authority, ref, result)
+    finally:
+        # The receipt already changed the next turn's policy. A config.yaml OSError must
+        # neither strand that policy nor misreport the committed selection as unresolved.
+        await _project_runtime_result(authority, ref, live, params, result, editor_servers, applied=applied)
+    if 'global_selection' in result:
+        await asyncio.to_thread(authority_persistence(authority).runtime.finish_deferred_global_model_publication,
+                                authority.epoch, session_id=ref.session_id, generation=result['execution_generation'])
+
+
+async def _project_runtime_result(authority, ref, live, params, result, editor_servers, *, applied):
+    """Receipt-owned runtime projections; only the initial commit fires its one-shot event."""
     operation = params['operation']
     current = authority_persistence(authority).sessions.get(ref.session_id)
     owns_projection = current is not None and (

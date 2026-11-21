@@ -5,6 +5,7 @@ pick asked refuses an undecodable compare value.
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -13,9 +14,15 @@ import pytest
 from persistence.authority.runtime import (
     ChatPickParams,
     DeferredPick,
+    ModelPick,
+    PreparedMutation,
     chat_pick_key,
     mutation_receipt_key,
 )
+from persistence.authority.bindings import local_session_id
+from persistence.conversation.sessions import NewSession
+from persistence.core.errors import PermanentStoreError
+from persistence.sqlite.conversation._store.local import POLICY_PREFIX
 from tests.persistence_sqlite.authority._admission_support import BackendSeed, begin_epoch
 from tests.persistence_sqlite.authority._support import (
     counted_transactions,
@@ -159,3 +166,44 @@ def test_mark_deferred_pick_asked_refuses_an_undecodable_compare_value(store):
 def test_mark_deferred_pick_asked_is_one_write(store):
     stored = _seed_deferred(store)
     assert_one_write(store, lambda: store.runtime.mark_deferred_pick_asked(SID, stored=stored, confirm="tok-1"))
+
+@pytest.mark.parametrize("previous_global", [False, True])
+def test_global_selection_fence_and_policy_roll_back_when_receipt_fails(store, previous_global):
+    epoch = store.runtime.begin_epoch(instance_id=OWNER)
+    sid = local_session_id("default", PRINCIPAL, "create-global")
+    store.sessions.create(NewSession(session_id=sid, source="tui", model="original"))
+    policy = {"model": "original", "config_json": '{"model":{"default":"original","provider":"custom"}}'}
+    receipt = {"session_id": sid, "profile_id": "default", "principal_id": PRINCIPAL, "request_id": "create-global",
+               "entry": {"session_id": sid}, "lineage": [sid], "policy": policy}
+    holder = store.holder()
+    holder._execute_write(lambda conn: conn.execute("INSERT INTO state_meta(key,value) VALUES(?,?)",
+                                                    (POLICY_PREFIX + sid, json.dumps(receipt))))
+
+    def prepared_pick(request_id):
+        row = store.sessions.get(sid)
+        fields = dict(principal_id=PRINCIPAL, session_id=sid, request_id=request_id,
+                      expected_revision=row.runtime_revision, expected_generation=row.runtime_generation,
+                      command=ModelPick(request_id, scope="global"))
+        snapshot = store.runtime.prepare_mutation(epoch, **fields)
+        selected = {"model": request_id, "config_json": json.dumps({"model": {"default": request_id, "provider": "custom"}})}
+        return dict(fields, prepared=PreparedMutation(snapshot, {"policy": selected}), owner=None)
+
+    if previous_global:
+        store.runtime.mutate(epoch, **prepared_pick("previous"))
+    generation = int(previous_global)
+    args = prepared_pick("next")
+    holder._execute_write(lambda conn: conn.execute(
+        "CREATE TRIGGER fail_global_receipt BEFORE INSERT ON state_meta "
+        "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT RAISE(ABORT, 'receipt failed'); END"))
+    before = dump(store.store_path)
+    with pytest.raises(PermanentStoreError, match="receipt failed"):
+        store.runtime.mutate(epoch, **args)
+    assert dump(store.store_path) == before
+    assert store.sessions.get(sid).runtime_generation == generation
+    assert not store.runtime.has_mutation_receipt(PRINCIPAL, sid, "next")
+    assert not store.runtime.is_latest_global_model_selection(session_id=sid, generation=generation + 1)
+    assert store.runtime.is_latest_global_model_selection(session_id=sid, generation=generation) is previous_global
+    holder._execute_write(lambda conn: conn.execute("DROP TRIGGER fail_global_receipt"))
+    committed = store.runtime.mutate(epoch, **args)
+    assert committed.result["global_selection"]["default"] == "next"
+    assert store.runtime.is_latest_global_model_selection(session_id=sid, generation=generation + 1)

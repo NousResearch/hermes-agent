@@ -194,11 +194,6 @@ class CLITuiRuntimeMixin:
         self._interactive_turn = False
         self._app.invalidate()
 
-        # After an interrupt the renderer may have drifted (leaked CPR text, VT100 parser
-        # stalled mid-escape): drain stray bytes and force a clean redraw.
-        if self._last_turn_interrupted:
-            self._recover_terminal_after_interrupt()
-
         # Re-queue any messages that arrived in _interrupt_queue while the agent was running and were never
         # claimed by the explicit interrupt path. See _drain_interrupt_queue_to_pending_input for the full
         # rationale. Regression of #17666 / #18760 — the drain block from the original PR #17939 was

@@ -3,6 +3,7 @@ CLI. Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import errno
 import os
@@ -54,6 +55,17 @@ def _run_on_app_loop(app, fn) -> None:
         except Exception:
             pass
     fn()
+
+
+def _off_app_loop(app) -> bool:
+    """Whether the calling thread is not the one running *app*'s event loop (while it runs)."""
+    loop = getattr(app, "loop", None)
+    if not isinstance(loop, asyncio.AbstractEventLoop) or not loop.is_running():
+        return False
+    try:
+        return asyncio.get_running_loop() is not loop
+    except RuntimeError:
+        return True
 
 
 def _tmux_passthrough(seq: str) -> str:
@@ -158,6 +170,12 @@ class CLITerminalMixin:
             return
         app = getattr(self, "_app", None)
         if not app:
+            return
+        if _off_app_loop(app):
+            # The REPL worker (post-interrupt recovery, ``/redraw``): its erase and replay would
+            # interleave with the loop's own paints, so they run on the loop, after the paints
+            # already queued there.
+            _run_on_app_loop(app, self._force_full_redraw)
             return
         fit = self._clear_prompt_toolkit_screen(app, rebuild_scrollback=self._redraw_rebuilds_scrollback())
         if getattr(self, "_terminal_io_broken", False):

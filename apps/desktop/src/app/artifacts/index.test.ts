@@ -48,6 +48,67 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it.each([
+    'Template: `https://clawhub.ai/{owner}/skills/{slug}`。',
+    '[Template](https://example.com/{owner}/report.html)',
+    '![Template](https://example.com/{name}.png)',
+    JSON.stringify({ output: 'Example: https://example.com/{owner}/report.html' })
+  ])('excludes unexpanded URL path templates from heuristic artifacts: %s', content => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content, role: 'assistant', timestamp: 2000 },
+      { content, role: 'tool', tool_name: 'terminal', timestamp: 2001 }
+    ])
+
+    expect(artifacts).toEqual([])
+  })
+
+  it('preserves concrete URLs and explicitly delivered brace-containing URLs', () => {
+    const values = [
+      'https://example.com/alice/report.html',
+      'https://example.com/%7Bowner%7D/report.html',
+      'https://example.com/search?q={owner}'
+    ]
+    const explicit = 'https://example.com/{literal}/report.html'
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content: values.join('\n'), role: 'assistant', timestamp: 2000 },
+      { content: `MEDIA:${explicit}`, role: 'assistant', timestamp: 2001 }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([...values, explicit])
+  })
+
+  it('keeps authoritative tool artifacts even when their URL contains literal braces', () => {
+    const value = 'https://example.com/{literal}/report.html'
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify({ output_url: value }),
+        role: 'tool',
+        tool_name: 'render_report',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([value])
+  })
+
+  it('filters templates on every loaded page without discarding concrete artifacts', async () => {
+    const session = makeSession()
+    const concrete = 'https://example.com/alice/report.html'
+    const loadPage = vi.fn(async (_session: SessionInfo, { offset }: { limit: number; offset: number }) => ({
+      messages: offset === 0
+        ? [{ content: 'https://example.com/{owner}/report.html', role: 'assistant' as const }]
+        : offset === 1
+          ? [{ content: concrete, role: 'assistant' as const }]
+          : [],
+      pagination: { limit: 1, offset, returned: offset < 2 ? 1 : 0 }
+    }))
+    const result = await loadArtifactsForSessions([session], loadPage)
+
+    expect(result.failures).toEqual([])
+    expect(result.artifacts.map(artifact => artifact.value)).toEqual([concrete])
+    expect(loadPage.mock.calls.map(([, page]) => page.offset)).toEqual([0, 1, 2])
+  })
+
   it('strips Markdown code delimiters from discovered link artifacts', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

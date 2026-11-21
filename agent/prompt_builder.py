@@ -19,6 +19,7 @@ from hermes_constants import (
     get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
+from agent.message_metadata import stamp_message_timestamp
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -587,9 +588,13 @@ def steer_user_row(steer_text: str) -> dict[str, Any]:
     """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
-    never merges the next real prompt into it and history renderers can label it."""
-    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
-            "display_kind": STEER_DISPLAY_KIND}
+    never merges the next real prompt into it and history renderers can label it.
+    Stamp it at delivery so a later database flush preserves its position before the reply."""
+    return stamp_message_timestamp({
+        "role": "user",
+        "content": format_steer_marker(steer_text).lstrip(),
+        "display_kind": STEER_DISPLAY_KIND,
+    })
 
 
 STEER_CHANNEL_NOTE = (

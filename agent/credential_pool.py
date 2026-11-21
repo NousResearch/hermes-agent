@@ -221,7 +221,7 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
-    # Epoch of the last deliberate ``hermes auth reset`` of this entry. Sticky: a later exhaustion
+    # Epoch of the last operator reset or automatic recovery. Sticky: a later exhaustion
     # stamps a newer ``last_status_at``, so "reset postdates status" stays decidable across processes.
     status_cleared_at: Optional[float] = None
     base_url: Optional[str] = None
@@ -2048,10 +2048,10 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 ):
                     continue
                 if clear_expired:
-                    # The probe may have rotated this row's single-use token pair: clear the
-                    # cooldown on the live row, not on this pre-probe copy.
+                    # Fence stale writers without overriding errors recorded during the probe.
                     entry = self._find(lambda e, i=entry.id: e.id == i) or entry
-                    entry = self._adopt(entry, persist=False, **_MARK_OK)
+                    recovered = {**_MARK_OK, "last_status_at": now, "status_cleared_at": now}
+                    entry = self._adopt(entry, persist=False, **recovered)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in _TOKENS_SINGLETON_PROVIDERS:

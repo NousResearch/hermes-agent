@@ -1,0 +1,30 @@
+name: annotate-for-hermes
+repo: https://github.com/LarryLemonBot/annotate-for-hermes
+sha: 3f2911fbd33b2344bf70e2dab30c581cb7a5a976
+title: "Annotate for Hermes"
+description: >-
+  Highlight passages in a reply, add a comment to each, and send them all
+  together in your next message. Works on stock Hermes today as one readable
+  quoted block; switches to a native annotation chip automatically once the
+  desktop ships the annotation API.
+maintainer: LarryLemonBot
+tier: community
+category: desktop
+version: "1.1.0"
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/LarryLemonBot/annotate-for-hermes#readme
+platforms: [macos]
+image: https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/3f2911fbd33b2344bf70e2dab30c581cb7a5a976/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/3f2911fbd33b2344bf70e2dab30c581cb7a5a976/docs/annotation-preview.png
+known_issues:
+  - "On stock Hermes the comments go into the draft as plain quoted text, not a chip. The chip interface needs the annotation API from core PR #146959, which is not in a stable release yet."
+  - "On stock Hermes any selected text outside an input can be annotated, because the SDK cannot tell the plugin which element is an assistant reply."
+  - "Comment dictation needs the proposed dictation API and is off on stock Hermes."
+  - "Unsaved popover comments and highlights do not survive an app reload. A plain-text block persists as ordinary draft text but is no longer managed by the plugin after a reload."
+  - "Tested on macOS (patched native build); plain-text mode tested only on a Linux stock v0.23.2 dev renderer, so Linux is not listed yet. Windows, screen readers, touch, and the official updater path are unverified."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

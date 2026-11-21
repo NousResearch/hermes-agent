@@ -64,6 +64,44 @@ class TestCLIStatusBar:
         assert text.endswith(" weekly-digest ")
         assert cli_obj._status_bar_display_width(text) == 80
 
+    def test_reasoning_badge_shows_a_non_default_level(self):
+        cli_obj = _make_cli()
+        cli_obj.provider = "deepseek"
+        cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
+
+        assert cli_obj._get_status_bar_snapshot()["reasoning_label"] == "high"
+        assert "high" in cli_obj._build_status_bar_text(width=80)
+        # Modern layout renders the same segments with prompt_toolkit styles.
+        segs = cli_obj._status_bar_segments(
+            cli_obj._get_status_bar_snapshot(), 80, None, False, styled=True)
+        assert "high" in "".join(text for _, text in segs[0])
+
+    def test_reasoning_badge_is_blank_for_unset_default_and_disabled(self):
+        """Nothing is worth the space: every route runs these when nobody chose a level."""
+        cli_obj = _make_cli()
+        cli_obj.provider = "deepseek"
+        for rc in (None, {"enabled": True, "effort": "medium"}, {"enabled": True, "effort": "normal"},
+                   {"enabled": False}):
+            cli_obj.reasoning_config = rc
+            assert cli_obj._get_status_bar_snapshot()["reasoning_label"] == ""
+            assert "☤ " in cli_obj._build_status_bar_text(width=80)
+
+    def test_reasoning_badge_follows_a_live_reasoning_switch(self):
+        cli_obj = _make_cli()
+        cli_obj.provider = "deepseek"
+        cli_obj.reasoning_config = {"enabled": True, "effort": "low"}
+        assert cli_obj._get_status_bar_snapshot()["reasoning_label"] == "low"
+        cli_obj.reasoning_config = {"enabled": True, "effort": "max"}
+        assert cli_obj._get_status_bar_snapshot()["reasoning_label"] == "max"
+
+    def test_reasoning_badge_is_omitted_under_moa(self):
+        """MoA resolves an effort per slot; a single global badge would misstate the turn."""
+        cli_obj = _make_cli(model="moa:quality")
+        cli_obj.provider = "moa"
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        assert cli_obj._get_status_bar_snapshot()["reasoning_label"] == ""
+
     def test_snapshot_refreshes_persisted_session_title(self):
         cli_obj = _make_cli()
         cli_obj.session_id = "session-1"

@@ -1,0 +1,8 @@
+name: you-should-know
+version: "0.1.0"
+description: "Sidecar observer inspired by the Claude Code 'You should Know' mod: scans the session's assistant output for important things you might miss (swallowed errors, unanswered questions, risky actions, pending follow-ups) and appends a short digest to the turn's visible output. Enable with `hermes plugins enable you-should-know`."
+author: NousResearch
+provides_hooks:
+  - transform_llm_output
+  - post_llm_call
+  - post_tool_call

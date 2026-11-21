@@ -23,8 +23,8 @@ from tools.skills_tool_setup import (
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
 from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
-    _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
-    _serve_plugin_skill, _serve_skill_file, _truncate_description)
+    _mark_background_review_read, _preprocess_skill, _read_skill_text, _read_skill_text_and_digest,
+    _safe_frontmatter, _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
 from tools.skill_provenance import is_background_review
 
@@ -656,8 +656,8 @@ def skill_view(
         error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:
             return error
-        try:  # read once — reused for platform check and main content
-            content = _read_skill_text(skill_md)
+        try:  # read once — reused for platform check, main content and the review read mark
+            content, content_digest = _read_skill_text_and_digest(skill_md)
         except Exception as e:
             return _fail(f"Failed to read skill '{name}': {e}")
         _log_security_warnings(name, skill_md, content, all_dirs, active_skills_dir)
@@ -726,7 +726,7 @@ def skill_view(
             **readiness_extras}
         if deps_note:
             result["deps_note"] = deps_note
-        _mark_background_review_read(skill_md)
+        _mark_background_review_read(skill_md, content_digest)
         if frontmatter.get("compatibility"):  # agentskills.io optional fields
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):

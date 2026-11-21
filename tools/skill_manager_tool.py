@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import os
 import re
 import shutil
 from collections import Counter
@@ -20,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
 
-from utils import atomic_write_text, is_truthy_value
+from utils import atomic_write_bytes, atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -31,7 +32,8 @@ from agent.skill_utils import (
 from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
-    _validate_delete_target, _is_background_review, _refusal as _err)
+    _read_mark_entry, _refresh_background_review_read_mark, _validate_delete_target, _is_background_review,
+    _refusal as _err, _journal_owned_by_batch)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
@@ -408,10 +410,12 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
     (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
     restores the original (or unlinks a new file). Error dict or None."""
-    original = None
+    original = original_bytes = None
+    mark = _read_mark_entry(target)  # before publishing: a read recorded after the write is not ours
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
+        original_bytes = target.read_bytes()
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
@@ -422,10 +426,11 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
-    if not scan_error:
+    if not scan_error:  # the bytes atomic_write_text published (text mode: "\n" -> os.linesep, utf-8)
+        _refresh_background_review_read_mark(target, mark, content.replace("\n", os.linesep).encode("utf-8"))
         return None
-    if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
+    if original_bytes is not None:  # exact bytes: a BOM or CRLF original stays as it was
+        atomic_write_bytes(target, original_bytes, preserve_owner=True)
     else:  # a dangling symlink's write created its destination: remove that, keep the link
         target.resolve().unlink(missing_ok=True)
     return _err(scan_error)
@@ -660,7 +665,9 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):
         return read_guard
+    mark = _read_mark_entry(target)
     target.unlink()
+    _refresh_background_review_read_mark(target, mark, None)  # removed: drops the fork's read mark
     _rmdir_if_empty(target.parent, skill_dir)
     return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
 
@@ -788,6 +795,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             forget(name)
 
 
+@_journal_owned_by_batch
 def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,

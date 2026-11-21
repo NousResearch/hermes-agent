@@ -4,9 +4,14 @@ operation may proceed, else a refusal (error dict or message). Origin-owned stat
 so test patches keep working."""
 
 import contextvars as _ctxvars
+import functools
+import hashlib
+import itertools
 import logging
+import os
+import stat
 import threading
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -28,46 +33,191 @@ def _is_background_review() -> bool:
         return True
 
 
+def _is_confirmed_background_review() -> bool:
+    """True only when the origin lookup succeeds and says background review. Moving a read mark vouches
+    for bytes the fork will write over without re-reading, so an unknown origin must never move one
+    (unlike the guards above, where unknown means stricter)."""
+    try:
+        from tools.skill_provenance import is_background_review
+        return bool(is_background_review())
+    except Exception:
+        logger.warning("write-origin lookup failed; not moving background-review read marks", exc_info=True)
+        return False
+
+
 def _resolved_str(path: Path) -> str:
     with suppress(Exception):
         return str(path.resolve())
     return str(path)
 
 
+def _file_sha256(path: Path) -> str:
+    """SHA-256 hex digest of ``path``'s current bytes; raises OSError when it cannot be read or is not
+    a regular file. Opened non-blocking and checked before reading: a FIFO or device swapped in for a
+    skill file must not hang the guard while it holds the skill lock."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    with open(fd, "rb", closefd=True) as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
 class _BackgroundReviewReadMarks:
-    """Read marks shared by copied tool contexts within one review run."""
+    """Read marks shared by copied tool contexts within one review run: resolved path -> (SHA-256 of
+    the bytes the fork was served, generation). The generation is unique per update, so a
+    compare-and-set tells "the update I made" from a later update that recorded the same digest."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._paths: set[str] = set()
+        self._marks: dict[str, tuple[str, int]] = {}
+        self._generations = itertools.count(1)
 
-    def add(self, path: str) -> None:
+    def set(self, path: str, digest: str) -> None:
         with self._lock:
-            self._paths.add(path)
+            self._marks[path] = (digest, next(self._generations))
 
-    def contains(self, path: str) -> bool:
+    def get(self, path: str) -> Optional[str]:
         with self._lock:
-            return path in self._paths
+            entry = self._marks.get(path)
+        return None if entry is None else entry[0]
+
+    def entry(self, path: str) -> Optional[tuple[str, int]]:
+        with self._lock:
+            return self._marks.get(path)
+
+    def compare_and_set(self, path: str, expected: Optional[tuple[str, int]],
+                        digest: Optional[str]) -> tuple[bool, Optional[tuple[str, int]]]:
+        """If the mark is still exactly ``expected`` (same update), record ``digest`` as a new update,
+        or drop the mark when ``digest`` is None. Returns (applied, the mark now)."""
+        with self._lock:
+            current = self._marks.get(path)
+            if current != expected:
+                return False, current
+            if digest is None:
+                self._marks.pop(path, None)
+                return True, None
+            self._marks[path] = new = (digest, next(self._generations))
+            return True, new
 
 
 _background_review_read_paths: _ctxvars.ContextVar[Optional[_BackgroundReviewReadMarks]] = (
     _ctxvars.ContextVar("background_review_read_paths", default=None))
 
 
-def mark_background_review_skill_read(path: Path) -> None:
+def mark_background_review_skill_read(path: Path, digest: Optional[str] = None) -> None:
     """Record that the active background-review fork has read a skill file. The fork must not
     patch content it only inferred from the transcript: skill_view/read_file call this, and
-    the write guards require the mark."""
+    the write guards require the mark. ``digest`` is the SHA-256 hex of the bytes the caller
+    served; without one, the file's current bytes are hashed (an unreadable file is not marked)."""
     if not _is_background_review():
         return
+    if digest is None:
+        try:
+            digest = _file_sha256(path)
+        except OSError:
+            logger.debug("could not hash %s for its background-review read mark", path, exc_info=True)
+            return
     if (marks := _background_review_read_paths.get()) is None:
         _background_review_read_paths.set(marks := _BackgroundReviewReadMarks())
-    marks.add(_resolved_str(path))
+    marks.set(_resolved_str(path), digest)
+
+
+def _read_mark(path: Path) -> Optional[str]:
+    marks = _background_review_read_paths.get()
+    return None if marks is None else marks.get(_resolved_str(path))
 
 
 def _background_review_has_read(path: Path) -> bool:
+    return _read_mark(path) is not None
+
+
+def _read_mark_entry(path: Path) -> Optional[tuple[str, int]]:
+    """The exact current mark update for ``path`` (pass it to the refresh after a write). None
+    unless the write is confirmed to be the background review's: a foreground write, even in a
+    context that shares the fork's marks, never moves them (the fork has not read what it wrote),
+    and neither does a write whose origin cannot be determined; the refresh then does nothing."""
+    if not _is_confirmed_background_review():
+        return None
     marks = _background_review_read_paths.get()
-    return marks is not None and marks.contains(_resolved_str(path))
+    return None if marks is None else marks.entry(_resolved_str(path))
+
+
+def _refresh_background_review_read_mark(path: Path, expected: Optional[tuple[str, int]],
+                                          published: Optional[bytes]) -> None:
+    """After the fork's own write: what it knows is now the bytes it wrote, so a second write to
+    the same file needs no re-read. ``published`` is exactly those bytes; the mark records them, never
+    what is on disk afterwards: a writer outside the skill lock (an editor, a sync) can change the file
+    between the atomic publish and this refresh, and its bytes must stay unseen, so the next write
+    is refused as stale. ``expected`` is the mark captured (under the skill lock) BEFORE the write was
+    published; only that exact update moves, so a read another worker recorded since stands. Only a
+    live mark moves (a create is not a read). ``published=None`` means the fork removed the file: the
+    mark is dropped without looking at the disk, so a file someone puts back in the meantime stays
+    unread."""
+    marks = _background_review_read_paths.get()
+    if marks is None or expected is None:
+        return
+    key = _resolved_str(path)
+    digest = hashlib.sha256(published).hexdigest() if published is not None else None
+    applied, now = marks.compare_and_set(key, expected, digest)
+    if applied and (journal := _batch_mark_journal.get()) is not None:
+        journal[key] = now  # the update the batch's own write left
+
+
+# Inside an atomic batch: the last update the batch's own operations made to each mark, so a
+# rollback can withdraw exactly those. Only an operation the batch dispatched itself (it claims each one) sees the
+# journal; any other skill_manage call, including one a hook makes while an operation runs, runs
+# with it hidden. Parallel tool calls run in contexts copied before the batch, so never see it.
+_batch_mark_journal: _ctxvars.ContextVar[Optional[dict[str, Optional[tuple[str, int]]]]] = (
+    _ctxvars.ContextVar("background_review_batch_mark_journal", default=None))
+_batch_op_claim: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("background_review_batch_op_claim", default=False)
+
+
+def _begin_batch_mark_journal():
+    return _batch_mark_journal.set({})
+
+
+@contextmanager
+def _batch_operation():
+    """Around the batch's own dispatch of one operation: the skill_manage call it makes is the
+    batch's, and journals."""
+    token = _batch_op_claim.set(True)
+    try:
+        yield
+    finally:
+        _batch_op_claim.reset(token)
+
+
+def _journal_owned_by_batch(fn):
+    """Decorate skill_manage: a call the batch claimed keeps the batch's journal (and consumes the
+    claim, so calls it makes in turn do not inherit it); every other call runs with no journal."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        owned = _batch_op_claim.get()
+        claim = _batch_op_claim.set(False)
+        hidden = None if owned else _batch_mark_journal.set(None)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if hidden is not None:
+                _batch_mark_journal.reset(hidden)
+            _batch_op_claim.reset(claim)
+    return wrapper
+
+
+def _end_batch_mark_journal(token, rolled_back: bool) -> None:
+    """Close the batch's journal. After a rollback the bytes the batch's writes taught the fork are
+    gone, and what the fork knew before them cannot be rebuilt safely (other workers may have read
+    in between), so each mark the batch's own operations left is dropped: the fork re-reads before
+    writing that file again. Only a mark that is still exactly the batch's update is dropped; any
+    later update stands. (A mark the batch itself dropped stays dropped: dropping is all a rollback
+    ever does, so no older value can come back.)"""
+    journal = _batch_mark_journal.get()
+    _batch_mark_journal.reset(token)
+    marks = _background_review_read_paths.get()
+    if not rolled_back or not journal or marks is None:
+        return
+    for key, last in journal.items():
+        marks.compare_and_set(key, last, None)
 
 
 def _reset_background_review_read_marks() -> None:
@@ -212,15 +362,32 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict
 
 def _background_review_read_before_write_guard(
     name: str, target: Path, action: str, file_label: str) -> Optional[dict[str, Any]]:
-    """Require review forks to load the exact target before mutating it."""
-    if not _is_background_review() or _background_review_has_read(target):
+    """Require review forks to load the exact target before mutating it, and refuse when the
+    target's bytes no longer match what was loaded (another writer changed it since). Callers
+    hold the skill's mutation lock, so the check and the write are one critical section against
+    every writer that takes the same lock file."""
+    if not _is_background_review():
+        return None
+    if (expected := _read_mark(target)) is None:
+        return _refusal(
+            f"Refusing background curator {action} for skill '{name}': the current {file_label} "
+            f"content has not been loaded in this review turn. Call skill_view(name) for SKILL.md, or "
+            f"skill_view(name, file_path=...) for a supporting file, then retry the write using the "
+            f"content just returned.",
+            _read_before_write_required=True)
+    try:
+        current = _file_sha256(target)
+    except OSError:
+        logger.warning("could not hash %s to check it is unchanged; refusing the write", target, exc_info=True)
+        current = None
+    if current == expected:
         return None
     return _refusal(
-        f"Refusing background curator {action} for skill '{name}': the current {file_label} "
-        f"content has not been loaded in this review turn. Call skill_view(name) for SKILL.md, or "
-        f"skill_view(name, file_path=...) for a supporting file, then retry the write using the "
-        f"content just returned.",
-        _read_before_write_required=True)
+        f"Refusing background curator {action} for skill '{name}': {file_label} changed since you "
+        f"loaded it (or could not be read to check). Another writer updated it, and writing now would "
+        f"overwrite that change. Call skill_view again for the current content and redo the change "
+        f"against what it returns.",
+        _stale_read=True)
 
 
 def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:

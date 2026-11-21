@@ -282,8 +282,11 @@ Adoption only governs *archival*. The background self-improvement review can
 patch, rewrite, and add support files to any skill it learns from (hand-written,
 URL-installed, bundled, hub-installed, external, or pinned), so lessons land in
 the skill that governs the task whoever wrote it. Every such write is recorded
-in the skill ledger. It may archive (delete) only curator-managed skills, never
-pinned ones. To review those writes before they land, turn on
+in the skill ledger. Before changing an existing file it must have read that
+file in the same review, and the write is refused if the file's bytes no longer
+match what it read (you, another profile or a sync edited it meanwhile); the
+review then re-reads and redoes the change against the current content. It may
+archive (delete) only curator-managed skills, never pinned ones. To review those writes before they land, turn on
 `skills.write_approval` (see [Gating agent skill writes](./skills.md#gating-agent-skill-writes-skillswrite_approval)).
 A bundled or hub-installed skill the review has edited counts as locally
 modified, so `hermes update` / `hermes skills update` stop overwriting it.

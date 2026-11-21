@@ -424,10 +424,11 @@ def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8"
 
 
 def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",
-                       mode: int | None = None, fsync_dir: bool = False) -> None:
-    """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
+                       mode: int | None = None, fsync_dir: bool = False, preserve_owner: bool = False) -> None:
+    """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material, exact restores).
+    *preserve_owner* carries an existing file's owner across, as ``atomic_write_text(preserve_mode=True)``."""
     path = Path(path)
-    _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
+    _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=preserve_owner,
                   mode=mode if mode is not None else preserve_file_mode(path), fsync_dir=fsync_dir)
 
 

@@ -53,6 +53,15 @@ _UPLOAD_RETRY_STATUSES = frozenset({403, 408, 429, 500, 502, 503, 504})
 _MEDIA_USER_AGENT = "HermesAgent-Relay/1.0 (+https://github.com/NousResearch/hermes-agent)"
 
 
+def _filename_header(name: str) -> str:
+    """Keep portable legacy headers byte-identical; encode everything else."""
+    if name.isascii() and name.isprintable() and "%" not in name:
+        return name
+    # The caller truncates by Unicode code point, before encoding: at most
+    # 255 * 4 UTF-8 bytes * 3 percent-escape characters + 7 prefix = 3067 bytes.
+    return "UTF-8''" + urllib.parse.quote(name, safe="")
+
+
 def media_base_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…`` connector base."""
     raw = (relay_dial_url or "").strip().rstrip("/")
@@ -173,7 +182,7 @@ class RelayMediaClient:
                 "User-Agent": _MEDIA_USER_AGENT,
                 "Authorization": f"Bearer {bearer}",
                 "Content-Type": content_type,
-                "X-Media-Filename": name,
+                "X-Media-Filename": _filename_header(name),
             }
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:

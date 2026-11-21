@@ -364,6 +364,34 @@ describe('a report counts as told only once the connection accepted it', () => {
     ])
   })
 
+  it('overlapping failures fall back to the last statement the connection accepted', async () => {
+    const { channel, pending, sent } = heldChannel()
+    const system = fakeSystem({ system: true, idleSeconds: 1, locked: false, suspended: false })
+    const { reporter, settle, view } = harness({ channel: channel as never, system })
+
+    // A: a claim for s1, accepted.
+    await settle()
+    pending[0].resolve()
+    // B: a withdrawal, still in flight.
+    view.sessionId = null
+    reporter.refresh()
+    await settle()
+    // C: the claim again, also in flight.
+    view.sessionId = 's1'
+    reporter.refresh()
+    await settle()
+    // Both fail: the connection still holds A's claim.
+    pending[1].reject(new Error('timed out'))
+    await settle()
+    pending[2].reject(new Error('timed out'))
+    await settle()
+    view.sessionId = null
+    reporter.refresh()
+    await settle()
+
+    expect(sent().map(call => call.sessions)).toEqual([['s1'], [], ['s1'], []])
+  })
+
   it('an older report rejected after a newer one was accepted changes nothing', async () => {
     const { channel, pending, sent } = heldChannel()
     const system = fakeSystem({ system: true, idleSeconds: 1, locked: false, suspended: false })

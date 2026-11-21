@@ -2970,6 +2970,14 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     for extra in extras:
         if _is_dir(extra):
             candidates.append(str(extra))
+    # Service supervisors omit package-manager locations from their default PATH.
+    for pm_dir in (
+        "/opt/homebrew/bin", "/opt/homebrew/sbin",
+        "/usr/local/bin", "/usr/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin", "/home/linuxbrew/.linuxbrew/sbin",
+    ):
+        if _is_dir(Path(pm_dir)):
+            candidates.append(pm_dir)
     return candidates
 
 
@@ -3154,7 +3162,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
+    sane_path = ":".join(dict.fromkeys(path_entries))
     start = installation_command(project_root, [*shlex.split(profile_arg), "gateway", "run"],
                             python=python_path, home=hermes_home)
     cleanup = installation_command(project_root, module="gateway.cgroup_cleanup",

@@ -255,6 +255,11 @@ display:
   inline_images: auto        # auto | kitty | iterm | unicode | off — see the CLI guide's "Inline Images"
 ```
 
+With `inline_images: auto`, the TUI draws kitty Unicode placeholders in kitty and Ghostty and
+half-blocks elsewhere. Inside Zellij it uses half-blocks even when Zellij runs in kitty, because
+Zellij does not support kitty Unicode placeholders; full-resolution images there are tracked in
+[#157628](https://github.com/NousResearch/hermes-agent/issues/157628).
+
 Runtime toggles:
 
 - `/details [hidden|collapsed|expanded|cycle]` — set the global mode

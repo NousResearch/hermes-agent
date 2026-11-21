@@ -434,9 +434,10 @@ class CLITuiRuntimeMixin:
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
-        # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
+        # runs 24-bit on kitty/Ghostty; Zellij there paints no placeholders but passes 24-bit
+        # colour. ColorDepth is imported lazily for tests that stub prompt_toolkit.
         extra_kw = {}
-        if terminal_image.supports_kitty_placeholders():
+        if terminal_image.is_kitty_terminal():
             from prompt_toolkit.output import ColorDepth
 
             extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT

@@ -241,6 +241,28 @@ def test_pet_resolve_ghostty_uses_kitty(boba_like, monkeypatch):
     assert cli_obj._pet_renderer.mode == "kitty"
 
 
+def test_pet_resolve_zellij_in_kitty_uses_unicode(boba_like, monkeypatch):
+    # Zellij rejects kitty Unicode placeholders (#157605), though it inherits kitty's env.
+    from hermes_cli.config import load_config, save_config
+
+    monkeypatch.delenv("WEZTERM_PANE", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    monkeypatch.setenv("TERM", "xterm-kitty")
+    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+    monkeypatch.setenv("ZELLIJ", "0")
+    cli_obj = _make_cli()
+    cfg = load_config()
+    cfg.setdefault("display", {}).setdefault("pet", {}).update(
+        {"enabled": True, "slug": "boba", "render_mode": "auto"}
+    )
+    save_config(cfg)
+
+    cli_obj._pet_resolve_config()
+
+    assert cli_obj._pet_renderer is not None
+    assert cli_obj._pet_renderer.mode == "unicode"
+
+
 def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
     from agent.pet import render
 

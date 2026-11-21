@@ -75,6 +75,17 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
+// Amazon Bedrock cross-region inference profiles serve one model under a
+// scoped id: `eu.anthropic.claude-opus-4-6-v1`, `global.amazon.nova-2-lite-v1:0`.
+// The leading scope+vendor segments say where the model is served, not what it
+// is, and the trailing `-v1`/`:0` is endpoint versioning — neither belongs in
+// the label (#135855). The scope is anchored to Bedrock's region codes and
+// vendor namespaces so a dotted id from any other catalog (which use
+// `vendor/model`, already stripped by `modelBaseId`) never matches.
+const BEDROCK_SCOPE_PREFIX_RE =
+  /^(?:us|eu|apac|jp|au|ca|sa|mx|global)\.(?:anthropic|amazon|meta|mistral|ai21|cohere|stability|deepseek|writer|perplexity)\./i
+const BEDROCK_VERSION_TAIL_RE = /-v\d+(?::\d+)?$/
+
 // Vendors write their own names in casing the model id does not carry, and
 // title-casing the id overrides it: `glm-5.2` reads as "Glm 5.2" instead of
 // "GLM 5.2" (#85849). Applied AFTER title-casing so the rule is one pass over
@@ -179,7 +190,13 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
+  // Strip the Bedrock inference-profile routing first (#135855): the suffix
+  // decomposition and name branches below must not read the scope or the tail.
+  const bare = modelBaseId(model)
+  const bedrockScoped = BEDROCK_SCOPE_PREFIX_RE.test(bare)
+  const unscoped = bedrockScoped ? bare.replace(BEDROCK_SCOPE_PREFIX_RE, '') : bare
+
+  let { base, variant, quant } = splitTrailingTags(unscoped)
 
   const tags = [variant, quant].filter(Boolean)
 
@@ -191,6 +208,13 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   if (contextWindow) {
     tags.push(contextWindow[1].toUpperCase())
     base = base.slice(0, -contextWindow[0].length)
+  }
+
+  // Drop the inference-profile endpoint tail (`…-v1:0`, `…-v1`) before the
+  // date pin, so `…-20251001-v1:0` leaves the pin visible to its own rule
+  // (#135855). Scoped only: no other catalog spells versions this way.
+  if (bedrockScoped) {
+    base = base.replace(BEDROCK_VERSION_TAIL_RE, '')
   }
 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.

@@ -522,6 +522,14 @@ class _ProviderCollector:
     def register_cli_command(self, *args, **kwargs):
         pass  # CLI registration happens via discover_plugin_cli_commands()
 
+    def register_context_reference(self, provider):
+        """A hook-only load (an explicit ``manager``) claims no ``@`` prefix: the table is process-wide and
+        keyed to the claiming manager, so a throwaway one would hold it past its stopped host and refuse
+        the profile's own load of the same plugin."""
+        if self._manager is None:
+            return self.__getattr__("register_context_reference")(provider)
+        return None
+
     def __getattr__(self, attr: str):
         """Delegate any other ``register_*`` call to a real ``PluginContext`` (a
         hand-maintained stub drifted: unknown calls raised and cost the provider).

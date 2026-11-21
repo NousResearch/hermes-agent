@@ -215,6 +215,21 @@ def test_a_second_download_of_the_same_name_never_overwrites_the_first():
     assert (Path(first).read_bytes(), Path(second).read_bytes()) == (b"one", b"two")
 
 
+@pytest.mark.parametrize("stem", ["报告" * 40, "📄" * 60], ids=["cjk", "emoji"])
+def test_unicode_attachment_names_leave_room_for_the_download_prefix(stem):
+    name = stem + ".pdf"
+    output = {"name": name, "mimetype": "application/pdf", "url": DOWNLOAD_URL}
+
+    saved = _execute(Gateway(data=output), Storage(content=b"received"), {"id": "1"})["response"]
+
+    assert "error" not in saved
+    path = Path(saved["path"])
+    assert saved["name"] == name
+    assert len(path.name.encode("utf-8")) <= 255
+    assert path.suffix == ".pdf" and "\ufffd" not in path.name
+    assert path.read_bytes() == b"received"
+
+
 def test_a_failed_download_keeps_the_result_and_names_the_file_error():
     output = {"name": "a.pdf", "mimetype": "application/pdf", "url": DOWNLOAD_URL}
     entry = _execute(Gateway(data={"file": output, "subject": "hi"}), Storage(status=404), {"id": "1"})

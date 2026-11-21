@@ -1,0 +1,26 @@
+name: midi-bridge
+repo: https://github.com/james-see/midi-bridge
+sha: 5c94d270116454795f644e2118f1f42e057da808
+description: "Send live MIDI events to a local DAW from Hermes Agent. Play notes, chords, drum patterns, control changes, and program changes in real time through any armed instrument track. Uses CoreMIDI (macOS) / ALSA (Linux) via the mido Python library. No cloud, no API keys — everything is local. Ships with 7 bundled skills: core (DAW setup, music theory, troubleshooting) plus 6 genre recipe skills (trap-beat, rap-boom-bap, house-beat, kanye-style, bach-melody, mozart-mode) so users can say 'play a trap beat' and get the right pattern."
+maintainer: james-see
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/james-see/midi-bridge/blob/9e5893471af435ac3128e58c9c19ae7fab38826b/README.md
+image: https://raw.githubusercontent.com/james-see/midi-bridge//assets/card.png
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - send_note
+    - send_notes
+    - send_cc
+    - send_program_change
+    - send_pitch_bend
+    - play_pattern
+    - drum_pattern
+    - list_midi_ports
+    - set_output
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

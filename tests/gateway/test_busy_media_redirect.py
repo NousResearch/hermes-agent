@@ -12,13 +12,14 @@ from gateway.session import SessionSource
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["busy", "priority"])
-@pytest.mark.parametrize("kind,caption,mime", [
-    (MessageType.DOCUMENT, "Read this too", "text/plain"),
-    (MessageType.PHOTO, "", "image/png"),
-    (MessageType.TEXT, "See attachment", "application/pdf"),
-    (MessageType.VOICE, "", "audio/ogg"),
+@pytest.mark.parametrize("kind,caption,mime,transcript", [
+    (MessageType.DOCUMENT, "Read this too", "text/plain", None),
+    (MessageType.PHOTO, "", "image/png", None),
+    (MessageType.TEXT, "See attachment", "application/pdf", None),
+    (MessageType.VOICE, "", "audio/ogg", "voice correction"),
+    (MessageType.VOICE, "Use the cached voice", "audio/ogg", None),
 ])
-async def test_interrupt_media_redirects_without_interrupting(route, kind, caption, mime, monkeypatch):
+async def test_interrupt_media_redirects_without_interrupting(route, kind, caption, mime, transcript, monkeypatch):
     runner = GatewayRunner(GatewayConfig())
     source = SessionSource(platform=Platform.SLACK, chat_id="lab", user_id="requester", thread_id="thread")
     event = MessageEvent(text=caption, source=source, message_type=kind,
@@ -38,14 +39,14 @@ async def test_interrupt_media_redirects_without_interrupting(route, kind, capti
     agent = Agent()
     runner._session_state("key").turn.agent = agent
     monkeypatch.setattr(runner, "_transcribe_and_echo_pending_voice",
-                        AsyncMock(return_value=("voice correction", ["voice correction"])))
+                        AsyncMock(return_value=(transcript or "", [transcript] if transcript else [])))
     if route == "priority":
         await runner._hm_busy_interrupt(event, source, agent, "key")
     else:
         outcome = await runner._resolve_busy_steer_or_redirect(event, "key", "interrupt", agent)
         assert outcome.redirected
     assert len(received) == 1
-    assert ("voice correction" if kind == MessageType.VOICE else "/cached/attachment") in received[0]
+    assert (transcript or "/cached/attachment") in received[0]
     assert caption in received[0]
 
 

@@ -101,7 +101,7 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = Non
     """Auto-track ephemeral files THIS call created: a path from the call's final arguments that
     this call's own pre-call snapshot saw absent and that exists now. Paths seen only in terminal
     OUTPUT (a `find` or `ls` listing), or absent from the snapshot, carry no such proof and are
-    never tracked. Best-effort, never raises."""
+    never tracked. Best-effort; the hook dispatcher isolates errors."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not isinstance(args, dict) or extractor is None or not tool_call_id:
         return

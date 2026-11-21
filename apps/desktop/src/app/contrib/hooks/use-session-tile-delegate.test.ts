@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reasoningEffortPending } from '@/app/chat/session-view'
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
-import { textPart } from '@/lib/chat-messages'
+import { chatMessageText, restorePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $clarifyRequests, type ClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $notifications } from '@/store/notifications'
 import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
@@ -17,6 +18,7 @@ import {
   clearSingleFlightSessionResumeState,
   singleFlightSessionResume
 } from '../../session/hooks/use-prompt-actions/single-flight-resume'
+import { pendingClarifyToolPayload } from '../../session/hooks/use-session-actions/restore-pending-clarify'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
@@ -753,6 +755,63 @@ describe('useSessionTileDelegate resumeTile', () => {
       undefined,
       undefined
     )
+  })
+
+  it('paints the stored transcript under a clarify re-delivered while the cold resume was in flight', async () => {
+    // After a window reload the server re-delivers the open clarify before
+    // session.resume returns, seeding the runtime with the card alone. The
+    // tile must still paint the stored chat with the card re-armed on it, not
+    // keep the lone card (on a chat longer than one page the card then
+    // remounts, losing its staged picks, when an older page lands above it).
+    setSessions([row({ id: 'stored-clarify', profile: 'default' })])
+
+    const request: ClarifyRequest = {
+      questions: [{ choices: ['Keep it', 'Change it'], multiSelect: false, qid: 'q0', question: 'Which way?' }],
+      requestId: 'srq-1',
+      sessionId: 'runtime-clarify'
+    }
+
+    $clarifyRequests.set({ 'runtime-clarify': request })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      messages: [
+        { content: 'Read every file first.', role: 'user', row_id: 10, timestamp: 1 },
+        { content: 'Done reading.', role: 'assistant', row_id: 11, timestamp: 2 },
+        { content: 'So what next?', role: 'user', row_id: 12, timestamp: 3 }
+      ],
+      session_id: 'stored-clarify'
+    } as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      info: { running: true },
+      session_id: 'runtime-clarify'
+    } as never)
+
+    const updateSessionState = vi.fn()
+
+    try {
+      renderTile(vi.fn(), { updateSessionState })
+      await sessionTileDelegate()!.resumeTile('stored-clarify')
+
+      const updater = updateSessionState.mock.calls.at(-1)![1] as (state: ClientSessionState) => ClientSessionState
+      const seeded = restorePendingClarifyToolCall([], pendingClarifyToolPayload(request)).messages
+      const next = updater(createClientSessionState('stored-clarify', seeded))
+
+      expect(next.messages.slice(0, 3).map(message => chatMessageText(message))).toEqual([
+        'Read every file first.',
+        'Done reading.',
+        'So what next?'
+      ])
+
+      const cards = next.messages.flatMap(message =>
+        message.parts.filter(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      )
+
+      expect(cards).toHaveLength(1)
+      expect(cards[0]).toMatchObject({ clarifyRequestId: 'srq-1' })
+      expect(next.streamId).toBe(next.messages.at(-1)!.id)
+    } finally {
+      $clarifyRequests.set({})
+    }
   })
 
   it('hydrates the tile model and provider from resume info', async () => {

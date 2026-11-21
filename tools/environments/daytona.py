@@ -14,9 +14,11 @@ from pathlib import Path, PurePosixPath
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
+from tools.environments.cloud_egress import cloud_egress_for_env, start_daytona_relay
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import ensure_lazy_dep
+from tools.environments.ssh_egress import source_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +34,14 @@ class DaytonaEnvironment(BaseEnvironment):
     # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
     # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
     _sudo_askpass_runtime_checked = True
+    _egress = _relay = None  # set in __init__ when proxy.cloud_relay is on
 
     def __init__(self, image: str, cwd: str = "/home/daytona", timeout: int = 60, cpu: int = 1,
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
+        # Resolved before the sandbox exists: a half-configured proxy refuses before any spend.
+        self._egress = cloud_egress_for_env("Daytona")
         ensure_lazy_dep("daytona")
         from daytona import (Daytona, CreateSandboxFromImageParams, DaytonaConfig, DaytonaError, Resources,
                              SandboxState)
@@ -98,7 +103,17 @@ class DaytonaEnvironment(BaseEnvironment):
             upload_fn=self._daytona_upload, delete_fn=self._daytona_delete,
             bulk_upload_fn=self._daytona_bulk_upload, bulk_download_fn=self._daytona_bulk_download)
         self._sync_manager.sync(force=True)
+        if self._egress is not None:
+            self._egress.install(self._daytona_upload, self._sandbox.process.exec, self._remote_home)
+            self._ensure_relay()
         self.init_session()
+
+    def _ensure_relay(self) -> None:
+        """(Re)start the in-sandbox relay agent; its PTY ends whenever the sandbox stops."""
+        if self._relay is None or not self._relay.alive():
+            if self._relay is not None:
+                self._relay.close()  # a failed relay's agent must free its ports first
+            self._relay = start_daytona_relay(self._egress, self._sandbox, self._remote_home)
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""
@@ -145,6 +160,8 @@ class DaytonaEnvironment(BaseEnvironment):
     def _before_execute(self) -> None:
         with self._lock:
             self._ensure_sandbox_ready()
+            if self._egress is not None:
+                self._ensure_relay()
         self._sync_manager.sync()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
@@ -169,8 +186,10 @@ class DaytonaEnvironment(BaseEnvironment):
                 with contextlib.suppress(Exception):
                     sandbox.stop()
 
+        prefix = source_prefix(self._remote_home) if self._egress is not None else ""
+
         def exec_fn() -> tuple[str, int]:
-            command = cmd_string
+            command = prefix + cmd_string
             if stdin_data:  # empty stdin == no stdin, as on base (heredoc skipped it)
                 with lock:
                     if state["cancelled"]:
@@ -180,7 +199,7 @@ class DaytonaEnvironment(BaseEnvironment):
                 with lock:
                     state["staged"] = remote_stdin
                 sandbox.fs.set_file_permissions(remote_stdin, mode="600")
-                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
+                command = self._redirect_stdin_from_file(command, remote_stdin)
             shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
             with lock:
                 if state["cancelled"]:
@@ -197,6 +216,9 @@ class DaytonaEnvironment(BaseEnvironment):
         with self._lock:
             if self._sandbox is None:
                 return
+            if self._relay is not None:
+                with contextlib.suppress(Exception):  # the PTY may already be gone with the sandbox
+                    self._relay.close()
             # sync_back runs inside the lock and after the None guard so an
             # already-cleaned-up env can't trigger a 3-attempt retry storm on a nil sandbox.
             if self._sync_manager:

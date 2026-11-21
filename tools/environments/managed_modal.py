@@ -16,6 +16,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from tools.environments.base import BaseEnvironment, touch_activity_if_due
+from tools.environments.cloud_egress import refuse_unrelayable
 from tools.interrupt import is_interrupted
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.terminal_tool_sudo_askpass import fill_timeout_token
@@ -57,6 +58,8 @@ class ManagedModalEnvironment(BaseEnvironment):
                  modal_sandbox_kwargs: Optional[dict[str, Any]] = None,
                  persistent_filesystem: bool = True, task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
+        refuse_unrelayable("Managed Modal", "the tool gateway runs commands over request/poll HTTP, with no "
+                           "long-lived stream into the sandbox.  Use terminal.modal_mode: direct.")
         # Managed Modal does not sync or mount host credential files.
         try:
             from tools.credential_files import get_credential_file_mounts

@@ -19,9 +19,11 @@ from typing import Any, Callable, Optional
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
+from tools.environments.cloud_egress import cloud_egress_for_env, start_modal_relay
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
+from tools.environments.ssh_egress import source_prefix
 from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
@@ -272,6 +274,7 @@ class ModalEnvironment(BaseEnvironment):
     # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
     _sudo_askpass_runtime_checked = True
     _snapshot_timeout = 60  # Modal cold starts can be slow
+    _egress = _relay = None  # set in __init__ when proxy.cloud_relay is on
     # Modal SDK stdin buffer limit: the command-router path allows 16 MB but the legacy server
     # path caps at 2 MB, so chunks stay under 2 MB and each is flushed individually via drain().
     _STDIN_CHUNK_SIZE = 1 * 1024 * 1024
@@ -282,6 +285,8 @@ class ModalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent, self._task_id = persistent_filesystem, task_id
         self._sandbox = self._app = None
+        # Resolved before the sandbox exists: a half-configured proxy refuses before any spend.
+        self._egress, self._relay_lock = cloud_egress_for_env("Modal"), threading.Lock()
         self._worker = _AsyncWorker()
         self._sync_manager: FileSyncManager | None = None  # initialized after sandbox creation
         restored_snapshot_id, restored_from_legacy_key = (
@@ -339,7 +344,18 @@ class ModalEnvironment(BaseEnvironment):
             upload_fn=self._modal_upload, delete_fn=self._modal_delete,
             bulk_upload_fn=self._modal_bulk_upload, bulk_download_fn=self._modal_bulk_download)
         self._sync_manager.sync(force=True)
+        if self._egress is not None:
+            self._egress.install(self._modal_upload, lambda cmd: self._exec(cmd, timeout=15, fail_label="egress chmod"), "/root")
+            self._ensure_relay()
         self.init_session()
+
+    def _ensure_relay(self) -> None:
+        """(Re)start the in-sandbox relay agent; its exec ends whenever the sandbox restarts."""
+        with self._relay_lock:  # two commands seeing a dead relay must not both bind its ports
+            if self._relay is None or not self._relay.alive():
+                if self._relay is not None:
+                    self._relay.close()  # a failed relay's agent must free its ports first
+                self._relay = start_modal_relay(self._egress, self._sandbox, self._worker, "/root")
 
     def _exec(self, cmd: str, *, timeout: int, stdin: str | None = None, fail_label: str | None = None,
               capture: bool = False):
@@ -386,9 +402,13 @@ class ModalEnvironment(BaseEnvironment):
 
     def _before_execute(self) -> None:
         self._sync_manager.sync()  # rate-limited internally
+        if self._egress is not None:
+            self._ensure_relay()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120, stdin_data: str | None = None):
         sandbox, worker = self._sandbox, self._worker
+        if self._egress is not None:
+            cmd_string = source_prefix("/root") + cmd_string
 
         def cancel():
             worker.run_coroutine(sandbox.terminate.aio(), timeout=15)
@@ -409,6 +429,8 @@ class ModalEnvironment(BaseEnvironment):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
         if self._sandbox is None:
             return
+        if self._relay is not None:
+            self._relay.close()
         if self._sync_manager:
             logger.info("Modal: syncing files from sandbox...")
             self._sync_manager.sync_back()

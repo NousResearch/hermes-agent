@@ -20,6 +20,8 @@ from tools.environments.file_sync import (
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 from tools.spill_safety import ensure_owned_private_dir
+from tools.environments.ssh_egress import (
+    REMOTE_CA_NAME, REMOTE_ENV_NAME, check_passthrough_collisions, source_prefix, ssh_egress_for_env)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,8 @@ class SSHEnvironment(BaseEnvironment):
         self._sync_manager = None  # cleanup() reads it; set before anything below can raise
         try:
             _ensure_ssh_available()
+            # Resolved before the first connection: the proxy reverse forward rides every master.
+            self._egress = None if probe_only else ssh_egress_for_env()
             self._establish_connection()
         except BaseException:
             if self._owns_control_dir:  # no instance survives to clean up this private fallback
@@ -136,6 +140,7 @@ class SSHEnvironment(BaseEnvironment):
             return
         self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
+        self._install_egress_files()
         if sync_files:
             self._ensure_remote_dirs()
             self._sync_manager = FileSyncManager(
@@ -178,6 +183,8 @@ class SSHEnvironment(BaseEnvironment):
         # Names only; values ride the ssh client's own environment (never the remote command text).
         cmd.extend(arg for name in send_env for arg in ("-o", f"SendEnv={name}"))
         cmd.extend(self._target_flags("-p"))
+        if self._egress is not None:
+            cmd.extend(self._egress.remote_forward_args())
         cmd.extend(extra_args or [])
         cmd.append(f"{self.user}@{self.host}")
         return cmd
@@ -222,6 +229,27 @@ class SSHEnvironment(BaseEnvironment):
         base = f"{self._remote_home}/.hermes"
         self._run_ssh(quoted_mkdir_command([base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]),
                       timeout=10)
+
+    def _install_egress_files(self) -> None:
+        """Ship the proxy CA and the token env file (0600) next to, not inside, the synced
+        ``~/.hermes`` tree so FileSyncManager never mirrors them back to the host."""
+        if self._egress is None:
+            return
+        ca_remote = f"{self._remote_home}/{REMOTE_CA_NAME}"
+        env_remote = f"{self._remote_home}/{REMOTE_ENV_NAME}"
+        self._scp_upload(str(self._egress.ca_host_path), ca_remote)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="hermes-egress-", suffix=".env",
+                                         delete=False) as fh:
+            fh.write(self._egress.env_file_text())
+            env_local = fh.name
+        try:
+            os.chmod(env_local, 0o600)
+            self._scp_upload(env_local, env_remote)
+        finally:
+            os.unlink(env_local)
+        self._run_ssh_checked(f"chmod 600 {shlex.quote(env_remote)} {shlex.quote(ca_remote)}", 10,
+                              "remote chmod of egress files failed", f"Egress setup on {self.host}")
+        logger.info("SSH: egress proxy tunnel active on remote 127.0.0.1:%d", self._egress.tunnel_port)
 
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via scp over ControlMaster."""
@@ -340,7 +368,11 @@ class SSHEnvironment(BaseEnvironment):
         remote sshd must ``AcceptEnv`` them (#14091). Profile-scoped names missing from the active
         scope are unset remotely so a shared host cannot serve another profile's value."""
         values, unset_names = resolve_passthrough_env(hermes_env_loader=load_hermes_env_vars)
-        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
+        script = prepend_unset(cmd_string, unset_names)
+        if self._egress is not None:
+            check_passthrough_collisions(values, self._egress)
+            script = source_prefix(self._remote_home) + script  # after the unsets so tokens win
+        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(script), login)
         client_env = client_env_with(values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 

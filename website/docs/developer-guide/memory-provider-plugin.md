@@ -124,7 +124,7 @@ fields; callers may initialize a provider without an agent or a session database
 | `hermes_home` | Active profile's storage directory. |
 | `platform` | Session surface, such as `cli`, `gui`, `acp`, or `telegram`. |
 | `session_title` | Stored session title, when available. A display label is not necessarily a user-selected identity. |
-| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. Shared constants live in `hermes_state_common.py`. |
+| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. The values are `persistence.conversation.sessions.TitleSource`. |
 | `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
@@ -145,8 +145,12 @@ It also receives `previous_message`: the text of the person's last message befor
 from the transcript Hermes holds (`""` on a first turn, or when that message was image-only). Known
 runtime rows in the user role are skipped (continue nudges, task-list snapshots, single
 background-process completion and watch-match notices, compaction summaries, mid-turn `/steer`
-messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`. It
-is best-effort: other runtime notices a gateway replays after a restart (a cron delivery, a process
+messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`.
+On a turn with an image, Hermes appends recalled memory and plugin or gateway notes to the message as
+text; `previous_message` is the turn's own text, without them. It
+is best-effort: an image turn stored by an older Hermes, or one that repair or compaction later merged
+with another turn, still carries its plugin and gateway notes, and
+other runtime notices a gateway replays after a restart (a cron delivery, a process
 heartbeat, a watch-disabled or batched-completion notice) can still come through. A process
 that resumed a session (`hermes chat --resume`, a gateway after a restart) never ran the previous
 turn's end, so a provider that prepares recall in `queue_prefetch()` can redo that work from it, even
@@ -525,7 +529,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
 
-- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's live manager already bound, on any host that serves several profiles, multiplexed or not, and logs `memory_provider_instance_shared`.
 - **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
 - **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
 

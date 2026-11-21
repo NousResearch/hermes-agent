@@ -81,6 +81,70 @@ class TestBuildToolPreview:
         assert result is not None
         assert text in result
 
+    @pytest.mark.parametrize("code", [
+        "fill_input('input[type=password]', 'Hunter2Correct!')",
+        "js(\"document.querySelector('#pwd').value='Hunter2Correct!'\")",
+        "cdp('Input.insertText', text='Hunter2Correct!')",
+        "fill_input('#p', 'abc\\'Hunter2Correct!')",
+        "fill_input('#p', \"\"\"Hunter2Correct!\"\"\")",
+        "fill_input('#p', 'Hunter2Correct!",
+        "type_text('Hunter2Correct!')",
+        "fill_input('input[type=password]:not(.x)', 'Hunter2Correct!')",
+        "fill_input('#a, #pass', 'Hunter2Correct!')",
+        "fill_input('#p', f'Hunter2Correct!')",
+        "fill_input('#p', r'Hunter2Correct!')",
+        "pw = 'Hunter2Correct!'\nfill_input('#p', pw)",
+        "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', **params)",
+        "params = {\"text\": \"Hunter2Correct!\"}\ncdp('Input.insertText', params)",
+        "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', {**params})",
+        "params = {'text': 'Hunter2Correct!'}\nparams = {**params}\ncdp('Input.insertText', **params)",
+        "fill_input('#p', ('Hunter2Correct!'))",
+        "fill_input('#p', '' 'Hunter2Correct!')",
+        "fill_input(text='Hunter2Correct!', selector='#p')",
+        "fill_input('#p', f'{1}Hunter2Correct!')",
+        "pw = ('Hunter2Correct!')\nfill_input('#p', pw)",
+        "fill_input('#p', ('Hunter2Correct!'",
+        # the parser ends a line at \r and \r\n as well as \n: spans must count the same lines
+        "x = 1\rfill_input('#p', 'Hunter2Correct!')",
+        "x = 1\r\nfill_input('#p', 'Hunter2Correct!')",
+        "x = 1\rfill_input('#p', 'Hunter2Correct!')\nprint('hello world, a longer line here')",
+        "s = '''a\rb'''\r\nfill_input('#p', 'Hunter2Correct!')\rprint('kept')\n",
+        # names bound by unpacking, loops, splats and calls to a function the snippet defines
+        "sel, pw = '#p', 'Hunter2Correct!'\nfill_input(sel, pw)",
+        "fill_input(*('#p', 'Hunter2Correct!'))",
+        "fill_input(**{'selector': '#p', 'text': 'Hunter2Correct!'})",
+        "for pw in ['Hunter2Correct!']:\n    fill_input('#p', pw)",
+        "def go(pw):\n    fill_input('#p', pw)\ngo('Hunter2Correct!')",
+        # the raw-text fallback (unparsed: extra ')') ends a literal at \r and skips comments, so the
+        # quote in "# it's" cannot swallow the typed value
+        "fill_input('#p',\r  # it's here\r  'Hunter2Correct!'))\r",
+        # a long concatenation makes the walk give up: the whole-pass fallback must hold too
+        pytest.param("# don't echo the password\rcss = " + " + ".join(f"'.c{i}{{}}'" for i in range(900))
+                     + "\rfill_input('#password', 'Hunter2Correct!')\r", id="cr-comment-quote-walk-fallback"),
+    ])
+    def test_browser_exec_typed_password_never_reaches_display(self, code):
+        """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,
+        yet every display surface (preview, verbose args, cute row) must mask it; the selector stays."""
+        args = {"code": code}
+        shown = (build_tool_preview("browser_exec", args, max_len=0),
+                 str(redact_tool_args_for_display("browser_exec", args)),
+                 get_cute_tool_message("browser_exec", args, 0.1))
+        assert all("Hunter2Correct!" not in s and "***" in s for s in shown)
+        assert args["code"] == code
+
+    def test_browser_exec_display_keeps_selectors_urls_and_untyped_strings(self):
+        """Only typed values are masked: a selector, a URL, a text= kwarg outside insertText and a
+        .value comparison all read as written."""
+        code = ("new_tab(url='https://example.com/login', text='Search page')\n"
+                "fill_input('input[type=password]:not(.x)', 'Hunter2Correct!')\n"
+                "cdp('Input.insertText', text='Hunter2Correct!')\n"
+                "js(\"document.querySelector('#u').value == 'admin'\")")
+        shown = redact_tool_args_for_display("browser_exec", {"code": code})["code"]
+        assert "Hunter2Correct!" not in shown
+        for kept in ("https://example.com/login", "text='Search page'",
+                     "input[type=password]:not(.x)", ".value == 'admin'"):
+            assert kept in shown
+
     def test_browser_type_display_args_redact_api_key(self):
         secret = "ghp_ABCDEFGHIJ1234567890"
         safe_args = redact_tool_args_for_display(

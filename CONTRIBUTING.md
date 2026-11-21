@@ -104,7 +104,7 @@ A well-built third-party-product plugin can clear automated review and still be 
 
 ## Submitting a Plugin to the Catalog
 
-A standalone plugin reaches users through the [plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins): a PR to this repo adding one `plugin-catalog/<name>.yaml` file that pins your repo at an exact commit. Read **[Submitting to the plugin catalog](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission)** before opening one. It covers what to check first (`hermes plugins validate --install-deps`), how review works, and every admission rule. The canonical rules live in [`plugin-catalog/README.md`](plugin-catalog/README.md); if you change them, change the mirrored block in the docs page in the same PR (a test keeps the two identical).
+A standalone plugin reaches users through the [plugin catalog](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog), browsable on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace): a PR to this repo adding one `plugin-catalog/<name>.yaml` file that pins your repo at an exact commit. Read **[Submitting to the plugin catalog](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission)** before opening one. It covers what to check first (`hermes plugins validate --install-deps`), how review works, and every admission rule. The canonical rules live in [`plugin-catalog/README.md`](plugin-catalog/README.md); if you change them, change the mirrored block in the docs page in the same PR (a test keeps the two identical).
 
 The rules that most often send a submission back: the plugin must extend Hermes only through public hooks, `ctx.register_*` APIs and the Desktop SDK (no patching core code or Desktop markup at runtime), must not update itself, must declare the capabilities it registers, and must disclose risky behaviour.
 
@@ -161,6 +161,32 @@ restores the prior shell environment and removes the function.
 To run one command in the environment without activating a shell, use
 `scripts/run-in-hermes-env CMD...`.
 
+### Developer commands (`just`)
+
+`just` with no arguments lists every developer command. Each recipe calls one
+script or tool in this repository, so the commands below also work without
+`just`. The lefthook pre-commit hook calls the same recipes.
+
+| Recipe | Runs |
+|---|---|
+| `just setup` | `setup-hermes.sh --runtime-only --test-environment` (PowerShell: `setup-hermes.ps1 -RuntimeOnly`) |
+| `just check` | `scripts/check`, every blocking lint check; `just check --only health` selects checks |
+| `just fix` | the pinned ruff with `--fix`, then `pnpm -r fix` |
+| `just test <paths>` | `scripts/run_tests.sh <paths>`; refuses to start without a path, even with flags |
+| `just test-all` | the full Python suite |
+| `just js-install`, `just check-js`, `just test-js` | `pnpm install --frozen-lockfile`, `pnpm -r check`, `pnpm -r test` (after building `@hermes/ink`) |
+| `just desktop`, `just tui` | the desktop and TUI dev servers |
+| `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
+| `just docs-generate`, `just docs-check` | regenerate the skill docs pages; then every docs check CI runs (committed pages match, links, diagrams) |
+| `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
+| `just check-repo-guards`, `just check-uv-lock` | the repo-guards history, contributor and supply-chain steps, and the `uv.lock` check, through `scripts/ci/local_step.sh` against the merge base with `origin/main` |
+| `just check-icons`, `just lint-docker`, `just check-plugin-catalog`, `just check-nix` | the committed-icons check, hadolint and shellcheck on the container inputs, the catalog validator, `nix flake check` |
+| `just test-catalog`, `just test-whatsapp-bridge`, `just test-rust` | the plugin-catalog tests, the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`), the bootstrap installer's `cargo test --lib` |
+
+Recipes that run Python go through `scripts/run-in-hermes-env`, so they work in
+a shell that was never activated. A new developer command is a script under
+`scripts/` plus a recipe that calls it; the recipe holds no logic.
+
 ### Manual development and test environment
 
 Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
@@ -202,7 +228,7 @@ than copying production credentials into the checkout.
 
 ### JavaScript workspaces and website
 
-From the repository root, run `pnpm install --frozen-lockfile` for the desktop,
+From the repository root, run `pnpm install --frozen-lockfile` (`just js-install`) for the desktop,
 TUI, dashboard, and shared JS workspaces. `pm/lock.json` pins pnpm
 (`source ./activate`, or `. .\activate.ps1` in PowerShell, provides that exact
 version). An install that runs lifecycle scripts refuses any other pnpm, a direct or
@@ -211,18 +237,34 @@ filtered `pnpm install` included: the root `preinstall` script requires the
 root `engines.pnpm` range. pnpm 12 skips the root `preinstall` under
 `--ignore-scripts`, `--lockfile-only` (which writes `pnpm-lock.yaml`) and `pnpm fetch`,
 so another pnpm 12 is not refused there; CI installs every changed lockfile with the
-pinned pnpm under `--frozen-lockfile`. The website is a separate npm project:
+pinned pnpm under `--frozen-lockfile`. The website is a separate npm project
+(`just docs-install`, `just docs-build`):
 
 ```bash
 npm ci --prefix website
 npm run build:fast --prefix website
 ```
 
+In the repository root and the JS workspace folders, npm refuses every command that
+installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,
+`--package-lock-only` or `--force`, `npm ci`, `update`, `dedupe`, `uninstall`,
+`link`): each of these folders has an `.npmrc` with `engine-strict=true`, and its
+`package.json` declares an `engines.npm` that no npm satisfies. `npm rebuild` and
+`npm pkg set` are not refused. An explicit `--engine-strict=false` overrides the
+refusal.
+
+`npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
+But `engine-strict` applies anywhere in the checkout: in these folders, and through
+the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
+
 Use a Node version accepted by the corresponding `package.json` engines.
 Native desktop dependencies can also require the platform build toolchain.
 
 Logos and icons are generated from `assets/nous-girl-*.svg` and
-`assets/backgrounds/`. `node scripts/generate-icons.mjs` renders them with the
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` (`just icons`) renders them with the
 Hermes runtime Python (`HERMES_PYTHON`, else `python` on PATH): Pillow and
 resvg-py are core dependencies. Generated outputs are committed and CI fails if
 they are stale; rerun the generator and commit after changing any source SVG.
@@ -232,9 +274,12 @@ they are stale; rerun the generator and commit after changing any source SVG.
 Use the canonical runner on every host:
 
 ```bash
-scripts/run_tests.sh
-scripts/run_tests.sh tests/agent/ -v
+just test-all
+just test tests/agent/ -v
 ```
+
+Both recipes call `scripts/run_tests.sh`; `just test` refuses to start
+without a path, and `just test-all` runs the full suite.
 
 On Windows, run the script through Bash. When no local `.venv` or `venv`
 contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
@@ -255,7 +300,8 @@ hermes-agent/
 ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
+├── persistence/              # Storage contracts; persistence/sqlite/ is the SQLite backend (FTS5 search, session titles)
+├── persistence_assembly.py   # open_persistence(): the one entry point to a profile's store
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
@@ -364,7 +410,7 @@ User message → AIAgent._run_agent_loop()
 
 - **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
+- **Session persistence**: All conversations are stored in SQLite through the storage interface (`persistence/`, opened with `persistence_assembly.open_persistence`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
 - **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
@@ -374,11 +420,12 @@ User message → AIAgent._run_agent_loop()
 ## Code Style
 
 - **PEP 8** with practical exceptions (we don't enforce strict line length)
+- **Shape**: folders, facades, family packages and the Python idioms new code follows are in the root `AGENTS.md` § Packages and Python shape; the code-health fix text points there too
 - **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does — `# increment counter` adds nothing
 - **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
 - **Error messages**: every user-facing error message names the actual cause and the remediation step — never the proximate symptom. A missing API key is "no OpenRouter API key configured — set `OPENROUTER_API_KEY`", never "payment/credit error"; a failed request logs the exception class and message (secret-redacted) rather than an empty reason; a timed-out long job reports the timeout and where the job went, not a fallback-routing noise string. If you know the cause, say it; if you don't, say what you do know plus what to check — never a placeholder that points somewhere else.
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
-- **Code health ratchet**: `python scripts/check` runs every blocking lint check CI runs, with the same pinned tools. To run it automatically, `python scripts/check --install-hook pre-push` judges the tip of each branch you push, as CI judges the PR as a whole, not each intermediate commit (`--install-hook` alone runs it on every commit instead, judging what you staged; `--uninstall-hook` removes either; `--no-verify` skips once). The hook covers every worktree of your clone, judges each pushed tip with that tip's own checker, prefers the repo's `.venv`/`venv` Python (3.11+), and needs ruff 0.15.10 or `uv` on `PATH`; re-run `--install-hook` after pulling to refresh the hook script. Its code-health part gives every function and file its own cap: new functions stay at cyclomatic complexity ≤ 20, ≤ 300 lines and nesting ≤ 6, files at ≤ 2,000 lines, and code already over a target may only get smaller (a file already past 2,000 lines may not grow: offset the growth by moving an existing function into a `<stem>_<topic>` sibling, or put new tests in a new test file). Pattern rules (blind `except Exception`, missing timeouts, profile-scope hazards such as a hardcoded `~/.hermes` or a new `HERMES_*` env var) track each existing violation where it sits, so existing debt never blocks you, but a new instance does, even one that replaces an identical violation you removed. Moving code keeps its history: a function or module-level statement moved to another file keeps the cap and the existing violations it had, and so does a moved function you lightly edit, unless a function of that name already exists in the destination (the edited one is then judged against that function's cap). A function you both rename and edit is new code, and so is a copy that leaves the original in place. A file the checker cannot parse or measure fails. TypeScript complexity follows ESLint's `complexity` rule except where `scripts/code_health/ts_units.mjs` says otherwise. Each finding prints its fix; a genuine exception takes a `# health: allow <RULE> -- <why>` comment on the line (or on a comment-only line directly above it), which reviewers read; ruff's `# noqa` does not waive a ratchet finding, and a broad catch that logs must keep the traceback (`logger.exception` or `exc_info=True`). Heuristic rules print as warnings until a frozen replay of merged PRs shows they are precise enough to block. Rules and targets: `scripts/code_health/config.py`. Maintainers switch the whole ratchet with `ENFORCEMENT` there (`blocking`, `advisory` or `off`): it is always read from main (CI: the merge commit's first parent; local runs: `origin/main`), never from the branch under test, so a one-line commit to main reaches every open PR on its next CI run (a re-run reuses the old merge commit) and every local hook after a fetch, and a PR cannot relax its own check; one rule can be demoted with `blocking=False`.
+- **Code health ratchet**: `python scripts/check` runs every blocking lint check CI runs, with the same pinned tools. To run it automatically, `python scripts/check --install-hook pre-push` judges the tip of each branch you push, as CI judges the PR as a whole, not each intermediate commit (`--install-hook` alone runs it on every commit instead, judging what you staged; `--uninstall-hook` removes either; `--no-verify` skips once). The hook covers every worktree of your clone, judges each pushed tip with that tip's own checker, prefers the repo's `.venv`/`venv` Python (3.11+), and needs ruff 0.15.10 or `uv` on `PATH`; re-run `--install-hook` after pulling to refresh the hook script. Its code-health part gives every function and file its own cap: new functions stay at cyclomatic complexity ≤ 20, ≤ 300 lines and nesting ≤ 6, files at ≤ 2,000 lines, and code already over a target may only get smaller (a file already past 2,000 lines may not grow: offset the growth by turning `<stem>.py` into a `<stem>/` folder and moving an existing function into a topic module there, never a new flat `<stem>_<topic>.py`; a model tool in a folder registers from `tools/<stem>/tool.py`, the only file tool discovery imports there; new tests go in `tests/<area>/<stem>/test_<topic>.py`). Pattern rules (blind `except Exception`, missing timeouts, profile-scope hazards such as a hardcoded `~/.hermes` or a new `HERMES_*` env var) track each existing violation where it sits, so existing debt never blocks you, but a new instance does, even one that replaces an identical violation you removed. Moving code keeps its history: a function or module-level statement moved to another file keeps the cap and the existing violations it had, and so does a moved function you lightly edit, unless a function of that name already exists in the destination (the edited one is then judged against that function's cap). A function you both rename and edit is new code, and so is a copy that leaves the original in place. A file the checker cannot parse or measure fails. TypeScript complexity follows ESLint's `complexity` rule except where `scripts/code_health/ts_units.mjs` says otherwise. Each finding prints its fix; a genuine exception takes a `# health: allow <RULE> -- <why>` comment on the line (or on a comment-only line directly above it), which reviewers read; ruff's `# noqa` does not waive a ratchet finding, and a broad catch that logs must keep the traceback (`logger.exception` or `exc_info=True`). Heuristic rules print as warnings until a frozen replay of merged PRs shows they are precise enough to block. Rules and targets: `scripts/code_health/config.py`. Maintainers switch the whole ratchet with `ENFORCEMENT` there (`blocking`, `advisory` or `off`): it is always read from main (CI: the merge commit's first parent; local runs: `origin/main`), never from the branch under test, so a one-line commit to main reaches every open PR on its next CI run (a re-run reuses the old merge commit) and every local hook after a fetch, and a PR cannot relax its own check; one rule can be demoted with `blocking=False`.
 
 ### Fail loud at integration boundaries
 
@@ -982,8 +1029,8 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: use `scripts/run_tests.sh` for the same environment and per-file isolation as CI.
-2. **Run the lint checks**: `python scripts/check` (the blocking lint lane, locally).
+1. **Run tests**: `just test <paths>` (scripts/run_tests.sh) for the same environment and per-file isolation as CI.
+2. **Run the lint checks**: `just check` (the blocking lint lane, locally).
 3. **Test manually**: Run `hermes` and exercise the code path you changed
 4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.

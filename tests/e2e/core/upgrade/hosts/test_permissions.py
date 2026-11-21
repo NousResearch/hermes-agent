@@ -11,7 +11,10 @@ who runs Hermes, while their own data under HERMES_HOME stays writable. On such 
 * ``hermes update`` must exit non-zero with a message that names the permission problem, never
   report success, never crash with a traceback, and leave the install on its old commit;
 * once the tree is writable again, the same ``hermes update`` succeeds: the refused attempt left
-  nothing behind that blocks the next one.
+  nothing behind that blocks the next one;
+* the sandbox shape (OpenShell/Landlock, rootless Podman, systemd ``ReadOnlyPaths=``) runs a turn:
+  the dependency generations and the rest of the install read-only, write access granted only to
+  ``installs/<key>/leases/`` and ``installs/<key>/locks/``, which never move between builds.
 
 One real install through HEAD's ``scripts/install.sh``; upstream then publishes a release. The
 read-only state is real file modes (``chmod -R a-w``), which is exactly what a different uid
@@ -23,6 +26,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -49,6 +53,12 @@ def _chmod_code(sb: I.Sandbox, *, writable: bool) -> None:
         subprocess.run(["chmod", "-R", "u+w" if writable else "a-w", str(sb.hermes_home / name)], check=True)
 
 
+def _sandbox_writable(sb: I.Sandbox) -> list[Path]:
+    """What a sandbox policy grants: each committed install's ``leases/`` and ``locks/``."""
+    states = [s for s in (sb.hermes_home / "installs").iterdir() if (s / "facts.json").is_file()]
+    return [state / name for state in states for name in ("leases", "locks")]
+
+
 @pytest.fixture(scope="module")
 def provider():
     with FakeLLMServer(default_text="fake reply for the permissions suite") as srv:
@@ -73,6 +83,17 @@ def world(tmp_path_factory, provider):
             try:
                 out["ro_turn"] = sb.run([sb.hermes, "-z", "turn on a read-only install tree"], timeout=900)
                 out["ro_turn_requests"] = len(provider.main_requests()) - n
+            finally:
+                _chmod_code(sb, writable=True)
+            out["sandbox_writable"] = _sandbox_writable(sb)
+            n = len(provider.main_requests())
+            _chmod_code(sb, writable=False)
+            try:
+                for path in out["sandbox_writable"]:
+                    if path.is_dir():
+                        subprocess.run(["chmod", "-R", "u+w", str(path)], check=True)
+                out["sandbox_turn"] = sb.run([sb.hermes, "-z", "turn with only leases and locks writable"], timeout=900)
+                out["sandbox_turn_requests"] = len(provider.main_requests()) - n
             finally:
                 _chmod_code(sb, writable=True)
             # Only the checkout read-only: the launch path works (a read-only installs/ refuses it), so
@@ -105,6 +126,21 @@ def test_read_only_install_tree_still_runs_a_turn(world, provider):
     if cp.returncode == 0:
         assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
         assert world["ro_turn_requests"] == 1, f"the turn reached the provider {world['ro_turn_requests']} times (want 1)"
+
+
+def test_turn_runs_with_only_leases_and_locks_writable(world, provider):
+    assert world["install"].returncode == 0, "install.sh failed:\n" + I.describe(world["install"])
+    writable = world["sandbox_writable"]
+    assert writable, "no committed install state under installs/"
+    missing = [str(path) for path in writable if not path.is_dir()]
+    cp = world["sandbox_turn"]
+    assert cp.returncode == 0 and I.TRACEBACK not in cp.stdout + cp.stderr, (
+        f"the turn failed with only installs/<key>/leases/ and locks/ writable (missing: {missing}):\n"
+        + I.describe(cp))
+    assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
+    assert world["sandbox_turn_requests"] == 1, (
+        f"the turn reached the provider {world['sandbox_turn_requests']} times (want 1)")
+    assert not missing, f"a launch on a writable tree left no directory for a sandbox policy to grant: {missing}"
 
 
 def test_update_on_a_read_only_tree_refuses_with_a_reason_and_recovers(world, provider):

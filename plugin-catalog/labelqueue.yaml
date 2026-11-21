@@ -1,0 +1,22 @@
+name: labelqueue
+title: LabelQueue
+repo: https://github.com/AbigailDavised/labelqueue-mcp
+sha: efafa3fca54ffab038b04978c6b419ef9080f254
+version: "1.0.1"
+description: "Exact Avery sheet (5160, 5163, 5164, 5167, 8160, L7160) and thermal roll (4x6, 2.25x1.25) label geometry specifications, pitch and margin measurements, browser sub-millimeter print-drift diagnostics, and Code128/GS1/UPC/QR barcode symbology checker through LabelQueue's official MCP server (Streamable HTTP at https://labelqueue.com/api/mcp, no sign-in, no keys in config). Bundles the labelqueue workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to labelqueue.com/api/mcp with only the label template code, printer DPI or barcode format query arguments. All 4 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: LabelQueue
+tier: community
+category: tools
+docs_url: https://labelqueue.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/labelqueue-mcp/efafa3fca54ffab038b04978c6b419ef9080f254/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/labelqueue-mcp/efafa3fca54ffab038b04978c6b419ef9080f254/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/labelqueue-mcp/efafa3fca54ffab038b04978c6b419ef9080f254/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

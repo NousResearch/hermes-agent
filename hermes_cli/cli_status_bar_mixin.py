@@ -425,7 +425,7 @@ class CLIStatusBarMixin:
         db = getattr(self, "_session_db", None)
         if not pending and db is not None and session_id:
             try:
-                title = str(db.get_session_title(session_id) or "").strip()
+                title = str(db.get_session_title(self._title_session_id()) or "").strip()
             except Exception:
                 title = ""
         self._status_bar_title_session_id = session_id

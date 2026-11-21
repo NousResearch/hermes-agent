@@ -113,18 +113,23 @@ class DashboardAuthProvider(ABC):
     Subclasses MUST set ``name`` (stable lowercase id) and ``display_name``. Capability flags:
     ``supports_password`` (credential form + ``complete_password_login``; OAuth methods may be
     ``NotImplementedError`` stubs), ``supports_token`` (``verify_token`` for the token-auth seam),
+    ``supports_peer_pass`` (``verify_peer_pass`` for the ``/api/peer`` route),
     ``supports_session`` (False for token-only credentials such as drain, never offered a login),
     ``interactive_login`` (False for a provider that verifies credentials but has no browser
     sign-in flow — kept out of the login page, ``/api/auth/providers`` and the auto-SSO redirect
     even though its ``verify_session`` is real; a session provider presenting a provisioned
-    shared token is the bundled consumer).
+    shared token is the bundled consumer), ``refresh_reuse_detection`` (False when a used refresh
+    token stays valid: a replay is then harmless, so ``refresh_singleflight`` caches no success for
+    it and every replay reaches ``refresh_session`` and the provider's own revocation check).
     """
     name: str = ""
     display_name: str = ""
     supports_password: bool = False
     supports_token: bool = False
+    supports_peer_pass: bool = False
     supports_session: bool = True
     interactive_login: bool = True
+    refresh_reuse_detection: bool = True
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
@@ -141,6 +146,10 @@ class DashboardAuthProvider(ABC):
 
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
+
+    def revoke_access_session(self, *, access_token: str) -> None:
+        """Logout's revoke by the access token, for a provider whose access token can outlive the
+        refresh token (and its cookie). Best-effort, must not raise; the default does nothing."""
 
     def complete_password_login(self, *, username: str, password: str) -> Session:
         """Verify a username/password pair and mint a :class:`Session` (only called when
@@ -159,6 +168,16 @@ class DashboardAuthProvider(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support token auth "
             "(set supports_token = True and override verify_token)")
+
+    def verify_peer_pass(self, *, token: str) -> Optional[TokenPrincipal]:
+        """Verify a pass minted for this agent, for the ``/api/peer`` route; return its holder and
+        every scope it carries (the route decides which permit what). Kept apart from
+        ``verify_token`` so a pass never authorises another provider's token routes. Return
+        ``None`` for a token that is not a pass for this agent; raise ``ProviderError`` only for an
+        outage. The default raises so a mis-flagged provider fails loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support peer passes "
+            "(set supports_peer_pass = True and override verify_peer_pass)")
 
 
 def assert_protocol_compliance(cls: type) -> None:

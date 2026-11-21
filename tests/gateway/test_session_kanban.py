@@ -5,12 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
@@ -44,13 +46,13 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     assert context['skills'] == ['owned-skill'] and context['goal_mode'] and context['goal_max_turns'] == 3
     assert context['accept_hooks'] is True and 'Goal criteria' in context['goal_text']
     for changed in ({'run_id': task.current_run_id + 1}, {'board': 'foreign'}, {'claim_lock': 'forged'}, {'cwd': '/tmp'}):
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             build_kanban_policy(connection, params | changed, config)
     connection.native_owner = False
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         build_kanban_policy(connection, params, config)
     from gateway.session_policy import build_policy
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
@@ -106,7 +108,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
@@ -135,13 +137,12 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
         calls.append(('submit', submission))
     async def resume(ref, params):
         calls.append(('resume', ref))
-    db = SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db'))
-    authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
+    authority = SimpleNamespace(profile_id=str(tmp_path), persistence=storage_handle(tmp_path), submit=submit)
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task_id, run_id=old.current_run_id, claim_lock=old.claim_lock)
     from gateway.session_kanban import run_task
-    with pytest.raises(RuntimeStoreError, match='stale_kanban_claim'):
+    with pytest.raises(AuthorityRefusal, match='stale_kanban_claim'):
         asyncio.run(run_task(connection, params))
     assert calls == []
     with closing(connect(board='owned')) as conn:

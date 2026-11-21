@@ -32,7 +32,7 @@ from agent.display import (
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
-from agent.message_sanitization import coalesce_tool_call_id
+from session_rules.turns import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
@@ -42,20 +42,17 @@ from agent.inline_tool_executors import (
     InlineToolContext,
     apply_transform_tool_result,
     emit_terminal_post_tool_call,
+    is_context_engine_tool,
+    is_memory_provider_tool,
     tool_hook_ids,
 )
 from agent.message_metadata import stamp_data_use
 from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
-    _NEVER_PARALLEL_TOOLS,
-    _is_destructive_command,
-    _is_multimodal_tool_result,
-    _multimodal_text_summary,
-    _append_subdir_hint_to_multimodal,
-    _context_pruned_argument_paths,
-    _plan_tool_batch_segments,
-    make_tool_result_message,
+    _NEVER_PARALLEL_TOOLS, _is_destructive_command, _append_subdir_hint_to_multimodal,
+    _context_pruned_argument_paths, _plan_tool_batch_segments, make_tool_result_message,
 )
+from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -64,6 +61,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.skills_tool_dedup import release_replaced_skill_view, release_replaced_skill_views
 from hermes_cli.observability.shared_metrics_efficiency import note_tool_result, record_tool_batch
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
@@ -219,7 +217,7 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
-        from hermes_state import classify_persistence_error
+        from storage_errors import classify_persistence_error
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
@@ -699,7 +697,13 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
+    # Deny-by-default for a hosted scope, before plugin hooks, guardrails or any executor: every
+    # sequential, concurrent and batched call reaches its executor (inline, memory provider, context
+    # engine, registry) only through here.
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    block_message, block_error_type = hosted_tool_refusal(ref.name), "hosted_tool_refused"
+    if block_message is None:
+        block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)
@@ -744,7 +748,9 @@ def _dispatch_authorized_once(
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     from agent.tool_progress_relay import bound_tool_progress
     from tools.connectors.data_use import collect_data_use
-    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
+    from tools.mcp_elicitation_form import bound_form_asker  # MCP elicitation asks on this turn's clarify surface
+    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use, \
+            bound_form_asker(getattr(agent, "clarify_callback", None)):
         try:
             return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
         finally:
@@ -774,6 +780,16 @@ def _run_agent_tool_execution_middleware(
 
     trace = middleware_trace if middleware_trace is not None else []
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if hosted_tool_refusal(function_name) is not None:
+        # Refused in a hosted scope before Relay and every request/execution middleware: no
+        # host-side callback sees, rewrites or acts on a call that will not run.
+        state.dispatched = True
+        state.result = _dispatch_authorized_once(
+            agent, state, _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, trace),
+            execute=execute, scope_block=scope_block, display_index=display_index,
+            begin_execution=begin_execution, authorization_gate=authorization_gate)
+        return state
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
@@ -910,8 +926,10 @@ def _run_sequential_tool_execution_middleware(
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
     from agent.tool_dispatch_helpers import _extend_tool_timeout
+    from agent.tool_executor_deadline import deadline_with_floor, declared_deadline_floor
 
-    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
+    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else deadline_with_floor(
+        _resolve_sequential_tool_timeout(), declared_deadline_floor(function_name, function_args))
     timeout_s = _extend_tool_timeout(function_name, timeout_s)
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
@@ -1132,6 +1150,7 @@ def _commit_tool_result(
         )
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
     note_tool_result(agent, function_name, tool_call_id, function_result, persisted_result)
+    release_replaced_skill_view(effective_task_id, tool_call_id, persisted_result)
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
     if subdir_hints:
@@ -1219,6 +1238,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     plugin_live_notes.keep_after_turn_budget(agent, batch)
     sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)
+    release_replaced_skill_views(effective_task_id, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
 
@@ -1601,7 +1621,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # Resolved before the batch is built so the start-order gate can clamp under the deadline.
-    timeout_s = _resolve_concurrent_tool_timeout()
+    from agent.tool_executor_deadline import batch_deadline
+
+    timeout_s = batch_deadline(_resolve_concurrent_tool_timeout(), parsed_calls)
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
@@ -1686,15 +1708,20 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
-    if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
+        from tools.arg_validation import call_with_arg_checks
+        from tools.registry import registry
+        return _SequentialDispatch(
+            lambda next_args: call_with_arg_checks(
+                registry.get_entry(function_name), next_args, agent._dispatch_delegate_task),
+            spinner=spinner, is_delegate=True)
+    if is_context_engine_tool(agent, function_name):
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
             error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
-    if agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    if is_memory_provider_tool(agent, function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
         return _SequentialDispatch(
             execute=lambda next_args: agent._memory_manager.handle_tool_call(

@@ -7,6 +7,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -15,9 +16,31 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
+from urllib.parse import unquote
 
 from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
+from scripts.termux.deb_version import deb_version_for_tag
+
+
+def release_version(tag: str) -> str:
+    """The version a stable or canary tag publishes; packages are named after it."""
+    from hermes_cli.update_channel import release_version as version_for
+
+    version = version_for(tag)
+    if version is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    return version
+
+
+def release_channel(tag: str) -> str:
+    """The channel an accepted candidate publishes to: ``canary`` for a canary tag, else ``stable``.
+
+    The tag decides, never a caller flag, so a stable candidate can never write a canary feed or
+    the reverse (scripts/termux/deb_version.py and scripts/releases/r2.py key on it the same way)."""
+    from hermes_cli.update_channel import is_canary_tag
+
+    return "canary" if is_canary_tag(tag) else "stable"
 
 
 def sha256_file(file: Path) -> str:
@@ -39,7 +62,7 @@ def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict |
             raise ValueError("Built package provenance does not match the channel request")
         return
     if (stamp.get("commit") != commit or stamp.get("tag") != tag
-            or stamp.get("baseVersion") != tag.removeprefix("v")):
+            or stamp.get("baseVersion") != release_version(tag)):
         raise ValueError("Built package provenance does not match the release")
 
 
@@ -73,14 +96,65 @@ def require_owner_write(archive: zipfile.ZipFile) -> None:
         raise ValueError(f"{len(locked)} update ZIP entries lack owner write; ShipIt cannot install it ({locked[:3]})")
 
 
+SQUIRREL_ZIP_LIMIT = 1 << 30
+
+
+def require_squirrel_downloadable(package: Path) -> None:
+    """Squirrel.Mac before Electron 44.7 (v0.22.0 ships 40) reads the whole update ZIP into one buffer;
+    from 1 GiB its growth asks Electron's allocator for 2 GiB, which refuses, and the app dies
+    mid-download (electron/electron#55089)."""
+    size = package.stat().st_size
+    if size >= SQUIRREL_ZIP_LIMIT:
+        raise ValueError(f"update ZIP is {size:,} bytes; Squirrel.Mac before Electron 44.7 crashes "
+                         f"downloading {SQUIRREL_ZIP_LIMIT:,} bytes (1 GiB) or more")
+    print(f"macOS update ZIP: {size:,} bytes, {(SQUIRREL_ZIP_LIMIT - size) / 1e6:.0f} MB under the 1 GiB limit")
+
+
+def _probe_windows_product_version(executable: Path) -> str:
+    # -Command joins trailing argv into the script text, so $args stays empty.
+    return subprocess.check_output([
+        "powershell", "-NoProfile", "-Command",
+        "(Get-Item -LiteralPath $env:RECORD_EXECUTABLE).VersionInfo.ProductVersion",
+    ], env={**os.environ, "RECORD_EXECUTABLE": str(executable)},
+        text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=30).strip()
+
+
+def _packaged_windows_executable_version(
+    archive: zipfile.ZipFile,
+    executable_relpath: str,
+    *,
+    probe=None,
+) -> str:
+    """Extract the manifest's declared executable from the MSIX itself and probe its version.
+
+    Reading ``*-unpacked/`` on disk is unsafe when a later variant build (such as the
+    Store build on a canary) overwrites the unpacked directory with a different quad.
+    """
+    if not executable_relpath:
+        raise ValueError("MSIX application manifest has no Executable attribute")
+    target = PureWindowsPath(executable_relpath).as_posix().lstrip("/")
+    # MakeAppx percent-encodes part names: "Hermes Agent.exe" is stored as Hermes%20Agent.exe.
+    entry = single(
+        name for name in archive.namelist()
+        if unquote(name.replace("\\", "/")).lstrip("/").casefold() == target.casefold()
+    )
+    probe = probe or _probe_windows_product_version
+    with tempfile.TemporaryDirectory() as temp:
+        extracted = Path(temp) / PureWindowsPath(entry).name
+        with archive.open(entry) as src, extracted.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return probe(extracted)
+
+
 def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
-           *, channel_request: dict | None = None) -> None:
+           *, channel_request: dict | None = None, executable_version_probe=None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
     row: dict = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
     if platform == "windows":
         package = single(p for p in root.glob(f"*-win-{arch}.msix") if not p.name.startswith("Store-"))
-        if channel_request is None and not package.name.endswith(f"-{tag[1:]}-win-{arch}.msix"):
+        if channel_request is None and not package.name.endswith(f"-{release_version(tag)}-win-{arch}.msix"):
             raise ValueError("Windows artifact filename differs from release tag")
+        version_sidecar = root / f"version-info-{arch}.json"
         with zipfile.ZipFile(package) as archive:
             manifest = ET.fromstring(archive.read("AppxManifest.xml"))
             identity = manifest.find("{*}Identity")
@@ -88,32 +162,29 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             stamp_name = single(n for n in archive.namelist() if n.replace("\\", "/").endswith("/resources/install-stamp.json"))
             stamp = json.loads(archive.read(stamp_name))
             stamp_matches(stamp, tag, commit, channel_request=channel_request)
-        if identity.attrib["ProcessorArchitecture"].lower() != arch:
-            raise ValueError("MSIX architecture differs from release target")
-        row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
-                   applicationId=application.attrib["Id"], version=identity.attrib["Version"])
-        version_sidecar = root / f"version-info-{arch}.json"
-        if version_sidecar.is_file():
-            row["executableVersion"] = json.loads(
-                version_sidecar.read_text(encoding="utf-8-sig"),
-            )["productVersion"]
-        elif os.name == "nt":
-            # The stamp carries no executable name; the package's own manifest does.
-            executable_name = PureWindowsPath(application.attrib["Executable"]).name
-            executable = single(root.glob(f"*-unpacked/{executable_name}"))
-            # -Command joins trailing argv into the script text, so $args stays empty.
-            row["executableVersion"] = subprocess.check_output([
-                "powershell", "-NoProfile", "-Command",
-                "(Get-Item -LiteralPath $env:RECORD_EXECUTABLE).VersionInfo.ProductVersion",
-            ], env={**os.environ, "RECORD_EXECUTABLE": str(executable)},
-                text=True, encoding="utf-8", stdin=subprocess.DEVNULL).strip()
+            if identity.attrib["ProcessorArchitecture"].lower() != arch:
+                raise ValueError("MSIX architecture differs from release target")
+            row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
+                       applicationId=application.attrib["Id"], version=identity.attrib["Version"])
+            if version_sidecar.is_file():
+                row["executableVersion"] = json.loads(
+                    version_sidecar.read_text(encoding="utf-8-sig"),
+                )["productVersion"]
+            elif executable_version_probe is not None or os.name == "nt":
+                # The stamp carries no executable name; the package's own manifest does.
+                row["executableVersion"] = _packaged_windows_executable_version(
+                    archive,
+                    application.attrib.get("Executable", ""),
+                    probe=executable_version_probe,
+                )
         if stamp.get("receiverProtocol") == 1:
             row["receiverProtocol"] = 1
     elif platform == "macos":
-        version = channel_request["version"] if channel_request is not None else tag[1:]
+        version = channel_request["version"] if channel_request is not None else release_version(tag)
         package = single(root.glob(f"*-mac-{arch}.zip"))
         if not package.name.endswith(f"-{version}-mac-{arch}.zip"):
             raise ValueError("macOS artifact filename differs from requested version")
+        require_squirrel_downloadable(package)
         app = single(root.glob("mac*/*.app"))
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         signature = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], check=True, capture_output=True, text=True, encoding="utf-8")
@@ -135,7 +206,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         fields = subprocess.check_output(["dpkg-deb", "--field", str(package), "Package", "Version", "Architecture"], text=True, encoding="utf-8")
         parsed = dict(line.split(": ", 1) for line in fields.splitlines())
         row.update(identity=parsed["Package"], version=parsed["Version"], filename=package.relative_to(root).as_posix())
-        if parsed["Version"] != f"{tag[1:]}-1":
+        if parsed["Version"] != deb_version_for_tag(tag):
             raise ValueError("Termux artifact version differs from release tag")
         if parsed["Architecture"] != "aarch64":
             raise ValueError("Wrong Termux package architecture")
@@ -253,7 +324,7 @@ PACKAGE_SUFFIXES = (".dmg", ".zip", ".blockmap", ".msix", ".msixbundle", ".deb")
 
 
 def materialize(manifest: dict, root: Path, *, public_base: str, store_only: bool = False,
-                metadata_only: bool = False) -> None:
+                metadata_only: bool = False, only: Iterable[str] | None = None) -> None:
     validate_candidates(manifest, manifest["tag"], manifest["commit"], public_base,
                         archive=manifest["archive"])
     files = manifest.get("files", [])
@@ -265,6 +336,11 @@ def materialize(manifest: dict, root: Path, *, public_base: str, store_only: boo
     selected = [item for item in files if item["path"].startswith("Store-") and item["path"].endswith(".msixbundle")] if store_only else files
     if metadata_only:
         selected = [item for item in selected if not item["path"].endswith(PACKAGE_SUFFIXES)]
+    if only is not None:
+        wanted = set(only)
+        selected = [item for item in selected if item["path"] in wanted]
+        if {item["path"] for item in selected} != wanted:
+            raise ValueError("Requested candidate files are not in the manifest")
     if store_only and len(selected) != 1:
         raise ValueError("Expected one Store candidate")
     from scripts.releases.progress import log
@@ -296,6 +372,7 @@ def publish(manifest: dict, root: Path, public_base: str) -> None:
     """Verify versioned uploads and stage APT content-addressed files, not indexes."""
     from scripts.releases.r2 import put
 
+    channel = release_channel(manifest["tag"])
     materialize(manifest, root, public_base=public_base)
     windows = [row for row in manifest["packages"] if row["platform"] == "windows"]
     if windows:
@@ -305,7 +382,7 @@ def publish(manifest: dict, root: Path, public_base: str) -> None:
     for file in (root / "apt").rglob("*"):
         rel = file.relative_to(root / "apt").as_posix()
         if file.is_file() and (rel.startswith("pool/") or "/by-hash/" in rel):
-            put(tag=manifest["tag"], key=f"releases/termux/stable/{rel}", file=file, key_is_full=True, immutable=True)
+            put(tag=manifest["tag"], key=f"releases/termux/{channel}/{rel}", file=file, key_is_full=True, immutable=True)
 
 
 def write_appinstaller(out: Path, *, identity: str, publisher: str, version: str,
@@ -357,16 +434,20 @@ def publish_canary_appinstaller(root: Path, *, tag: str, variant: str, bundle: P
 
 
 def promote(manifest: dict, root: Path, public_base: str) -> None:
-    from scripts.releases.r2 import put, finalize
+    """Point the release's channel at an accepted candidate: the Windows App Installer feed, the
+    merged macOS feed and the Termux APT indexes. ``release_channel`` picks stable or canary."""
+    from scripts.releases.r2 import finalize
 
+    channel = release_channel(manifest["tag"])
     # Feeds need the per-arch feed legs and APT indexes, not the packages: those are
     # bound by the accepted candidate's sha256 receipts.
     materialize(manifest, root, public_base=public_base, metadata_only=True)
     windows = next(r for r in manifest["packages"] if r["platform"] == "windows")
-    uri = f"{public_base.rstrip('/')}/releases/win32/stable/stable.appinstaller"
-    appinstaller = root / "stable.appinstaller"
-    write_appinstaller(appinstaller, identity=windows["identity"], publisher=windows["publisher"],
-                       version=windows["version"], self_uri=uri, artifact_uri=windows["artifact"]["url"])
+    uri = f"{public_base.rstrip('/')}/releases/win32/{channel}/{channel}.appinstaller"
+    appinstaller = root / f"{channel}.appinstaller"
+    if channel == "stable":
+        write_appinstaller(appinstaller, identity=windows["identity"], publisher=windows["publisher"],
+                           version=windows["version"], self_uri=uri, artifact_uri=windows["artifact"]["url"])
     apt = root / "apt"
     indexes = sorted(p for p in apt.rglob("*") if p.is_file() and not p.relative_to(apt).as_posix().startswith("pool/") and "/by-hash/" not in p.relative_to(apt).as_posix())
     indexes.sort(key=lambda p: p.name == "InRelease")
@@ -380,8 +461,32 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
     # Every package and index must exist before the first channel write.
     # The merged feed points at the attempt archive; the version stays plain.
     finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], verify_bytes=False)
-    def publish_pointer(key, file):
-        put(tag=manifest["tag"], key=key, file=file, key_is_full=True)
+    publish_pointer = _pointer_publisher(manifest["tag"], public_base)
+    if channel == "stable":
+        publish_pointer("releases/win32/stable/stable.appinstaller", appinstaller)
+    else:
+        # The canary feed keeps its bundle beside it, as it always has: canary archives are pruned
+        # after 14 days (scripts/releases/r2.py prune-canaries), and a quiet fortnight must not
+        # leave the live feed pointing at a deleted archive. The bytes are the accepted bundle,
+        # re-checked against their receipt digest before they are copied.
+        paths = {item["url"]: item["path"] for item in manifest["files"]}
+        bundle_name = paths[windows["artifact"]["url"]]
+        materialize(manifest, root, public_base=public_base, only={bundle_name})
+        publish_canary_appinstaller(root, tag=manifest["tag"], variant="bundled", bundle=root / bundle_name,
+                                    identity=windows["identity"], publisher=windows["publisher"],
+                                    version=windows["version"], public_base=public_base)
+        publish_pointer(f"releases/win32/canary/{appinstaller.name}", appinstaller, upload=False)
+    for file in indexes:
+        publish_pointer(f"releases/termux/{channel}/{file.relative_to(apt).as_posix()}", file)
+
+
+def _pointer_publisher(tag: str, public_base: str):
+    """Write one mutable channel pointer and read it back through the public origin."""
+    from scripts.releases.r2 import put
+
+    def publish_pointer(key: str, file: Path, *, upload: bool = True) -> None:
+        if upload:
+            put(tag=tag, key=key, file=file, key_is_full=True)
         digest = hashlib.sha256()
         with urllib.request.urlopen(f"{public_base.rstrip('/')}/{key}", timeout=60) as response:
             while chunk := response.read(1024 * 1024):
@@ -389,9 +494,7 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
         if digest.hexdigest() != sha256_file(file):
             raise ValueError(f"Channel read-back differs: {key}")
 
-    publish_pointer("releases/win32/stable/stable.appinstaller", appinstaller)
-    for file in indexes:
-        publish_pointer(f"releases/termux/stable/{file.relative_to(apt).as_posix()}", file)
+    return publish_pointer
 
 
 def main(argv: list[str] | None = None) -> None:

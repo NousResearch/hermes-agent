@@ -11,8 +11,8 @@ from gateway import run, session_cron
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import SessionAuthority
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
+from persistence_assembly import store_location
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_cron_submit_creation_commit_waits_off_the_owner_loop(tmp_path, monkeypatch):
@@ -20,11 +20,11 @@ def test_cron_submit_creation_commit_waits_off_the_owner_loop(tmp_path, monkeypa
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
     with jobs.use_cron_store(tmp_path / 'cron'):
         job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local', model='fixture')
-        db = SessionDB(tmp_path / 'state.db')
+        db = storage_handle(tmp_path)
         runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
                                  adapters={})
-        authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                     epoch=begin_runtime_epoch(db, instance_id='test'))
+        authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=db,
+                                     epoch=db.runtime.begin_epoch(instance_id='test'))
         monkeypatch.setattr(authority, '_schedule', lambda ref: None)
         runner.session_authority = authority
 
@@ -35,7 +35,7 @@ def test_cron_submit_creation_commit_waits_off_the_owner_loop(tmp_path, monkeypa
             held, release = threading.Event(), threading.Event()
 
             def hold_writer():  # another process's writer
-                other = sqlite3.connect(db.db_path, timeout=10)
+                other = sqlite3.connect(store_location(db.scope), timeout=10)
                 other.execute('BEGIN IMMEDIATE')
                 held.set()
                 release.wait(5)
@@ -62,7 +62,7 @@ def test_cron_submit_creation_commit_waits_off_the_owner_loop(tmp_path, monkeypa
             finally:
                 release.set()
                 tick.cancel()
-            assert len(list_session_admissions(db, session_id=receipt['session_id'], pending_only=False)) == 1
+            assert len(db.admissions.list(session_id=receipt['session_id'], pending_only=False)) == 1
             assert max(gaps) < 0.5, max(gaps)
         try:
             asyncio.run(probe())

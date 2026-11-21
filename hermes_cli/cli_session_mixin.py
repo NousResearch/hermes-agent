@@ -372,8 +372,15 @@ class CLISessionMixin:
         lines.extend(status_lines(fields, "created", "last_activity", "tokens", "agent_running"))
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+    def _list_recent_sessions(
+        self, limit: int = 10, *, include_all_sources: bool = False, search_query: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent sessions for in-chat browsing/resume affordances.
+
+        Scoped to this CLI's own sessions unless *include_all_sources* widens it: the default
+        keeps desktop/gateway lanes out of a local chat's list, while ``/sessions all`` opts in
+        to discovering conversations started on another interface.
+        """
         if not self._session_db:
             return []
         try:
@@ -382,18 +389,26 @@ class CLISessionMixin:
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
-                include_all_sources=False, include_unnamed=True, limit=limit,
+                include_all_sources=include_all_sources, include_unnamed=True, limit=limit,
+                search_query=search_query,
                 exclude_sources=list(INTERNAL_LISTING_SOURCES))
         except Exception:
             return []
 
-    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
+    def _show_recent_sessions(
+        self, *, reason: str = "history", limit: int = 10,
+        include_all_sources: bool = False, search_query: str | None = None,
+    ) -> bool:
         """Render recent sessions inline from the active chat TUI.
 
         Returns True when something was shown, False if no session list was available.
         """
         from cli import _cli_visible_print
-        sessions = self._list_recent_sessions(limit=limit)
+        sessions = self._list_recent_sessions(
+            limit=limit, include_all_sources=include_all_sources, search_query=search_query)
+        # The table rendered here is what a following bare number (or `/resume <n>`) must resolve
+        # against, so a widened list never resolves its numbers against CLI-only rows.
+        self._last_session_listing = sessions
         if not sessions:
             return False
 
@@ -411,6 +426,12 @@ class CLISessionMixin:
         _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
+            if include_all_sources:
+                # Only the widened view can mix interfaces, so label each row's origin — a desktop
+                # row and a CLI row with the same title are otherwise indistinguishable.
+                surface = str(session.get("source") or "").strip()
+                if surface:
+                    title = f"[{surface}] {title}"[:32]
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"), session_id=session.get("id"))
             _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")

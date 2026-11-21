@@ -641,7 +641,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
 
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
-        """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        """Handle /resume [all|session_id|title] — switch to a previous session mid-conversation.
+
+        Bare ``/resume`` lists this CLI's own sessions; ``/resume all`` is the discovery spelling
+        that matches ``/sessions all``, for a user who wants a conversation started on another
+        interface but has no title or id to type yet.
+        """
         if getattr(self, "_agent_running", False):
             return _cp(f"  {_t('shared.agent_busy', command='/resume')}")
         from cli import _sync_process_session_id
@@ -649,16 +654,18 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
         if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
             target = target[1:-1].strip()
+        widen = target.lower() in {"all", "--all"}
+        if widen:
+            target = ""
         if not target:
             _cp(f"  {_t('resume.usage')}")
-            if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
-                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
-                # next line instead of having to retype `/resume 3`. The list here must match the one shown
-                # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+            if self._show_recent_sessions(reason="resume", include_all_sources=widen):
+                # Arm a one-shot bare-number selection against the exact table just rendered:
+                # `_show_recent_sessions` stores it, so a widened list resolves consistently,
+                # and a number typed on the next line means the same row. See #34584.
+                self._pending_resume_sessions = (
+                    getattr(self, "_last_session_listing", None)
+                    or self._list_recent_sessions(limit=10))
                 return
             return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
@@ -722,7 +729,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
         """``(session_id, meta)`` for a numbered selection, title, or id (an empty compression-chain head
         redirects to the descendant holding the transcript); None after printing why it was not resolved."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            # Prefer the table rendered last: after `/sessions all` the numbers point into the
+            # widened list, and re-listing CLI-only rows here would resume a different session.
+            sessions = getattr(self, "_last_session_listing", None)
+            if sessions is None:
+                sessions = self._list_recent_sessions(limit=10)
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))
@@ -746,15 +757,34 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
-        an explicit target delegates to /resume so both spellings behave identically."""
+        """Handle ``/sessions [all] [full] [search <terms>] [list|<id-or-title>]``.
+
+        ``all`` widens the table to every interface's sessions in this profile (#44964), ``full``
+        keeps unnamed rows, ``search``/``find`` filters by title or id, and any other word is a
+        target delegated to ``/resume`` so both spellings behave identically.
+        """
         arg = _command_arg(cmd_original)
-        if arg and arg.lower() not in {"list", "ls", "browse"}:
-            self._handle_resume_command(f"/resume {arg}")
-        elif not self._session_db:
-            _cp(_db_unavailable_line())
-        elif not self._show_recent_sessions(reason="sessions"):
+        from hermes_cli.session_listing import parse_session_listing_args
+        include_all, _include_unnamed, target, search_query = parse_session_listing_args(arg)
+        if target:
+            if target.isdigit() and include_all:
+                # `/sessions all 3` numbers the widened table, so render it first (that also arms
+                # `_last_session_listing`, which the numbered branch resolves against).
+                self._show_recent_sessions(reason="sessions", include_all_sources=True)
+            self._handle_resume_command(f"/resume {target}")
+            return
+        if not self._session_db:
+            return _cp(_db_unavailable_line())
+        shown = self._show_recent_sessions(
+            reason="sessions", include_all_sources=include_all, search_query=search_query or None)
+        if not shown:
             _cp(f"  {_t('sessions.none_yet')}")
+            return
+        # Same arm as a bare `/resume`: the number shown can be typed on the next line, and it
+        # resolves against this table rather than a freshly listed CLI-only one.
+        armed = getattr(self, "_last_session_listing", None)
+        if armed:
+            self._pending_resume_sessions = armed
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the

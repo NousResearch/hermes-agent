@@ -435,6 +435,8 @@ def _pin_capture(fork: Any, capture: Any) -> None:
     fork._cached_system_prompt_static = capture.system_prompt_static
     fork.tools = copy.deepcopy(capture.tools)
     fork.valid_tool_names = {tool["function"]["name"] for tool in fork.tools}
+    if capture.reasoning_config is not None:  # the captured request's level (an adaptive turn's own)
+        fork.reasoning_config = copy.deepcopy(capture.reasoning_config)
     fork._prompt_cache_fork_tag = PLUGIN_FORK_TASK
 
 

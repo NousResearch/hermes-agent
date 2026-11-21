@@ -206,13 +206,55 @@ def _strip_leading_code_span(text: str) -> str:
     return text[run:close].strip() if close != -1 else text
 
 
+# One bracketed token and nothing else: ``[`` + any non-space run + optional ``]``. Anything with
+# a second word fails this shape, so a damaged marker followed by prose is always delivered.
+_DAMAGED_MARKER_SHAPE = re.compile(r"\[\s*([^\s\[\]]*)\s*(\]?)")
+_SILENT_LETTERS = "silent"
+
+
+def _within_one_edit(a: str, b: str) -> bool:
+    """Optimal-string-alignment distance <= 1: one dropped, extra, replaced or swapped letter."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diffs = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        return len(diffs) <= 1 or (
+            len(diffs) == 2 and diffs[1] == diffs[0] + 1
+            and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]]
+        )
+    short, long = sorted((a, b), key=len)
+    return any(long[:i] + long[i + 1:] == short for i in range(len(long)))
+
+
+def _is_damaged_silent_marker(text: str) -> bool:
+    """A whole reply that is ``[SILENT]`` damaged in transit or by the model's own typing.
+
+    Replaying 265 real cron replies (PR #158289 thread) found ``[`` (a provider cut-off),
+    ``[SLENT]``, ``[SLIENT]``, ``[ SILENT ]`` and ``[<U+200B>SILENT]`` all delivered to the
+    user's chat as the whole message. After invisible characters, NFKC, case, code wrapping and
+    edge emphasis are removed, the reply is silence iff it is one bracketed token whose letters
+    are within one edit of ``silent`` (closing bracket optional), or an unclosed truncation of
+    the marker (``[``, ``[S``, ``[SIL``). ``[URGENT]``, ``[SILVER]`` and ``[SLENT] extra words``
+    are not that shape and are delivered.
+    """
+    form = unicodedata.normalize("NFKC", _strip_format_characters(text)).casefold()
+    form = _strip_edge_silence_punctuation(_strip_code_wrap(form))
+    if len(form) > _MARKER_LENGTH_CAP or not (shape := _DAMAGED_MARKER_SHAPE.fullmatch(form)):
+        return False
+    letters, closed = shape.groups()
+    truncated = not closed and _SILENT_LETTERS.startswith(letters)
+    return truncated or _within_one_edit(letters, _SILENT_LETTERS)
+
+
 def is_autonomous_silence_response(response: Any) -> bool:
     """Loose silence matcher for autonomous lanes (cron, webhook).
 
     Models reliably bracket ``[SILENT]`` with a short note, so unlike the
     interactive EXACT rule this also suppresses when a marker sits on its own
     first/last line or the bracketed sentinel opens the response (``[SILENT] No
-    changes detected``).  A token buried mid-sentence is still delivered.
+    changes detected``).  A token buried mid-sentence is still delivered, and so
+    is anything with more than one token; a whole reply that is a damaged
+    ``[SILENT]`` (:func:`_is_damaged_silent_marker`) is silence.
     Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
     """
     stripped = _strip_format_characters(response.strip()) if isinstance(response, str) else ""
@@ -225,9 +267,13 @@ def is_autonomous_silence_response(response: Any) -> bool:
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
-    return _canonical_silence_candidate(_strip_leading_code_span(stripped)).startswith(_BRACKETED_SILENCE_MARKERS) or any(
-        is_intentional_silence_response(c) or is_intentional_silence_response(_strip_code_wrap(c))
-        for c in candidates
+    return (
+        _canonical_silence_candidate(_strip_leading_code_span(stripped)).startswith(_BRACKETED_SILENCE_MARKERS)
+        or _is_damaged_silent_marker(stripped)
+        or any(
+            is_intentional_silence_response(c) or is_intentional_silence_response(_strip_code_wrap(c))
+            for c in candidates
+        )
     )
 
 

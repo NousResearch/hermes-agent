@@ -419,6 +419,24 @@ def _cmd_backup(args) -> int:
     return 0
 
 
+def _route_text(route: object) -> str:
+    """``provider/model, routed|same model`` for a ledger entry's review route, or ""."""
+    if not isinstance(route, dict):
+        return ""
+    where = "/".join(str(route.get(key) or "?") for key in ("provider", "model"))
+    return f"{where}, {'routed' if route.get('routed') else 'same model'}"
+
+
+def _origin_suffix(row: dict) -> str:
+    """``  [origin route]`` for entries a review fork or the curator wrote; foreground and
+    pre-origin entries render as before."""
+    origin = row.get("origin")
+    if not origin or origin == "foreground":
+        return ""
+    route = _route_text(row.get("route"))
+    return f"  [{origin} {route}]" if route else f"  [{origin}]"
+
+
 def _cmd_ledger(args) -> int:
     """List per-mutation audit ledger entries (newest first), or compact the file in place."""
     from tools import skill_ledger
@@ -444,7 +462,7 @@ def _cmd_ledger(args) -> int:
         print(
             f"{r.get('id', '?'):<14} {_fmt_ts(r.get('ts')):<12} "
             f"{r.get('actor', '?'):<8} {r.get('action', '?'):<12} "
-            f"{r.get('skill', '?')}{extra}")
+            f"{r.get('skill', '?')}{extra}{_origin_suffix(r)}")
     print(
         "\nRoll back a single mutation with `hermes curator rollback <id>`; "
         "whole-tree snapshots remain available via `hermes curator rollback --list`.")
@@ -535,6 +553,10 @@ def _rollback_ledger_entry(args, entry_id: str) -> int:
     print(f"  action: {entry.get('action', '?')}")
     print(f"  skill:  {entry.get('skill', '?')}")
     print(f"  actor:  {entry.get('actor', '?')}")
+    if entry.get("origin"):
+        print(f"  origin: {entry['origin']}")
+    if route := _route_text(entry.get("route")):
+        print(f"  route:  {route}")
     print(f"  when:   {entry.get('ts', '?')}")
     touched = {i.get("path") for i in (entry.get("before") or []) + (entry.get("after") or [])}
     print(f"  files:  {len(touched)}")

@@ -1099,6 +1099,9 @@ def build_cache_parity_fork(
     # same-model path), so its turn-start/turn-exit log lines are otherwise
     # indistinguishable from live turns (#118693).
     review_agent._turn_origin = write_origin
+    # The skill ledger records each review write's route (model, provider, routed); model and
+    # provider are read live at write time, the routing decision only exists here.
+    review_agent._review_routed = _routed
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
     review_agent._user_profile_enabled = agent._user_profile_enabled

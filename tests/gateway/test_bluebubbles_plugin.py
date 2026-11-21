@@ -9,6 +9,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.run import _BUILTIN_ADAPTERS
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -712,7 +713,6 @@ class TestBlueBubblesPluginRegistration:
     def test_core_wiring_removed(self):
         from gateway.outbound import senders
         import gateway.outbound.send as smt
-        from gateway.run import _BUILTIN_ADAPTERS
         from hermes_cli import gateway_setup_wizard as wiz
 
         assert Platform.BLUEBUBBLES not in _BUILTIN_ADAPTERS

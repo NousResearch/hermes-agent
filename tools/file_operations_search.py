@@ -254,6 +254,38 @@ def _prepend_skipped_paths_warning(skip: dict, existing: Optional[str]) -> Optio
 
 _PERMISSION_SEARCH_HINT = "Nothing matched in the readable part of the search scope."
 
+# A content search runs under a wall-clock budget, not a per-file one: on a large data
+# root (hundreds of thousands of files) one unpruned scan can take a minute, which the
+# caller experiences as a dead turn. Pruning by directory name plateaus — much of such a
+# tree is real data, not caches — so the only honest bound is time: stop at the budget,
+# keep what matched so far, and SAY the result is partial. The find-based `files` lane is
+# unaffected (one bounded walk, not a content scan).
+_CONTENT_SEARCH_TIME_BUDGET = 4
+_CONTENT_SEARCH_TIME_BUDGET_ENV = "HERMES_CONTENT_SEARCH_TIMEOUT"
+
+
+def _content_search_time_budget() -> int:
+    """Wall-clock budget (seconds) for one content search: the constant, or
+    ``HERMES_CONTENT_SEARCH_TIMEOUT`` for a deliberate large scan."""
+    raw = (os.environ.get(_CONTENT_SEARCH_TIME_BUDGET_ENV) or "").strip()
+    if raw:
+        try:
+            value = int(float(raw))
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return _CONTENT_SEARCH_TIME_BUDGET
+
+
+def _partial_search_note(matches_shown: int, budget: int) -> str:
+    """Sentence appended when the content-search budget cut the scan short."""
+    return (
+        f"Partial results: content search stopped after {budget}s "
+        f"({matches_shown} match(es) so far) — narrow the path or pattern, "
+        f"or raise {_CONTENT_SEARCH_TIME_BUDGET_ENV}, for the rest."
+    )
+
 
 def _merge_child_warnings(children: list[SearchResult], has_results: bool) -> list[str]:
     """Combine per-root search warnings into one list: the skipped-path sentences collapse
@@ -1322,7 +1354,8 @@ class SearchMixin:
         (a truncating head makes rg exit 0 / grep 141, which the ==2 guard ignores).
         ``line_cap`` appends ``| cut -c1-2000`` for engines without --max-columns
         (grep): bounds giant single-line matches at the pipe layer; skipped for
-        files_only/count where lines are paths/counts."""
+        files_only/count where lines are paths/counts. Content searches run under
+        ``_content_search_time_budget()`` and say so in the warning when it fires."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         if line_cap:  # grep/find pipelines: shell only, with the column cap
             parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
@@ -1330,9 +1363,14 @@ class SearchMixin:
                 parts += ["|", "cut", "-c1-2000"]
             result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
         else:
-            result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
-        return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
+            budget = _content_search_time_budget()
+            result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=budget,
+                                          merge_stderr=True, shell_prefix="set -o pipefail; ")
+        parsed = _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
+        if not line_cap and parsed.limit_reason == "search_timeout":
+            note = _partial_search_note(parsed.total_count, budget)
+            parsed.warning = note if not parsed.warning else f"{note} {parsed.warning}"
+        return parsed
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int,

@@ -12,7 +12,7 @@ Built-in wires (live-verified against each vendor except where noted):
   ``gpt-live-transcribe``, the one model that emits deltas before the turn is committed). The
   endpoint requires >= 24 kHz input, so PCM is resampled 16 k -> 24 k here.
 - ``xai``: ``wss://api.x.ai/v1/stt`` with ``interim_results=true``.
-- ``elevenlabs``: ``wss://api.elevenlabs.io/v1/speech-to-text/realtime`` (``scribe_v2_realtime``),
+- ``elevenlabs``: ``wss://api.elevenlabs.io/v1/speech-to-text/realtime`` (``scribe_v3_live``; ``stt.elevenlabs.streaming_model`` pins another),
   built from the vendor AsyncAPI schema.
 
 Plugin providers opt in through ``TranscriptionProvider.streaming_capable`` /
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 INPUT_RATE = 16000  # the contract every caller feeds
 DEFAULT_OPENAI_STREAMING_MODEL = "gpt-live-transcribe"
-ELEVENLABS_REALTIME_MODEL = "scribe_v2_realtime"
+ELEVENLABS_REALTIME_MODEL = "scribe_v3_live"
 STREAMING_PROVIDERS = ("openai", "xai", "elevenlabs")
 _FINALIZE_TIMEOUT_S = 20.0
 _CONNECT_TIMEOUT_S = 10.0
@@ -377,11 +377,11 @@ class ElevenLabsRealtimeSession(_WebSocketSession):
     provider = "elevenlabs"
 
     def __init__(self, api_key: str, base_url: str, language: Optional[str],
-                 on_partial: Optional[PartialCallback] = None) -> None:
+                 on_partial: Optional[PartialCallback] = None, model: str = ELEVENLABS_REALTIME_MODEL) -> None:
         super().__init__(on_partial)
         parts = urlsplit(base_url.rstrip("/"))
         scheme = "wss" if parts.scheme == "https" else "ws"
-        query = {"model_id": ELEVENLABS_REALTIME_MODEL, "audio_format": f"pcm_{INPUT_RATE}",
+        query = {"model_id": model, "audio_format": f"pcm_{INPUT_RATE}",
                  "commit_strategy": "vad"}
         if language:
             query["language_code"] = language
@@ -490,7 +490,8 @@ def _builtin_session(provider: str, stt_config: dict[str, Any], language: Option
         if not api_key:
             return None
         base = str(section.get("base_url") or tc.ELEVENLABS_STT_BASE_URL)
-        return ElevenLabsRealtimeSession(api_key, base, language, on_partial)
+        model = str(section.get("streaming_model") or ELEVENLABS_REALTIME_MODEL)
+        return ElevenLabsRealtimeSession(api_key, base, language, on_partial, model)
     return None
 
 

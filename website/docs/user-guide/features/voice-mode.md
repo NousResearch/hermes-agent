@@ -190,7 +190,7 @@ stt:
 |---|---|---|
 | `openai` | Realtime transcription session | Needs your own `OPENAI_API_KEY`; the Nous-managed audio gateway serves file transcription only |
 | `xai` | `wss://api.x.ai/v1/stt` | Needs `XAI_API_KEY` (the Grok OAuth login is not used for live STT) |
-| `elevenlabs` | Scribe v2 realtime | `ELEVENLABS_API_KEY` |
+| `elevenlabs` | Scribe v3 Live (`stt.elevenlabs.streaming_model: scribe_v2_realtime` pins the old model) | `ELEVENLABS_API_KEY` |
 | plugin | `TranscriptionProvider.streaming_capable` | Plugins opt in with `open_stream_session()` |
 
 Live transcription covers CLI and TUI voice mode and Desktop dictation. Local whisper, Groq, Mistral and DeepInfra keep using the file path. If a live session can't open, or fails mid-recording, Hermes transcribes the recording as usual, so turning this on never loses a take.
@@ -586,6 +586,7 @@ DISCORD_ALLOWED_USERS=...
 | **OpenAI** | `gpt-transcribe` | Fast | Best | Paid ($0.0045/min) | Yes |
 | **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
 | **xAI** | `grok-voice-transcribe-2.0` | Fast | Best | Paid ($0.10/hr batch) | Yes |
+| **ElevenLabs** | `scribe_v3` | Fast | Best | Paid ($0.20/hr batch, $0.22/hr live) | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 

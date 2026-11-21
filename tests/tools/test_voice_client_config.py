@@ -166,6 +166,15 @@ def test_elevenlabs_tts_direct_carries_voice_and_model(voice_home, monkeypatch):
     assert tts["min_len"] == 6
 
 
+def test_elevenlabs_stt_direct_uses_the_configured_model_id(voice_home, monkeypatch):
+    # stt.elevenlabs pins its model under ``model_id`` (the key the relay path reads too).
+    voice_home({"stt": {"provider": "elevenlabs", "elevenlabs": {"model_id": "scribe_v2"}}})
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
+    stt = _resolve()["stt"]
+    assert stt["wire"] == "elevenlabs-stt"
+    assert stt["model"] == "scribe_v2"
+
+
 def test_command_provider_relays(voice_home, monkeypatch):
     voice_home({
         "stt": {

@@ -1184,7 +1184,7 @@ DEFAULT_CONFIG = {
             "language": "",  # blank = inherit stt.language; set "en", "es", ... to force
         },
         "elevenlabs": {
-            "model_id": "scribe_v2",  # scribe_v2, scribe_v1
+            "model_id": "scribe_v3", "streaming_model": "scribe_v3_live",  # or scribe_v2/_v1; scribe_v2_realtime
             "language_code": "",  # blank = inherit stt.language; set "eng", "spa", ... to force
             "tag_audio_events": False,
             "diarize": False,

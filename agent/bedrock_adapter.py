@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.errors import EmptyStreamError
+from hermes_cli.model_catalog import extend_context_lengths
 from agent.tool_history_as_text import tool_history_for_request
 
 logger = logging.getLogger(__name__)
@@ -1582,14 +1583,15 @@ def bedrock_static_context_length(model_id: str) -> Optional[int]:
     if _APPLICATION_PROFILE_ARN_RE.search(model_id):
         model_id = _inference_profile_model_cache.get(model_id, model_id)
     lowered = model_id.lower()
-    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in lowered]
+    table = extend_context_lengths("bedrock", BEDROCK_CONTEXT_LENGTHS)
+    matches = [key for key in table if key in lowered]
     if matches:
-        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+        return table[max(matches, key=len)]
     family = _CATALOG_FAMILY_ID_RE.search(lowered)
     if family is None:
         return None
     from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, family.group(1))
+    hit = _longest_key_match(extend_context_lengths("default", DEFAULT_CONTEXT_LENGTHS), family.group(1))
     return hit[1] if hit else None
 
 

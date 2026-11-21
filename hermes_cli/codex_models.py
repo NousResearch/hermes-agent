@@ -105,6 +105,16 @@ def codex_model_requires_account_discovery(model: str) -> bool:
     return is_astra_model(model) or normalize_model_for_provider(model, "openai-codex") in GPT62_MODEL_IDS
 
 
+def model_requires_account_discovery(provider: str, model: str) -> bool:
+    """Whether only ``provider``'s account-scoped listing may advertise ``model``: never a curated
+    row, a stale cache row or a published one."""
+    from agent.reasoning_effort import is_astra_model
+
+    if provider == "openai-codex":
+        return codex_model_requires_account_discovery(model)
+    return provider in {"openai", "openai-api"} and is_astra_model(model)
+
+
 def codex_catalog_credential_identity() -> str:
     """Identity of the credential live discovery would use right now, for the catalog cache key.
 

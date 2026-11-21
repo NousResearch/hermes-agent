@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.model_catalog import manifest_model_metadata
 from utils import atomic_json_write, atomic_write_text
 
 from hermes_constants import openrouter_variant_base
@@ -853,9 +854,10 @@ def _merge_catalog_entry_with_override(raw: dict[str, Any], override: dict[str, 
 def _builtin_model_metadata(
     provider: str, model: str, *, config: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
-    provider_key = _models_dev_id(provider, config=config) or (provider or "").strip()
-    return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+    """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry; else the
+    entry the cached model catalog publishes for a model added after this release."""
+    key = (_models_dev_id(provider, config=config) or (provider or "").strip(), (model or "").strip().lower())
+    return _BUILTIN_MODEL_METADATA.get(key) or manifest_model_metadata(*key)
 
 
 def _relay_vision_marker_metadata(provider: str, model: str) -> Optional[dict[str, Any]]:
@@ -887,8 +889,7 @@ def _apply_overrides(
     """Catalog/builtin metadata, patched by the plugin's declaration, then by the explicit user override.
     ``_UNKNOWN_MODEL_BASE`` is the base on a catalog miss; a fill-gap ``_default`` applies only when no
     source knows the model. None when nothing knows it."""
-    builtin = _builtin_model_metadata(provider, model, config=config)
-    base = entry if entry is not None else builtin
+    base = entry if entry is not None else _builtin_model_metadata(provider, model, config=config)
     declared = _provider_model_capabilities(provider, model)
     if declared:
         base = _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, declared)

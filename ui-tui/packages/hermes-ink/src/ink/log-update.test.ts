@@ -233,6 +233,41 @@ describe('LogUpdate.render diff contract', () => {
     expect(stdoutOnly(diff)).toContain('timer2s')
   })
 
+  it('full-resets when an overflowing frame shrinks but still exceeds the viewport', () => {
+    // Browser Chat row-loss repro: the previous frame overflowed the viewport
+    // (8 rows in a 5-row viewport, cursor at the bottom), so its tail lives in
+    // physical scrollback. The next frame shrinks to 6 rows but still exceeds
+    // the viewport. Terminal clear operations cannot pull scrollback rows back
+    // into view, and the partial diff's row mapping no longer matches the
+    // physical terminal, so later writes overwrite already-painted rows.
+    // Repainting is the only way to re-anchor virtual rows to scrollback.
+    const w = 20
+    const viewportH = 5
+    const prevH = 8
+    const nextH = 6
+
+    const prev = mkScreen(w, prevH)
+    paint(prev, 0, 'scrollbackrow')
+    paint(prev, 7, 'resptail')
+
+    const next = mkScreen(w, nextH)
+    paint(next, 0, 'scrollbackrow')
+    paint(next, 5, 'respend')
+    next.damage = { x: 0, y: 0, width: w, height: nextH }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+
+    const diff = log.render(
+      mkFrame(prev, w, viewportH, prevH),
+      mkFrame(next, w, viewportH, nextH),
+      false,
+      false
+    )
+
+    expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
+    expect(stdoutOnly(diff)).toContain('respend')
+  })
+
   it('keeps DECSTBM fast-path when scroll region stays above bottom row', () => {
     const w = 12
     const h = 6

@@ -2081,3 +2081,66 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_link_recovers_dependency_rekinded_to_needs_input(kanban_home):
+    """Regression: block_task(kind='dependency') with zero parents re-kinds to
+    sticky needs_input; linking the real dependency afterwards must move the
+    card back into the dependency-wait lane so recompute_ready auto-promotes it
+    once that parent completes — with no explicit unblock anywhere."""
+    with kbc.connect() as conn:
+        # B is the real dependency, A is the worker that blocked before linking.
+        b = kb.create_task(conn, title="dependency")
+        a = kb.create_task(conn, title="blocked worker")
+        claimed = kb.claim_task(conn, a, claimer="worker")
+        assert claimed is not None
+
+        # Block as a dependency with NO parents linked yet -> re-kinded sticky.
+        assert kb.block_task(
+            conn, a, kind="dependency", expected_run_id=claimed.current_run_id,
+        ) is True
+        parked = kb.get_task(conn, a)
+        assert parked.status == "blocked"
+        assert parked.block_kind == "needs_input"
+        blocked_evt = [e for e in kb.list_events(conn, a) if e.kind == "blocked"][-1]
+        assert blocked_evt.payload["requested_kind"] == "dependency"
+        assert blocked_evt.payload["rekind_reason"] == "no_open_parent"
+
+        # The real dependency is linked only now (parent B not yet terminal).
+        kb.link_tasks(conn, parent_id=b, child_id=a)
+        recovered = kb.get_task(conn, a)
+        assert recovered.status == "todo"
+        assert recovered.block_kind == "dependency"
+        wait = [e for e in kb.list_events(conn, a) if e.kind == "dependency_wait"][-1]
+        assert wait.payload["demoted_from_needs_input"] is True
+        assert wait.payload["parent"] == b
+
+        # Completing B and recomputing must auto-promote A without any unblock.
+        assert kb.complete_task(conn, b, result="done")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, a).status in ("ready", "todo")
+        assert kb.get_task(conn, a).status == "ready"
+
+
+def test_link_terminal_parent_leaves_needs_input_block_untouched(kanban_home):
+    """The recovery branch only applies to a non-terminal parent: linking an
+    already-done parent to a card parked blocked/needs_input leaves nothing to
+    wait on, so status/block_kind must stay exactly as the breaker left them."""
+    with kbc.connect() as conn:
+        b = kb.create_task(conn, title="already done dependency")
+        kb.complete_task(conn, b, result="done")
+        a = kb.create_task(conn, title="blocked worker")
+        claimed = kb.claim_task(conn, a, claimer="worker")
+        assert claimed is not None
+        assert kb.block_task(
+            conn, a, kind="dependency", expected_run_id=claimed.current_run_id,
+        ) is True
+        assert kb.get_task(conn, a).status == "blocked"
+        assert kb.get_task(conn, a).block_kind == "needs_input"
+
+        kb.link_tasks(conn, parent_id=b, child_id=a)
+
+        stuck = kb.get_task(conn, a)
+        assert stuck.status == "blocked"
+        assert stuck.block_kind == "needs_input"
+        assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, a)]

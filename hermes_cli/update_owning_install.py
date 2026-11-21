@@ -75,3 +75,22 @@ def retarget_to_owning_install(project_root: Path) -> None:
     env = dict(os.environ, PYTHONPATH=str(owner))
     code = subprocess.call([sys.executable, "-m", "hermes_cli.main", *sys.argv[1:]], cwd=owner, env=env)
     raise SystemExit(code)
+
+
+def describe_running_source(project_root: Path) -> str | None:
+    """One line naming the interpreter this process runs on, or None when ordinary.
+
+    Used by the not-a-git-repo dead ends: after :func:`retarget_to_owning_install`
+    the code is the owner's, so a remaining non-repo means the owning checkout
+    itself is gone (moved tree, zip install) — the message must say WHERE this
+    process comes from instead of a bare "reinstall".
+    """
+    if sys.prefix == sys.base_prefix:
+        return None
+    venv = Path(sys.prefix).resolve()
+    if venv.name in ("venv", ".venv") and (venv.parent / "hermes_cli" / "main.py").is_file():
+        return f"this process runs on {venv.parent}'s own interpreter"
+    owner = _pm_environment_owner(venv)
+    if owner is not None:
+        return f"this process runs from the workspace snapshot of {owner}"
+    return f"this process runs on the interpreter at {venv}"

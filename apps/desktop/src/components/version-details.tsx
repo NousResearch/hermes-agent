@@ -5,6 +5,7 @@ import type { DesktopVersionInfo, RuntimeSource } from '@/global'
 import { useI18n } from '@/i18n'
 import { distributionLabelKey } from '@/lib/distribution-label'
 import { ExternalLink } from '@/lib/external-link'
+import { relativeTime } from '@/lib/time'
 import { shortVersion } from '@/lib/version-label'
 import { $updateStatus, sourceUpdateTrack } from '@/store/updates'
 
@@ -114,6 +115,22 @@ export function VersionDetails({ version, channelAction }: { version: DesktopVer
             >
               {version.commit.slice(0, 14)}
             </ExternalLink>
+            {(() => {
+              // Commit truth: the hash names the exact build (version strings
+              // can label different builds); the stamp age says how stale it
+              // is. Unparseable stamp dates render nothing, never "NaN ago".
+              const builtAtMs = version.builtAt ? Date.parse(version.builtAt) : Number.NaN
+
+              if (Number.isNaN(builtAtMs)) {
+                return null
+              }
+
+              return (
+                <span className="text-muted-foreground" title={version.builtAt ?? undefined}>
+                  {' '}· built {relativeTime(builtAtMs)}
+                </span>
+              )
+            })()}
             {version.dirty && <span className="text-warning"> {u.versionDetailsUncommittedChanges}</span>}
           </dd>
         </div>

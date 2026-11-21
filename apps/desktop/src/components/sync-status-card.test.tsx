@@ -25,9 +25,21 @@ const details: DesktopSyncReceipt = {
 interface ReceiptCase {
   name: string
   receipt: DesktopSyncReceipt | null
+  tail?: { message: string; at?: string | null } | null
   headline: RegExp | null
   tone?: string
 }
+
+const updateBase: DesktopSyncReceipt = {
+  outcome: 'failed',
+  started_at: '2026-10-20T10:00:00.000Z',
+  finished_at: '2026-10-20T10:09:00.000Z',
+  pre_update: { sha: 'abc123def456', short_sha: 'abc123', version: '0.21.5', source: 'git' },
+  steps: [{ name: 'sibling_profile_snapshots', ok: true, detail: 'ain=ok' }]
+}
+
+const freshTail = { message: 'Building update products', at: new Date(Date.now() - 30_000).toISOString() }
+const staleTail = { message: 'Building update products', at: '2026-10-01T10:00:00.000Z' }
 
 const cases: ReceiptCase[] = [
   { name: 'missing', receipt: null, headline: null },
@@ -82,15 +94,65 @@ const cases: ReceiptCase[] = [
     receipt: { plugin_checks: details.plugin_checks?.slice(1) },
     headline: /Plugin updates available/,
     tone: 'text-muted-foreground'
+  },
+  {
+    name: 'failed update names the stop reason',
+    receipt: { ...updateBase, stop_reason: 'RuntimeError: gateway never came back' },
+    headline: /Last update failed.*gateway never came back/,
+    tone: 'text-destructive'
+  },
+  {
+    name: 'failed update falls back to the failed step',
+    receipt: {
+      ...updateBase,
+      stop_reason: null,
+      steps: [{ name: 'venv_sync', ok: false, detail: 'uv sync exited 1' }]
+    },
+    headline: /Last update failed.*uv sync exited 1/,
+    tone: 'text-destructive'
+  },
+  {
+    name: 'successful update is surfaced, not buried',
+    receipt: { ...updateBase, outcome: 'success' },
+    headline: /Last update succeeded/,
+    tone: 'text-muted-foreground'
+  },
+  {
+    name: 'interrupted update points at rerun',
+    receipt: { ...updateBase, outcome: 'interrupted', stop_reason: null },
+    headline: /was interrupted.*rerun `hermes update`/,
+    tone: 'text-amber-600'
+  },
+  {
+    name: 'running update shows the live tail message',
+    receipt: { ...updateBase, outcome: 'running', stop_reason: null },
+    tail: freshTail,
+    headline: /Update in progress — Building update products/,
+    tone: 'text-muted-foreground'
+  },
+  {
+    name: 'stale tail reads as wedged, not working',
+    receipt: { ...updateBase, outcome: 'running', stop_reason: null },
+    tail: staleTail,
+    headline: /Update in progress — no progress for/,
+    tone: 'text-amber-600'
+  },
+  {
+    name: 'running update without a tail falls back to the last step',
+    receipt: { ...updateBase, outcome: 'running', stop_reason: null },
+    tail: null,
+    headline: /Update in progress — sibling_profile_snapshots/,
+    tone: 'text-muted-foreground'
   }
 ]
 
 it.each(cases)(
   '$name receipt paints the dominant warning and subordinate rows',
-  async ({ receipt, headline, tone }: ReceiptCase): Promise<void> => {
+  async ({ receipt, tail, headline, tone }: ReceiptCase): Promise<void> => {
     vi.stubGlobal('hermesDesktop', {
-      getSyncStatus: async (): Promise<DesktopSyncReceipt | null> => receipt
-    } satisfies Pick<Window['hermesDesktop'], 'getSyncStatus'>)
+      getSyncStatus: async (): Promise<DesktopSyncReceipt | null> => receipt,
+      getUpdateStage: async () => tail ?? null
+    } satisfies Pick<Window['hermesDesktop'], 'getSyncStatus' | 'getUpdateStage'>)
     await act(async (): Promise<void> => {
       render(<SyncStatusCard />)
     })
@@ -103,7 +165,7 @@ it.each(cases)(
 
     expect(screen.getByText(headline).className).toContain(tone)
 
-    if (receipt?.plugin_bisect) {
+    if (receipt && 'plugin_bisect' in receipt && receipt.plugin_bisect) {
       expect(screen.getByText('conflictor: conflicts with core pin')).toBeTruthy()
     }
 
@@ -111,9 +173,11 @@ it.each(cases)(
       expect(screen.getByText('bad-url: update_url points at a fork')).toBeTruthy()
     }
 
-    expect(screen.getByText('grower: 1.0.0 → 1.1.0')).toBeTruthy()
-    expect(screen.queryByText('fine')).toBeNull()
-    expect(screen.queryByText('kept')).toBeNull()
+    if (receipt?.plugin_checks?.some(row => row.update_available === true)) {
+      expect(screen.getByText('grower: 1.0.0 → 1.1.0')).toBeTruthy()
+      expect(screen.queryByText('fine')).toBeNull()
+      expect(screen.queryByText('kept')).toBeNull()
+    }
   }
 )
 

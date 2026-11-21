@@ -30,11 +30,10 @@ export function SyncStatusCard() {
   useEffect(() => {
     let alive = true
 
-    void window.hermesDesktop
-      ?.getSyncStatus?.()
-      .then(receipt => {
+    void Promise.all([window.hermesDesktop?.getSyncStatus?.(), window.hermesDesktop?.getUpdateStage?.()])
+      .then(([receipt, tail]) => {
         if (alive) {
-          setSummary(deriveSyncStatusSummary(receipt))
+          setSummary(deriveSyncStatusSummary(receipt ?? null, tail ?? null))
         }
       })
       .catch(() => {

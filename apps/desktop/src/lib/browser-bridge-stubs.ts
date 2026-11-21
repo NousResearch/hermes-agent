@@ -60,6 +60,7 @@ export const BROWSER_BRIDGE_STUBS = {
   getRecentLogs: async () => ({ lines: [], path: '' }),
   // Venv/plugin receipts live on the server host; a browser tab has none of its own.
   getSyncStatus: async () => null,
+  getUpdateStage: async () => null,
   getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
   windowControls: {
     custom: false,

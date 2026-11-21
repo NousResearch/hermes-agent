@@ -271,3 +271,44 @@ def test_metadata_preserving_rotation_invalidates_creds_cache(vertex_adapter, mo
     (key2,) = vertex_adapter._creds_cache
     assert key2 != key1, "content change must produce a new cache key"
     assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1
+
+
+# ---------------------------------------------------------------------------
+# Native Gemini base URL + per-model OpenAI-compat fallback
+# ---------------------------------------------------------------------------
+
+
+def test_build_vertex_base_url_targets_native_google_publisher():
+    from agent.vertex_adapter import build_vertex_base_url
+
+    assert build_vertex_base_url("proj", "global") == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/proj/locations/global/publishers/google")
+    assert build_vertex_base_url("proj", "us-east5") == (
+        "https://us-east5-aiplatform.googleapis.com/v1beta1/projects/proj/locations/us-east5/publishers/google")
+
+
+@pytest.mark.parametrize("model", [None, "", "google/gemini-3-flash-preview", "gemini-3.1-pro-preview"])
+def test_vertex_base_url_for_model_keeps_native_base_for_gemini(model):
+    from agent.vertex_adapter import vertex_base_url_for_model
+
+    base = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google/"
+    assert vertex_base_url_for_model(base, model) == base.rstrip("/")
+
+
+def test_vertex_base_url_for_model_swaps_non_gemini_to_openai_compat():
+    from agent.vertex_adapter import vertex_base_url_for_model
+
+    base = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+    assert vertex_base_url_for_model(base, "meta/llama-4-maverick") == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi")
+
+
+def test_vertex_base_url_for_model_swaps_openai_compat_back_to_gemini_native():
+    """Bidirectional: a config default built for a non-Gemini model (``…/endpoints/openapi``),
+    overridden with a Gemini model, must swap back to the native ``…/publishers/google`` base —
+    the OpenAI-compat endpoint doesn't serve Gemini's native tool/thinking surface."""
+    from agent.vertex_adapter import vertex_base_url_for_model
+
+    base = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    assert vertex_base_url_for_model(base, "google/gemini-2.5-pro") == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google")

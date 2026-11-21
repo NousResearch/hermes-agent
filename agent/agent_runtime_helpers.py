@@ -658,6 +658,14 @@ def recover_with_credential_pool(
                 "credential rotation, deferring to fallback chain"
             )
         return False, has_retried_429
+    if (error_context or {}).get("usage_window_outage"):
+        # Nous 503 ``usage_window_unavailable``: the gateway could not *check* the allowance. The
+        # credential is not at fault — rotating or benching it would penalise a healthy key and,
+        # across a window-long outage, walk the whole pool into cooldown. Back off / fall back.
+        _ra().logger.info(
+            "Usage-window check outage (503) — skipping credential rotation, deferring to backoff/fallback"
+        )
+        return False, has_retried_429
     if effective_reason == FailoverReason.billing:
         # A separate pool instance may have resolved runtime credentials, leaving no ``current_id``;
         # match the key that failed, not a different account.

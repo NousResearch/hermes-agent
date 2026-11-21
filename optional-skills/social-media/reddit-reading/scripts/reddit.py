@@ -44,7 +44,7 @@ WWW = "https://www.reddit.com"
 OAUTH = "https://oauth.reddit.com"
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
-_THREAD_RE = re.compile(r"reddit\.com/r/([^/]+)/comments/([a-z0-9]+)", re.I)
+_THREAD_RE = re.compile(r"reddit\.com/r/([^/]+)/comments/([a-z0-9]+)", re.IGNORECASE)
 
 
 def strip_html(text: str | None) -> str:

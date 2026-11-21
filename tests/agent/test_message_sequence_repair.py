@@ -9,7 +9,15 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+import json
+
+import pytest
+
+from persistence.conversation.messages import CONTENT_JSON_PREFIX
 from run_agent import AIAgent
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _bare_agent():
@@ -219,7 +227,7 @@ def test_repair_keeps_tool_matching_only_call_id():
 
 def test_repair_keeps_tool_result_keyed_by_response_item_id():
     """The normalized call id must still pair the raw Responses item id."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -245,7 +253,7 @@ def test_repair_keeps_tool_result_keyed_by_response_item_id():
 
 def test_coalesce_tool_call_id_uses_call_half_of_composite_id():
     """Raw bridge ids must use their canonical call half for tool results."""
-    from agent.message_sanitization import coalesce_tool_call_id
+    from session_rules.turns import coalesce_tool_call_id
 
     assert coalesce_tool_call_id({"id": "call_ABC|fc_123"}) == "call_ABC"
 
@@ -300,7 +308,7 @@ def test_sanitize_keeps_parallel_results_keyed_by_responses_id_variant():
 
 def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
     """Consuming one alias group must not orphan a different parallel call."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "do both"},
@@ -594,7 +602,7 @@ def test_sanitize_deduplicates_duplicate_assistant_tool_call_ids():
         {"role": "tool", "tool_call_id": "call_Y", "content": "r"},
     ]
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     ids = [tc["id"] for tc in assistant["tool_calls"]]
     assert ids == ["call_Y"]  # duplicate collapsed
 
@@ -615,7 +623,7 @@ def test_sanitize_preserves_distinct_tool_call_ids():
         {"role": "tool", "tool_call_id": "call_B", "content": "rb"},
     ]
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
 
@@ -783,7 +791,7 @@ def test_sanitize_drops_empty_tool_calls_array():
         {"role": "assistant", "content": "answer", "tool_calls": []},
     ]
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     assert "tool_calls" not in assistant
     assert assistant["content"] == "answer"
 
@@ -797,7 +805,7 @@ def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
     replayed on the next turn and 400s strict providers (DeepSeek v4). The
     merge's union branches only ever set non-empty lists or leave the key
     untouched, so the empty array survives into the persisted state."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -827,7 +835,7 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     the legitimate tool result as an orphan and silently deleted it —
     corrupting the persisted history and leaving the assistant's
     tool_calls unanswered (itself a strict-provider HTTP 400 trigger)."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     class SDKToolCall:
         def __init__(self, call_id):
@@ -1420,7 +1428,7 @@ def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
          "tool_call_id": "call_1", "content": '{"number": 123}'},
     ]
     out = sanitize_api_messages(list(messages))
-    result = [m for m in out if m.get("role") == "tool"][0]
+    result = next(m for m in out if m.get("role") == "tool")
     assert result["name"] == "tool_call"
     # The internal name stays available for the session DB / UI, and the
     # caller's own message objects are untouched (per-call copy only).
@@ -1579,3 +1587,134 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     assert repairs == 1
     assert _DB_PERSISTED_MARKER not in messages[0]
     assert agent._db_flush_scan_prefix is None
+
+
+# ── sentinel-encoded multimodal content (#125299) ──────────────────────────
+
+def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
+    """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
+    re-inserts history) must be decoded back to structured content, not glued onto an adjacent
+    text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
+    from session_rules.turns import repair_message_sequence
+
+    parts = [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
+    ]
+    encoded = CONTENT_JSON_PREFIX + json.dumps(parts)
+    messages = [
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "any follow-up thoughts?"},
+    ]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    # The encoded turn is restored to structured content and left un-merged; the base64 image
+    # never leaks into the neighbouring text turn.
+    assert len(messages) == 2
+    assert messages[0]["content"] == parts
+    assert messages[1]["content"] == "any follow-up thoughts?"
+
+    # A body that no longer parses stays encoded and is never welded onto the next text turn.
+    corrupt = CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
+    messages = [{"role": "user", "content": corrupt}, {"role": "user", "content": "still there?"}]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    assert [m["content"] for m in messages] == [corrupt, "still there?"]
+
+
+def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
+    """ehz0ah #125331 (blocking): decoding a *durable* sentinel row is representation-only —
+    re-encoding the decoded content reproduces the exact ``\\x00json:`` scalar already stored,
+    so the row must KEEP its ``_db_persisted`` marker. Dropping it makes the append-only flush treat
+    the historical user turn as new (user ``_row_id`` values are never update targets in
+    ``resolve_and_repair_transcript_batch``), re-appending a duplicate user turn on the durable
+    transcript. This drives the real repair + ``_persist_session`` flush and asserts the stored row
+    count and role order do not change — a regression the content-only repair tests cannot catch."""
+    import os
+    from unittest.mock import patch
+    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    parts = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 2000}},
+    ]
+    # The stored durable scalar is exactly the prefixed JSON of parts; a resumed row re-enters
+    # the working set as this same string (e.g. after a proactive prune re-inserts history, #124102).
+    encoded = CONTENT_JSON_PREFIX + json.dumps(parts)
+
+    db = storage_handle(tmp_path)
+    sid = "20260928_000000_dup"
+    seed_session(db, sid, "cli", model="test/model")
+    seed_messages(db, sid, {"role": "user", "content": encoded}, {"role": "assistant", "content": "ok"})
+
+    def _active_rows():
+        with raw_holder(db)._read_ctx() as conn:
+            return conn.execute(
+                "SELECT role FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (sid,),
+            ).fetchall()
+
+    before = [r[0] for r in _active_rows()]
+    assert before == ["user", "assistant"]
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            persistence=db,
+            session_id=sid,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent._session_db_created = True
+    agent._last_flushed_db_idx = 2
+
+    # Live/resumed set: both durable rows carry their persistence markers; the user row arrives as its
+    # stored sentinel scalar.
+    messages = [
+        {"role": "user", "content": encoded, _DB_PERSISTED_MARKER: True},
+        {"role": "assistant", "content": "ok", _DB_PERSISTED_MARKER: True},
+    ]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    # Decode restored the structured content but kept the durable marker (storage-equivalent): a
+    # valid user→assistant sequence needs no alternation repair, so decode adds nothing to the count.
+    assert repairs == 0
+    assert messages[0]["content"] == parts
+    assert messages[0].get(_DB_PERSISTED_MARKER) is True
+
+    # The symptom: run the persist walk twice (turn finalize + close safety-net). The append-only flush
+    # must skip the already-durable user row — no re-INSERT, row count and role order stay put.
+    agent._persist_session(messages, conversation_history=None)
+    agent._persist_session(messages, conversation_history=None)
+
+    after = [r[0] for r in _active_rows()]
+    assert after == ["user", "assistant"], f"flush changed the durable transcript: {before} -> {after}"
+
+
+_UNANSWERED_CALL = {"role": "assistant", "content": "", "_row_id": 21,
+                    "tool_calls": [{"id": "unanswered", "type": "function",
+                                    "function": {"name": "f", "arguments": "{}"}}]}
+_STRAY_RESULT = {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 21}
+
+
+@pytest.mark.parametrize("ahead", [False, True], ids=["behind_survivor", "ahead_of_first_survivor"])
+@pytest.mark.parametrize("dropped", [_UNANSWERED_CALL, _STRAY_RESULT], ids=["unanswered_call", "stray_result"])
+def test_repair_records_dropped_tool_row_on_survivor(dropped, ahead):
+    """A dropped row is recorded on the survivor before it, or on the first survivor when nothing is kept
+    ahead of it (#129162)."""
+    agent = _bare_agent()
+    prompt = {"role": "user", "content": "prompt", "_row_id": 20}
+    messages = [dict(dropped), prompt] if ahead else [prompt, dict(dropped)]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [21]

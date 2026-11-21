@@ -25,6 +25,7 @@ import json
 import os
 import re
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
 from pathlib import Path
@@ -118,7 +119,7 @@ def browser_send_payload(broker: dict, body_text: str, to: str | None = None) ->
 
     No network and no credentials: the deterministic part (recipient-lock to the broker's own
     declared address, subject/body split) happens here; the agent then composes and sends it in
-    the operator's logged-in webmail with browser_* tools. Same recipient guard as `send()`, so
+    the operator's logged-in webmail with browser_exec. Same recipient guard as `send()`, so
     the browser lane cannot be pointed at an arbitrary person either.
     """
     allowed = broker_addresses(broker)
@@ -163,8 +164,22 @@ def _respect_rate_limit(min_interval: float, sleep, now, state_path=None) -> Non
 
 
 # SMTP errors that are permanent (don't retry) vs transient (retry with backoff).
+# SMTPNotSupportedError is permanent: a server that will not STARTTLS (or refuses
+# AUTH) will not change its mind on the next attempt, and in the STARTTLS case a
+# retry would just re-offer the credentials to the same downgraded connection.
 _SMTP_PERMANENT = (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused,
-                   smtplib.SMTPSenderRefused, smtplib.SMTPDataError)
+                   smtplib.SMTPSenderRefused, smtplib.SMTPDataError,
+                   smtplib.SMTPNotSupportedError)
+
+
+def _connection_is_tls(smtp) -> bool:
+    """True when the SMTP conversation is already running over TLS.
+
+    Covers implicit-TLS connections (`SMTP_SSL` on port 465, and the injected
+    implicit-TLS test factories): those never advertise STARTTLS and don't need
+    it, so the STARTTLS step is skipped for them.
+    """
+    return isinstance(getattr(smtp, "sock", None), ssl.SSLSocket)
 
 
 def send(broker: dict, body_text: str, to: str | None = None,
@@ -176,7 +191,14 @@ def send(broker: dict, body_text: str, to: str | None = None,
     Recipient is locked to an address the broker record declares (PermissionError
     otherwise). `min_interval` paces sends across invocations (deliverability /
     account-safety); transient SMTP/socket failures retry with exponential backoff,
-    permanent ones (auth, recipient refused) raise immediately. NOTE: a successful
+    permanent ones (auth, recipient refused) raise immediately. TLS is required
+    before login: port 465 connects with implicit TLS (`SMTP_SSL`), any other
+    port must complete STARTTLS, and a server that will not STARTTLS (and is not
+    already on a TLS connection) fails permanently instead of sending the
+    password and the request over cleartext. The TLS context is verified
+    (`create_default_context`), so an internal relay with a self-signed or
+    private-CA certificate is rejected: point `EMAIL_SMTP_HOST` at a host with a
+    publicly trusted certificate. NOTE: a successful
     SMTP handoff is NOT proof of delivery - real bounces arrive later as inbound mail;
     in programmatic mode `poll-verification`/inbox review surfaces them, and the
     due-queue re-scan is the true confirmation. Returns send metadata.
@@ -208,25 +230,42 @@ def send(broker: dict, body_text: str, to: str | None = None,
 
     _respect_rate_limit(min_interval, _sleep, _now, _rate_state)
 
-    factory = _smtp_factory or smtplib.SMTP
+    def _open():
+        # An injected factory owns its own transport (the hermetic tests). With
+        # no factory, port 465 is the implicit-TLS submission port, so connect
+        # with SMTP_SSL and a verified context (TLS from the first byte, no
+        # STARTTLS). Every other port connects plaintext and must STARTTLS below.
+        if _smtp_factory is not None:
+            return _smtp_factory(settings["host"], settings["port"], timeout=30)
+        if settings["port"] == 465:
+            return smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=30,
+                                    context=ssl.create_default_context())
+        return smtplib.SMTP(settings["host"], settings["port"], timeout=30)
+
     attempts = 0
     while True:
         attempts += 1
         try:
-            with factory(settings["host"], settings["port"], timeout=30) as smtp:
+            with _open() as smtp:
                 smtp.ehlo()
-                try:
-                    smtp.starttls()
+                if not _connection_is_tls(smtp):
+                    try:
+                        smtp.starttls(context=ssl.create_default_context())
+                    except smtplib.SMTPNotSupportedError as exc:
+                        raise smtplib.SMTPNotSupportedError(
+                            "server did not offer STARTTLS on a plaintext "
+                            "connection. Refusing to log in: the account "
+                            "password and the request would go out unencrypted."
+                        ) from exc
                     smtp.ehlo()
-                except smtplib.SMTPNotSupportedError:
-                    pass  # already-TLS ports / test doubles
                 smtp.login(settings["address"], settings["password"])
                 smtp.send_message(msg)
             break
         except _SMTP_PERMANENT:
             raise  # auth / recipient refused: retrying won't help
         except (smtplib.SMTPException, OSError) as exc:
-            if attempts > max_retries:
+            # A certificate that failed verification will fail the same way on a retry.
+            if attempts > max_retries or isinstance(exc, ssl.SSLCertVerificationError):
                 raise RuntimeError(f"SMTP send failed after {attempts} attempts: {exc}") from exc
             _sleep(min(2 ** (attempts - 1), 30))  # 1s, 2s, 4s... capped
     return {"to": recipient, "subject": subject, "message_id": msg["Message-ID"],
@@ -244,7 +283,7 @@ def _decode_part(part) -> str:
             return ""
         charset = part.get_content_charset() or "utf-8"
         return payload.decode(charset, errors="replace")
-    except Exception:  # noqa: BLE001 - malformed MIME must not kill the poll
+    except Exception:
         return ""
 
 
@@ -286,8 +325,12 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
     import datetime as _dt
     since = (_dt.date.today() - _dt.timedelta(days=max(0, since_days))).strftime("%d-%b-%Y")
 
-    factory = _imap_factory or imaplib.IMAP4_SSL
-    conn = factory(settings["host"], settings["port"])
+    if _imap_factory is not None:
+        conn = _imap_factory(settings["host"], settings["port"])
+    else:
+        # IMAP4_SSL's default context skips certificate checks, so a MITM cert would get the password.
+        conn = imaplib.IMAP4_SSL(settings["host"], settings["port"],
+                                 ssl_context=ssl.create_default_context())
     try:
         conn.login(settings["address"], settings["password"])
         conn.select("INBOX", readonly=True)
@@ -310,7 +353,7 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
     finally:
         try:
             conn.logout()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 

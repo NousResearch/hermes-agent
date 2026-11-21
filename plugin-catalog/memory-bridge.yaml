@@ -1,0 +1,37 @@
+name: memory-bridge
+title: Memory Bridge
+repo: https://github.com/summero/memory-bridge
+sha: d166fbe72493050ef2651f37f8b2c267ee5f18d2
+version: "0.1.0"
+description: >-
+  Read-only, permission-aware search and reading over an operator-approved folder of
+  Markdown notes, such as a team's shared agent memory. Two tools, memory_bridge_search
+  and memory_bridge_read. Each calling profile's policy.json (in its plugin-data
+  directory) sets the memory root and allow/deny patterns; the model can only ask
+  questions and cannot widen access. Cron and delegated subagents are refused unless the
+  policy opts in. Standalone tool plugin, not a memory provider. Disclosure — reads
+  Markdown files under the operator-configured root, which is outside the plugin's own
+  data, and returns snippets and file text into the model's context (sent to your model
+  provider). On macOS it reads file ACLs through the system C library (ctypes). No network
+  calls, shell commands, background processes, credentials, telemetry, writes or Python
+  dependencies. Logs short refusal reason codes only. Imports the undocumented
+  agent.delegation_context helper for subagent detection (rule 9 warning) and fails
+  closed if it moves.
+maintainer: summero
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/summero/memory-bridge/blob/d166fbe72493050ef2651f37f8b2c267ee5f18d2/README.md
+readme: true
+platforms: [macos]
+known_issues:
+  - Does nothing until an operator creates plugin-data/memory-bridge/policy.json in each calling profile's home; see the README's install steps.
+  - Linux is experimental and unsupported; other platforms are unsupported.
+  - Cron and subagent refusal were tested with simulated signals only; real scheduler and delegate_task runs are unverified.
+capabilities:
+  provides_tools:
+    - memory_bridge_search
+    - memory_bridge_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

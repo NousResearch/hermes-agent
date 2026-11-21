@@ -10,6 +10,9 @@ import os
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 @pytest.fixture(autouse=True)
 def _isolated_config_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -58,12 +61,32 @@ class TestCronRunJobGuard:
         job.update(overrides)
         return job
 
-    def test_run_job_fails_closed_on_corrupt_config(self, tmp_path):
-        from cron.scheduler import run_job
+    @pytest.mark.asyncio
+    async def test_run_job_fails_closed_on_corrupt_config(self, tmp_path):
+        import json
+        from types import SimpleNamespace
+
+        from gateway.session_contract import SessionRef
+        from gateway.session_cron import current_execution, execute
 
         _write_corrupt_config(tmp_path)
-
-        success, output_doc, final_response, error = run_job(self._job())
+        # Agent-backed run_job is now a client. Exercise the scheduler's guard
+        # through its owner entry, without launching a daemon or bypassing it.
+        persistence = storage_handle(tmp_path)
+        ref = SessionRef("default", "cron-guard")
+        seed_session(persistence, ref.session_id, "cron")
+        owner = SimpleNamespace(persistence=persistence, pending_results={}, sessions={
+            ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
+        admission = {"admission_id": "guard-fire", "request_id": "guard-fire",
+                     "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
+        policy = SimpleNamespace(request_json=json.dumps({
+            "cron_job": self._job(), "extra_prompt": None, "request_id": "guard-fire"}))
+        previous = current_execution()
+        with pytest.raises(RuntimeError, match="Hermes stopped because your settings file"):
+            await execute(owner, ref, admission, policy)
+        success, _output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
+        assert current_execution() is previous
+        assert not owner._cron_cancellations
 
         assert success is False
         assert error is not None
@@ -76,7 +99,7 @@ class TestCronRunJobGuard:
 
         _write_corrupt_config(tmp_path)
 
-        success, output_doc, final_response, error = run_job(
+        _success, _output_doc, _final_response, error = run_job(
             self._job(no_agent=True, script="true", deliver="none")
         )
         assert "Hermes stopped because your settings file" not in (error or "")

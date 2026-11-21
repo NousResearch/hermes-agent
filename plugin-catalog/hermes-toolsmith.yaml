@@ -1,6 +1,8 @@
 name: hermes-toolsmith
 repo: https://github.com/Adolanium/hermes-toolsmith
-sha: b66068edbd9642d76b4bbb023b47b7e560a7922a
+sha: 419669c1efd49513cc404f5503c99b61ed68593f
+version: "1.0.1"
+image: https://raw.githubusercontent.com/Adolanium/hermes-toolsmith/419669c1efd49513cc404f5503c99b61ed68593f/assets/catalog-banner.png
 description: Local developer tools, transformation recipes, and reviewed chat handoff inside Hermes Desktop.
 maintainer: Adolanium
 tier: community

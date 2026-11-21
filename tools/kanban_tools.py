@@ -12,9 +12,10 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any, Callable, Optional
 
+from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
@@ -186,26 +187,51 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
-def _default_task_id(arg: Optional[str]) -> Optional[str]:
-    """``task_id`` arg or the dispatcher's env var. A delegate child or an
-    in-process cron job must never inherit the worker's task id implicitly."""
-    if arg:
-        return arg
-    if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
+def _default_task_id(arg: Any) -> Optional[str]:
+    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
+    if arg is not None:
+        val = str(arg).strip()
+        if val:
+            return val
+    if _is_delegated_child_context():
         return None
-    return os.environ.get("HERMES_KANBAN_TASK") or None
+    if not _is_dispatcher_owned_worker():
+        # A cron job fired in-process from a worker must never inherit the
+        # worker's task id as an implicit default.
+        return None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid:
+        val = env_tid.strip()
+        if val:
+            return val
+    return None
 
 
 def _require_task_id(args: dict) -> str:
+    """Resolve the target task or reject with a message the caller can act on.
+
+    The env default only exists for a dispatcher-spawned worker; every other
+    caller must name a task, so a rejection points at ``kanban_list`` instead of
+    an env var a chat caller cannot set (#91431).
+    """
     tid = _default_task_id(args.get("task_id"))
-    _check(tid, "task_id is required (or set HERMES_KANBAN_TASK in the env)")
-    return tid
+    if tid:
+        return tid
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        # Env task present but not usable here (delegate child / cron run beside
+        # a worker): it is not this session's to default to.
+        raise _Reject(
+            "task_id is required: this session does not own the inherited "
+            "HERMES_KANBAN_TASK, so it is not a valid default. Pass an explicit "
+            "task_id.")
+    raise _Reject(
+        "task_id is required: this session has no dispatcher-assigned task to "
+        "default to. Pass an explicit task_id; discover task ids with kanban_list.")
 
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
-    return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
-
+    return os.environ.get(var) if task_id and owned_kanban_task() == task_id else None
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
@@ -222,6 +248,17 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
+def _reject_inherited_task_mutation(tid: str, env_tid: Optional[str] = None) -> None:
+    """Refuse a mutation of the card whose ``HERMES_KANBAN_TASK`` this execution inherited
+    without owning it; naming it explicitly must not stand in for the dispatcher's grant."""
+    env_tid = env_tid if env_tid is not None else (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if env_tid and tid == env_tid and not owned_kanban_task():
+        raise _Reject(
+            f"refusing to mutate task {tid}: this run inherited it from the Kanban worker that "
+            "fired it and does not own it. Report findings in this run's output or file a new "
+            "card with kanban_create; only the card's own worker may change it.")
+
+
 def _enforce_worker_task_ownership(tid: str) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
@@ -231,7 +268,12 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     a buggy or prompt-injected worker that passed an explicit ``task_id`` for some other task could corrupt
     sibling or cross-tenant runs (see #19534).
     """
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if env_tid and not owned_kanban_task():
+        # Inherited, not owned (cron run fired from the worker): the worker's card is
+        # read-only here, while other cards keep the orchestrator path.
+        _reject_inherited_task_mutation(tid, env_tid)
+        return
     if env_tid and tid != env_tid:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
@@ -259,7 +301,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     _enforce_worker_task_ownership(tid)
     if (
         tool_name in _RUN_LIFECYCLE_TOOLS
-        and os.environ.get("HERMES_KANBAN_TASK")
+        and owned_kanban_task()
         and _worker_run_id(tid) is None
     ):
         raise _Reject(
@@ -328,12 +370,10 @@ def _redact_opt(value: Any) -> Any:
     return _redact(value) if value else value
 
 
-def _redact_metadata(metadata: dict) -> Optional[dict]:
-    """Redact via a JSON round-trip; None if the result can't be re-parsed."""
-    try:
-        return json.loads(redact_sensitive_text(json.dumps(metadata), force=True))
-    except json.JSONDecodeError:
-        return None
+def _redact_metadata(metadata: dict) -> dict:
+    """Redact leaf-by-leaf: a whole-JSON pass can eat a string's closing quote and fail to re-parse."""
+    from agent.redact_structured import redact_structured
+    return redact_structured(metadata)
 
 
 def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
@@ -547,6 +587,10 @@ def heartbeat_current_worker_from_env() -> bool:
         # An in-process delegate child's activity is not the worker's liveness; checked before
         # stamping the window so a chatty child cannot starve the worker's own heartbeat.
         return False
+    if not _is_dispatcher_owned_worker() and not _delegation_ctx(
+            "is_delegated_child_process_context", False):
+        # A cron run fired in-process from the worker is not the worker's liveness either.
+        return False
     _auto_heartbeat_last_attempt = now
     try:
         from hermes_cli import kanban_db_dispatch as kbd
@@ -637,7 +681,18 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
-    tid = _require_task_id(args)
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        # No dispatcher task in scope and no explicit id: the caller asked "what
+        # should I be looking at". A chat profile cannot set HERMES_KANBAN_TASK,
+        # so an error naming the env var is dead end (#91431) — answer instead.
+        return json.dumps({
+            "current_task": None,
+            "hint": (
+                "No dispatcher-assigned task in this session, so there is no "
+                "task to show by default. Call kanban_list to see task ids on "
+                "the board, then kanban_show(task_id=<id>) for full state."),
+        })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
         return json.dumps({
@@ -694,8 +749,7 @@ def _handle_complete(args: dict, **kw) -> str:
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
     if isinstance(metadata, dict):
-        # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
-        metadata = _redact_metadata(metadata) or metadata
+        metadata = _redact_metadata(metadata)
     created_cards = _coerce_str_list(
         args.get("created_cards"), "created_cards", "task ids", strip=True)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
@@ -845,7 +899,6 @@ def _handle_request_review(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     if metadata is not None:
         metadata = _redact_metadata(metadata)
-        _check(metadata is not None, "metadata could not be safely serialized")
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
@@ -915,8 +968,14 @@ def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
     _reject_delegated_child_mutation("kanban_comment")
     tid = args.get("task_id")
-    _check(tid, "task_id is required (use the current task id if that's what "
-                "you mean — pulls from env but kept explicit here)")
+    if not tid:
+        # A comment writes to the board, so a bare call must stay an error — but
+        # point at kanban_list, not an env var a chat caller cannot set (#91431).
+        raise _Reject(
+            "task_id is required: comments are per-task and this session has no "
+            "dispatcher-assigned task to default to. Discover task ids with "
+            "kanban_list, or pass the task id you mean.")
+    _reject_inherited_task_mutation(str(tid))
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity (``_persisted_identity``), never
     # caller args: comments are injected into future workers' system prompts, so an
@@ -1036,18 +1095,17 @@ def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
     """Return a session id only when it is present in this profile's state.db."""
     if not session_id:
         return None
-    try:
-        from hermes_state import SessionDB
-        from hermes_constants import get_hermes_home
+    with ExitStack() as handles:
+        try:
+            from hermes_constants import get_hermes_home
+            from persistence_assembly import open_persistence_reader
 
-        state = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-    except Exception:  # state.db may not exist for a CLI/dashboard invocation
-        logger.debug("Could not open state.db to verify Kanban provenance", exc_info=True)
-        return None
-    try:
-        return session_id if state.get_session(session_id) else None
-    finally:
-        state.close()
+            state = handles.enter_context(open_persistence_reader(get_hermes_home()))
+            state.ready()
+        except Exception:  # state.db may not exist for a CLI/dashboard invocation
+            logger.debug("Could not open state.db to verify Kanban provenance", exc_info=True)
+            return None
+        return session_id if state.sessions.get(session_id) else None
 
 
 @_kanban_handler("kanban_create")
@@ -1090,7 +1148,8 @@ def _handle_create(args: dict, **kw) -> str:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+            conn, title=_redact(str(title).strip()), body=_redact_opt(args.get("body")),
+            assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
             priority=_opt_int(args.get("priority"), 0),
             workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
@@ -1113,6 +1172,32 @@ def _handle_create(args: dict, **kw) -> str:
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 
+def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
+    """Re-resolve a TUI session key at subscribe time: the inherited ``HERMES_SESSION_KEY``
+    can name a session already superseded by a compaction fork, and a subscription bound to
+    the dead key silently drops every later completion notification (#110068). Maps the key
+    to its continuation tip via the session store's lineage walk. Best-effort, fail-open:
+    any error (or an unresolvable key) returns *session_key* unchanged."""
+    home = None
+    if profile and profile != "default":
+        try:
+            from pathlib import Path
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+            if profile_exists(profile):
+                home = Path(get_profile_dir(profile))
+        except Exception:
+            home = None
+    try:
+        from persistence_assembly import open_persistence, profile_scope
+        persistence = open_persistence(profile_scope(home=home))
+        try:
+            return persistence.lineage.resolve_resume_target(session_key) or session_key
+        finally:
+            persistence.close()
+    except Exception:
+        return session_key
+
+
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
@@ -1133,6 +1218,10 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     if not notifier_profile:
         from hermes_cli.profiles import current_profile_name
         notifier_profile = current_profile_name("default")
+    if platform == "tui":
+        # The inherited key can be stale after a compaction fork (#110068): bind the
+        # subscription to the live continuation tip, not the key the process started with.
+        chat_id = _live_tui_session_key(chat_id, notifier_profile)
     delivery_metadata: dict[str, Any] = {
         k: v for k, v in (
             ("thread_id", thread_id), ("chat_type", chat_type),
@@ -1241,4 +1330,7 @@ _TOOLS = (
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
-                      check_fn=_gate)
+                      check_fn=_gate, compat_args=_UNDECLARED_ARGS.get(_name, ()),
+                      # _kanban_handler rejects unknown keys before anything else and each handler
+                      # words its own missing-field errors, so required arguments stay with it.
+                      self_checked_args=_sch["parameters"].get("required", ()))

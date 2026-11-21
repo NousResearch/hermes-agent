@@ -3,10 +3,10 @@
 Every command runs in its own network namespace (no route, no DNS; proven per module by
 ``_seed.assert_isolated``). The proxy is what a corporate network runs: it tunnels ``CONNECT``,
 inspects TLS with the company's own root, may demand credentials, and refuses every host it has no
-route for, logging it. The installed checkout was cloned from the official GitHub URL, so the
-update's channel read (``hermes-assets.nousresearch.com``), its git fetch and every lazy blob
-fetch of the partial clone (``github.com``) have to cross the proxy, and the cell reads the
-proxy's log to show they did.
+route for, logging it. The installed checkout was cloned from the official GitHub URL and follows
+``main``, so the update's git fetch and every lazy blob fetch of the partial clone
+(``github.com``) have to cross the proxy, and the cell reads the proxy's log to show they did and
+that no release record was read.
 
 Failure classes: #124022 (updater dies with ``UNEXPECTED_EOF`` when direct TLS is cut and it
 ignores the proxy), a proxy that requires auth, and a corporate root supplied via
@@ -48,7 +48,7 @@ def _assert_updated_through_proxy(inst: S.Installed, r: S.Result, new: str) -> N
     assert r.rc == 0, "update through the proxy failed\n" + r.report(inst)
     assert inst.head() == new, f"update exited 0 but HEAD is {inst.head()}, not the published {new}\n" + r.report(inst)
     channel = [h for h in edge.proxy.requests(S.ASSETS) if h.path.startswith("/releases/channels/")]
-    assert channel, "the channel record was never read through the proxy\n" + r.report(inst)
+    assert not channel, f"main read a release record (it follows the git branch): {channel}\n" + r.report(inst)
     fetches = [h for h in edge.proxy.requests("github.com") if h.path.startswith(GIT_PATH) and h.status == 200]
     assert any("git-upload-pack" in h.path for h in fetches), "no git fetch crossed the proxy\n" + r.report(inst)
     stray = sorted(edge.proxy.hosts("refused") | edge.proxy.hosts("tls-rejected"))
@@ -96,18 +96,19 @@ def test_update_with_corporate_root_only_in_ssl_cert_file(inst):
     _assert_updated_through_proxy(inst, r, new)
 
 
-def test_tunnel_cut_to_channel_host_fails_fast_and_changes_nothing(inst):
-    """The #124022 symptom made deterministic: the proxy accepts the CONNECT to the release
-    host and hangs up before TLS (``UNEXPECTED_EOF``). The update must stop, say the channel
-    could not be read, and must not silently fall through to the git branch."""
+def test_tunnel_cut_to_the_git_host_fails_fast_and_changes_nothing(inst):
+    """The #124022 symptom made deterministic: the proxy accepts the CONNECT to github.com and
+    hangs up before TLS (``UNEXPECTED_EOF``). The update must stop within bounds, change
+    nothing, and print no success banner."""
     inst.publish("tunnel-cut")
     before = inst.state()
-    edge = inst.edge(eof_hosts=[S.ASSETS])
+    edge = inst.edge(eof_hosts=["github.com"])
     try:
         r = inst.hermes("update", "--yes", edge=edge, timeout=300)
     finally:
         edge.close()
     assert r.secs < 60, f"a cut tunnel took {r.secs:.0f}s to fail\n" + r.report(inst)
-    S.assert_nothing_changed(inst, before, r, "tunnel cut to the channel host")
-    assert "channel" in r.out.lower() and "unavailable" in r.out.lower(), (
-        "the failure does not say the release channel was unreachable\n" + r.report(inst))
+    S.assert_nothing_changed(inst, before, r, "tunnel cut to the git host")
+    assert "github.com" in edge.proxy.hosts("eof"), "the update failed before reaching the cut tunnel\n" + r.report(inst)
+    assert "fetch" in r.out.lower() or "github.com" in r.out, (
+        "the failure does not say the git fetch failed\n" + r.report(inst))

@@ -203,7 +203,7 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
         try:
             extra = {k: v for k, v in (("api_key", api_key), ("api_url", api_url)) if v}
             return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
-        except Exception as hosted_exc:  # noqa: BLE001
+        except Exception as hosted_exc:
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
 
@@ -256,7 +256,7 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
         return None
     try:
         proc = subprocess.run(
-            ["pdftotext", path, "-"], capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT)
+            ["pdftotext", path, "-"], stdin=subprocess.DEVNULL, capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     out = proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else ""

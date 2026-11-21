@@ -102,7 +102,8 @@ def _cmd_boards_rm(args: argparse.Namespace) -> int:
         return _err(f"kanban boards rm: {exc}")
     if res["action"] == "archived":
         print(f"Board {res['slug']!r} archived → {res['new_path']}\n"
-              "Recover by moving the directory back to <root>/kanban/boards/<slug>/.")
+              "Recover by moving the directory back to <root>/kanban/boards/<slug>/ "
+              "and deleting the archived tombstone board.json left in its place.")
     else:
         print(f"Board {res['slug']!r} deleted.")
     return 0
@@ -117,6 +118,10 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
             f"kanban boards switch: board {normed!r} does not exist. "
             f"Create it with `hermes kanban boards create {normed}`."
         )
+    # An archived board has a tombstone board.json; switching to it would pin
+    # `current` at a dead slug (#43243).
+    if kb.read_board_metadata(normed).get("archived"):
+        return _err(f"kanban boards switch: board {normed!r} is archived.")
     kb.set_current_board(normed)
     print(f"Active board is now {normed!r}.")
     return 0

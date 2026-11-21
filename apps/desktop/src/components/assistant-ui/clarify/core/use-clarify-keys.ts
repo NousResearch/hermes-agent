@@ -1,35 +1,53 @@
 import { type RefObject, useCallback, useEffect, useState } from 'react'
 
-import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import type { ClarifyQuestion } from '@/store/clarify'
 
+import { arrowMove, isForeignKeystroke, shortcutIndex } from './use-clarify-keys-handlers'
+
 interface ClarifyKeysOptions {
+  columns?: number
   enabled: boolean
   formRef: RefObject<HTMLFormElement | null>
-  isStaged: (question: ClarifyQuestion) => boolean
-  onClear: (question: ClarifyQuestion) => void
+  initialRow?: number
+  isStaged: (question: ClarifyQuestion, row?: number) => boolean
+  onClear?: (question: ClarifyQuestion) => void
   onConfirm: () => void
   onToggle: (question: ClarifyQuestion, choice: string) => void
+  other?: boolean
   questions: ClarifyQuestion[]
+  shortcuts?: boolean
 }
 
 export function useClarifyKeys({
+  columns,
   enabled,
   formRef,
+  initialRow = 0,
   isStaged,
   onClear,
   onConfirm,
   onToggle,
-  questions
+  other = true,
+  questions,
+  shortcuts = true
 }: ClarifyKeysOptions) {
-  const [cursor, setCursor] = useState({ question: 0, row: 0 })
+  const [cursor, setCursor] = useState({ question: 0, row: initialRow })
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
-  const row = Math.min(cursor.row, choices.length)
+  const otherRows = other ? 1 : 0
+  const row = Math.min(cursor.row, choices.length - 1 + otherRows)
 
   const focusQuestion = useCallback(
     (index: number) => setCursor(current => (current.question === index ? current : { question: index, row: 0 })),
+    []
+  )
+
+  const focusRow = useCallback(
+    (index: number, choiceIndex: number) =>
+      setCursor(current =>
+        current.question === index && current.row === choiceIndex ? current : { question: index, row: choiceIndex }
+      ),
     []
   )
 
@@ -49,19 +67,27 @@ export function useClarifyKeys({
     [formRef, onOtherFocus]
   )
 
+  // A multi-select is never "open": zero picks is a valid answer ("pick any"). Counting it
+  // open would let plain Enter jump onto its first row, where Enter only toggles a choice,
+  // so mashing Enter would flip that choice on and off forever and never send the set.
+  const isOpen = useCallback(
+    (question: ClarifyQuestion | undefined) => Boolean(question && !question.multiSelect && !isStaged(question)),
+    [isStaged]
+  )
+
   const nextUnstaged = useCallback(
     (index: number): null | number => {
       for (let offset = 1; offset < questions.length; offset += 1) {
         const candidate = (index + offset) % questions.length
 
-        if (!isStaged(questions[candidate])) {
+        if (isOpen(questions[candidate])) {
           return candidate
         }
       }
 
       return null
     },
-    [isStaged, questions]
+    [isOpen, questions]
   )
 
   const pick = useCallback(
@@ -89,20 +115,20 @@ export function useClarifyKeys({
   )
 
   const move = useCallback(
-    (delta: number) => {
-      if (!active) {
+    (delta: number, wrap = true) => {
+      const itemCount = choices.length + otherRows
+
+      if (!active || (!wrap && (row + delta < 0 || row + delta >= itemCount))) {
         return
       }
 
       if (!active.multiSelect) {
-        onClear(active)
+        onClear?.(active)
       }
-
-      const itemCount = choices.length + 1
 
       setCursor({ question: questionIndex, row: (row + delta + itemCount) % itemCount })
     },
-    [active, choices.length, onClear, questionIndex, row]
+    [active, choices.length, onClear, otherRows, questionIndex, row]
   )
 
   const activate = useCallback(() => {
@@ -118,8 +144,19 @@ export function useClarifyKeys({
       return
     }
 
-    if (isStaged(active)) {
-      onConfirm()
+    if (isStaged(active, row)) {
+      // Plain Enter submits the set only once no question is open, from any question (the
+      // last one included); otherwise it moves to the first open one, so a set is never sent
+      // half answered by accident (Cmd/Ctrl+Enter still submits from anywhere).
+      const next = questions.findIndex(isOpen)
+
+      if (next < 0) {
+        onConfirm()
+      } else if (questions[next]?.choices?.length) {
+        setCursor({ question: next, row: 0 })
+      } else {
+        focusOther(next)
+      }
 
       return
     }
@@ -131,7 +168,7 @@ export function useClarifyKeys({
     }
 
     focusOther(questionIndex)
-  }, [active, focusOther, isStaged, onConfirm, pick, questionIndex, row])
+  }, [active, focusOther, isOpen, isStaged, onConfirm, pick, questionIndex, questions, row])
 
   useEffect(() => {
     if (!enabled || !active) {
@@ -142,62 +179,32 @@ export function useClarifyKeys({
       if (index < choices.length) {
         event.preventDefault()
         pick(questionIndex, index)
-      } else if (index === choices.length) {
+      } else if (other && index === choices.length) {
         event.preventDefault()
         focusOther(questionIndex)
       }
     }
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
+      if (isForeignKeystroke(event, formRef.current)) {
         return
       }
 
-      // Not the visible card ⇒ not our keystroke. Inactive tabs stay MOUNTED,
-      // so every parked clarify keeps a live `window` listener; without this the
-      // card that acts is whichever mounted first, and answering the question in
-      // front of you silently answers a background session's question instead —
-      // resuming an agent turn the user never saw. Same resolver the composer's
-      // `clarifyCardOwnsKey` yields to, so the two cannot disagree about which
-      // card is live.
-      if (visibleClarifyCard() !== formRef.current) {
-        return
-      }
+      const arrow = arrowMove(event.key, columns)
 
-      const focused = document.activeElement as HTMLElement | null
-
-      if (
-        focused &&
-        (focused.isContentEditable ||
-          (focused.matches('a[href], button, input, select, textarea, [role="button"]') &&
-            !focused.matches('button[data-choice]')))
-      ) {
-        return
-      }
-
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (arrow) {
         if (choices.length > 0) {
           event.preventDefault()
-          move(event.key === 'ArrowDown' ? 1 : -1)
+          move(arrow.delta, arrow.wrap)
         }
 
         return
       }
 
-      if (/^[1-9]$/.test(event.key)) {
-        pickByIndex(event, Number(event.key) - 1)
+      const index = shortcuts ? shortcutIndex(event.key) : null
 
-        return
-      }
-
-      const key = event.key.toLowerCase()
-
-      // Only the letters this card actually renders a row for. Anything past
-      // the last row belongs to the composer — the user is typing a message
-      // instead of picking an option, and swallowing the keystroke here would
-      // make the first letter of it vanish.
-      if (key.length === 1 && key >= 'a' && key <= 'z') {
-        pickByIndex(event, key.charCodeAt(0) - 97)
+      if (index !== null) {
+        pickByIndex(event, index)
 
         return
       }
@@ -211,7 +218,20 @@ export function useClarifyKeys({
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activate, active, choices.length, enabled, focusOther, formRef, move, pick, questionIndex])
+  }, [
+    activate,
+    active,
+    choices.length,
+    columns,
+    enabled,
+    focusOther,
+    formRef,
+    move,
+    other,
+    pick,
+    questionIndex,
+    shortcuts
+  ])
 
-  return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, onOtherFocus, pick }
+  return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, focusRow, onOtherFocus, pick }
 }

@@ -73,7 +73,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     from hermes_cli.local_runtime.bootstrap import (
         _launch_budget, get_supervisor, refresh_local_runtime, staged_models)
     from hermes_cli.local_runtime.context_policy import growth_decision
-    from hermes_cli.local_runtime.estimator import profile_from_gguf
+    from hermes_cli.local_runtime.estimator import as_loaded, profile_from_gguf
     from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
     from hermes_cli.local_runtime.hardware import probe_budget
     from hermes_cli.local_runtime.presets import (
@@ -95,7 +95,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
 
     try:
         server_idle = sup.is_idle(model_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         server_idle = False
 
     budget = probe_budget(planning=True)
@@ -103,7 +103,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         # Capacity budget, not live-free: growth executes via a server bounce, so the grown
         # instance loads onto a freed card. Live-free is distorted by the very model being grown
         # — it reads its own residency as unavailable and vetoes rungs that fit.
-        profile, budget,
+        as_loaded(profile, budget), budget,
         current_window=current_window,
         session_tokens=session_tokens,
         measured_decode_tok_s=measured_decode_tok_s,
@@ -117,9 +117,13 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         logger.debug("growth %s: %s (%s)", model_id, decision.action, decision.reason)
         return None
 
-    # The grown instance loads after this one exits, so the model's own memory counts as free.
-    # Other loaded models still count as held, which errs toward a smaller window.
-    live = _launch_budget(budget, own_bytes=resident_footprint(gguf, budget, current_window) or 0)
+    # The grown instance loads after this one exits, so the model's own memory counts as free,
+    # draft included when its running preset has one. Other loaded models still count as held,
+    # which errs toward a smaller window.
+    running = read_preset_decisions().get(model_id)
+    drafting = running is not None and (running.keys or {}).get("spec-type") == "draft-dflash"
+    own_bytes = resident_footprint(gguf, budget, current_window, drafting=drafting) or 0
+    live = _launch_budget(budget, own_bytes=own_bytes)
     plan = preset_for_model(gguf, budget, set(), requested_window=decision.next_window, live=live)
     if plan is None or plan.refusal or plan.window < decision.next_window:
         logger.debug("growth %s: the next rung does not fit beside other programs' GPU memory",

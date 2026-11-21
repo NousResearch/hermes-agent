@@ -307,11 +307,11 @@ def test_referenced_feed_bundle_filenames_reads_main_package_only():
 def test_feed_referenced_keys_protects_bundle_and_absolute_tag_uris():
     tag_feed = CANARY_FEED_XML.replace(
         'Uri="https://r2.example/releases/win32/canary/HermesBundled-0.27.2.9-win.msixbundle"',
-        'Uri="https://r2.example/releases/tag/v0.27.2+canary.20260829T000000Z/HermesBundled-0.27.2-win-x64.msix"',
+        'Uri="https://r2.example/releases/tag/canary.20260829T000000Z-v0.27.2/HermesBundled-0.27.2-win-x64.msix"',
     )
     keys = feed_referenced_keys("releases/win32/canary", tag_feed)
     assert "releases/win32/canary/HermesBundled-0.27.2-win-x64.msix" in keys
-    assert "releases/tag/v0.27.2+canary.20260829T000000Z/HermesBundled-0.27.2-win-x64.msix" in keys
+    assert "releases/tag/canary.20260829T000000Z-v0.27.2/HermesBundled-0.27.2-win-x64.msix" in keys
 
 
 CANARY_DIR = "releases/win32/canary"
@@ -573,6 +573,7 @@ def test_cli_reuses_an_immutable_multipart_object(r2_server, tmp_path):
     result = subprocess.run(
         [sys.executable, "-c", script, "put", "--tag", "v1.0.0", "--key", path.name, "--file", str(path), "--immutable"],
         cwd=Path(__file__).resolve().parents[2], env=os.environ, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert [method for method, _, _ in r2_server.requests] == ["POST", "GET", "HEAD"]
@@ -621,7 +622,7 @@ def test_put_page_object_carries_html_type_and_no_store(r2_server):
         os.unlink(path)
     stored, _etag = r2_server.store["releases/stable/index.html"]
     assert stored == page.encode("utf-8")
-    headers = [r[2] for r in r2_server.requests if r[0] == "PUT"][0]
+    headers = next(r[2] for r in r2_server.requests if r[0] == "PUT")
     assert headers["Content-Type"] == "text/html; charset=utf-8"
     assert headers["Cache-Control"] == "no-store"
 
@@ -677,13 +678,13 @@ def test_list_cli_paginates_and_decodes_keys(r2_server, capsys):
     b'<Foo Uri="https://x/old.msixbundle" />', b'<MainPackage Uri="https://x/old.msixbundle" />',
     b'<AppInstaller><MainBundle Uri="https://x/old.msixbundle" />'])
 def test_real_prune_retention_and_second_feed_failure(r2_server, capsys, bad_feed):
-    tag_reference = 'releases/tag/v0.27.2+canary.20260801T000000Z/live.msixbundle'
+    tag_reference = 'releases/tag/canary.20260801T000000Z-v0.27.2/live.msixbundle'
     second = f'<AppInstaller><MainBundle Uri="https://cdn.example/{tag_reference}" /></AppInstaller>'
-    doomed = {f'{CANARY_DIR}/old.msixbundle', 'releases/tag/v0.27.2+canary.20260801T000000Z/old.zip'}
+    doomed = {f'{CANARY_DIR}/old.msixbundle', 'releases/tag/canary.20260801T000000Z-v0.27.2/old.zip'}
     kept = {f'{CANARY_DIR}/HermesBundled-0.27.2.9-win.msixbundle', f'{CANARY_DIR}/live.msixbundle',
             f'{CANARY_DIR}/fresh.msixbundle', f'{CANARY_DIR}/unknown.msixbundle', tag_reference,
             'releases/win32/stable/old.msixbundle', 'releases/unknown/old.msixbundle',
-            'releases/tag/v0.28.0/old.zip', 'releases/tag/v0.28.0+canary.20260904T000000Z/today.zip'}
+            'releases/tag/v0.28.0/old.zip', 'releases/tag/canary.20260904T000000Z-v0.28.0/today.zip'}
     r2_server.store.update({key: (b'artifact', '"e"') for key in doomed | kept})
     r2_server.store[f'{CANARY_DIR}/canary.appinstaller'] = (CANARY_FEED_XML.encode(), '"e"')
     r2_server.store[f'{CANARY_DIR}/second.appinstaller'] = (second.encode() if bad_feed is None else bad_feed, '"e"')
@@ -792,11 +793,28 @@ def test_download_streams_verified_bytes_and_preserves_destination_on_failure(r2
     monkeypatch.setattr(r2.time, 'sleep', lambda _: None)
     r2.download_object(**args)
     assert request_times == [NOW, refreshed]
+    # A body corrupted in transit (right length, wrong bytes) is fetched again, not failed on the spot.
+    sent = []
+
+    def corrupt_once(handler):
+        sent.append(1)
+        if len(sent) == 1:
+            handler._send(200, payload[:-1] + bytes([payload[-1] ^ 1]))
+        else:
+            original_get(handler)
+
+    monkeypatch.setattr(_R2StubHandler, 'do_GET', corrupt_once)
+    target.write_bytes(b"previous complete file")
+    r2.download_object(**args)
+    assert target.read_bytes() == payload and len(sent) == 2
     monkeypatch.setattr(_R2StubHandler, 'do_GET', original_get)
 
+    # A stored object that really differs from its receipt still fails, after the bounded attempts.
     r2_server.store[key] = (b"corrupt replacement", '"e"')
+    r2_server.requests.clear()
     with pytest.raises(ValueError, match="checksum mismatch"):
         r2.download_object(**args)
+    assert sum(1 for method, _, _ in r2_server.requests if method == "GET") == 3
     assert target.read_bytes() == payload
     assert list(target.parent.iterdir()) == [target]
     del r2_server.store[key]

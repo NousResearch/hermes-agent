@@ -12,14 +12,11 @@ parses.
 
 import pytest
 
-import agent.skill_bundles as skill_bundles
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
-from agent.skill_commands import (
-    SKILL_EXCERPT_JOINT,
-    SKILL_SCAFFOLD_SQL_LIKE,
-    describe_skill_invocation,
-)
+from agent import skill_bundles
+from agent import skill_commands
+from tools import skills_tool
+from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE
+from session_rules.turns import describe_skill_invocation
 
 SKILL_BODY = "Kick off a task in a fresh isolated git worktree instead of the current checkout."
 
@@ -151,7 +148,7 @@ class TestGatewayAutoLoadScaffold:
         return f"{joined}\n\n{user_text}" if user_text else joined
 
     def test_describes_the_typed_request(self, skills):
-        message = self._auto_load_scaffold(skills_dir := skills, ["work"],
+        message = self._auto_load_scaffold(skills, ["work"],
                                            user_text="Fix the CI gate before the release")
         assert describe_skill_invocation(message) == "Fix the CI gate before the release"
 
@@ -187,13 +184,13 @@ class TestGatewayAutoLoadScaffold:
         assert "_" not in AUTO_LOAD_SCAFFOLD_SQL_LIKE[:-1]
 
     def test_preview_shaping_strips_the_scaffold(self, skills):
-        from hermes_state_common import _shape_preview
+        from persistence.sqlite._state.common import _shape_preview
         message = self._auto_load_scaffold(skills, ["work"],
                                            user_text="Fix the CI gate before the release")
         assert _shape_preview(message) == "Fix the CI gate before the release"
 
     def test_long_scaffold_preview_keeps_the_request(self, skills, monkeypatch):
-        from hermes_state_common import _shape_preview
+        from persistence.sqlite._state.common import _shape_preview
         long_body = ("Long skill paragraph.\n\n" * 80) + SKILL_BODY
         _write_skill(skills, "work", body=long_body)
         message = self._auto_load_scaffold(skills, ["work"],

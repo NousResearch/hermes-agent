@@ -23,19 +23,19 @@ logger = logging.getLogger(__name__)
 
 # Test files newly tracked this turn, keyed by task_id (or session_id) so on_session_end can
 # decide whether to run cleanup. Locked: post_tool_call fires concurrently on parallel calls.
-_recent_test_tracks: Dict[str, Set[str]] = {}
+_recent_test_tracks: dict[str, set[str]] = {}
 _lock = threading.Lock()
 
 
-def _extract_path_arg(args: Dict[str, Any]) -> Set[str]:
+def _extract_path_arg(args: dict[str, Any]) -> set[str]:
     """write_file/patch: the single ``path`` arg."""
     path = args.get("path")
     return {path} if isinstance(path, str) and path else set()
 
 
-def _extract_paths_from_terminal(args: Dict[str, Any]) -> Set[str]:
+def _extract_paths_from_terminal(args: dict[str, Any]) -> set[str]:
     """Candidate paths named in a terminal command; guess_category/is_safe_path filter later."""
-    paths: Set[str] = set()
+    paths: set[str] = set()
     cmd = args.get("command") or ""
     if isinstance(cmd, str) and cmd:
         # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`.
@@ -54,7 +54,7 @@ def _extract_paths_from_terminal(args: Dict[str, Any]) -> Set[str]:
     return paths
 
 
-_PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], Set[str]]] = {
+_PATH_EXTRACTORS: dict[str, Callable[[dict[str, Any]], set[str]]] = {
     "write_file": _extract_path_arg,
     "patch": _extract_path_arg,
     "terminal": _extract_paths_from_terminal}
@@ -62,7 +62,7 @@ _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], Set[str]]] = {
 
 # (owner, tool_call_id) -> (snapshot time, argument paths absent before the call). Post tracks only
 # these, so pre-existing files and paths swapped in after the snapshot (another hook's modify) fail closed.
-_pre_call: Dict[Tuple[str, str], Tuple[float, FrozenSet[str]]] = {}
+_pre_call: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}
 _PRE_CALL_TTL_S = 3600.0  # a call whose post hook never fires (blocked) must not leak its entry
 
 
@@ -70,18 +70,18 @@ def _owner(task_id: str, session_id: str) -> str:
     return task_id or session_id or "default"
 
 
-def _pre_call_key(task_id: str, session_id: str, tool_call_id: str) -> Tuple[str, str]:
+def _pre_call_key(task_id: str, session_id: str, tool_call_id: str) -> tuple[str, str]:
     # tool_call_id alone is not unique (llama.cpp sends one constant id), so scope it by owner.
     return (_owner(task_id, session_id), tool_call_id)
 
 
-def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, task_id: str = "",
+def _on_pre_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None, task_id: str = "",
                       session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
     """Snapshot which argument paths are absent before the call. Never raises: pre_tool_call hooks
     fail CLOSED (a raise would block the tool), so an error records no absent path."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not tool_call_id or extractor is None or not isinstance(args, dict):
-        return None
+        return
     now = time.time()
     try:
         absent = frozenset(str(p) for p in (Path(s).expanduser() for s in extractor(args)) if not p.exists())
@@ -91,10 +91,10 @@ def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None
         for key in [k for k, (taken, _a) in _pre_call.items() if now - taken > _PRE_CALL_TTL_S]:
             del _pre_call[key]
         _pre_call[_pre_call_key(task_id, session_id, tool_call_id)] = (now, absent)
-    return None
+    return
 
 
-def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
+def _on_post_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None,
                        task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
     """Auto-track ephemeral files THIS call created: a path from the call's final arguments that
     this call's own pre-call snapshot saw absent and that exists now. Paths seen only in terminal
@@ -156,7 +156,7 @@ Test files are auto-tracked on write_file / terminal and auto-cleaned at session
 """
 
 
-def _fmt_summary(summary: Dict[str, Any]) -> str:
+def _fmt_summary(summary: dict[str, Any]) -> str:
     base = (f"[disk-cleanup] Cleaned {summary['deleted']} files + "
             f"{summary['empty_dirs']} empty dirs, freed {dg.fmt_size(summary['freed'])}.")
     if summary.get("errors"):
@@ -164,13 +164,13 @@ def _fmt_summary(summary: Dict[str, Any]) -> str:
     return base
 
 
-def _item_block(header: str, items: List[Dict], indent: str) -> List[str]:
+def _item_block(header: str, items: list[dict], indent: str) -> list[str]:
     """``header`` formatted with ``{n}`` / ``{size}``, followed by one line per item."""
     size = dg.fmt_size(sum(i["size"] for i in items))
     return [header.format(n=len(items), size=size)] + [f"{indent}[{item['category']}] {item['path']}" for item in items]
 
 
-def _cmd_dry_run(argv: List[str]) -> str:
+def _cmd_dry_run(argv: list[str]) -> str:
     auto, prompt = dg.dry_run()
     lines = ["Dry-run preview (nothing deleted):"]
     lines += _item_block("  Auto-delete : {n} files ({size})", auto, "    ")
@@ -179,7 +179,7 @@ def _cmd_dry_run(argv: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _cmd_deep(argv: List[str]) -> str:
+def _cmd_deep(argv: list[str]) -> str:
     # In-session deep can't prompt — show what quick cleaned plus items needing confirmation.
     quick_summary = dg.quick()
     _auto, prompt_items = dg.dry_run()
@@ -190,7 +190,7 @@ def _cmd_deep(argv: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _cmd_track(argv: List[str]) -> str:
+def _cmd_track(argv: list[str]) -> str:
     if len(argv) < 3:
         return "Usage: /disk-cleanup track <path> <category>"
     path_arg, category = argv[1], argv[2]
@@ -201,7 +201,7 @@ def _cmd_track(argv: List[str]) -> str:
     return f"Not tracked (already present, missing, or outside HERMES_HOME): {path_arg}"
 
 
-def _cmd_forget(argv: List[str]) -> str:
+def _cmd_forget(argv: list[str]) -> str:
     if len(argv) < 2:
         return "Usage: /disk-cleanup forget <path>"
     n = dg.forget(argv[1])
@@ -209,7 +209,7 @@ def _cmd_forget(argv: List[str]) -> str:
             else f"Not found in tracking: {argv[1]}")
 
 
-_SUBCOMMANDS: Dict[str, Callable[[List[str]], str]] = {
+_SUBCOMMANDS: dict[str, Callable[[list[str]], str]] = {
     "status": lambda argv: dg.format_status(dg.status()),
     "dry-run": _cmd_dry_run,
     "quick": lambda argv: _fmt_summary(dg.quick()),

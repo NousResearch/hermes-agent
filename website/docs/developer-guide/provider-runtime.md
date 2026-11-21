@@ -63,7 +63,6 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic (native)
 - Google / Gemini (`gemini`)
 - Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
@@ -122,7 +121,7 @@ Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
 - `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
-- `OPENAI_API_KEY` is used for custom endpoints and as a fallback
+- `OPENAI_API_KEY` is only sent to OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with
 
 Hermes also distinguishes between:
 
@@ -166,9 +165,7 @@ Codex uses a separate Responses API path:
 Auxiliary tasks such as:
 
 - vision
-- web extraction summarization
 - context compression summaries
-- skills hub operations
 - MCP helper operations
 - memory flushes
 

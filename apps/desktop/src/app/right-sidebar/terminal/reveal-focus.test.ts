@@ -168,6 +168,7 @@ function statusbarSelect() {
     () =>
       useStatusbarItems({
         agentsOpen: false,
+        changeSessionCwd: async () => {},
         chatOpen: true,
         commandCenterOpen: false,
         extraLeftItems: [],

@@ -50,6 +50,7 @@ def is_connected(config) -> bool:
 def interactive_setup() -> None:
     """`hermes gateway setup` flow for A2A."""
     from hermes_cli.setup import prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning
+    from .security import _parse_peer_tokens
     print_header("A2A (Agent-to-Agent)")
     print_info("Expose Hermes as an A2A-discoverable agent and call other A2A agents.")
     print_info("Uses Python stdlib — no extra packages needed.")
@@ -74,12 +75,21 @@ def interactive_setup() -> None:
                  "remote agent has its own authenticated identity."):
         print_info(line)
     if prompt_yes_no("Configure tokens to allow REMOTE A2A peers?", False):
-        peer_tokens = ask("Per-peer tokens (name:token, comma-separated; blank to skip)", "A2A_PEER_TOKENS")
+        peer_tokens = prompt("Per-peer tokens (name:token, comma-separated; blank to skip)",
+                             default=get_env_value("A2A_PEER_TOKENS") or "").strip()
+        if peer_tokens and not _parse_peer_tokens(peer_tokens):
+            # The runtime refuses every caller for this value; catch it here instead of at 401.
+            print_warning("A2A_PEER_TOKENS needs name:token pairs (e.g. alice:tok1) — not saved.")
+            peer_tokens = ""
+        if peer_tokens:
+            save_env_value("A2A_PEER_TOKENS", peer_tokens)
         token = prompt("Shared bearer token (blank to skip)", password=True)
         if token:
             save_env_value("A2A_BEARER_TOKEN", token)
         if peer_tokens or token:
             ask("Bind host for remote access (e.g. 0.0.0.0)", "A2A_HOST")
+        elif get_env_value("A2A_PEER_TOKENS") or get_env_value("A2A_BEARER_TOKEN"):
+            print_warning("No new tokens saved — the A2A tokens already in .env stay in effect.")
         else:
             print_warning("No tokens entered — staying localhost-only.")
 

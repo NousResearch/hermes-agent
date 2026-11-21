@@ -333,7 +333,7 @@ async def test_slack_channel_media_anchor_untouched():
 async def test_media_caller_metadata_not_mutated():
     """The anchor promotion must not leak into the caller's dict — media
     helpers are called in loops with a shared metadata mapping."""
-    adapter, stub = _media_wire("D1", "dm")
+    adapter, _stub = _media_wire("D1", "dm")
     caller_md = {"user_id": "U1"}
     await adapter.send_image(
         "D1", "https://example.com/x.png", reply_to="1700.0001", metadata=caller_md

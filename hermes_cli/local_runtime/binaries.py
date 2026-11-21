@@ -79,7 +79,8 @@ def unavailable_reason(backend: str, target: str | None = None) -> str | None:
     if name is None:
         return f"unknown backend {backend}"
     target = target or pm.current_target()
-    reason = pm.get_package(name).missing_reason(target)
+    package = pm.get_package(name)
+    reason = package.missing_reason(target) or package.native_abi_reason(target)
     if reason:
         return reason
     lock = pm.Lockfile(pm.paths.lockfile_path())
@@ -153,8 +154,12 @@ def _legacy_installs(backend: str) -> list[tuple[str, Path, dict]]:
 
 
 def _legacy_artifacts(package, version: str, target: str, assets: dict) -> list[str] | None:
-    """The manifest's archive digests in PM's archive order, or None when one is missing."""
-    shas = [assets.get(url.rsplit("/", 1)[-1]) for url in package.fetch_urls(version, target)]
+    """The manifest's archive digests in PM's archive order, or None when one is missing.
+
+    The pre-PM installer fetched only llama.cpp's own release assets. On Linux PM also pins the
+    libgomp .deb, so an adopted engine there records fewer archives than the lock and counts as
+    outdated: usable now (its manifest proves it ran against the host's libgomp), update offered."""
+    shas = [assets.get(name) for name in package._asset_names(version, target)]
     if not shas or not all(isinstance(sha, str) and _SHA256.fullmatch(sha) for sha in shas):
         return None
     return shas
@@ -200,7 +205,7 @@ def adopt_legacy_engine(backend: str) -> bool:
                 if _adopt(package, version, target, source, manifest, root, facts_path):
                     return True
                 _LEFT_IN_PLACE.add(source)
-    except Exception as exc:  # noqa: BLE001 - a failed move must not break the callers that ask
+    except Exception as exc:
         logger.warning("could not move the pre-PM llama.cpp %s engine into the PM store: %s", backend, exc)
     return False
 

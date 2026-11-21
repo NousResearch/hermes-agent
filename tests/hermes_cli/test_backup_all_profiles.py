@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.backup as backup
+from hermes_cli import backup
 
 
 def _mk_profile(home: Path, jobs: int = 0) -> Path:

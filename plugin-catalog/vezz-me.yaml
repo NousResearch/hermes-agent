@@ -1,0 +1,18 @@
+name: vezz-me
+title: "Vezz me — AI Reading & Context Assistant"
+repo: https://github.com/mosmn/hermes-plugin-vezz
+sha: ea438e1d5df1c289827d4c7f0d7c7f61b64d055b
+description: "Contextual AI reading assistant, webpage text extraction, and prompt preset engine for Hermes Agent. Powered by Vezz me."
+maintainer: mosmn
+tier: community
+category: web
+docs_url: https://github.com/mosmn/hermes-plugin-vezz#readme
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools:
+    - vezz_extract_reading_context
+    - vezz_format_prompt_preset
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,285 @@
+"""The stable release lanes, defined once.
+
+A stable release is a set of lanes. A build lane produces something users get
+(a package or an image); a test lane is a suite that gates the release. The
+claim records the set, ``admit`` turns it into one flag per lane and one run
+flag per workflow job, and every gate judges each job against that same set.
+
+``release.py release`` starts from DEFAULT (every lane except Termux) and edits it with ``--only``, ``--with`` and ``--without``.
+
+Lanes are independent switches, but a job runs only when every lane it needs
+is on (JOB_LANES), so a test lane for something that is not built is inert:
+``upgrade`` with ``macos-arm64`` off runs no macOS upgrade arm.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, Mapping
+
+
+@dataclass(frozen=True)
+class Lane:
+    name: str
+    default: bool
+    doc: str
+
+
+LANES = (
+    Lane("docker", True, "build and publish the Docker image"),
+    Lane("windows", True, "signed Windows x64 + arm64 MSIX and the universal bundle (the update channel's package)"),
+    Lane("windows-store", True, "unsigned Microsoft Store bundle, submitted to Partner Center (needs no signing)"),
+    Lane("macos-arm64", True, "macOS Apple Silicon DMG + ZIP"),
+    Lane("termux", False, "Termux (Android aarch64) APT package"),
+    Lane("linux", False, "diagnostic Linux x64 + arm64 AppImage builds (non-gating)"),
+    Lane("ci", True, "the full CI pipeline"),
+    Lane("nix", True, "Nix checks"),
+    Lane("docker-tests", True, "tests of the Docker image before it is published"),
+    Lane("pm-bundle", True, "PM bundle acceptance"),
+    Lane("windows-live", True, "Windows live venv E2E"),
+    Lane("install-e2e", True, "install and update E2E"),
+    Lane("bootstrap-version", True, "bootstrap installer release identity check"),
+    Lane("termux-checks", True, "Termux verification (runs only with termux)"),
+    Lane("smoke", True, "native install + chat smoke of each built desktop package"),
+    Lane("upgrade", True, "signed-package upgrade acceptance (OLD to NEW) of each built desktop package"),
+)
+NAMES = tuple(lane.name for lane in LANES)
+DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
+# A canary is a run of the stable pipeline with every lane on but one: it has no claim to narrow
+# it, so Termux runs too, and a lane added above runs in the canary with no other
+# edit. The exception is `upgrade`, the signed-package arms: the canary is its own app (Hermes
+# Canary), so no signed package of it can upgrade a stable install, and canary-to-canary says
+# nothing about what stable users get. Old stable to this commit is install-e2e's job, which
+# installs released stable tags and updates them to the commit under test, with no bundle.
+# Beyond that a canary differs from a stable release only in policy (POLICY_JOBS). CANARY is the
+# base a canary claim starts from; --only/--with/--without narrow or widen it exactly as they do
+# DEFAULT for a stable claim.
+CANARY = frozenset(NAMES) - {"upgrade"}
+
+DESKTOP = ("windows", "macos-arm64")
+WINDOWS = ("windows", "windows-store")
+BUNDLES = (*DESKTOP, "windows-store", "termux")
+# The protected desktop channel, the update feeds and the Termux index move only for a release that
+# built every desktop package the channel serves. A partial set still stages, verifies and (for
+# Windows) submits its packages, but leaves the channels on the previous release.
+CHANNEL_DESKTOP = ("windows", "macos-arm64")
+DERIVED = ("bundles", "desktop-channel", "windows-build")
+
+# Each stable-release.yml job and the lanes that must all be on for it to run. A job named here
+# reports `skipped` when one is off and `success` otherwise; a job not named never skips. DERIVED
+# names are computed from the lanes: "bundles" is any build lane except docker, "desktop-channel"
+# is the full desktop set the protected channel serves, "windows-build" is either Windows lane (the
+# per-arch builds and the bundle assembly are shared, each lane only picks which package they make).
+JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs in {
+    "ci": ("ci",),
+    "nix": ("nix",),
+    "docker": ("docker",),
+    "publish-docker": ("docker",),
+    "pm-bundle": ("pm-bundle",),
+    "termux-checks": ("termux-checks", "termux"),
+    "windows-live": ("windows-live",),
+    "install-e2e": ("install-e2e",),
+    "bootstrap-version": ("bootstrap-version",),
+    "candidates-darwin-arm64": ("macos-arm64",),
+    "candidates-win32-arm64": ("windows-build",),
+    "candidates-win32-x64": ("windows-build",),
+    "candidates-win32-bundle": ("windows-build",),
+    "candidates-termux": ("termux",),
+    "candidates-linux-x64": ("linux",),
+    "candidates-linux-arm64": ("linux",),
+    "candidate-manifest": ("bundles",),
+    "publish-bundles": ("bundles",),
+    # A canary only advances channels, so it publishes only the full desktop set they serve.
+    "publish-canary": ("desktop-channel",),
+    "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
+    "transitions-win32": ("windows", "upgrade"),
+    "macos-packaged-arm64": ("macos-arm64", "upgrade"),
+    "windows-packaged": ("windows", "upgrade"),
+}.items()}
+
+# Diagnostic builds run in parallel on canaries (and when opted into) without entering
+# candidate-manifest or gating publication.
+DIAGNOSTIC_LANES = frozenset({"linux"})
+DIAGNOSTIC_CALLS = frozenset({"candidates-linux-x64", "candidates-linux-arm64"})
+CANDIDATE_CALLS = tuple(job for job in JOB_LANES
+                        if job.startswith("candidates-") and job not in DIAGNOSTIC_CALLS)
+
+# The release policies stable-release.yml runs. Every build and test job is shared; only these
+# publication jobs belong to one policy, and each runs only under its own. A stable release
+# publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
+# candidate to the canary channels and never touches a stable head or the Store.
+POLICIES = ("stable", "canary")
+POLICY_JOBS = {"publish-bundles": "stable", "publish-canary": "canary"}
+# The lane set a claim of each policy starts from, and the lanes it can never run: a canary is its
+# own app identity, so no signed package of it can upgrade anything (see CANARY).
+POLICY_BASE = {"stable": DEFAULT, "canary": CANARY}
+POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"})}
+
+# Candidate handoff group and manifest target, each with the lane that builds it.
+HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",
+                "darwin-arm64": "macos-arm64", "termux": "termux"}
+TARGET_LANE = {"windows/x64": "windows", "windows/arm64": "windows", "macos/arm64": "macos-arm64",
+               "termux/aarch64": "termux"}
+LEFT_OUT = {
+    "docker": "the Docker image keeps its previous stable tag",
+    "windows": "no signed Windows packages: the Windows update channel stays on its previous release",
+    "windows-store": "no Microsoft Store submission",
+    "macos-arm64": "no macOS Apple Silicon package",
+    "termux": "the Termux APT channel stays on its previous release",
+}
+
+
+def select(*, only: Iterable[str] | None = None, with_: Iterable[str] = (),
+           without: Iterable[str] = (), policy: str = "stable") -> frozenset[str]:
+    """The lane set a claim asks for. ``only`` replaces the policy's base (POLICY_BASE)."""
+    if policy not in POLICIES:
+        raise ValueError(f"unknown release policy {policy!r}")
+    base, added, removed = (_known(group) for group in (POLICY_BASE[policy] if only is None else only,
+                                                         with_, without))
+    if added & removed:
+        raise ValueError(f"--with and --without both name {', '.join(sorted(added & removed))}")
+    lanes = frozenset((base | added) - removed)
+    require_allowed(lanes, policy)
+    return lanes
+
+
+def require_allowed(lanes: Iterable[str], policy: str) -> None:
+    """Refuse a lane the policy can never run (POLICY_REFUSED)."""
+    refused = frozenset(lanes) & POLICY_REFUSED[policy]
+    if refused:
+        raise ValueError(f"a {policy} claim cannot run {', '.join(sorted(refused))}")
+
+
+def _known(names: Iterable[str]) -> frozenset[str]:
+    names = frozenset(names)
+    unknown = names - set(NAMES)
+    if unknown:
+        raise ValueError(f"unknown lane {', '.join(sorted(unknown))}; lanes are {', '.join(NAMES)}")
+    return names
+
+
+def parse_list(values: Iterable[str] | None) -> list[str] | None:
+    """Flatten repeated comma-separated option values; None when the option was not given."""
+    if values is None:
+        return None
+    return [name.strip() for value in values for name in value.split(",") if name.strip()]
+
+
+def effective(lanes: Iterable[str]) -> frozenset[str]:
+    lanes = frozenset(lanes)
+    return lanes | {name for name, derived in (("bundles", has_bundles(lanes)),
+                                               ("desktop-channel", advances_desktop(lanes)),
+                                               ("windows-build", bool(lanes & set(WINDOWS)))) if derived}
+
+
+def flags(lanes: Iterable[str]) -> dict[str, bool]:
+    """One flag per lane plus the derived names: what ``admit`` hands the workflow."""
+    on = effective(lanes)
+    return {name: name in on for name in (*NAMES, *DERIVED)}
+
+
+def from_flags(raw: object) -> frozenset[str]:
+    """The lane set of a ``flags`` mapping; refuses anything but a boolean for every lane."""
+    if not isinstance(raw, Mapping) or set(raw) != {*NAMES, *DERIVED} \
+            or any(not isinstance(value, bool) for value in raw.values()):
+        raise ValueError("lanes must be a boolean for every lane")
+    return frozenset(name for name in NAMES if raw[name])
+
+
+def jobs_to_run(lanes: Iterable[str], policy: str = "stable") -> dict[str, bool]:
+    """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this.
+
+    ``policy`` only removes the other policy's publication job (POLICY_JOBS); it never adds or
+    removes a build or test job, so a canary and a stable release with the same lanes run the
+    same graph."""
+    if policy not in POLICIES:
+        raise ValueError(f"unknown release policy {policy!r}")
+    on = effective(lanes)
+    return {job: needs <= on and POLICY_JOBS.get(job, policy) == policy
+            for job, needs in JOB_LANES.items()}
+
+
+def handoffs(lanes: Iterable[str], names: Iterable[str]) -> tuple[str, ...]:
+    """``names`` without the candidate handoff groups the lanes did not build."""
+    on = effective(lanes)
+    return tuple(name for name in names if HANDOFF_LANE[name] in on)
+
+
+def targets(lanes: Iterable[str]) -> frozenset[str]:
+    """The manifest platform/arch targets the lanes build."""
+    on = frozenset(lanes)
+    return frozenset(target for target, lane in TARGET_LANE.items() if lane in on)
+
+
+def has_bundles(lanes: Iterable[str]) -> bool:
+    return bool(frozenset(lanes) & set(BUNDLES))
+
+
+def runs_smokes(lanes: Iterable[str]) -> bool:
+    """A smoke result exists only for a built desktop package."""
+    on = frozenset(lanes)
+    return "smoke" in on and bool(on & set(DESKTOP))
+
+
+def advances_desktop(lanes: Iterable[str]) -> bool:
+    return frozenset(lanes) >= set(CHANNEL_DESKTOP)
+
+
+def moves_channels(lanes: Iterable[str]) -> bool:
+    """Whether publication moves a channel head. A release that moves none is finished once public."""
+    on = frozenset(lanes)
+    return "docker" in on or advances_desktop(on)
+
+
+# Claims record `lanesRevision` next to `lanes`. A claim without it was cut when "windows" also meant
+# the Store bundle, so it reads as windows plus windows-store; the two lanes cannot otherwise be told
+# apart from a revision-2 claim that chose "windows" alone.
+LANES_REVISION = 2
+_LEGACY_OPTIONAL = ("includeMacosIntel", "includeTermux")
+_LEGACY_BUNDLE_LANES = frozenset({*BUNDLES, "pm-bundle", "upgrade", "smoke"})
+_TEST_LANES = frozenset({"ci", "nix", "docker-tests", "pm-bundle", "windows-live", "install-e2e",
+                         "bootstrap-version", "termux-checks", "smoke", "upgrade"})
+
+
+def claim_lanes(metadata: Mapping) -> frozenset[str]:
+    """The lanes a claim message records.
+
+    Claims cut before lanes existed carry ``skipBundles``, ``skipTests`` and
+    (later) ``includeMacosIntel`` / ``includeTermux`` instead of ``lanes``. They
+    stay readable for as long as their tags do: each translates to the lane set
+    that gated the same jobs. A missing include key reads as false. macOS Intel
+    is no longer built, so only a claim that left it out (``false``) still reads.
+    """
+    if "lanes" in metadata:
+        lanes = metadata["lanes"]
+        if (not isinstance(lanes, list) or any(not isinstance(name, str) for name in lanes)
+                or lanes != sorted(set(lanes))):
+            raise ValueError("Stable claim metadata is invalid")
+        if metadata.get("lanesRevision", 1) not in (1, LANES_REVISION):
+            raise ValueError("Stable claim metadata is invalid")
+        try:
+            known = _known(lanes)
+        except ValueError as error:
+            raise ValueError("Stable claim metadata is invalid") from error
+        if "lanesRevision" not in metadata and "windows" in known:
+            known |= {"windows-store"}
+        return known
+    if any(not isinstance(metadata.get(key), bool)
+           for key in ("skipBundles", "skipTests", *(k for k in _LEGACY_OPTIONAL if k in metadata))):
+        raise ValueError("Stable claim metadata is invalid")
+    if metadata.get("includeMacosIntel"):
+        raise ValueError("Stable claim metadata is invalid: it opts into macOS Intel (includeMacosIntel), "
+                         "which is no longer built")
+    lanes = set(DEFAULT)
+    if metadata.get("includeTermux"):
+        lanes.add("termux")
+    if metadata["skipBundles"]:
+        lanes -= _LEGACY_BUNDLE_LANES
+    if metadata["skipTests"]:
+        lanes -= _TEST_LANES
+    return frozenset(lanes)
+
+
+def describe(lanes: Iterable[str]) -> str:
+    on = frozenset(lanes)
+    off = [name for name in NAMES if name not in on]
+    return f"on: {', '.join(name for name in NAMES if name in on) or 'none'}; off: {', '.join(off) or 'none'}"

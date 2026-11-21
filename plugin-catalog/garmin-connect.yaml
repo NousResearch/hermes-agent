@@ -1,0 +1,40 @@
+name: garmin-connect
+title: "Garmin Connect (unofficial)"
+repo: https://github.com/adrianlaborda/hermes-garmin
+sha: "1077ef6c02547cee8ed3ef90e5ae304979fd6cf2"
+version: "0.1.0"
+description: "Unofficial community plugin for Garmin Connect data through Garmin's official Personal API: sleep, HRV, Body Battery, stress, steps, heart rate, activities, weight, heart-rate training load and fitness age, with deterministic baselines and trend flags (garmin_trends), a /garmin command, an optional one-line daily context, a morning readiness brief automation and a Hermes Desktop readiness panel. Fourteen read-only tools. The key is entered in Hermes Desktop under Settings > Plugins > garmin-connect (or with hermes config set), stored in the profile's .env as GARMIN_PERSONAL_API_KEY and read through Hermes's secret route. Disclosure — Unofficial, not affiliated with Garmin. Contacts only personal.connectapi.garmin.com (personal.connectapi.garmin.cn for region china): GET requests plus one POST that exchanges the user's GARMIN_PERSONAL_API_KEY for a short-lived token, which is kept in memory only. Health data in tool results goes to your model provider. With `inject_daily_context` on (off by default), a one-line health summary is added to new chats. A background thread reads the Garmin profile time zone when timezone is auto. `garmin_activity_fit` saves activity ZIPs under the profile's plugin-data folder. No telemetry, no self-update."
+maintainer: adrianlaborda
+tier: community
+category: tools
+docs_url: https://github.com/adrianlaborda/hermes-garmin#readme
+requires_hermes: ">=0.22.2"
+readme: true
+platforms: []
+# Rendered from synthetic fixture data (docs/screenshots/ in the plugin repo) at the pinned sha.
+screenshots:
+  - https://raw.githubusercontent.com/adrianlaborda/hermes-garmin/1077ef6c02547cee8ed3ef90e5ae304979fd6cf2/docs/screenshots/pane-light.png
+  - https://raw.githubusercontent.com/adrianlaborda/hermes-garmin/1077ef6c02547cee8ed3ef90e5ae304979fd6cf2/docs/screenshots/pane-dark.png
+  - https://raw.githubusercontent.com/adrianlaborda/hermes-garmin/1077ef6c02547cee8ed3ef90e5ae304979fd6cf2/docs/screenshots/page.png
+  - https://raw.githubusercontent.com/adrianlaborda/hermes-garmin/1077ef6c02547cee8ed3ef90e5ae304979fd6cf2/docs/screenshots/setup.png
+capabilities:
+  provides_tools:
+    - garmin_today
+    - garmin_sleep
+    - garmin_hrv
+    - garmin_body_battery
+    - garmin_stress
+    - garmin_steps
+    - garmin_heart_rate
+    - garmin_activities
+    - garmin_activity
+    - garmin_activity_fit
+    - garmin_body
+    - garmin_trends
+    - garmin_training_load
+    - garmin_fitness_age
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - GARMIN_PERSONAL_API_KEY

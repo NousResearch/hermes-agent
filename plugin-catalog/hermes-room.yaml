@@ -1,0 +1,19 @@
+name: hermes-room
+repo: https://github.com/adenijiridwan43/hermes-room
+sha: b2f7b250a6fbac84d67942f63a181c9d267e6303
+description: "Hermes Room washes untrusted web, email, file and tool output before Hermes reads it: deterministically, with model help for semantic attacks, and with receipts you can audit. Layer 1 (always, local, stdlib-only) strips zero-width/bidi/control characters, ANSI escapes and hidden-HTML payloads, and masks leaked secrets (AWS/GitHub/GitLab/Slack/OpenAI/Google keys, JWTs, private-key blocks, password=/secret= assignments). Layer 2 runs only when Layer 1 flags something: a host-model reviewer via ctx.llm.complete_structured, your active Hermes model - no provider/model override, no extra API key - 20s timeout, 800 tokens, fail-open to Layer 1. Every change yields a local JSONL Trust Receipt (SHA-256, rule IDs, counts, reviewer verdict, never raw content): trust_receipt shows what changed, trust_report exports Markdown. Disclosure - reads only tool-output text; no network beyond the user's own provider call via ctx.llm; no shell, no background processes, no telemetry; no credentials required (requires_env is empty); writes solely to <HERMES_HOME>/hermes-room/receipts.jsonl (hashes/counts only, local); fails open, never blocks or breaks the tool loop. Disclosure — rewrites the result of every tool (web, email, MCP, read_file, terminal, skills) before the model sees it: it strips hidden HTML/control characters, deletes phrases that look like injected instructions, masks secret-looking values and adds an `[UNTRUSTED ...]` header, so files read through it may differ from what is on disk; when a rule fires it sends up to 8,000 characters of the unmasked output to your active Hermes model for review (an extra model call, up to 20 s) and may replace the result with the reviewer's re-washed text; receipts in `<HERMES_HOME>/hermes-room/receipts.jsonl` hold hashes, rule IDs and counts plus the reviewer's verdict, quoted snippets and up to 2,000 characters of its reply; no other network, shell, background work or telemetry."
+maintainer: adenijiridwan43
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.2.0"
+docs_url: https://github.com/adenijiridwan43/hermes-room#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - trust_receipt
+    - trust_report
+  provides_hooks:
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

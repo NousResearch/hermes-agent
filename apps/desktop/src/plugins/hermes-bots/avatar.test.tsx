@@ -120,6 +120,23 @@ describe('rendering a blob face', () => {
     expect('traits' in opts).toBe(false)
   })
 
+  it('keeps any bot name inside the data-bot-face attribute as text', async () => {
+    // A name is text, not markup: quotes and angle brackets in it close neither the attribute nor
+    // the svg tag, and replacement patterns such as `$&` stay literal. The roster PNG backfill
+    // still finds the face by the exact name.
+    const { BotFace } = await import('./avatar')
+
+    for (const name of ['x"><img src=x onerror="globalThis.botFaceRan=1"><b title="', 'a$&b$\'c']) {
+      const { container, unmount } = render(<BotFace color="#38bdf8" name={name} shape="blobatar" size={56} />)
+
+      expect(container.querySelector('img')).toBeNull()
+      expect(container.querySelector('b')).toBeNull()
+      expect(container.querySelectorAll('svg')).toHaveLength(1)
+      expect(container.querySelector('svg')?.getAttribute('data-bot-face')).toBe(name)
+      unmount()
+    }
+  })
+
   it('puts every silhouette inside its own frozen band', async () => {
     const { BLOB_KINDS, BotFace } = await import('./avatar')
 

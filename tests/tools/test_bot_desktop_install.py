@@ -19,7 +19,8 @@ def _isolated_host(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y tigervnc-standalone-server")
     yield
-    install._running.clear()
+    for key in list(install._slot_files):
+        install.release(key)
 
 
 def test_empty_password_cancels_without_spawning(monkeypatch):
@@ -47,7 +48,7 @@ def test_second_install_for_same_profile_is_refused(monkeypatch):
         install.install_packages(ask_password=lambda: "pw", on_line=lambda _l: None)
     gate.set()
     worker.join(5)
-    install.assert_not_running()  # slot released once the run finishes
+    install.release(install.claim())  # slot released once the run finishes
 
 
 def test_claim_is_atomic_and_refuses_a_second_claim():
@@ -256,7 +257,7 @@ def test_install_slot_is_held_across_processes(tmp_path):
             "import fcntl,sys\nfh=open(sys.argv[1],'a+',encoding='utf-8')\n"
             "try:\n    fcntl.flock(fh.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB); print('free')\n"
             "except OSError:\n    print('held')", str(runtime.state_dir() / "install.lock")],
-            capture_output=True, text=True)
+            capture_output=True, text=True, check=False)
         assert probe.stdout.strip() == "held", probe
     finally:
         install.release(key)

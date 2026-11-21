@@ -176,6 +176,32 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _strip_trailing_commas(raw: str) -> str:
+    """Drop a comma that only whitespace separates from a ``}``/``]``, outside string values:
+    ``"x = [1, 2, ]"`` inside a string is content (a write_file body), not JSON structure."""
+    out: list[str] = []
+    in_string = False
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string and ch == "\\":
+            out.append(raw[i:i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            in_string = not in_string
+        elif ch == "," and not in_string:
+            j = i + 1
+            while j < n and raw[j] in " \t\r\n":
+                j += 1
+            if j < n and raw[j] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 # When a repair rewrites arguments to "{}", the WARNING log is the last surviving copy of
 # content that can hold real user data (a truncated write_file), so bound it generously.
 _FULL_ARGS_LOG_BOUND = 100_000
@@ -253,11 +279,11 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         pass
 
     # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
-    # (bounded). Bracket counting is string-aware: delimiters inside string values
-    # ({"code": "}"}) are not structure, and the closers land in stack order — a truncated
-    # {"items": [{"n": 1}, {"n": 2 needs "}]}" appended, and a misnested
-    # {"a": [{"b": 1}, {"c": 2}} needs "]" inserted before the misplaced "}".
-    fixed = re.sub(r",\s*([}\]])", r"\1", raw_stripped)
+    # (bounded). Comma stripping and bracket counting are string-aware: delimiters inside
+    # string values ({"code": "}"}, "[1, 2, ]") are not structure, and the closers land in
+    # stack order — a truncated {"items": [{"n": 1}, {"n": 2 needs "}]}" appended, and a
+    # misnested {"a": [{"b": 1}, {"c": 2}} needs "]" inserted before the misplaced "}".
+    fixed = _strip_trailing_commas(raw_stripped)
     fixed = _rebalance_json_closers(fixed) or fixed
     for _ in range(50):
         if _loads_ok(fixed) or not (

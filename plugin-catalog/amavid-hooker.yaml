@@ -1,0 +1,25 @@
+name: amavid-hooker
+repo: https://github.com/quynhchiv/amavid-hooker
+sha: 8f7f4e83ad44e3d3797d3a89920a1e5b3ec34302
+description: >-
+  Generate and edit UGC images and videos with Grok Imagine (xAI) straight from
+  Hermes. Drag an Amazon product to Telegram (or any prompt), and Hermes turns it
+  into a ready-to-post creative: image generation and editing, text-to-video,
+  image-to-video, reference-to-video, and visual flow canvas. Portable Agent
+  Plugins v1 package (mcp.json + skills/), no plugin code. Requires Node.js 20+
+  and the official Grok CLI; each user signs in via their own Grok CLI OAuth
+  session (grok login --oauth). Tokens stay in ~/.grok/auth.json and are never
+  returned by MCP tools. Disclosure — media generation may consume the user's
+  xAI quota; requests go only to auth.x.ai and api.x.ai plus the Grok CLI auth
+  flow; generated files stay local; the local canvas listens on loopback.
+maintainer: quynhchiv
+tier: community
+category: tools
+docs_url: https://github.com/quynhchiv/amavid-hooker#readme
+version: "0.3.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

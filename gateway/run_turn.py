@@ -556,15 +556,15 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
         ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
         from gateway.stream_consumer import StreamConsumerConfig
+        from gateway.platforms.helpers import message_editing_capabilities
         _pause_typing_before_finalize = None
         if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
             def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
                 _adapter.pause_typing_for_chat(_chat_id)
-        # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
-        # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-        if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
+        # Non-editing chats need an enabled draft/native transport to receive streaming deltas.
+        _adapter_supports_edit, _adapter_streams_unedited = message_editing_capabilities(
+            adapter, source.chat_id, transport=scfg.transport)
+        if not _adapter_supports_edit and not _adapter_streams_unedited and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
         # Some Matrix clients render the cursor as tofu: stream text, no cursor.

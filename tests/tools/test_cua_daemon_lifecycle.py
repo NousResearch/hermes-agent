@@ -80,13 +80,19 @@ elif args[0] == 'stop':
     original_thread = threading.Thread
 
     class ReaderThread(original_thread):
+        # Patching threading.Thread is process-wide: pass through threads other than the daemon's
+        # stderr reader (e.g. the owned-spawn supervisor's waiter started by the first spawn).
         def start(self):
+            if self.name != "hermes-cua-daemon-stderr":
+                return super().start()
             readers.append(self)
             if boundary == "thread_start_error":
                 raise RuntimeError("reader launch refused")
             super().start()
 
         def join(self, timeout=None):
+            if self not in readers:
+                return super().join(timeout)
             assert timeout is not None and timeout > 0, "reader joins must be bounded"
             # Delay diagnostics until cleanup explicitly synchronizes with the reader.
             release.set()

@@ -57,7 +57,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
-| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
+| `hermes slack` | Slack helpers (currently: generate the app manifest; the most-used commands become native slashes, the rest go through `/hermes <command>`). |
 | `hermes auth` | Manage credentials — add, list, remove, reset, status, logout. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
@@ -489,9 +489,11 @@ hermes slack manifest --long-description-file AGENTS.md --write
 hermes slack manifest --slashes-only  # just the features.slash_commands array
 ```
 
-Generates a Slack app manifest that registers every gateway command in
-`COMMAND_REGISTRY` (`/btw`, `/stop`, `/model`, …) as a first-class
-Slack slash command — matching Discord and Telegram parity. Paste the
+Generates a Slack app manifest that registers gateway commands
+(`/btw`, `/stop`, `/model`, …) as first-class Slack slash commands. Slack
+caps an app at 25 slash commands, so the manifest declares `/hermes` plus
+the 24 most-used commands; every other command is reached as
+`/hermes <command>`. Paste the
 output into your Slack app config at
 [https://api.slack.com/apps](https://api.slack.com/apps) → your app →
 **Features → App Manifest → Edit**, then **Save**. Slack prompts for

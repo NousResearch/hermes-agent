@@ -1,5 +1,6 @@
-"""``hermes slack manifest`` — generate the Slack app manifest JSON that registers every gateway
-command as a native Slack slash (``/btw``, ``/stop``, ``/model``, …)."""
+"""``hermes slack manifest`` — generate the Slack app manifest JSON that registers the most-used
+gateway commands as native Slack slashes (``/btw``, ``/stop``, ``/model``, …), capped at Slack's
+25-per-app limit; the rest go through ``/hermes <command>``."""
 from __future__ import annotations
 
 import json

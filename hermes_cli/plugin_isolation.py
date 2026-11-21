@@ -179,15 +179,21 @@ def transient_plugin_host() -> Iterator[Any]:
     if isolation_mode() != ISOLATION_HOST:
         yield None
         return
+    import uuid
+
     from hermes_cli.plugins import PluginManager
     manager = PluginManager()
-    manager.scope_key = f"{manager.scope_key}#transient"  # home_path stays the profile's home
+    # One scope per manager, so two overlapping hook loads never share registry slots; home_path stays
+    # the profile's home.
+    manager.scope_key = f"{manager.scope_key}#transient-{uuid.uuid4().hex}"
     try:
         yield manager
     finally:
         try:
             manager.unload()
         finally:
-            host = manager._running_plugin_host()
+            # Any host this manager made, alive or not: one whose channel closed can still have a running
+            # process, and shutdown() waits for or kills it.
+            host = getattr(manager, "_plugin_host_instance", None)
             if host is not None:
                 host.shutdown()

@@ -249,6 +249,19 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_review_handoff_kinds_are_not_silent(self):
+        """Review-flow kinds must render — a kind with no formatter is claimed and
+        dropped (the cursor advances and the user is never told)."""
+        for kind, payload, needle in (
+            ("review_requested", {"summary": "PR ready: x"}, "review"),
+            ("changes_requested", {"reason": "tighten the gate"}, "changes requested"),
+            ("block_loop_detected", {"reason": "needs credentials"}, "triage"),
+        ):
+            ev = SimpleNamespace(kind=kind, payload=payload)
+            text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+            assert text, f"{kind} rendered nothing"
+            assert needle in text, (kind, text)
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.
@@ -348,3 +361,50 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+
+class TestReviewHandoffReachesTheOriginSession:
+    """A worker parked for review must reach the session that dispatched it.
+
+    Regression (2026-10-14, cc-dispatch): ``_KANBAN_NOTIFY_KINDS`` mirrored an
+    older gateway list, so ``review_requested`` was never claimed here. The
+    subscription cursor froze at the last delivered event and the originating
+    TUI/desktop session got no receipt at all — while the separate Feishu leg
+    still fired, which hid the gap. ``changes_requested`` (corrections back to
+    the implementer) and ``block_loop_detected`` (escalation past the review
+    round limit) were missing for exactly the same reason.
+    """
+
+    def test_notify_kinds_cover_every_gateway_terminal_kind(self):
+        """Parity guard: the two pollers must not drift apart again."""
+        from gateway.kanban_watchers_notifier import TERMINAL_KINDS
+        from tui_gateway import session_notifications as sn
+
+        missing = sorted(set(TERMINAL_KINDS) - set(sn._KANBAN_NOTIFY_KINDS))
+        assert missing == [], (
+            "TUI poller would claim-and-drop these kinds (cursor advances, "
+            f"nothing delivered): {missing}"
+        )
+
+    def test_review_requested_is_delivered_to_the_origin_session(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb.claim_task(conn, tid)
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert kb.request_review(
+                conn, tid, summary="PR ready: x\nfull details below",
+                expected_run_id=task.current_run_id,
+            ) is True
+        finally:
+            conn.close()
+
+        first = _collect_kanban_notifications(_session())
+
+        assert len(first) == 1, "review handoff produced no receipt"
+        assert tid in first[0]
+        assert "review" in first[0]
+        assert "PR ready: x" in first[0], "the worker's summary must ride the receipt"
+        # Claimed exactly once — the cursor must advance past the event.
+        assert _collect_kanban_notifications(_session()) == []

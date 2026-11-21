@@ -46,7 +46,7 @@ DEFAULT_STARS_FILE = DEFAULT_OUTPUT_DIR / "plugin-stars.json"
 _GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
 
 CATALOG_TIERS = ("official", "verified", "community")
-CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
+CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "games", "general")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Keep in sync with scripts/validate_plugin_catalog.py (cosmetic fields attached to the pin).
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")

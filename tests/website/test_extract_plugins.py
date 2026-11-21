@@ -185,6 +185,23 @@ def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     assert entries["optout"]["readme"] is False and entries["optout"]["readmeUrl"] == ""
 
 
+def test_games_category_is_kept_in_generated_feed(mod, tmp_path):
+    """The new `games` shelf must survive into plugins.json / plugins-meta.json."""
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "alpha", category="games")
+
+    assert mod.load_catalog_entries(catalog)[0]["category"] == "games"
+
+    out_dir = tmp_path / "api"
+    rc = mod.main(catalog_dir=catalog, output_dir=out_dir)
+    assert rc == 0
+    plugins = json.loads((out_dir / "plugins.json").read_text(encoding="utf-8"))
+    meta = json.loads((out_dir / "plugins-meta.json").read_text(encoding="utf-8"))
+    assert plugins[0]["category"] == "games"
+    assert meta["byCategory"] == {"games": 1}
+
+
 # --------------------------------------------------------------------------
 # Full run: outputs + graceful degradation
 # --------------------------------------------------------------------------

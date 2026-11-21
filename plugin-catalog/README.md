@@ -206,7 +206,7 @@ description: One-line description.
 maintainer: OwnerName
 tier: community             # official | verified | community (default community);
                             # official and verified are set by Nous maintainers only
-category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
+category: memory            # desktop | memory | platform | web | tools | voice | automation | models | games | general
                             # (default desktop) — used by catalog clients for grouping
 requires_hermes: ">=0.19"   # optional; enforced at install and update (also declare it in plugin.yaml)
 docs_url: ""                # optional

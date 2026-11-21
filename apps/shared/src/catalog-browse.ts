@@ -8,6 +8,7 @@ export const PLUGIN_CATEGORIES: Record<string, { label: string; icon: string; bl
   tools: { label: 'Tools', icon: '🛠️', blurb: 'New tools the agent can call' },
   voice: { label: 'Voice', icon: '🎙️', blurb: 'Speech, TTS and realtime audio' },
   automation: { label: 'Automation', icon: '⏱️', blurb: 'Hooks, wake triggers and session automation' },
+  games: { label: 'Games', icon: '🎮', blurb: 'Game data, trackers and community tools' },
   models: { label: 'Models', icon: '✨', blurb: 'Model and inference providers' },
   general: { label: 'General', icon: '📦', blurb: 'Plugins that span several areas' }
 }

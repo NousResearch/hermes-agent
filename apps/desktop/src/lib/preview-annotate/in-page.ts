@@ -29,6 +29,7 @@ export type AnnotatePageEvent =
   | { identity: AnnotatePageIdentity; rect: AnnotatePageRect; type: 'pick-element' }
   | { rect: AnnotatePageRect; type: 'pick-area' }
   | { rect: AnnotatePageRect; type: 'reposition' }
+  | { number: number; type: 'remove-pin' }
   | { type: 'end' }
 
 export interface AnnotatePinChrome {
@@ -58,6 +59,9 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   const win = doc.defaultView
   // Literals, not imports: this function is stringified into the guest page.
   const blue = '#2F80ED'
+  const red = '#E5484D'
+  const removeFill = '#E5E7EB'
+  const removeInk = '#111827'
   const fill = 'rgba(47, 128, 237, 0.14)'
   const markerSize = 22
   const stroke = '2px'
@@ -106,6 +110,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   let areaForced = false
   let liveDraft: { el: Element | null; page: AnnotatePageRect } | null = null
   let livePins: { el: Element | null; number: number; page: AnnotatePageRect; wrap: HTMLElement }[] = []
+  let shownRemove: HTMLElement | null = null
   let raf = 0
   let lastDraftKey = ''
 
@@ -481,6 +486,26 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     return mark
   }
 
+  /** The hidden × that deletes a saved pin: a slightly smaller marker on the top-right corner. */
+  const makeRemove = (number: number): HTMLElement => {
+    const remove = makeMarker(number)
+    remove.removeAttribute('data-annotate-marker')
+    remove.setAttribute('data-annotate-remove', String(number))
+    remove.textContent = '×'
+    const size = markerSize - 4
+    style(remove, {
+      display: 'none',
+      'font-size': '12px',
+      height: `${size}px`,
+      left: 'auto',
+      right: `${-size / 2}px`,
+      top: `${-size / 2}px`,
+      width: `${size}px`
+    })
+
+    return remove
+  }
+
   const ensure = () => {
     if (host && shadow && hoverBox && draftBox && marquee && pinsLayer) {
       return
@@ -545,6 +570,51 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     doc.documentElement.appendChild(host)
   }
 
+  const isOver = (el: HTMLElement, x: number, y: number): boolean => {
+    if (el.style.display === 'none') {
+      return false
+    }
+
+    const r = el.getBoundingClientRect()
+
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+  }
+
+  /**
+   * Hovering a saved pin shows a × on its top-right corner, red while the pointer
+   * is on it. Pins ignore pointer events, so this hit-tests their rects. Returns
+   * the pin's number when the pointer is on its visible ×. No × while a draft is
+   * open: redrawing the pins mid-draft would drop the draft's anchor.
+   */
+  const hoverPins = (x: number, y: number): number | null => {
+    let next = !liveDraft && shownRemove && isOver(shownRemove, x, y) ? shownRemove : null
+    const hot = Boolean(next)
+    // The smallest pin under the pointer wins, so a pin nested inside a bigger one stays reachable.
+    let area = Infinity
+
+    for (const pin of livePins) {
+      const r = pin.wrap.getBoundingClientRect()
+
+      if (!hot && !liveDraft && isOver(pin.wrap, x, y) && r.width * r.height <= area) {
+        area = r.width * r.height
+        next = pin.wrap.querySelector('[data-annotate-remove]') as HTMLElement | null
+      }
+    }
+
+    if (shownRemove && shownRemove !== next) {
+      style(shownRemove, { display: 'none' })
+    }
+
+    if (next) {
+      style(next, { background: hot ? red : removeFill, color: hot ? '#fff' : removeInk, display: 'flex' })
+    }
+
+    shownRemove = next
+    host?.style.setProperty('cursor', hot ? 'pointer' : 'crosshair')
+
+    return hot && next ? Number(next.getAttribute('data-annotate-remove')) : null
+  }
+
   const onMove = (event: MouseEvent) => {
     if (!hoverBox) {
       return
@@ -562,7 +632,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
       return
     }
 
-    const hit = underPoint(event.clientX, event.clientY)
+    const hit = hoverPins(event.clientX, event.clientY) === null ? underPoint(event.clientX, event.clientY) : null
 
     if (!hit) {
       style(hoverBox, { display: 'none' })
@@ -581,6 +651,21 @@ export function annotateInPage(doc: Document): AnnotateInPage {
 
     event.preventDefault()
     event.stopPropagation()
+
+    const remove = hoverPins(event.clientX, event.clientY)
+
+    if (remove !== null) {
+      emit({ number: remove, type: 'remove-pin' })
+
+      return
+    }
+
+    // A pick is starting: the × it may have shown is not part of it.
+    if (shownRemove) {
+      style(shownRemove, { display: 'none' })
+      shownRemove = null
+    }
+
     drag = { x: event.clientX, y: event.clientY }
     areaForced = event.shiftKey
   }
@@ -711,6 +796,8 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     }
 
     const previous = livePins
+    shownRemove = null
+    host?.style.setProperty('cursor', 'crosshair')
     pinsLayer.replaceChildren()
     livePins = []
 
@@ -738,6 +825,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
       paintOutline(wrap, true)
       place(wrap, el ? box(el) : toView(page))
       wrap.appendChild(makeMarker(pin.number))
+      wrap.appendChild(makeRemove(pin.number))
       pinsLayer.appendChild(wrap)
       livePins.push({ el, number: pin.number, page, wrap })
     }
@@ -843,6 +931,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     drag = null
     liveDraft = null
     livePins = []
+    shownRemove = null
     waiting = null
     queued.length = 0
   }

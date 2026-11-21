@@ -7,6 +7,19 @@ afterEach(() => {
   document.querySelectorAll('hermes-annotate').forEach(node => node.remove())
 })
 
+/** A fixed client rect: jsdom has no layout. */
+const rectAt = (left: number, top: number, width: number, height: number) => () => ({
+  bottom: top + height,
+  height,
+  left,
+  right: left + width,
+  toJSON: () => ({}),
+  top,
+  width,
+  x: left,
+  y: top
+})
+
 describe('annotateInPage overlay', () => {
   it('installs a host and tears it down completely', () => {
     const api = annotateInPage(document)
@@ -412,6 +425,103 @@ describe('annotateInPage overlay', () => {
 
     expect(wheel.defaultPrevented).toBe(true)
     expect(scroller.scrollTop).toBe(30)
+    api.teardown()
+  })
+
+  it('deletes a saved pin from the × its box shows on hover', async () => {
+    const word = document.createElement('span')
+    document.body.appendChild(word)
+    document.elementFromPoint = () => word
+
+    const api = annotateInPage(document)
+    api.install()
+    api.showPins([{ kind: 'area', number: 2, rect: { height: 40, width: 120, x: 20, y: 80 } }])
+
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const wrap = host.shadowRoot!.querySelector('[data-annotate-pin="2"]') as HTMLElement
+    const remove = wrap.querySelector('[data-annotate-remove]') as HTMLElement
+
+    wrap.getBoundingClientRect = rectAt(20, 80, 120, 40)
+    remove.getBoundingClientRect = rectAt(129, 69, 22, 22)
+
+    const move = (x: number, y: number) =>
+      host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }))
+
+    expect(remove.style.display).toBe('none')
+    move(60, 100)
+    expect(remove.style.display).toBe('flex')
+    expect(api.getMarkerNumbers()).toEqual([2])
+    const resting = remove.style.background
+    move(140, 80)
+    expect(host.style.cursor).toBe('pointer')
+    expect(remove.style.background).not.toBe(resting)
+
+    const pending = api.wait()
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 140, clientY: 80 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 140, clientY: 80 }))
+
+    await expect(pending).resolves.toEqual({ number: 2, type: 'remove-pin' })
+    await expect(Promise.race([api.wait(), Promise.resolve('nothing else')])).resolves.toBe('nothing else')
+    api.teardown()
+  })
+
+  it('offers the × of the smallest pin under the pointer', () => {
+    const api = annotateInPage(document)
+    api.install()
+    api.showPins([
+      { kind: 'area', number: 1, rect: { height: 20, width: 60, x: 40, y: 40 } },
+      { kind: 'area', number: 2, rect: { height: 200, width: 300, x: 10, y: 10 } }
+    ])
+
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const pin = (n: number) => host.shadowRoot!.querySelector(`[data-annotate-pin="${n}"]`) as HTMLElement
+    pin(1).getBoundingClientRect = rectAt(40, 40, 60, 20)
+    pin(2).getBoundingClientRect = rectAt(10, 10, 300, 200)
+    const removeOf = (n: number) => pin(n).querySelector('[data-annotate-remove]') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 50, clientY: 50 }))
+
+    expect(removeOf(1).style.display).toBe('flex')
+    expect(removeOf(2).style.display).toBe('none')
+    api.teardown()
+  })
+
+  it('offers no × while a comment draft is open', () => {
+    const word = document.createElement('span')
+    document.body.appendChild(word)
+    document.elementFromPoint = () => word
+
+    const api = annotateInPage(document)
+    api.install()
+    api.showPins([{ kind: 'area', number: 1, rect: { height: 40, width: 120, x: 20, y: 80 } }])
+
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const wrap = host.shadowRoot!.querySelector('[data-annotate-pin="1"]') as HTMLElement
+    wrap.getBoundingClientRect = rectAt(20, 80, 120, 40)
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 300, clientY: 300 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300, clientY: 300 }))
+    host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 60, clientY: 100 }))
+
+    expect((wrap.querySelector('[data-annotate-remove]') as HTMLElement).style.display).toBe('none')
+    api.teardown()
+  })
+
+  it('ignores a click where the × would be before it shows', async () => {
+    document.elementFromPoint = () => null
+
+    const api = annotateInPage(document)
+    api.install()
+    api.showPins([{ kind: 'area', number: 1, rect: { height: 40, width: 120, x: 20, y: 80 } }])
+
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const remove = host.shadowRoot!.querySelector('[data-annotate-remove]') as HTMLElement
+    remove.getBoundingClientRect = rectAt(129, 69, 22, 22)
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 140, clientY: 80 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 140, clientY: 80 }))
+
+    await expect(Promise.race([api.wait(), Promise.resolve('nothing sent')])).resolves.toBe('nothing sent')
     api.teardown()
   })
 })

@@ -19,6 +19,7 @@ import pytest
     ("env_file", "service_identity_unverified"), ("dynamic_user", "service_identity_unverified"),
     ("wrong_command", "service_identity_unverified"), ("command_profile", "profile_mismatch"),
     ("dropin_home", "profile_mismatch"), ("manager_home", "profile_mismatch"),
+    ("manager_quoting", "deadline"), ("manager_quoted_home", "deadline"),
 ])
 def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypatch, case, reason):
     from hermes_cli import gateway_runtime as runtime
@@ -80,6 +81,14 @@ def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypa
     if case == "manager_home":
         props['Environment'] = 'HERMES_SUPERVISED_CHILD=1'
         manager_env = f'HERMES_HOME={tmp_path / "other"}\n'
+    if case == "manager_quoting":
+        # Session variables (CachyOS fish MANPAGER, libguestfs PS1) as systemctl prints them (#142207).
+        manager_env = "\n".join([r"MANPAGER=$'sh -c \'col -bx | bat -l man -p\''",
+                                 r"GUESTFISH_PS1=$'\\[\\e[1;32m\\]><fs>\\[\\e[0;31m\\] '", "TABBED=$'a\\tb\\001'"]) + "\n"
+    if case == "manager_quoted_home":
+        # The space in "custom root" makes systemctl quote the home; identity binds the decoded path.
+        props['Environment'] = 'HERMES_SUPERVISED_CHILD=1'
+        manager_env = f"HERMES_HOME=$'{home}'\n"
     if case == "default":
         # An older default install may rely on the user manager's HOME.
         props['Environment'] = 'HERMES_SUPERVISED_CHILD=1'

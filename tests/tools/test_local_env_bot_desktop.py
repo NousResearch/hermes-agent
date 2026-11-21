@@ -52,3 +52,114 @@ def test_routing_does_not_stamp_bot_desktop_activity(monkeypatch):
     _make_run_env({})
     # A plain terminal command is not screen use; idle_stop_minutes must stay effective.
     assert stamps == []
+
+
+_SCREEN = {
+    "DISPLAY": ":20",
+    "XAUTHORITY": "/run/hermes/bot-desktop/xauth",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/hermes/bot-desktop/bus",
+}
+
+
+def test_background_spawn_gets_the_screen_env_too(monkeypatch):
+    """#150076: a background spawn built its env without the overlay, so the GUI app it launched
+    died with ``cannot open display`` while the same command in the foreground opened on the screen."""
+    from tools.process_registry import ProcessRegistry
+
+    _publish(monkeypatch, _SCREEN)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    env = ProcessRegistry._spawn_env({})
+    assert env["DISPLAY"] == ":20"
+    assert env["XAUTHORITY"] == _SCREEN["XAUTHORITY"]
+    assert env["DBUS_SESSION_BUS_ADDRESS"] == _SCREEN["DBUS_SESSION_BUS_ADDRESS"]
+    assert "WAYLAND_DISPLAY" not in env
+
+
+def test_background_spawn_leaves_the_seat_env_alone(monkeypatch):
+    from tools.process_registry import ProcessRegistry
+
+    _publish(monkeypatch, {})
+    monkeypatch.setenv("DISPLAY", ":0")
+    env = ProcessRegistry._spawn_env({})
+    assert env["DISPLAY"] == ":0"
+
+
+def test_both_child_env_lanes_apply_the_same_overlay(monkeypatch):
+    """One producer for both lanes: whatever a foreground command gets, a background spawn gets — the
+    asymmetry is what the report was about, and a second inlined copy is how it comes back."""
+    from tools.process_registry import ProcessRegistry
+
+    _publish(monkeypatch, _SCREEN)
+    foreground = _make_run_env({})
+    background = ProcessRegistry._spawn_env({})
+    assert {k: foreground.get(k) for k in _SCREEN} == {k: background.get(k) for k in _SCREEN}
+
+
+# The launcher publishes its own private XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_CACHE_HOME next to the
+# display keys (tools/bot_desktop/launcher.sh). Those must not reach a terminal child: a CLI would read
+# and write the Bot Desktop profile's config/data/cache instead of the session's (#131495; the allowlist
+# is dskwe's #131502).
+_SESSION_XDG = {
+    "XDG_CONFIG_HOME": "/home/u/.config",
+    "XDG_DATA_HOME": "/home/u/.local/share",
+    "XDG_CACHE_HOME": "/home/u/.cache",
+}
+_DESKTOP_XDG = {
+    "XDG_CONFIG_HOME": "/run/hermes/bot-desktop/xdg",
+    "XDG_DATA_HOME": "/run/hermes/bot-desktop/xdg/.local-share",
+    "XDG_CACHE_HOME": "/run/hermes/bot-desktop/xdg/.cache",
+}
+
+
+def _published_with_xdg():
+    return {**_SCREEN, **_DESKTOP_XDG}
+
+
+def _lane_env(lane):
+    if lane == "foreground":
+        return _make_run_env({})
+    from tools.process_registry import ProcessRegistry
+
+    return ProcessRegistry._spawn_env({})
+
+
+@pytest.mark.parametrize("lane", ["foreground", "background"])
+def test_screen_overlay_preserves_session_xdg_directories(monkeypatch, lane):
+    for key, value in _SESSION_XDG.items():
+        monkeypatch.setenv(key, value)
+    _publish(monkeypatch, _published_with_xdg())
+
+    env = _lane_env(lane)
+    assert env["DISPLAY"] == ":20", "display parity is the point of the overlay"
+    assert {k: env.get(k) for k in _SESSION_XDG} == _SESSION_XDG, (
+        "the published XDG dirs are the desktop's private ones; the session's own must survive")
+
+
+@pytest.mark.parametrize("lane", ["foreground", "background"])
+def test_screen_overlay_never_adds_the_desktop_xdg_dirs(monkeypatch, lane):
+    for key in _SESSION_XDG:
+        monkeypatch.delenv(key, raising=False)
+    _publish(monkeypatch, _published_with_xdg())
+
+    env = _lane_env(lane)
+    assert env["DISPLAY"] == ":20"
+    leak = {k: env.get(k) for k in _DESKTOP_XDG if k in env}
+    assert leak == {}, "a terminal command must not inherit the desktop's private XDG dirs"
+
+
+@pytest.mark.parametrize("lane", ["foreground", "background"])
+def test_a_sandbox_hosted_screen_publishes_nothing_to_a_host_child(monkeypatch, lane):
+    """The overlay reads host_published_env(), not published_env(): while the screen lives inside the
+    terminal backend, the published values name a display, an Xauthority file and XDG dirs on the
+    sandbox side, which a process started on this machine cannot open."""
+    from tools.bot_desktop import sandbox_host
+
+    _publish(monkeypatch, _SCREEN)
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: {"backend": "FakeSandbox"})
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("XAUTHORITY", raising=False)
+
+    env = _lane_env(lane)
+    assert env["DISPLAY"] == ":0"
+    assert env.get("XAUTHORITY", "") != _SCREEN["XAUTHORITY"]

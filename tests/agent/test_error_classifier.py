@@ -922,6 +922,44 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_expired_sealed_reasoning_reaches_replay_strip(self):
+        """Meta expires its sealed reasoning blobs on a TTL; a long session then replays stale ones.
+
+        The 400 must take the same one-shot replay strip as the other invalid encrypted-reasoning
+        rejections (retry on the same provider). Falling through to format_error punts the turn to
+        the fallback provider every few minutes.
+        """
+        message = "HTTP 400: reasoning `encrypted_content` has expired"
+        e = MockAPIError(
+            message,
+            status_code=400,
+            body={"error": {"message": "reasoning `encrypted_content` has expired",
+                            "type": "invalid_request_error", "code": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.6")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    @pytest.mark.parametrize("message", [
+        "reasoning encrypted_content is malformed",
+        "the API key expired",
+    ], ids=["encrypted-without-expired", "expired-without-encrypted"])
+    def test_expired_reasoning_match_stays_narrow(self, message):
+        """Only an EXPIRED encrypted-reasoning replay takes the strip path.
+
+        Either word alone must keep its previous classification, so unrelated 400s are not
+        silently retried with their reasoning stripped.
+        """
+        e = MockAPIError(
+            "Error code: 400 - " + message,
+            status_code=400,
+            body={"error": {"message": message, "type": "invalid_request_error",
+                            "code": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.6")
+        assert result.reason != FailoverReason.invalid_encrypted_content
+
     # ── Reasoning-mandatory route rejecting a disable ──
 
     def test_reasoning_mandatory_400_is_retryable_not_format_error(self):

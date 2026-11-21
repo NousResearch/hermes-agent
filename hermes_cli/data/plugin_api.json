@@ -96,6 +96,13 @@
       ]
     },
     {
+      "source": "Kanban dashboard plugin pickup-control contract",
+      "entries": [
+        "hermes_cli.kanban_control:control_status",
+        "hermes_cli.kanban_control:set_control_scope"
+      ]
+    },
+    {
       "source": "developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements",
       "entries": [
         "persistence",

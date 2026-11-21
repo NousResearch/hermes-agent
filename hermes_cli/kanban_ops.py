@@ -91,6 +91,22 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
+    if res.control_state != "running":
+        payload = {
+            "control_state": res.control_state,
+            "control_error": res.control_error,
+            "spawned": [],
+        }
+        if getattr(args, "json", False):
+            _print_json(payload, ascii=True)
+        elif res.control_state == "paused":
+            print("Dispatch held: new Kanban pickups are paused")
+        else:
+            print(
+                "Dispatch refused: Kanban pickup control state is unknown"
+                + (f" ({res.control_error})" if res.control_error else ""),
+            )
+        return 0 if res.control_state == "paused" else 2
     if getattr(args, "json", False):
         _print_json({
             **{k: getattr(res, k)
@@ -113,6 +129,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
+            "control_state": res.control_state,
+            "control_error": res.control_error,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")

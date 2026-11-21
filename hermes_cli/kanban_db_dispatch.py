@@ -26,6 +26,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_control import claim_refusal_state, dispatch_hold
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 from hermes_cli._startup_fast import project_root_str
 
@@ -150,18 +151,11 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    control_state: str = "running"; control_error: Optional[str] = None
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
-    """One line naming why the tick(s) held ready work back, or ``""``.
-
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
-    """
+    """Name per-task respawn guards and tick-level holds (#111910)."""
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
     for res in results:
@@ -2122,10 +2116,12 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task  # reassigned since the gates: CAS loses (#147534)
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, expect_assignee=assignee)
-    if claimed is None:
+    claim = _kb.claim_review_task_result if lane == "review" else _kb.claim_task_result
+    attempt = claim(conn, task_id, ttl_seconds=ttl_seconds, expect_assignee=assignee)
+    if attempt.task is None:
+        result.control_state, result.control_error = claim_refusal_state(conn, attempt.reason)
         return False
+    claimed = attempt.task
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -2346,6 +2342,10 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    held = dispatch_hold(conn)
+    if held is not None:
+        result.control_state, result.control_error = held.state, held.error_code
+        return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

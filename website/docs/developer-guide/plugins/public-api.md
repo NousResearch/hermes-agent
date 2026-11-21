@@ -101,6 +101,8 @@ with a name allows that one name only.
 | `tools.browser_supervisor_capture` | whole module | developer-guide / plugins docs |
 | `tools.computer_use.backend` | whole module | developer-guide / plugins docs |
 | `tools.registry` | whole module | developer-guide / plugins docs |
+| `hermes_cli.kanban_control` | `control_status` | Kanban dashboard plugin pickup-control contract |
+| `hermes_cli.kanban_control` | `set_control_scope` | Kanban dashboard plugin pickup-control contract |
 | `persistence` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `persistence.conversation.messages` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `persistence.conversation.search` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |

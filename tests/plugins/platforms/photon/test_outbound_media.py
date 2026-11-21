@@ -128,3 +128,48 @@ async def test_standalone_send_text_then_attachments(
     assert posted[1][1]["path"] == str(img)
     assert posted[1][1]["kind"] == "attachment"
     assert posted[1][1]["mimeType"] == "image/png"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "is_voice, expected_kind",
+    [(False, "attachment"), (True, "voice")],
+    ids=["plain-audio", "audio-as-voice"],
+)
+async def test_media_dispatch_sends_plain_audio_as_an_attachment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, is_voice: bool, expected_kind: str
+) -> None:
+    """The base media dispatch routes every audio MEDIA file to ``send_voice(..., is_voice=...)``.
+    A plain one (music, a sound effect: no ``[[audio_as_voice]]``) is a normal attachment, as
+    ``_standalone_send`` already sends it; only a voice-intent file becomes an iMessage voice note."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import Platform, SessionSource
+
+    _patch_safe_path(monkeypatch)
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+    clip = tmp_path / "door_knock.mp3"
+    clip.write_bytes(b"ID3\x04" + b"\x00" * 32)
+    event = MessageEvent(text="", source=SessionSource(platform=Platform("photon"), chat_id="any;-;+15551234567"))
+    results: list = []
+
+    await adapter._deliver_media_attachments(
+        event, [(str(clip), is_voice)], [], force_document_attachments=False, human_delay=0,
+        metadata={}, record_delivery=results.append)
+
+    assert [r.success for r in results] == [True]
+    assert [(path, body["path"], body["kind"]) for path, body in calls] == [
+        ("/send-attachment", str(clip), expected_kind)]
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_reply_stays_a_voice_note(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Auto-TTS (``play_tts``) passes no ``is_voice`` flag: it is speech and stays a voice note."""
+    _patch_safe_path(monkeypatch)
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+    speech = tmp_path / "reply.m4a"
+    speech.write_bytes(b"\x00\x00\x00\x18ftypM4A ")
+
+    assert (await adapter.play_tts("any;-;+15551234567", str(speech))).success is True
+    assert [body["kind"] for _path, body in calls] == ["voice"]

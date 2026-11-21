@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -144,3 +146,45 @@ def test_per_profile_isolation(tmp_path):
         b.close()
 
 
+
+
+def _git_accepts(ref: str) -> bool:
+    """Ask git itself, so the test cannot drift from git's own rules."""
+    if shutil.which("git") is None:  # pragma: no cover - git is a hard dependency elsewhere
+        pytest.skip("git not installed")
+    return (
+        subprocess.run(
+            ["git", "check-ref-format", "--branch", ref], capture_output=True, check=False
+        ).returncode
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "verify: word_budget.sh re-bites",  # a dot inside the slug
+        "review the docs and OpenAPI.",  # a trailing dot
+        "gate flake: concurrent go test ./... runs",  # '..' anywhere
+        "Fix a.lock handling",  # '.lock' material
+        "a title long enough to be cut at forty characters and then some",  # truncation
+    ],
+)
+def test_branch_name_for_never_emits_a_ref_git_rejects(conn, title):
+    pid = pdb.create_project(conn, name="App", folders=["/www/app"])
+    project = pdb.get_project(conn, pid)
+
+    ref = pdb.branch_name_for(project, "t_abc123", title=title)
+
+    assert _git_accepts(ref), f"git rejects {ref!r} for title {title!r}"
+    assert ".." not in ref
+    assert not ref.endswith((".", ".lock"))
+
+
+def test_branch_name_for_is_unchanged_for_a_plain_title(conn):
+    pid = pdb.create_project(conn, name="App", folders=["/www/app"])
+    project = pdb.get_project(conn, pid)
+
+    assert pdb.branch_name_for(project, "t_abc123", title="Fix the thing") == (
+        "app/t_abc123-fix-the-thing"
+    )

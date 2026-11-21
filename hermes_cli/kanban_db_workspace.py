@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -686,6 +687,25 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _sanitize_branch_ref(name: str) -> str:
+    """Return a ref git accepts, changing as little as possible.
+
+    Cards created before the slug fix — and any card carrying a hand-written
+    ``branch_name`` — can hold a name git refuses: ``..`` anywhere, a trailing
+    ``.``, or a ``.lock`` suffix (issues #136683, #147233). Sanitising at
+    materialisation, not only in the generator, lets those cards spawn instead of
+    failing on every retry; the dispatcher persists whatever this returns. A name
+    git already accepts passes through unchanged.
+    """
+    s = str(name or "").strip().replace(" ", "-")
+    if "." in s:
+        s = re.sub(r"\.+", "-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-/")
+    while s.endswith(".lock"):
+        s = s[: -len(".lock")].rstrip("-/")
+    return s or "wt/task"
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -718,7 +738,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     every worktree lands under a board-owned repo (``<repo>/.worktrees/<id>``)
     instead of the dispatcher's incidental CWD (whatever dir the gateway was
     launched from); with no anchor configured we fail loudly rather than guess."""
-    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    branch_name = _sanitize_branch_ref((task.branch_name or "").strip() or f"wt/{task.id}")
     if not task.workspace_path:
         board_slug = board if board else _kb.get_current_board()
         board_default = (_kb.read_board_metadata(board_slug).get("default_workdir") or "").strip()

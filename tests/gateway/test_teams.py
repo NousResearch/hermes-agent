@@ -1221,3 +1221,38 @@ async def test_shortened_card_preview_says_where_the_full_command_is():
         await adapter.send_exec_approval(chat_id="c1", command="echo " + "C" * 5000, session_key="s1")
     card_text = " ".join(texts)
     assert "Preview shortened" in card_text and "5005" in card_text
+
+
+# ---------------------------------------------------------------------------
+# Tests: send() reply threading
+# ---------------------------------------------------------------------------
+
+class TestTeamsSendReplyThreading:
+    """``reply_to`` is the triggering message. In a channel thread that is a reply, not the thread
+    root, so a threaded ``reply()`` there targets a thread that does not exist."""
+
+    THREAD = "19:chan@thread.tacv2;messageid=1700000000001"
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="sent-1"))
+        adapter._app.reply = AsyncMock(return_value=MagicMock(id="sent-2"))
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_reply_in_a_channel_thread_sends_to_the_thread_itself(self):
+        adapter = self._make_adapter()
+        result = await adapter.send(self.THREAD, "hello", reply_to="1700000000002")
+        assert result.success
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert adapter._app.send.await_args.args[0] == self.THREAD
+
+    @pytest.mark.asyncio
+    async def test_reply_to_a_new_channel_post_opens_its_thread(self):
+        adapter = self._make_adapter()
+        result = await adapter.send("19:chan@thread.tacv2", "hello", reply_to="1700000000003")
+        assert result.success
+        adapter._app.reply.assert_awaited_once()
+        assert adapter._app.reply.await_args.args[:2] == ("19:chan@thread.tacv2", "1700000000003")

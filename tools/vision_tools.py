@@ -969,9 +969,9 @@ VISION_ANALYZE_SCHEMA = {
         # Dieted (#95681): routing mechanics (native attach vs aux-model text fallback) removed — the route
         # is automatic and the native path's own tool result says "you can see it natively now"; the schema
         # doesn't need to predict plumbing.
-        "Load an image into the conversation so you can see it. Call it "
-        "any time the user references an image — then answer from what "
-        "you see."
+        "Inspect an image when you need visual information that is not "
+        "already available, such as exact text or small details. If the image "
+        "or an existing description is enough to answer the request, answer directly."
     ),
     "parameters": {
         "type": "object",

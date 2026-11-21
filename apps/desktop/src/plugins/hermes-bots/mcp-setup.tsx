@@ -347,7 +347,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
   if (phase === 'error') {
     return (
-      <span className="ml-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
+      <span className="ml-1.5 text-[0.65rem] text-destructive">
         {(message || b.tools.setupFailed) + ' '}
         <Button className="underline" onClick={() => setPhase('idle')} size="inline" variant="link">
           {t.common.retry}

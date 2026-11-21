@@ -226,7 +226,7 @@ export function QuickEntryApp() {
           </select>
         </div>
         {state.error ? (
-          <div role="alert" style={{ color: 'var(--destructive, #ef4444)', fontSize: 11 }}>
+          <div role="alert" style={{ color: 'var(--dt-destructive)', fontSize: 11 }}>
             {state.error}
           </div>
         ) : null}

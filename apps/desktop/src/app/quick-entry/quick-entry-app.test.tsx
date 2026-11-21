@@ -1,6 +1,6 @@
 /** Regression coverage for #77429: native picker options must paint a readable surface. */
 
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { QuickEntryStatePush } from '@/store/quick-entry'
@@ -11,9 +11,11 @@ const initialHermesDesktop = window.hermesDesktop
 
 describe('QuickEntryApp', () => {
   let pushState: ((payload: QuickEntryStatePush) => void) | undefined
+  let submit: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     pushState = undefined
+    submit = vi.fn()
     window.hermesDesktop = {
       quickEntry: {
         dismiss: vi.fn(),
@@ -24,7 +26,7 @@ describe('QuickEntryApp', () => {
           return vi.fn()
         }),
         onLateResult: vi.fn(() => vi.fn()),
-        submit: vi.fn()
+        submit
       }
     } as never
   })
@@ -52,5 +54,26 @@ describe('QuickEntryApp', () => {
       expect(option.style.color).toBe('var(--ui-text-primary, var(--foreground))')
       expect(option.style.backgroundColor).toBe('var(--ui-bg-elevated, var(--background))')
     }
+  })
+
+  it('paints a failed submit with the theme destructive token', async () => {
+    submit.mockResolvedValueOnce({
+      message: 'The gateway went away.',
+      ok: false
+    })
+
+    render(<QuickEntryApp />)
+
+    act(() => {
+      pushState?.({ connected: true, sessions: [] })
+    })
+
+    const input = screen.getByRole('textbox', { name: 'Quick Entry' })
+    fireEvent.change(input, { target: { value: 'ship it' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').style.color).toBe('var(--dt-destructive)')
+    })
   })
 })

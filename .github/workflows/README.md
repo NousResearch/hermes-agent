@@ -171,7 +171,7 @@ GET and the commit 404s.
 |---|---|
 | `pull_request` (any branch, any path) | The classifier selects lanes from the PR diff. E2E lanes are forced **off**. |
 | `push` to `main` | Every lane is on (a push has no PR diff, so the classifier fails open). E2E lanes are forced **off**. PR-only jobs skip. |
-| `workflow_dispatch` | Every lane is on, **E2E included**. Inputs: `release` (strict gate), `strict_acceptance`. |
+| `workflow_dispatch` | Every lane is on, **E2E included**. Inputs: `release` (strict gate), `strict_acceptance`, `upgrade_base`. |
 | `workflow_call` from `stable-release.yml` or `canary-e2e.yml` | `release: true` and `commit: <claim or canary commit>`. Every lane is forced on, E2E included, with the strict gate. |
 
 There are no `paths:` filters: CI starts on every PR. The `detect` job
@@ -224,7 +224,7 @@ of every suite that reads it.
 | Python tests | `tests.yml` | `python` or `e2e` or `e2e_upgrade` | none of those lanes |
 | ↳ `Run tests (1/2, 2/2)` | | always inside `tests.yml` | |
 | ↳ `e2e` | | `e2e` lane (release or dispatch) | every PR and every push to `main` |
-| ↳ `e2e-upgrade-plan`, `e2e-upgrade (shard)` | | `e2e_upgrade` lane (release or dispatch) | every PR and every push |
+| ↳ `e2e-upgrade-plan`, `e2e-upgrade (shard)` (`(shard from <base>)` per `upgrade_base` entry) | | `e2e_upgrade` lane (release or dispatch) | every PR and every push |
 | OS-specific tests | `tests-os.yml` | `python` or `desktop_updater` or `e2e` or `e2e_upgrade` | none of those |
 | ↳ macOS (2 slices), Windows x64, Windows arm64 (2 slices) | | always inside `tests-os.yml`; the real Windows hand-off tests only with `desktop_updater` | |
 | ↳ Windows install + update E2E | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
@@ -321,7 +321,20 @@ gh workflow run ci.yaml --ref my-branch -f release=true
 
 # Acceptance: let tracked known_failure gaps FAIL instead of xfail
 gh workflow run ci.yaml --ref my-branch -f strict_acceptance=upd-txn
+
+# Upgrade rehearsal: the e2e-upgrade shards once per named start version
+gh workflow run ci.yaml --ref my-branch -f upgrade_base=v0.21.6,v0.22.7,v0.23.0,v0.23.3
 ```
+
+`upgrade_base` takes release tags (or commits, or an updater generation name:
+`by-path`, `handoff`, `pre-handoff`), comma-separated. `e2e-upgrade-plan` turns
+it into one job per start for every shard whose start follows it
+(`e2e-upgrade (core from v0.23.0)`, ...), with `HERMES_E2E_UPGRADE_BASE` set per
+job; empty keeps the default start, the newest release before HEAD. Name every
+start in ONE dispatch: a second dispatch on the same branch cancels the first.
+The variable moves the start of `test_upgrade_path.py` (shard `core`), the
+`handoff` suite's `n1` column and the `git` cells that use the default base;
+`hosts` (no start), `network` and `pm` (a fixed updater generation) run once.
 
 To get the Docker and Nix slow lanes on a PR without a dispatch, add the
 `run-e2e` label (see [`label-rerun.yml`](#pr-helpers)). The label does **not**

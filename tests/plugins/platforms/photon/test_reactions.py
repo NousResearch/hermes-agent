@@ -193,3 +193,24 @@ async def test_inbound_reaction_on_bot_message_routed(
     assert event.reply_to_is_own_message is True
 
 
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_falls_back_to_sent_text_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """spectrum often can't hydrate targetText for our own sends; use the local index."""
+    from plugins.platforms.photon import adapter as photon_adapter
+
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture_handled(adapter, monkeypatch)
+    monkeypatch.setattr(
+        photon_adapter, "_lookup_sent_text",
+        lambda chat_id, message_id: "indexed reply" if message_id == "bot-msg-1" else None,
+    )
+
+    await adapter._dispatch_inbound(_reaction_event(emoji=_THUMBS_UP, target_text=None))
+
+    assert len(captured) == 1
+    assert captured[0].reply_to_message_id == "bot-msg-1"
+    assert captured[0].reply_to_text == "indexed reply"

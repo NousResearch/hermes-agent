@@ -38,6 +38,22 @@ class TestZeroMatchProbe:
         assert "literal match" in r.get("warning", "")
         assert "meta.py" in r.get("warning", "")
 
+    def test_timed_out_search_skips_probes(self, proj, monkeypatch):
+        # A timed-out zero is not a real zero: each probe re-walks the same tree and
+        # times out too (60s search + 2x30s probes measured on a 3 GB root).
+        from tools.file_operations import ShellFileOperations
+        from tools.file_operations_common import SearchResult
+
+        monkeypatch.setattr(ShellFileOperations, "_has_command", lambda self, cmd: True)
+        monkeypatch.setattr(ShellFileOperations, "_search_with_rg", lambda self, *a, **k: SearchResult(
+            total_count=0, truncated=True, limit_reason="search_timeout"))
+        probes = []
+        monkeypatch.setattr(ShellFileOperations, "_zero_match_probe",
+                            lambda self, *a, **k: probes.append(a) or "probe hint")
+        r = json.loads(search_tool("anything", path=str(proj / "proj"), task_id="t-zm-timeout"))
+        assert probes == []
+        assert "probe hint" not in r.get("warning", "")
+
     def test_true_zero_match_no_hint(self, proj):
         r = json.loads(search_tool("zzz_totally_absent_zzz", path=str(proj / "proj"), task_id="t-zm"))
         assert r["total_count"] == 0

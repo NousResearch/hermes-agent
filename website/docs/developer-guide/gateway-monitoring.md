@@ -333,8 +333,9 @@ When it suspends its own machine under scale-to-zero, it starts one more
 - **Replies.** `2xx` is stored. `429`/`503` wait for `Retry-After`, at most 10
   minutes. `401`/`403` back off 2, 4, 8, 16, 32 and then 60 minutes until a
   report is stored again. A network error or another `5xx` gets one retry a few
-  seconds later. The reply body is never read: a receiver can set the interval
-  and ask for a wait, and cannot steer the gateway in any other way.
+  seconds later. A goodbye is never retried, but a wait asked for in its reply
+  holds the next beat. The reply body is never read: a receiver can set the
+  interval and ask for a wait, and cannot steer the gateway in any other way.
 
 What a report carries, and nothing else:
 

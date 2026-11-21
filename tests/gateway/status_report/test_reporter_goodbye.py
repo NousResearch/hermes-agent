@@ -337,6 +337,48 @@ async def test_a_wait_asked_for_by_a_beat_answered_after_the_goodbye_is_kept(clo
 
     assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
 
+@pytest.mark.parametrize(("reply", "wait_s"), [
+    (Reply(503, {"Retry-After": "300"}), 300),
+    (Reply(401), RESPONSES["rejected_backoff_s"][0]),
+], ids=["asked to wait", "rejected"])
+async def test_a_wait_asked_for_in_the_goodbye_reply_holds_the_next_beat(clock, reply, wait_s):
+    """The goodbye is never retried, but a wait its reply asks for holds as it does after a beat:
+    a machine that wakes soon after, or never froze, does not beat at the end of the quiet minute."""
+    receiver = Receiver()
+    receiver.reply_with(Reply(), reply)
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+
+    reporter.goodbye()
+    await settle()
+    clock.advance(wait_s - 1)
+    await reporter.poll()
+    assert receiver.kinds == ["beat", "goodbye"]
+    clock.advance(2)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "goodbye", "beat"]
+
+async def test_a_wait_asked_for_in_the_goodbye_reply_outlasts_a_beat_answered_after_it(clock):
+    """A beat in flight when the goodbye went out settles at the quiet minute, whichever reply comes
+    back first; the goodbye's wait still holds."""
+    receiver = Receiver()
+    receiver.reply_with(Reply(), Reply(), Reply(503, {"Retry-After": "300"}))
+    reporter = _goodbye_while_the_second_beat_is_in_flight(receiver)
+    await reporter.poll()
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+    await settle()
+    assert receiver.kinds == ["beat", "beat", "goodbye"]
+
+    clock.advance(GOODBYE_QUIET_S + 1)
+    await reporter.poll()
+    assert receiver.kinds == ["beat", "beat", "goodbye"]
+    clock.advance(300 - GOODBYE_QUIET_S)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
+
 @pytest.mark.parametrize("held_off", [Reply(401), Reply(503, {"Retry-After": "300"})], ids=["rejected", "asked to wait"])
 async def test_no_goodbye_while_the_receiver_holds_the_sender_off(clock, held_off):
     receiver = Receiver()

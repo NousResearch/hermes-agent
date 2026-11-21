@@ -176,7 +176,8 @@ class StatusReporter:
         self._no_beat_before = time.time() + _GOODBYE_QUIET_S
         # The next beat is due as soon as the quiet minute ends, not at the interval: a machine that
         # froze beats on waking, and one that woke soon after (or never froze) says so within a
-        # minute, however long an interval the receiver set.
+        # minute, however long an interval the receiver set. A wait asked for in the goodbye's reply
+        # moves it later (_hold_after_goodbye).
         self._due_at = self._no_beat_before
         # Its seq is taken now, below any beat after it: a goodbye held up past a wake must not
         # outrank the wake beat at the receiver.
@@ -203,6 +204,7 @@ class StatusReporter:
             return
         outcome = await self._off_loop(
             post_report, self._target, body, timeout=_GOODBYE_TIMEOUT_S, opener=self._opener)
+        self._hold_after_goodbye(outcome)
         logger.info("status report: goodbye %s (%s)", outcome.kind, outcome.status or "no reply")
 
     async def _become_sender(self) -> bool:
@@ -277,6 +279,27 @@ class StatusReporter:
         with bind_state(scope_for_profile(self._launch_home), secrets={}, terminal=False):
             return self._read_source()
 
+    def _wait_asked_for(self, outcome: Outcome) -> Optional[float]:
+        """The wait a reply holds the sender off for, or None: a usable ``Retry-After`` on a throttle,
+        the next step of the backoff on a rejection (counted here)."""
+        if outcome.kind == "throttled" and outcome.retry_after_s is not None:
+            return min(outcome.retry_after_s, _RETRY_AFTER_MAX_S)
+        if outcome.kind == "rejected":
+            self._rejections += 1
+            return _REJECTED_BACKOFF_S[min(self._rejections - 1, len(_REJECTED_BACKOFF_S) - 1)]
+        return None
+
+    def _hold_after_goodbye(self, outcome: Outcome) -> None:
+        """A goodbye is never retried, but a wait its reply asks for holds the next beat as it does
+        after a beat. It moves the quiet minute's end, so a beat that was in flight and settles
+        after this keeps it too."""
+        wait = self._wait_asked_for(outcome)
+        if wait is None:
+            return
+        self._receiver_holds_off = True
+        self._no_beat_before = max(self._no_beat_before, time.time() + wait)
+        self._due_at = max(self._due_at, self._no_beat_before)
+
     def _settle(self, outcome: Outcome, body: bytes, *, retried: bool, after_goodbye: bool = False) -> None:
         """Set the next beat from how this one went. *after_goodbye*: a goodbye went out while this
         beat was in flight, and the machine may have frozen and woken before its reply came back."""
@@ -287,13 +310,9 @@ class StatusReporter:
             # that stops sending one gets the normal interval again without a gateway restart.
             told = outcome.report_interval_s
             self._interval_s = INTERVAL_S if told is None else min(max(told, INTERVAL_MIN_S), INTERVAL_MAX_S)
-        wait, held_off = _jittered(self._interval_s), False
-        if outcome.kind == "throttled" and outcome.retry_after_s is not None:
-            wait, held_off = min(outcome.retry_after_s, _RETRY_AFTER_MAX_S), True
-        elif outcome.kind == "rejected":
-            wait, held_off = _REJECTED_BACKOFF_S[min(self._rejections, len(_REJECTED_BACKOFF_S) - 1)], True
-            self._rejections += 1
-        elif outcome.kind == "failed" and not retried and not after_goodbye:
+        asked = self._wait_asked_for(outcome)
+        wait, held_off = (_jittered(self._interval_s), False) if asked is None else (asked, True)
+        if outcome.kind == "failed" and not retried and not after_goodbye:
             # One quick retry of the same report, unless a goodbye has gone out since: its seq is
             # higher, so the receiver would drop the retry.
             wait, self._retry_body = _QUICK_RETRY_S, body

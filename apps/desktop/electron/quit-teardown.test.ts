@@ -4,6 +4,12 @@ import { test, vi } from 'vitest'
 
 import { backendQuitNeedsWait, backendTeardownOptions, createQuitTeardownCoordinator } from './quit-teardown'
 
+/** Past the queued microtasks and the macrotask the final quit is requested from. */
+async function nextMacrotask(): Promise<void> {
+  await new Promise<void>(done => setImmediate(done))
+  await new Promise<void>(done => setImmediate(done))
+}
+
 function deferred() {
   let resolve!: () => void
 
@@ -74,7 +80,7 @@ test('one final quit waits for every required teardown branch', async () => {
 
   ssh.resolve()
   await Promise.all([backend.promise, ssh.promise])
-  await Promise.resolve()
+  await nextMacrotask()
   assert.equal(requestFinalQuit.mock.calls.length, 1)
 
   assert.equal(coordinator.begin(tasks), false, 'the coordinator must not cancel its own final quit')
@@ -98,8 +104,7 @@ test('teardown failure still releases the final quit after all branches settle',
     true
   )
 
-  await Promise.resolve()
-  await Promise.resolve()
+  await nextMacrotask()
   assert.equal(requestFinalQuit.mock.calls.length, 1)
 })
 
@@ -127,8 +132,24 @@ test('a synchronous reentrant quit cannot start a second teardown', async () => 
     ]),
     true
   )
-  await Promise.resolve()
-  await Promise.resolve()
+  await nextMacrotask()
   assert.equal(duplicate.mock.calls.length, 0)
   assert.equal(finalQuit.mock.calls.length, 1)
+})
+
+test('teardown that settles at once requests the final quit only after before-quit returns', async () => {
+  // Electron drains the microtasks a before-quit listener queued before it
+  // reads that listener's verdict; an app.quit() issued from them is lost.
+  const order: string[] = []
+  const coordinator = createQuitTeardownCoordinator(() => order.push('final quit'))
+
+  assert.equal(coordinator.begin([{ run: () => undefined, waitForCompletion: true }]), true)
+
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve()
+  }
+
+  order.push('before-quit returned')
+  await nextMacrotask()
+  assert.deepEqual(order, ['before-quit returned', 'final quit'])
 })

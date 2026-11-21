@@ -1,6 +1,6 @@
 """Signed-in provider requests that core makes FOR plugins; the token never reaches plugin code.
 
-A plugin that needs the user's subscription sign-in (today: Codex / ChatGPT) must not read, refresh
+A plugin that needs the user's subscription sign-in (today: Codex / ChatGPT, Nous Portal) must not read, refresh
 or rewrite Hermes's auth store or ``~/.codex/auth.json``. Codex refresh tokens are single-use, so a
 second refresher races Hermes's locked refresh and can sign the user out. Instead the plugin declares
 ``requires_auth: [openai-codex]`` in its ``plugin.yaml`` and calls :func:`credentialed_provider_request`.
@@ -65,10 +65,33 @@ def _codex_auth(url: str) -> tuple[dict[str, str], str]:
     return headers, str(creds.get("base_url") or "")
 
 
+def _nous_auth(url: str) -> tuple[dict[str, str], str]:
+    """``(auth headers, credential base URL)`` from Hermes's own Nous resolver (refresh under its lock)."""
+    from agent.turn_failure_copy import oauth_relogin_command
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+
+    try:
+        creds = resolve_nous_runtime_credentials()
+    except AuthError as exc:
+        if not exc.relogin_required:
+            raise
+        creds = {}
+    token = str(creds.get("api_key") or "").strip()
+    if not token:
+        raise ProviderNotSignedIn(
+            f"Not signed in to Nous Portal in Hermes. Run `{oauth_relogin_command('nous')}` "
+            "or sign in to Nous Portal under Providers in the Hermes desktop app.")
+    return {"Authorization": f"Bearer {token}"}, str(creds.get("base_url") or "")
+
+
 # provider -> (origins its token may be sent to, auth resolver). chatgpt.com is the Codex backend
 # core itself calls; api.openai.com hosts the Realtime client-secret endpoint Codex clients use.
 _PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str]]]] = {
     "openai-codex": (frozenset({("https", "chatgpt.com", 443), ("https", "api.openai.com", 443)}), _codex_auth),
+    # The Portal's inference hosts, the same two Hermes sends Nous bearers to (welcome-api: the free tier).
+    "nous": (frozenset({("https", "inference-api.nousresearch.com", 443), ("https", "welcome-api.nousresearch.com", 443)}),
+             _nous_auth),
 }
 
 

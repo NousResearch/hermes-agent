@@ -667,7 +667,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
 # accept): context_window, supports_tools, supports_vision, supports_reasoning,
-# model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
+# model_family, extra_body. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
 # models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
@@ -798,6 +798,33 @@ def _override_context_window(provider: str, model: str) -> Optional[int]:
     ``_default`` must not preempt more specific sources; fill-gap defaults apply in ``lookup_models_dev_context``."""
     ov = _explicit_model_override(provider, model)
     return _override_int(ov, "context_window") if ov is not None else None
+
+
+def explicit_model_extra_body(
+    provider: str, model: str, *, config: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    """EXPLICIT per-model ``model_overrides.<provider>.<model>.extra_body`` wire additions, or {}.
+
+    Merged into the chat-completions ``extra_body`` by the transport for every provider —
+    the sanctioned slot for non-standard wire params (llama.cpp-style ``repeat_penalty``,
+    ``presence_penalty``, vendor sampler knobs) on OpenAI-compat gateways, which the
+    openai SDK flattens into the JSON body top level but rejects as top-level ``create()``
+    kwargs. Explicit-only on purpose: wire params are deliberate per-model tuning, never
+    a fill-gap ``_default``.
+    """
+    ov = _explicit_model_override(provider, model, config=config)
+    if ov is None:
+        return {}
+    raw = ov.get("extra_body")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        warn_key = ("extra_body", repr(raw))
+        if warn_key not in _OVERRIDE_WARNED_KEYS:
+            _OVERRIDE_WARNED_KEYS.add(warn_key)
+            logger.warning("model_overrides: ignoring invalid extra_body value %r (expected a mapping)", raw)
+        return {}
+    return {key: value for key, value in raw.items() if isinstance(key, str) and key}
 
 
 # Catalog miss — a _default override may fill the gap (#84482).

@@ -11,7 +11,6 @@ import contextvars
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -304,9 +303,10 @@ def apply_result(cli, monitor, item: dict, result: Any) -> None:
 def open_url(url: str) -> bool:
     """Open ``url`` in a graphical browser without letting the opener write over the prompt."""
     if sys.platform.startswith("linux") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        opener = shutil.which("xdg-open")
+        from hermes_platform.resolver import locate_command
+        opener = locate_command("xdg-open").command
         if opener:
-            subprocess.Popen([opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            subprocess.Popen([*opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
                              start_new_session=True)  # detached-spawn: ok — the user's browser, meant to outlive Hermes
             return True

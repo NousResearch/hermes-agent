@@ -381,7 +381,7 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
     # Many OpenAI-compatible and Anthropic-compatible proxies (DashScope coding plan, Cline,
     # MiniMax) never implement GET /models; /chat/completions works fine. Rejecting the switch
     # here bricked `/model` for them (#12220), so both chat modes persist the name unverified.
-    accepted = req.api_mode in ("chat_completions", "anthropic_messages")
+    accepted = req.api_mode in ("chat_completions", "anthropic_messages", "codex_responses", "codex_app_server")
     message = f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
     if accepted:
         message += (f"`{req.requested}` was accepted without verification — if this endpoint does not "

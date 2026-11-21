@@ -674,6 +674,15 @@ This isolation is also the reason to never run two agents against the *same* pro
 
 There is no hard limit. Each profile is a directory under `~/.hermes/profiles/` that carries at least one identity file (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json` or `state.db`); a bare directory without one (a leftover from a log rotation or cron tick) is not a profile — it is not listed or served, `-p <name>` reports it as missing, and `hermes profile create <name>` refuses to overwrite it until you move or remove it. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
 
+### One profile per topic, or one profile with Telegram topics? {#profile-per-topic-or-topics}
+
+Both work. They isolate different things, so pick by what you want kept apart:
+
+- **Telegram topics** ([forum topics](../user-guide/messaging/telegram.md#group-chat-usage) in a group, [Private Chat Topics](../user-guide/messaging/telegram.md#private-chat-topics-bot-api-94) in a DM, or [`/topic`](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic)) isolate the **conversation**. Each topic is its own session with its own history and context. Everything else is shared: memory (`MEMORY.md`, `USER.md`), skills, `SOUL.md`, cron jobs, credentials, the model, and the bot token. One bot, one profile.
+- **Profiles** isolate the **agent**. Each has its own memory, skills, `SOUL.md`, cron jobs, and model/credentials, and each needs its own Telegram bot (one token per profile, see [Can two profiles share the same bot token?](#can-two-profiles-share-the-same-bot-token)). On the desktop, a profile shows up as a [Bot](../user-guide/bot-mode.md) with its own chat.
+
+Rule of thumb: start with **one profile and topics**. Split a domain into its own profile when it needs memory the others should not see (health vs finance), a different personality or skill set, its own model, or its own cron schedule. Skills and memory ride along in every turn's system prompt, so a single profile that has accumulated skills for many unrelated domains pays for all of them on every chat; a focused profile keeps that cost and its memory on-topic.
+
 ---
 
 ## Workflows & Patterns

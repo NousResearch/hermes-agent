@@ -48,4 +48,16 @@ describe('technicalTrace', () => {
     expect(technicalTrace(undefined, 'plain text')).toBe('Result:\nplain text')
     expect(technicalTrace(undefined, '"already quoted"')).toBe('Result:\n"already quoted"')
   })
+
+  it('never re-indents JSON whose numbers JSON.parse would change', () => {
+    // A Discord/Telegram id past 2^53: re-serializing would show ...7552 for ...7553.
+    const lossy = '{"chat_id":1234567890123457553,"ok":true}'
+
+    expect(technicalTrace(undefined, lossy)).toBe(`Result:\n${lossy}`)
+    expect(technicalTrace(undefined, '{"x":1e999}')).toBe('Result:\n{"x":1e999}')
+    // Digits inside strings and safe numbers still pretty-print.
+    expect(technicalTrace(undefined, '{"id":"1234567890123457553","n":9007199254740991}')).toBe(
+      'Result:\n{\n  "id": "1234567890123457553",\n  "n": 9007199254740991\n}'
+    )
+  })
 })

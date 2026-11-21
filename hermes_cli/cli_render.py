@@ -905,13 +905,25 @@ def _cli_visible_print(text: str = "") -> None:
         print(text)
 
 
+def _tui_colors_enabled() -> bool:
+    """Honor the NO_COLOR spec and TERM=dumb — the TUI must emit plain text when asked."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if (os.environ.get("TERM") or "").strip().lower() in {"dumb", "unknown"}:
+        return False
+    return True
+
+
 class ChatConsole:
     """Rich Console drop-in routing rendered ANSI through ``_cprint`` so colors survive patch_stdout."""
 
     def __init__(self):
         from io import StringIO
         self._buffer = StringIO()
-        self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
+        if _tui_colors_enabled():
+            self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
+        else:
+            self._inner = Console(file=self._buffer, force_terminal=True, color_system=None, no_color=True, highlight=False)
 
     def print(self, *args, **kwargs):
         from cli import _OSC_ESCAPE_RE, _cprint

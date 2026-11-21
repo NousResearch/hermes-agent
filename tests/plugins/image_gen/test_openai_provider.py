@@ -94,6 +94,38 @@ class TestModelResolution:
         assert model_id == "gpt-image-2-low"
         assert meta["quality"] == "low"
 
+    def test_scoped_custom_model_beats_stale_top_level_catalog_id(self, monkeypatch, tmp_path):
+        """A leftover shared ``image_gen.model`` that happens to be a *catalog* id must not
+        shadow the provider-scoped custom id. The gateway user set
+        ``image_gen.openai.model: ag/gemini-3.1-flash-image`` for their own endpoint; a stale
+        ``image_gen.model: gpt-image-2-medium`` used to win because it resolved against the
+        catalog first, so the gateway received a model it does not serve and answered with a
+        missing-credential error."""
+        import hermes_yaml as yaml
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {
+            "model": "gpt-image-2-medium",
+            "openai": {"model": "ag/gemini-3.1-flash-image"}}}))
+
+        model_id, meta = openai_plugin._resolve_model()
+
+        assert model_id == "ag/gemini-3.1-flash-image"
+        assert meta["api_model"] == "ag/gemini-3.1-flash-image"
+        assert meta["quality"] is None  # passthrough id carries no quality enum
+
+    def test_top_level_catalog_id_still_honoured_without_scoped_model(self, monkeypatch, tmp_path):
+        """The shared top-level knob keeps working as the fallback it is."""
+        import hermes_yaml as yaml
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"model": "gpt-image-2-high"}})
+        )
+        model_id, meta = openai_plugin._resolve_model()
+        assert model_id == "gpt-image-2-high"
+        assert meta["quality"] == "high"
+
 
 # ── Endpoint / credential routing ───────────────────────────────────────────
 

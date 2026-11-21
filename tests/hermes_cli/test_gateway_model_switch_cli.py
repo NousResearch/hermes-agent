@@ -99,7 +99,7 @@ def test_model_before_the_first_turn_commits_on_the_session_that_turn_runs(gatew
     conn.state(SID).info.update(model="old-model", provider="openrouter")
     cli = _cli()
 
-    def init_agent():  # main's _init_agent: the stand-in on this CLI's gateway session
+    def init_agent(**_kwargs):  # main's _init_agent: the stand-in on this CLI's gateway session
         cli.agent = GatewayAgent(connection=conn, session_id=SID, model=cli.model, provider=cli.provider)
         return True
     cli._init_agent = init_agent
@@ -111,6 +111,29 @@ def test_model_before_the_first_turn_commits_on_the_session_that_turn_runs(gatew
     assert (mutation["session_id"], mutation["payload"]["model"]) == (SID, "new-model")
     first_turn = GatewayAgent(connection=conn, session_id=SID, model="old-model", provider="openrouter")
     assert first_turn.model == "new-model"
+
+
+def test_first_turn_init_runs_on_the_switched_route(gateway, monkeypatch):
+    """Initialization sees the selected route; a failed initialization restores the previous route."""
+    from cli import HermesCLI
+    cli = _cli()
+    seen = {}
+
+    def init_agent(**kwargs):
+        assert kwargs == {"allow_fallback": False}
+        seen.update(model=cli.model, provider=cli.provider,
+                    requested=cli.requested_provider, base_url=cli.base_url)
+        return False
+    cli._init_agent = init_agent
+    monkeypatch.setattr("cli._cprint", lambda *_a, **_k: None)
+    picked = ModelSwitchResult(success=True, new_model="deepseek-flash", target_provider="deepseek",
+                               api_key="dk", base_url="https://api.deepseek.com/v1",
+                               api_mode="chat_completions")
+    assert HermesCLI._stage_and_swap_model(cli, picked, "gpt-6.1-sol") is False
+    assert seen == {"model": "deepseek-flash", "provider": "deepseek",
+                    "requested": "deepseek", "base_url": "https://api.deepseek.com/v1"}
+    assert (cli.model, cli.provider, cli.requested_provider, cli.base_url) == (
+        "old-model", "openrouter", "openrouter", "")
 
 
 def test_the_owners_refusal_is_asked_in_the_clis_model_guard_prompt():

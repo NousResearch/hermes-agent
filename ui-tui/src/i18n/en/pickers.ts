@@ -61,7 +61,7 @@ export const pickersEn = {
         // {0} = provider warning text from the backend.
         warning: (warning: string) => `warning: ${warning}`,
         noMatches: 'no providers match',
-        hint: '↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close'
+        hint: '↑/↓ select · Enter choose · ^d disconnect · Esc clear/back'
       },
       // Window plans (Nous subscription with included usage): the per-model word, section titles and limit
       // notes. Same words as the desktop picker (`modelPicker`).
@@ -101,8 +101,8 @@ export const pickersEn = {
         unknownProvider: '(unknown provider)',
         noMatches: 'no models match filter',
         noneListed: 'no models listed for this provider',
-        hint: '↑/↓ select · Enter next · Esc clear/back · q close',
-        emptyHint: 'Esc back · q close'
+        hint: '↑/↓ select · Enter next · Esc clear/back',
+        emptyHint: 'Esc back'
       }
     },
     session: {

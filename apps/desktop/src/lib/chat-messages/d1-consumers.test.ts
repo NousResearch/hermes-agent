@@ -47,6 +47,27 @@ describe('D1 settlement and presentation consumers', () => {
 
     expect(deriveChangedFiles(normalize(parts))).toEqual([{ path: '/tmp/a.ts', name: 'a.ts', added: 1, removed: 1 }])
   })
+  it('prefers exact backend totals over the capped preview in changed-files', () => {
+    const preview = `--- a/big.html\n+++ b/big.html\n@@ -1 +1 @@\n${'+line\n'.repeat(78)}`
+    const bigParts = upsertToolPart(
+      [],
+      {
+        name: 'write_file',
+        tool_id: 'big',
+        args: { path: '/tmp/big.html' },
+        result: 'ok',
+        inline_diff: preview,
+        lines_added: 200,
+        lines_removed: 0
+      },
+      'complete',
+      2
+    )
+
+    expect(deriveChangedFiles(normalize(bigParts))).toEqual([
+      { path: '/tmp/big.html', name: 'big.html', added: 200, removed: 0 }
+    ])
+  })
   it('keeps envelope-only todo completion and explicit clearing after normalization', () => {
     const todos = [{ id: 'a', content: 'Do it', status: 'completed' }]
     const parts = upsertToolPart([], { name: 'todo_list', tool_id: 'todos', result: 'ok', todos }, 'complete', 2)

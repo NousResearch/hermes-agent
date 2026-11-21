@@ -26,10 +26,15 @@ from typing import Iterable
 # only carry the user's own shell state (PATH, functions, exports they set), not Hermes' per-turn session
 # identity. Used by unit tests as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
-_SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
-    "HERMES_CRON_SESSION|HERMES_DELEGATED_CHILD_CONTEXT|"
-    "HERMES_RPC_|HERMES_KERNEL_DIR)")
+# The names/prefixes that carry session identity across the bash handoff: each command re-injects this
+# session's values, so they are excluded from the shared snapshot (see below) and, in
+# ``agent.session_client_env``, refused from a client even when the profile lists them (core owns them).
+# Entries ending in ``_`` are prefixes. The regex below is the Python-side contract tests check; the
+# dump path unsets by name/prefix (see below / issue #71296).
+_SNAPSHOT_BRIDGE_ENV = ('HERMES_SESSION_', 'HERMES_UI_SESSION_ID', 'HERMES_CRON_AUTO_DELIVER_',
+                        'HERMES_CRON_SESSION', 'HERMES_DELEGATED_CHILD_CONTEXT',
+                        'HERMES_RPC_', 'HERMES_KERNEL_DIR')
+_SNAPSHOT_EXCLUDED_ENV_REGEX = "^declare -x (" + "|".join(_SNAPSHOT_BRIDGE_ENV) + ")"
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.

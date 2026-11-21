@@ -45,13 +45,26 @@ def configured_names(config) -> frozenset:
     return frozenset(name.strip() for name in raw if isinstance(name, str) and name.strip()) if isinstance(raw, list) else frozenset()
 
 
-def _travels(name: str, secret=None) -> bool:
+def _core_owned(name: str) -> bool:
+    """A name core's own machinery writes per-session or per-command and must never accept from a
+    client, even one whose profile lists it: the behaviour values (read through :func:`session_env`)
+    and the snapshot bridge names that carry session identity across the bash handoff."""
+    from tools.environments.base_session_env import _SNAPSHOT_BRIDGE_ENV
+    return name in BEHAVIOUR_ENV or any(name == p or name.startswith(p) for p in _SNAPSHOT_BRIDGE_ENV)
+
+
+def _travels(name: str, secret=None, listed=()) -> bool:
     """A toolchain name may travel unless it is a credential by execute_code's secret policy (even when
-    listed: ``NODE_AUTH_TOKEN`` matches ``NODE_``; secrets reach tools through ``terminal.env_passthrough``)
-    or a Hermes control name (a delegated child's markers, Kanban pins). ``secret``: a session's frozen
-    copy of that policy's substrings."""
+    listed: ``NODE_AUTH_TOKEN`` matches ``NODE_``; secrets reach tools through ``terminal.env_passthrough``).
+    A ``HERMES_`` control name travels only when *listed* — your profile's exact listing in
+    ``terminal.client_env_passthrough`` is the whole opt-in, and it buys nothing on a :func:`_core_owned`
+    name, which the refusal keeps. A launcher sets such a listing to hand its sessions a per-run pin
+    (a workflow lane's run directory) the daemon was started without and cannot answer per session.
+    ``secret``: a session's frozen copy of that policy's substrings; ``listed``: the rules' frozen names."""
     hidden = is_secret_env_name(name) if secret is None else any(s in name.upper() for s in secret)
-    return not hidden and not name.startswith('HERMES_')
+    if hidden:
+        return False
+    return not name.startswith('HERMES_') or (name in listed and not _core_owned(name))
 
 
 def client_env_rules(config, *, local=True) -> dict:
@@ -65,7 +78,7 @@ def client_env_rules(config, *, local=True) -> dict:
 
 
 def _kept(name: str, rules: dict) -> bool:
-    return name in rules['behaviour'] or (_travels(name, rules['secret']) and (
+    return name in rules['behaviour'] or (_travels(name, rules['secret'], rules['names']) and (
         name in rules['names'] or name.startswith(tuple(rules['prefixes']))))
 
 
@@ -137,11 +150,15 @@ def session_env(name: str, default: str = '') -> str:
 
 
 def tool_env() -> dict[str, str]:
-    """The toolchain values this session's tool subprocesses start with (empty when unbound or remote)."""
+    """The toolchain values this session's tool subprocesses start with (empty when unbound or remote).
+    A ``HERMES_`` name the session's frozen rules list travels here too, and the gateway's own value
+    for any listed name the session did not send is left behind rather than served in its place."""
     bound = _BOUND.get()
     if bound is None or not bound[1]:
         return {}
-    return {name: value for name, value in bound[0].items() if name not in BEHAVIOUR_ENV and _travels(name)}
+    rules = bound[2] or {'names': (), 'prefixes': TOOL_ENV_PREFIXES, 'secret': None}
+    return {name: value for name, value in bound[0].items()
+            if name not in BEHAVIOUR_ENV and _travels(name, rules['secret'], rules['names'])}
 
 
 def toolchain_environ(base=None) -> dict[str, str]:
@@ -164,7 +181,7 @@ def toolchain_environ(base=None) -> dict[str, str]:
     if not bound[1]:
         return env
     rules = bound[2] or {'names': TOOL_ENV, 'prefixes': TOOL_ENV_PREFIXES, 'secret': None}
-    names = {name for name in rules['names'] if _travels(name, rules['secret'])}
+    names = {name for name in rules['names'] if _travels(name, rules['secret'], rules['names'])}
     prefixes = tuple(rules['prefixes'])
     kept = {k: v for k, v in env.items() if k == 'PATH' or not (k in names or k.startswith(prefixes))}
     return kept | tool_env()

@@ -85,17 +85,22 @@ def test_execute_code_child_env_starts_from_the_sessions_toolchain(daemon_env, t
     assert '/daemon/bin' in _parts(_build_child_env(**kwargs))
 
 
-# execute_code's secret names (BEARER, CREDS, DSN, WEBHOOK...) and Hermes control names never travel, even
-# under a built-in prefix (NODE_, CONDA_) or a profile's configured extra names.
+# execute_code's secret names (BEARER, CREDS, DSN, WEBHOOK...) never travel, even under a built-in
+# prefix (NODE_, CONDA_) or a profile's configured extra names; Hermes control names travel only on an
+# exact listing, and never when core owns them (a delegated child's marker).
 REFUSED = {'NODE_BEARER': 'b', 'NODE_CREDS': 'c', 'CONDA_DSN': 'postgres://u:p@h/db', 'DEPLOY_WEBHOOK': 'https://h',
-           'HERMES_KANBAN_DB': '/board.db', 'HERMES_DELEGATED_CHILD_CONTEXT': '1'}
+           'HERMES_DELEGATED_CHILD_CONTEXT': '1'}
 
 
 def test_credential_and_control_names_are_refused_by_execute_codes_secret_policy():
     from agent.session_client_env import accept_client_env, collect_client_env
     config = {'terminal': {'client_env_passthrough': ['DEPLOY_WEBHOOK', 'HERMES_KANBAN_DB', 'MY_TOOLCHAIN_HOME']}}
-    sent = {**REFUSED, 'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'PATH': '/client/bin'}
-    kept = {'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'PATH': '/client/bin'}
+    sent = {**REFUSED, 'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'HERMES_KANBAN_DB': '/board.db',
+            'PATH': '/client/bin'}
+    # A listed HERMES_ name travels (the Kanban board pin: an exact listing, no core ownership); an
+    # unlisted credential and a core-owned control marker do not, the listing or no listing.
+    kept = {'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'HERMES_KANBAN_DB': '/board.db',
+            'PATH': '/client/bin'}
     assert accept_client_env(sent, config) == kept  # the gateway, before anything is stored
     assert collect_client_env(sent, config) == kept  # the client, before anything is sent
 

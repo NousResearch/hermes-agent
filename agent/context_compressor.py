@@ -31,8 +31,8 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
-from agent.context_compressor_window import CompactionWindowMixin
-from agent.context_compressor_prune import ProactivePruneMixin
+from agent.context_compressor_window import CompactionWindowMixin, summary_view
+from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
@@ -330,6 +330,8 @@ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY = "_proactive_prune_cold_credit"
+PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: None}
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -759,7 +761,7 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 def _is_summary_stub(content: str) -> bool:
     """True for a ``[tool] ... (N chars)`` summary (a prune-only one may carry the rule) or a lean-tail demotion stub."""
-    return (s := without_skill_safety_rule(content)).startswith("[") and " chars)" in s and len(s) < 400 or is_demoted_stub(s)
+    return (s := without_skill_safety_rule(content)).startswith("[") and (" chars)" in s or " chars result)" in s) and len(s) < 400 or is_demoted_stub(s)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -1562,10 +1564,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
 
 def _sum_terminal(name, args, content, content_len, line_count):
-    cmd = _str_arg(args, "command")
-    cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
-    exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
-    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+    return terminal_stub(args, content, line_count)
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
@@ -1606,9 +1605,7 @@ def _sum_web_extract(name, args, content, content_len, line_count):
 
 
 def _sum_delegate_task(name, args, content, content_len, line_count):
-    goal = _str_arg(args, "goal")
-    goal = goal if len(goal) <= 60 else goal[:57] + "..."
-    return f"[delegate_task] '{goal}' ({content_len:,} chars result)" + _result_failure_suffix(content)
+    return delegate_stub(args, content, content_len)
 
 
 def _sum_execute_code(name, args, content, content_len, line_count):
@@ -1920,7 +1917,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
-    first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
+    first_arg = stub_arguments(args)
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
@@ -2280,15 +2277,13 @@ class ContextCompressor(
                 self._persist_consecutive_overload_aborts()
 
     def _load_proactive_prune_rearm_tokens(self) -> None:
-        """Restore the cache-boundary runway for a resumed durable session."""
-        self._load_durable(
-            "_proactive_prune_rearm_tokens", "get_session_model_config_value", "proactive prune runway",
-            int, 0, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, 0,
-        )
+        """Restore the cache-boundary runway and the cold-prune credit for a resumed durable session."""
+        for key in (PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY):  # attr == key
+            self._load_durable(key, "get_session_model_config_value", "proactive prune runway", int, 0, key, 0)
 
     def _clear_durable_proactive_prune_rearm(self) -> None:
-        """Best-effort removal of the persisted prune-runway key; transcript untouched."""
-        self._durable_write("patch_session_model_config", "proactive prune runway clear", {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None})
+        """Best-effort removal of the persisted prune-runway keys; transcript untouched."""
+        self._durable_write("patch_session_model_config", "proactive prune runway clear", dict(PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR))
 
     def _persist_fallback_compression_streak(self) -> None:
         self._durable_write("set_compression_fallback_streak", "compression fallback streak", self._fallback_compression_streak)
@@ -2699,8 +2694,8 @@ class ContextCompressor(
         self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
-        # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
-        self._proactive_prune_rearm_tokens: int = 0
+        # Rearm after a committed prune only once the prompt regrows; cold prunes credit the next warm gate.
+        self._proactive_prune_rearm_tokens = self._proactive_prune_cold_credit = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
@@ -3190,7 +3185,7 @@ class ContextCompressor(
         otherwise an identical lockout after a full compaction (rearm back
         at 0) would be silent (#101889).
         """
-        self._proactive_prune_rearm_tokens = 0
+        self._proactive_prune_rearm_tokens = self._proactive_prune_cold_credit = 0
         self._last_reclaim_block_warn = None
 
     def _billed_basis_over_threshold(self, current_tokens: int | None) -> bool:
@@ -5083,12 +5078,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
-        if prepared:
-            compress_end = prepared.compress_end
+        compress_end = prepared.compress_end if prepared is not None else compress_end
+        # Summarize first, archive after: the summarizer reads the ORIGINAL rows; _commit_window writes later.
+        plan, messages = messages, summary_view(messages, canonical_messages, compress_start, compress_end)
         turns_to_summarize = messages[compress_start:compress_end]
-        # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
-        if getattr(self, "tail_mode", "lean") == "lean":
-            messages = self._demote_stale_tail_tools(messages, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
@@ -5136,8 +5129,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
-        # Phase 4: Assemble compressed message list
-        compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
+        # Phase 4: the summary exists, so archive what the compaction drops or shortens, then assemble.
+        messages, pruned_count = self._commit_window(canonical_messages, plan, pruned_count, compress_start, compress_end)
+        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(

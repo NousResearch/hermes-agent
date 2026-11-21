@@ -218,7 +218,7 @@ import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopUserData } from './data-paths'
-import { registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
+import { extractDeepLink, handleLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -423,12 +423,12 @@ import {
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import {
-  bundledPayload,
   installIdForRoot,
   type PayloadInfo,
   payloadPythonPath,
   payloadTicketRuntime,
-  requireBundledPayload
+  requireBundledPayload,
+  runnableBundledPayload
 } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
@@ -4821,8 +4821,8 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
-async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
-  const payload = bundledPayload(process.resourcesPath)
+async function resolveHermesBackend(backendArgs: string[], progress?: typeof advanceBootProgress): Promise<ResolvedHermesBackend> {
+  const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
     if (!IS_WINDOWS) {
@@ -11516,7 +11516,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
-        return resolveHermesBackend(backendArgs)
+        return resolveHermesBackend(backendArgs, advanceBootProgress)
       },
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
@@ -13245,6 +13245,7 @@ function createWindow() {
 
   const revealController = wireWindowReveal(createdMainWindow, {
     onRevealed: () => {
+      revealedMainWindows.add(createdMainWindow)
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
       schedulePersistWindowState()
@@ -17171,17 +17172,16 @@ let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
 
-function _extractDeepLink(argv) {
-  if (!Array.isArray(argv)) {
-    return null
-  }
-
-  return argv.find(a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))) || null
-}
+const revealedMainWindows = new WeakSet()
+const launchTarget = () => ({ ready: revealedMainWindows.has(mainWindow), activate: () => activateWindow(mainWindow) })
 
 function handleDeepLink(url) {
   if (!url || typeof url !== 'string') {
     return
+  }
+
+  if (handleLaunchDeepLink(url, DEEPLINK_SCHEMES, launchTarget())) {
+    return rememberLog('[deeplink] launch link handled (content ignored)')
   }
 
   let parsed
@@ -17342,7 +17342,7 @@ if (!isPrimaryInstance) {
       handleDeepLink('hermes://close-preview')
     }
 
-    const url = _extractDeepLink(argv)
+    const url = extractDeepLink(argv, DEEPLINK_SCHEMES)
 
     if (url) {
       handleDeepLink(url)
@@ -17513,7 +17513,7 @@ app.whenReady().then(() => {
   })
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
-  const _coldStartLink = _extractDeepLink(process.argv)
+  const _coldStartLink = extractDeepLink(process.argv, DEEPLINK_SCHEMES)
 
   if (_coldStartLink) {
     handleDeepLink(_coldStartLink)

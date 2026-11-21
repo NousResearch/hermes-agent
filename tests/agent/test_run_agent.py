@@ -611,7 +611,7 @@ class TestInit:
             assert a._use_prompt_caching is True
 
     def test_prompt_caching_cache_ttl_defaults_without_config(self):
-        """cache_ttl stays 5m when prompt_caching is absent from config."""
+        """cache_ttl falls back to the auto tier (never None) when prompt_caching is absent."""
         with (
             patch("model_tools.get_tool_definitions", return_value=[]),
             patch("model_tools.check_toolset_requirements", return_value={}),

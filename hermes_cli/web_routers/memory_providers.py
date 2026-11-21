@@ -126,8 +126,10 @@ def _read_flat_json(provider: ProviderConfigSchema) -> dict[str, Any]:
 def _provider_instance(provider: ProviderConfigSchema):
     """The loaded provider behind a ``STORAGE_PROVIDER`` schema (it owns its config layout)."""
     instance = _load_memory_provider(provider.name, register_skills=False)  # the panel never registers skills
-    if instance is None:  # it declares a panel, so it is known: it failed to load
-        raise HTTPException(status_code=503, detail=f"Memory provider {provider.name} could not be loaded; see the logs")
+    if instance is None:  # it declares a panel, so it is known: it is parked or failed to load
+        from plugins.memory import parked_provider_notice
+        detail = parked_provider_notice(provider.name) or f"Memory provider {provider.name} could not be loaded; see the logs"
+        raise HTTPException(status_code=503, detail=detail)
     return instance
 
 

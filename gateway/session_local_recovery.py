@@ -50,12 +50,15 @@ def local_source(authority, chat_id, user_id):
 
 
 def _refused_check(exc):
-    """``<reason or error> at <function>:<line>``: where a receipt check raised, and why, followed
+    """``<reason[field: detail] at <function>:<line>``: where a receipt check raised, and why, followed
     through every chained ``__cause__`` (``restore_policy`` and ``local_receipt`` wrap the check
-    that failed into a bare ``storage_unavailable``)."""
+    that failed into a bare ``storage_unavailable``). A refusal that names its field shows it here,
+    so the log identifies the check rather than only its line (#148540)."""
     import traceback
     frames = traceback.extract_tb(exc.__traceback__)
     cause = exc.reason if isinstance(exc, AuthorityRefusal) else f'{type(exc).__name__}: {exc}'
+    if isinstance(exc, AuthorityRefusal) and exc.field:
+        cause += f'[{exc.field}]' + (f': {exc.detail}' if exc.detail else '')
     where = f' at {frames[-1].name}:{frames[-1].lineno}' if frames else ''
     chained = f', caused by {_refused_check(exc.__cause__)}' if exc.__cause__ is not None else ''
     return f'{cause}{where}{chained}'
@@ -166,21 +169,25 @@ def _stray_route_target(authority, receipt, session_id):
     return True
 
 
-def restore_local_session(authority, sid):
-    from gateway.session_authority import LiveSession
-    from gateway.session_local import LocalSessionAdapter
+def prepare_local_session(authority, sid, *, catch_up=True):
+    """Blocking receipt validation, with no live-session publication.
+
+    Startup uses ``catch_up=False``: any intervening compression is handed back to the
+    coordinator, never adopted as an untracked write merely because this is a worker.
+    """
     from gateway.session_policy import restore_policy
     try:
         # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
         receipt, source, route, entry = owned_receipt(authority, sid)
-        chat_id, store = source.chat_id, authority.runner.session_store
-        adopted = _with_untracked_compression(authority, sid, receipt)
+        adopted = _with_untracked_compression(authority, sid, receipt) if catch_up else receipt
         policy = restore_policy(adopted['policy'])
         if adopted is not receipt:  # re-read after a catch-up: check the copy that will be served
             receipt, entry = adopted, _checked_entry(authority, adopted, source, route)
-        target = entry.session_id
         from gateway.session_local_adoption import _binding
-        authority_persistence(authority).bindings.validate_lineage(_binding(receipt))
+        bindings, binding = authority_persistence(authority).bindings, _binding(receipt)
+        if not catch_up and bindings.compression_adoptable(binding):
+            raise _CatchUpPending('storage_unavailable')
+        bindings.validate_lineage(binding)
     except _CatchUpPending:
         raise
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
@@ -189,6 +196,20 @@ def restore_local_session(authority, sid):
         if isinstance(exc, AuthorityRefusal):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
+    return receipt, source, route, entry, policy
+
+
+def restore_local_session(authority, sid):
+    prepared = prepare_local_session(authority, sid)
+    return publish_local_session(authority, sid, prepared)
+
+
+def publish_local_session(authority, sid, prepared, *, route_proof=None):
+    """Publish on the owner loop. Startup supplies a locked, read-only route proof."""
+    from gateway.session_authority import LiveSession
+    from gateway.session_local import LocalSessionAdapter
+    receipt, source, route, entry, policy = prepared
+    chat_id, target, store = source.chat_id, entry.session_id, authority.runner.session_store
     adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise AuthorityRefusal('runtime_draining')
@@ -196,11 +217,13 @@ def restore_local_session(authority, sid):
     from gateway.session_history_mount import is_history_mount
     if live is None or is_history_mount(live):
         source = adapter.kept_source(source)
-        with store._lock:
-            store._ensure_loaded_locked()
+        with store._lock if route_proof is None else contextlib.nullcontext():
+            if route_proof is None:
+                store._ensure_loaded_locked()
             current = store._entries.get(route)
             if current is not None and current.session_id != target:
-                if not _stray_route_target(authority, receipt, current.session_id):
+                if not (_stray_route_target(authority, receipt, current.session_id)
+                        if route_proof is None else route_proof[1]):
                     raise AuthorityRefusal('admission_conflict')
                 current = None
             # The receipt is the creation copy; a persisted entry for the same target keeps the
@@ -226,15 +249,16 @@ def restore_local_session(authority, sid):
     elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):
         pass  # every claim of a live session lands here: no write, so no wait on the store lock
     else:
-        with store._lock:
-            current = store._entry_locked(route)
+        with store._lock if route_proof is None else contextlib.nullcontext():
+            current = store._entry_locked(route) if route_proof is None else store._entries.get(route)
             if current is None:
                 # A route the loaded store cannot see (an older release's scope, a pruned row) is the
                 # receipt's to rebuild, as on a cold restore: refusing wedges every claim until a restart.
                 entry.origin = source
                 store._entries[route] = entry
             elif (current.session_id not in receipt.get('lineage', [sid])
-                    and not _stray_route_target(authority, receipt, current.session_id)):
+                    and not (_stray_route_target(authority, receipt, current.session_id)
+                             if route_proof is None else route_proof[1])):
                 raise AuthorityRefusal('admission_conflict')
             else:
                 current.session_id = target
@@ -478,7 +502,7 @@ def recover_local_sessions(authority, *, schedule=False):
         except (_ReceiptRefused, _CatchUpPending):
             continue  # logged: the check that refused it, or the catch-up handed to a worker
         except AuthorityRefusal as exc:
-            logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
+            logging.getLogger(__name__).warning('Local session %s paused: %s', sid, _refused_check(exc))
     if schedule:
         # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
         from gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close

@@ -622,11 +622,11 @@ def _first_warning() -> "bool":
 def _engine_session_db(engine: "Any", db_path: "Path", read_only: "bool") -> "_SessionDB":
     """The ``SessionDB`` Hermes hands a plugin context engine as ``session_db``. The stand-in's one warning goes to an
     engine with a session hook that cannot take ``persistence``, naming its class."""
-    from agent.context_compressor_summary import _accepts_keyword_argument
+    from agent.context_compressor_summary import accepts_keyword_argument
 
     db = _SessionDB(db_path, read_only=read_only)
     hooks = [getattr(engine, name, None) for name in ("bind_session_state", "on_session_start")]
-    if not all(_accepts_keyword_argument(hook, "persistence") for hook in hooks if callable(hook)) and _first_warning():
+    if not all(accepts_keyword_argument(hook, "persistence") for hook in hooks if callable(hook)) and _first_warning():
         _warnings.warn(
             f"context engine {type(engine).__module__}.{type(engine).__qualname__} gets session_db, a "
             f"hermes_state.SessionDB, which is deprecated and is removed in {_REMOVAL_RELEASE}; accept the "

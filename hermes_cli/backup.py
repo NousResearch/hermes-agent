@@ -24,12 +24,13 @@ from sqlite_support import RETIRED_GENERATION_DIR_SUFFIX, is_zeroed_sqlite_file
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.backup_atomic import _atomic_output_path
+from hermes_cli.backup_atomic import _atomic_output_path, publish_private_tree
 from hermes_cli.backup_integrity import verify_sqlite_integrity
 from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
-from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
+from hermes_cli.home_data_layout import (
+    BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, PROVIDER_PLUGIN_SNAPSHOT_PARTS, SECRET_CACHE_FILES, profile_root_entry)
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -122,7 +123,8 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
-    return parts in BRIDGE_LOG_PARTS or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS)
+    return (parts in BRIDGE_LOG_PARTS or parts[:2] == PROVIDER_PLUGIN_SNAPSHOT_PARTS
+            or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS))
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -1338,21 +1340,9 @@ def _create_quick_snapshot_locked(
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    # Make the staged quick snapshot owner-only before it is published. The
-    # staging directory is private from creation, so copied source modes can
-    # be normalized safely before the final atomic rename exposes the
-    # snapshot. Permission failures are intentionally fatal: publishing a
-    # readable recovery bundle is worse than reporting a failed snapshot.
-    if os.name != "nt":
-        os.chmod(root, 0o700)
-        os.chmod(staging_dir, 0o700)
-        for path in staging_dir.rglob("*"):
-            if path.is_dir():
-                os.chmod(path, 0o700)
-            elif path.is_file():
-                os.chmod(path, 0o600)
-
-    os.replace(staging_dir, snap_dir)
+    # Make the staged quick snapshot owner-only, durable, then visible (update auto-restore trusts
+    # a published snapshot, so its files must not read back as zeros after a crash).
+    publish_private_tree(staging_dir, snap_dir)
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a

@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 
 from acp.schema import (
-    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
+    AvailableCommand, AvailableCommandsUpdate, SessionConfigOptionSelect, SessionConfigSelectOption,
     SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
@@ -125,10 +125,9 @@ async def session_config_options(client, session_id, models, info, mode_id):
 
 
 def model_state(info: dict) -> SessionModelState | None:
-    """The picker for the session's model (``session.info``), from the shared inventory; a single
-    current-model row when nothing is listable, as main's ``_build_model_state``. Blocking."""
+    """The picker for ``session.info`` from shared inventory, with a current-model fallback. Blocking."""
     from acp_adapter.auth import detect_provider
-    from acp_adapter.model_catalog import build_model_state, encode_model_choice
+    from acp_adapter.model_catalog import build_model_state, fallback_model_state
     model = str(info.get("model") or "").strip()
     provider = info.get("provider") or detect_provider() or "openrouter"
     try:
@@ -138,10 +137,7 @@ def model_state(info: dict) -> SessionModelState | None:
     except Exception:
         # Boundary: a broken inventory must not fail session/new; the current model still shows.
         logger.debug("Could not build ACP model state", exc_info=True)
-    if not model:
-        return None
-    choice = encode_model_choice(provider, model)
-    return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+    return fallback_model_state(model, provider)
 
 
 def provenance_meta(home: Path, acp_session_id: str, session_id: str) -> dict | None:

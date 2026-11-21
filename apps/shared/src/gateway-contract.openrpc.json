@@ -187,6 +187,24 @@
       }
     },
     {
+      "name": "bot_delivery.list",
+      "summary": "Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotDeliveryListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotDeliveryListResult"
+        }
+      }
+    },
+    {
       "name": "bot_relay.deliver",
       "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
       "params": [
@@ -3859,6 +3877,24 @@
       }
     },
     {
+      "name": "shared_metrics.desktop_long_frames",
+      "summary": "Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopLongFramesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsDesktopDailyResult"
+        }
+      }
+    },
+    {
       "name": "shared_metrics.desktop_onboarding",
       "summary": "Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).",
       "params": [
@@ -7359,6 +7395,134 @@
         ],
         "title": "BillingStepUpVerificationPayload",
         "type": "object"
+      },
+      "BotDeliveryListParams": {
+        "additionalProperties": false,
+        "description": "``profile`` is the SENDER bot; it routes the call to that profile's connection.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotDeliveryListParams",
+        "type": "object"
+      },
+      "BotDeliveryListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/BotDeliveryRow"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sender",
+          "deliveries"
+        ],
+        "title": "BotDeliveryListResult",
+        "type": "object"
+      },
+      "BotDeliveryRow": {
+        "additionalProperties": false,
+        "description": "``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last\nwrite (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``)\nfor ``failed`` \u2014 ``unknown_outcome`` means the target may have acted: never resend it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_handle": {
+            "title": "Target Handle",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotDeliveryState"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Waiting On"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "target",
+          "target_handle",
+          "state",
+          "since",
+          "preview"
+        ],
+        "title": "BotDeliveryRow",
+        "type": "object"
+      },
+      "BotDeliveryState": {
+        "enum": [
+          "queued",
+          "claimed",
+          "working",
+          "waiting_on_you",
+          "failed"
+        ],
+        "title": "BotDeliveryState",
+        "type": "string"
       },
       "BotRelayDeliverParams": {
         "additionalProperties": false,
@@ -24364,7 +24528,7 @@
       },
       "MessageCompletePayload": {
         "additionalProperties": false,
-        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /\n``compute_host_bridge`` (``text`` + ``status``).",
+        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) /\n``compute_host_bridge`` (``text`` + ``status``).",
         "properties": {
           "text": {
             "anyOf": [
@@ -24550,6 +24714,18 @@
               }
             ],
             "default": null
+          },
+          "paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paused"
           }
         },
         "title": "MessageCompletePayload",
@@ -33640,6 +33816,28 @@
             "default": {},
             "title": "Coverage",
             "type": "object"
+          },
+          "warming_off": {
+            "default": false,
+            "title": "Warming Off",
+            "type": "boolean"
+          },
+          "tier_pending": {
+            "default": false,
+            "title": "Tier Pending",
+            "type": "boolean"
+          },
+          "learned": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Learned"
           }
         },
         "required": [
@@ -39408,6 +39606,18 @@
             ],
             "default": null,
             "title": "Expected Hosted Task Id"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resume"
           }
         },
         "required": [
@@ -42639,6 +42849,72 @@
           "detail"
         ],
         "title": "SharedMetricsDesktopFrictionParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFrameCount": {
+        "additionalProperties": false,
+        "description": "Long animation frames counted in one duration bucket while the window was visible.",
+        "properties": {
+          "bucket": {
+            "enum": [
+              "50ms_to_100ms",
+              "100ms_to_250ms",
+              "250ms_to_1s",
+              "1s_to_5s",
+              "gte_5s"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "count"
+        ],
+        "title": "SharedMetricsDesktopLongFrameCount",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFramesParams": {
+        "additionalProperties": false,
+        "description": "One finished UTC day's long-frame histogram and visible window time, aggregated on the client.\n``day`` (YYYY-MM-DD) only latches a resend and is never recorded.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopLongFrameCount"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "visible_ms": {
+            "default": 0,
+            "title": "Visible Ms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SharedMetricsDesktopLongFramesParams",
         "type": "object"
       },
       "SharedMetricsDesktopModeDay": {

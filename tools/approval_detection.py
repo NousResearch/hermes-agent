@@ -1071,6 +1071,10 @@ _LINE_CONTINUATION_RE = re.compile(r"(?<!\\)((?:\\\\)*+)\\\r?\n")
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 # Each nested eval re-parses the rest of the command, so every level is a full rescan.
 _MAX_EVAL_NESTING = 8
+# Characters of projected payloads (env -S, -c, eval) the deny walk reads, per character of the command:
+# each payload is rescanned whole, so a chain of carriers (`env -S '${A}' ` repeated) is quadratic without it. One
+# whole-command read per supported nesting level (and one more), so a benign eval or -c chain at the limit is read through.
+_DENY_PROJECTION_WORK_PER_CHAR = _MAX_EVAL_NESTING + 1
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 # A scan that ran out of its step budget: approval, never remembered (a session or always grant
 # would wave every later unscanned command through), and not a hardline refusal.
@@ -1538,23 +1542,29 @@ def _dequoted_escape(char: str, quote: str | None) -> str:
     return char if quote is None or char in '$`"\\' else "\\" + char
 
 
-def _deny_command_variants(command: str):
-    """Add executable projections without reparsing normalized argument data.
+def _deny_projection_variants(command: str, capped: list[str]):
+    """Executable projections for ``approvals.deny``, added to the floors' detection variants (which keep
+    whole-input matching for existing globs) without reparsing normalized argument data.
 
-    Whole-input matching is retained for existing globs. New projections parse
-    the original quote state, preserve path-specific rules, and fold only the
-    executable basename (never arbitrary argument paths).
+    Projections parse the original quote state, preserve path-specific rules, and fold only the
+    executable basename (never arbitrary argument paths). A source left unread (eval nested past
+    the limit, the projection work spent) is appended to *capped*: the caller must refuse it.
     """
-    yield from _command_detection_variants(command, floors=True)
     # Heredoc bodies are masked first, then ANSI-C expanded: `$'...'` inside a body is literal data.
-    pending = list(dict.fromkeys(
+    roots = list(dict.fromkeys(
         expand_ansi_c_quotes(source) for source in heredoc_scan_sources(command, _SHELL_NAMES_RE, floors=True)))
-    seen = set()
+    pending = [(source, 0) for source in roots]
+    seen, work = set(), _DENY_PROJECTION_WORK_PER_CHAR * len(command) + 1024
     while pending:
-        source = pending.pop()
+        source, eval_depth = pending.pop()
         if source in seen:
             continue
         seen.add(source)
+        if source not in roots:
+            work -= len(source)
+            if work < 0:
+                capped.append(source)
+                return
         for start, end, word in _iter_shell_command_word_spans(source):
             segment = _shell_command_segment(source, start)
             executable = _deobfuscate_shell_word_for_detection(word)
@@ -1584,12 +1594,13 @@ def _deny_command_variants(command: str):
             if os.path.basename(executable) == "env":
                 tokens = _shell_segment_tokens(segment, 0)
                 if tokens:
-                    payload = _env_split_payload(tokens)
+                    # An unresolvable ${NAME} still splits into the argv env runs.
+                    payload = _env_split_payload(tokens, unresolved=True, capped=capped)
                     if payload:
-                        pending.append(payload)
-        for _, payload in _execution_flag_findings(source):
-            if payload:
-                pending.append(payload)
+                        pending.append((payload, eval_depth))
+        # -c payloads and eval code; eval nesting is bounded as on the floors, and *capped* records a source
+        # whose deeper eval code was not projected so the caller can refuse it.
+        pending.extend(_nested_payloads(source, eval_depth, capped))
 
 
 def _command_detection_variants(

@@ -201,7 +201,9 @@ class _CuratedCatalog(dict):
 _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
-_MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"]
+# Keep M3 at [0]: the first static id is the provider default (get_default_model_for_provider),
+# so a new release must not silently re-point sessions that never chose a model.
+_MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M3.1-Flash", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"]
 _TENCENT_MODELS = ["hy4-preview", "hy3", "hy3-preview"]
 # Alibaba DashScope Coding platform (coding-intl): Qwen + third-party (GLM, Kimi, MiniMax, DeepSeek).
 # Classic DashScope keys should override DASHSCOPE_BASE_URL to
@@ -265,7 +267,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
         "kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],
     "minimax": list(_MINIMAX_MODELS),
-    "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+    "minimax-oauth": ["MiniMax-M3", "MiniMax-M3.1-Flash", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
         "claude-fable-5-2", "claude-fable-5.1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",

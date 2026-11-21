@@ -78,6 +78,8 @@ Or in-session:
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
+| `skills_manage` | `skill_manage` | Skill creation and editing only. Disable it (`agent.disabled_toolsets: [skills_manage]`) to keep skills read-only. |
+| `skills_read` | `skill_view`, `skills_list` | Skill browsing only: the session can load skills but not create or edit them. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo_list` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |

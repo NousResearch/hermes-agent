@@ -122,7 +122,9 @@ class Model(BaseHTTPRequestHandler):
 
 
 def login(client, issuer, actor):
-    response = client.get('/auth/login', params={'provider': 'self-hosted'})
+    # The browser addressed public_url's host; the proxy routing it here forwards that host.
+    response = client.get('/auth/login', params={'provider': 'self-hosted'},
+                          headers={'X-Forwarded-Host': 'rooms.invalid'})
     assert response.status_code == 302, response.text
     authorize = response.headers['location']
     assert authorize.startswith(issuer + '/authorize?'), authorize

@@ -1070,6 +1070,8 @@ dashboard:
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
 
+Sign-in always happens on the `public_url` host. The sign-in cookie belongs to the host that set it, and the provider returns to `<public_url>/auth/callback`. So when sign-in starts on another name that still reaches the dashboard (an old hostname, an alias), Hermes first redirects it to the same sign-in URL on the `public_url` host, and the browser lands there signed in. To decide which host the browser used, it reads `X-Forwarded-Host`, falling back to `Host`. Behind a proxy that rewrites `Host` and sends no `X-Forwarded-Host`, this costs one extra redirect and never loops.
+
 The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
 WebSocket `Origin` value. This supports a reverse proxy that preserves the
 browser-facing hostname while forwarding to a dashboard bound to

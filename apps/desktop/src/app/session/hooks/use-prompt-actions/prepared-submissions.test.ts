@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { listPreparedImageDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
+import { adoptPreparedSubmission, ENTRY_PREFIX, listPreparedImageDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
 import { storedJournal } from './prepared-submissions-test-utils'
 import type { SubmissionDestination } from './submission-destination'
 
@@ -98,4 +98,34 @@ test('tabs without Web Locks never share one slash command retry record', async 
   } finally {
     Reflect.deleteProperty(navigator, 'locks')
   }
+})
+
+// A full origin quota must degrade reload recovery, never refuse the message (#156129). The
+// refused entry lives in this window instead, so a lost acknowledgement still reuses its id.
+test('a refused browser journal write does not reject and keeps the entry adoptable in the window', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const destination = { scopeKey: 'local::default' } as SubmissionDestination
+  const intent = preparedSubmissionKey('stored', destination, 'look at this', [{ id: '/p/a.png', kind: 'image', label: 'a.png' }])
+  const entry: PreparedSubmission = { id: 'sub-1', text: 'look at this', attachments: [{ id: '/p/a.png', kind: 'image', label: 'a.png' }], params: { submission_id: 'sub-1' }, owner: { connectionId: 'local', profile: 'default' } }
+  const setItem = window.localStorage.setItem.bind(window.localStorage)
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  vi.spyOn(window.localStorage, 'setItem').mockImplementation((key: string, value: string) => {
+    // Only the journal store refuses, like a quota filled by thumbnails and turn journals.
+    if (key.startsWith(ENTRY_PREFIX)) { throw new DOMException('The quota has been exceeded.', 'QuotaExceededError') }
+    setItem(key, value)
+  })
+
+  await expect(writePreparedSubmission(intent, entry)).resolves.toBeUndefined()
+  expect(warn).toHaveBeenCalledWith('[prepared-submission-unstored]', expect.objectContaining({ name: 'QuotaExceededError' }))
+  expect(window.localStorage.getItem(ENTRY_PREFIX + intent)).toBeNull()
+
+  // The send's own window still sees the entry: retry adopts the same submission id.
+  expect((await readPreparedSubmission(intent))?.id).toBe('sub-1')
+  expect((await adoptPreparedSubmission(intent, 'sub-1'))?.entry.text).toBe('look at this')
+  expect((await listPreparedImageDrafts('stored', destination.scopeKey)).map(draft => draft.id)).toEqual(['sub-1'])
+
+  // Retirement drops the in-window copy with the stored one; an acknowledged send is never re-offered.
+  await removePreparedSubmission(intent, 'sub-1')
+  expect(await readPreparedSubmission(intent)).toBeUndefined()
+  expect(await listPreparedImageDrafts('stored', destination.scopeKey)).toEqual([])
 })

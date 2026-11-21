@@ -89,8 +89,31 @@ export function applyPreviewGuestAttachPrefs(
   // Remember the resolved preview jar so the activity gate recognizes this
   // guest's own (possibly non-default) session later.
   if (resolveSession && partition) {
-    previewGuestSessions.add(resolveSession(partition))
+    const session = resolveSession(partition)
+    previewGuestSessions.add(session)
+    applyPreviewGuestUserAgent(session, partition)
   }
+}
+
+/**
+ * Present external browser checks with the preview's actual Chromium engine
+ * and unchanged platform version, rather than Electron/application wrappers.
+ */
+export function applyPreviewGuestUserAgent(
+  previewSession: Pick<Session, 'getUserAgent' | 'setUserAgent'>,
+  partition: string | undefined
+): void {
+  if (!isPreviewPartition(partition)) {
+    return
+  }
+
+  const current = previewSession.getUserAgent()
+
+  if (!/\sChrome\/\d+(?:\.\d+)+\s/.test(current) || !/\s(?:Hermes|Electron)\/[^\s]+/.test(current)) {
+    return
+  }
+
+  previewSession.setUserAgent(current.replace(/\s+(?:Hermes|Electron)\/[^\s]+/g, ''))
 }
 
 let nextLease = 0

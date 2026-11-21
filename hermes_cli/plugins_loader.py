@@ -325,13 +325,16 @@ class PluginLoaderMixin:
                 pass
         return _unsubscribe
 
-    def _notify_plugin_loaded(self, loaded_before: frozenset) -> None:
-        """Fire every :meth:`on_plugin_loaded` listener for the plugins this sweep added over
-        ``loaded_before``; nothing new = no event. One raising listener never starves the rest."""
+    def _notify_plugin_loaded(self, loaded_before: frozenset, *, force: bool = False) -> None:
+        """Notify listeners after discovery. A forced sweep re-created existing plugins,
+        so listeners must re-wire every recreated plugin even when no new key appeared."""
         if not self._plugin_loaded_listeners:
             return
         from hermes_cli.plugins_activation import activation_summaries
-        summaries = [s for s in activation_summaries(self) if s["key"] not in loaded_before]
+        summaries = [
+            s for s in activation_summaries(self)
+            if force or s["key"] not in loaded_before
+        ]
         if not summaries:
             return
         for callback in list(self._plugin_loaded_listeners):

@@ -445,7 +445,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 self._discovered = False
                 raise
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
-        self._notify_plugin_loaded(loaded_before)
+        self._notify_plugin_loaded(loaded_before, force=force)
 
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded

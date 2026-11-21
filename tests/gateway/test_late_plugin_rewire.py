@@ -50,9 +50,11 @@ def test_on_plugin_loaded_fires_with_activation_summary_after_a_late_load():
     assert late == [{"name": "late_cmd", "key": "late_cmd",
                      "activated_now": {"gateway_commands": ["late"], "callbacks": ["telegram"]},
                      "deferred": {"tools": ["late_tool"]}}]
-    assert len(events) == 1  # only the sweep that added it fires — and only for the newcomer
-    discover_plugins(force=True)  # nothing new: no event (the gateway re-wire is not spammed)
     assert len(events) == 1
+    discover_plugins(force=True)  # forced re-load recreates existing plugins
+    assert len(events) == 2
+    recreated = [e for e in events[-1] if e["name"] == "late_cmd"]
+    assert recreated and recreated[0]["key"] == "late_cmd"
     unsubscribe()
 
 

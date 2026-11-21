@@ -601,6 +601,17 @@ Subagent ids come from `delegation.status` (or `list_active_subagents()`) — th
 
 So the parent (or the operator driving it) can tell a steered child from one that finished on the old instructions, and re-issue the guidance as a follow-up instead of trusting that it landed.
 
+## Sibling Peer Messages
+
+By default each subagent reports only to the parent: a fact task 1 finds reaches task 2 after both finish. Set `delegation.peer_messages: true` and every child of a batch of two or more gets a `message_peer` tool plus a line in its brief naming its siblings (`task-1` … `task-N`). A child can send a short note to one sibling, several, or `all`:
+
+```text
+message_peer(to="task-2", message="Q3 revenue in the 10-K is 4.1M, not the 3.8M in the deck")
+→ {"status": "queued", "queued_for": ["task-2"], "already_finished": []}
+```
+
+The note reaches each sibling that is still running, appended to its next tool result and labelled as a sibling's finding (never as a message from you). A sibling that already finished does not get it, and the sender is told so. Children reach only the siblings of their own batch. All siblings keep identical tool lists, so they still share one prompt cache. Start a new session after turning it on.
+
 ## Live Transcripts
 
 Every `delegate_task` dispatch also creates one **append-only, human-readable log per task** so you (or the parent agent) can watch a subagent work in real time instead of waiting for the consolidated summary:
@@ -806,6 +817,7 @@ error.
 delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+  # peer_messages: false                   # true = batch siblings get message_peer to share findings mid-run
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)

@@ -726,6 +726,8 @@ def delegate_task(
     )
     if err:
         return tool_error(err)
+    from tools.delegate_tool_peers import wire_batch_peers
+    wire_batch_peers(children)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,

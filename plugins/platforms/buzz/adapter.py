@@ -84,6 +84,33 @@ _BUZZ_PRESENTATION_MENTION_SEPARATOR = "\u200b"
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
 
 
+def _escape_presentation_mention(content: str, name: str, *, member_boundary: bool = False) -> str:
+    """Make every ``@name`` token presentation-only via an invisible separator after the ``@`` (Buzz
+    p-tags whitespace-prefixed @tokens at publish, so an inserted separator keeps the text readable
+    while the relayer no longer sees a member mention).
+
+    ``member_boundary=True`` applies the publish-side boundary for a known member: a period ends the
+    name there (the CLI tags ``@Name.`` / ``@Name.rest``), which the interim downgrade must match to
+    keep such narration non-summoning. The default keeps the token-continuation boundary (``.`` stays
+    inside the token) used by the CLI-rejected-token recovery, whose escape is driven by the CLI's own
+    error message, not by member matching."""
+    tail = r"$|[^A-Za-z0-9_-]" if member_boundary else r"$|[^A-Za-z0-9._-]"
+    token = re.compile(rf"(?<!\S)@{re.escape(name)}(?={tail})", re.IGNORECASE)
+    escaped, _ = token.subn(lambda m: "@" + _BUZZ_PRESENTATION_MENTION_SEPARATOR + m.group(0)[1:], content)
+    return escaped
+
+
+def _is_non_conversational_send(metadata: Optional[dict[str, Any]]) -> bool:
+    """True for a mid-turn status/interim send that is NOT the turn's conversational reply.
+
+    The gateway marks these (``_interim_send``, ``non_conversational``); their text is incidental
+    narration, so an ``@name`` inside it is prose rather than a deliberate agent-to-agent summons.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("_interim_send") or metadata.get("non_conversational"))
+
+
 def _escape_unresolved_presentation_mention(content: str, error: str) -> Optional[str]:
     """Make a CLI-rejected ``@name`` presentation-only via an invisible separator after the ``@`` (Buzz
     p-tags whitespace-prefixed @tokens at publish, so prose like ``@session:...`` fails preflight)."""
@@ -91,9 +118,8 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
     name = match.group("name") if match else ""
     if not name:
         return None
-    token = re.compile(rf"(?<!\S)@{re.escape(name)}(?=$|[^A-Za-z0-9._-])", re.IGNORECASE)
-    escaped, count = token.subn(lambda m: "@" + _BUZZ_PRESENTATION_MENTION_SEPARATOR + m.group(0)[1:], content)
-    return escaped if count else None
+    escaped = _escape_presentation_mention(content, name)
+    return escaped if escaped != content else None
 
 
 _FETCH_LIMIT = 50  # events per poll / seed call
@@ -786,6 +812,28 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 text = pattern.sub("\x00", text)
         return found
 
+    async def _downgrade_presentation_mentions(self, chat_id: str, content: str) -> str:
+        """Make every member-shaped ``@Name`` in *content* presentation-only.
+
+        Used for interim/status sends, which must never wake a member: their ``@tokens`` are
+        incidental narration, not a deliberate summons — and the CLI p-tags bare member-shaped
+        ``@Name`` at publish even without an explicit ``--mention``.
+        """
+        if "@" not in content:
+            return content
+        self_pk = getattr(self, "_self_pubkey", None)
+        names: list[str] = []
+        for pk in await self._channel_member_pubkeys(chat_id):
+            if pk == self_pk:
+                continue
+            name = await self._profile_display_name(pk)
+            if name:
+                names.append(name)
+        out = content
+        for name in sorted(set(names), key=len, reverse=True):
+            out = _escape_presentation_mention(out, name, member_boundary=True)
+        return out
+
     async def _run_message_send(self, args: list[str], content: str, mention_pubkeys: Optional[list[str]] = None):
         """Send with bounded recovery (each rung once): explicit ``--mention``s; on "not channel members" retry
         without; escape an unresolvable ``@token`` and retry; finally ``--mention <self>`` (downgrades @names to text).
@@ -826,7 +874,13 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         meta = metadata or {}
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
         args += self._reply_args(meta.get("thread_id") or meta.get("reply_to_message_id") or reply_to)
-        mention_pubkeys = await self._mention_pubkeys_for(chat_id, content)
+        if _is_non_conversational_send(meta):
+            # Interim/status narration is not a summons: downgrade any member-shaped @name to
+            # presentation-only text instead of resolving it into an actionable p-tag.
+            content = await self._downgrade_presentation_mentions(chat_id, content)
+            mention_pubkeys: list[str] = []
+        else:
+            mention_pubkeys = await self._mention_pubkeys_for(chat_id, content)
         code, out, err = await self._run_message_send(args, content, mention_pubkeys)
         result = self._send_result(chat_id, code, out, err)
         if result.success:

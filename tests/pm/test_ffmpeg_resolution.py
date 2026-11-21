@@ -6,6 +6,7 @@ import pytest
 from pm import update
 from pm.package import InstallError
 from pm.packages import Ffmpeg
+from pm.defaults import default_packages
 
 
 @pytest.fixture
@@ -70,9 +71,19 @@ def test_unadvertised_version_refuses_instead_of_relabelling_old_bytes(indexes, 
     with pytest.raises(InstallError, match="9.9.9"):
         Ffmpeg().fetch_url("9.9.9", target)
 
-
 def test_only_retained_month_end_builds_are_pinned(indexes):
     versions = Ffmpeg().latest_versions("win32-x64")
     assert "9.1.2" in versions
     assert "9.1.3" not in versions  # current month: still a daily
     assert "9.1.1" not in versions  # older daily in a finished month
+
+
+def test_ffmpeg_failure_does_not_block_updates():
+    package = Ffmpeg()
+    assert package.optional is True
+    assert package.default is True
+
+
+def test_ffmpeg_remains_in_default_install_closure():
+    assert default_packages(["ffmpeg"], target="darwin-arm64", declined_names=frozenset()) == ["ffmpeg"]
+    assert default_packages(["ffmpeg"], target="darwin-arm64", declined_names=frozenset({"ffmpeg"})) == []

@@ -1332,6 +1332,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 scope.enter_context(api_policy_scope())
                 bind_turn_workspace(policy, self._ctx.session_id)
                 from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+                if policy is None:  # a messaging chat: its /workspace (or per-thread fork) root
+                    from gateway.session_workspace import workspace_turn
+                    scope.enter_context(workspace_turn(
+                        self._runner, self._ctx.session_key, self._ctx.session_id, self._ctx.user_config))
                 cwd_owner = restore_turn_cwd(self._runner, self._ctx.session_key, policy)
                 try:
                     result = self._run_sync_scoped()

@@ -168,6 +168,24 @@ def _maintain_pack_health(repo_root: str) -> None:
         logger.debug("pack maintenance skipped: %s", e)
 
 
+def remote_default_ref(repo_root: str, timeout: float = 5) -> str:
+    """``origin/<default branch>``: ``origin/HEAD`` when set locally, else asked of the remote
+    (network, capped at *timeout*, at least 5 s); ``""`` when neither answers."""
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+    env = noninteractive_git_env()
+    head_ref = _git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], repo_root, timeout=20,
+                    stdin=subprocess.DEVNULL, env=env)
+    if head_ref.returncode == 0 and (ref := head_ref.stdout.strip().replace("refs/remotes/", "", 1)):
+        return ref
+    show = _git(["remote", "show", "origin"], repo_root, timeout=max(timeout, 5), stdin=subprocess.DEVNULL, env=env)
+    for line in show.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("HEAD branch:"):
+            branch = line.split(":", 1)[1].strip()
+            return "origin/" + branch if branch and branch != "(unknown)" else ""
+    return ""
+
+
 def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
                            freshness_window: float = 300) -> tuple:
     """Resolve the freshest base ref to branch a new worktree from -> ``(base_ref, banner_label)``.
@@ -234,19 +252,7 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
 
     # 2. Remote default branch (origin/HEAD).
     try:
-        head_ref = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
-        default_ref = (head_ref.stdout.strip().replace("refs/remotes/", "", 1)
-                       if head_ref.returncode == 0 else "")
-        if not default_ref:
-            # origin/HEAD not set locally; ask the remote (network, capped like the fetch).
-            show = _run(["remote", "show", "origin"], timeout=max(fetch_timeout, 5))
-            for line in show.stdout.splitlines():
-                line = line.strip()
-                if line.startswith("HEAD branch:"):
-                    _branch = line.split(":", 1)[1].strip()
-                    if _branch and _branch != "(unknown)":
-                        default_ref = "origin/" + _branch
-                    break
+        default_ref = remote_default_ref(repo_root, fetch_timeout)
         if default_ref and "/" in default_ref:
             remote, branch = default_ref.split("/", 1)
             return _refresh(remote, branch, default_ref)

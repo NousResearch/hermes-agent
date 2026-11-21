@@ -297,9 +297,22 @@ class GatewaySlashCommandsMixin(
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
-    def _terminal_cwd(self) -> str:
+    def _terminal_cwd(self, source=None) -> str:
+        """The chat's ``/workspace`` root when *source* has one, else the profile's terminal cwd."""
+        from gateway.session_workspace import bound_root
         from tools.terminal_scope import terminal_env
-        return terminal_env("TERMINAL_CWD", str(Path.home()))
+        root = bound_root(self, self._session_key_for_source(source)) if source is not None else ""
+        return root or terminal_env("TERMINAL_CWD", str(Path.home()))
+
+    def _checkouts(self, source) -> list[tuple[str, str]]:
+        """``[(label, dir)]`` the chat's git-facing commands read: each repository worktree of a
+        folder-of-repositories thread fork (labelled by repository), else ``[("", _terminal_cwd)]``."""
+        from gateway.session_workspace import bound_dirs
+        return bound_dirs(self, self._session_key_for_source(source)) or [("", self._terminal_cwd(source))]
+
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        from gateway.session_workspace import handle_workspace_command
+        return await handle_workspace_command(self, event)
 
     @staticmethod
     def _display_config_target(event: MessageEvent):
@@ -749,11 +762,23 @@ class GatewaySlashCommandsMixin(
         mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
-        cwd = self._terminal_cwd()
         # --all / --force: classic full restore, overwriting user edits too.
         tokens = event.get_command_args().strip().split()
         restore_all = any(tok.lower() in ("--all", "--force") for tok in tokens)
-        arg = " ".join(tok for tok in tokens if tok.lower() not in ("--all", "--force"))
+        tokens = [tok for tok in tokens if tok.lower() not in ("--all", "--force")]
+        checkouts = dict(self._checkouts(event.source))
+        if "" not in checkouts:  # a folder-of-repositories thread fork: /rollback <repo> [N]
+            if tokens and tokens[0] in checkouts:
+                cwd = checkouts[tokens.pop(0)]
+            elif len(checkouts) == 1:
+                cwd = next(iter(checkouts.values()))
+            else:
+                return "\n\n".join(f"**{label}**\n" + format_checkpoint_list(mgr.list_checkpoints(cwd), cwd)
+                                    for label, cwd in checkouts.items()) + "\n\n" + t(
+                    "gateway.rollback.pick_repo", repos=", ".join(checkouts))
+        else:
+            cwd = checkouts[""]
+        arg = " ".join(tokens)
         # Container-backed session: host checkpoints belong to another tree, so a restore is
         # refused; the bare listing stays visible, prefixed with the reason (same as the CLI).
         reason = mgr.unsupported_backend_reason()
@@ -791,7 +816,7 @@ class GatewaySlashCommandsMixin(
         mode = "working"
         for low in args:
             mode = _DIFF_MODE_BY_ARG.get(low, mode)
-        cwd = self._terminal_cwd()
+        mgr = None
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
             mgr = self._checkpoint_manager(event.source)
@@ -799,13 +824,16 @@ class GatewaySlashCommandsMixin(
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
                 return reason
-            result = await asyncio.to_thread(mgr.session_diff, cwd)
-        else:
-            from tools.working_diff import collect_working_diff
-            result = await asyncio.to_thread(collect_working_diff, cwd, mode)
-        if not result.get("success"):
-            return t("gateway.diff.failed", error=result.get("error") or t("gateway.diff.err_default"))
-        return self._render_diff_result(result, stat_only)
+        from tools.working_diff import collect_working_diff
+        replies = []
+        checkouts = self._checkouts(event.source)  # a thread fork of several repositories: one per repo
+        for label, cwd in checkouts:
+            result = await asyncio.to_thread(mgr.session_diff, cwd) if mgr is not None else (
+                await asyncio.to_thread(collect_working_diff, cwd, mode))
+            reply = (self._render_diff_result(result, stat_only) if result.get("success") else
+                     t("gateway.diff.failed", error=result.get("error") or t("gateway.diff.err_default")))
+            replies.append(f"**{label}**\n{reply}" if len(checkouts) > 1 else reply)
+        return "\n\n".join(replies)
 
     def _render_diff_result(self, result: dict, stat_only: bool) -> str:
         """Render a working/session diff result: stat block, untracked list, fenced (truncated) diff."""

@@ -42,6 +42,15 @@ approval:
     second_one: "{count} 秒"
     second_other: "{count} 秒"
 gateway:
+  workspace:
+    source_session: "会话覆盖"
+    source_global: "全局默认"
+    status: "📁 **工作区：** `{cwd}`（{source}）\n全局默认：`{global_cwd}`\n使用 `/workspace /absolute/path` 绑定当前聊天，或使用 `/workspace clear` 回到全局默认。"
+    set: "✅ 当前聊天工作区已设置为：`{cwd}`\n此聊天后续会使用该目录作为项目上下文、文件工具、终端命令、@ 引用和回滚的工作目录。"
+    cleared: "已清除工作区覆盖。后续将使用全局默认：`{cwd}`"
+    relative_rejected: "请使用绝对路径，例如 `/workspace /home/me/project`。"
+    not_dir: "工作区路径不是已存在的目录：`{path}`"
+    save_failed: "无法保存工作区：{error}"
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining: "⏳ 正在等待 {count} 个活跃代理结束后重启..."
   goal_cleared: "✓ 目标已清除。"
@@ -378,6 +387,7 @@ gateway:
     kept_oversize: "↷ 已保留（文件过大无法纳入检查点，没有可恢复的存储副本）：{files}"
     failed_deletes: "⚠️ 无法移除（保留原文件）：{files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "检查点未启用，因此没有会话基线。\n在 config.yaml 中启用:\n```\ncheckpoints:\n  enabled: true\n```\n普通 /diff 仍然可用 — 它直接使用 git。"
     no_changes: "没有更改。"

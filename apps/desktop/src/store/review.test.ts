@@ -4,6 +4,8 @@ import type { ClientSessionState } from '@/app/types'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 
 import {
+  $reviewCommentDraft,
+  $reviewComments,
   $reviewCommitDefault,
   $reviewCommitMsgBusy,
   $reviewDiff,
@@ -21,21 +23,26 @@ import {
   $reviewShipBusy,
   $reviewShipInfo,
   $reviewTurnBase,
+  addReviewComment,
+  clearReviewComments,
   clearReviewSelection,
   closeReview,
   commitChanges,
   confirmRevert,
   createOrOpenPr,
+  formatReviewCommentsPrompt,
   generateCommitMessage,
   openReview,
   openReviewForPath,
   refreshReview,
   refreshShipInfo,
+  removeReviewComment,
   requestRevert,
   revealReview,
   revertReviewFile,
   selectReviewFile,
   stageReviewFile,
+  startReviewComment,
   toggleReview,
   unstageReviewFile
 } from './review'
@@ -718,5 +725,67 @@ describe('mutation gating', () => {
     await stageReviewFile('a.ts')
 
     expect(review.stage).toHaveBeenCalledWith('/repo', 'a.ts')
+  })
+})
+
+describe('review line comments', () => {
+  beforeEach(() => {
+    $reviewComments.set([])
+    $reviewCommentDraft.set(null)
+  })
+
+  it('adds, removes and clears comments, and adding clears the draft', () => {
+    startReviewComment({ kind: 'add', line: 3, path: 'a.ts', side: 'new', snippet: 'const x = 1' })
+    expect($reviewCommentDraft.get()).not.toBeNull()
+
+    addReviewComment({ body: 'rename this', kind: 'add', line: 3, path: 'a.ts', side: 'new', snippet: 'const x = 1' })
+
+    expect($reviewCommentDraft.get()).toBeNull()
+    expect($reviewComments.get()).toHaveLength(1)
+
+    removeReviewComment($reviewComments.get()[0].id)
+    expect($reviewComments.get()).toEqual([])
+
+    addReviewComment({ body: 'one', kind: 'remove', line: 2, path: 'b.ts', side: 'old', snippet: 'old' })
+    clearReviewComments()
+    expect($reviewComments.get()).toEqual([])
+
+    // Comments belong to the repo they were written against: re-homing an
+    // open pane to another worktree must not carry them into its prompt.
+    openReview('/repo-a', 'tile:a')
+    addReviewComment({ body: 'keep', kind: 'add', line: 1, path: 'a.ts', side: 'new', snippet: 'x' })
+    revealReview('/repo-a', 'tile:a')
+    expect($reviewComments.get()).toHaveLength(1)
+    startReviewComment({ kind: 'add', line: 2, path: 'a.ts', side: 'new', snippet: 'y' })
+    revealReview('/repo-b', 'tile:b')
+    expect($reviewComments.get()).toEqual([])
+    expect($reviewCommentDraft.get()).toBeNull()
+
+    // Same when the main chat's own checkout moves under an unpinned pane.
+    closeReview()
+    openReview()
+    addReviewComment({ body: 'main', kind: 'add', line: 1, path: 'a.ts', side: 'new', snippet: 'x' })
+    $currentCwd.set('/repo-c')
+    expect($reviewComments.get()).toEqual([])
+  })
+
+  it('formats the agent prompt with file/line anchors and diff snippets', () => {
+    addReviewComment({ body: 'rename this', kind: 'add', line: 3, path: 'a.ts', side: 'new', snippet: 'const x = 1' })
+    addReviewComment({
+      body: 'why removed?',
+      kind: 'remove',
+      line: 2,
+      path: 'a.ts',
+      side: 'old',
+      snippet: 'const y = 2'
+    })
+
+    const prompt = formatReviewCommentsPrompt($reviewComments.get())
+
+    expect(prompt).toContain('- a.ts:3 (new line)')
+    expect(prompt).toContain('diff: +const x = 1')
+    expect(prompt).toContain('comment: rename this')
+    expect(prompt).toContain('- a.ts:2 (old line)')
+    expect(prompt).toContain('diff: -const y = 2')
   })
 })

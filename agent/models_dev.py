@@ -203,13 +203,16 @@ def _models_dev_id(
     provider: str, *, config: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
-    catalog only through its configured ``catalog_provider`` alias (#112649)."""
+    catalog only through its configured ``catalog_provider`` alias (#112649); a registered alias of a
+    provider profile (``github-copilot`` for ``copilot``) reads its profile's catalog."""
     key = (provider or "").strip()
     mdev_id = models_dev_id_for(key)
     if mdev_id is None:
         alias = _configured_catalog_provider(key, config=config)
-        mdev_id = (models_dev_id_for(alias) or alias) if alias else None
-        if mdev_id is not None and mdev_id not in models_dev_provider_map().values() \
+        if not alias:
+            return _profile_alias_models_dev_id(key, config=config)
+        mdev_id = models_dev_id_for(alias) or alias
+        if mdev_id not in models_dev_provider_map().values() \
                 and mdev_id not in fetch_models_dev(allow_network=False):
             # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
             if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
@@ -218,6 +221,41 @@ def _models_dev_id(
                                "models.dev id; ignoring", key, alias)
             mdev_id = None
     return mdev_id
+
+
+def _profile_alias_models_dev_id(name: str, *, config: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """models.dev id of the provider profile *name* is a registered alias of, else None.
+
+    Sessions can record a provider by one of its profile's aliases (the GitHub Copilot plugin's sessions
+    record ``github-copilot``); ``models_dev_id_for`` matches exact profile names only, so every catalog
+    consumer (image routing, reasoning, context window) read those models as unknown. Only fills a miss:
+    exact ids and a configured ``catalog_provider`` keep precedence, ``custom:`` routes are never resolved,
+    and a user-defined provider of the same name is never re-pointed at a vendor catalog."""
+    if not name or name.lower().startswith("custom") or _is_named_custom_provider(name, config=config):
+        return None
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(name)
+    except Exception:  # health: allow BLE001 -- an unavailable registry keeps the previous answer (unknown)
+        logger.debug("provider alias %r: profile lookup failed; catalog stays unknown", name, exc_info=True)
+        return None
+    canonical = str(getattr(profile, "name", "") or "").strip()
+    if not canonical or canonical == name:
+        return None
+    return models_dev_id_for(canonical)
+
+
+def _is_named_custom_provider(name: str, *, config: Optional[dict[str, Any]] = None) -> bool:
+    """True when the user defined a provider with this exact name (``providers.<name>`` or legacy
+    ``custom_providers[].name``): its own endpoint, never a vendor catalog."""
+    row = (_cfg_get("providers", name, default=None, config=config) if config is not None
+           else _cfg_get("providers", name, default=None))
+    if isinstance(row, dict):
+        return True
+    legacy = (_cfg_get("custom_providers", default=None, config=config) if config is not None
+              else _cfg_get("custom_providers", default=None))
+    return any(isinstance(e, dict) and str(e.get("name") or "").strip() == name
+               for e in (legacy if isinstance(legacy, list) else []))
 
 
 _UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once per process

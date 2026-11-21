@@ -355,7 +355,15 @@ def _merge_live_in_stored_order(display, live):
     Display deduplication keeps a carried message at its FIRST copy's position, so after a rotated
     compression the copied tail sits before the new summary. Clients take the live rows of a resume
     as the transcript (the CLI's ``conversation_history``, ``/undo``'s prefix, rollback, ACP replay),
-    so the live subsequence must be the stored one; archived rows only anchor between live rows."""
+    so the live subsequence must be the stored one; archived rows only anchor between live rows.
+
+    Clone guard: the live set carries every row of each compaction generation, and the display
+    lineage folds a generation's carried tail into the original's slot — so a live row whose
+    ``(message_uid, timestamp)`` identity the display set already shows is a clone of a carried
+    tail (the user saw it painted twice, e.g. ``mwlf5loyekujbd``) and is dropped here; the display
+    set already paints it. The live rows that survive are exactly the ones the display set shows,
+    so undo/rewind/retry still address every user-visible row. Genuinely distinct repeats
+    (different uids, different timestamps) keep both copies."""
     current = {row['_row_id'] for row in live}
     groups, pending, shown = [], [], 0
     for row in display:
@@ -364,9 +372,19 @@ def _merge_live_in_stored_order(display, live):
             pending, shown = [], shown + 1
         else:
             pending.append({**row, 'archived': True})
+    # Identities the display set already paints: (message_uid, timestamp) pairs of rows that are
+    # themselves NOT live. A live row sharing such an identity is a clone of a row the lineage fold
+    # already shows (the user saw it painted twice, e.g. ``mwlf5loyekujbd``).
     shown_ids = {row['_row_id'] for row in display} & current
+    display_idents = {
+        (row.get('message_uid'), row.get('timestamp'))
+        for row in display
+        if row.get('message_uid') and row['_row_id'] not in current
+    }
     rows, seen = [], 0
     for row in sorted(live, key=lambda r: r['_row_id']):
+        if (row.get('message_uid'), row.get('timestamp')) in display_idents:
+            continue  # clone of a row the display set already shows
         if row['_row_id'] in shown_ids:
             rows.extend(groups[seen])
             seen += 1

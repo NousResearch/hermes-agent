@@ -42,7 +42,11 @@ def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not os.access(dest.parent, os.W_OK):
             raise PermissionError("directory is not writable")
-        if os.path.lexists(dest) and (dest.is_dir() or not os.access(dest, os.W_OK)):
+        # is_dir() and access() follow the link. A symlink is replaced by the rename
+        # below, so refuse only a real directory or a non-link that is not writable.
+        if os.path.lexists(dest) and (
+                dest.is_dir()
+                or (not dest.is_symlink() and not os.access(dest, os.W_OK))):
             raise PermissionError("file is not writable")
         # Extract into a private directory beside dest, then rename over it: the extractor
         # deletes its target on failure, so dest itself is only ever replaced by a full image.

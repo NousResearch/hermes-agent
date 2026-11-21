@@ -66,14 +66,94 @@ class VisionMessagePrepMixin:
 
     # 20 MB base64 ≈ 15 MB decoded — prevents OOM from an oversized data: URL in a shared gateway process.
     _MAX_DATA_URL_BASE64_BYTES = 20 * 1024 * 1024
+    # Above the soft cap we still attempt one bounded decode + downscale: a 20-64 MB inline
+    # payload is almost always a hi-res phone screenshot, not an attack. Past the hard cap we
+    # skip it exactly as before (#54484).
+    _MAX_DATA_URL_DECODE_BYTES = 64 * 1024 * 1024
+    # Pixel guard: byte size says nothing about decode size — a 20 MB PNG can expand past 1 GB.
+    _MAX_DOWNSCALE_PIXELS = 50_000_000
+    _DOWNSCALE_MAX_SIDE = 1568
+    _DOWNSCALE_QUALITY_LADDER = (85, 70, 50, 35)
+
+    @staticmethod
+    def _decode_oversized_data_url(data: str, mime: str) -> Optional[tuple[bytes, str]]:
+        """Decode an over-cap base64 payload and re-encode it small enough to analyze.
+
+        Returns ``(jpeg_bytes, ".jpg")``, or ``None`` when the payload is past the hard
+        cap, is not a raster image, cannot be decoded, or would expand past
+        ``_MAX_DOWNSCALE_PIXELS``. Callers keep the pre-existing "skip + accurate note"
+        path on ``None`` (see #132605 / #132610).
+        """
+        if len(data) > VisionMessagePrepMixin._MAX_DATA_URL_DECODE_BYTES:
+            return None
+        if mime and mime.startswith("image/") is False:
+            return None
+        try:
+            import io
+
+            from PIL import Image
+        except Exception:
+            return None
+        try:
+            raw = base64.b64decode(data)
+        except Exception:
+            return None
+        try:
+            with Image.open(io.BytesIO(raw)) as probe:
+                width, height = probe.size
+                animated = bool(getattr(probe, "is_animated", False))
+        except Exception as exc:
+            logger.info("oversized data-URL is not a decodable image: %s", exc)
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        if width * height > VisionMessagePrepMixin._MAX_DOWNSCALE_PIXELS:
+            logger.info(
+                "oversized data-URL is %dx%d (%d px), refusing to expand past the pixel budget",
+                width, height, width * height,
+            )
+            return None
+        budget = VisionMessagePrepMixin._MAX_DATA_URL_BASE64_BYTES
+        resample = Image.Resampling.LANCZOS
+        side = VisionMessagePrepMixin._DOWNSCALE_MAX_SIDE
+        try:
+            with Image.open(io.BytesIO(raw)) as img:
+                if animated:
+                    img.seek(0)
+                img.thumbnail((side, side), resample)
+                if img.mode in ("RGBA", "LA", "P") or "transparency" in (img.info or {}):
+                    # JPEG has no alpha channel: flatten onto white, or screenshots turn black.
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    rgba = img.convert("RGBA")
+                    background.paste(rgba, mask=rgba.split()[-1])
+                    img = background
+                elif img.mode != "RGB":
+                    img = img.convert("RGB")
+                for quality in VisionMessagePrepMixin._DOWNSCALE_QUALITY_LADDER:
+                    buffer = io.BytesIO()
+                    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+                    payload = buffer.getvalue()
+                    if (len(payload) * 4) // 3 + 100 <= budget:
+                        logger.info(
+                            "downscaled oversized data-URL %dx%d -> %dx%d (%d bytes, q=%d)",
+                            width, height, img.width, img.height, len(payload), quality,
+                        )
+                        return payload, ".jpg"
+        except Exception as exc:
+            logger.info("oversized data-URL downscale failed: %s", exc)
+        return None
 
     @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
         header, _, data = str(image_url or "").partition(",")
-        if len(data) > VisionMessagePrepMixin._MAX_DATA_URL_BASE64_BYTES:
-            logger.warning("data-URL payload too large (%d bytes), skipping", len(data))
-            return "", None
         mime = header[len("data:"):].split(";", 1)[0].strip() if header.startswith("data:") else ""
+        if len(data) > VisionMessagePrepMixin._MAX_DATA_URL_BASE64_BYTES:
+            shrunk = VisionMessagePrepMixin._decode_oversized_data_url(data, mime)
+            if shrunk is None:
+                logger.warning("data-URL payload too large (%d bytes), skipping", len(data))
+                return "", None
+            data = base64.b64encode(shrunk[0]).decode("ascii")
+            mime = "image/jpeg"
         suffix = _DATA_URL_SUFFIXES.get(mime if mime.startswith("image/") else "image/jpeg", ".jpg")
         tmp = tempfile.NamedTemporaryFile(prefix="anthropic_image_", suffix=suffix, delete=False)
         try:

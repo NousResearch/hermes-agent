@@ -167,6 +167,9 @@ with a name allows that one name only.
 | `hermes_cli.cli_output` | whole module | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.platforms.session_model` | `SessionModelPickerProvider` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
 | `gateway.platforms.session_model` | `SessionModelSettings` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
+| `tools.write_review_api` | `list_writes` | plugins/index.md § Review staged memory and skill writes |
+| `tools.write_review_api` | `preview_write` | plugins/index.md § Review staged memory and skill writes |
+| `tools.write_review_api` | `decide_write` | plugins/index.md § Review staged memory and skill writes |
 | `tools.skills_tool` | `find_all_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `sort_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `skill_search_dirs` | plugins/index.md § Read the skill catalog |

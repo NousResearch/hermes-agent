@@ -723,6 +723,43 @@ class TestA2AOrchestrate:
         assert out.startswith("[first: ")
         assert "win" in out
 
+    @staticmethod
+    def _capture_outbound(monkeypatch, cfg):
+        """Drive the real send path against a card-less peer; return posted JSON-RPC bodies."""
+        posted: list[dict] = []
+
+        def no_card(url, headers, timeout):
+            raise OSError("no agent card")
+
+        def fake_post(url, body, headers, timeout):
+            posted.append(body)
+            return {"jsonrpc": "2.0", "id": body["id"], "result": {"task": protocol.build_task(
+                "task-1", "ctx-1", protocol.STATE_COMPLETED, "ok")}}
+
+        monkeypatch.setattr(tools, "_load_config", lambda: cfg)
+        monkeypatch.setattr(tools, "_http_get_json", no_card)
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        return posted
+
+    def test_fan_out_sends_configured_peer_tenant(self, monkeypatch):
+        """a2a_orchestrate must route to the tenant configured for the peer, like a2a_call."""
+        cfg = {"a2a_agents": {"dev": {"url": "http://peer.example", "tenant": "dev-team",
+                                      "capabilities": ["code"]}}}
+        posted = self._capture_outbound(monkeypatch, cfg)
+        assert "ok" in tools.a2a_call({"agent": "dev", "message": "direct"})
+        assert "ok" in tools.a2a_orchestrate({"capability": "code", "message": "fan-out"})
+        assert len(posted) == 2
+        direct, fan_out = posted
+        assert direct["params"]["tenant"] == "dev-team"
+        assert fan_out["params"].get("tenant") == direct["params"]["tenant"]
+
+    def test_fan_out_without_configured_tenant_sends_none(self, monkeypatch):
+        cfg = {"a2a_agents": {"dev": {"url": "http://peer.example", "capabilities": ["code"]}}}
+        posted = self._capture_outbound(monkeypatch, cfg)
+        assert "ok" in tools.a2a_orchestrate({"capability": "code", "message": "fan-out"})
+        assert len(posted) == 1
+        assert "tenant" not in posted[0]["params"]
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SSRF protection for push callbacks

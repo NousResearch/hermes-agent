@@ -33,8 +33,9 @@ def _configured_peers() -> dict:
 
 
 def _peer_from_entry(entry: dict, **extra: Any) -> dict:
+    """Configured peer entry -> outbound peer; shared by a2a_call and a2a_orchestrate so both route alike."""
     return {"url": entry.get("url", ""), "auth": entry.get("auth", {}) or {},
-            "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)), **extra}
+            "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)), "tenant": entry.get("tenant", ""), **extra}
 
 
 def _resolve_peer(agent: str) -> Optional[dict]:
@@ -42,7 +43,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     if agent.startswith(("http://", "https://")):
         return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
     entry = _configured_peers().get(agent)
-    return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", "")) if entry else None
+    return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or []) if entry else None
 
 
 def _auth_header(auth: dict) -> dict:

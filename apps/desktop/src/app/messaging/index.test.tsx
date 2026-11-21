@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -323,6 +323,47 @@ describe('MessagingView setup-guide link', () => {
     })
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
+  })
+})
+
+describe('MessagingView credential documentation link', () => {
+  it('opens a credential docs icon through the validated external opener', async () => {
+    const docsUrl = 'https://learn.microsoft.com/en-us/microsoftteams/'
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          env_vars: [
+            {
+              advanced: false,
+              description: 'Teams application credential',
+              is_password: true,
+              is_set: false,
+              key: 'TEAMS_APP_ID',
+              prompt: 'Application ID',
+              redacted_value: null,
+              required: true,
+              url: docsUrl
+            }
+          ]
+        })
+      ]
+    })
+
+    const { container } = await renderMessaging()
+
+    const link = await waitFor(() => {
+      const anchor = container.querySelector<HTMLAnchorElement>(`a[href="${docsUrl}"]`)
+
+      expect(anchor).not.toBeNull()
+
+      return anchor!
+    })
+
+    const click = createEvent.click(link)
+    fireEvent(link, click)
+
+    expect(click.defaultPrevented).toBe(true)
+    expect(openExternalLink).toHaveBeenCalledWith(docsUrl)
   })
 })
 

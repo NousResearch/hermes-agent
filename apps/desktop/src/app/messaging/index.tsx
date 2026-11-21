@@ -1113,13 +1113,22 @@ function MessagingField({
   const m = t.messaging
   const copy = fieldCopy(field, m)
   const fieldId = `messaging-field-${field.key}`
+  const docsUrl = field.url
 
   const tools = (
     <>
-      {field.url && (
+      {docsUrl && (
         <Tip label={m.openDocs}>
           <Button asChild className="size-8 shrink-0" variant="ghost">
-            <a href={field.url} rel="noreferrer" target="_blank">
+            <a
+              href={docsUrl}
+              onClick={event => {
+                event.preventDefault()
+                openExternalLink(docsUrl)
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
               <ExternalLink className="size-3.5" />
             </a>
           </Button>

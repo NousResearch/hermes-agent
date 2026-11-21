@@ -164,7 +164,8 @@ _MUST_DELIVER_REPLIES = (
     "S", "SLENT", "Silent retry succeeded", "Nothing new [SLENT] but here is the digest",
     "Reply with `[SILENT]` when there is nothing new.", "Price up 3%\n\n[SILVER]",
     "Built a helper where --silent-empty emits [SILENT] when empty.",
-    "[\n\nSILVER moved 3%]", "\u200b\ufeff", "",
+    "[\n\nSILVER moved 3%]", "\u200b\ufeff", "\u200b\n\u200b", "",
+    "```\n[SILENT] handling is enabled\n```", "```\n[SLENT] handling is enabled\n```",
 )
 
 

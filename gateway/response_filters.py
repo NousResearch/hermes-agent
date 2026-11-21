@@ -198,12 +198,14 @@ def _strip_code_wrap(text: str) -> str:
 
 def _strip_leading_code_span(text: str) -> str:
     """Content of a leading inline code span (any backtick-run length), e.g. the
-    `[SILENT]` in "`[SILENT]` note"; ``text`` unchanged when there is none."""
+    `[SILENT]` in "`[SILENT]` note"; ``text`` unchanged when there is none. A span that crosses
+    a line is a fenced block, not an inline marker, so a code block opening with the marker is
+    content."""
     if not text.startswith("`"):
         return text
     run = len(text) - len(text.lstrip("`"))
     close = text.find("`" * run, run)
-    return text[run:close].strip() if close != -1 else text
+    return text[run:close].strip() if close != -1 and "\n" not in text[run:close] else text
 
 
 # One bracketed token and nothing else: ``[`` + any non-space run + optional ``]``. Anything with
@@ -257,7 +259,7 @@ def is_autonomous_silence_response(response: Any) -> bool:
     ``[SILENT]`` (:func:`_is_damaged_silent_marker`) is silence.
     Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
     """
-    stripped = _strip_format_characters(response.strip()) if isinstance(response, str) else ""
+    stripped = _strip_format_characters(response).strip() if isinstance(response, str) else ""
     if not stripped:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]

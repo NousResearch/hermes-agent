@@ -283,6 +283,16 @@
     } catch (_e) { return null; }
   }
 
+  // Deep link: /kanban?search=<query> pre-fills the board's search filter,
+  // read once on mount, so external tools can link to a filtered card view.
+  // switchBoard() still clears the search like any other filter.
+  function readUrlParam(name) {
+    try {
+      const v = new URLSearchParams(window.location.search).get(name);
+      return (v || "").trim() || null;
+    } catch (_e) { return null; }
+  }
+
   function writeSelectedBoard(slug) {
     try {
       // Persist the user's dashboard-side board pin even for "default".
@@ -646,7 +656,7 @@
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
-    const [search, setSearch] = useState("");
+    const [search, setSearch] = useState(function () { return readUrlParam("search") || ""; });
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 

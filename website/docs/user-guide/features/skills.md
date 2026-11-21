@@ -1109,6 +1109,20 @@ The same command works in chat as a slash command:
 Each profile has its own `.bundled_manifest` under its own `HERMES_HOME`, so `hermes -p coder skills reset <name>` only affects that profile.
 :::
 
+### Skills that leave the bundle
+
+When a release moves a bundled skill to the official optional catalog, or stops shipping it, Hermes keeps your local copy and its manifest entry, so the copy still counts as a built-in. It no longer receives bundled updates. On each update while such a copy remains, `hermes update` lists it under "moved to optional" or "removed from the bundle". Archived copies and copies managed by the Skills Hub are not listed. The notice only reports: it doesn't delete, overwrite, or install anything.
+
+Run these commands in the profile the notice came from. `-p` applies only to the command it's passed to, so after `hermes -p coder update`, use `hermes -p coder skills ...`.
+
+**Removed from the bundle.** The copy keeps working. Delete its folder from the profile's `skills/` directory when you no longer need it. Once no active or archived copy with that name remains, the next sync drops its manifest entry.
+
+**Moved to optional.** `hermes skills repair-official <name> --restore` switches to the official version. It takes the official skill's name or folder name; if the name in the notice isn't found, the skill was renamed when it moved, so use its folder name.
+
+Check before running it: `--restore` moves into `skills/.restore-backups/` every active skill whose folder name matches the official skill's folder name, or whose `name:` matches the official skill's name or folder name, plus any copy at the official skill's install path that differs from the official version. That includes Skills Hub installs, whose lock entries can be left pointing at a missing folder or at replaced content. If any of those copies came from the Skills Hub, don't use `--restore`.
+
+Then, once you've kept what you need from the backup, move it out of `skills/`. Skill discovery still scans `.restore-backups/`, so while the backup is there the notice keeps listing it, and if it has the same name as the restored skill, the restored skill can't be loaded by name.
+
 ### Slash commands (inside chat)
 
 All the same commands work with `/skills`:

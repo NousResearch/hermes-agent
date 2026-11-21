@@ -1155,30 +1155,15 @@ def test_real_lock_api_internal_errors_fail_closed_skips_compression(
     assert _count_children(db, parent_sid) == 0
     agent.context_compressor.compress.assert_not_called()
 
-def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> None:
-    """An oversized review snapshot replays warm on the first request, then
-    compacts in memory before further requests — without mutating the parent.
+@pytest.mark.parametrize("snapshot_chars, oversized", [(200, False), (3000, False), (10000, True)])
+def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path, snapshot_chars: int, oversized: bool) -> None:
+    """Drive the real review worker and conversation loop with a stub provider.
 
-    Regression for #93057: the fork historically pinned ``compression_enabled =
-    False`` because it shares the parent's session_id (issue #38727). That
-    left the review's private snapshot unbounded — every follow-up request in
-    the review tool loop replayed the whole snapshot (350k-384k input tokens
-    per request in production). The fix detaches the fork's compressor from
-    the parent's store/session_id and enables in-memory-only compaction.
-
-    This test drives the REAL ``_run_review_in_thread`` + ``run_conversation``
-    with a threshold-crossing snapshot across two provider requests and
-    asserts:
-      • the FIRST request replays the full snapshot untouched (warm
-        prompt-cache parity) — no compaction summary, middle turns present;
-      • compression actually fired before the SECOND request (a real
-        threshold crossing, not just setup-time binding state), and that
-        request carries the compaction summary and none of the middle
-        snapshot turns;
-      • the fork keeps the parent's session_id (prompt-cache parity) but its
-        agent-level AND compressor-level session bindings are detached;
-      • the parent's durable transcript, session row, and child-session graph
-        are byte-for-byte unchanged after the compaction ran.
+    Fitting first requests keep the parent's warm snapshot; oversized requests
+    compact before sending. The second request uses the compacted transcript.
+    The fork keeps its cache identity while both persistence bindings detach;
+    the parent's messages, session row and child graph remain unchanged.
+    Regression for #93057 and the shared-session persistence risk in #38727.
     """
     import agent.background_review as br
 
@@ -1201,7 +1186,7 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
     snapshot = [
         {
             "role": "user" if i % 2 == 0 else "assistant",
-            "content": f"review turn {i} " + "x" * 200,
+            "content": f"review turn {i} " + "x" * snapshot_chars,
         }
         for i in range(24)
     ]
@@ -1278,7 +1263,8 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
         )
         # Stub the fork's compressor so compaction output is deterministic
         # and no aux-LLM call happens; the trigger/commit paths stay real.
-        self.context_compressor.threshold_tokens = 1
+        self.context_compressor.context_length = 40_000
+        self.context_compressor.threshold_tokens = 20_000
         self.context_compressor.protect_first_n = 1
         self.context_compressor.protect_last_n = 1
         self.context_compressor.compress = MagicMock(
@@ -1336,6 +1322,9 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
         result = real_run_conversation(self, *args, **kwargs)
         captured["compression_calls"] = self.context_compressor.compress.call_count
         create = self.client.chat.completions.create
+        from agent.model_metadata import estimate_request_tokens_rough
+        first_request = create.call_args_list[0].kwargs
+        captured["first_request_tokens"] = estimate_request_tokens_rough(first_request["messages"], tools=first_request.get("tools"))
         captured["create_calls"] = create.call_count
         captured["outbound"] = [
             call.kwargs.get("messages") for call in create.call_args_list
@@ -1356,19 +1345,18 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
             f"expected a 2-request review (tool call + final), "
             f"got {captured['create_calls']}"
         )
+        if snapshot_chars == 3000:
+            assert 20_000 < captured["first_request_tokens"] <= 40_000
         first_outbound, second_outbound = captured["outbound"]
         first_contents = [str(m.get("content", "")) for m in first_outbound]
         second_contents = [str(m.get("content", "")) for m in second_outbound]
-        # Warm-cache parity: the first request replays the full snapshot
-        # untouched — middle turns present, no compaction summary yet.
-        assert any("review turn 12" in text for text in first_contents), (
-            "the review fork's FIRST request must replay the full snapshot "
-            "(warm prompt-cache read) — compaction must not rewrite it before "
-            "the first provider call"
+        # Preserve the warm cache only when the first request fits.
+        assert any("review turn 12" in text for text in first_contents) is (not oversized), (
+            "the first review request must preserve only snapshots that fit"
         )
-        assert not any(
+        assert any(
             "[CONTEXT COMPACTION]" in text for text in first_contents
-        ), f"first request was compacted prematurely: {first_contents!r}"
+        ) is oversized, f"first request compaction did not match its budget: oversized={oversized}"
         # The SECOND request carries the compaction summary and none of the
         # middle snapshot turns.
         assert any(

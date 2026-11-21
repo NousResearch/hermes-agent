@@ -33,15 +33,26 @@ pytestmark = pytest.mark.platforms("posix")
 _DAEMON_PKG = "browser_harness_standin"
 
 
+def _spawn_daemon(tmp_path: Path, tag: dict) -> subprocess.Popen:
+    """Start the stand-in and return once its exec has finished. Popen can return while the kernel is
+    still setting up the new image (a vfork parent resumes at exec), and /proc/<pid>/cmdline reads
+    empty until then: the identity check rightly answers "nothing to own yet". A real harness daemon
+    publishes its own pid file from inside the running module, so it never hits that window."""
+    import psutil
+
+    proc = subprocess.Popen([sys.executable, "-m", "browser_harness.daemon"], cwd=str(tmp_path / "pkgroot"),
+                            stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, **tag})
+    wait_until(lambda: "browser_harness.daemon" in psutil.Process(proc.pid).cmdline(), what="the daemon's exec")
+    return proc
+
+
 @pytest.fixture
 def fake_daemon(tmp_path):
     pkg = tmp_path / "pkgroot" / "browser_harness"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "daemon.py").write_text("import time\ntime.sleep(300)\n", encoding="utf-8")
-    proc = subprocess.Popen([sys.executable, "-m", "browser_harness.daemon"], cwd=str(tmp_path / "pkgroot"),
-                            stdin=subprocess.DEVNULL, start_new_session=True,
-                            env={**os.environ, **process_identity.spawn_env("browser-harness-daemon")})
+    proc = _spawn_daemon(tmp_path, process_identity.spawn_env("browser-harness-daemon"))
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     yield proc, runtime
@@ -195,8 +206,7 @@ def test_a_daemon_another_live_hermes_started_on_the_same_name_is_never_register
     tag = process_identity.spawn_env("browser-harness-daemon")
     tag[process_identity.SPAWN_ENV_VAR] = tag[process_identity.SPAWN_ENV_VAR].replace(
         f":{os.getpid()}:", f":{other_hermes.pid}:")
-    daemon = subprocess.Popen([sys.executable, "-m", "browser_harness.daemon"], cwd=str(tmp_path / "pkgroot"),
-                              stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, **tag})
+    daemon = _spawn_daemon(tmp_path, tag)
     try:
         _publish(runtime, "bu-default", daemon.pid)
         # The in-call check stops too, instead of re-checking a daemon that is never ours every tick.

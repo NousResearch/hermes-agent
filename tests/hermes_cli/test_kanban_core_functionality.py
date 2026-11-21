@@ -771,6 +771,7 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     kbc._migrate_add_optional_columns(conn)
     after = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     assert "skills" in after, f"migration did not add skills column: {after}"
+    assert "todo_hold" in after, f"migration did not add todo_hold column: {after}"
 
     # Idempotent: running again must not raise.
     kbc._migrate_add_optional_columns(conn)
@@ -782,6 +783,7 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     keys = set(row.keys())
     assert "skills" in keys
     assert row["skills"] is None
+    assert row["todo_hold"] == 0
     conn.close()
 
 

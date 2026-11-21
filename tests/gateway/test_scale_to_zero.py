@@ -399,6 +399,23 @@ def test_request_brokered_suspend_posts_the_signed_url():
     assert seen == {"url": _SLEEP_URL, "method": "POST"}
 
 
+def test_request_brokered_suspend_sends_an_explicit_user_agent():
+    """Cloudflare Browser Integrity Check rejects urllib's default ``Python-urllib/x.y``
+    signature with error 1010 before the request reaches the broker, so the suspend must
+    carry the same explicit Hermes User-Agent other outbound calls use (#157817)."""
+    from hermes_cli.version_info import hermes_user_agent
+
+    seen = {}
+
+    def opener(request, timeout=None):
+        seen["ua"] = request.get_header("User-agent")
+        return _FakeResponse(200)
+
+    assert request_brokered_suspend(_SLEEP_URL, opener=opener) is True
+    assert seen["ua"] == hermes_user_agent()
+    assert not seen["ua"].startswith("Python-urllib")
+
+
 def test_request_brokered_suspend_fails_awake():
     # Fail-awake: any refusal leaves the machine running rather than stranding a
     # frozen peer that still looks live to the connector.

@@ -39,6 +39,7 @@ import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
+import { loadAgentPlugins } from '@/store/agent-plugins'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
@@ -319,6 +320,40 @@ function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CS
         }
       : {})
   } as CSSProperties
+}
+
+function useGatewayStartupTasks(
+  gatewayState: ReturnType<typeof $gatewayState.get>,
+  requestGateway: AmbientGatewayRequest,
+  activeGatewayProfile: string | null
+): void {
+  useEffect(() => {
+    if (gatewayState === 'open') {
+      // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
+      // same listener this auto-arm claims.
+      void armWakeWord(requestGateway)
+    }
+  }, [gatewayState, requestGateway])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
+      return
+    }
+
+    // CLI enable does not open Capabilities to load the desktop half.
+    void loadAgentPlugins(requestGateway, activeGatewayProfile || null)
+  }, [activeGatewayProfile, gatewayState, requestGateway])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
+      return
+    }
+
+    const report = () => void reportPendingUpdateRun(requestGateway)
+    report()
+
+    return window.hermesDesktop?.updates?.onPendingRun?.(report)
+  }, [gatewayState, requestGateway])
 }
 
 export function ContribWiring({ children }: { children: ReactNode }) {
@@ -892,24 +927,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshSessions
   })
 
-  useEffect(() => {
-    if (gatewayState === 'open') {
-      // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
-      // same listener this auto-arm claims.
-      void armWakeWord(requestGateway)
-    }
-  }, [gatewayState, requestGateway])
-
-  useEffect(() => {
-    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
-      return
-    }
-
-    const report = () => void reportPendingUpdateRun(requestGateway)
-    report()
-
-    return window.hermesDesktop?.updates?.onPendingRun?.(report)
-  }, [gatewayState, requestGateway])
+  useGatewayStartupTasks(gatewayState, requestGateway, activeGatewayProfile)
 
   useDesktopMetrics({
     enabled: !isAuxiliaryWindow(),

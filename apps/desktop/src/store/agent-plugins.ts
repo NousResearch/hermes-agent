@@ -1,7 +1,11 @@
 import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { agentPackageName } from '@/app/capabilities/plugins/plugin-packages'
+import { noteEnabledAgentPackages } from '@/contrib/plugins-store'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
@@ -136,6 +140,7 @@ let inflightProfile: string | null = null
 // Bumped per load so a slow response from a previous profile scope can't
 // overwrite the newer scope's list (async results can land out of order).
 let loadGeneration = 0
+let inflightMayEnableDesktopHalf = false
 
 /** Scope a `plugins.manage` payload to a profile. Omitted (null) = the
  *  backend's launch profile — older backends ignore the extra param. */
@@ -149,14 +154,16 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  stale list. */
 export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
   const scope = profile ?? null
+  const mayEnableDesktopHalf = ownsLocalDesktopHalf(scope)
 
-  if (inflight && inflightProfile === scope) {
+  if (inflight && inflightProfile === scope && inflightMayEnableDesktopHalf === mayEnableDesktopHalf) {
     return inflight
   }
 
   const generation = ++loadGeneration
 
   inflightProfile = scope
+  inflightMayEnableDesktopHalf = mayEnableDesktopHalf
   inflight = (async () => {
     if ($agentPluginsStatus.get() !== 'ready') {
       $agentPluginsStatus.set('loading')
@@ -172,10 +179,13 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
         return
       }
 
-      $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
+      const rows = (result?.plugins ?? []).map(normalizeAgentPluginRow)
+
+      $agentPlugins.set(rows)
       $agentPluginsProfile.set(scope)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
+      noteBootDesktopHalves(rows, scope, mayEnableDesktopHalf)
     } catch (e) {
       if (generation !== loadGeneration) {
         return
@@ -192,6 +202,30 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
   })()
 
   return inflight
+}
+
+/** Desktop halves are app-wide copies on this machine. Only the active local
+ *  profile's enabled unified packages may turn one on, and only by the folder
+ *  identity Electron stamps as `packageName`. A remote list, another profile's
+ *  list, or an agent-only row must not flip a local half that shares a name.
+ *  Those lists also must not replace a catch-up already noted for the local
+ *  profile — a later scan would otherwise apply the wrong names. An explicit
+ *  Desktop off still wins inside `enablePackageDesktopHalf`. */
+function ownsLocalDesktopHalf(profile: string | null): boolean {
+  return (
+    $connection.get()?.mode === 'local' && normalizeProfileKey(profile) === normalizeProfileKey($activeGatewayProfile.get())
+  )
+}
+
+function noteBootDesktopHalves(rows: readonly AgentPluginRow[], profile: string | null, mayEnable: boolean): void {
+  const stillOwns = () => ownsLocalDesktopHalf(profile)
+
+  if (mayEnable && stillOwns()) {
+    noteEnabledAgentPackages(
+      rows.filter(row => row.status === 'enabled' && row.has_desktop_half).map(agentPackageName),
+      stillOwns
+    )
+  }
 }
 
 /** Flip a backend plugin on/off and patch the row from the RPC's refreshed

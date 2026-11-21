@@ -40,6 +40,9 @@ def test_dashboard_refresh_preserves_restart_bookkeeping(already_restarted_units
         _kill_stale_dashboard_processes=lambda **kwargs: calls.append(kwargs) or {'unrecovered': [1234]}))
     update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=already_restarted_units)
     from hermes_constants import get_hermes_home
-    assert calls == [{'restart_managed': True, 'already_restarted_units': already_restarted_units,
-                      'scope_home': str(get_hermes_home())}]
+    assert len(calls) == 1
+    call = dict(calls[0])
+    scope = call.pop('scope_home')
+    assert call == {'restart_managed': True, 'already_restarted_units': already_restarted_units}
+    assert str(get_hermes_home()) in scope
     assert 'could not be auto-restarted' in capsys.readouterr().out

@@ -9,7 +9,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})
+# ``mouse``: the classic CLI's on/off toggle; the TUI's own /mouse (tracking presets) is in _TUI_EXTRA.
+_TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny", "mouse"})
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/density", "Toggle compact display mode", "TUI"),

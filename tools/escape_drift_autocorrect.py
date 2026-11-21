@@ -123,6 +123,119 @@ def maybe_correct_quote_escaping(old_string: str, new_string: str, content: str)
     return stripped_old, _strip_spurious_quote_escapes(new_string)
 
 
+# A doubled backslash is one token so `\\u4f60` (a literal backslash + "u4f60") never decodes.
+_UNICODE_ESCAPE_RE = re.compile(r"\\\\|\\u[0-9a-fA-F]{4}")
+_UNICODE_ESCAPE_TOKEN_RE = re.compile(r"\\u[0-9a-fA-F]{4}")
+_ODD_BACKSLASH_BEFORE_NON_ASCII_RE = re.compile(r"(?:^|[^\\])(?:\\\\)*\\[^\x00-\x7f]")
+_ODD_TRAILING_BACKSLASH_RE = re.compile(r"(?:^|[^\\])(?:\\\\)*\\$")
+
+
+def _decode_unicode_escapes(text: str) -> Optional[str]:
+    """``text`` with its non-ASCII ``\\uXXXX`` escapes decoded (surrogate pairs joined);
+    None when that leaves a lone surrogate. ASCII escapes stay spelled out: they are
+    not the drift this repairs and ``\\u0022`` may be deliberate."""
+    def decode(match: re.Match) -> str:
+        token = match.group(0)
+        return token if len(token) == 2 or int(token[-4:], 16) < 0x80 else chr(int(token[-4:], 16))
+    decoded = _UNICODE_ESCAPE_RE.sub(decode, text)
+    try:
+        decoded = decoded.encode("utf-16", "surrogatepass").decode("utf-16")
+    except UnicodeDecodeError:
+        return None
+    return decoded
+
+
+def _splits_escape(content: str, offset: int) -> bool:
+    """True when a slice boundary at ``offset`` falls inside an escape token."""
+    if offset > 0 and content[offset - 1] == "\\" and content[offset:offset + 1] in set("\\'\"/bfnrtv0u"):
+        return True
+    return any(content[start] == "\\" and _UNICODE_ESCAPE_TOKEN_RE.fullmatch(content, start, start + 6)
+               for start in range(max(0, offset - 5), offset))
+
+
+def _unicode_recovery_pattern(decoded: str) -> re.Pattern:
+    """Each non-ASCII char matches itself or its ``\\uXXXX`` spelling (either hex case)."""
+    parts = []
+    for char in decoded:
+        if ord(char) < 0x80:
+            parts.append(re.escape(char))
+            continue
+        units = char.encode("utf-16-be")
+        hexes = [units[i:i + 2].hex() for i in range(0, len(units), 2)]
+        escaped = "".join(r"(?<!\\)\\u" + "".join(f"[{d}{d.upper()}]" if d.isalpha() else d for d in h)
+                          for h in hexes)
+        parts.append(f"(?:{re.escape(char)}|{escaped})")
+    return re.compile("".join(parts))
+
+
+def _canonical_unicode_slice(content: str, decoded: str, new_string: str) -> Optional[str]:
+    """The single file spelling ``decoded`` occurs as, or None when that is ambiguous.
+
+    Refuses differently spelled candidates, slices splitting an escape token, a trailing
+    replacement backslash that would fuse with a following one, and any literal occurrence
+    the escape-aware pattern did not accept (str replacement would edit it too).
+    """
+    spans = [m.span() for m in _unicode_recovery_pattern(decoded).finditer(content)]
+    if not spans:
+        return None
+    canonical = content[spans[0][0]:spans[0][1]]
+    fuses = _ODD_TRAILING_BACKSLASH_RE.search(new_string) is not None
+    for start, end in spans:
+        if (content[start:end] != canonical or _splits_escape(content, start) or _splits_escape(content, end)
+                or (fuses and content[end:end + 1] == "\\")):
+            return None
+    literal = [m.start() for m in re.finditer(re.escape(canonical), content)]
+    return canonical if literal == [start for start, _ in spans] else None
+
+
+def _escape_like(new_string: str, canonical: str) -> Optional[str]:
+    """``new_string`` with non-ASCII chars spelled as ``\\uXXXX``, reusing the file's hex case;
+    None for a backslash that would fuse with a generated escape."""
+    if _ODD_BACKSLASH_BEFORE_NON_ASCII_RE.search(new_string):
+        return None
+    digits = "".join(t[2:] for t in _UNICODE_ESCAPE_TOKEN_RE.findall(canonical))
+    upper = sum(d.isupper() for d in digits) > sum(d.islower() for d in digits)
+    out = []
+    for char in new_string:
+        if ord(char) < 0x80:
+            out.append(char)
+            continue
+        units = char.encode("utf-16-be")
+        for i in range(0, len(units), 2):
+            h = units[i:i + 2].hex()
+            out.append("\\u" + (h.upper() if upper else h))
+    return "".join(out)
+
+
+def maybe_correct_unicode_escapes(old_string: str, new_string: str, content: str) -> tuple[str, str]:
+    """Match an anchor whose only difference from the file is how non-ASCII text is spelled:
+    ``\\u4f60\\u597d`` in old_string against ``你好`` on disk, or the reverse.
+
+    The recovered anchor must be one unambiguous file slice; new_string is rewritten into
+    the file's spelling (decoded for a plain file, escaped with the file's hex case for an
+    escaped one). A slice mixing both spellings, or any unsafe boundary, is left unchanged
+    so the normal no-match error fires.
+    """
+    if old_string in content:
+        return old_string, new_string
+    decoded = _decode_unicode_escapes(old_string)
+    # The cap bounds the per-char alternation regex, run before every fuzzy patch with non-ASCII.
+    if decoded is None or len(decoded) > 256 or not any(ord(c) >= 0x80 for c in decoded):
+        return old_string, new_string
+    if decoded == old_string and "\\u" not in content:
+        return old_string, new_string
+    canonical = _canonical_unicode_slice(content, decoded, new_string)
+    if canonical is None:
+        return old_string, new_string
+    has_escapes = any(int(t[-4:], 16) >= 0x80 for t in _UNICODE_ESCAPE_TOKEN_RE.findall(canonical))
+    if not has_escapes:
+        return canonical, _decode_unicode_escapes(new_string) or new_string
+    if any(ord(c) >= 0x80 for c in canonical):
+        return old_string, new_string
+    escaped_new = _escape_like(new_string, canonical)
+    return (canonical, escaped_new) if escaped_new is not None else (old_string, new_string)
+
+
 def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -> tuple[str, str, Optional[str]]:
     """Apply whichever escape-drift auto-correction (if any) is verified against the file's
     actual content and report which one fired.
@@ -149,6 +262,14 @@ def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -
         return corrected_old, corrected_new, (
             "escape-drift auto-corrected: halved doubled backslash runs in old_string "
             "before matching; new_string has no backslashes and was left unchanged."
+        )
+
+    corrected_old, corrected_new = maybe_correct_unicode_escapes(old_string, new_string, content)
+    if corrected_old != old_string:
+        return corrected_old, corrected_new, (
+            "escape-drift auto-corrected: old_string spelled non-ASCII text differently from the "
+            "file (\\uXXXX escapes vs literal characters); matched the file's spelling and wrote "
+            "new_string in that same spelling."
         )
 
     return old_string, new_string, None

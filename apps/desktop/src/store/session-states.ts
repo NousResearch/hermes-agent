@@ -25,10 +25,12 @@ import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
+  activateTreePane,
   focusedSessionTabAnchor,
   isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
+  renameTreePane,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
@@ -2452,20 +2454,35 @@ export function frontMainIfSelected(storedSessionId: string): boolean {
  *  the preview described the live one. A tile the probe rejects is DISCARDED
  *  (resurrecting it would just front the stale session again — same
  *  no-undo rationale as discardSessionTile) and never fronted, so the caller
- *  falls through to its authoritative open. No probe = the old behavior. */
+ *  falls through to its authoritative open. No probe = the old behavior.
+ *
+ *  `rehomeStaleTo`: the session a stale tab should be showing instead — the
+ *  caller has ALREADY resolved it (Bot Mode: the canonical chat's lineage tip,
+ *  fresh from the registry). The stale tab is then re-keyed onto it where it
+ *  stands rather than discarded. Discarding is only safe when the caller goes
+ *  on to open something visible; a background wake opens nothing
+ *  (refreshInPlace never mints a tab), so a discard there deleted the user's
+ *  open Bot Chat and left the strip on whatever tab sat beside it. */
 export function focusWorkspaceOwnerSessionTile(
   workspaceOwnerKey: string,
   isStaleTile?: (tile: SessionTile) => boolean,
-  onlyStoredIds?: readonly string[]
+  onlyStoredIds?: readonly string[],
+  rehomeStaleTo?: string
 ): null | string {
-  const allOwned = $sessionTiles
-    .get()
-    .filter(tile => tile.workspaceMode === 'bots' && tile.workspaceOwnerKey === workspaceOwnerKey)
+  const ownedTiles = () =>
+    $sessionTiles.get().filter(tile => tile.workspaceMode === 'bots' && tile.workspaceOwnerKey === workspaceOwnerKey)
+
+  const allOwned = ownedTiles()
 
   let owned = allOwned
 
   if (typeof isStaleTile === 'function') {
     const stale = allOwned.filter(tile => {
+      // The re-home target is by definition the live tab.
+      if (rehomeStaleTo && tile.storedSessionId === rehomeStaleTo) {
+        return false
+      }
+
       try {
         return isStaleTile(tile)
       } catch {
@@ -2474,11 +2491,16 @@ export function focusWorkspaceOwnerSessionTile(
       }
     })
 
-    for (const tile of stale) {
-      discardSessionTile(tile.storedSessionId)
-    }
+    if (rehomeStaleTo) {
+      rehomeStaleTiles(stale, rehomeStaleTo)
+      owned = ownedTiles()
+    } else {
+      for (const tile of stale) {
+        discardSessionTile(tile.storedSessionId)
+      }
 
-    owned = allOwned.filter(tile => !stale.includes(tile))
+      owned = allOwned.filter(tile => !stale.includes(tile))
+    }
   }
 
   // `onlyStoredIds`: the sessions this call may front (Bot Mode passes the
@@ -2500,6 +2522,54 @@ export function focusWorkspaceOwnerSessionTile(
   return focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey }) === 'tile'
     ? storedSessionId
     : null
+}
+
+/** Re-key stale tabs onto the session they should be showing, in place.
+ *
+ *  The first stale tab BECOMES the tab for `nextStoredSessionId`: same strip
+ *  slot, same scope and caption, still the tab on screen if it was. Its
+ *  runtime binding is dropped — it was resumed for the old id — so the tab
+ *  resumes the new one like a tab restored from a previous run. The layout
+ *  tree is re-keyed before the tile list so the pane mirror sees a pane that
+ *  is already docked: letting it dispose + re-adopt would front a neighbor
+ *  and re-dock the tab at the end of the strip.
+ *
+ *  When `nextStoredSessionId` already has a tab, a stale one is its twin and
+ *  simply goes (one tab per conversation) — but if the twin was the tab on
+ *  screen, the live tab takes its place rather than whichever tab sat beside
+ *  it. */
+function rehomeStaleTiles(stale: readonly SessionTile[], nextStoredSessionId: string): void {
+  const nextPaneId = `${TILE_PANE_PREFIX}${nextStoredSessionId}`
+
+  for (const { runtimeId, storedSessionId } of stale) {
+    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+    const tiles = $sessionTiles.get()
+
+    if (tiles.some(tile => tile.storedSessionId === nextStoredSessionId)) {
+      const tree = $layoutTree.get()
+      const group = tree ? findGroupOfPane(tree, paneId) : null
+      const onScreen = Boolean(group && group.active === paneId && group.panes.includes(nextPaneId))
+
+      discardSessionTile(storedSessionId)
+
+      if (group && onScreen) {
+        activateTreePane(group.id, nextPaneId)
+      }
+
+      continue
+    }
+
+    if (runtimeId) {
+      dropSessionState(runtimeId)
+    }
+
+    renameTreePane(paneId, nextPaneId)
+    saveTiles(
+      tiles.map(tile =>
+        tile.storedSessionId === storedSessionId ? { ...toStored(tile), storedSessionId: nextStoredSessionId } : tile
+      )
+    )
+  }
 }
 
 /** Does a sidebar click still need to navigate after `focusOpenSession`? A miss

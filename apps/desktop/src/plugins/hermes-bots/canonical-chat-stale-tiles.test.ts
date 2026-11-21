@@ -66,9 +66,11 @@ describe('120810: compressed Bot Chat discards the stale tile', () => {
     await openBotCanonicalChat('ops')
 
     expect(focusMock).toHaveBeenCalledTimes(1)
-    const [ownerKey, probe, onlyIds] = focusMock.mock.calls[0]
+    const [ownerKey, probe, onlyIds, rehomeStaleTo] = focusMock.mock.calls[0]
     expect(ownerKey).toBe('bot:ops')
     expect(onlyIds).toEqual([])
+    // The old-segment tab follows the conversation to its tip.
+    expect(rehomeStaleTo).toBe('tip-9')
     // Stale: Bot Chat-titled tile at an id that is neither registry nor tip.
     expect(probe({ storedSessionId: 'old-segment', workspaceTabTitle: 'Bot Chat' })).toBe(true)
     // Live tip and registry row are never stale.
@@ -80,7 +82,7 @@ describe('120810: compressed Bot Chat discards the stale tile', () => {
     expect(hostMock.openSession.mock.calls[0][0]).toBe('tip-9')
   })
 
-  it('a background refresh discards stale tiles without fronting the live one (#121874)', async () => {
+  it('a background refresh reconciles stale tiles without fronting the live one (#121874)', async () => {
     const { openBotCanonicalChat } = await loadModule()
     await openBotCanonicalChat('ops', { background: true })
 
@@ -88,5 +90,23 @@ describe('120810: compressed Bot Chat discards the stale tile', () => {
     const [, probe, onlyIds] = focusMock.mock.calls[0]
     expect(onlyIds).toEqual([])
     expect(probe({ storedSessionId: 'old-segment', workspaceTabTitle: 'Bot Chat' })).toBe(true)
+  })
+
+  // The wake's openSession is refreshInPlace: it refreshes a tab that exists
+  // and mints none. A discard-only probe therefore DELETED the open Bot Chat
+  // tab whenever the tip had rotated outside this window (a teammate's
+  // message_agent, a cron delivery), leaving the strip on the tab beside it.
+  it('a background refresh re-homes the stale tab onto the tip it then refreshes in place', async () => {
+    const { openBotCanonicalChat } = await loadModule()
+    await openBotCanonicalChat('ops', { background: true })
+
+    const [, , , rehomeStaleTo] = focusMock.mock.calls[0]
+    const [openedId, options] = hostMock.openSession.mock.calls[0]
+
+    expect(rehomeStaleTo).toBe('tip-9')
+    expect(openedId).toBe(rehomeStaleTo)
+    expect(options).toMatchObject({ refreshInPlace: true })
+    // Reconcile first: the refresh has to find the re-homed tab.
+    expect(focusMock.mock.invocationCallOrder[0]).toBeLessThan(hostMock.openSession.mock.invocationCallOrder[0])
   })
 })

@@ -133,6 +133,32 @@ def test_a_refused_delete_is_shown_as_delete_incomplete_until_retried(profile, m
     assert not profile.exists() and not named_profile_delete_incomplete(profile)
 
 
+@pytest.mark.parametrize(("record", "replaced"), [(b"", False), (b"incom", False), (b"deleted\r\n", True)],
+                         ids=["empty", "torn", "crlf-deleted"])
+def test_only_a_finished_delete_record_lets_create_replace_the_leftovers(profile, monkeypatch, record, replaced):
+    """A retry rewrites a partial delete's record (truncate, then write). Killed in between, the
+    leftovers must not read as a finished delete's shell, which create replaces."""
+    from hermes_constants import profile_tombstone_path
+    note = profile / "preserved-note.txt"
+    note.write_text("keep me")
+
+    def partial(path, _onexc):
+        for filename in ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db"):
+            (path / filename).unlink(missing_ok=True)
+        raise OSError(errno.EBUSY, "file is in use", str(note))
+
+    monkeypatch.setattr(profiles, "_rmtree_with_retry", partial)
+    with pytest.raises(RuntimeError, match="did not finish"):
+        profiles.delete_profile("owned-delete", yes=True)
+    profile_tombstone_path(profile).write_bytes(record)
+    if replaced:  # a finished delete's record, LF or CRLF: the dir is a shell create replaces
+        profiles.create_profile("owned-delete", no_alias=True, no_skills=True)
+    else:
+        with pytest.raises(FileExistsError, match="did not finish"):
+            profiles.create_profile("owned-delete", no_alias=True, no_skills=True)
+    assert note.exists() is not replaced
+
+
 def test_delete_incomplete_checks_the_tombstone_before_probing_identity(tmp_path, monkeypatch):
     """A colliding directory that is NOT tombstoned must never be probed for identity files: on Python
     3.11-3.13 ``Path.is_file()`` re-raises a ``PermissionError`` from an unreadable directory, which would
@@ -213,6 +239,41 @@ def test_an_interrupted_delete_keeps_its_leftovers_from_create(profile, monkeypa
     assert (profile / "preserved-note.txt").read_text() == "keep me"
 
 
+def test_a_refused_rename_keeps_a_partial_deletes_record(profile, monkeypatch):
+    """The message offers rename to keep a partial delete's leftovers. Rename must leave the delete's
+    ``incomplete`` record as it found it, during its owner wait (a kill there skips the finally) and
+    after a refusal: read as ``deleted``, or cleared, the leftovers become a shell create erases."""
+    from hermes_constants import named_profile_delete_incomplete
+    note = profile / "preserved-note.txt"
+    note.write_text("keep me")
+
+    def partial(path, _onexc):
+        for filename in ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db"):
+            (path / filename).unlink(missing_ok=True)
+        raise OSError(errno.EBUSY, "file is in use", str(note))
+
+    with monkeypatch.context() as fail:
+        fail.setattr(profiles, "_rmtree_with_retry", partial)
+        with pytest.raises(RuntimeError, match="did not finish"):
+            profiles.delete_profile("owned-delete", yes=True)
+    registered, in_wait, wait = [], [], profiles.wait_profile_unowned
+    monkeypatch.setattr(profiles_remove, "OWNER_RELEASE_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(profiles, "_live_default_multiplexer", lambda: True)
+    monkeypatch.setattr(profiles, "_maybe_register_gateway_service", registered.append)
+    monkeypatch.setattr(profiles, "wait_profile_unowned",
+                        lambda home, **kw: in_wait.append(named_profile_delete_incomplete(home)) or wait(home, **kw))
+    holder = _hold(profile)
+    try:
+        with pytest.raises(RuntimeError, match="retry the rename"):
+            profiles.rename_profile("owned-delete", "owned-kept")
+    finally:
+        _release(holder)
+    assert in_wait == [True] and named_profile_delete_incomplete(profile) and registered == []
+    with pytest.raises(FileExistsError, match="did not finish"):
+        profiles.create_profile("owned-delete", no_alias=True, no_skills=True)
+    assert note.read_text() == "keep me"
+
+
 def test_a_finished_delete_never_tombstones_a_create_that_cleared_it(profile, monkeypatch):
     """Another process's same-name create can clear the tombstone right after rmtree; recording the
     finished delete must not write it back over that create's new profile."""
@@ -226,6 +287,23 @@ def test_a_finished_delete_never_tombstones_a_create_that_cleared_it(profile, mo
     monkeypatch.setattr(profiles, "_rmtree_with_retry", removed_then_created_elsewhere)
     profiles.delete_profile("owned-delete", yes=True)
     assert not named_profile_is_deleted(profile)
+
+
+def test_an_interrupted_delete_of_the_active_profile_resets_it(profile, monkeypatch):
+    """Ctrl-C skips everything after rmtree. The sticky profile must not keep naming a home whose
+    delete did not finish, or every command, the advised retry included, refuses to start."""
+    from hermes_cli import main as hermes_main
+    profiles.set_active_profile("owned-delete")
+
+    def interrupted(_path, _onexc):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(profiles, "_rmtree_with_retry", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        profiles.delete_profile("owned-delete", yes=True)
+    assert profiles.get_active_profile() == "default"  # the sticky file, not this process's home
+    monkeypatch.setattr(hermes_main.sys, "argv", ["hermes", "profile", "delete", "owned-delete", "--yes"])
+    hermes_main._apply_profile_override()  # the advised retry reaches its handler
 
 
 def test_a_retried_partial_delete_leaves_a_replaceable_post_delete_shell(profile, monkeypatch):
@@ -244,3 +322,21 @@ def test_a_retried_partial_delete_leaves_a_replaceable_post_delete_shell(profile
     assert not profile.exists()
     profile.mkdir()  # a stale writer re-creates the deleted home
     assert profiles.create_profile("owned-delete", no_alias=True, no_skills=True).is_dir()
+
+
+def test_a_finished_delete_whose_record_cannot_be_rewritten_says_how_to_finish(profile, monkeypatch, capsys):
+    """The rmtree succeeded but rewriting the record failed (e.g. a Windows reader holding it): the
+    record stays ``incomplete``, so the delete must say so and name the command that finishes it."""
+    from hermes_constants import TOMBSTONE_INCOMPLETE, profile_tombstone_path
+    marker, real_open = profile_tombstone_path(profile), os.open
+
+    def held(path, flags, *args, **kwargs):
+        if Path(path) == marker:
+            raise PermissionError(errno.EACCES, "held by another process", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(profiles_remove.os, "open", held)
+    profiles.delete_profile("owned-delete", yes=True)
+    monkeypatch.undo()
+    assert not profile.exists() and marker.read_bytes() == TOMBSTONE_INCOMPLETE
+    assert "finish it with `hermes profile delete owned-delete`" in capsys.readouterr().out

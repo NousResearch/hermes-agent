@@ -27,6 +27,46 @@ class _DoctorLoadError(RuntimeError):
 def _deny_network(*_args: Any, **_kwargs: Any) -> None:
     raise RuntimeError("network access is disabled while Plugin Doctor runs")
 
+def _probe_home_root() -> str:
+    """Scratch root for Doctor's probe home, excluding roots under a tombstoned/missing named profile.
+
+    ``hermes_bootstrap`` points every process's ``TMPDIR`` at ``<home>/cache/scratch``, so the
+    probe home normally lands INSIDE a named profile's tree — and ``named_profile_home()``
+    (pure path shape) attributes that whole subtree to the profile. ``ensure_hermes_home()``
+    runs on every ``load_config()`` during plugin registration and refuses the probe home via
+    ``assert_named_profile_home_live`` the moment the surrounding profile carries a tombstone,
+    killing the unrelated doctor command with ``FileNotFoundError: Named profile home does not
+    exist``. A tombstone's only job is refusing name REUSE, so Doctor must never place its probe
+    home under a deleted/missing named profile at all: such roots are skipped (excluded from
+    probe-home selection) and the platform temp root — recomputed with the temp env suppressed,
+    so no ``TMPDIR`` can point it back into a profile tree — is used instead.
+    """
+    from hermes_constants import named_profile_home, named_profile_is_deleted
+
+    def _attributable_home_is_live(root: str) -> bool:
+        home = named_profile_home(root)
+        return home is None or not (named_profile_is_deleted(home) or not home.exists())
+
+    ambient = tempfile.gettempdir()
+    if _attributable_home_is_live(ambient):
+        return ambient
+    saved_tempdir = tempfile.tempdir
+    suppressed = {key: os.environ.pop(key, None) for key in ("TMPDIR", "TEMP", "TMP")}
+    tempfile.tempdir = None
+    try:
+        fallback = tempfile.gettempdir()
+    finally:
+        tempfile.tempdir = saved_tempdir
+        for key, value in suppressed.items():
+            if value is not None:
+                os.environ[key] = value
+    if not _attributable_home_is_live(fallback):
+        raise _DoctorLoadError(
+            f"Plugin Doctor cannot find a temp root outside a deleted named profile "
+            f"({ambient} and {fallback} both resolve under one); run it with TMPDIR pointing "
+            "at a live profile's scratch or the platform temp dir.")
+    return fallback
+
 
 def _stage_copy(source: Path, staged: Path) -> None:
     """Copy *source* to *staged*, refusing any directory that leads into the destination.
@@ -66,8 +106,10 @@ def _doctor_runtime(plugin_path: Path):
     stack = ExitStack()
     try:
         # The temp dir enters the stack FIRST so any failure below (ENOSPC / KeyboardInterrupt in
-        # copytree) removes it instead of stranding a hermes-plugin-doctor-* directory.
-        home = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-")))
+        # copytree) removes it instead of stranding a hermes-plugin-doctor-* directory. Its root
+        # skips tombstoned/missing named profiles (see _probe_home_root).
+        home = Path(stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-", dir=_probe_home_root())))
         bundled = home / "bundled-plugins"
         plugins_root = home / "plugins"
         bundled.mkdir(parents=True)

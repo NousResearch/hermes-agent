@@ -792,6 +792,67 @@ Authorization: Bearer ***
 
 Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
+### Named, scoped API keys
+
+`API_SERVER_KEY` is the full-access operator key and stays required. To hand a second client
+(a browser chat UI, a dashboard, a CI job) less than that, add named keys under
+`platforms.api_server.keys` (also accepted under `gateway.api_server.keys`). Each entry names an
+environment variable holding the secret; literal secrets in `config.yaml` are rejected.
+
+```yaml
+platforms:
+  api_server:
+    keys:
+      - name: dashboard              # shows up in refusal messages and logs (never the secret)
+        key_env: API_SERVER_KEY_DASHBOARD
+        scopes: [models:read, sessions:read]
+        read_only: true
+      - name: ticket-bot
+        key_env: API_SERVER_KEY_TICKET_BOT
+        scopes: [sessions:read, runs, approvals:answer]
+        session_ids: [ticket-1234]   # optional allowlist
+        expires: "2027-01-31T00:00:00Z"
+```
+
+Generate a distinct secret per key and append it to `.env` (the file is not shell-expanded, so
+never paste a literal `$(...)` into it):
+
+```bash
+echo "API_SERVER_KEY_DASHBOARD=$(openssl rand -hex 32)" >> ~/.hermes/.env
+echo "API_SERVER_KEY_TICKET_BOT=$(openssl rand -hex 32)" >> ~/.hermes/.env
+```
+
+| Scope | Routes |
+|-------|--------|
+| `models:read` | `GET /v1/models`, `/api/model/options`, `/v1/capabilities`, `/v1/skills`, `/v1/toolsets` |
+| `sessions:read` | `GET /api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` |
+| `sessions:write` | `POST /api/sessions`, `PATCH`/`DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/fork`, `/model` |
+| `runs` | `POST /api/sessions/{id}/chat[/stream]`, `/v1/chat/completions`, `/v1/responses` (+ `GET`/`DELETE /v1/responses/{id}`), `POST /v1/runs`, `GET /v1/runs/{id}[/events]`, `POST /v1/runs/{id}/steer`, `/stop`, `/resolve-unknown` |
+| `approvals:answer` | `POST /v1/runs/{id}/approval`, `/clarify` |
+| `jobs:read` / `jobs:write` | `GET /api/jobs[/{id}]` / the mutating `/api/jobs*` routes |
+
+Rules:
+
+- A route not in the table (`/health/detailed`, `/v1/room-members/*`, any route added later)
+  answers only `API_SERVER_KEY` — new routes fail closed for scoped keys.
+- A key without the route's scope gets `403` with `code: insufficient_scope` and
+  `required_scope` naming the missing scope.
+- `read_only: true` refuses every method but `GET`/`HEAD` (`403 read_only_key`).
+- `session_ids` limits the key to routes that name a listed session in the path, and runs started on
+  one. Routes that list or create sessions, or take a session from the request body
+  (`GET /api/sessions`, `/v1/runs`, `/v1/chat/completions`, `/v1/responses`, jobs), are refused
+  (`403 session_not_allowed`), not filtered. So is any request carrying `X-Hermes-Session-Key` or
+  `X-Hermes-Session-Id`.
+- `expires` (ISO-8601, UTC when no offset) — at or after it the key gets `401 api_key_expired`.
+- A key whose `key_env` is unset, a placeholder, or shorter than 16 characters, an entry with an
+  unknown scope or field, and a secret already used by another key are skipped with a startup
+  warning. They never authenticate, and the server still starts on `API_SERVER_KEY`.
+- Scoped keys work on the listener's own profile only. `/p/<profile>/` routes still require that
+  profile's own `API_SERVER_KEY`.
+- Scoped keys share the full key's run namespace: a key with `runs` can poll, steer and stop any run
+  whose id it knows (unless `session_ids` narrows it). Scopes limit which routes a key can call. They
+  do not change what the agent may do once a run starts (tool policy is still per profile).
+
 ### Multi-profile routing (`/p/<profile>/…`)
 
 When [multi-profile gateway routing](../multi-profile-gateways.md) is

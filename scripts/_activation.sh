@@ -116,6 +116,13 @@ hermes_activation_current() {
 # nothing when the inherited one is current.
 hermes_ensure_env() {
     local repo="$1" script
+    # Agent terminals can inherit PATH without activation markers.
+    # Recover the complete environment before checking its existing input stamps.
+    if [ -z "${__HERMES_ACTIVATED:-}" ]; then
+        if script="$(hermes_compose_env "$repo" sh 2>/dev/null)"; then
+            hermes_apply_env "$script"
+        fi
+    fi
     hermes_activation_current "$repo" && return 0
     hermes_sync "$repo" || {
         echo "setup failed" >&2

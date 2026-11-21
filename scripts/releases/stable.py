@@ -926,9 +926,10 @@ def commit_supports_claim_tag(commit: str, run=output) -> bool:
         deb_py = run(["git", "show", f"{commit}:scripts/termux/deb_version.py"])
     except (subprocess.CalledProcessError, ValueError):
         return False
+    # The claim-tag reader each file gained; a test runs this against the current tree.
     return ("def is_commit_tag(" in channel_py
             and "COMMIT_TAG_RE" in msix_mjs
-            and '"commit"' in deb_py)
+            and "canary|commit" in deb_py)
 
 
 def verify(env: dict, run=output) -> None:

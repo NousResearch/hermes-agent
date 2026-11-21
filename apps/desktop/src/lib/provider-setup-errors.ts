@@ -4,9 +4,10 @@
 // but …" form, and both arrive wrapped in `agent_init_failed_message()`. Matching is by the
 // noun phrase, never the surrounding wording, and deliberately NOT by "provider configured"
 // alone: the auxiliary-model warning says "No auxiliary LLM provider configured" and is not a
-// provider-setup failure.
+// provider-setup failure. Provider resolution on a blank install now says "is not connected to
+// any AI provider yet" (hermes_cli/auth.py, code no_provider_configured).
 const PROVIDER_SETUP_ERROR_RE =
-  /No (?:inference|Hermes|LLM) provider(?: is)? configured|no_provider_configured|set an API key|is set in config\.yaml but no (?:API key|credentials)/i
+  /No (?:inference|Hermes|LLM) provider(?: is)? configured|not connected to any AI provider|no_provider_configured|set an API key|is set in config\.yaml but no (?:API key|credentials)/i
 
 const SESSION_INFO_CREDENTIAL_WARNING_RE = /^No API key configured for provider '[^']*'\. First message will fail\.$/
 

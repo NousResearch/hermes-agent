@@ -41,7 +41,7 @@ def _cdp_http_reachable(parsed, timeout: float = 2.0) -> bool:
     return False
 
 
-def _connect_local_default(port: int, system: str, announce) -> str | None:
+def _connect_local_default(port: int, system: str, announce, *, desktop_env=None) -> str | None:
     """Discover (or launch) the default local debug browser → CDP URL, or None after announcing."""
     from agent.deadline import poll_until
     from hermes_cli.browser_connect import (
@@ -63,7 +63,7 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
                  f"on port {launch_port} instead...")
     else:
         announce("Chromium-family browser isn't running with remote debugging — attempting to launch...")
-    launch = launch_chrome_debug(launch_port, system)
+    launch = launch_chrome_debug(launch_port, system, **({"desktop_env": desktop_env} if desktop_env is not None else {}))
     if launch.launched:
         # Bounded wait: the whole connect must finish inside the client RPC timeout.
         discovered = poll_until(lambda: discover_local_cdp_url(launch_port, timeout=1.0), 10.0, 0.5)
@@ -133,7 +133,9 @@ def _browser_connect(rid, params: dict) -> dict:
             except OSError as e:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
         elif _is_default_local_cdp(parsed):
-            discovered = _connect_local_default(port, system, announce)
+            desktop_env = params.get("desktop_env")
+            discovered = _connect_local_default(
+                port, system, announce, **({"desktop_env": desktop_env} if desktop_env is not None else {}))
             if discovered is None:
                 return _ok(rid, {"connected": False, "url": url, "messages": messages})
             # Adopt whatever loopback/port answered ([::1] and/or an alternate port when 9222 was squatted).

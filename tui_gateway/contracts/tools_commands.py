@@ -551,6 +551,7 @@ class BrowserManageParams(Params):
     url: str | None = None
     session_id: str | None = None
     profile: str | None = None
+    desktop_env: dict[str, str] | None = None
 
 
 class BrowserManageResult(Result):

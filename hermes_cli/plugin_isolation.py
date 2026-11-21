@@ -58,12 +58,13 @@ HOST_SKIPPED_CTX_METHODS: dict[str, str] = {
 
 # Live ctx facades the host reaches by method call; each call returns plain data.
 HOST_REMOTE_FACADES: frozenset[str] = frozenset({
-    "state", "llm", "platform_actions", "subagent_lifecycle", "delegation_backends",
+    "state", "llm", "platform_actions", "subagent_lifecycle", "delegation_backends", "skill_catalog_mutations",
 })
 
 # Object-taking ctx methods and the ABC the parent checks. The host sends the object's method table
 # and the parent builds a subclass of that ABC whose methods run in the host.
 HOST_OBJECT_BASES: dict[str, str] = {
+    "register_skill_catalog": "hermes_cli.skill_catalog:SkillCatalogProvider",
     "register_image_gen_provider": "agent.image_gen_provider:ImageGenProvider",
     "register_video_gen_provider": "agent.video_gen_provider:VideoGenProvider",
     "register_web_search_provider": "agent.web_search_provider:WebSearchProvider",

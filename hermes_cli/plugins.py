@@ -275,6 +275,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
+        self._catalog_epoch = 0
+        self._catalog_diagnostics = False
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
         # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
         # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
@@ -405,6 +407,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
             return
         with self._discovery_lock, _plugin_home_scope(self.home_path):
+            from hermes_cli.skill_catalog.activation import allowed
+            if not allowed(self):
+                return
             if self._discovered and not force:
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before

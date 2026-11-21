@@ -39,6 +39,8 @@ import type {
   ThinkingMode
 } from '../types.js'
 
+import { Chevron } from './accordion.js'
+
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
 
@@ -227,42 +229,6 @@ function StreamCursor({
     </Text>
   ) : (
     <Text color={color}>{streaming && on ? '▍' : ' '}</Text>
-  )
-}
-
-function Chevron({
-  count,
-  onClick,
-  open,
-  suffix,
-  t,
-  title,
-  tone = 'dim'
-}: {
-  count?: number
-  onClick: (deep?: boolean) => void
-  open: boolean
-  suffix?: string
-  t: Theme
-  title: string
-  tone?: 'dim' | 'error' | 'warn'
-}) {
-  const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
-
-  return (
-    <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
-      <Text color={color} dim={tone === 'dim'}>
-        <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-        {title}
-        {typeof count === 'number' ? ` (${count})` : ''}
-        {suffix ? (
-          <Text color={t.color.statusFg} dim>
-            {'  '}
-            {suffix}
-          </Text>
-        ) : null}
-      </Text>
-    </Box>
   )
 }
 

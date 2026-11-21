@@ -39,5 +39,7 @@ export interface ApprovalCopy {
     alwaysTitle: string
     alwaysDescription: string
     timedOutSystemLine: string
+    editTitle: string
+    editTimedOutSystemLine: string
   }
 }

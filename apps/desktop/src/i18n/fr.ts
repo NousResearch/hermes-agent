@@ -506,6 +506,8 @@ export const frOverrides = {
       networkTitleNamed: session => `Accès au site requis — ${session}`,
       scheduleTitle: 'Hermes veut planifier une tâche',
       scheduleTitleNamed: session => `Hermes veut planifier une tâche — ${session}`,
+      scheduleEditTitle: 'Hermes veut modifier une tâche planifiée',
+      scheduleEditTitleNamed: session => `Hermes veut modifier une tâche planifiée — ${session}`,
       allowAction: 'Autoriser',
       denyAction: 'Refuser',
       inputTitle: 'Saisie requise',

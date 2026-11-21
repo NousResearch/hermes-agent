@@ -45,6 +45,9 @@ export const deApproval: Partial<ApprovalCopy> = {
     alwaysDescription:
       'Hermes erstellt geplante Jobs, ohne vorher zu fragen. Du kannst die Nachfrage wieder einschalten, indem du cron_create aus command_allowlist in config.yaml entfernst.',
     timedOutSystemLine:
-      'Zeit für die Freigabe abgelaufen — der Job wurde nicht erstellt. Bitte Hermes, es erneut zu versuchen, oder erhöhe das Limit unter Einstellungen → Sicherheit → Freigabe-Zeitlimit.'
+      'Zeit für die Freigabe abgelaufen — der Job wurde nicht erstellt. Bitte Hermes, es erneut zu versuchen, oder erhöhe das Limit unter Einstellungen → Sicherheit → Freigabe-Zeitlimit.',
+    editTitle: 'Diesen Job ändern?',
+    editTimedOutSystemLine:
+      'Zeit für die Freigabe abgelaufen — der Job wurde nicht geändert. Bitte Hermes, es erneut zu versuchen, oder erhöhe das Limit unter Einstellungen → Sicherheit → Freigabe-Zeitlimit.'
   }
 }

@@ -194,6 +194,8 @@ export const jaOverrides = {
       networkTitleNamed: session => `サイトへのアクセスが必要です — ${session}`,
       scheduleTitle: 'Hermes がジョブをスケジュールしようとしています',
       scheduleTitleNamed: session => `Hermes がジョブをスケジュールしようとしています — ${session}`,
+      scheduleEditTitle: 'Hermes がスケジュール済みジョブを変更しようとしています',
+      scheduleEditTitleNamed: session => `Hermes がスケジュール済みジョブを変更しようとしています — ${session}`,
       allowAction: '許可',
       denyAction: '拒否',
       inputTitle: '入力が必要です',

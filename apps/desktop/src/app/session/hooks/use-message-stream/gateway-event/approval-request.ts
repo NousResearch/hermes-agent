@@ -4,6 +4,7 @@ import {
   accessTarget,
   approvalKindFields,
   type ApprovalRequest,
+  isScheduleApproval,
   networkTarget,
   networkTargetName,
   receiveApprovalRequest
@@ -72,8 +73,8 @@ function approvalNotice(request: ApprovalRequest) {
   const access = accessTarget(request)
   const network = networkTarget(request)
 
-  if (request.kind === 'access' || request.kind === 'network' || request.kind === 'schedule') {
-    const prefix = `${request.kind}Title`
+  if (request.kind === 'access' || request.kind === 'network' || isScheduleApproval(request)) {
+    const prefix = request.kind === 'schedule_edit' ? 'scheduleEditTitle' : `${request.kind}Title`
 
     return {
       approveKey: 'notifications.native.allowAction',

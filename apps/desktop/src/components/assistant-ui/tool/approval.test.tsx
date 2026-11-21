@@ -432,6 +432,28 @@ describe('schedule approval card', () => {
     expect(command.container.querySelector('[data-approval-run]')?.textContent).toContain('Run')
     expect(command.container.querySelector('[data-approval-deny]')?.textContent).toBe('Reject')
   })
+
+  it('draws a change to a job as "Change this job?" with its change list, Deny / Allow', () => {
+    const description = 'Change "Water reminder": schedule: every 2h -> every 3h'
+
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      allowPermanent: false,
+      choices: ['once', 'deny'],
+      command: '<cronjob_manage> (change "Water reminder")',
+      description,
+      kind: 'schedule_edit',
+      requestId: 'apr-edit',
+      sessionId: 'sess-1'
+    })
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Change this job?')).toBeTruthy()
+    expect(screen.getByText(description)).toBeTruthy()
+    expect(container.querySelector('[data-approval-kind="schedule"] .codicon-watch')).not.toBeNull()
+    expect(container.querySelector('[data-approval-deny]')?.textContent).toBe('Deny')
+    expect(screen.queryByText(/cronjob_manage|Always allow/)).toBeNull()
+  })
 })
 
 describe('folder and site approval cards', () => {

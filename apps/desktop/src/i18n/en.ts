@@ -491,6 +491,8 @@ export const en: Translations = {
       networkTitleNamed: session => `Website access needed — ${session}`,
       scheduleTitle: 'Hermes wants to schedule a job',
       scheduleTitleNamed: session => `Hermes wants to schedule a job — ${session}`,
+      scheduleEditTitle: 'Hermes wants to change a scheduled job',
+      scheduleEditTitleNamed: session => `Hermes wants to change a scheduled job — ${session}`,
       allowAction: 'Allow',
       denyAction: 'Deny',
       inputTitle: 'Input needed',

@@ -41,7 +41,8 @@ const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
 
 // A timed-out new-job card says the job was not created, not that a command did not run.
 const TIMED_OUT_LINE_KEYS: Partial<Record<string, string>> = {
-  schedule: 'assistant.approval.schedule.timedOutSystemLine'
+  schedule: 'assistant.approval.schedule.timedOutSystemLine',
+  schedule_edit: 'assistant.approval.schedule.editTimedOutSystemLine'
 }
 
 const timedOutLine = (kind?: string): string =>

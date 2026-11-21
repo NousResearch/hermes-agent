@@ -114,7 +114,7 @@ class CanonicalPendingPrompt(Result):
     command: str | None = None
     description: str | None = None
     # Which approval card (``ApprovalKind``); absent = command. Not ``kind``: that names the prompt type.
-    approval_kind: Literal['command', 'access', 'network', 'schedule'] | None = None
+    approval_kind: Literal['command', 'access', 'network', 'schedule', 'schedule_edit'] | None = None
     edit: dict[str, JsonValue] | None = None
     question: str | None = None
     multi_select: bool | None = None

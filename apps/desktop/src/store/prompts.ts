@@ -102,7 +102,12 @@ export interface ApprovalRequest extends KeyedPrompt {
 // `approval` request and answer as a command. These cards can outlive the turn
 // that raised them: the sandbox, not the agent loop, waits on the answer.
 // A new scheduled job (`schedule`) is asked from inside the turn, like a command.
-export type ApprovalKind = 'command' | 'access' | 'network' | 'schedule'
+export type ApprovalKind = 'command' | 'access' | 'network' | 'schedule' | 'schedule_edit'
+
+const SCHEDULE_KINDS: ReadonlySet<unknown> = new Set(['schedule', 'schedule_edit'])
+
+/** A new scheduled job or a change to one: the card's body is the job description. */
+export const isScheduleApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean => SCHEDULE_KINDS.has(request.kind)
 export type ApprovalAccessLevel = 'read' | 'read_write'
 
 export interface ApprovalAccessTarget {
@@ -127,14 +132,14 @@ const wireText = (value: unknown): string | undefined =>
  *  `approval.pending` entries, resume snapshots). Missing or unknown kinds read
  *  as a command, so an older or newer backend never gets a blank card. */
 export function approvalKindFields(raw: Record<string, unknown> | null | undefined): ApprovalKindFields {
-  if (!raw || (raw.kind !== 'access' && raw.kind !== 'network' && raw.kind !== 'schedule')) {
+  if (!raw || (raw.kind !== 'access' && raw.kind !== 'network' && !SCHEDULE_KINDS.has(raw.kind))) {
     return {}
   }
 
   const risk = wireText(raw.risk)
-  const fields: ApprovalKindFields = { kind: raw.kind, ...(risk ? { risk } : {}) }
+  const fields: ApprovalKindFields = { kind: raw.kind as ApprovalKind, ...(risk ? { risk } : {}) }
 
-  if (raw.kind === 'schedule') {
+  if (SCHEDULE_KINDS.has(raw.kind)) {
     return fields
   }
 
@@ -157,7 +162,7 @@ export const isCommandApproval = (request: Pick<ApprovalRequest, 'kind'>): boole
 /** A command or a new scheduled job: the turn's own tool call waits on it, so
  *  it ends with the turn and stands in for the turn's tool rows. */
 export const isTurnApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean =>
-  isCommandApproval(request) || request.kind === 'schedule'
+  isCommandApproval(request) || isScheduleApproval(request)
 
 export const accessTarget = (request: ApprovalRequest): ApprovalAccessTarget | null =>
   request.kind === 'access' && request.target && 'path' in request.target && !('host' in request.target)

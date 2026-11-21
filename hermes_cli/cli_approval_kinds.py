@@ -8,7 +8,7 @@ means nothing to the user. Unknown kinds render as ``command``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping
 
@@ -90,6 +90,11 @@ _CARDS = {
         body_is_description=True,
         truncated_key="cli.tui.approval_schedule_truncated"),
 }
+# An edit of an existing job: the schedule card with its own title and "not changed" outcomes.
+_CARDS["schedule_edit"] = replace(
+    _CARDS["schedule"], title_key="cli.tui.approval_title_schedule_edit",
+    timeout_key="cli.approval.schedule_edit_timeout",
+    outcome_keys=MappingProxyType({**_COMMAND_OUTCOME_KEYS, "deny": "cli.approval.schedule_edit_outcome_deny"}))
 
 
 def approval_card(kind: str | None) -> ApprovalCard:

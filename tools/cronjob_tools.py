@@ -1013,6 +1013,11 @@ def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
             return tool_error(error, success=False)
     if not updates:
         return tool_error("No updates provided.", success=False)
+    if a["approve"]:
+        try:
+            _approve_job_edit(job, updates)
+        except _ScheduleDeclined as declined:
+            return declined.args[0]
     updated = update_job(job["id"], updates)
     _notify_provider_jobs_changed_safe()
     # An update can switch modes or delivery — echo the same guidance as create.
@@ -1097,7 +1102,7 @@ def cronjob(
     grace_minutes: Optional[int | str] = None,
     approve: bool = False) -> str:
     """Unified cron job management tool. ``approve`` (model-tool dispatch only) shows a model-initiated
-    create on a schedule card first; CLI, dashboard and Desktop callers never pass it."""
+    create or update on a schedule card first; CLI, dashboard and Desktop callers never pass it."""
     a = dict(locals())
     try:
         normalized = (action or "").strip().lower()
@@ -1315,10 +1320,12 @@ def _approval_task(job: dict[str, Any]) -> str:
     return "; ".join([task, *extras])
 
 
-def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str) -> None:
+def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str,
+                       kind: str = "schedule", once_only: bool = False) -> None:
     """Show one schedule card through the shared gate; return on approval, raise ``_ScheduleDeclined``
     otherwise. A context where no card would be shown (``schedule_card_skip_reason``) returns at once and
-    says why in the log, as it did before cards existed."""
+    says why in the log, as it did before cards existed. ``once_only`` (an edit) offers allow/deny only:
+    each change is its own consent, and "allow new jobs" grants never cover one."""
     from tools.approval import SCHEDULE_PATTERN_KEY, _run_approval_gate, schedule_card_skip_reason
     from tools.approval_context import get_current_session_key
 
@@ -1330,7 +1337,7 @@ def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, 
         pattern_key=SCHEDULE_PATTERN_KEY, description=description, display_target=display_target,
         subject="Scheduling a job requires the user's approval", noun="scheduled jobs",
         advice="Tell the user what you wanted to schedule; do not retry.",
-        autoapprove_log_prefix=f"cronjob {pattern_key_action}", kind="schedule")
+        autoapprove_log_prefix=f"cronjob {pattern_key_action}", kind=kind, once_only=once_only)
     if result.get("approved"):
         return
     outcome = result.get("outcome")
@@ -1361,10 +1368,41 @@ def _approve_new_job(job: dict[str, Any]) -> None:
             job["schedule"], job["name"], job["schedule"].get("run_at"), "", job.get("timezone"))
 
 
+# Fields a "Change this job?" card lists, old -> new, each as the user reads it.
+_EDIT_CARD_FIELDS = (
+    ("prompt", "prompt", lambda j: j.get("prompt") or ""),
+    ("schedule", "schedule", lambda j: j.get("schedule_display") or ""),
+    ("repeat", "runs", lambda j: str((j.get("repeat") or {}).get("times") or "forever")),
+    ("deliver", "delivers to", lambda j: j.get("deliver") or ""),
+    ("monitor", "monitor", lambda j: j.get("monitor_script") or j.get("monitor_url") or ""),
+    ("script", "script", lambda j: j.get("script") or ""),
+    ("enabled_toolsets", "toolsets", lambda j: "" if j.get("enabled_toolsets") is None else
+     ", ".join(j["enabled_toolsets"]) or "none"),
+    ("workdir", "workdir", lambda j: j.get("workdir") or ""),
+    ("model", "model", lambda j: "/".join(p for p in (j.get("provider"), j.get("model")) if p)),
+)
+
+
+def _approve_job_edit(job: dict[str, Any], updates: dict[str, Any]) -> None:
+    """Show a model-initiated update on a "Change this job?" card before it is saved: each changed field
+    as old -> new, computed from the merged record update_job would store (so an invalid edit fails
+    first, unasked). Raises ``_ScheduleDeclined`` when the user does not approve; nothing changes."""
+    from cron.jobs import merge_job_update
+    after = merge_job_update(copy.deepcopy(job), copy.deepcopy(updates))
+    changes = [f"{label}: {show(job) or '(none)'} -> {show(after) or '(none)'}"
+               for _key, label, show in _EDIT_CARD_FIELDS if show(job) != show(after)]
+    if not changes:
+        return  # only fields the card does not list (name, skills, catch-up...): nothing new to consent to
+    name = job.get("name") or job["id"]
+    _ask_schedule_card(pattern_key_action="update", name=name, kind="schedule_edit", once_only=True,
+                       description=f"Change \"{name}\": " + "; ".join(changes),
+                       display_target=f"<cronjob_manage> (change \"{name}\")")
+
+
 def _cronjob_handler(args, **kw):
     """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
     ``monitor_script``/``monitor_url`` pair (legacy field names still accepted). A model-initiated
-    create waits for the user's approval first."""
+    create or update waits for the user's approval first."""
     _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
     return cronjob(
         action=args.get("action", ""),

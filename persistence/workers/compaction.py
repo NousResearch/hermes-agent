@@ -30,7 +30,7 @@ def _rows(rows: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]] | No
 
 @dataclass(frozen=True, slots=True)
 class WorkerCompaction:
-    """A ``compression.archive`` payload: the replacement ``messages``, the sidecar ``model_config_patch``, the ``watermark`` the summary covered, the compression ``lock_holder`` (``None`` for a lease-less micro-compaction or prune), the ``tail_count`` the replacement carries, and the held-row proofs (``carried_messages``, ``covered_ids``, ``unresolved_held``, ``held_for_cas``). :meth:`payload` sends all nine keys, as the producer does."""
+    """Replacement rows, sidecar patch, watermark, lease holder, carried tail and held-row proofs for ``compression.archive``. The prompt is sent only when supplied, preserving the legacy payload and receipt digest for transcript-only writes."""
 
     messages: Sequence[WorkerMessage]
     model_config_patch: Mapping[str, JsonValue] | None = None
@@ -41,6 +41,7 @@ class WorkerCompaction:
     covered_ids: Sequence[int] | None = None
     unresolved_held: Sequence[Mapping[str, JsonValue]] | None = None
     held_for_cas: Sequence[Mapping[str, JsonValue]] | None = None
+    system_prompt: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -48,6 +49,7 @@ class WorkerCompaction:
             "watermark": self.watermark, "lock_holder": self.lock_holder, "tail_count": self.tail_count,
             "carried_messages": _rows(self.carried_messages), "covered_ids": None if self.covered_ids is None else list(self.covered_ids),
             "unresolved_held": _rows(self.unresolved_held), "held_for_cas": _rows(self.held_for_cas),
+            **({"system_prompt": self.system_prompt} if self.system_prompt is not None else {}),
         }
 
 

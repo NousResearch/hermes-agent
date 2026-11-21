@@ -640,13 +640,17 @@ def update_session_meta(
 
 def update_system_prompt(holder: StoreHolder, session_id: str, system_prompt: Optional[str]) -> None:
     """Store the full assembled system prompt snapshot."""
-    def _do(conn):
-        conn.execute(
-            "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
-            (holder._store_system_prompt(conn, system_prompt), session_id),
-        )
-        _delete_unreferenced_system_prompts(conn)
-    holder._execute_write(_do)
+    holder._execute_write(lambda conn: _update_system_prompt_on_conn(holder, conn, session_id, system_prompt))
+
+
+def _update_system_prompt_on_conn(
+    holder: StoreHolder, conn: sqlite3.Connection, session_id: str, system_prompt: Optional[str],
+) -> None:
+    conn.execute(
+        "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
+        (holder._store_system_prompt(conn, system_prompt), session_id),
+    )
+    _delete_unreferenced_system_prompts(conn)
 
 
 def update_session_tool_names(holder: StoreHolder, session_id: str, pin: Any) -> None:

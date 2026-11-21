@@ -17,13 +17,18 @@ Bug scenario (pre-fix):
 """
 
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from persistence.conversation.messages import NewMessage
+import pytest
+
+from persistence.conversation.messages import HeldCoverage, NewMessage
+from persistence.core.errors import PermanentStoreError
+from tests.fixtures.storage_holder import raw_holder
 from tests.fixtures.storage_read import conversation, transcript_rows
-from tests.fixtures.storage_seed import seed_session
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +198,123 @@ class TestFlushAfterCompression:
                 "final answer",
             ]
             db.close()
+
+    @pytest.mark.parametrize("exact_coverage", [False, True])
+    @pytest.mark.parametrize("prompt", ["NEW PROMPT", ""])
+    def test_archive_and_compact_persists_system_prompt_in_same_write(self, tmp_path, exact_coverage, prompt):
+        """In-place compaction must not leave transcript and prompt split (#84722).
+
+        A crash between archive_and_compact and a later update_system_prompt
+        used to resume with compacted messages and the pre-compaction prompt.
+        Both must land in the same write; a store failure must roll back the
+        archive.
+        """
+        from persistence_assembly import open_persistence, profile_scope
+
+        with open_persistence(profile_scope(home=tmp_path)) as db:
+            sid = seed_session(db, "s1", "cli", system_prompt="OLD PROMPT")
+            seed_messages(db, sid, {"role": "user", "content": "old question"},
+                          {"role": "assistant", "content": "old answer"})
+
+            compacted = [
+                NewMessage(role="assistant", content="[CONTEXT COMPACTION] summary"),
+                NewMessage(role="user", content="recent"),
+            ]
+            db.messages.compact(
+                sid,
+                compacted,
+                coverage=HeldCoverage(db.messages.active_message_ids(sid)) if exact_coverage else None,
+                system_prompt=prompt,
+            )
+            row = db.sessions.get(sid)
+            assert row is not None
+            assert row.system_prompt == prompt
+            assert [m["content"] for m in transcript_rows(db, sid)] == [
+                "[CONTEXT COMPACTION] summary",
+                "recent",
+            ]
+
+            db.sessions.update_system_prompt(sid, "OLD PROMPT")
+            db.messages.append(sid, NewMessage(role="assistant", content="another"))
+
+            connection = raw_holder(db)._conn
+            assert connection is not None
+            connection.execute(
+                "CREATE TEMP TRIGGER reject_prompt BEFORE INSERT ON system_prompts "
+                "WHEN NEW.prompt = 'SHOULD NOT LAND' "
+                "BEGIN SELECT RAISE(FAIL, 'prompt store failed'); END")
+            before = transcript_rows(db, sid)
+            with pytest.raises(PermanentStoreError, match="prompt store failed") as failure:
+                db.messages.compact(
+                    sid,
+                    [NewMessage(role="user", content="should-not-land")],
+                    coverage=HeldCoverage(db.messages.active_message_ids(sid)) if exact_coverage else None,
+                    system_prompt="SHOULD NOT LAND",
+                )
+            assert isinstance(failure.value.__cause__, sqlite3.IntegrityError)
+            assert transcript_rows(db, sid) == before
+            session = db.sessions.get(sid)
+            assert session is not None
+            assert session.system_prompt == "OLD PROMPT"
+
+    @pytest.mark.parametrize("fail_prompt", [False, True])
+    def test_in_place_prompt_commit_survives_flush_and_restart(self, monkeypatch, tmp_path, fail_prompt):
+        """A real compaction and final flush must resume one transcript with its matching prompt."""
+        from agent.conversation_compression import compress_context
+        from persistence_assembly import open_persistence, profile_scope
+
+        scope = profile_scope(home=tmp_path)
+        with open_persistence(scope) as db:
+            sid = seed_session(db, "original-session", "cli", system_prompt="OLD PROMPT")
+            agent = self._make_agent(db)
+            agent.compression_in_place = True
+            agent._session_db_created = True
+            # The real detached gateway mode retains a seeded prompt at the boundary.
+            agent._retain_seeded_system_prompt = True
+            agent._cached_system_prompt = "NEW PROMPT"
+            original = [
+                {"role": "user" if i % 2 == 0 else "assistant", "content": f"old {i} " + "x" * 2000}
+                for i in range(6)
+            ] + [
+                {"role": "user", "content": "latest question"},
+                {"role": "assistant", "content": "latest answer"},
+            ]
+            agent._flush_messages_to_session_db(original, [])
+
+            def summarize(_messages, **_kwargs):
+                return [
+                    {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                    {"role": "assistant", "content": "retained context"},
+                    {"role": "user", "content": "latest question"},
+                    {"role": "assistant", "content": "latest answer"},
+                ]
+
+            # Only the provider-produced summary is supplied; lease, transaction,
+            # caller rollback, persistence markers and ordinary flush are real.
+            monkeypatch.setattr(agent.context_compressor, "compress", summarize)
+            agent.context_compressor._last_compress_aborted = False
+            agent.context_compressor._last_summary_error = None
+            if fail_prompt:
+                connection = raw_holder(db)._conn
+                assert connection is not None
+                connection.execute(
+                    "CREATE TEMP TRIGGER reject_prompt BEFORE INSERT ON system_prompts "
+                    "WHEN NEW.prompt = 'NEW PROMPT' "
+                    "BEGIN SELECT RAISE(FAIL, 'prompt store failed'); END")
+            returned, _ = compress_context(agent, original, "NEW PROMPT", approx_tokens=100_000)
+            expected = [m["content"] for m in original] if fail_prompt else [
+                "[CONTEXT COMPACTION] summary", "retained context", "latest question", "latest answer"]
+            assert [m["content"] for m in returned] == expected
+            assert agent._last_compaction_in_place is (not fail_prompt)
+            agent._flush_messages_to_session_db(returned)
+
+        with open_persistence(scope) as resumed:
+            rows = conversation(resumed, sid)
+            assert [m["content"] for m in rows] == expected
+            assert [m["role"] for m in rows] == ["user", "assistant"] * (len(expected) // 2)
+            session = resumed.sessions.get(sid)
+            assert session is not None
+            assert session.system_prompt == ("OLD PROMPT" if fail_prompt else "NEW PROMPT")
 
     def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
         """An aborted retry must survive flush, restart, and resume."""

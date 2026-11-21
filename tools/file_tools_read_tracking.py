@@ -341,7 +341,8 @@ def _file_version(resolved: str) -> tuple | None:
     if not _on_host(resolved):
         return None
     try:
-        if not stat.S_ISREG(os.stat(resolved).st_mode):
+        path_before = os.stat(resolved)
+        if not stat.S_ISREG(path_before.st_mode):
             return None
         fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(fd, "rb") as stream:
@@ -349,10 +350,19 @@ def _file_version(resolved: str) -> tuple | None:
             if not stat.S_ISREG(before.st_mode):
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
+            descriptor_after = os.fstat(stream.fileno())
             after = os.stat(resolved)
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        version = tuple(getattr(before, name) for name in fields)
-        if version == tuple(getattr(after, name) for name in fields):
+        version = tuple(getattr(path_before, name) for name in fields)
+        descriptor_version = tuple(getattr(before, name) for name in fields)
+        # Windows stat may expose creation time as ctime while fstat exposes
+        # change time. Compare each interface with itself, retaining BOTH ctime
+        # drift checks; cross-interface identity/size/mtime still catches a
+        # path rebound before open or during hashing. Return the path signature
+        # because read tracking compares it with _file_metadata (also stat).
+        if (version == tuple(getattr(after, name) for name in fields)
+                and descriptor_version == tuple(getattr(descriptor_after, name) for name in fields)
+                and version[:-1] == descriptor_version[:-1]):
             return (*version, digest)
         return None
     except OSError:

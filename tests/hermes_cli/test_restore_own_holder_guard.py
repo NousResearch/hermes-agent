@@ -120,6 +120,26 @@ def test_safe_restore_fallback_still_works_without_holder(tmp_path):
     assert _read_marker(dst) == "snapshot-good"
 
 
+def test_safe_restore_fallback_refuses_when_holder_scan_is_inconclusive(tmp_path, monkeypatch):
+    # An unfinished scan (no psutil, unreadable /proc, a failed Restart
+    # Manager call) is "unknown", not "no holders": the inode swap must wait.
+    from persistence.sqlite.admin import _doctor
+
+    dst = tmp_path / "projects.db"
+    src = tmp_path / "snap.db"
+    _make_db(src, "snapshot-good")
+    _make_db(dst, "live-old")
+    with open(dst, "r+b") as fh:
+        fh.write(b"\x00" * 100)
+    before = dst.read_bytes()
+    monkeypatch.setattr(
+        _doctor, "foreign_state_db_holders", lambda path: [(-1, "open-file scan unavailable")]
+    )
+
+    assert backup_restore_mod._safe_restore_db(src, dst) is False
+    assert dst.read_bytes() == before
+
+
 def test_safe_restore_refuses_unreadable_canonical_epoch(tmp_path, caplog):
     dst, src = tmp_path / "state.db", tmp_path / "snapshot.db"
     _make_db(src, "snapshot-good")

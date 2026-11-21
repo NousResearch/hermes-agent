@@ -46,4 +46,5 @@ process starts at `interval_s`, and its first report goes out at once.
 
 A goodbye is sent once, with a short timeout and no retry, and is skipped while a `wait` or a
 `backoff` is running. No beat follows it for `goodbye_quiet_s` seconds; a beat after that means the
-gateway is still, or again, running.
+gateway is still, or again, running. A `wait` or `backoff` asked for in the goodbye's reply holds the
+next beat as it would after a beat.

@@ -86,7 +86,7 @@ def wired():
 async def test_telegram_descriptor_round_trips_through_stub(wired):
     """The connector's handshake descriptor for Telegram survives JSON + the
     adapter configures itself from it (utf16 length unit, 4096 limit)."""
-    adapter, stub = wired
+    adapter, _stub = wired
     desc = _telegram_descriptor()
     assert CapabilityDescriptor.from_json(desc.to_json()) == desc
     # Adapter reflects the descriptor's capability profile.
@@ -111,4 +111,3 @@ async def test_inbound_telegram_event_reaches_adapter(wired, monkeypatch):
 
 async def _async_capture(sink, event):
     sink.append(event)
-    return None

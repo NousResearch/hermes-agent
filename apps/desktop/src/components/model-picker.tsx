@@ -1,4 +1,13 @@
-import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
+import type { ModelOptionProvider, ModelPricing, PlanUsage, PlanUsageGauge } from '@hermes/shared'
+import {
+  gaugeTitle,
+  hasTopTier,
+  PAYMENT_PAUSE_REASON,
+  planBlocks,
+  planLimit,
+  splitRecommended,
+  usageTag
+} from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -7,7 +16,9 @@ import { type ReactElement, useMemo, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
+import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
+import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -24,6 +35,8 @@ import type { HermesGateway } from '../hermes'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
+import { ProviderStatusChip } from './provider-status-chip'
+import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
@@ -95,7 +108,7 @@ export function ModelPickerDialog({
   const localModelsEnabled = $localModelsEnabled.get()
 
   const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
-  const localStatus = useLocalModelsStatus(owner, open && localModelsEnabled)
+  const localStatus = useLocalModelsStatus(owner, open && localModelsEnabled, true)
 
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 
@@ -312,7 +325,8 @@ function ModelResults({
 
   const groups = configured.map(provider => ({
     provider,
-    // Empty query: the backend's curated order, verbatim.
+    // Empty query: the backend's curated order, verbatim (it already leads a
+    // window plan with its featured picks).
     models: rankModels(provider, provider.models ?? []),
     downloads: provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
   }))
@@ -340,9 +354,79 @@ function ModelResults({
         }
 
         const unavailable = new Set(provider.unavailable_models ?? [])
+        const accountLimited = accountResetMs(provider) !== null
+
+        const renderModel = (model: string) => {
+          const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
+          const price = provider.pricing?.[model]
+          const locked = unavailable.has(model)
+          const resetMs = modelResetMs(provider, model)
+          const resetLabel = resetMs === null ? null : formatReset(resetMs)
+          // Window plans: a model a full allowance stops looks unavailable; the limit line says why, once.
+          const dimmed = !locked && (accountLimited || resetLabel !== null || planBlocks(provider, model))
+          // Managed local model loading into memory right now: show the
+          // real load percent inline (keyed by exact model id — remote
+          // providers never match).
+          const loadProgress = loadingModels[model]
+
+          return (
+            <CommandItem
+              className={cn(
+                'flex items-center gap-2 pl-6 font-mono',
+                isCurrent &&
+                  'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground',
+                locked && 'cursor-not-allowed opacity-45'
+              )}
+              disabled={locked}
+              key={`${provider.slug}:${model}`}
+              onSelect={() => {
+                if (!locked) {
+                  onSelectModel(provider, model)
+                }
+              }}
+              value={`${provider.slug}:${model}`}
+            >
+              <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
+                <HighlightMatches foldSeparators query={search} text={model} />
+              </span>
+              {loadProgress && (
+                <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
+                  <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                    <span
+                      className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                      style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                    />
+                  </span>
+                  <span className="text-[0.62rem] tabular-nums text-muted-foreground">{loadProgress.percent}%</span>
+                </span>
+              )}
+              {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>}
+              {resetLabel && (
+                <Badge
+                  className="font-sans tabular-nums"
+                  size="xs"
+                  title={t.shell.modelMenu.modelLimitedTip(resetLabel)}
+                  variant="warn"
+                >
+                  {t.shell.modelMenu.modelResets(resetLabel)}
+                </Badge>
+              )}
+              {provider.plan_usage?.kind === 'usage_window' ? (
+                <UsageLevelTag isCurrent={isCurrent} level={usageTag(provider, model)} />
+              ) : (
+                <ModelPrice isCurrent={isCurrent} price={price} />
+              )}
+            </CommandItem>
+          )
+        }
+
+        // Window plans, no query: "Recommended" (the plan's picks) then "Other models".
+        // A query is its own ranking, so the list stays flat while searching.
+        const split = q ? null : splitRecommended(provider, models)
 
         return (
           <CommandGroup heading={<ProviderHeading provider={provider} />} key={provider.slug}>
+            {provider.plan_usage && <PlanUsageSummary provider={provider} usage={provider.plan_usage} />}
             {provider.warning && (
               <div className="px-2 pb-2">
                 <InlineNotice className="px-2.5 py-1.5 text-xs" kind="warning">
@@ -350,53 +434,21 @@ function ModelResults({
                 </InlineNotice>
               </div>
             )}
-            {models.map(model => {
-              const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
-              const price = provider.pricing?.[model]
-              const locked = unavailable.has(model)
-              // Managed local model loading into memory right now: show the
-              // real load percent inline (keyed by exact model id — remote
-              // providers never match).
-              const loadProgress = loadingModels[model]
-
-              return (
-                <CommandItem
-                  className={cn(
-                    'flex items-center gap-2 pl-6 font-mono',
-                    isCurrent &&
-                      'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground',
-                    locked && 'cursor-not-allowed opacity-45'
-                  )}
-                  disabled={locked}
-                  key={`${provider.slug}:${model}`}
-                  onSelect={() => {
-                    if (!locked) {
-                      onSelectModel(provider, model)
-                    }
-                  }}
-                  value={`${provider.slug}:${model}`}
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    <HighlightMatches foldSeparators query={search} text={model} />
-                  </span>
-                  {loadProgress && (
-                    <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
-                      <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
-                        <span
-                          className="block h-full rounded-full bg-primary transition-[width] duration-500"
-                          style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
-                        />
-                      </span>
-                      <span className="text-[0.62rem] tabular-nums text-muted-foreground">{loadProgress.percent}%</span>
-                    </span>
-                  )}
-                  {locked && (
-                    <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
-                  )}
-                  <ModelPrice isCurrent={isCurrent} price={price} />
-                </CommandItem>
-              )
-            })}
+            {split ? (
+              <>
+                <ModelSectionLabel>{copy.sectionRecommended}</ModelSectionLabel>
+                {split.recommended.map(renderModel)}
+                {split.other.length > 0 && <ModelSectionLabel>{copy.sectionOther}</ModelSectionLabel>}
+                {split.other.map(renderModel)}
+              </>
+            ) : (
+              models.map(renderModel)
+            )}
+            {hasTopTier(provider, models) && (
+              <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
+                {copy.largeFootnote}
+              </div>
+            )}
             {groupDownloads.map(job => (
               <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
             ))}
@@ -493,6 +545,207 @@ function DownloadingModelRow({
   )
 }
 
+function gaugeLabel(gauge: PlanUsageGauge, copy: { today: string; week: string; month: string; topTier: string }) {
+  return gaugeTitle(gauge, { day: copy.today, month: copy.month, top_tier: copy.topTier, week: copy.week })
+}
+
+/** Bracketed `[||||      ]` allowance meter (fills as it is USED); a sliver always shows one
+ * cell, not-quite-full never shows all ten. */
+function AsciiBar({
+  fill,
+  isCurrent,
+  percentLabel,
+  style
+}: {
+  fill: number
+  isCurrent?: boolean
+  percentLabel?: string
+  style: string
+}) {
+  const cells = 10
+  const value = Math.min(1, Math.max(0, fill))
+  let filled = Math.round(value * cells)
+
+  if (value > 0 && filled === 0) {
+    filled = 1
+  }
+
+  if (value < 1 && filled === cells) {
+    filled = cells - 1
+  }
+
+  // Green / yellow / red: how much of the allowance is used.
+  const color =
+    style === 'red'
+      ? 'text-red-600 dark:text-red-400'
+      : style === 'yellow'
+        ? 'text-amber-600 dark:text-amber-400'
+        : 'text-emerald-600 dark:text-emerald-400'
+
+  return (
+    <span className="inline-flex items-center gap-1 font-mono" title={percentLabel}>
+      <span
+        aria-hidden
+        className={cn(
+          'whitespace-pre text-[0.62rem] leading-none tracking-[-0.08em]',
+          isCurrent ? 'text-primary-foreground/85' : color
+        )}
+      >
+        [{'|'.repeat(filled)}
+        {' '.repeat(cells - filled)}]
+      </span>
+      {percentLabel ? (
+        <span
+          className={cn(
+            'text-[0.62rem] tabular-nums',
+            isCurrent ? 'text-primary-foreground/70' : 'text-muted-foreground'
+          )}
+        >
+          {percentLabel}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+/** Allowance gauge: fills as it is used, `NN% used` (same rule as the portal and CLI). */
+function UsageBar({ gauge, isCurrent }: { gauge: PlanUsageGauge; isCurrent?: boolean }) {
+  const { t } = useI18n()
+  const used = 1 - Math.min(1, Math.max(0, gauge.left_fraction))
+
+  return (
+    <AsciiBar
+      fill={used}
+      isCurrent={isCurrent}
+      percentLabel={t.modelPicker.percentUsed(formatPercentUsed(used))}
+      style={gauge.style}
+    />
+  )
+}
+
+/** Window plans: "Recommended" / "Other models" title inside a provider group (not selectable). */
+function ModelSectionLabel({ children }: { children: string }) {
+  return (
+    <div className="px-6 pb-1 pt-2 text-[0.62rem] font-medium uppercase tracking-wide text-muted-foreground">
+      {children}
+    </div>
+  )
+}
+
+/** Window plans: Large (its own monthly limit) or Free (never runs out); other models carry no tag. */
+export function UsageLevelTag({
+  isCurrent = false,
+  level
+}: {
+  isCurrent?: boolean
+  level: 'free' | 'top_tier' | null
+}) {
+  const { t } = useI18n()
+
+  if (!level) {
+    return null
+  }
+
+  return (
+    <span
+      className={cn(
+        'shrink-0 rounded-sm px-1 py-0.5 font-sans text-[0.62rem] font-medium',
+        isCurrent
+          ? 'bg-primary-foreground/20 text-primary-foreground'
+          : level === 'free'
+            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+            : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+      )}
+      title={level === 'top_tier' ? t.modelPicker.largeFootnote : undefined}
+    >
+      {t.modelPicker.usageLevels[level]}
+    </span>
+  )
+}
+
+/**
+ * Window plans: one line above the model list once an allowance is full, saying what happens next —
+ * paid (or Large) models now bill your top-up credits, pay as you go, or they wait for the reset.
+ * Renders nothing while every allowance has room, for every other account, and while paused.
+ */
+export function PlanLimitLine({ className, provider }: { className?: string; provider: ModelOptionProvider }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+  const limit = planLimit(provider)
+
+  if (!limit) {
+    return null
+  }
+
+  const when = formatResetsIn(limit.gauge.resets_at_ms)
+  const name = gaugeTitle(limit.gauge, copy.limitNames)
+  const head = `${copy.limitReached(name)}${when ? ` · ${copy.resetsIn(when)}` : ''}`
+
+  const then =
+    limit.then === 'credits'
+      ? limit.scope === 'all'
+        ? copy.limitThenCredits
+        : copy.limitThenCreditsLarge
+      : limit.then === 'wait'
+        ? limit.scope === 'all'
+          ? copy.limitThenWait
+          : copy.limitThenWaitLarge
+        : null
+
+  return (
+    <div className={cn('text-[0.62rem] leading-snug', className)}>
+      <span className={limit.then === 'wait' ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
+        {head}
+      </span>
+      {then ? (
+        <span className={limit.then === 'credits' ? 'text-foreground' : 'text-muted-foreground'}> · {then}</span>
+      ) : null}
+    </div>
+  )
+}
+
+function PlanUsageSummary({ provider, usage }: { provider: ModelOptionProvider; usage: PlanUsage }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
+  const windowGauges = usage.gauges ?? []
+
+  // Window plans only: any other shape (an older backend's credit-grant gauge) shows nothing.
+  if (usage.kind !== 'usage_window') {
+    return null
+  }
+
+  const limited = planLimit(provider) !== null
+
+  return (
+    <div className="px-6 pb-2 pt-0.5 text-[0.62rem] leading-relaxed text-muted-foreground">
+      <div className="flex flex-col gap-0.5">
+        {limited ? (
+          <PlanLimitLine provider={provider} />
+        ) : (
+          <div>
+            {copy.included}
+            {usage.paused_reason
+              ? ` · ${usage.paused_reason === PAYMENT_PAUSE_REASON ? copy.pausedRenewal : copy.pausedOther}`
+              : ''}
+          </div>
+        )}
+        {windowGauges.map(g => {
+          const when = formatResetsIn(g.resets_at_ms)
+
+          return (
+            <div className="flex items-center gap-2 font-mono" key={g.label}>
+              <span className="w-[4.5rem] shrink-0">{gaugeLabel(g, copy)}</span>
+              <UsageBar gauge={g} />
+              {when ? <span className="text-muted-foreground">{copy.resetsIn(when)}</span> : null}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // Compact In/Out $/Mtok price tag, mirroring the CLI picker's price columns.
 // Renders nothing when pricing is unavailable for the model.
 function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
@@ -585,8 +838,14 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   // account on the free plan; `free_tier_row` is the no-account route's own
   // row. Either way the user is on free inference, so say so. Never match the
   // route by name — the label is copy.
+  const planName = provider.plan_usage?.plan
+
   const tierBadge =
-    provider.free_tier === true || provider.free_tier_row === true ? (
+    provider.plan_usage?.kind === 'usage_window' && planName ? (
+      <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">
+        {planName}
+      </span>
+    ) : provider.free_tier === true || provider.free_tier_row === true ? (
       <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
         {copy.freeTier}
       </span>
@@ -603,6 +862,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
       {tierBadge}
+      <ProviderStatusChip provider={provider} />
     </span>
   )
 }

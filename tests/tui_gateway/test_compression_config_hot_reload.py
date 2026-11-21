@@ -8,6 +8,9 @@ the already-open session kept the computed threshold from agent creation.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from agent.context_compressor import ContextCompressor
 from tui_gateway import server
@@ -169,7 +172,7 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
 
     # The pin is scoped to the configured default route (#116467); that scoping has its own tests,
     # this one is about the cap, so keep the 1M window in scope for the bare test runtime.
-    import agent.agent_init as agent_init
+    from agent import agent_init
 
     monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 1_000_000)
     _sync_with_cfg(monkeypatch, session, {"model": {"context_length": 1_000_000}, "compression": {}})
@@ -248,6 +251,58 @@ def test_removing_compressor_keys_restores_fresh_build_values(monkeypatch):
         assert getattr(compressor, attr) == getattr(fresh, attr), attr
 
 
+def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
+    """Hot reload parses YAML booleans like agent_init: a bool is never a count (`true` is not a 1-token
+    trigger); it keeps the default."""
+    session, compressor = _session_with_compressor()
+    for raw, expected in ((True, 0), (False, 0)):
+        monkeypatch.setattr(server, "_load_cfg", lambda raw=raw: {"compression": {"proactive_prune_tokens": raw}})
+        server._sync_agent_compression_with_config("sid-bool", session)
+        assert compressor.proactive_prune_tokens == expected
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"proactive_prune_min_reclaim_tokens": True}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.proactive_prune_min_reclaim_tokens == 4_096
+    # Non-prune keys keep their existing reload coercion (protect_last_n: false -> 0, as agent_init's int()).
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"protect_last_n": False}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.protect_last_n == 0
+
+
+@pytest.mark.parametrize("raw", [50, 0])
+def test_live_prune_result_floor_matches_fresh_build(monkeypatch, raw):
+    session, compressor = _neutral_session(proactive_prune_min_result_chars=30_000)
+    _, fresh = _neutral_session(proactive_prune_min_result_chars=raw)
+    _sync_with_cfg(monkeypatch, session, {"compression": {"proactive_prune_min_result_chars": raw}})
+    assert compressor.proactive_prune_min_result_chars == fresh.proactive_prune_min_result_chars
+
+
+@pytest.mark.parametrize("write_fails", [True, False])
+def test_post_archive_noop_names_the_actual_reason(tmp_path, monkeypatch, write_fails):
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    from tests.agent.test_proactive_prune_archive import _compressor, _round
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "read"}]
+    for i in range(8):
+        messages += _round(i, "original output\n" + "x" * 12_000 if i == 0 else "ok")
+    messages.append({"role": "user", "content": "continue"})
+    compressor = _compressor()
+    candidate, count = compressor._prune_old_tool_results(
+        messages, protect_tail_count=compressor.protect_last_n,
+        protect_tail_tokens=None, min_prune_chars=compressor.proactive_prune_min_result_chars)
+    assert count == 1
+    before = sum(map(_estimate_msg_budget_tokens, messages))
+    # The bare stub exactly meets the gate; a successful archive's pointer pushes it below.
+    compressor.proactive_prune_min_reclaim_tokens = before - sum(map(_estimate_msg_budget_tokens, candidate))
+    if write_fails:
+        monkeypatch.setattr("tools.tool_result_storage.write_pruned_original", lambda *args: None)
+    with patch.object(compressor, "_warn_reclamation_no_op") as warn:
+        result, count = compressor.prune_tool_results_only(messages, current_tokens=600_000)
+    assert result is messages and count == 0
+    reason = "prune:archive_write_failed" if write_fails else "prune:reclaim_below_minimum"
+    warn.assert_called_once_with(reason, 600_000, before=before)
+
+
 def test_removing_threshold_restores_derived_default(monkeypatch):
     session, compressor = _neutral_session(threshold_percent=0.85)
     assert compressor.threshold_percent == 0.85
@@ -277,6 +332,16 @@ def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
     assert compressor._config_context_length is None
     assert compressor.context_length == 1_000_000
     assert compressor.threshold_tokens == _with_default_cap(int(1_000_000 * 0.50))
+
+
+def test_live_checkpoint_required_reaches_the_prune_gate(monkeypatch):
+    """The proactive prune bypasses the checkpoint hook, so its call-site gate must see a live flip."""
+    session, _ = _neutral_session()
+    session["agent"].compression_checkpoint_required = False
+    _sync_with_cfg(monkeypatch, session, {"compression": {"checkpoint_required": True}})
+    assert session["agent"].compression_checkpoint_required is True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].compression_checkpoint_required is False
 
 
 def test_removing_idle_compact_after_seconds_restores_zero(monkeypatch):

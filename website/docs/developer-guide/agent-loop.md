@@ -195,7 +195,7 @@ When the primary model fails (429 rate limit, 5xx server error, 401/403 auth err
 4. On 401/403, attempt credential refresh before failing over
 5. A Codex Responses turn that stalls on reasoning-only output (three consecutive continuations with no visible text or tool call) also fails over to the next fallback with reason `incomplete_response`; if the stall consumed the iteration budget, the fallback gets exactly one bounded grace call
 
-The fallback system also covers auxiliary tasks independently — vision, compression, and web extraction each have their own fallback chain configurable via the `auxiliary.*` config section.
+The fallback system also covers auxiliary tasks independently — vision, compression, and title generation each have their own fallback chain configurable via the `auxiliary.*` config section.
 
 ## Compression and Persistence
 
@@ -215,7 +215,7 @@ The fallback system also covers auxiliary tasks independently — vision, compre
 ### Session Persistence
 
 After each turn:
-- Messages are saved to the session store (SQLite via `hermes_state.py`)
+- Messages are saved to the session store (SQLite through the storage interface in `persistence/`)
 - Memory changes are flushed to `MEMORY.md` / `USER.md`
 - The session can be resumed later via `/resume` or `hermes chat --resume`
 

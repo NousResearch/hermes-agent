@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { $touchPointer } from '@/lib/touch-interaction'
 
 import { assistantMessage, stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
 
@@ -16,6 +17,9 @@ stubThreadEnvironment()
 
 afterEach(() => {
   cleanup()
+  $touchPointer.set(false)
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 stubThreadViewportSize()
@@ -56,6 +60,16 @@ function Harness({ onEdit }: { onEdit: (message: AppendMessage) => Promise<void>
 // it. Capture process-level uncaught exceptions for the duration of the gesture
 // instead — an unguarded throw registers here and fails the test.
 describe('edit send arrow — macOS click gesture (blur races cancel)', () => {
+  it('keeps touch prose outside the edit button and requires explicit Edit', async () => {
+    $touchPointer.set(true)
+    render(<Harness onEdit={vi.fn(async () => {})} />)
+    const text = await screen.findByText('edit me please')
+    expect(text.closest('button, [role="button"]')).toBeNull()
+    fireEvent.click(text)
+    expect(screen.queryByRole('textbox', { name: 'Edit message' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }))
+    expect(await screen.findByRole('textbox', { name: 'Edit message' })).toBeTruthy()
+  })
   it('sends without an uncaught "Composer is not available" when the arrow-click blurs the editor', async () => {
     const uncaught: unknown[] = []
 

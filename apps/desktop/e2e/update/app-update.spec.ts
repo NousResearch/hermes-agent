@@ -31,8 +31,8 @@ import {
   diagnostics,
   git,
   handoffLog,
-  installProcesses,
   launchInstalledApp,
+  nonGatewayProcesses,
   openAbout,
   publishUpstream,
   startInstallSession,
@@ -116,9 +116,9 @@ test('clicking Update now moves the backend to the new commit, relaunches the ap
       // Hand the machine back to Playwright: quit the relaunched app the way the OS asks it to.
       process.kill(relaunched.pid, 'SIGTERM')
       await expect
-        .poll(() => installProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
+        .poll(() => nonGatewayProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
           timeout: 60_000,
-          message: 'the relaunched app quits cleanly on SIGTERM'
+          message: 'the relaunched app quits cleanly on SIGTERM (its gateway outlives it)'
         })
         .toEqual([])
     })

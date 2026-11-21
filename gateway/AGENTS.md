@@ -8,8 +8,7 @@ New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by st
 `gateway/run.py` is the facade; phases live in `run_*.py` (startup, adapters, inbound, turn, busy,
 goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers in
 `slash_commands_*.py` mixins, authorization in `authz_mixin.py`, adapters in `platforms/<name>.py`
-over `platforms/base.py`. `builtin_hooks/` is the extension point for always-registered gateway
-hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
+over `platforms/base.py`. The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
 (`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
 
@@ -56,69 +55,32 @@ truth: `chat.*Stream` speaks STANDARD markdown, not mrkdwn; `stopStream.markdown
 `startStream`/`stopStream` are Tier 2 (~20/min). Check `draft_stream_is_message is True` —
 MagicMock adapters in older tests auto-create truthy attributes.
 
+## No user content in INFO+ logs
+
+Logs reach `hermes debug share` uploads: never log bodies, subjects, display names, addresses or
+phones at INFO+. Log `len(text)`, an id, `hash_for_log(chat_id)` or `redact_phone(...)`; the raw
+value goes to DEBUG (HX017).
+
 ## Background process notifications
 
-`terminal(background=true, notify_on_complete=true)` starts a gateway watcher that detects
-completion and triggers a new agent turn. Verbosity: `display.background_process_notifications`
-(or `HERMES_BACKGROUND_NOTIFICATIONS`): `concise` (default; one line, failures append an output
-tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
-(final raw output only on non-zero exit), `off`.
+`terminal(background=true, notify_on_complete=true)` arms a watcher on the gateway loop
+(`run_notifications.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
+`display.background_process_notifications`. Injection requires the `admit_internal_event` receipt
+(a handler returning None is not acceptance); refused admission refunds every claimed batch sibling
+without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
+§ Background process notifications.
 
-The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
-_register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
-is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
-while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
-receipt (the agent's next turn is the report) unless the launching turn is still running at exit
-— then the injection only queues a follow-up, so the concise receipt goes out immediately.
-
-The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
-required. Notify-off drains these without waking. Transport failures are retried; unavailable
-durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
-events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
-at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
-async completions remain durable delivery rows, never autonomous new model turns. Require the
-`admit_internal_event` receipt for completion/watch injection: a handler returning None is not
-acceptance. Refused admission refunds every claimed batch sibling without spending an attempt;
-actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
-persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
-
-Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
-reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
-or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
-briefs are labelled user turns appended at a turn boundary, preserving role alternation
-(`cron/AGENTS.md`).
+Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
+FIFO as human input (private launch policy, `internal_notification` display kind); observers never
+own or consume those turns, and an interrupted started turn stays unknown and pauses its followers.
 
 ## `/login` (off-turn, paired DM only)
 
-`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
-`desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
-`GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
-`chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
-conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
-
-**It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
-approves the code owns this gateway's inference and connectors for every chat it serves. Slash
-gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to
-DM the bot can run it. Operators of shared gateways must set it.
-
-The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
-the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
-close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
-
-On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
-session model override pinned to it. It does not switch agents in place and does not write a model
-override: `settle_after_upgrade` already moved `model.default`/`model.base_url` in the config, every
-turn re-resolves the config and the credentials, and `_agent_config_signature` already forces a
-rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
-an expiring access token that nothing refreshes.
+`GatewayLoginCommandsMixin` refuses outside a real paired DM (ntfy, raft and a2a report `dm` for
+broadcast surfaces) and binds the WHOLE install's `providers.nous`, so shared gateways must set
+`allow_admin_from`. It drains `anon_auth.run_sign_in` on its private single-worker `_login_executor`
+(never the shared pool), allows one attempt per process, and on completion evicts agents still on
+`nous/welcome` instead of writing a model override. Long form: `gateway-internals.md` § `/login`.
 
 ## Gateway lifecycle vs. the Desktop app
 
@@ -142,8 +104,14 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
-  with one WARNING at the first seam it reaches, never keyed into `agent:main`. `_transport_owner`,
-  `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
+  with one WARNING at the first seam it reaches, never keyed into `agent:main`
+  (`parked_route_refusal.drop_rejected_route`; a route to a *parked* profile also tells the sender
+  in-channel to resend, since a direct bot's update is already confirmed and never redelivered; a
+  relay frame is ACKed and refused alike (`ParkedProfileRefusal`: a withheld one stalls the
+  ack-gated drain); a
+  dispatch its transport has not acknowledged yet, e.g. Google Chat HTTP events, runs in
+  `retryable_ingress()` and answers `ParkedRouteRefused` (503) instead, releasing its dedup claim).
+  `_transport_owner`, `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
   `_resolve_profile_for_key` read the identity when present and fall back to their old chain only
   for sources nothing resolved (restored rows, hand-built sources). Never derive a second answer
   next to the identity; extend the object. `transport_profile` ≠ `runtime_profile` is normal
@@ -163,7 +131,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   | shared credential → satellite (`profile_routes`) | routed | receiving adapter | receiving adapter (`_is_shared_bot_satellite` after restart) |
   | shared bot → profile that owns its own bot | routed | receiving adapter | receiving adapter (conversation continuity; #70625's "routed bot" reading was not adopted) |
   | secondary-owned bot → `default` (`bot_profile`) | default (`agent:main`) | receiving adapter | receiving adapter |
-  | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`; a disconnected secondary → `None`, never the default bot |
+  | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`, else that map's Relay when it `fronts_platform` (`_fronting_relay`, the `resolve_delivery_transport` rule); a disconnected secondary → `None`, never the default bot |
 - **Identity survives the process.** `SessionEntry.transport_profile` (routing index +
   `sessions.transport_profile`, nullable, reconciled by `SCHEMA_SQL`) persists the receiving bot
   next to the key namespace; the namespace says where a lane RUNS, the column says which bot may
@@ -171,7 +139,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   plugin injection, background-process events) reads `entry.origin` through
   `authz_mixin.py::_restored_source`, which re-pins a `RoutingIdentity(transport=None)` via
   `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
-  adapter or nothing (never the default bot by heuristic). Rows without the column (pre-PR-5)
+  adapter or nothing (never the default bot by heuristic). Restored relay lanes use `_fronting_relay`;
+  revival paths warm egress with `delivery.prime_revived_egress`. Rows without the column (pre-PR-5)
   keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
   command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
   hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`
@@ -200,7 +169,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
   asserts every plugin's `_env_enablement` reads only through it.
 - **Scope is bound per profile activity, not per turn.** `run.py::_profile_runtime_scope(home)`
-  wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
+  (one `Scope`: `agent/runtime_scope.py`, HX016) wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
   that touches a session's home, secrets or terminal scope with no turn on the stack: release and
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
@@ -208,8 +177,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
-  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
-  wrote a secondary profile's memories into the default profile's store, silently.
+  from `os.environ`, which holds the launch profile. Why: eviction under the launch scope wrote a
+  secondary profile's memories into the default profile's store.
 - **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
@@ -225,18 +194,23 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
-- **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
-  register_from_config` and lifecycle observers are prepared under each profile's scope at startup
+- **Hooks and observers register per served profile.** `agent/shell_hooks.py::register_from_config`
+  and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
-  time (a module constant freezes to the first importer).
+  time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND
+  unregistered) on every local session create/resume via `session_policy.refresh_profile_hooks` ->
+  `shell_hooks.sync_from_config`, the only caller that removes.
 - **Adapter YAML never reaches `os.environ` under multiplex.** `platforms/_shared.py::
   apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary
   profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):
   os.environ[X] = …` bridge is first-profile-wins across the process — test two profiles with
   conflicting flags before touching precedence.
-- **Unserved is reported, never silent.** Shared-ingress platforms (WhatsApp bridge, Relay) run on
-  the default profile only; a secondary enabling one is logged once with the remedy and stamped
-  into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). `needs_attention` is
+- **Unserved is reported, never silent.** Shared-ingress platforms (Relay) run on the default
+  profile only; a secondary enabling one is logged once with the remedy and stamped into runtime
+  status (`run_adapters.py::_note_unserved_secondary_platform`). The WhatsApp bridge is per profile:
+  a paired secondary gets its own adapter and port (`plugins/platforms/whatsapp/bridge_ownership.py`),
+  an unpaired one is reported as `whatsapp_unpaired`, and a secondary never adopts or signals a
+  bridge its own pidfile (pid + start time + port) does not identify. `needs_attention` is
   set and cleared at the single writer (`_update_platform_runtime_status`) on the connect path.
 - **One launch-home identity.** "Does this task serve a routed profile?" compares the override
   with `hermes_constants.get_routing_process_hermes_home()` (`agent/secret_scope.py::

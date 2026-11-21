@@ -41,7 +41,7 @@ def run_admission(clone, env):
     script.write_text(_admission_script(), encoding='utf-8', newline='\n')
     return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script)], cwd=clone,
                           env={**env, 'PATH': str(helper) + os.pathsep + env['PATH']},
-                          capture_output=True, text=True, encoding='utf-8', timeout=60)
+                          capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
 
 def test_mixed_dispatch_is_refused_before_loading_repository_code(tmp_path):

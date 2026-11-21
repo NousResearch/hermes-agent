@@ -48,15 +48,16 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
 @pytest.mark.parametrize("has_agent_db", [True, False])
 def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch, path, has_agent_db):
     from tui_gateway import server
-    from hermes_state import SessionDB
     from hermes_constants import get_hermes_home
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     home = tmp_path / ".hermes"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    db = SessionDB(db_path=profile / "state.db")
+    db = open_persistence(profile_scope(home=profile))
     old = SimpleNamespace(_session_db=db if has_agent_db else None,
                           _owns_session_db=has_agent_db, _session_title_hint="Bot Chat")
     session = {"agent": old, "profile_home": str(profile), "session_key": "profile-key",
@@ -82,7 +83,7 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
         assert old._owns_session_db is has_agent_db
         assert not built, "prepare config before allocating a replacement"
         assert get_hermes_home() == home
-        db.create_session("still-owned", "tui")
+        seed_session(db, "still-owned", "tui")
     finally:
         db.close()
         for agent in built:
@@ -115,3 +116,26 @@ def test_rebuild_keeps_session_runtime_picks_but_new_clears_them(monkeypatch):
         session.pop(pin)
     server._rebuild_session_agent("sid", session)
     assert seen[-1] == dict.fromkeys(carried)
+
+
+def test_rebuild_finishing_after_close_closes_the_replacement_and_its_handle(tmp_path, monkeypatch):
+    """session.close claiming the record while _make_agent runs already tore down the agent it saw:
+    the replacement must be closed (and its dedicated handle released), never installed (#49852)."""
+    from tui_gateway import server
+
+    closed: list[str] = []
+    handle = SimpleNamespace(close=lambda: closed.append("db"))
+    monkeypatch.setattr(server, "_open_profile_session_db", lambda _home: handle)
+    monkeypatch.setattr(server, "_config_model_target", lambda: "default-a")
+    session = {"agent": None, "session_key": "k", "profile_home": str(tmp_path / "worker")}
+
+    def make_agent(*_args, session_db=None, **_kwargs):
+        session["_closing"] = True  # _pop_session_by_id lands mid-build
+        return SimpleNamespace(_session_db=session_db, _owns_session_db=False,
+                               close=lambda: closed.append("agent"))
+
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    with pytest.raises(RuntimeError, match="closed"):
+        server._rebuild_session_agent("sid", session, session_id="k")
+    assert session["agent"] is None
+    assert closed == ["agent", "db"]

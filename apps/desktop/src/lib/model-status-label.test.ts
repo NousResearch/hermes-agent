@@ -84,11 +84,61 @@ describe('model-status-label', () => {
     expect(displayModelName('claude-sonnet-5[1m]')).toBe('Sonnet 5 1M')
   })
 
-  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+  it('keeps the model pill to name + speed tier; the effort lives on its own pill', () => {
     expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true, serviceTier: 'ultrafast' })).toBe(
+      'GPT-5.5 · Ultrafast'
+    )
     expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
     expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
     expect(formatModelPillLabel('')).toBe('No model')
+  })
+
+  it('omits speed tags when fastMode is off or the model does not support the tier', () => {
+    expect(formatModelPillLabel('gemini-4-neon', { fastMode: false, serviceTier: 'ultrafast' })).toBe('Gemini 4 Neon')
+    expect(formatModelPillLabel('gemini-2.5-flash', { fastMode: false, serviceTier: 'ultrafast' })).toBe(
+      'Gemini 2.5 · Flash'
+    )
+    expect(
+      formatModelPillLabel('gemini-4-neon', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: false,
+        supportsUltrafast: false
+      })
+    ).toBe('Gemini 4 Neon')
+    expect(
+      formatModelPillLabel('gemini-4-neon', {
+        fastMode: true,
+        serviceTier: 'priority',
+        supportsFast: false,
+        supportsUltrafast: false
+      })
+    ).toBe('Gemini 4 Neon')
+    expect(
+      formatModelPillLabel('anthropic/claude-opus-4.8', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: true,
+        supportsUltrafast: false
+      })
+    ).toBe('Opus 4.8')
+    expect(
+      formatModelPillLabel('anthropic/claude-opus-4.8-fast', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: false,
+        supportsUltrafast: false
+      })
+    ).toBe('Opus 4.8 · Fast')
+    expect(
+      formatModelPillLabel('openai/gpt-6.1-sol', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: true,
+        supportsUltrafast: true
+      })
+    ).toBe('GPT-6.1-sol · Ultrafast')
   })
 
   it('rides the same variant tags on the pill as the catalog rows (#118083)', () => {

@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 import gateway.run as gateway_run
-import tools.checkpoint_manager as cpm
+import agent.checkpoints.manager as cpm
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
@@ -62,7 +62,6 @@ def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
         f"checkpoints:\n  enabled: {str(enabled).lower()}\n", encoding="utf-8"
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", home, raising=False)
-    monkeypatch.setattr(cpm, "CHECKPOINT_BASE", tmp_path / "checkpoints")
 
 # ---------------------------------------------------------------------------
 # Default (working-tree) mode

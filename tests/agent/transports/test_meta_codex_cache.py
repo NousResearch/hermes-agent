@@ -9,7 +9,7 @@ from agent.transports.codex import _default_prompt_cache_retention_for_request
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex  # noqa: F401
+    import agent.transports.codex
     return get_transport("codex_responses")
 
 

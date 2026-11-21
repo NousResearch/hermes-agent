@@ -163,6 +163,14 @@ export function unregisterPluginSlots(plugin: string): void {
   if (changed) _notifySlots();
 }
 
+/** Clear every slot registration (the selected profile changed). Listeners
+ *  hear of it on the next microtask, so this is safe during a render. */
+export function clearPluginSlots(): void {
+  if (_slotRegistry.size === 0) return;
+  _slotRegistry.clear();
+  queueMicrotask(_notifySlots);
+}
+
 interface PluginSlotProps {
   /** Slot identifier (e.g. `"sidebar"`, `"header-left"`). */
   name: string;

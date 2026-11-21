@@ -121,11 +121,8 @@ Hermes 应用多层防护机制：
 HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
 ```
 
-完全替换后端（用于测试）：
-
-```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
-```
+完全替换驱动：在 `config.yaml` 中用 `computer_use.backend` 指定后端（默认 `cua`，或已安装的 provider 插件目录名）。
+`hermes tools` → Computer Use 会列出所有已安装的后端。
 
 ### Windows 自动启动（可选）
 

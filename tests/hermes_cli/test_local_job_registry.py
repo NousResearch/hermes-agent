@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from pm.downloader import DownloadPaused
-from tests.hermes_cli.test_local_download_jobs import client  # noqa: F401
+from tests.hermes_cli.test_local_download_jobs import client
 
 
 def test_jobs_keep_every_active_download_ahead_of_bounded_history(client):

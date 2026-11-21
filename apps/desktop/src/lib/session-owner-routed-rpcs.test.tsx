@@ -1,0 +1,164 @@
+// Every Desktop RPC that carries a session_id must reach the backend that OWNS
+// that session. On a multiplexed local gateway the window's ambient socket is
+// the launch profile's authority, which refuses a secondary profile's session:
+// llm.oneshot and the session YOLO toggle failed outright, session.title fell
+// back to REST and model.options to the launch profile's catalog.
+import type { ModelOptionsResult } from '@hermes/shared'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, render, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { I18nProvider } from '@/i18n'
+import type * as GatewayStore from '@/store/gateway'
+import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
+import { stubResizeObserver } from '@/test/jsdom'
+
+const mocks = vi.hoisted(() => {
+  // The ambient (launch-profile) socket: it refuses another profile's session.
+  const ambient = {
+    request: vi.fn(async () => {
+      throw new Error('not_found')
+    })
+  }
+
+  return { ambient, requestGatewayForAgent: vi.fn() }
+})
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<typeof GatewayStore>()),
+  $gateway: atom(mocks.ambient),
+  activeGateway: () => mocks.ambient,
+  requestGatewayForAgent: mocks.requestGatewayForAgent
+}))
+
+const { requestOneShot } = await import('./oneshot')
+const { setSessionYolo } = await import('./yolo-session')
+const { renameSessionPreferringRpc } = await import('@/app/chat/sidebar/session-actions-menu')
+const { ModelVisibilityDialog } = await import('@/components/model-visibility-dialog')
+const { reloadMcp } = await import('./mcp-reload')
+const { skipOnboarding } = await import('@/store/onboarding-run')
+
+stubResizeObserver()
+
+const RUNTIME = 'rt-research-1'
+const STORED = 'stored-research-1'
+const OWNER = { connectionId: 'local', profile: 'research' }
+
+beforeEach(() => {
+  mocks.requestGatewayForAgent.mockImplementation(async (_connection: string, _profile: string, method: string) =>
+    method === 'llm.oneshot'
+      ? { text: ' commit: research ' }
+      : method === 'config.set'
+        ? { value: '1' }
+        : method === 'session.title'
+          ? { title: 'Renamed on owner' }
+          : {}
+  )
+  $sessionStates.set({ [RUNTIME]: { storedSessionId: STORED } as never })
+  setSessionOwnerHint(STORED, OWNER)
+})
+
+afterEach(() => {
+  cleanup()
+  _resetSessionOwnerHintsForTests()
+  $sessionStates.set({})
+  vi.clearAllMocks()
+})
+
+describe('session_id RPCs go to the session owner, not the ambient socket', () => {
+  it('llm.oneshot borrows the secondary-profile session model on its owner', async () => {
+    await expect(requestOneShot({ sessionId: RUNTIME, template: 'commit_message' })).resolves.toBe('commit: research')
+
+    expect(mocks.ambient.request).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith(
+      'local',
+      'research',
+      'llm.oneshot',
+      expect.objectContaining({ session_id: RUNTIME, template: 'commit_message' })
+    )
+  })
+
+  it('the session YOLO toggle lands on the owner, even when handed the ambient requester', async () => {
+    const ambientRequest = vi.fn(async () => {
+      throw new Error('not_found')
+    })
+
+    await expect(setSessionYolo(ambientRequest as never, RUNTIME, true)).resolves.toBe(true)
+
+    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'config.set', {
+      key: 'yolo',
+      session_id: RUNTIME,
+      value: '1'
+    })
+  })
+
+  it('session.title renames the live runtime on its owner instead of dropping to REST', async () => {
+    await expect(renameSessionPreferringRpc(STORED, 'Renamed')).resolves.toEqual({ title: 'Renamed on owner' })
+
+    expect(mocks.ambient.request).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'session.title', {
+      session_id: RUNTIME,
+      title: 'Renamed'
+    })
+  })
+
+  it('reload.mcp reloads the chat on its owner', async () => {
+    mocks.requestGatewayForAgent.mockResolvedValue({ session: 'applied', session_servers: ['linear'] })
+
+    await expect(reloadMcp(mocks.ambient as never, RUNTIME)).resolves.toMatchObject({ sessionServers: ['linear'] })
+
+    expect(mocks.ambient.request).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'reload.mcp', {
+      confirm: true,
+      session_id: RUNTIME
+    })
+  })
+
+  it('Skip setup ends the onboarding run on its owner', async () => {
+    const ambientRequest = vi.fn(async () => {
+      throw new Error('not_found')
+    })
+
+    await skipOnboarding(ambientRequest as never, RUNTIME)
+
+    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'onboarding.skip', {
+      session_id: RUNTIME
+    })
+  })
+
+  it('Edit Models reads model.options for a secondary-profile session from its owner, under its profile', async () => {
+    const catalog: ModelOptionsResult = { providers: [{ models: ['m-research'], name: 'R', slug: 'r' }] }
+    mocks.requestGatewayForAgent.mockResolvedValue(catalog)
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider>
+          <ModelVisibilityDialog
+            gw={mocks.ambient as never}
+            onOpenChange={() => {}}
+            onOpenProviders={() => {}}
+            open
+            profile="default"
+            sessionId={RUNTIME}
+          />
+        </I18nProvider>
+      </QueryClientProvider>
+    )
+
+    await waitFor(() =>
+      expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'model.options', expect.anything())
+    )
+    expect(mocks.ambient.request).not.toHaveBeenCalled()
+
+    // The backend lets an explicit profile override session_id: the window's
+    // ambient 'default' would build the launch profile's catalog.
+    const params = mocks.requestGatewayForAgent.mock.calls[0][3] as Record<string, unknown>
+
+    expect(params).toMatchObject({ explicit_only: true, session_id: RUNTIME })
+    expect(params.profile ?? 'research').toBe('research')
+  })
+})

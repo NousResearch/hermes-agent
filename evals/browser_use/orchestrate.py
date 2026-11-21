@@ -56,9 +56,10 @@ def reset_browser_state():
         subprocess.run(
             ["taskkill", "/F", "/IM", "agent-browser.exe", "/T"],
             capture_output=True,
+            check=False,
         )
     else:
-        subprocess.run(["pkill", "-f", "agent-browser"], capture_output=True)
+        subprocess.run(["pkill", "-f", "agent-browser"], capture_output=True, check=False)
     code = "cdp('Network.clearBrowserCookies')\nprint('cleared')\n"
     try:
         subprocess.run(
@@ -68,6 +69,7 @@ def reset_browser_state():
             capture_output=True,
             timeout=120,
             env=ENV,
+            check=False,
         )
     except Exception:
         pass
@@ -93,6 +95,7 @@ for arm, task, model, rep in cells:
             text=True,
             timeout=args.run_timeout,
             env={**ENV, "BUBENCH_TASKS": args.tasks},
+            check=False,
         )
         rec = None
         for line in (proc.stdout or "").splitlines():

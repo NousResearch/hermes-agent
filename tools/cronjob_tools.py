@@ -1315,9 +1315,24 @@ def _approval_task(job: dict[str, Any]) -> str:
         task = f"{task} (after running script {script})" if script else task
     extras = [f"checks {label} {job[key]} first each run" for key, label in
               (("monitor_script", "script"), ("monitor_url", "URL")) if job.get(key)]
-    if job.get("deliver") not in (None, "origin", "local"):
-        extras.append(f"delivers to {job['deliver']}")
+    extras.append(f"results go to {_audience(job.get('deliver'))}")
+    if job.get("failure_deliver") and job["failure_deliver"] != job.get("deliver"):
+        extras.append(f"failure notices go to {_audience(job['failure_deliver'])}")
     return "; ".join([task, *extras])
+
+
+# How a deliver token reads on the card: who will see the result, never a raw address alone.
+_AUDIENCE = {"origin": "this chat", "local": "nowhere (saved to the job's history only)",
+             "all": "every connected home channel"}
+
+
+def _audience(deliver: Any) -> str:
+    """The card's plain answer to "who sees this": the default (this chat), a named token, or each target
+    of a comma list, so two jobs differing only in audience never read the same."""
+    if not deliver:
+        return _AUDIENCE["origin"]
+    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    return ", ".join(_AUDIENCE.get(p.lower()) or (f"{p} (home channel)" if ":" not in p else p) for p in parts)
 
 
 def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str,
@@ -1354,19 +1369,19 @@ def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, 
 def _approve_new_job(job: dict[str, Any]) -> None:
     """``create_job``'s ``approve`` hook for a model-initiated create: the card describes the finished,
     validated record (its saved name, when it actually runs, paused, monitor, delivery), so every rule
-    create enforces has passed before the user is asked. A run time that went by while the card waited
-    moves to the schedule's next one; a one-shot past its grace window is refused."""
-    from cron.jobs import _next_run_or_reject_past_oneshot, _parse_aware
-    from hermes_time import now as hermes_now
+    create enforces has passed before the user is asked. A card answered after the first run it showed
+    has gone by is stale: nothing is saved, rather than a different time than the one approved."""
+    from cron import jobs as cron_jobs
 
     times = (job.get("repeat") or {}).get("times")
     runs = f", {times} runs" if times and times > 1 else ""
     _ask_schedule_card(pattern_key_action="create", name=job["name"],
                        description=f"Schedule \"{job['name']}\" ({_approval_when(job)}{runs}): {_approval_task(job)}",
                        display_target=f"<cronjob_manage> (schedule \"{job['name']}\")")
-    if job.get("next_run_at") and _parse_aware(job["next_run_at"]) <= hermes_now():
-        job["next_run_at"] = _next_run_or_reject_past_oneshot(
-            job["schedule"], job["name"], job["schedule"].get("run_at"), "", job.get("timezone"))
+    if job.get("next_run_at") and cron_jobs._parse_aware(job["next_run_at"]) <= cron_jobs._hermes_now():
+        raise _ScheduleDeclined(tool_error(
+            "The schedule card was answered after the first run it showed had passed; nothing was saved. "
+            "Offer the job again with a later time if it is still wanted.", success=False, declined=True))
 
 
 # Fields a "Change this job?" card lists, old -> new, each as the user reads it.

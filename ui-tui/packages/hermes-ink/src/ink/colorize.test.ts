@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { richEightBitColorNumber, shouldUseRichEightBitDowngradeForLegacyAppleTerminal } from './colorize.js'
+import {
+  richEightBitColorNumber,
+  shouldClampChalkLevelForTmux,
+  shouldUseRichEightBitDowngradeForLegacyAppleTerminal
+} from './colorize.js'
+
+describe('shouldClampChalkLevelForTmux', () => {
+  it('keeps truecolor when explicitly enabled inside tmux', () => {
+    expect(shouldClampChalkLevelForTmux({ HERMES_TUI_TRUECOLOR: '1', TMUX: '/tmp/tmux-1000/default,1,0' }, 3)).toBe(false)
+    expect(shouldClampChalkLevelForTmux({ HERMES_TUI_TRUECOLOR: ' true ', TMUX: 'tmux' }, 3)).toBe(false)
+  })
+
+  it('keeps the safe 256-color default inside tmux without the opt-in', () => {
+    expect(shouldClampChalkLevelForTmux({ TMUX: '/tmp/tmux-1000/default,1,0' }, 3)).toBe(true)
+    expect(shouldClampChalkLevelForTmux({ HERMES_TUI_TRUECOLOR: '0', TMUX: 'tmux' }, 3)).toBe(true)
+    expect(shouldClampChalkLevelForTmux({ HERMES_TUI_TRUECOLOR: '1', NO_COLOR: '1', TMUX: 'tmux' }, 3)).toBe(true)
+  })
+})
 
 describe('shouldUseRichEightBitDowngradeForLegacyAppleTerminal', () => {
   it('uses Rich-compatible 256-color downgrade on legacy Apple Terminal', () => {

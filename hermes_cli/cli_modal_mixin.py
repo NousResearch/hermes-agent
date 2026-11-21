@@ -15,6 +15,7 @@ import time as _time
 import webbrowser
 
 from agent.i18n import t
+from hermes_cli import program_status
 from hermes_cli.callbacks import prompt_for_secret
 from typing import Optional
 
@@ -1096,11 +1097,13 @@ class CLIModalMixin:
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
             self._paint_now()
+            program_status.blocked("permission")
 
             result = self._poll_modal_queue(response_queue, "_approval_deadline")
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
+            program_status.working()
             if result is _TIMED_OUT:
                 _cprint(f"\n{_DIM}  {t('cli.approval.timeout_denying')}{_RST}")
                 self._persist_prompt_summary(

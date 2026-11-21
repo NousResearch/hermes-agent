@@ -6,6 +6,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli import program_status
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,8 @@ class GatewayChatView:
         self._composer = None
         # `/undo` puts the removed message back in the composer for the next prompt.
         self.prefill = ""
+        # Herdr (and any terminal speaking OSC 7501) shows this pane as an idle agent.
+        program_status.idle()
 
     def unknown_admissions(self):
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
@@ -329,9 +332,15 @@ class GatewayChatView:
         if payload.get("status") == "interrupted" and isinstance(warning, str) and warning.strip():
             print(warning.strip(), file=sys.stderr, flush=True)
         self.completions[admission] = payload
+        if payload.get("status") == "interrupted":
+            program_status.idle()
+        else:
+            program_status.done()
 
     def _request(self, admission, payload):
         self.prompts[payload["prompt_id"]] = payload
+        # Blocked on a person: Herdr shows "Needs you" for the pane.
+        program_status.blocked("permission" if payload.get("kind") == "approval" else "question")
         # Finite invocations only need the session-blocking state so they can
         # detach cleanly; do not print another admission's control details.
         if not self.finite:
@@ -339,6 +348,8 @@ class GatewayChatView:
 
     def _settled(self, admission, payload):
         self.prompts.pop(payload["prompt_id"], None)
+        # The person answered; the turn continues.
+        program_status.working()
 
     async def submit(self, text):
         self.mutations.retire(self.session_id)
@@ -353,8 +364,12 @@ class GatewayChatView:
             if not self.quiet:
                 from agent.i18n import t
                 print(t("cli.voice.stop_phrase_typed"), flush=True)
+            program_status.idle()
             return receipt
         admission = (receipt or {}).get("admission_id")
+        if admission:
+            # A turn was admitted: Herdr shows the pane as working until it completes.
+            program_status.working()
         if admission and admission not in self.completions and self.session_id == sid:
             self.mine[admission] = None
             if self.gaps != gaps:  # a re-attach left after this submit: its snapshot covers it

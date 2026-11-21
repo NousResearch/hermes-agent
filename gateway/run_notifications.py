@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, cast
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
+from gateway.platforms.base import BasePlatformAdapter, SendResult, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_profile_home import completion_event_scope_or_refuse
@@ -278,10 +278,23 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
             image_paths = [p for p, v in media_files if _is_photo(p, v)]
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+            # Ledger-before-send for the post-stream (streamed final) attachment lane (I-018 / #240).
+            # This lane calls the adapter's media methods directly, so it never passed the bracket the
+            # non-streaming path has (base.py _deliver_media_attachments / _send_image_batch): a
+            # transport death here (846609) left only a warning and the platform never learned a file
+            # was owed, so neither the reconnect sweep nor the boot sweep could re-send it.
             # Local images and URL images go out in one batch so a platform that bundles native
             # multi-attachment sends (Signal) still gets a single call. ``[[as_document]]`` only
-            # applies to local files: a URL has no file to hand to send_document.
+            # applies to local files: a URL has no file to hand to send_document. The ledger stays
+            # local-file-only: a URL image has no local file for the sweep to re-send.
+            _ledgered = isinstance(adapter, BasePlatformAdapter)
+            _image_ids = []
             if image_paths or url_images:
+                if _ledgered:
+                    for _p in image_paths:
+                        _oid = await adapter._record_media_obligation(event, adapter, _p, "image")
+                        if _oid is not None:
+                            _image_ids.append(_oid)
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     images, _ = caption_with_footer(adapter, [*images, *url_images], footer_line)
@@ -289,19 +302,30 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     captioned = caption_landed(result, images)  # only once the send confirmed it
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    result = SendResult(success=False, error=str(e))
+                if _image_ids:
+                    await adapter._finalize_media_batch(_image_ids, result, event, adapter)
             for media_path, is_voice in non_image_media:
+                _oid = None
+                if _ledgered:
+                    _kind = adapter._media_obligation_kind(
+                        media_path, is_voice=is_voice, media_tag=True)
+                    _oid = await adapter._record_media_obligation(event, adapter, media_path, _kind)
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    result = SendResult(success=False, error=str(e))
+                if _oid is not None:
+                    await adapter._finalize_media_obligation(_oid, result, event, adapter)
         return captioned
 
 

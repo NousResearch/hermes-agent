@@ -418,6 +418,8 @@ class ClaimedObligation:
     last_error: Optional[str] = None
     adopted: bool = False
     not_before: Optional[float] = None
+    media_path: Optional[str] = None
+    media_kind: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,7 +587,7 @@ class CoordinationRepository(SubagentLedger, Protocol):
 
     # ── delivery obligations (gateway/delivery_ledger.py) ──
 
-    def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str, thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None, owner: OwnerStamp) -> None:
+    def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str, thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None, media_path: Optional[str] = None, media_kind: Optional[str] = None, owner: OwnerStamp) -> None:
         """Insert or replace a ``pending`` row with 0 attempts, stamped to ``owner`` (``adapter_profile`` stripped, ``'default'`` when unset), then the retention prune in the same write."""
         ...
 

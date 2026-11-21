@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Run build helpers with the prepared Python, never an ambient uv environment. */
 import { execFileSync } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /**
@@ -15,7 +17,9 @@ export function runPython(args, options = {}) {
   return execFileSync(env.HERMES_PYTHON, args, { stdio: 'inherit', ...options, env })
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Node resolves symlinks in import.meta.url but not in argv[1]; compare canonical paths.
+const mainEntry = process.argv[1] ? resolve(process.argv[1]) : ''
+if (mainEntry && existsSync(mainEntry) && import.meta.url === pathToFileURL(realpathSync(mainEntry)).href) {
   try {
     runPython(process.argv.slice(2))
   } catch (/** @type {unknown} */ error) {

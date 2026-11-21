@@ -403,6 +403,10 @@ ensure_uv() {
         else
             _digest="$(shasum -a 256 "$_tmp/uv.tar.gz" | cut -d' ' -f1)"
         fi
+        # GNU coreutils prefixes the output line with a backslash when it had to
+        # escape the file name (a backslash or newline in the path), so `cut`
+        # yields the marker glued to the digest; `shasum` never escapes.
+        _digest="${_digest#\\}"
         if [ "$_digest" != "$UV_PIN_SHA256" ]; then
             rm -rf "$_tmp"
             fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)" download_digest_mismatch

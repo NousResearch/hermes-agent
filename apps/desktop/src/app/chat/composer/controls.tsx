@@ -20,6 +20,7 @@ import { sendButtonDisabled } from './paused-reply'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
+import { useVoiceStart } from './voice-engine-rows'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
 
@@ -94,6 +95,8 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const hudMode = useStore($hudMode)
+  // A plugin voice engine chosen in the picker takes the start press (composer.voiceEngines).
+  const startVoice = useVoiceStart(conversation.onStart)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -122,7 +125,7 @@ export function ComposerControls({
       autoSpeak={autoSpeak}
       disabled={disabled}
       onDictate={onDictate}
-      onStartConversation={conversation.onStart}
+      onStartConversation={startVoice}
       onToggleAutoSpeak={onToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
@@ -177,7 +180,7 @@ export function ComposerControls({
         </Tip>
       ) : null}
       {showVoicePrimary ? (
-        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
+        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={startVoice} />
       ) : (
         <Tip
           label={

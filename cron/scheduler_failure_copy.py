@@ -154,3 +154,58 @@ def blocked_config_notice(job_name: str, reason: str) -> str:
         "the next scheduled time and will not repeat this alert; check with "
         "`hermes cron doctor`."
     )
+
+
+_SOURCE_FAILURE_PREFIXES = (
+    "[monitor_source_failed]", "monitor_url fetch failed:",
+    "script exited with code ", "script execution failed:", "script timed out",
+)
+
+
+def is_source_failure(error: str) -> bool:
+    """Known pre-agent source contracts, never a guess from an HTTP code alone."""
+    return error.lower().startswith(_SOURCE_FAILURE_PREFIXES)
+
+
+def source_failure_notice(job_name: str, job_id: str, error: str) -> str:
+    """Keep raw source errors out of chat and avoid blaming an uninvolved model."""
+    return (
+        f"⚠️ Cron '{job_name}' failed while reading its script/monitor source. "
+        "No model was invoked. Check the source and its connection; "
+        f"run log: `hermes cron runs {job_id}`."
+    )
+
+
+def defer_transient_source_notice(job: dict, error: str) -> bool:
+    """Alert by the third failed tick for short monitor hiccups; keep every failed run.
+
+    No extra retries. Rare/one-shot jobs and unknown/critical failures alert now.
+    """
+    if not (job.get("monitor_script") or job.get("monitor_url")) or not is_source_failure(error):
+        return False
+    from cron.jobs import _schedule_cadence_seconds
+
+    schedule = job.get("schedule", {})
+    # The general cadence helper only samples two cron occurrences. For notice
+    # deferral accept a provably continuous minute-step schedule, never a daily burst.
+    if schedule.get("kind") == "cron":
+        expression = str(schedule.get("expr") or "")
+        match = re.fullmatch(r"(?:\*|\*/([1-5]))\s+\*\s+\*\s+\*\s+\*", expression.strip())
+        cadence = int(match.group(1) or 1) * 60 if match else None
+    else:
+        cadence = _schedule_cadence_seconds(schedule)
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    if times is not None and times > 0 and repeat.get("completed", 0) + 1 >= times:
+        return False
+    if cadence is None or not 0 < cadence <= 300 or int(job.get("failure_streak") or 0) >= 2:
+        return False
+    lower = error.lower()
+    if re.search(r"\b(?:401|403)\b|disk full|no space|corrupt|integrity|permission denied", lower):
+        return False
+    return bool(
+        re.search(r"\b(?:http(?: error)?|server error)\W{0,3}(?:500|502|503|504)\b", lower)
+        or "temporary failure in name resolution" in lower
+        or "name or service not known" in lower
+        or "[errno -5]" in lower
+    )

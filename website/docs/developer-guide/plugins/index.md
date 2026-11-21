@@ -1380,6 +1380,52 @@ def open_skill(name):
 Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
 returns the on-disk catalog only.
 
+### Review staged memory and skill writes
+
+With `memory.write_approval` or `skills.write_approval` on, the agent's writes to that store are
+staged in a queue until someone approves or rejects them. (A foreground memory write in the
+interactive CLI asks inline instead.) A plugin that shows the queue, such as a review page or a
+badge with the pending count, should use `tools.write_review_api` instead of reading the pending
+store itself. These names are public and covered by the compatibility contract:
+
+| Import | What it gives you |
+|---|---|
+| `list_writes(kind="all", *, page=1, page_size=25)` | One page of pending writes as metadata only (`id`, `kind`, `action`, `created_at`, `origin`, `summary`, `is_batch`, `op_count`), never memory text. `kind` is `"all"`, `"memory"` or `"skills"`; `page` is at least 1 and `page_size` is 1 to 100. The reply also has `total` (writes matching `kind`), `counts` per kind plus `"total"`, `gates` (whether each gate is on) and `needs_review`, a count per kind of writes whose approval stopped partway. `counts` and `needs_review` always cover both kinds, and writes that need review aren't in `items`. |
+| `preview_write(kind, pending_id)` | What approving would do right now, for `kind` `"memory"` or `"skills"`. The reply has `created_at` (seconds since the epoch, or `None` when unknown). A pending write gets `ready`, `stale` or `conflict`, per-op previews for skills or the entries for memory, and an `expect` value. A write that isn't pending gets `already_resolved`, `needs_review` or `conflict`, with `expect` set to `None`. |
+| `decide_write(kind, pending_id, decision, *, expect)` | Approves or rejects (`decision` is `"approve"` or `"reject"`). Pass the `expect` from the preview the person saw, unchanged. The `status` is `applied`, `rejected`, `already_resolved` (with `prior` and `decided_at`), `conflict` (with `reason`) or `needs_review`. |
+
+For an unblocked skill `create`, render `content` (the full `SKILL.md`) as plain text; `diff` is
+`None`. For other skill ops, `diff` contains a unified diff or a text message.
+
+All three act on the active profile for the call. They never take a profile name or a home path,
+and they don't check who is asking, so call them only from code the host has already authorized.
+Don't log their arguments or previews: they can contain memory text.
+
+An approval checks what it would change against the preview: the previewed file revisions for a
+skill (a delete or file removal must also match what was staged), and the pinned entries for memory.
+If something changed, or the id isn't pending, or another decision holds it, you get `conflict` and
+nothing is written; a write that was pending stays pending, so preview it again. Once an outcome is
+recorded, deciding the same id again returns `already_resolved` and applies nothing.
+
+A write under `needs_review` can't be approved; the plugin API can't close it either. Once a person
+has checked the files, `/memory reject <id>` or `/skills reject <id>` closes it.
+
+Approve only what a person chose to approve. Keep the `expect` from the preview you showed them and
+send that one back:
+
+```python
+from tools.write_review_api import decide_write, list_writes, preview_write
+
+def pending_count():
+    return list_writes()["counts"]["total"]
+
+def show(kind, pending_id):
+    return preview_write(kind, pending_id)
+
+def decide(kind, pending_id, decision, shown_expect):
+    return decide_write(kind, pending_id, decision, expect=shown_expect)
+```
+
 ### Check file paths and read YAML with Hermes's own helpers
 
 A plugin that reads or writes a path the model chose (an attachment, an export target, a file to

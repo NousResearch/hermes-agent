@@ -27,6 +27,7 @@ import errno
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -1303,12 +1304,24 @@ def list_needs_review(subsystem: str) -> list[dict[str, Any]]:
     return items
 
 
+def _staged_time(record: dict[str, Any]) -> Optional[float]:
+    """The record's ``created_at`` as a float, or None if it is missing, a bool, not a finite number
+    or outside +/-1e11 seconds (a millisecond timestamp, say). The list and the preview both use it."""
+    created = record.get("created_at")
+    if isinstance(created, bool) or not isinstance(created, (int, float)) or not math.isfinite(created):
+        return None
+    return float(created) if -100_000_000_000 < created < 100_000_000_000 else None
+
+
 def preview_pending(subsystem: str, pending_id: str) -> dict[str, Any]:
     """What approving ``pending_id`` would do right now, for a GUI to show before anyone decides.
 
-    The reply has ``id``, ``subsystem``, ``summary``, ``origin``, ``status``, ``reason``, ``ops``,
-    ``changed_since_staged``, ``notice`` and ``expect``. Each op has a ``gist`` and ``diff`` for
-    skills, or ``action``, ``content``, ``old_text`` and ``matched_entry`` for memory.
+    The reply has ``id``, ``subsystem``, ``summary``, ``origin``, ``created_at``, ``status``, ``reason``,
+    ``ops``, ``changed_since_staged``, ``notice`` and ``expect``. ``created_at`` is the staging time
+    (epoch seconds, a float), or None when the record has no usable time or no record was loaded.
+    Each op has a ``gist`` and ``diff`` for skills, or ``action``, ``content``, ``old_text`` and
+    ``matched_entry`` for memory.
+    For a skill ``create`` with no blocker, ``content`` holds the full ``SKILL.md`` and ``diff`` is None.
 
     ``status`` is ``ready``, ``stale`` (something changed since staging and the write no longer
     applies, such as a moved memory entry or a skill patch whose anchor is gone) or ``conflict`` (the
@@ -1330,8 +1343,8 @@ def preview_pending(subsystem: str, pending_id: str) -> dict[str, Any]:
     if not isinstance(record.get("payload"), dict):
         reply = _decided(subsystem, pending_id) or _reply(
             subsystem, pending_id, "conflict", reason=f"no pending {subsystem} write with id '{pending_id}'.")
-        return {"reason": None, **reply, "summary": "", "origin": "", "ops": [], "changed_since_staged": [],
-                "notice": None, "expect": None}
+        return {"reason": None, **reply, "summary": "", "origin": "", "created_at": None, "ops": [],
+                "changed_since_staged": [], "notice": None, "expect": None}
     payload = record["payload"]
     changed: list[str] = []
     if subsystem == MEMORY:
@@ -1343,6 +1356,9 @@ def preview_pending(subsystem: str, pending_id: str) -> dict[str, Any]:
             snapshot = _capture_skill_targets(affected, set(_skill_targets(payload, text_only=True)))
         targets = snapshot.revisions
         ops = _skill_op_previews(payload, snapshot)
+        for op in ops:
+            if op["action"] == "create" and op["blocker"] is None:
+                op["content"], op["diff"] = op["diff"], None
         base = record.get("base")
         changed = _changed_targets(base, targets) if _is_revision_map(base) else []
         if _non_atomic_batch(payload):
@@ -1358,7 +1374,8 @@ def preview_pending(subsystem: str, pending_id: str) -> dict[str, Any]:
     notice = (f"Changed since this write was staged: {', '.join(changed)}. Each diff is against the "
               "current file, and approving applies the write to it." if changed and status == "ready" else None)
     return {**_reply(subsystem, pending_id, status, reason=reason),
-            "summary": record.get("summary", ""), "origin": record.get("origin", "foreground"), "ops": ops,
+            "summary": record.get("summary", ""), "origin": record.get("origin", "foreground"),
+            "created_at": _staged_time(record), "ops": ops,
             "changed_since_staged": changed, "notice": notice,
             "expect": {"profile": _profile_identity(), "record_sha256": hashlib.sha256(raw).hexdigest(),
                        "targets": targets}}

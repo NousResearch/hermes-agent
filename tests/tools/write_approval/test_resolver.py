@@ -754,6 +754,25 @@ def test_whole_skill_preview_rejects_a_special_file_without_opening_it(home, mon
     assert pipe.exists()
 
 
+def test_skills_diff_preserves_create_then_patch_batch_output(home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    body = _skill_md("probe")
+    payload = {"action": "batch", "operations": [
+        {"action": "create", "name": "probe", "content": body},
+        {"action": "patch", "name": "probe", "old_string": "# body", "new_string": "# revised"},
+    ]}
+    pid = wa.stage_write(wa.SKILLS, payload, summary="create and patch", origin="foreground")["id"]
+    patch_diff = ("--- a/SKILL.md\n+++ b/SKILL.md\n@@ -2,4 +2,4 @@\n"
+                  " name: probe\n description: probe skill\n ---\n-# body\n+# revised\n")
+
+    assert handle_pending_subcommand(wa.SKILLS, ["diff", pid]) == (
+        f"# Pending skill write {pid}: create and patch\n\n"
+        f"## op 1/2: create 'probe' — probe skill ({len(body)} chars)\n\n{body}\n\n"
+        f"## op 2/2: patch 'probe' SKILL.md (+1/-1 lines)\n\n{patch_diff}"
+    )
+
+
 def test_skill_preview_orders_patch_chain_across_equivalent_path_spellings(home):
     _create_skill("probe")
     root = _skill_dir("probe")

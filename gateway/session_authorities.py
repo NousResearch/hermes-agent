@@ -269,13 +269,16 @@ def admission_owner(authority, session_id):
 
 
 def holds_admission(authority, session_id) -> bool:
-    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
-    retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
-    closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    """Whether *authority* holds an outstanding canonical admission for *session_id*.
+    Queued, started and unknown turns still belong to the FIFO; terminal rows are settled history.
+    A parked profile's retained (retiring) store that cannot answer counts as holding one:
+    startup auto-resume fails closed instead of stopping the boot or resuming a turn FIFO may own.
+    """
     from gateway.session_persistence import authority_persistence
     try:
         return authority_persistence(authority).admissions.has_pending(
-            session_ids=(session_id, admission_owner(authority, session_id)))
+            session_ids=(session_id, admission_owner(authority, session_id)),
+            statuses=frozenset({'queued', 'started', 'unknown'}))
     except Exception as exc:
         if not getattr(authority, 'retiring', False):
             raise

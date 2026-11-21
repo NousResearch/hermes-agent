@@ -74,11 +74,17 @@ def _self_hosted(base_url) -> bool:
     """A loopback, private-network or tailnet (``*.ts.net``) server, or a private-use name: ``*.home.arpa`` plus every
     name model validation already treats as a user's own endpoint (``*.localhost``, ``*.local``, ``*.lan``,
     ``*.internal``, ``*.home``, ``*.localdomain``, single-label). Such a server may pick its own model."""
+    import ipaddress
+
     from agent.model_metadata import is_local_endpoint  # loads the provider registry: only a model-less URL pays
     from hermes_cli.models_validate import _non_public_host
     from utils import base_url_hostname
     host = base_url_hostname(base_url)
-    return _non_public_host(host) or host.endswith(('.ts.net', '.home.arpa')) or is_local_endpoint(base_url)
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:  # a name: model validation's private-use rules, plus the tailnet and home.arpa suffixes
+        return _non_public_host(host) or host.endswith(('.ts.net', '.home.arpa')) or is_local_endpoint(base_url)
+    return is_local_endpoint(base_url)  # an IP literal by its scope: a global IPv6 has no dot but is public
 
 
 class ProfileConfigUnavailable(RuntimeError):

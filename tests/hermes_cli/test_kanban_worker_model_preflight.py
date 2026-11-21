@@ -340,3 +340,20 @@ def test_a_self_hosted_url_the_runtime_may_pick_defers(model, env, expected, mon
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: "cloud-model")
     assert task_model(_card(), {"model": model}) == expected
+
+
+@pytest.mark.parametrize("url, expected", [
+    ("http://[2606:4700::1111]:8000/v1", ("cloud-model", False)),
+    ("http://8.8.8.8:8000/v1", ("cloud-model", False)),
+    ("http://[::1]:8000/v1", ("", False)),
+    ("http://[fd00::5]:8000/v1", ("", False)),
+    ("http://[fe80::1]:8000/v1", ("", False)),
+], ids=["public-ipv6", "public-ipv4", "loopback-ipv6", "ula-ipv6", "link-local-ipv6"])
+def test_an_ip_literal_is_judged_by_its_scope(url, expected, monkeypatch):
+    """A global IPv6 literal has no dot, but it is public: only a name gets the private-use name rules."""
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: "cloud-model")
+    assert task_model(_card(), {"model": {"provider": "deepseek", "base_url": url}}) == expected

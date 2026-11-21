@@ -5,9 +5,11 @@ import {
   $threadMessagesBelowBySession,
   $threadScrolledUpBySession,
   onScrollToBottomRequest,
+  onThreadMessageJumpRequest,
   publishThreadAtBottom,
   publishThreadMessagesBelow,
   requestScrollToBottom,
+  requestThreadMessageJump,
   resetPublishedThreadScroll,
   resetThreadScroll,
   setThreadAtBottom
@@ -135,5 +137,33 @@ describe('requestScrollToBottom', () => {
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledOnce()
     stopSecond()
+  })
+})
+
+describe('thread message jump bridge', () => {
+  it('routes a direction only to the matching session handler', () => {
+    const sessionA = vi.fn()
+    const sessionB = vi.fn()
+    const stopA = onThreadMessageJumpRequest(sessionA, 'session-a')
+    const stopB = onThreadMessageJumpRequest(sessionB, 'session-b')
+
+    requestThreadMessageJump(1, 'session-a')
+
+    expect(sessionA).toHaveBeenCalledOnce()
+    expect(sessionA).toHaveBeenCalledWith(1)
+    expect(sessionB).not.toHaveBeenCalled()
+
+    stopA()
+    stopB()
+  })
+
+  it('forgets a handler when its subscriber unmounts', () => {
+    const handler = vi.fn()
+    const stop = onThreadMessageJumpRequest(handler, 'session-a')
+
+    stop()
+    requestThreadMessageJump(-1, 'session-a')
+
+    expect(handler).not.toHaveBeenCalled()
   })
 })

@@ -592,6 +592,8 @@ export const en: Translations = {
       'session.archive': 'Archive current session',
       'conversation.scrollPageUp': 'Scroll conversation up one page',
       'conversation.scrollPageDown': 'Scroll conversation down one page',
+      'conversation.jumpToPreviousMessage': 'Jump to previous message',
+      'conversation.jumpToNextMessage': 'Jump to next message',
       'workspace.newWorktree': 'New worktree',
       'workspace.openFolder': 'Open folder as project',
       'composer.focus': 'Focus composer',

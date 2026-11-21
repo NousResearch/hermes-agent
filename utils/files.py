@@ -521,12 +521,17 @@ def _roundtrip_load(path: Path):
 
 
 def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
-    def _write(f) -> None:
-        yaml_rt.dump(config, f)
-        if extra_content:
-            f.write(extra_content)
-
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=preserve_file_mode(path))
+    """Atomically write *config*; a save that renders the file's current bytes writes nothing, so
+    the file keeps its inode and mtime and change detectors (gateway profile reconcile, CLI config
+    watcher) don't read a no-op save as an edit."""
+    import io
+    buf = io.StringIO()
+    yaml_rt.dump(config, buf)
+    rendered = buf.getvalue() + (extra_content or "")
+    with suppress(OSError, UnicodeDecodeError):
+        if path.read_text(encoding="utf-8") == rendered:
+            return
+    _atomic_write(path, lambda f: f.write(rendered), prefix=f".{path.stem}_", mode=preserve_file_mode(path))
 
 
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:

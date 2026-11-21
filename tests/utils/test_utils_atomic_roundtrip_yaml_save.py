@@ -288,3 +288,18 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+    def test_unchanged_save_leaves_the_file_untouched(self, config_path):
+        """A save whose render equals the file's bytes writes nothing: the inode and mtime stay, so
+        change detectors (gateway profile reconcile reconnecting adapters) never see a no-op save
+        as an edit. A real change still lands."""
+        from utils import atomic_roundtrip_yaml_save
+
+        config_path.write_text("# notes\nagent:\n  max_turns: 30  # keep\n", encoding="utf-8")
+        before = config_path.stat()
+        atomic_roundtrip_yaml_save(config_path, {"agent": {"max_turns": 30}})
+        after = config_path.stat()
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+        atomic_roundtrip_yaml_save(config_path, {"agent": {"max_turns": 45}})
+        assert config_path.read_text(encoding="utf-8") == "# notes\nagent:\n  max_turns: 45  # keep\n"

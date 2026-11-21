@@ -25,6 +25,9 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Provider to configure directly (e.g. honcho), skipping the picker")
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    from hermes_cli.subcommands.dream import add_dream_command
+
+    add_dream_command(memory_sub)
     _reset_parser = memory_sub.add_parser(
         "reset", help="Erase all built-in memory (MEMORY.md and USER.md)")
     add_yes_flag(_reset_parser)

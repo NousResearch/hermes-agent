@@ -30,6 +30,19 @@ def dependency_home_root() -> Path:
     return get_default_hermes_root(home=override) if override else get_default_hermes_root()
 
 
+def plugin_target_in_home(target: Path) -> bool:
+    """Whether *target* is a plugin directory a Hermes home owns: under the Hermes root with a
+    ``plugins`` parent, or a direct child of the root's or a profile's ``plugins`` dir relocated
+    by a symlink/junction (#134952). The install side resolves targets through that link before
+    publication, so the relocated form is judged against the homes' resolved ``plugins`` dirs."""
+    root = dependency_home_root()
+    resolved = target.resolve()
+    if target.parent.name == "plugins" and resolved.is_relative_to(root.resolve()):
+        return True
+    homes = [root, *(root / "profiles").glob("*")]
+    return resolved.parent in {(home / "plugins").resolve() for home in homes}
+
+
 def installs_root() -> Path:
     return dependency_home_root() / "installs"
 

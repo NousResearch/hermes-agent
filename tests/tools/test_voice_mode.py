@@ -392,6 +392,58 @@ class TestAudioRecorder:
         assert recorder._stream is None
         stream.close.assert_called_once_with()
 
+    def test_overlapping_starts_open_one_stream(self, mock_sd, monkeypatch):
+        """A start() that overlaps another must not build a second stream.
+
+        _ensure_stream() ran outside any lock, so the loser's InputStream was dropped open and
+        its callback thread later ran in freed closure memory.
+        """
+        import threading
+
+        from tools import voice_mode
+        from tools.voice_mode import AudioRecorder
+
+        monkeypatch.setattr(voice_mode, "_default_input_samplerate", lambda _sd: 48000)
+        building = threading.Event()
+        release = threading.Event()
+
+        the_stream = MagicMock(name="stream")
+
+        def _build(*_args, **_kwargs):
+            building.set()
+            assert release.wait(2.0), "the first start was never released"
+            return the_stream
+
+        mock_sd.InputStream.side_effect = _build
+        recorder = AudioRecorder()
+        first = threading.Thread(target=recorder.start, daemon=True)
+        first.start()
+        assert building.wait(2.0), "the first start never reached PortAudio"
+        recorder.start()  # a key repeat lands while the first start is building its stream
+        release.set()
+        first.join(2.0)
+
+        assert not first.is_alive()
+        assert mock_sd.InputStream.call_count == 1
+        assert recorder._stream is the_stream
+
+    def test_failed_stream_start_closes_the_stream(self, mock_sd, monkeypatch):
+        """A start() that fails late already owns a callback thread: closing it is the
+        only thing that keeps that thread off freed memory."""
+        from tools import voice_mode
+        from tools.voice_mode import AudioRecorder
+
+        monkeypatch.setattr(voice_mode, "_default_input_samplerate", lambda _sd: 48000)
+        mock_sd.InputStream.return_value.start.side_effect = RuntimeError("device busy")
+        recorder = AudioRecorder()
+
+        with pytest.raises(RuntimeError):
+            recorder.start()
+
+        mock_sd.InputStream.return_value.close.assert_called_once_with()
+        assert recorder._stream is None
+        assert recorder._starting is False  # the failed start released the slot
+
     def test_ensure_stream_rebuilds_when_liveness_probe_fails(self, mock_sd):
         from tools.voice_mode import AudioRecorder
 

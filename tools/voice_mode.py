@@ -554,6 +554,7 @@ class _RecorderBase:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._recording, self._start_time, self._current_rms = False, 0.0, 0
+        self._starting = False  # start() in flight: a second call must not open a second stream
         # Live STT (``stt.streaming``): hosts set ``on_live_partial`` to render partial text.
         self.on_live_partial: Optional[Callable[[str], None]] = None
         self._live: Any = None
@@ -681,6 +682,9 @@ class AudioRecorder(_RecorderBase):
     def __init__(self) -> None:
         super().__init__()
         self._stream: Any = None
+        # Serializes stream create/close: two overlapping start() calls (key repeat) would
+        # otherwise each build an InputStream and drop the loser under the callback thread.
+        self._stream_lock = threading.RLock()
         self._frames: list[Any] = []
         self._sample_rate: int = SAMPLE_RATE
         self._on_silence_stop = None
@@ -799,44 +803,48 @@ class AudioRecorder(_RecorderBase):
         can still deactivate the stream when another input stream opens; in
         that case the dead object must be closed and rebuilt before capture.
         """
-        if self._stream is not None:
-            try:
-                if self._stream.active:
-                    return
-            except Exception:
-                logger.debug("Audio input stream liveness probe failed", exc_info=True)
+        with self._stream_lock:
+            if self._stream is not None:
+                try:
+                    if self._stream.active:
+                        return
+                except Exception:
+                    logger.debug("Audio input stream liveness probe failed", exc_info=True)
 
-            logger.debug("Rebuilding inactive audio input stream")
-            self._close_stream_with_timeout()
-        sd, np = _import_audio()
+                logger.debug("Rebuilding inactive audio input stream")
+                self._close_stream_with_timeout()
+            sd, np = _import_audio()
 
-        def _callback(indata, frames, time_info, status):
-            if status:
-                logger.debug("sounddevice status: %s", status)
-            if self._recording:
-                self._on_audio_block(np, indata)
+            def _callback(indata, frames, time_info, status):
+                if status:
+                    logger.debug("sounddevice status: %s", status)
+                if self._recording:
+                    self._on_audio_block(np, indata)
 
-        stream = None
-        for attempt in range(2):
-            try:  # may block on CoreAudio (first call only)
-                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                        callback=_callback)
-                stream.start()
-                break
-            except Exception as e:
-                with suppress(Exception):
-                    stream.close()
-                stream = None
-                # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
-                # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
-                # failed open itself wakes the bridge, so one immediate retry succeeds
-                # where the user's second key press would have (#109303).
-                if attempt or "timed out" not in str(e).lower():
-                    raise RuntimeError(
-                        f"Failed to open audio input stream: {e}. "
-                        "Check that a microphone is connected and accessible.") from e
-                logger.info("Audio input stream start timed out; retrying once")
-        self._stream = stream
+            stream = None
+            for attempt in range(2):
+                try:  # may block on CoreAudio (first call only)
+                    stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                            callback=_callback)
+                    stream.start()
+                    break
+                except Exception as e:
+                    if stream is not None:
+                        with suppress(Exception):
+                            stream.close()
+                        # A start() that failed late already has a callback thread; closing it is what
+                        # keeps the closure alive for that thread (it holds no Python reference back).
+                    stream = None
+                    # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
+                    # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
+                    # failed open itself wakes the bridge, so one immediate retry succeeds
+                    # where the user's second key press would have (#109303).
+                    if attempt or "timed out" not in str(e).lower():
+                        raise RuntimeError(
+                            f"Failed to open audio input stream: {e}. "
+                            "Check that a microphone is connected and accessible.") from e
+                    logger.info("Audio input stream start timed out; retrying once")
+            self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:
         """Start capturing; *on_silence_stop* is invoked (daemon thread, no args) when
@@ -848,8 +856,9 @@ class AudioRecorder(_RecorderBase):
         except ImportError as e:
             raise RuntimeError(f"Voice mode requires sounddevice and numpy.\n{_voice_capture_install_hint(e)}") from e
         with self._lock:
-            if self._recording:
+            if self._recording or self._starting:
                 return
+            self._starting = True
             self._frames = []
             self._start_time = time.monotonic()
             self._reset_detection_state()
@@ -857,17 +866,24 @@ class AudioRecorder(_RecorderBase):
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
         self._sample_rate = _default_input_samplerate(sd)
-        self._ensure_stream()
-        self._open_live_session(self._sample_rate)
+        try:
+            self._ensure_stream()
+            self._open_live_session(self._sample_rate)
+        except BaseException:
+            with self._lock:
+                self._starting = False
+            raise
         with self._lock:
+            self._starting = False
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
         """Close the stream with a timeout to prevent CoreAudio hangs."""
-        if self._stream is None:
-            return
-        stream, self._stream = self._stream, None
+        with self._stream_lock:
+            if self._stream is None:
+                return
+            stream, self._stream = self._stream, None
 
         def _do_close():
             with suppress(Exception):

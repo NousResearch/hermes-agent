@@ -176,6 +176,36 @@ def test_session_redirect_queues_while_compressing(monkeypatch):
     assert seen == []
 
 
+@pytest.mark.parametrize("method,expect_interrupt", [
+    ("session.redirect", True),
+    ("session.steer", False),
+])
+def test_direct_correction_waits_for_pending_model_pick(monkeypatch, method, expect_interrupt):
+    """A direct correction must not run on the old model after config.set defers a pick."""
+    monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: False)
+    delivered, interrupted = [], []
+    monkeypatch.setattr(server, "_interrupt_busy_session", lambda sid, session, agent: interrupted.append(sid))
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: delivered.append(("redirect", text)) or True,
+        steer=lambda text: delivered.append(("steer", text)) or True,
+    )
+    pick = {"raw": "haiku --provider anthropic"}
+    session = _session(agent=agent, pending_model_switch=pick)
+    monkeypatch.setitem(server._sessions, "sid", session)
+    try:
+        resp = server.handle_request({
+            "id": "r1", "method": method, "params": {"session_id": "sid", "text": "next"}})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "queued"
+    assert delivered == []
+    assert session["queued_prompt"]["text"] == "next"
+    assert session["pending_model_switch"] is pick
+    assert interrupted == (["sid"] if expect_interrupt else [])
+
+
 # ── manual compaction holds the session busy (#133504) ────────────────────
 
 def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch):
@@ -242,3 +272,39 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert session["history"][0]["content"] == "[summary]"
     assert session["running"] is False
     assert infos[0] == {"running": True} and infos[-1] == {"running": False}  # Desktop sees the busy edge close
+
+
+# ── pending model pick: never answer on the old model ─────────────────────
+
+def test_busy_redirect_skipped_while_model_pick_pending(monkeypatch):
+    """A pick made mid-turn applies at the NEXT turn start. A live redirect would be answered by the old
+    model while session.info already shows the pick, so the message must queue (and interrupt) instead."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: False)
+    interrupted = []
+    monkeypatch.setattr(server, "_interrupt_busy_session", lambda sid, session, agent: interrupted.append(sid))
+    seen = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True, redirect=lambda text: seen.append(text) or True)
+    session = _session(agent=agent, pending_model_switch={"raw": "haiku --provider anthropic"})
+
+    resp = server._handle_busy_submit("r1", "sid", session, "next message", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert seen == []  # not redirected into the live (old-model) turn
+    assert interrupted == ["sid"]  # interrupt mode still stops the live turn
+    assert session["queued_prompt"]["text"] == "next message"
+
+
+def test_busy_steer_skipped_while_model_pick_pending(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: False)
+    seen = []
+    agent = types.SimpleNamespace(steer=lambda text: seen.append(text) or True)
+    session = _session(agent=agent, pending_model_switch={"raw": "haiku --provider anthropic"})
+
+    resp = server._handle_busy_submit("r1", "sid", session, "next message", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert seen == []
+    assert session["queued_prompt"]["text"] == "next message"

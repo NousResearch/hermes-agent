@@ -37,7 +37,7 @@ describe('kanban event cursor', () => {
     })
 
     const rest = async <T>(path: string, _opts?: PluginRestOptions): Promise<T> => {
-      if (path === '/board?board=ops') {
+      if (path === '/board?board=ops&done_limit=100') {
         return board as Promise<T>
       }
 
@@ -82,11 +82,11 @@ describe('kanban event cursor', () => {
     })
 
     const rest = async <T>(path: string, _opts?: PluginRestOptions): Promise<T> => {
-      if (path === '/board?board=ops') {
+      if (path === '/board?board=ops&done_limit=100') {
         return ops as Promise<T>
       }
 
-      if (path === '/board?board=ship') {
+      if (path === '/board?board=ship&done_limit=100') {
         return BOARD(7) as T
       }
 

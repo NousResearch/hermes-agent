@@ -65,6 +65,7 @@ import {
 import {
   $boardSlug,
   $collapsedLanes,
+  $doneLimit,
   $introDismissed,
   $lanesByProfile,
   boardKey,
@@ -73,6 +74,7 @@ import {
   bulkTasks,
   createTask,
   deleteTask,
+  DONE_PAGE,
   estimateNew,
   fetchBoard,
   fetchBoards,
@@ -351,6 +353,7 @@ function Column({
   collapsed,
   column,
   columns,
+  more,
   onAdd,
   onDelete,
   onDropTask,
@@ -359,11 +362,14 @@ function Column({
   onToggle,
   onToggleSelect,
   selected,
-  tenants
+  tenants,
+  total
 }: {
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  /** Load the next page of a capped lane (the Done column's history). */
+  more?: { label: string; loading?: boolean; onClick: () => void }
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -373,6 +379,8 @@ function Column({
   onToggleSelect: (id: string) => void
   selected: ReadonlySet<string>
   tenants: readonly string[]
+  /** The lane's full count when it holds only a page of its cards. */
+  total?: number
 }) {
   const k = useKanban()
   const [over, setOver] = useState(false)
@@ -380,6 +388,7 @@ function Column({
   const label = columnLabel(k, column.name)
   const locked = isLockedTarget(column.name)
   const byProfile = useValue($lanesByProfile)
+  const count = total ?? column.tasks.length
 
   // The dashboard's "lanes by profile": sub-group Running by assignee so a
   // fleet's in-flight work reads per-worker. Null = flat (off, or trivial).
@@ -448,9 +457,7 @@ function Column({
         <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]">
           {label}
         </span>
-        {column.tasks.length > 0 && (
-          <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-        )}
+        {count > 0 && <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{count}</span>}
       </button>
     )
   }
@@ -467,7 +474,7 @@ function Column({
             {label}
           </span>
         </Tip>
-        <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
+        <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{count}</span>
         <button
           aria-label={k.collapse(label)}
           className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
@@ -514,6 +521,19 @@ function Column({
                 tenants={tenants}
               />
             ))}
+        {more && (
+          // Locked while the next page loads: the click is visibly taken and can't stack.
+          <button
+            aria-busy={more.loading || undefined}
+            className="flex shrink-0 items-center justify-center gap-1.5 rounded-md py-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-(--ui-text-tertiary)"
+            disabled={more.loading}
+            onClick={more.onClick}
+            type="button"
+          >
+            <Codicon name={more.loading ? 'loading' : 'chevron-down'} size="0.7rem" spinning={more.loading} />
+            {more.loading ? k.loadingMoreDone : more.label}
+          </button>
+        )}
         {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
             display) so it always holds its slot and never thrashes layout.
             Locked lanes get none: you can't create into a system state. */}
@@ -1097,6 +1117,69 @@ function SelectionBar({
   )
 }
 
+// ── done paging ──────────────────────────────────────────────────────────────
+
+interface DonePaging {
+  hidden: number
+  shown: number
+  total: number
+}
+
+/** The server caps the done column (history) to the newest `$doneLimit` cards and
+ *  reports the real count as `done_total`. Older servers send every card, no total. */
+function donePaging(board: KanbanBoard | undefined): DonePaging {
+  const shown = board?.columns.find(col => col.name === 'done')?.tasks.length ?? 0
+  const total = typeof board?.done_total === 'number' ? board.done_total : shown
+
+  return { hidden: Math.max(0, total - shown), shown, total }
+}
+
+/** Done-lane props: the "show more" footer, and the full count unless a filter
+ *  narrows the lane (then the visible count is the honest one). Other lanes: none. */
+function donePagingProps(
+  name: string,
+  paging: DonePaging,
+  filtering: boolean,
+  label: (page: number, hidden: number) => string,
+  more: { loading: boolean; onMore: () => void }
+): Pick<Parameters<typeof Column>[0], 'more' | 'total'> {
+  if (name !== 'done' || paging.hidden === 0) {
+    return {}
+  }
+
+  return {
+    more: {
+      label: label(Math.min(DONE_PAGE, paging.hidden), paging.hidden),
+      loading: more.loading,
+      onClick: more.onMore
+    },
+    total: filtering ? undefined : paging.total
+  }
+}
+
+/** "Show more" for the capped done column: raise the limit by a page and refetch.
+ *  `loading` holds from the click until that refetch settles (or fails), so the
+ *  footer locks and spins instead of looking like nothing happened. */
+export function useShowMoreDone(queryKey: readonly unknown[], shown: number) {
+  const qc = useQueryClient()
+  const [loading, setLoading] = useState(false)
+
+  const onMore = () => {
+    if (loading) {
+      return
+    }
+
+    setLoading(true)
+    $doneLimit.set(Math.max($doneLimit.get(), shown) + DONE_PAGE)
+    // Unlock on either outcome; a failed refetch surfaces through the board query itself.
+    const unlock = () => setLoading(false)
+
+    void qc.invalidateQueries({ queryKey }).then(unlock, unlock)
+  }
+
+  return { loading, onMore }
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export function KanbanBoardPage() {
@@ -1205,6 +1288,10 @@ export function KanbanBoardPage() {
   }, [board, search, tenant, assignee])
 
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
+
+  const done = donePaging(board)
+  const filtering = [search.trim(), tenant, assignee].some(Boolean)
+  const showMoreDone = useShowMoreDone(boardKey(scope, slug, archived), done.shown)
 
   const moveMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
@@ -1418,6 +1505,7 @@ export function KanbanBoardPage() {
 
             return (
               <Column
+                {...donePagingProps(col.name, done, filtering, k.showMoreDone, showMoreDone)}
                 collapsed={laneOverrides[col.name] ?? auto}
                 column={col}
                 columns={columnNames}

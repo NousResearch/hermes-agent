@@ -99,7 +99,11 @@ async function ensureBaseline(slug: string): Promise<void> {
   baselinePending.add(slug)
 
   try {
-    const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
+    // Only latest_event_id is read: done_limit=1 skips the done history (servers
+    // without the parameter ignore it and return the full board).
+    const board = (await rest!<{ latest_event_id?: unknown }>(
+      `/board?board=${encodeURIComponent(slug)}&done_limit=1`
+    )) as {
       latest_event_id?: unknown
     }
 

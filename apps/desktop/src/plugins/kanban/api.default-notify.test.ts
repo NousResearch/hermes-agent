@@ -110,7 +110,7 @@ describe('default board event notifications', () => {
     resolveBoards({ current: 'late' })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(socket).toHaveBeenCalledTimes(change === 'selection' ? 1 : 0)
-    expect(rest).not.toHaveBeenCalledWith('/board?board=late')
+    expect(rest.mock.calls.some(([path]) => String(path).startsWith('/board?board=late'))).toBe(false)
   })
 
   it('does not resolve or override a caller-selected board', async () => {
@@ -145,7 +145,7 @@ describe('default board event notifications', () => {
         return { current: 'default', boards: [{ slug: 'default' }] }
       }
 
-      if (path === '/board?board=default' || path === '/board') {
+      if (path.startsWith('/board?board=default&') || path.startsWith('/board?done_limit=')) {
         return { latest_event_id: latest }
       }
 
@@ -161,7 +161,9 @@ describe('default board event notifications', () => {
     // first-live-frame baseline seeding is separately owned by PR #116236.
     latest = 101
     callbacks[0]({ cursor: 101, events: [{ id: 101, kind: 'created' }] })
-    await vi.waitFor(() => expect(rest.mock.calls.filter(([path]) => path === '/board?board=default')).toHaveLength(2))
+    await vi.waitFor(() =>
+      expect(rest.mock.calls.filter(([path]) => String(path).startsWith('/board?board=default&'))).toHaveLength(2)
+    )
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(doors.notify).not.toHaveBeenCalled()
     latest = 102

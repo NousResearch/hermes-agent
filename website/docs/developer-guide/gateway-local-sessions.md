@@ -55,8 +55,9 @@ call only). An owner listing `client-identity-v1` in `runtime.describe` capabili
 the connection's life; a malformed label answers `4001` and leaves the earlier one in place. The
 Desktop app sends `hermes-desktop` / `desktop` and the Webapp `hermes-webapp` / `webapp`.
 
-An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`,
-and only then does a client send `client.activity {sessions, idle_seconds, basis, can_alert?,
+An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`
+on a connection that keeps presence (a WebSocket; stdio answers `false`), and only then does a
+client send `client.activity {sessions, idle_seconds, basis, can_alert?,
 away?}`: the sessions it has in view (at most 16 ids, each at most 256 characters), how long
 ago the user's last input was,
 whether that comes from the OS idle clock (`basis: "system"`) or from input inside the Hermes

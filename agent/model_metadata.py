@@ -27,7 +27,7 @@ from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
+from hermes_constants import OPENROUTER_MODELS_URL, openrouter_openai_tier_alias, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
 from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
@@ -492,9 +492,8 @@ def _strip_openrouter_routing_variant(
 ) -> str:
     """Strip an OpenRouter routing-variant suffix for catalog lookup.
 
-    ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are request-time
-    routing modifiers, NOT catalog entries — OpenRouter's ``/models`` lists
-    only the base id, and a variant shares the base model's context window.
+    ``:nitro``/``:floor``/``:exacto``/``:online`` and OpenAI ``-fast``/``-flex`` are
+    request-time modifiers, not catalog entries: the base id owns the context window.
     Without this, every lookup below misses and the resolver falls through to
     a generic family default (``x-ai/grok-4.6:nitro`` → the 131K ``grok``
     catch-all instead of its real 2M window).
@@ -516,7 +515,8 @@ def _strip_openrouter_routing_variant(
     )
     if not is_openrouter:
         return model
-    base = openrouter_variant_base(model)
+    alias = openrouter_openai_tier_alias(model)
+    base = openrouter_variant_base(model) or (alias[0] if alias else None)
     if base is None:
         return model
     logger.debug(

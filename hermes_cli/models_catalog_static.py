@@ -30,6 +30,8 @@ _OPENROUTER_DESCRIPTIONS = {
     "openai/gpt-6-astra-flex": "0.5x price, flex tier",
     "openai/gpt-6-astra-pro-fast": "2x price, priority tier",
     "openai/gpt-6-astra-pro-flex": "0.5x price, flex tier",
+    "openai/gpt-6.1-terra-fast": "2x price, priority tier",
+    "openai/gpt-6.1-terra-flex": "0.5x price, flex tier",
     "stealth/union-alpha": "free, stealth model",
     "stealth/space-bunny-alpha": "free, stealth model",
 }
@@ -42,7 +44,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openai/gpt-6.2-astra", "openai/gpt-6.2-astra-pro", "openai/gpt-6.2-sol", "openai/gpt-6.2-sol-pro",
         "openai/gpt-6-astra", "openai/gpt-6-astra-fast", "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro",
         "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
-        "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
+        "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra",
+        "openai/gpt-6.1-terra-fast", "openai/gpt-6.1-terra-flex", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
         "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-4-argon",
         "google/gemini-3.1-pro-preview",
@@ -70,6 +73,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _OPENROUTER_ONLY = {
     "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast",
     "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
+    "openai/gpt-6.1-terra-fast", "openai/gpt-6.1-terra-flex",
     "stealth/union-alpha",
 }
 

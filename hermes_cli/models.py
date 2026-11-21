@@ -665,8 +665,7 @@ def fetch_openrouter_models(
     if cached is not None and not force_refresh:
         return list(cached)
 
-    # Cold process: serve from the persisted disk cache when fresh so the
-    # picker doesn't re-download the full ~686KB catalog on every open.
+    # Cold process: serve the persisted disk cache so the picker avoids a ~686KB re-download.
     if not force_refresh:
         disk = _read_openrouter_catalog_disk(allow_stale=cache_only)
         if disk:
@@ -676,8 +675,7 @@ def fetch_openrouter_models(
     if cache_only:
         return list(OPENROUTER_MODELS)
 
-    # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
-    # (tool support, free pricing) is applied on top either way.
+    # Remote catalog manifest, in-repo snapshot fallback; live /v1/models filter applies on top.
     try:
         from hermes_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
@@ -696,18 +694,20 @@ def fetch_openrouter_models(
     if _openrouter_reasoning_caps_cache is None and seeded is not None:
         _openrouter_reasoning_caps_cache = seeded
 
+    from hermes_constants import openrouter_openai_tier_alias
     curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
-    for preferred_id, _ in fallback:
-        live_item = live_by_id.get(preferred_id)
+    for preferred_id, curated_desc in fallback:
+        alias = openrouter_openai_tier_alias(preferred_id)
+        live_item = live_by_id.get(alias[0] if alias else preferred_id)
         # Hide models without tool-calling support — selecting one fails at the first tool call.
         if live_item is None or not _openrouter_model_supports_tools(live_item):
             continue
-        # Hide models that don't advertise tool-calling support — hermes-agent requires it and surfacing
-        # them leads to immediate runtime failures when the user selects them. Ported from
-        # Kilo-Org/kilocode#9068.
+        # Hide models without advertised tool support; selecting them fails at runtime (Kilo-Org/kilocode#9068).
+        # Hermes requires tool calling and surfacing these models leads to immediate failures.
         if preferred_id == silent_default:
             desc = "default"  # keep the silent-default badge through the live refresh
+        elif alias: desc = curated_desc
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))

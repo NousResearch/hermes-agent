@@ -190,6 +190,46 @@ provider_routing:
   require_parameters: true
 ```
 
+## OpenAI Fast/Flex tier aliases
+
+For OpenAI models served by multiple OpenRouter service tiers, Hermes accepts
+`openai/<model>-flex` and `openai/<model>-fast` aliases. They are not separate
+`/models` entries: Hermes rewrites the wire model to `openai/<model>` and pins
+`provider.only` to `openai/flex` or `openai/fast` respectively. For example:
+
+```
+hermes chat --cli --provider openrouter -m openai/gpt-6.1-terra-flex
+```
+
+sends model `openai/gpt-6.1-terra` with `provider.only: ["openai/flex"]`.
+
+This support is for the built-in `openrouter` provider. A custom `providers:` entry
+whose base URL is OpenRouter uses a generic profile and does not apply the rewrite,
+so select `--provider openrouter` when using a tier alias.
+
+Only `openai/*` ids are interpreted. Other vendors use different endpoint tags,
+and some ship real model ids ending in `-fast`, so those are left untouched.
+Malformed (`openai/-flex`), chained (`...-fast-flex`) and routing-variant
+(`...:floor`) ids are also left untouched rather than silently rewritten.
+
+Preference and fallback semantics:
+
+- The tier alias's `only` overrides a conflicting user `only`; other preferences
+  (`ignore`, `order`, `sort`, `require_parameters`, `data_collection`) survive.
+- `ignore: ["openai/flex"]` conflicts with a Flex alias and can leave no eligible
+  endpoint. Do not combine them.
+- Tier pins are exact: `allow_fallbacks` does not expand a one-element `only`
+  pool to standard endpoints. That is intentional — a Flex request is a request
+  for Flex pricing, not "Flex if convenient, otherwise standard price".
+- Fallback models resolve independently; a tier pin does not leak to another
+  model in the fallback chain.
+- Raw `request_overrides` are applied after the profile and can replace the
+  provider object or model. Treat that as an expert escape hatch.
+- Local cost estimates for a tier alias may use the base model's `/models`
+  pricing and therefore overstate Flex cost. OpenRouter bills the endpoint that
+  actually serves the request; check the response `service_tier` and your
+  OpenRouter usage for the charged rate.
+
 ## How It Works
 
 Provider routing preferences are passed to OpenRouter on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.

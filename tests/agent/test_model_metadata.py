@@ -2016,7 +2016,6 @@ class TestOpenRouterRoutingVariantContextLength:
         assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
         assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000
 
-
 def test_endpoint_pricing_already_per_million_is_not_inflated():
     """#112018 / #34256 / #79174: a /models catalog quoting USD per 1M tokens (with or without an explicit
     ``unit``) must reach usage_pricing as per-token rates, so the cost estimate is $0.60/M — not $600,000/M."""

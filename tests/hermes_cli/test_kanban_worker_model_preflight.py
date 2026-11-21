@@ -131,6 +131,8 @@ def test_a_card_without_a_model_takes_the_profiles(profile_model, expected, monk
 @pytest.mark.parametrize("config", [
     {"model": {"provider": "custom", "base_url": "http://127.0.0.1:9/v1"}},
     {"model": {"provider": "openrouter", "base_url": "http://127.0.0.1:8000/v1"}},
+    {"model": {"provider": "lmstudio"}},
+    {"model": {"provider": "llamacpp"}},
     {"model": {"provider": "custom", "base_url": "http://localhost.:8000/v1"}},
     {"model": {"provider": "custom", "base_url": "http://192.168.1.50:8000/v1"}},
     {"model": {"provider": "custom", "base_url": "https://llm.example.test/v1"},
@@ -139,7 +141,7 @@ def test_a_card_without_a_model_takes_the_profiles(profile_model, expected, monk
      "custom_providers": [{"name": "lan", "base_url": "http://192.168.1.50:8000/v1"}]},
     {"model": {"provider": "auto"}},
     {},
-], ids=["custom-loopback", "builtin-loopback", "loopback-trailing-dot", "lan-server", "fallback-chain", "named-lan-entry", "auto", "unset"])
+], ids=["custom-loopback", "builtin-loopback", "builtin-local-default", "managed-llamacpp", "loopback-trailing-dot", "lan-server", "fallback-chain", "named-lan-entry", "auto", "unset"])
 def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp_path, monkeypatch):
     import socket
 
@@ -167,6 +169,23 @@ def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp
     assert task_model(_card(), config) == ("", False)
     assert kanban_launch_policy(_card(reasoning_effort=None), str(tmp_path), config).model == ""
     assert opened == []
+
+
+@pytest.mark.parametrize("model, env_var, url, expected", [
+    ({"provider": "openai"}, "OPENAI_BASE_URL", "http://127.0.0.1:9/v1", ("", False)),
+    ({"provider": "openai-api"}, "OPENAI_BASE_URL", "http://192.168.1.50:8000/v1", ("", False)),
+    ({"provider": "deepseek"}, "DEEPSEEK_BASE_URL", "http://127.0.0.1:9/v1", ("", False)),
+    ({"provider": "openai-api"}, "OPENAI_BASE_URL", "https://proxy.example.test/v1", ("cloud-model", False)),
+    ({"provider": "deepseek", "base_url": "https://api.deepseek.com/v1"}, "DEEPSEEK_BASE_URL", "http://127.0.0.1:9/v1",
+     ("cloud-model", False)),
+], ids=["openai-alias-local", "openai-api-lan", "deepseek-local", "openai-api-public", "yaml-url-wins"])
+def test_a_builtin_providers_own_base_url_variable_decides_locality(model, env_var, url, expected, monkeypatch):
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    monkeypatch.setenv(env_var, url)
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: "cloud-model")
+    assert task_model(_card(), {"model": model}) == expected
 
 
 @pytest.mark.parametrize("profile_model, expected", [

@@ -1,4 +1,4 @@
-name: xai
+name: image-xai
 version: 1.0.0
 description: "xAI image generation backend (grok-imagine-image). Text-to-image."
 author: Julien Talbot

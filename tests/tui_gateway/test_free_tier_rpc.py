@@ -160,3 +160,59 @@ def test_sign_in_offer_is_moot_once_signed_in(guest, monkeypatch):
         _save_auth_store(store)
     assert "nudge_due_in" not in _call("free_tier.status")
     assert _call("free_tier.claim_nudge") == {"claimed": False}
+
+
+def test_status_carries_the_portal_in_app_offer_and_drops_it_once_cleared(guest):
+    """The Portal's campaign (``in_app_offer`` on the account payload) rides the same
+    pure-read status: present while the memo holds it, absent once the Portal stops
+    serving it."""
+    from hermes_cli import in_app_offer
+
+    offer = {
+        "id": "offer_1", "title": "Welcome back", "body": "Here is an offer.",
+        "cta_label": "See the offer", "cta_url": "https://portal.nousresearch.com/billing",
+    }
+    in_app_offer.record_from_account_payload({"in_app_offer": offer})
+    try:
+        assert _call("free_tier.status")["in_app_offer"] == offer
+    finally:
+        in_app_offer.record_from_account_payload({})
+
+    assert "in_app_offer" not in _call("free_tier.status")
+
+
+def test_in_app_offer_refresh_returns_the_fetched_offer_and_is_a_long_handler(guest, monkeypatch):
+    """``in_app_offer.refresh`` is the network leg (status stays a pure read): it runs on the RPC
+    pool, returns the offer the fetch recorded, and omits the key when there is none."""
+    from hermes_cli import in_app_offer
+
+    assert "in_app_offer.refresh" in srv._LONG_HANDLERS
+
+    offer = {
+        "id": "offer_1", "title": "Welcome back", "body": "Here is an offer.",
+        "cta_label": "See the offer", "cta_url": "https://portal.nousresearch.com/billing",
+    }
+    monkeypatch.setattr(in_app_offer, "refresh_from_portal", lambda: dict(offer))
+    assert _call("in_app_offer.refresh") == {"in_app_offer": offer}
+
+    monkeypatch.setattr(in_app_offer, "refresh_from_portal", lambda: None)
+    assert _call("in_app_offer.refresh") == {}
+
+
+def test_in_app_offer_report_forwards_and_never_errors(guest, monkeypatch):
+    """``in_app_offer.report`` is network I/O on the RPC pool, forwards the id and event, and
+    answers ``reported: false`` rather than an error when the report raises."""
+    from hermes_cli import in_app_offer
+
+    assert "in_app_offer.report" in srv._LONG_HANDLERS
+
+    calls = []
+    monkeypatch.setattr(in_app_offer, "report_event", lambda offer_id, event: calls.append((offer_id, event)) or True)
+    assert _call("in_app_offer.report", {"offer_id": "offer_1", "event": "clicked"}) == {"reported": True}
+    assert calls == [("offer_1", "clicked")]
+
+    def boom(offer_id, event):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(in_app_offer, "report_event", boom)
+    assert _call("in_app_offer.report", {"offer_id": "offer_1", "event": "shown"}) == {"reported": False}

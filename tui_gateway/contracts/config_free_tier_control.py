@@ -190,6 +190,20 @@ class FreeTierChallengePayload(OpenModel):
     attempt: int = 0
 
 
+class InAppOfferPayload(OpenModel):
+    """The Nous Portal's campaign offer (``hermes_cli/in_app_offer.py`` memo of the account
+    payload's ``in_app_offer``): copy the client shows in a dismissible dialog, plus the CTA hop.
+    Absent when no campaign matches the account."""
+
+    id: str
+    title: str
+    body: str
+    cta_label: str
+    cta_url: str
+    # ISO instant the offer's promo stops being claimable; absent with no deadline.
+    claimable_until: str | None = None
+
+
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
     ``setup.runtime_check.free_tier_route``'s question."""
@@ -211,6 +225,8 @@ class FreeTierStatusResult(Result):
     nudge_due_in: int | None = None
     # The same for the connector offer: a guest with no trial that has connected an app.
     connector_nudge_due_in: int | None = None
+    # The Portal's in-app campaign for this account, when one is live (``hermes_cli/in_app_offer.py``).
+    in_app_offer: InAppOfferPayload | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -250,6 +266,48 @@ class FreeTierAckNoticeResult(Result):
 
 method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
+
+
+class InAppOfferRefreshResult(Result):
+    # The offer after the fetch, or absent when the Portal serves none (or the profile is signed out).
+    in_app_offer: InAppOfferPayload | None = None
+
+
+method("in_app_offer.refresh", params=ProfileParams, result=InAppOfferRefreshResult,
+       doc="Fetch the Nous account once with the stored token (never refreshing it) and return the "
+           "Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users "
+           "whose sessions never fetch the account.")
+
+
+class InAppOfferReportParams(ProfileParams):
+    offer_id: str
+    event: Literal["shown", "clicked"]
+
+
+class InAppOfferReportResult(Result):
+    # Whether the Portal took the report. False covers signed out, an offer this profile was not
+    # served, and any network failure: the count is best-effort and never an error.
+    reported: bool
+
+
+method("in_app_offer.report", params=InAppOfferReportParams, result=InAppOfferReportResult,
+       doc="Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. "
+           "Uses the stored token as it is (never refreshing it) and only for the offer this "
+           "profile was served.")
+
+
+class InAppOfferDismissParams(ProfileParams):
+    offer_id: str
+
+
+class InAppOfferDismissResult(Result):
+    # False only for a blank id or a failed write; the client keeps its own record either way.
+    dismissed: bool
+
+
+method("in_app_offer.dismiss", params=InAppOfferDismissParams, result=InAppOfferDismissResult,
+       doc="Close the in-app offer for this profile on every surface, so free_tier.status (and the "
+           "dashboard's /api/in-app-offer) stop serving it.")
 
 
 class FreeTierClaimNudgeParams(ProfileParams):

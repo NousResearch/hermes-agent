@@ -138,6 +138,10 @@ export interface Translations {
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
     sharedMetricsSaveFailed?: string;
+    /** Nous Portal in-app offer dialog — optional, English fallback. */
+    inAppOfferBanner?: string;
+    inAppOfferDismiss?: string;
+    inAppOfferClaimBy?: (deadline: string) => string;
   };
 
   // ── System page: Memory section ──

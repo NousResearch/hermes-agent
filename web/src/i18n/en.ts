@@ -122,6 +122,9 @@ export const en: Translations = {
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
+    inAppOfferBanner: "From Nous",
+    inAppOfferDismiss: "Maybe later",
+    inAppOfferClaimBy: (deadline: string) => `Claim by ${deadline}`,
   },
 
   // ── System page: Memory section ──

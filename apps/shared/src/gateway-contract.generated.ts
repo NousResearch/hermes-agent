@@ -681,6 +681,7 @@ export interface FreeTierStatusResult {
   challenge?: FreeTierChallengePayload | null
   nudge_due_in?: number | null
   connector_nudge_due_in?: number | null
+  in_app_offer?: InAppOfferPayload | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -690,6 +691,16 @@ export interface FreeTierChallengePayload {
   expires_in: number
   message: string
   attempt?: number
+  [key: string]: unknown
+}
+/** The Nous Portal's campaign offer (``hermes_cli/in_app_offer.py`` memo of the account payload's ``in_app_offer``): copy the client shows in a dismissible dialog, plus the CTA hop. Absent when no campaign matches the account. */
+export interface InAppOfferPayload {
+  id: string
+  title: string
+  body: string
+  cta_label: string
+  cta_url: string
+  claimable_until?: string | null
   [key: string]: unknown
 }
 export interface FreeTierChallengeResultParams {
@@ -711,6 +722,24 @@ export interface FreeTierProvisionResult {
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
+}
+export interface InAppOfferRefreshResult {
+  in_app_offer?: InAppOfferPayload | null
+}
+export interface InAppOfferReportParams {
+  profile?: string | null
+  offer_id: string
+  event: 'shown' | 'clicked'
+}
+export interface InAppOfferReportResult {
+  reported: boolean
+}
+export interface InAppOfferDismissParams {
+  profile?: string | null
+  offer_id: string
+}
+export interface InAppOfferDismissResult {
+  dismissed: boolean
 }
 export interface FreeTierClaimNudgeParams {
   profile?: string | null
@@ -6573,6 +6602,12 @@ export interface RpcMethods {
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
   /** Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks). */
   'image.render': { params: ImageRenderParams; result: ImageRenderResult }
+  /** Close the in-app offer for this profile on every surface, so free_tier.status (and the dashboard's /api/in-app-offer) stop serving it. */
+  'in_app_offer.dismiss': { params: InAppOfferDismissParams; result: InAppOfferDismissResult }
+  /** Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account. */
+  'in_app_offer.refresh': { params: ProfileParams; result: InAppOfferRefreshResult }
+  /** Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. Uses the stored token as it is (never refreshing it) and only for the offer this profile was served. */
+  'in_app_offer.report': { params: InAppOfferReportParams; result: InAppOfferReportResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -7011,6 +7046,9 @@ export const RPC_METHODS = [
   'image.detach',
   'image.generate',
   'image.render',
+  'in_app_offer.dismiss',
+  'in_app_offer.refresh',
+  'in_app_offer.report',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

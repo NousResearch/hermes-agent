@@ -4463,6 +4463,11 @@ export const esOverrides = {
       retrying: 'Reintentando…'
     }
   },
+  inAppOffer: {
+    dismiss: 'Quizá más tarde',
+    describedBy: 'Un mensaje del equipo de Nous.',
+    claimBy: (deadline: string) => `Canjéalo antes del ${deadline}`
+  },
   modelPicker: {
     title: 'Cambiar modelo',
     current: 'actual:',

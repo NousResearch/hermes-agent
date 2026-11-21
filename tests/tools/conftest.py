@@ -8,9 +8,29 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
+import os
 from unittest.mock import patch
 
 import pytest
+
+
+def pytest_addoption(parser):
+    group = parser.getgroup("V4A oracle fuzz")
+    group.addoption("--oracle-seed", type=int, default=None)
+    group.addoption("--oracle-count", type=int, default=None)
+
+
+def pytest_configure(config):
+    # The hermetic runner does not forward arbitrary environment variables.
+    for option, variable in (
+        ("oracle_seed", "HERMES_PATCH_ORACLE_SEED"),
+        ("oracle_count", "HERMES_PATCH_ORACLE_COUNT"),
+    ):
+        value = config.getoption(option)
+        if value is not None:
+            if value < 0:
+                raise pytest.UsageError(f"--{option.replace('_', '-')} must be nonnegative")
+            os.environ[variable] = str(value)
 
 
 @pytest.fixture(autouse=True)

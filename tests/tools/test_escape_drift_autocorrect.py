@@ -91,7 +91,11 @@ def test_shared_correction_policy_across_tools(workdir, monkeypatch, engine, con
         result = _patch_tool(path=str(target), old_string=old, new_string=new, task_id="t-shared")
     if expected is None:
         assert result.get("success") is not True
-        assert "intentional backslashes" in result["error"]
+        if engine == "v4a":
+            assert "ESCAPE_DRIFT_AMBIGUOUS" in result["error"]
+            assert "intentional backslashes" not in result["error"]
+        else:
+            assert "intentional backslashes" in result["error"]
         assert target.read_text() == content
     else:
         assert result["success"] is True

@@ -167,6 +167,16 @@ def _drop_repeated_recall_lines(text: str) -> str:
     return "\n".join(kept)
 
 
+# The one note text we emit today. Its wording must be covered by a fragment in
+# ``_MEMORY_NOTE_BODY_PATTERNS`` in ``session_rules.turns``; the round-trip test in
+# ``tests/agent/test_memory_context_note.py`` enforces it.
+_MEMORY_CONTEXT_NOTE = (
+    "[System note: The following is recalled memory context, "
+    "NOT new user input. Treat as authoritative reference data — "
+    "this is the agent's persistent memory and should inform all responses.]"
+)
+
+
 def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
@@ -178,9 +188,7 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
+        f"{_MEMORY_CONTEXT_NOTE}\n\n"
         f"{clean}\n"
         "</memory-context>"
     )

@@ -344,12 +344,15 @@ def _request_approval(action: str, args: dict[str, Any]) -> Optional[str]:
     so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
     foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
     """
+    from agent.delegation_context import is_delegated_child_process_context
     from tools.approval import _run_approval_gate
 
     mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
     description = f"Allow computer_use to perform `{action}`?"
     result = _run_approval_gate(
         pattern_key=f"cua:{action}:{mode}", description=description,
+        # Only fixed action and mode labels belong on an external approval surface.
+        desktop_transport_target=None if is_delegated_child_process_context() else f"computer_use: {action} ({mode})",
         display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
         subject=f"computer_use `{action}` requires approval", noun="desktop actions",
         advice="Find an alternative approach that avoids driving the desktop.",
@@ -427,9 +430,9 @@ _ACTIONS: dict[str, _ActionSpec] = {
                                                              f"{args.get('to_element') or args.get('to_coordinate')}{fg}")),
     "scroll": _input(_do_scroll, summarize=lambda a, args, fg: f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{fg}"),
     "type": _input(lambda backend, action, args, **delivery: backend.type_text(args.get("text", ""), **delivery),
-                   summarize=lambda a, args, fg: f"type {args.get('text', '')[:60]!r}" + ("..." if len(args.get("text", "")) > 60 else "") + fg),
+                   summarize=lambda a, args, fg: f"type [text hidden]{fg}"),
     "key": _input(lambda backend, action, args, **delivery: backend.key(args.get("keys", ""), **delivery),
-                  summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}{fg}"),
+                  summarize=lambda a, args, fg: f"key [keys hidden]{fg}"),
     "set_value": _input(lambda backend, action, args, **_: (
         json.dumps({"error": "set_value requires `value`"}) if args.get("value") is None
         else backend.set_value(value=str(args["value"]), element=args.get("element")))),

@@ -283,3 +283,32 @@ class TestPromotion:
         thread._finish("failed", error="boom")
         with pytest.raises(ValueError):
             build_promotion_prompt(thread)
+
+
+class TestThreadCommands:
+    def _done(self, task="find the retry logic", answer="net.py:40"):
+        thread = register_thread("s", task)
+        thread._finish("done", answer=answer)
+        return thread
+
+    def test_promote_latest_returns_the_turn_to_submit(self):
+        from agent.side_thread import run_thread_command
+        thread = self._done()
+        result = run_thread_command("s", parse_btw_args("--promote now fix it"))
+        assert thread.thread_id in result.text
+        assert result.prompt == build_promotion_prompt(thread, "now fix it")
+
+    def test_promote_refusals_submit_nothing(self):
+        from agent.side_thread import run_thread_command
+        assert run_thread_command("s", parse_btw_args("--promote")).prompt == ""
+        running = register_thread("s", "still going")
+        assert run_thread_command("s", parse_btw_args(f"--promote {running.thread_id}")).prompt == ""
+        assert run_thread_command("s", parse_btw_args("--promote btw_000000")).prompt == ""
+
+    def test_stop_and_list(self):
+        from agent.side_thread import run_thread_command
+        running = register_thread("s", "still going")
+        listing = run_thread_command("s", parse_btw_args("--threads")).text
+        assert running.thread_id in listing and "still going" in listing
+        run_thread_command("s", parse_btw_args(f"--stop {running.thread_id}"))
+        assert running.stop_requested

@@ -66,7 +66,16 @@ _DENY_FMT = (
 
 
 class SideThreadUnavailable(RuntimeError):
-    """The session cannot start an exploration thread (no live agent, provider, or capacity)."""
+    """The session cannot start an exploration thread. ``code`` names the ``side_thread.<code>``
+    catalog line a surface shows: ``no_agent``, ``provider`` or ``too_many``."""
+
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(detail or code)
+        self.code = code
+
+    def user_message(self) -> str:
+        from agent.i18n import t
+        return t(f"side_thread.{self.code}", count=MAX_RUNNING_PER_SESSION)
 
 
 @dataclass
@@ -158,8 +167,7 @@ def register_thread(session_id: str, task: str, thread_id: Optional[str] = None)
     with _registry_lock:
         threads = _registry.setdefault(_scope_key(session_id), OrderedDict())
         if sum(1 for t in threads.values() if t.running) >= MAX_RUNNING_PER_SESSION:
-            raise SideThreadUnavailable(
-                f"{MAX_RUNNING_PER_SESSION} side explorations are already running; stop one with /btw --stop <id>")
+            raise SideThreadUnavailable("too_many", f"{MAX_RUNNING_PER_SESSION} side explorations already running")
         threads[thread.thread_id] = thread
         finished = [tid for tid, t in threads.items() if not t.running]
         for tid in finished[: max(0, len(threads) - MAX_THREADS_PER_SESSION)]:
@@ -251,17 +259,6 @@ def _tool_names(messages: list[dict[str, Any]]) -> list[str]:
     return names
 
 
-def _refusal(parent_agent: Any) -> Optional[str]:
-    """Why the parent's runtime cannot run a tool-using fork, or None."""
-    from agent.side_question_request import _agent_provider_refusal
-    reason = _agent_provider_refusal(parent_agent)
-    if reason == "moa":
-        return "the session runs a mixture-of-agents model"
-    if reason == "agent_provider":
-        return "the session's provider runs its own tools"
-    return None
-
-
 def run_side_exploration(
     thread: SideThread, parent_agent: Any, history: Optional[list[dict[str, Any]]], *,
     on_progress: Optional[Callable[[str], None]] = None,
@@ -276,6 +273,7 @@ def run_side_exploration(
         release_cache_parity_fork,
     )
     from agent.side_question import _side_question_task_config, trim_snapshot_for_fork
+    from agent.side_question_request import _agent_provider_refusal
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
     from tools.skills_tool import bind_turn_secret_capture
 
@@ -287,14 +285,16 @@ def run_side_exploration(
             except Exception:
                 logger.debug("side exploration progress callback failed", exc_info=True)
 
-    try:
-        if parent_agent is None:
-            raise SideThreadUnavailable("no live agent for this conversation yet; send a message first")
-        if (refusal := _refusal(parent_agent)) is not None:
-            raise SideThreadUnavailable(f"side exploration is unavailable: {refusal}")
-    except SideThreadUnavailable as exc:
-        thread._finish("failed", error=str(exc))
-        raise
+    # MoA fans out to advisors and an agent-as-provider runs its own tools remotely: neither can
+    # be held to a dispatch-side whitelist.
+    refusal = None
+    if parent_agent is None:
+        refusal = SideThreadUnavailable("no_agent", "no live parent agent")
+    elif (reason := _agent_provider_refusal(parent_agent)) is not None:
+        refusal = SideThreadUnavailable("provider", reason)
+    if refusal is not None:
+        thread._finish("failed", error=refusal.user_message())
+        raise refusal
 
     task_cfg = _side_question_task_config()
     allowed, max_iterations = explore_settings(task_cfg)
@@ -381,22 +381,21 @@ def format_thread_line(thread: SideThread) -> str:
 
 
 def format_thread_list(threads: list[SideThread]) -> str:
+    from agent.i18n import t
     if not threads:
-        return "No side explorations in this conversation. Start one with /btw --explore <task>."
-    lines = ["Side explorations:", *(f"  {format_thread_line(t)}" for t in threads),
-             "Promote a finished one with /btw --promote <id> [note]."]
-    return "\n".join(lines)
+        return t("side_thread.list_empty")
+    return "\n".join([t("side_thread.list_header"), *(f"  {format_thread_line(th)}" for th in threads),
+                      t("side_thread.list_hint")])
 
 
 def format_report(thread: SideThread) -> str:
-    """The thread's report as shown on the surface that started it."""
-    body = thread.answer or ("(stopped before reporting)" if thread.status == "stopped" else "(no report)")
-    footer = [f"{thread.thread_id} · {thread.status} · {int(thread.elapsed)}s"]
-    if thread.tool_calls:
-        footer.append(_tool_tally(thread.tool_calls))
-    footer_text = " · ".join(footer)
-    hint = f"Promote it into the conversation with /btw --promote {thread.thread_id}" if thread.answer else ""
-    return "\n\n".join(part for part in (body, footer_text, hint) if part)
+    """The thread's report body as the surface that started it shows it: the answer, a
+    ``btw_ab12cd · done · 42s · read_file ×2`` footer, and the promotion hint."""
+    from agent.i18n import t
+    footer = " · ".join(part for part in (
+        thread.thread_id, thread.status, f"{int(thread.elapsed)}s", _tool_tally(thread.tool_calls)) if part)
+    hint = t("side_thread.promote_hint", thread_id=thread.thread_id) if thread.answer else ""
+    return "\n\n".join(part for part in (thread.answer, footer, hint) if part)
 
 
 def build_promotion_prompt(thread: SideThread, note: str = "") -> str:
@@ -419,6 +418,42 @@ def build_promotion_prompt(thread: SideThread, note: str = "") -> str:
     note = (note or "").strip()
     lines.append(note if note else "Take these findings into account for the work in this conversation.")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class ThreadCommandResult:
+    """What ``/btw --threads|--stop|--promote`` produced: ``text`` to show and, for a promotion,
+    the ``prompt`` the surface submits as the next user turn (queued behind a busy agent)."""
+
+    text: str
+    prompt: str = ""
+
+
+def run_thread_command(session_id: str, request: "BtwRequest") -> ThreadCommandResult:
+    """The surface-neutral half of ``/btw`` thread management; surfaces only render the result
+    and, for ``promote``, submit ``prompt`` on their normal turn path."""
+    from agent.i18n import t
+
+    if request.action == "list":
+        return ThreadCommandResult(format_thread_list(list_threads(session_id)))
+    if request.action not in {"stop", "promote"}:
+        raise ValueError(f"not a thread command: {request.action}")
+    thread = find_thread(session_id, request.ref)
+    if thread is None:
+        if request.ref:
+            return ThreadCommandResult(t("side_thread.not_found", ref=request.ref))
+        if request.action == "promote":
+            return ThreadCommandResult(t("side_thread.none_finished"))
+        return ThreadCommandResult(format_thread_list(list_threads(session_id)))
+    if request.action == "stop":
+        key = "side_thread.stopping" if thread.stop() else "side_thread.already_finished"
+        return ThreadCommandResult(t(key, thread_id=thread.thread_id))
+    if thread.running:
+        return ThreadCommandResult(t("side_thread.still_running", thread_id=thread.thread_id))
+    if not thread.answer:
+        return ThreadCommandResult(t("side_thread.no_report", thread_id=thread.thread_id))
+    return ThreadCommandResult(t("side_thread.promoted", thread_id=thread.thread_id),
+                               build_promotion_prompt(thread, request.text))
 
 
 # ── /btw argument parsing (one parser; every surface only renders) ───────────────────────────

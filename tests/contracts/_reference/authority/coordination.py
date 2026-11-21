@@ -241,6 +241,14 @@ class InMemoryCoordinationRepository(SubagentRecords, DelegationLedger, Obligati
         row = self._table("coord_turn_leases").get(self._key(str(session_id)))
         return float(row[1]) if row is not None and row[0] == holder else None
 
+    def session_turn_leases(self, *, session_id: SessionId) -> tuple[tuple[str, float], ...]:
+        """Read-only, oldest expiry first; no sweep: a caller deciding whether a lost turn's
+        owner can still be alive must see the row the dead holder left behind."""
+        if not session_id:
+            return ()
+        row = self._table("coord_turn_leases").get(self._key(str(session_id)))
+        return ((row[0], float(row[1])),) if row is not None else ()
+
     # ── hygiene streak ───────────────────────────────────────────────────
 
     def increment_hygiene_failure_streak(self, *, session_key: str) -> int:

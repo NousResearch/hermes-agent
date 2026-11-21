@@ -437,6 +437,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_PASSWORD` | Password or app password for the email account |
 | `EMAIL_IMAP_HOST` | IMAP hostname for the email adapter |
 | `EMAIL_IMAP_PORT` | IMAP port |
+| `EMAIL_IMAP_FOLDER` | IMAP mailbox to poll (default: `INBOX`) |
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
 | `EMAIL_SMTP_PORT` | SMTP port |
 | `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot |

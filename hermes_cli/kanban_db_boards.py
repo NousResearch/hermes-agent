@@ -10,10 +10,60 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
+from typing import Callable
 from typing import Optional
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
+
+# Directory moves/deletes on Windows fail while any file inside is still open.
+# The gateway process holds each board's ``kanban.db`` (+ ``-wal``/``-shm``)
+# open, and the handle is routinely released between requests, so a couple of
+# short retries clear the common case. The delay is a module constant so tests
+# can zero it instead of sleeping on the wall clock.
+_DIR_OP_ATTEMPTS = 3
+_DIR_OP_RETRY_DELAY_S = 0.15
+
+
+def _locked_dir_message(slug: str, action: str, exc: OSError) -> str:
+    """Actionable replacement for the bare ``PermissionError`` (#143908)."""
+    return (
+        f"could not {action} board {slug!r}: {exc}. "
+        "The board directory is locked by another process — on Windows the Hermes "
+        "gateway keeps kanban.db (and its -wal/-shm files) open. Run "
+        "`hermes gateway restart`, then try again."
+    )
+
+
+def _retry_locked_dir_op(slug: str, action: str, op: Callable[[], Any]) -> Any:
+    """Run a whole-directory op (``rename``/``rmtree``), retrying a locked dir.
+
+    A concurrent reader inside the gateway holds ``kanban.db`` open, so the move
+    raises ``PermissionError`` (WinError 5/32) instead of succeeding. Retry
+    briefly, then translate the final failure into ``ValueError`` — the API layer
+    maps that to 400 with this message, where a ``PermissionError`` escaped as an
+    opaque 500 and archived nothing. Durable fix (not done here): have the
+    gateway park/close its per-board connections before a board is removed.
+    """
+    for attempt in range(1, _DIR_OP_ATTEMPTS + 1):
+        try:
+            return op()
+        except PermissionError as exc:
+            if attempt >= _DIR_OP_ATTEMPTS:
+                _log.error(
+                    "kanban: could not %s board %r after %d attempts: %s",
+                    action, slug, attempt, exc,
+                    exc_info=True,
+                )
+                raise ValueError(_locked_dir_message(slug, action, exc)) from exc
+            _log.warning(
+                "kanban: %s of board %r blocked by a locked file (attempt %d/%d): %s",
+                action, slug, attempt, _DIR_OP_ATTEMPTS, exc,
+            )
+            time.sleep(_DIR_OP_RETRY_DELAY_S)
 
 
 def _dir_holds_board(d: Path) -> bool:
@@ -174,7 +224,7 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():  # rapid double-archive
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        _retry_locked_dir_op(normed, "archive", lambda: d.rename(target))
         # Leave an ``archived`` tombstone at the original slug. Stale dashboard
         # tabs / gateway pollers can keep calling connect(board=slug) after the
         # archive; without a marker the resurrect-guard cannot tell an archived
@@ -191,7 +241,7 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         )
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     import shutil
-    shutil.rmtree(d)
+    _retry_locked_dir_op(normed, "delete", lambda: shutil.rmtree(d))
     return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

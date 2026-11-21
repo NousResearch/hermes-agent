@@ -41,7 +41,6 @@ OVERPASS_URLS = [
 ]
 # Backward-compat alias for any caller that imports OVERPASS_API directly.
 OVERPASS_API      = OVERPASS_URLS[0]
-OSRM_BASE         = "https://router.project-osrm.org/route/v1"
 TIMEAPI_BASE      = "https://timeapi.io/api/timezone/coordinate"
 
 # Seconds to sleep between Nominatim requests (ToS requirement)
@@ -136,10 +135,11 @@ def _tags_for(category):
         return list(entry)
     return [entry]
 
-OSRM_PROFILES = {
-    "driving": "driving",
-    "walking": "foot",
-    "cycling": "bike",
+# OSRM selects the routing graph by server instance.
+OSRM_ROUTE_URLS = {
+    "driving": "https://router.project-osrm.org/route/v1/driving",
+    "walking": "https://routing.openstreetmap.de/routed-foot/route/v1/driving",
+    "cycling": "https://routing.openstreetmap.de/routed-bike/route/v1/driving",
 }
 
 # ---------------------------------------------------------------------------
@@ -689,16 +689,15 @@ def cmd_distance(args):
     destination_query = " ".join(args.to)
     mode              = args.mode.lower()
 
-    if mode not in OSRM_PROFILES:
-        error_exit(f"Invalid mode '{mode}'. Choose from: {', '.join(OSRM_PROFILES)}")
+    if mode not in OSRM_ROUTE_URLS:
+        error_exit(f"Invalid mode '{mode}'. Choose from: {', '.join(OSRM_ROUTE_URLS)}")
 
     # Geocode origin and destination
     o_lat, o_lon, o_name = geocode_single(origin_query)
     d_lat, d_lon, d_name = geocode_single(destination_query)
 
-    profile = OSRM_PROFILES[mode]
     url = (
-        f"{OSRM_BASE}/{profile}/"
+        f"{OSRM_ROUTE_URLS[mode]}/"
         f"{o_lon},{o_lat};{d_lon},{d_lat}"
         f"?overview=false&steps=false"
     )
@@ -776,16 +775,15 @@ def cmd_directions(args):
     destination_query = " ".join(args.to)
     mode              = args.mode.lower()
 
-    if mode not in OSRM_PROFILES:
-        error_exit(f"Invalid mode '{mode}'. Choose from: {', '.join(OSRM_PROFILES)}")
+    if mode not in OSRM_ROUTE_URLS:
+        error_exit(f"Invalid mode '{mode}'. Choose from: {', '.join(OSRM_ROUTE_URLS)}")
 
     # Geocode origin and destination
     o_lat, o_lon, o_name = geocode_single(origin_query)
     d_lat, d_lon, d_name = geocode_single(destination_query)
 
-    profile = OSRM_PROFILES[mode]
     url = (
-        f"{OSRM_BASE}/{profile}/"
+        f"{OSRM_ROUTE_URLS[mode]}/"
         f"{o_lon},{o_lat};{d_lon},{d_lat}"
         f"?overview=false&steps=true"
     )
@@ -1194,7 +1192,7 @@ def build_parser():
     p_dist.add_argument(
         "--mode", "-m",
         default="driving",
-        choices=list(OSRM_PROFILES.keys()),
+        choices=list(OSRM_ROUTE_URLS.keys()),
         help="Travel mode (default: driving).",
     )
 
@@ -1219,7 +1217,7 @@ def build_parser():
     p_dir.add_argument(
         "--mode", "-m",
         default="driving",
-        choices=list(OSRM_PROFILES.keys()),
+        choices=list(OSRM_ROUTE_URLS.keys()),
         help="Travel mode (default: driving).",
     )
 

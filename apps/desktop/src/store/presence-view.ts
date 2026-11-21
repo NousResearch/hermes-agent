@@ -66,7 +66,8 @@ const MAIN_CHAT_PANE = 'workspace'
 
 /** Whether the chat on this window's route is the tab in front. Another tab of its zone (a second
  *  conversation, a preview, a tool) can cover it, and its zone can be minimized or collapsed, while
- *  the route and the main session stay the same. Without a layout that places the chat, nothing can. */
+ *  the route and the main session stay the same. With no layout tree, or no zone holding the chat,
+ *  nothing covers it, so it counts as in front. */
 export function mainChatShowing(): boolean {
   const tree = $layoutTree.get()
 

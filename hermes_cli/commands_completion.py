@@ -462,6 +462,10 @@ class SlashCommandCompleter(Completer):
             if cmd_name.startswith(word):
                 yield _cmd_completion(cmd_name, f"🔌 {desc or 'Plugin command'}")
 
+        for cmd_name, desc in self._quick_commands().items():
+            if cmd_name.startswith(word):
+                yield _cmd_completion(cmd_name, f"⚡ {desc}")
+
     def _plugin_commands(self) -> Mapping[str, str]:
         """``{name: description}``: the provider's (the classic CLI asks its gateway), else, when it
         has none (None), this process's plugin registry."""
@@ -473,6 +477,34 @@ class SlashCommandCompleter(Completer):
             return found
         except Exception:  # a plugin's registry or the gateway call must never break typing
             logging.getLogger(__name__).debug("plugin command completion unavailable", exc_info=True)
+            return {}
+
+    def _quick_commands(self) -> Mapping[str, str]:
+        """``{name: description}`` for config-backed quick commands (``exec`` / ``alias``).
+
+        Best-effort: a missing/unreadable config or a malformed entry must never
+        break typing, mirroring ``_plugin_commands``. The description falls back to
+        the underlying command/target and is truncated to keep the menu readable.
+        """
+        try:
+            from hermes_cli.config import load_config_readonly
+            qcmds = (load_config_readonly() or {}).get("quick_commands", {}) or {}
+            found: dict[str, str] = {}
+            for qname, qc in sorted(qcmds.items()):
+                if not isinstance(qc, dict):
+                    continue
+                qtype = qc.get("type", "")
+                if qtype == "exec":
+                    default_desc = f"exec: {qc.get('command', '')}"
+                elif qtype == "alias":
+                    default_desc = f"alias → {qc.get('target', '')}"
+                else:
+                    default_desc = qtype or "quick command"
+                desc = str(qc.get("description") or default_desc)
+                found[qname] = desc[:50] + ("..." if len(desc) > 50 else "")
+            return found
+        except Exception:  # an unreadable config must never break typing
+            logging.getLogger(__name__).debug("quick command completion unavailable", exc_info=True)
             return {}
 
 

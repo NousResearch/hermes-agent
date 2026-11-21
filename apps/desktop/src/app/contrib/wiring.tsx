@@ -121,7 +121,6 @@ import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import {
   CRON_ROUTE,
   navigateToWorkspacePage,
-  routeSessionId,
   sessionRoute,
   SETTINGS_ROUTE,
   syncWorkspaceRoute
@@ -173,6 +172,7 @@ import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
+import { useRouteRefs } from './hooks/use-route-refs'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
@@ -353,20 +353,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
 
-  const routedSessionId = routeSessionId(location.pathname)
-  const routedSessionIdRef = useRef(routedSessionId)
-
-  routedSessionIdRef.current = routedSessionId
-  const routeToken = `${location.pathname}:${location.search}:${location.hash}`
-  const routeTokenRef = useRef(routeToken)
-  routeTokenRef.current = routeToken
-  const getRouteToken = useCallback(() => routeTokenRef.current, [])
-
-  const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
+  const { getRouteToken, getRoutedStoredSessionId, routedSessionId, routedSessionIdRef } = useRouteRefs(location)
 
   const clearRoutedSessionIntent = useCallback(() => {
     routedSessionIdRef.current = null
-  }, [])
+  }, [routedSessionIdRef])
 
   // Point the workspace at the route: the pane contribution re-registers
   // headerVeto from $workspaceIsPage (so the main zone's tab bar stands down
@@ -548,6 +539,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     branchStoredSession,
     createBackendSessionForSend,
     openNewSessionTile,
+    openSideChat,
     removeSession,
     resumeSession,
     selectSidebarItem,
@@ -719,6 +711,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     activeSessionId,
     activeSessionIdRef,
     branchCurrentSession: branchInNewChat,
+    openSideChat,
     busyRef,
     createBackendSessionForSend,
     getRoutedStoredSessionId,

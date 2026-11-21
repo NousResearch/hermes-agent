@@ -82,6 +82,12 @@ commandcode = CommandCodeProfile(
         "moonshotai/Kimi-K2.6", "zai-org/GLM-5.1", "MiniMaxAI/MiniMax-M2.7", "stepfun/Step-3.5-Flash",
         "xiaomi/mimo-v2.5-pro", "google/gemini-3.5-flash", "gpt-5.5",
     ),
+    # The endpoint implements only ``json_object``; a ``json_schema`` request is a
+    # guaranteed HTTP 400 ("Supported formats: json_object"), observed on the
+    # ``z-ai/glm-*`` models. Auxiliary calls (titles, compression summaries) then
+    # log a failure and retry without the schema — declaring it here lets them
+    # omit the field up front. Same shape as the DeepSeek profile.
+    unsupported_response_formats=("json_schema",),
     default_aux_model="deepseek/deepseek-v4-flash",
 )
 

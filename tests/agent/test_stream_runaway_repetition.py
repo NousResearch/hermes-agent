@@ -48,8 +48,10 @@ _LOOP_BUDGET = 100_000
 class _FakeEndpoint:
     """Local endpoint streaming one reply per request, on the chat or the Anthropic wire."""
 
-    def __init__(self, channel: str, text: str, *, endless: bool, prefix: str = "") -> None:
+    def __init__(self, channel: str, text: str, *, endless: bool, prefix: str = "",
+                 finish_reason: str = "stop", tool_args: str | None = None) -> None:
         self.channel, self.text, self.endless, self.prefix = channel, text, endless, prefix
+        self.finish_reason, self.tool_args = finish_reason, tool_args
         self.requests = 0
         self._stop = threading.Event()
         endpoint = self
@@ -112,13 +114,16 @@ class _FakeEndpoint:
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
             }) + "\n\n"
 
-        for n, piece in enumerate(self._pieces()):
+        if self.tool_args is not None:  # one streamed tool call whose arguments stop where the server cut
+            yield chunk({"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {
+                "name": "terminal", "arguments": self.tool_args}}]})
+        for n, piece in enumerate(self._pieces() if self.tool_args is None else ()):
             if self.channel == _LOOP_BEHIND_DETAILS:
                 yield chunk({"reasoning_content": piece, "reasoning_details": [
                     {"type": "reasoning.text", "text": f"Step {n}: weighing option {n * 7919}. ", "index": 0}]})
             else:
                 yield chunk({field: piece})
-        yield chunk({}, "stop")
+        yield chunk({}, self.finish_reason)
         yield "data: [DONE]\n\n"
 
     def _anthropic_frames(self):
@@ -153,8 +158,10 @@ def endpoint(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     started = []
 
-    def start(channel: str, text: str, *, endless: bool, prefix: str = "") -> _FakeEndpoint:
-        started.append(_FakeEndpoint(channel, text, endless=endless, prefix=prefix))
+    def start(channel: str, text: str, *, endless: bool, prefix: str = "", finish_reason: str = "stop",
+              tool_args: str | None = None) -> _FakeEndpoint:
+        started.append(_FakeEndpoint(channel, text, endless=endless, prefix=prefix, finish_reason=finish_reason,
+                                     tool_args=tool_args))
         return started[-1]
 
     yield start
@@ -162,12 +169,12 @@ def endpoint(monkeypatch):
         server.close()
 
 
-def _run_turn(server: _FakeEndpoint, api_mode: str) -> dict:
+def _run_turn(server: _FakeEndpoint, api_mode: str, toolsets: tuple[str, ...] = ()) -> dict:
     from run_agent import AIAgent
 
     agent = AIAgent(
         model="fixture-local", provider="custom", base_url=server.url, api_key="fixture", api_mode=api_mode,
-        quiet_mode=True, skip_memory=True, skip_context_files=True, enabled_toolsets=[], max_iterations=3,
+        quiet_mode=True, skip_memory=True, skip_context_files=True, enabled_toolsets=list(toolsets), max_iterations=3,
     )
     outcome: dict = {}
 
@@ -221,3 +228,21 @@ def test_repetitive_but_legitimate_stream_is_delivered(endpoint, text):
 
     assert result["completed"] is True
     assert result["final_response"] == text.strip()
+
+
+@pytest.mark.parametrize(("finish_reason", "tool_args"), [
+    ("repetition", None), ("repeat", None),
+    # Cut inside the arguments' JSON string: stream assembly rewrites the finish reason to "length".
+    ("repeat", '{"command": "echo again; echo again; echo again; echo ag'),
+], ids=["repetition-text", "repeat-text", "repeat-mid-tool-args"])
+def test_provider_flagged_repetition_is_not_delivered(endpoint, finish_reason, tool_args):
+    """A server-side loop detector (vLLM ``repetition``, Kimi ``repeat``) ends the request itself.
+    The reply is short enough to pass every client-side scale check, so only the flag says it looped."""
+    server = endpoint("content", _ASKED_FOR_REPEAT, endless=False, finish_reason=finish_reason, tool_args=tool_args)
+
+    result = _run_turn(server, "chat_completions", ("terminal",) if tool_args else ())
+
+    assert (result["completed"], result["failure_reason"]) == (False, "truncated")
+    assert "Repetition Detected" in result["final_response"]
+    assert server.requests == 1
+    assert not any(_ASKED_FOR_REPEAT[:40] in json.dumps(m) for m in result["messages"])

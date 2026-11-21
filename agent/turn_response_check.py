@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.prompt_cache_lifecycle import start_prompt_cache_warming
+from agent.repetition_guard import PROVIDER_REPETITION_FINISH_REASONS
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
@@ -79,6 +80,11 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
         return transport.response_finish_reason(response)
     normalized = transport.normalize_response(response)  # Bedrock already normalized at dispatch
     finish_reason = normalized.finish_reason
+    if finish_reason in PROVIDER_REPETITION_FINISH_REASONS:
+        # The provider cut a repetition loop: hand it to the length path's runaway stop, which
+        # ends the turn before any continuation or tool call from the looped reply runs.
+        response._runaway_repetition = True
+        return "length"
     if agent.api_mode != "bedrock_converse" and agent._should_treat_stop_as_truncated(
         finish_reason, normalized, messages
     ):

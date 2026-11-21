@@ -136,6 +136,12 @@ def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str
         return
     first_shown_idx = len(all_prior) - len(shown) + 1
     lines.append("## Prior attempts on this task")
+    lines.append(
+        "Before retrying, inspect and verify existing work against the task's requested outcome. "
+        "Reuse completed work, continue what remains, and record completion if the full outcome "
+        "is already satisfied."
+    )
+    lines.append("")
     if omitted_note:
         lines.append(omitted_note)
     for offset, run in enumerate(shown):

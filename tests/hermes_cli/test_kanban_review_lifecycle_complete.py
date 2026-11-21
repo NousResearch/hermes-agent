@@ -423,19 +423,14 @@ def test_dispatcher_sweeps_survive_iso_text_timestamps(conn, monkeypatch) -> Non
 
 def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
     """SQLite sorts TEXT above every INTEGER, so ISO stamps (#97455) must not pass
-    the guards' SQL windows by type: an old ISO success does not hold a card, an
-    old ISO PR comment does not either, and an ISO handoff OLDER than an int PR
-    comment does not lift ``active_pr``."""
-    now, iso = int(time.time()), _iso
+    the guards' SQL windows by type: an old ISO success does not hold a card,
+    and an old ISO re-queue does not lift a recent success."""
+    iso = _iso
 
     def card(title):
         task_id = kb.create_task(conn, title=title, assignee="dev")
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         return task_id
-
-    def comment(task_id, at):
-        conn.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'dev', ?, ?)",
-                     (task_id, "opened https://github.com/o/r/pull/1", at))
 
     old_success = card("old success")
     kb.claim_task(conn, old_success)
@@ -450,13 +445,13 @@ def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
     assert kbd.check_respawn_guard(conn, old_success) == "recent_success"  # a readable recent ISO still holds
 
     with kb.write_txn(conn):
-        old_pr, guarded = card("old pr"), card("guarded")
-        comment(old_pr, iso(90 * 86400))
-        comment(guarded, now - 60)
-        conn.execute("INSERT INTO task_events (task_id, kind, payload, created_at) VALUES "
-                     "(?, 'assigned', '{\"assignee\": \"ops\", \"from\": \"dev\"}', ?)", (guarded, iso(7200)))
-    assert kbd.check_respawn_guard(conn, old_pr) is None
-    assert kbd.check_respawn_guard(conn, guarded) == "active_pr"
+        conn.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES (?, 'unblocked', ?)",
+                     (old_success, iso(7200)))
+    assert kbd.check_respawn_guard(conn, old_success) == "recent_success"
+    with kb.write_txn(conn):
+        conn.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES (?, 'unblocked', ?)",
+                     (old_success, iso(5)))
+    assert kbd.check_respawn_guard(conn, old_success) is None
 
 
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:

@@ -15,12 +15,14 @@ import pytest
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR,
+    RUNTIME_OVERHEAD_BYTES,
     SPEED_FLOOR_TOK_S,
     WindowDecision,
     growth_decision,
     initial_window,
     ladder,
     launch_args,
+    plan_launch,
     recurrent_spill_blocks,
     spill_overrides,
     ub_logits_bytes,
@@ -436,3 +438,64 @@ def test_kv_scale_prices_mtp_draft_context():
     # The safety direction: the estimate must never be BELOW measured.
     # (Calibration receipts: predicted-measured was +233..+1400 MiB.)
     assert scaled > base
+
+# ── MTP posture choice when the model spills in BOTH postures ─────
+
+
+def test_spilled_mtp_keeps_the_prefill_microbatch():
+    """Regression: an MTP model whose weights alone exceed the card spills in
+    BOTH postures, so demanding the stacked posture be resident denied it the
+    large microbatch forever. launch_args then emitted no -b/-ub at all and the
+    child silently fell back to llama.cpp's default 512 — the slowest prefill
+    posture, while a non-MTP sibling on the same box correctly got -ub 2048.
+
+    Receipts on an 8 GiB card / 22 GiB MoE at the 64K floor: 422 tok/s lean vs
+    735-858 tok/s stacked, identical KV and window (spill bytes equal in both).
+    """
+    prof = replace(moe(weights_gib=21, per_token_f16=2048, layers=41,
+                       native=256 * 1024), n_vocab=248320, kv_scale=1.2)
+    plan = plan_launch(prof, card(6), mtp_capable=True)
+    assert not isinstance(plan.decision, PhysicsRefusal)
+    assert plan.mtp_prefill is True, "stacking is free when the lean posture spills too"
+
+    args = launch_args(prof, plan.decision, mtp_capable=True, mtp_prefill=plan.mtp_prefill)
+    assert args[args.index("-ub") + 1] == "2048"
+    assert args[args.index("-b") + 1] == "4096"
+    assert args[args.index("-c") + 1] == str(plan.decision.window)
+
+
+def test_chosen_posture_never_costs_window_versus_the_other(card_budget=None):
+    """The guard's stated intent, as a plain invariant over several profiles and
+    cards: whichever posture wins must never grant a SMALLER window than the
+    loser. True of the old code and the new — this pins the property the fix had
+    to preserve, not the bug itself.
+    """
+    for handles, budget in ((moe(weights_gib=21, per_token_f16=2048, layers=41,
+                                 native=256 * 1024), card(6)),
+                            (moe(weights_gib=1, per_token_f16=2048, layers=41,
+                                 native=1024 * 1024), card(4)),
+                            (moe(weights_gib=17), card(24)),
+                            (dense(weights_gib=20), card(6))):
+        prof = replace(handles, n_vocab=248320)
+        lean = initial_window(prof, budget, overhead_bytes=RUNTIME_OVERHEAD_BYTES)
+        stacked = initial_window(
+            prof, budget,
+            overhead_bytes=RUNTIME_OVERHEAD_BYTES
+            + ub_logits_bytes(prof.n_vocab, mtp_capable=True, mtp_prefill=True))
+        if isinstance(lean, PhysicsRefusal) or isinstance(stacked, PhysicsRefusal):
+            continue
+        plan = plan_launch(prof, budget, mtp_capable=True)
+        if isinstance(plan.decision, PhysicsRefusal):
+            continue
+        chosen = stacked.window if plan.mtp_prefill else lean.window
+        assert chosen >= min(lean.window, stacked.window), (
+            f"{prof.name}: posture choice cost window "
+            f"(chosen {chosen}, lean {lean.window}, stacked {stacked.window})")
+
+
+def test_resident_mtp_still_takes_the_stacked_posture():
+    """Pre-existing behaviour must not regress: a model that fits takes stacked."""
+    prof = replace(moe(weights_gib=2, per_token_f16=1000, layers=8,
+                       native=64 * 1024), n_vocab=248320)
+    plan = plan_launch(prof, card(48), mtp_capable=True)
+    assert plan.mtp_prefill is True

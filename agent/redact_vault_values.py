@@ -53,14 +53,23 @@ def clear_vault_redaction_values() -> None:
         _VAULT_REDACTION_VALUES.pop(_vault_scope(), None)
 
 
+REDACTED_VAULT_VALUE = "«redacted-vault-secret»"
+
+
+def registered_vault_values() -> tuple[str, ...]:
+    """The current profile's registered vault values, longest first."""
+    if not _VAULT_REDACTION_VALUES:
+        return ()
+    with _VAULT_REDACTION_LOCK:
+        bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
+        return tuple(sorted(bucket, key=len, reverse=True)) if bucket else ()
+
+
 def redact_registered_vault_values(text: str) -> str:
     """Exact-substring scrub of every vault secret value registered for the current profile."""
     if not isinstance(text, str) or not text:
         return text
-    with _VAULT_REDACTION_LOCK:
-        bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
-        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
-    for value in values:
+    for value in registered_vault_values():  # longest first: a substring never shadows its superstring
         if value in text:
-            text = text.replace(value, "«redacted-vault-secret»")
+            text = text.replace(value, REDACTED_VAULT_VALUE)
     return text

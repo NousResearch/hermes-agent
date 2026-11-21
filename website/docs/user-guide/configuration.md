@@ -3175,9 +3175,21 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, credential stores such as `~/.aws/credentials`, `~/.aws/config`, `.netrc` (`_netrc`), `.pgpass`, `.npmrc`, `.pypirc` and `.git-credentials`, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) and the password field of those credential stores with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- **Your own `.env` values** are also masked by exact value, whatever they look like, while `redact_secrets` is on: each value in the active profile's `.env` that is secret-named (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*PASSWORD`, …), credential-shaped or multi-line becomes `«redacted-secret»` in logs, tool output, `hermes debug share` and replies sent to chats (streamed replies hold back a value's first characters until it can be masked whole). Values shorter than 12 characters and plain words or hostnames under a secret name (`AUTH_MODE=password`) are never registered, and only a whole value is masked. Values are resolved as the runtime sees them (`${VAR:-default}` expanded, quoted multi-line values whole). Values are read from the active profile only, so one profile's secrets never mask, or reveal, text in another profile's output. Values applied from [external secret sources](secrets/index.md) are masked the same way, and stay masked even with `redact_secrets: false`.
 - `redact_phone_numbers` — when `true` (default), phone numbers in E.164 form (`+15551234567`) are masked (`+155****4567`) in the agent's replies and in everything the gateway sends to a chat platform, even with `redact_secrets: false`. Set it to `false` on a trusted single-operator setup whose assistant must show exact phone numbers (a contact list, a call log). Only E.164 numbers are affected: API keys, bot tokens, bearer tokens, passwords and every other secret pattern stay masked in chat, and logs and tool output keep masking phone numbers. Any value other than `true` or `false` keeps them masked and logs a warning.
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
+
+### Refusing to attach files that hold a secret
+
+```yaml
+gateway:
+  refuse_secret_files: false   # true: never attach a file containing one of this profile's secret values
+```
+
+With `refuse_secret_files: true`, the gateway will not deliver a file (a `MEDIA:` tag, a bare file path in a reply, a `send_message` attachment, a cron or `hermes send` attachment) whose bytes contain one of the active profile's `.env` secret values or applied secret-source values, the same set the exact-value redaction above masks. The file is dropped with the usual "denied by the delivery policy" log line naming the file, never the value. Files over 16 MB are not scanned. Off by default.
+
+This prevents accidents, such as attaching a debug log, a config dump or a copied `.env` that carries a live key. It is not a security boundary: the agent can still read the file with its terminal (its output is then redacted as above). Project `.env` / `.envrc` files are never delivered, with or without this setting.
 
 ## Website Blocklist
 

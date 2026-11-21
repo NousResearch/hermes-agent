@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
 from agent.message_metadata import stamp_message_timestamp
-from agent.redact_secret_sources import redact_secret_source_values
+from agent.redact_env_values import env_masking_enabled, redact_exact_secret_values
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     tool_may_have_side_effect,
@@ -417,14 +417,16 @@ def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _redact_secret_source_content(content: Any) -> Any:
-    """Scrub applied secret-source values from a result's text before it becomes provider context:
-    not every tool runs its output through ``redact_sensitive_text`` (MCP, web, plugin tools)."""
+    """Scrub the profile's exact secret values (vault, secret sources, and ``.env`` under
+    ``redact_secrets``) from a result's text before it becomes provider context: not every tool runs
+    its output through ``redact_sensitive_text`` (MCP, web, plugin tools)."""
+    if not isinstance(content, (str, list)):
+        return content
+    env = env_masking_enabled()
     if isinstance(content, str):
-        return redact_secret_source_values(content)
-    if isinstance(content, list):
-        return [{**item, "text": redact_secret_source_values(item["text"])} if _is_text_item(item) else item
-                for item in content]
-    return content
+        return redact_exact_secret_values(content, env=env)
+    return [{**item, "text": redact_exact_secret_values(item["text"], env=env)} if _is_text_item(item) else item
+            for item in content]
 
 
 def _normalize_tool_call_id(tool_call_id: Any) -> Any:

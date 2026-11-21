@@ -34,7 +34,7 @@ from agent.redact_headers import (
 from agent.redact_partial_keys import _redact_partial_private_keys
 from agent.redact_hermes_home import _is_under_hermes_home
 from agent.redact_pattern_shape import _pattern_structure
-from agent.redact_secret_sources import redact_secret_source_values
+from agent.redact_env_values import redact_exact_secret_values
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
 from agent.redact_zhipu import _ZHIPU_API_KEY_RE
 from agent.redact_vault_values import (  # re-exported: callers import these from agent.redact
@@ -1527,9 +1527,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = text if isinstance(text, str) else str(text)
     if not text:
         return text
-    # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
-    text = redact_secret_source_values(redact_registered_vault_values(text))
-    if not (force or _redact_enabled()):
+    # Vault and secret-source values are a hard model-egress boundary, masked whatever redact_secrets
+    # says; the profile's own .env values follow it. Exact values go before any shape rule splits one.
+    enabled = force or _redact_enabled()
+    text = redact_exact_secret_values(text, env=enabled)
+    if not enabled:
         return text
     return redact_credential_shapes(text, force=force, code_file=code_file, file_read=file_read,
                                     secret_file=secret_file, redact_url_credentials=redact_url_credentials,

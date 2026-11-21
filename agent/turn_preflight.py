@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from agent.context_compressor_summary import accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, note_context_boundary, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
 from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
@@ -430,6 +430,8 @@ def _proactive_tool_result_prune(
     if effective_task_id is not None:
         # A committed prune is a content-loss boundary like compaction: demoted skill_view / read_file
         # bodies survive only as one-line markers, so the repeat-read dedup must stop answering
-        # "unchanged" for them or the reload the marker asks for is refused.
-        _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+        # "unchanged" for them or the reload the marker asks for is refused. The guard's window
+        # evidence describes those same removed results, so it is dropped beside the dedup reset
+        # (#146217) — keeping only half makes the reload the marker asks for count as a replay.
+        note_context_boundary(agent, effective_task_id)
     return pruned_msgs

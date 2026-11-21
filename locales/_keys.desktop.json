@@ -4787,6 +4787,7 @@
     "sidebar.filter.inboxStyle",
     "sidebar.filter.manual",
     "sidebar.filter.merged",
+    "sidebar.filter.name",
     "sidebar.filter.needsInput",
     "sidebar.filter.noPR",
     "sidebar.filter.open",

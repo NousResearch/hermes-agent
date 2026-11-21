@@ -21,6 +21,13 @@ class _HardExitObserved(BaseException):
 
 def _prepare(monkeypatch):
     import hermes_cli.gateway as gateway_cli
+    import hermes_cli._early_recovery as recovery
+    from pm import environments
+    # Importing gateway.run executes hermes_bootstrap's import-time side effects against the checkout:
+    # the interrupted-update repair (git's marker under the live repo's .git) and dependency
+    # activation (reads <checkout>/../manifest.json). Neither is under test here.
+    monkeypatch.setattr(recovery, "restore_interrupted_pull", lambda root: False)
+    monkeypatch.setattr(environments, "activate_dependencies", lambda root: None)
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_cli, "_guard_official_docker_root_gateway", lambda: None)

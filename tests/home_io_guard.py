@@ -26,6 +26,11 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
+    # The lexical spelling too: a symlinked interpreter home (uv/PM ``cpython-3.11-…`` ->
+    # ``cpython-3.11.15-…``) is reached through the link name, and check() matches lexical paths
+    # against the prefixes before it resolves them.
+    Path(os.path.abspath(p)) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+} | {
     # A PM-activated developer shell runs sys.prefix's python against a dependency generation
     # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
     # interpreter's installation, not Hermes state.

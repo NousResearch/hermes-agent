@@ -19,6 +19,10 @@ from typing import Any, Optional
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
     "[静默]", "静默", "[沉默]", "沉默",
+    # pl, same translated-sentinel class as #110935: a PL-speaking lane answered
+    # the cron instruction with "[CICHO]" (production 2026-11) despite the
+    # wrapper's "never translate" rule, and the token reached the chat.
+    "[CICHO]", "CICHO", "[CISZA]", "CISZA",
 })
 
 # Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
@@ -27,6 +31,14 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
 _BRACKETED_SILENCE_MARKERS = tuple(
     sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
 )
+
+# Single-token misspelled sentinels ("[SBYLENT]", "[SLIENT]" in #147526) are
+# matched fuzzily against these only: ASCII markers (the 2-3 char CJK forms
+# would collide with ordinary words at distance <= 2) of length >= 5. Prose can
+# never fuzzy-match: only whitespace-free candidates are considered.
+_FUZZY_SILENCE_BASES = tuple(sorted(
+    m.upper() for m in LIVE_GATEWAY_SILENT_MARKERS if m.isascii() and len(m) >= 5
+))
 
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
 # machinery kinds may vanish on a bare silence marker.
@@ -76,13 +88,38 @@ def _canonical_silence_candidates(text: Any) -> tuple[str, ...]:
     return tuple(_canonical_silence_candidate(f) for f in forms)
 
 
+def _edit_distance_at_most(a: str, b: str, cap: int = 2) -> bool:
+    """True when Levenshtein(a, b) <= cap; banded row-minimum early exit."""
+    if abs(len(a) - len(b)) > cap:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > cap:
+            return False
+        prev = cur
+    return prev[-1] <= cap
+
+
 def is_intentional_silence_response(response: Any) -> bool:
     """True only when ``response`` is exactly a silence marker.
 
     Prose that merely mentions ``NO_REPLY`` must be delivered normally. A blank
     response is not silence either — that is the empty-response failure path.
+    A whitespace-free token that is a <=2-edit misspelling of an ASCII marker
+    ("[SLIENT]", "[SBYLENT]") counts as the marker (#147526): autonomous lanes
+    type the sentinel by hand and a typo must not leak the control token into
+    the chat as user-visible content.
     """
-    return any(c in LIVE_GATEWAY_SILENT_MARKERS for c in _canonical_silence_candidates(response))
+    candidates = _canonical_silence_candidates(response)
+    if any(c in LIVE_GATEWAY_SILENT_MARKERS for c in candidates):
+        return True
+    return any(
+        " " not in c and any(_edit_distance_at_most(c, m) for m in _FUZZY_SILENCE_BASES)
+        for c in candidates
+    )
 
 
 def _split_trailing_line(text: str) -> tuple[str, str]:

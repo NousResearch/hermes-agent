@@ -811,6 +811,97 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── Gateway control-dir modes ────────────────────────────────────
+        # Runtime discovery (hermes_cli/gateway_runtime_discovery.py)
+        # rejects a group-writable control dir whenever the owning group is
+        # shared, and sshd StrictModes refuses the group-writable service
+        # account home. The module therefore provisions stateDir (the
+        # account home) and HERMES_HOME (stateDir/.hermes) at 2750 — setgid
+        # + group r-x — while workingDirectory and the state subdirs stay
+        # 2770. The
+        # check reads the two outputs the module writes the modes through —
+        # the tmpfiles `d` rules and the activation chmod lines — and fails
+        # when the control dir ends up group-writable (2770).
+        gateway-control-dir-modes =
+          let
+            common = import ./moduleCommon.nix { inherit lib; };
+            cfg = (evalNixosModule { enable = true; }).config;
+            stateDir = cfg.services.hermes-agent.stateDir;
+            workingDirectory = cfg.services.hermes-agent.workingDirectory;
+            hermesHome = "${stateDir}/.hermes";
+            activation = cfg.system.activationScripts."hermes-agent-setup".text;
+            activationLines = lib.splitString "\n" activation;
+
+            stripWs = s:
+              let
+                m = builtins.match "[[:space:]]*(.*[^[:space:]])[[:space:]]*" s;
+              in
+              if m == null then "" else builtins.head m;
+
+            words = l: lib.filter (s: s != "") (lib.splitString " " l);
+            stripQuote = t: lib.replaceStrings [ ''"'' ] [ "" ] t;
+
+            # Mode field of the tmpfiles `d` rule provisioning `path`:
+            # "d <path><padding><mode> <user> <group> - -". The exact-path
+            # prefix keeps ${hermesHome} from also matching its subdirs.
+            ruleMode = path:
+              let
+                rules =
+                  lib.filter (r: lib.hasPrefix "d ${path} " r) cfg.systemd.tmpfiles.rules;
+              in
+              if rules == [ ]
+              then "MISSING"
+              else lib.elemAt (words (builtins.head rules)) 2;
+
+            # The chmod lines of the activation snippet whose mode is `mode`
+            # and whose target list contains `path` exactly (words may carry
+            # the shell quotes of the heredoc).
+            chmodLines = mode: path:
+              lib.filter (l:
+                let
+                  w = words (stripWs l);
+                in
+                lib.length w >= 3
+                && lib.elemAt w 0 == "chmod"
+                && lib.elemAt w 1 == mode
+                && lib.elem path (map stripQuote (lib.drop 2 w))
+              ) activationLines;
+
+            failures =
+              lib.optional (ruleMode hermesHome != "2750")
+                "tmpfiles must provision the gateway control dir ${hermesHome} at 2750 (discovery rejects a group-writable control dir), got: ${ruleMode hermesHome}"
+              ++ lib.optional (ruleMode stateDir != "2750")
+                "tmpfiles must provision ${stateDir} at 2750 (sshd StrictModes refuses a group-writable account home), got: ${ruleMode stateDir}"
+              ++ lib.optional (ruleMode workingDirectory != "2770")
+                "tmpfiles must keep ${workingDirectory} shared-writable at 2770, got: ${ruleMode workingDirectory}"
+              ++ lib.concatMap (d:
+                let
+                  m = ruleMode "${hermesHome}/${d}";
+                in
+                lib.optional (m != "2770")
+                  "tmpfiles must keep the state subdir ${hermesHome}/${d} shared-writable at 2770, got: ${m}"
+              ) common.stateSubdirs
+              ++ lib.optional (chmodLines "2750" hermesHome == [ ])
+                "activation must chmod 2750 the gateway control dir ${hermesHome}"
+              ++ lib.optional (chmodLines "2770" hermesHome != [ ])
+                "activation must not chmod 2770 the gateway control dir ${hermesHome}: ${lib.concatStringsSep "; " (chmodLines "2770" hermesHome)}"
+              ++ lib.optional (chmodLines "2750" stateDir == [ ])
+                "activation must chmod 2750 ${stateDir} (sshd StrictModes refuses a group-writable account home)"
+              ++ lib.optional (chmodLines "2770" stateDir != [ ])
+                "activation must not chmod 2770 ${stateDir}: ${lib.concatStringsSep "; " (chmodLines "2770" stateDir)}"
+              ++ lib.optional (chmodLines "2770" workingDirectory == [ ])
+                "activation must keep ${workingDirectory} shared-writable at 2770";
+          in
+          pkgs.runCommand "hermes-gateway-control-dir-modes" { } (
+            if failures != [ ] then
+              throw "gateway control-dir modes check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else ''
+              echo "PASS: stateDir + control dir at 2750 (sshd / discovery), workspace + subdirs at 2770 (tmpfiles + activation)"
+              mkdir -p $out
+              echo "ok" > $out/result
+            ''
+          );
+
         # ── How the backend waits for its bind target ────────────────────
         # The backend binds to `host` immediately by default. A unit that
         # starts at boot can lose the race against the daemon that supplies

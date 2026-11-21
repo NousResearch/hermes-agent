@@ -471,13 +471,13 @@ DEFAULT_CONFIG = {
     # first (`hermes worktree restore <name>`). Live trees and Kanban t_<hex> trees are never touched.
     "worktrees": {
         "archive_dirty": True,  # false = never remove a dirty/unpushed tree (the pre-archive behaviour)
-        # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
-        "archive_max_file_mb": 50,
+        "archive_max_file_mb": 50,  # untracked files over this (MB) are not archived; their tree is kept
         # The sweep deletes archive refs older than this many days. 0 keeps them forever.
         "archive_retention_days": 30,
         # Optional size budget (GB) for idle trees: past it the oldest idle trees are archived and
-        # removed first. Live, young and Kanban trees are never counted or touched. 0 = off.
+        # removed first (live, young and Kanban trees are never counted or touched). 0 = off.
         "max_total_gb": 0,
+        "shed_artifacts_after_hours": 0,  # idle this long: git-ignored node_modules/.venv/... go; 0 = off
         "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first

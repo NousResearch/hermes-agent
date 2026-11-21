@@ -123,8 +123,11 @@ def test_a_setting_set_in_both_places_is_checked_where_its_adapter_reads_it(monk
 def test_check_is_skipped_without_the_engine(monkeypatch, capsys):
     import hermes_re
 
+    from hermes_re._engine import engine_missing
+
     def _no_engine(*_args, **_kwargs):
-        raise ImportError("No module named 're2'")
+        cause = ModuleNotFoundError("No module named 're2'", name="re2")
+        raise engine_missing(cause) from cause
 
     monkeypatch.setattr(hermes_re, "build", _no_engine)
 
@@ -132,3 +135,21 @@ def test_check_is_skipped_without_the_engine(monkeypatch, capsys):
 
     assert status == 0
     assert "skipped: google-re2 not installed" in out
+
+
+def test_an_installed_engine_that_fails_to_import_is_reported_with_its_cause(monkeypatch, capsys):
+    """A source build linked against a missing libre2 is installed, not missing: the fix differs."""
+    import hermes_re
+    from hermes_re._engine import engine_missing
+
+    def _broken_engine(*_args, **_kwargs):
+        cause = ImportError("libre2.so.11: cannot open shared object file: No such file or directory")
+        raise engine_missing(cause) from cause
+
+    monkeypatch.setattr(hermes_re, "build", _broken_engine)
+
+    status, out = _doctor(monkeypatch, capsys)
+
+    assert status == 0
+    assert "google-re2 is installed but cannot be imported: ImportError: libre2.so.11: cannot open shared object" in out
+    assert "not installed" not in out

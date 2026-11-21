@@ -205,6 +205,16 @@ def collect_user_patterns() -> list[UserPattern]:
     return found
 
 
+def _engine_unavailable(exc: ImportError) -> str:
+    """Why the engine cannot load. The facade reports every import failure as a missing ``re2``; the
+    cause tells a package that is absent from one that is installed but broken (e.g. a source build
+    linked against a missing ``libre2``), which needs a different fix."""
+    cause = exc.__cause__ or exc
+    if isinstance(cause, ModuleNotFoundError) and cause.name == "re2":
+        return "google-re2 not installed"
+    return f"google-re2 is installed but cannot be imported: {type(cause).__name__}: {cause}"
+
+
 @doctor_check("Regex settings check skipped", "({e})")
 def _check_user_regex_settings(should_fix: bool, f: Finding) -> None:
     """A pattern the engine will refuse is a manual issue (doctor exits 1, like the other
@@ -212,8 +222,8 @@ def _check_user_regex_settings(should_fix: bool, f: Finding) -> None:
     try:
         import hermes_re
         hermes_re.build("a")  # the engine is loaded on the first build
-    except ImportError:
-        check_warn("Regex settings", "(skipped: google-re2 not installed)")
+    except ImportError as exc:
+        check_warn("Regex settings", f"(skipped: {_engine_unavailable(exc)})")
         return
     patterns = collect_user_patterns()
     flagged = refused = 0

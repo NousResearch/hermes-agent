@@ -11,9 +11,11 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 import uuid
 
+from datetime import UTC, datetime
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
 # Private aliases: this module calls them through its globals (tests patch ``_atomic_bytes``
 # here) and updaters shipped before PM import them by these names mid-swap
@@ -182,6 +184,15 @@ def lease_directory(generation: Path) -> Callable[[], None]:
         if lease.exists():
             break
         os.close(fd)
+
+    # Record the lessee so an orphaned lease -- a process that died without releasing -- is
+    # diagnosable from disk. The collector keys on the flock alone, so this is informational.
+    with suppress(OSError):
+        os.write(fd, json.dumps({
+            "pid": os.getpid(),
+            "created": datetime.now(UTC).isoformat(),
+            "argv0": sys.argv[0] if sys.argv else "",
+        }, sort_keys=True).encode())
 
     def release() -> None:
         atexit.unregister(release)

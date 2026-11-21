@@ -151,12 +151,14 @@ _HASH_PREFIX_HEX_RE = re.compile(
 _HEX_RUN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,64}(?![0-9a-fA-F])")
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~@-]+")
 _DATE_TOKEN_RE = re.compile(r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?")
+# A sentence-final period is part of the token, but not a file extension.
+_FRACTION_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?/-?\d+(?:\.\d+)?\.?")
 
 
 def _is_dense_identifier(token: str) -> bool:
     """True for a machine token a voice would spell out character by character."""
-    if "@" in token or _DATE_TOKEN_RE.fullmatch(token):
-        return False  # email addresses, dates ("2026-09-28", "2026/06/02")
+    if "@" in token or _DATE_TOKEN_RE.fullmatch(token) or _FRACTION_TOKEN_RE.fullmatch(token):
+        return False  # email addresses, dates, and numeric fractions ("3/4")
     if token.startswith(("~/", "./", "../", "/")):
         return True  # filesystem paths
     if "/" in token and (_FILENAME_EXT_RE.search(token) or any(char.isdigit() for char in token)):

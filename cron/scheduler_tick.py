@@ -135,6 +135,15 @@ def _tick_admitted(
             from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
             due_jobs = refuse_agent_jobs_without_gateway(due_jobs)
 
+        # PM between dependency generations (an update, `pm gc`, or a repair replaced the
+        # tree): a fire here dies in the worker's boot before its ownership acknowledgement
+        # and is booked as a FAILED run with an alert, though the same install commits a
+        # generation seconds later. Hold the slot for the next tick — no run recorded, the
+        # due instant untouched — until the grace window expires and the loud path resumes.
+        from cron.scheduler_worker_env import defer_while_dependencies_uncommitted
+        due_jobs = defer_while_dependencies_uncommitted(
+            due_jobs, home=_sched._get_hermes_home())
+
         if not due_jobs:
             # Idle tick: skip config load + pool setup, but still reap crashed jobs' MCP orphans.
             if verbose:

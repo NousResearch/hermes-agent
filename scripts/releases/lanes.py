@@ -162,10 +162,14 @@ def select(*, only: Iterable[str] | None = None, with_: Iterable[str] = (),
 
 
 def require_allowed(lanes: Iterable[str], policy: str) -> None:
-    """Refuse a lane the policy can never run (POLICY_REFUSED)."""
-    refused = frozenset(lanes) & POLICY_REFUSED[policy]
+    """Refuse a lane the policy can never run (POLICY_REFUSED), and a commit claim that builds nothing."""
+    lanes = frozenset(lanes)
+    refused = lanes & POLICY_REFUSED[policy]
     if refused:
         raise ValueError(f"a {policy} claim cannot run {', '.join(sorted(refused))}")
+    # A commit build's only output is the page of the bundles it built.
+    if policy == "commit" and not has_bundles(lanes):
+        raise ValueError("a commit claim must build at least one bundle")
 
 
 def _known(names: Iterable[str]) -> frozenset[str]:

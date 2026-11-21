@@ -24,7 +24,7 @@ import pytest
 
 from hermes_platform.resolver import locate_command
 from scripts.bundles import release_artifacts
-from scripts.releases import r2, stable
+from scripts.releases import lanes, r2, stable
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "0123456" + "a" * 33
@@ -125,6 +125,20 @@ def test_legacy_termux_record_accepts_the_tagless_commit_version(tmp_path):
     release_artifacts.record("termux", "aarch64", root, COMMIT_TAG, COMMIT, out, legacy_commit_build=True)
     row = json.loads(out.read_text(encoding="utf-8"))
     assert row["version"] == LEGACY_DEB_VERSION and row["legacyCommitBuild"] is True
+
+
+@pytest.mark.parametrize("selection", [{"only": ["smoke"]}, {"without": ["windows", "macos-arm64"]}])
+def test_a_commit_claim_that_builds_no_bundle_is_refused_before_and_at_admission(selection):
+    with pytest.raises(ValueError, match="at least one bundle"):
+        lanes.select(policy="commit", **selection)
+    message = json.dumps({
+        "schema": 1, "kind": "commit", "version": "0.33.0", "commit": COMMIT, "lanes": ["smoke"],
+        "lanesRevision": lanes.LANES_REVISION, "requireGreen": True, "bundleEnv": {},
+    })
+    with pytest.raises(ValueError, match="at least one bundle"):
+        stable.stamped_claim(message, tag=COMMIT_TAG, commit=COMMIT)
+    assert stable.stamped_claim(message.replace('["smoke"]', '["smoke", "termux"]'),
+                                tag=COMMIT_TAG, commit=COMMIT)["lanes"] == {"smoke", "termux"}
 
 
 def test_a_commit_of_this_tree_builds_as_a_claim():

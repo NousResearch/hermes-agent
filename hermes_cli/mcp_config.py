@@ -276,6 +276,11 @@ def _remove_mcp_server(name: str) -> bool:
     if not servers:
         config.pop("mcp_servers", None)
     save_config(config)
+    try:  # a re-added entry with the same name starts unbound
+        from tools.mcp_oauth import HermesTokenStorage
+        HermesTokenStorage(name).forget_configured_client()
+    except OSError:
+        pass
     return True
 
 

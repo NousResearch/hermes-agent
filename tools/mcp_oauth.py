@@ -424,6 +424,7 @@ class HermesTokenStorage:
     _client_info_path = partialmethod(_path, ".client.json")
     _meta_path = partialmethod(_path, ".meta.json")
     _cimd_rejected_path = partialmethod(_path, ".cimd-off")
+    _client_binding_path = partialmethod(_path, ".client-binding.json")
 
     def _state_paths(self) -> tuple[Path, Path, Path]:
         return self._tokens_path(), self._client_info_path(), self._meta_path()
@@ -575,6 +576,22 @@ class HermesTokenStorage:
             path.touch()
         except OSError as exc:  # non-fatal — worst case we retry CIMD later
             logger.debug("Could not record CIMD rejection at %s: %s", path, exc)
+
+    def configured_client_issuer(self, client_id: str) -> str | None:
+        """The authorization server a configured ``oauth.client_id`` first signed in with, or None.
+        Kept by ``remove()``: a re-login must not hand the configured secret to a server it moved to."""
+        data = _read_json(self._client_binding_path())
+        issuer = data.get("issuer") if isinstance(data, dict) and data.get("client_id") == client_id else None
+        return issuer if isinstance(issuer, str) and issuer else None
+
+    def bind_configured_client(self, client_id: str, issuer: str) -> None:
+        """Record *issuer* for the configured client unless one is already recorded for it."""
+        if self.configured_client_issuer(client_id) is None:
+            _write_json(self._client_binding_path(), {"client_id": client_id, "issuer": issuer})
+
+    def forget_configured_client(self) -> None:
+        """Drop the configured-client binding (the server entry itself was removed)."""
+        self._client_binding_path().unlink(missing_ok=True)
 
     def cimd_rejected(self) -> bool:
         """True when this server has refused our metadata document before."""
@@ -1234,11 +1251,18 @@ def _invalidate_tokens_on_client_change(
 
 
 def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_metadata: "OAuthClientMetadata") -> None:
-    """If cfg has a pre-registered client_id, persist it to storage."""
+    """If cfg has a pre-registered client_id, persist it to storage, stamped with the issuer it is
+    bound to. The SDK presents stored client credentials only to their recorded issuer (SEP-2352); when
+    the server now names another authorization server it registers a new client there instead, and
+    that registration is kept rather than overwritten with the configured secret again."""
     client_id = cfg.get("client_id")
     if not client_id:
         return
     info_cls = _sdk_class("OAuthClientInformationFull")
+    bound = storage.configured_client_issuer(client_id)
+    existing = _cached_client_info(storage)
+    if bound and existing and existing.get("client_id") != client_id and existing.get("issuer") not in (None, bound):
+        return
     _invalidate_tokens_on_client_change(storage, client_id, cfg.get("client_secret"))
     info_dict: dict[str, Any] = {
         "client_id": client_id,
@@ -1246,7 +1270,8 @@ def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_met
         "grant_types": client_metadata.grant_types,
         "response_types": client_metadata.response_types,
         "token_endpoint_auth_method": client_metadata.token_endpoint_auth_method,
-        **{key: cfg[key] for key in ("client_secret", "client_name", "scope") if cfg.get(key)}}
+        **{key: cfg[key] for key in ("client_secret", "client_name", "scope") if cfg.get(key)},
+        **({"issuer": bound} if bound else {})}
     _write_json(storage._client_info_path(), _model_json(info_cls.model_validate(info_dict)))
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 

@@ -38,7 +38,9 @@ export const sessionStatusLabel = (status: string): string => {
 
 const CTRL_OFFSET = 96
 
-const shortModel = (model = '') => model.replace(/^.*\//, '') || messages().pickers.session.modelUnknown
+const shortModel = (model?: null | string) =>
+  (model ?? '').replace(/^.*\//, '') || messages().pickers.session.modelUnknown
+
 const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })

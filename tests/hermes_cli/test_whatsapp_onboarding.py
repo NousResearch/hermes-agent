@@ -1,5 +1,7 @@
 import asyncio
+import json
 import time
+from types import SimpleNamespace
 
 import pytest
 import hermes_cli.config as _cfg_mod
@@ -140,3 +142,60 @@ def test_whatsapp_pairing_watcher_keeps_streamed_error(monkeypatch, lines, retur
     _rt_messaging._watch_whatsapp_pairing("watch", proc)
     assert record.status == "error"
     assert expected in record.error
+
+
+@pytest.mark.parametrize("setup", ["cli", "dashboard"])
+def test_pairing_install_is_ready_for_gateway_without_second_npm(tmp_path, monkeypatch, setup):
+    from gateway.config import PlatformConfig
+    from hermes_cli.main_platform_setup import _whatsapp_install_bridge
+    from hermes_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready
+
+    bridge = tmp_path / "bridge"
+    bridge.mkdir()
+    (bridge / "package.json").write_text('{"name":"whatsapp-test"}', encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda name: "npm")
+    monkeypatch.setattr("hermes_constants.with_hermes_node_path", dict)
+    calls = []
+
+    def install(*args, **kwargs):
+        calls.append(args)
+        (bridge / "node_modules").mkdir(exist_ok=True)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("subprocess.run", install)
+    if setup == "cli":
+        assert _whatsapp_install_bridge(bridge) is True
+    else:
+        _ensure_whatsapp_bridge_dependencies(bridge)
+    assert len(calls) == 1
+    assert bridge_dependencies_ready(bridge)
+
+    adapter = WhatsAppAdapter(PlatformConfig(extra={"bridge_script": str(bridge / "bridge.js")}))
+    assert adapter._ensure_bridge_deps(bridge) is True
+    assert len(calls) == 1
+
+
+def test_preexisting_bridge_install_without_stamp_recovers_without_npm(tmp_path):
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready
+
+    bridge = tmp_path / "bridge"
+    package = {"dependencies": {"core": "1.0.0"}}
+    lock = {"lockfileVersion": 3, "packages": {
+        "": package,
+        "node_modules/core": {"version": "1.0.0", "integrity": "sha512-core"},
+        "node_modules/platform-optional": {"version": "2.0.0", "optional": True},
+    }}
+    installed = {"lockfileVersion": 3, "packages": {
+        "node_modules/core": {"version": "1.0.0", "integrity": "sha512-core"},
+    }}
+    (bridge / "node_modules" / "core").mkdir(parents=True)
+    for path, data in ((bridge / "package.json", package), (bridge / "package-lock.json", lock),
+                       (bridge / "node_modules" / ".package-lock.json", installed)):
+        path.write_text(json.dumps(data), encoding="utf-8")
+    assert bridge_dependencies_ready(bridge) is False  # interrupted install left an empty package directory
+    (bridge / "node_modules" / "core" / "package.json").write_text(
+        json.dumps({"version": "1.0.0"}), encoding="utf-8")
+    assert bridge_dependencies_ready(bridge) is True
+    assert (bridge / "node_modules" / ".hermes-pkg-hash").exists()

@@ -7,17 +7,21 @@ import sys
 from tools.computer_use.backend import ComputerUseBackend, ComputerUseProvider
 
 
+def _cua_backend(**kwargs) -> ComputerUseBackend:
+    """The one import of the core backend, shared by the ordinary and session-execution factories."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+    return CuaDriverBackend(**kwargs)
+
+
 class CuaDriverProvider(ComputerUseProvider):
     name = "cua"
     display_name = "cua-driver (background)"
 
     def create_backend(self, *, permission_mode: str) -> ComputerUseBackend:
-        return self.create_execution_backend(permission_mode=permission_mode, execution_context=None)
+        return _cua_backend(permission_mode=permission_mode)
 
     def create_execution_backend(self, *, permission_mode: str, execution_context) -> ComputerUseBackend:
-        """``execution_context=None`` is an ordinary session's backend (what ``create_backend`` returns)."""
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode, execution_context=execution_context)
+        return _cua_backend(permission_mode=permission_mode, execution_context=execution_context)
 
     def is_available(self) -> bool:
         """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""

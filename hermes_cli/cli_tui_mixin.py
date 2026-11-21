@@ -84,7 +84,8 @@ def _num_prefix(i: int) -> str:
 
 
 def _term_rows() -> int:
-    return shutil.get_terminal_size((100, 24)).lines
+    from hermes_cli.cli_render import _terminal_dims
+    return _terminal_dims((100, 24))[1]
 
 
 

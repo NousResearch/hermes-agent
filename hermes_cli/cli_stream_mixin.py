@@ -56,10 +56,8 @@ def _tail_cells(text: str, limit: int) -> str:
 
 
 def _terminal_columns(default: int = 80) -> int:
-    try:
-        return shutil.get_terminal_size().columns
-    except Exception:
-        return default
+    from hermes_cli.cli_render import _terminal_dims
+    return _terminal_dims((default, 24))[0]
 
 
 class CLIStreamMixin:

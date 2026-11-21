@@ -418,11 +418,23 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
 
 
-def _terminal_columns() -> int:
+def _terminal_dims(default: tuple[int, int] = (80, 24)) -> tuple[int, int]:
+    """Live ``(columns, rows)``: the running prompt_toolkit app's output size wins,
+    ``shutil`` is only the fallback. The app can be narrower than shutil reports
+    (Termux, resized terminals), and every chrome row budget must read one source."""
     try:
-        return shutil.get_terminal_size((80, 24)).columns
+        from prompt_toolkit.application import get_app
+        size = get_app().output.get_size()
+        cols, rows = int(size.columns), int(size.rows)
+        if cols > 0 and rows > 0:
+            return cols, rows
     except Exception:
-        return 80
+        pass
+    return shutil.get_terminal_size(default)
+
+
+def _terminal_columns() -> int:
+    return _terminal_dims((80, 24))[0]
 
 
 def _terminal_width_for_streaming() -> int:
@@ -905,7 +917,7 @@ class ChatConsole:
         from cli import _OSC_ESCAPE_RE, _cprint
         self._buffer.seek(0)
         self._buffer.truncate()
-        self._inner.width = shutil.get_terminal_size((80, 24)).columns
+        self._inner.width = _terminal_dims()[0]
         self._inner.print(*args, **kwargs)
         for line in _OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n"):
             _cprint(line)
@@ -945,7 +957,7 @@ def _build_compact_banner() -> str:
     else:
         version_line = format_banner_version_label()
 
-    w = min(shutil.get_terminal_size().columns - 2, 88)
+    w = min(_terminal_dims()[0] - 2, 88)
     if w < 30:
         return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
 
@@ -966,7 +978,7 @@ def _build_compact_banner() -> str:
 
 def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
     """Stable TUI panel width wide enough for the title and content (incl. borders)."""
-    term_cols = shutil.get_terminal_size((100, 20)).columns
+    term_cols = _terminal_dims((100, 20))[0]
     longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
     inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
     return inner + 2  # leading/trailing space inside the borders

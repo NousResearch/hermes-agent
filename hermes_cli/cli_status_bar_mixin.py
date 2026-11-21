@@ -505,10 +505,10 @@ class CLIStatusBarMixin:
     @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
         """Live prompt_toolkit width (can be narrower than shutil's, esp. Termux), falling
-        back to ``shutil``."""
+        back to ``shutil``. Delegates to ``cli_render._terminal_dims`` — the single source."""
         try:
-            from prompt_toolkit.application import get_app
-            return get_app().output.get_size().columns
+            from hermes_cli.cli_render import _terminal_dims
+            return _terminal_dims(default)[0]
         except Exception:
             return shutil.get_terminal_size(default).columns
 
@@ -534,7 +534,8 @@ class CLIStatusBarMixin:
         """
         if width is None:
             try:
-                width = shutil.get_terminal_size((80, 24)).columns
+                from hermes_cli.cli_render import _terminal_dims
+                width = _terminal_dims((80, 24))[0]
             except Exception:
                 width = 80
         return max(32, int(width or 80))

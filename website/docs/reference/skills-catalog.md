@@ -76,6 +76,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`document-to-action-items`](../user-guide/skills/bundled/productivity/productivity-document-to-action-items.md) | Extract cited obligations, deadlines, tasks from documents. | `productivity/document-to-action-items` |
 | [`google-workspace`](../user-guide/skills/bundled/productivity/productivity-google-workspace.md) | Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python. | `productivity/google-workspace` |
 | [`maps`](../user-guide/skills/bundled/productivity/productivity-maps.md) | Geocode, POIs, routes, timezones via OpenStreetMap/OSRM. | `productivity/maps` |
+| [`md-to-html`](../user-guide/skills/bundled/productivity/productivity-md-to-html.md) | Render .md to styled HTML with a script, never LLM-written. | `productivity/md-to-html` |
 | [`meeting-action-items`](../user-guide/skills/bundled/productivity/productivity-meeting-action-items.md) | Turn meeting notes into cited decisions, owners, tickets. | `productivity/meeting-action-items` |
 | [`microsoft-office`](../user-guide/skills/bundled/productivity/productivity-microsoft-office.md) | Create, read, and edit Word, PowerPoint, and Excel files. | `productivity/microsoft-office` |
 | [`pdf`](../user-guide/skills/bundled/productivity/productivity-pdf.md) | PDF files: create, read, merge, fill, OCR, edit text. | `productivity/pdf` |

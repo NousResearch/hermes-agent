@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test, vi } from 'vitest'
 
 import {
+  backendArgvMatches,
   backendCommandMatches,
   type BackendIdentity,
   createBackendOwnership,
@@ -307,6 +308,30 @@ test('backend identity check matches only serve and dashboard invocation shapes'
   assert.equal(backendCommandMatches('"C:\\Hermes Runtime\\hermes.exe" dashboard --no-open'), true)
   assert.equal(backendCommandMatches('hermes chat --query serve'), false)
   assert.equal(backendCommandMatches('unrelated dashboard'), false)
+})
+
+test('legacy PID-only records never reach stop even when a replacement looks owned', async () => {
+  const legacy = ownershipEntry({ startMarker: 'pid-only:42' })
+  const store = memoryStore(stored([legacy]))
+  const matchesIdentity = vi.fn(async () => true)
+  const stop = vi.fn()
+  const ownership = createOwnership(store, { matchesIdentity, stop })
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  assert.equal(matchesIdentity.mock.calls.length, 0)
+  assert.equal(stop.mock.calls.length, 0)
+  assert.deepEqual(parseBackendOwnership(store.value()), [legacy])
+})
+
+test('native argv matcher ignores command-shaped data and preserves owned teardown shapes', () => {
+  assert.equal(backendArgvMatches(['/venv/bin/hermes', 'serve', '--port', '0']), true)
+  assert.equal(backendArgvMatches(['/venv/bin/hermes', '--profile', 'work', 'dashboard']), true)
+  assert.equal(backendArgvMatches(['/venv/bin/python3', '-m', 'hermes_cli.main', 'serve']), true)
+  assert.equal(backendArgvMatches(['/venv/bin/python3', '/venv/bin/hermes', 'serve']), true)
+  assert.equal(backendArgvMatches(['/bin/other', '--note', 'hermes serve']), false)
+  assert.equal(backendArgvMatches(['/venv/bin/hermes', 'chat', '--query', 'hermes serve']), false)
+  assert.equal(backendArgvMatches(['/venv/bin/hermes', '--profile', 'serve']), false)
+  assert.equal(backendArgvMatches(['/venv/bin/hermes serve', '--port', '0']), false)
 })
 
 test('shutdown coordinator returns one promise and awaits teardown exactly once', async () => {

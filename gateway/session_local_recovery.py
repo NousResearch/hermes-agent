@@ -110,21 +110,23 @@ def _checked_entry(authority, receipt, source, route):
 
 
 def _is_compression_segment(db, sid):
-    """True when *sid* is a non-root compression segment whose lineage root holds the receipt.
+    """True when *sid* is a compression segment that another session's receipt lists in its lineage.
 
-    The receipt lives on the root (the id ``session.resume`` returns as ``stored_session_id``), so a
-    client holding the segment id would poll ``storage_unavailable`` forever. A segment never gets a
-    receipt of its own, so the refusal is terminal. A live session whose receipt is merely absent
-    stays transient."""
-    lineage = db.get_compression_lineage(sid)
-    root = lineage[0] if lineage else sid
-    if root == sid:
-        return False
-    try:
-        local_receipt(db, root)
-    except RuntimeStoreError:
-        return False
-    return True
+    The receipt lives on the conversation's logical owner (the id ``session.resume`` returns as
+    ``stored_session_id``), which is not always the compression root: a conversation adopted
+    mid-chain keeps its receipt on the segment it was adopted at. A client holding a later segment's
+    id would poll ``storage_unavailable`` forever. A segment never gets a receipt of its own, so the
+    refusal is terminal. A live session whose receipt is merely absent stays transient."""
+    for owner in db.get_compression_lineage(sid):
+        if owner == sid:
+            continue
+        try:
+            receipt = local_receipt(db, owner)
+        except RuntimeStoreError:
+            continue
+        if sid in receipt.get('lineage', ()):
+            return True
+    return False
 
 
 def owned_receipt(authority, sid):

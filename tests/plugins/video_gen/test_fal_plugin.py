@@ -311,6 +311,8 @@ class TestFamilyKeyNormalization:
 
         assert _normalize_family_key("bytedance/seedance-2.0/mini") == "seedance-2.0-mini"
         assert _normalize_family_key("bytedance/seedance-2.0") == "seedance-2.0"
+        assert _normalize_family_key("bytedance/seedance-2.5/flash") == "seedance-2.5-flash"
+        assert _normalize_family_key("bytedance/seedance-2.5") == "seedance-2.5"
         assert _normalize_family_key("minimax/h3") == "minimax-h3"
         assert _normalize_family_key("xai/grok-imagine-video/v1.5") == "grok-imagine-1.5"
         assert _normalize_family_key("google/gemini-omni-flash") == "gemini-omni-flash"

@@ -59,6 +59,11 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
     "seedance-2.5": _family("Seedance 2.5", "~60-180s", "premium", "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
                             "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/image-to-video", aspect_ratios=_SIX_ASPECTS,
                             image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p"), durations=(4, 30), audio=True),  # i2v aspect is "auto" only
+    # Flash (Nov 15 2026): the fast Seedance 2.5 tier, same request schema (string duration "4".."30", 480p/720p, no `seed`).
+    "seedance-2.5-flash": _family("Seedance 2.5 Flash", "~30-90s", "premium", "Fast Seedance 2.5 tier. Native audio + lip-sync, 4-30s, 480p/720p.",
+                                  "bytedance/seedance-2.5/flash/text-to-video", "bytedance/seedance-2.5/flash/image-to-video",
+                                  aspect_ratios=_SIX_ASPECTS, image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p"),
+                                  durations=(4, 30), audio=True),
     "minimax-h3": _family("MiniMax H3", "~60-180s", "premium", "MiniMax frontier. Native 2K (up to 4K), 5-15s, seven aspect ratios.",
                           "minimax/h3/text-to-video", "minimax/h3/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",),  # i2v follows image
                           aspect_ratios=_SIX_ASPECTS, resolutions=("768P", "2K", "4K"), resolution_aliases=_H3_ALIASES, durations=(5, 15), audio_native=True),

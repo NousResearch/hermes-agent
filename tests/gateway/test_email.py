@@ -16,7 +16,7 @@ import os
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock, AsyncMock, ANY
 
 
 
@@ -532,6 +532,57 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
+
+
+    def _sent_message(self, adapter, reply_to):
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", "answer", reply_to)
+            return mock_server.send_message.call_args[0][0]
+
+    def test_reply_subject_follows_the_message_it_answers(self):
+        """Concurrent emails from one sender: each reply keeps its own subject, not the latest one."""
+        adapter = self._make_adapter()
+        for mid, subject in (("<one@test.com>", "Test 1: mix bus"), ("<two@test.com>", "Test 2: plan"),
+                             ("<three@test.com>", "Test 3: providers")):
+            adapter._thread_context["user@test.com"] = {"subject": subject, "message_id": mid}
+            adapter._remember_subject(mid, subject)
+        first = self._sent_message(adapter, "<one@test.com>")
+        self.assertEqual(first["Subject"], "Re: Test 1: mix bus")
+        self.assertEqual(first["In-Reply-To"], "<one@test.com>")
+        second = self._sent_message(adapter, "<two@test.com>")
+        self.assertEqual(second["Subject"], "Re: Test 2: plan")
+        self.assertEqual(second["In-Reply-To"], "<two@test.com>")
+
+    def test_dispatch_records_subject_by_message_id(self):
+        """_dispatch_message keeps every inbound subject, so a later email does not overwrite it."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter._sender_accepted = lambda *_: True  # auth is covered by TestSenderAuthentication
+        for mid, subject in (("<a@test.com>", "First topic"), ("<b@test.com>", "Second topic")):
+            asyncio.run(adapter._dispatch_message({
+                "uid": b"1", "sender_addr": "user@test.com", "sender_name": "User", "subject": subject,
+                "message_id": mid, "in_reply_to": "", "body": "hi", "attachments": [],
+            }))
+        self.assertEqual(self._sent_message(adapter, "<a@test.com>")["Subject"], "Re: First topic")
+
+    def test_unknown_reply_target_falls_back_to_sender_context(self):
+        """A reply_to the adapter never saw (e.g. after a restart) keeps the old per-sender behavior."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Latest", "message_id": "<latest@test.com>"}
+        sent = self._sent_message(adapter, "<unknown@test.com>")
+        self.assertEqual(sent["Subject"], "Re: Latest")
+        self.assertEqual(sent["In-Reply-To"], "<unknown@test.com>")
+
+    def test_subject_memory_is_bounded(self):
+        from plugins.platforms.email import adapter as mod
+        adapter = self._make_adapter()
+        for i in range(mod._MAX_SUBJECTS_BY_MESSAGE_ID + 5):
+            adapter._remember_subject(f"<{i}@test.com>", f"s{i}")
+        self.assertEqual(len(adapter._subject_by_message_id), mod._MAX_SUBJECTS_BY_MESSAGE_ID)
+        self.assertNotIn("<0@test.com>", adapter._subject_by_message_id)
 
 
 class TestSendMethods(unittest.TestCase):

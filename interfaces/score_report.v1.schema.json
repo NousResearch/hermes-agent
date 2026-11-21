@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "score_report.v1",
+  "type": "object",
+  "required": ["schema_version","task_id","candidate_id","split",
+               "outcome","passed","tokens","steps","time","trajectory_ref"],
+  "properties": {
+    "schema_version":  {"const": "1.0"},
+    "task_id":         {"type": "string"},
+    "candidate_id":    {"type": "string"},
+    "split":           {"enum": ["train","heldout"]},
+    "outcome":         {"enum": ["passed","failed","error","timeout"]},
+    "passed":          {"type": "boolean"},
+    "tokens":          {"type": "integer"},
+    "steps":           {"type": "integer"},
+    "time":            {"type": "number"},
+    "failure_reason":  {"type": ["string","null"]},
+    "trajectory_ref":  {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if":   {"properties": {"passed": {"const": false}}},
+      "then": {"required": ["failure_reason"],
+               "properties": {"failure_reason": {"type": "string","minLength": 1}}}
+    }
+  ]
+}

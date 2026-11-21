@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -28,6 +29,10 @@ TOOL_ENV = ('PATH', 'VIRTUAL_ENV', 'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOM
 TOOL_ENV_PREFIXES = ('CONDA_', 'NODE_', 'NVM_', 'PYENV_')
 # ``terminal.client_env_passthrough`` names more non-secret toolchain variables for a profile.
 CONFIG_KEY = 'client_env_passthrough'
+# ``terminal.client_env_turn_passthrough`` names values a shell client sends with EACH turn
+# (``prompt.submit``'s ``turn_env``): a run identity that changes per turn and that the session's
+# frozen map therefore cannot carry.
+TURN_CONFIG_KEY = 'client_env_turn_passthrough'
 # The session-start notice of a session whose client the gateway could not place on its own host.
 NOT_LOCAL_WARNING = ("this session uses the gateway's own PATH, toolchain and prefill file: the client's environment "
                      'was not applied because the client is not attached to this gateway locally.')
@@ -155,9 +160,10 @@ def toolchain_environ(base=None) -> dict[str, str]:
     client's venv or GEM_HOME never reaches another's session through the daemon it started. PATH is
     the exception: a client that sent none runs with the gateway's."""
     env = dict(os.environ if base is None else base)
+    turn = bound_turn_env()
     bound = _BOUND.get()
     if bound is None:
-        return env
+        return env | turn
     for name in BEHAVIOUR_ENV:
         if bound[1] or name not in HOST_BEHAVIOUR:
             env.pop(name, None)
@@ -167,4 +173,66 @@ def toolchain_environ(base=None) -> dict[str, str]:
     names = {name for name in rules['names'] if _travels(name, rules['secret'])}
     prefixes = tuple(rules['prefixes'])
     kept = {k: v for k, v in env.items() if k == 'PATH' or not (k in names or k.startswith(prefixes))}
-    return kept | tool_env()
+    return kept | tool_env() | turn
+
+
+# ── per-turn values ──────────────────────────────────────────────────────────────────────────────
+# A client declares a bounded map with EACH prompt (``prompt.submit``'s ``turn_env``) for values that
+# change from turn to turn: the identity of the job that spawned this run, a request id. The session's
+# ``client_env`` is frozen when the session is created, so a resumed session would hand the next turn
+# the PREVIOUS turn's values — a stale identity is worse than a missing one. The names are the
+# operator's own declaration (``terminal.client_env_turn_passthrough``); an exact name is what makes
+# the credential filter inapplicable, since declaring a credential here is the whole point of it.
+_MAX_TURN_NAMES = 32
+_MAX_TURN_BYTES = 32 * 1024
+_TURN: ContextVar = ContextVar('session_turn_env', default=None)
+
+
+def _plain_name(name: str) -> bool:
+    return bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name)) and not name.startswith('HERMES_')
+
+
+def configured_turn_names(config) -> frozenset:
+    """The profile's declared per-turn names (``terminal.client_env_turn_passthrough``)."""
+    terminal = config.get('terminal') if isinstance(config, dict) else None
+    raw = terminal.get(TURN_CONFIG_KEY) if isinstance(terminal, dict) else None
+    return (frozenset(n.strip() for n in raw if isinstance(n, str) and _plain_name(n.strip()))
+            if isinstance(raw, list) else frozenset())
+
+
+def collect_turn_env(environ=None, config=None) -> dict[str, str]:
+    """Client side: this shell's values for the declared names (a name it did not export is absent,
+    never an empty string, so the gateway can tell "unset" from "empty")."""
+    environ = os.environ if environ is None else environ
+    return {name: environ[name] for name in sorted(configured_turn_names(config))
+            if isinstance(environ.get(name), str)}
+
+
+def accepted_turn_env(value, names) -> dict[str, str]:
+    """Gateway side: the validated per-turn map, keeping only the names the profile declares and
+    dropping the rest (a client one release ahead must not be refused by a lagging profile).
+    Raises ``ValueError`` for anything but a bounded flat string-to-string map."""
+    if value is None:
+        return {}
+    if (not isinstance(value, dict) or len(value) > _MAX_TURN_NAMES
+            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items())
+            or sum(len(k) + len(v) for k, v in value.items()) > _MAX_TURN_BYTES):
+        raise ValueError('turn_env must be a map of variable names to string values')
+    return {name: value[name] for name in sorted(value) if name in names}
+
+
+@contextmanager
+def turn_env_scope(env):
+    """Bind one turn's declared values for this context only (``None``: none). They reach that turn's
+    tool subprocesses (:func:`toolchain_environ`) and nothing else: never the session's policy, never
+    another turn, never a log line."""
+    token = _TURN.set(dict(env) if env else None)
+    try:
+        yield
+    finally:
+        _TURN.reset(token)
+
+
+def bound_turn_env() -> dict[str, str]:
+    """The declared values of the turn executing here (empty outside one)."""
+    return _TURN.get() or {}

@@ -879,3 +879,140 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+# ---------------------------------------------------------------------------
+# Owed death notices: a lifecycle kill must reach the agent (agent_close bug).
+#
+# 2026-11-12 incident: the gateway restart killed the background Codex task at
+# 15:34 (SIGTERM, termination_source=agent_close, consume_output=True) and no
+# notification ever arrived — the agent waited on a dead process for 5+ hours.
+# A death owed a notice must ride the SAME wake chain as a completion
+# (``_enqueue_process_completion_notification``) even when the kill sweep forced
+# the completion consumed, and the receipt is stamped delivered afterwards so no
+# later boot replays it.
+# ---------------------------------------------------------------------------
+
+def _killed_session(**over):
+    import time as _time
+    fields = dict(
+        output_buffer="partial work\n", exited=True, exit_code=-15,
+        command="zsh -ic 'codex exec long-task'", started_at=None,
+        exited_at=_time.mktime(_time.strptime("2026-11-12 15:34:50", "%Y-%m-%d %H:%M:%S")),
+        completion_reason="killed",
+        termination_source="agent_close", notify_on_complete=True,
+        persist_on_release=False, owner_task_id="t1", task_id="t1",
+    )
+    fields.update(over)
+    return SimpleNamespace(**fields)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_killed_completion_delivers_despite_forced_consume(
+    monkeypatch, tmp_path
+):
+    """The agent_close sweep's consume_output=True must not suppress the owed
+    death notice: the mark means the killer took the output, not that the agent
+    learned the task died."""
+    import tools.process_registry as pr_module
+    from tools import process_registry_results as receipts
+
+    session = _killed_session()
+    # consumed=True mirrors kill_process(source="agent_close", consume_output=True).
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([session], consumed=True))
+    marked = []
+    monkeypatch.setattr(receipts, "mark_interrupt_notice_delivered", lambda sid: marked.append(sid))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123",
+               "notify_on_complete": True}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_awaited_once()
+    synth_text = runner._enqueue_process_completion_notification.await_args.args[0]
+    assert "task interrupted" in synth_text
+    assert "agent_close" in synth_text and "SIGTERM" in synth_text
+    assert "codex exec long-task" in synth_text
+    # Kill time rides the notice (cause AND time).
+    assert "2026-11-12" in synth_text
+    # Delivered -> receipt stamped; no later gateway boot replays it.
+    assert marked == ["proc_test"]
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dead_session_replay_watcher_delivers_interruption_notice(
+    monkeypatch, tmp_path
+):
+    """Gateway-restart replay: arm_interrupt_notices builds a watcher with an
+    embedded dead_session (interrupted_death=True) from the pending receipt; it
+    must deliver the notice through the same completion wake chain."""
+    import tools.process_registry as pr_module
+    from tools import process_registry_results as receipts
+
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([]))
+    marked = []
+    monkeypatch.setattr(receipts, "mark_interrupt_notice_delivered", lambda sid: marked.append(sid))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    watcher = {
+        **_watcher_dict(session_id="proc_replay"),
+        "session_key": "agent:main:telegram:dm:123",
+        "notify_on_complete": True,
+        "interrupted_death": True,
+        "dead_session": _killed_session(
+            id="proc_replay", completion_reason="lost", termination_source="gateway_downtime",
+            exit_code=None, output_buffer=""),
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    synth_text = runner._enqueue_process_completion_notification.await_args.args[0]
+    assert "task interrupted" in synth_text
+    assert "outcome unknown" in synth_text
+    assert marked == ["proc_replay"]
+
+
+@pytest.mark.asyncio
+async def test_interruption_notice_falls_back_to_chat_message_when_wake_refused(
+    monkeypatch, tmp_path
+):
+    """An owed death notice is never silent: when the wake chain refuses past its
+    retries, the plain chat notice goes out and the receipt is stamped."""
+    import tools.process_registry as pr_module
+    from tools import process_registry_results as receipts
+
+    session = _killed_session()
+    sticky = _FakeRegistry([session], consumed=True)
+    sticky.get = lambda session_id: session  # the watcher polls again on every retry
+    monkeypatch.setattr(pr_module, "process_registry", sticky)
+    marked = []
+    monkeypatch.setattr(receipts, "mark_interrupt_notice_delivered", lambda sid: marked.append(sid))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=False)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123",
+               "notify_on_complete": True}
+
+    await runner._run_process_watcher(watcher)
+    sent = [call.args[1] for call in adapter.send.await_args_list]
+    assert sent, "refused wake must fall back to a chat message, never silence"
+    assert any("task interrupted" in text for text in sent)
+    assert marked == ["proc_test"]

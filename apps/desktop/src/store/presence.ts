@@ -173,9 +173,25 @@ export function createPresenceReporter(deps: PresenceReporterDeps): PresenceRepo
       return
     }
 
+    const previous = told.get(channel)
     told.set(channel, statement)
-    // A refused or failed report must never reach the user or the connection.
-    channel.request('client.activity', { ...params }).catch(() => undefined)
+    // A refused or failed report must never reach the user or the connection. It was not told,
+    // though: the statement before it stands, and the next evaluation sends this one again. Only
+    // while it is still the newest statement for this connection, so a late failure cannot
+    // undo a later report.
+    channel.request('client.activity', { ...params }).catch(() => {
+      if (told.get(channel) !== statement) {
+        return
+      }
+
+      if (previous) {
+        told.set(channel, previous)
+      } else {
+        told.delete(channel)
+      }
+
+      awayTold.delete(channel)
+    })
   }
 
   // An empty list withdraws everything this connection holds without claiming any input.

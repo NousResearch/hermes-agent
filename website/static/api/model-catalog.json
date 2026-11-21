@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-19T11:17:17Z",
+  "updated_at": "2026-11-19T11:29:56Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -526,6 +526,1281 @@
         },
         {
           "id": "stealth/space-bunny-alpha"
+        }
+      ]
+    },
+    "openai": {
+      "models": [
+        {
+          "id": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5-mini"
+        },
+        {
+          "id": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-5.2-codex"
+        },
+        {
+          "id": "gpt-4.1"
+        },
+        {
+          "id": "gpt-4o"
+        },
+        {
+          "id": "gpt-4o-mini"
+        }
+      ]
+    },
+    "openai-api": {
+      "models": [
+        {
+          "id": "gpt-6.2-sol"
+        },
+        {
+          "id": "gpt-6.2-astra"
+        },
+        {
+          "id": "gpt-6.1-sol"
+        },
+        {
+          "id": "gpt-6.1-sol-pro"
+        },
+        {
+          "id": "gpt-6-sol"
+        },
+        {
+          "id": "gpt-6-sol-pro"
+        },
+        {
+          "id": "gpt-6-luna"
+        },
+        {
+          "id": "gpt-6-luna-pro"
+        },
+        {
+          "id": "gpt-5.6-sol"
+        },
+        {
+          "id": "gpt-5.6-sol-pro"
+        },
+        {
+          "id": "gpt-5.6-terra"
+        },
+        {
+          "id": "gpt-5.6-terra-pro"
+        },
+        {
+          "id": "gpt-5.6-luna"
+        },
+        {
+          "id": "gpt-5.6-luna-pro"
+        },
+        {
+          "id": "gpt-5.5"
+        },
+        {
+          "id": "gpt-5.5-pro"
+        },
+        {
+          "id": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5.4-nano"
+        },
+        {
+          "id": "gpt-5-mini"
+        },
+        {
+          "id": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-4.1"
+        },
+        {
+          "id": "gpt-4o"
+        },
+        {
+          "id": "gpt-4o-mini"
+        }
+      ]
+    },
+    "gemini": {
+      "models": [
+        {
+          "id": "gemini-3.8-flash"
+        },
+        {
+          "id": "gemini-4-hydrogen"
+        },
+        {
+          "id": "gemini-4-carbon"
+        },
+        {
+          "id": "gemini-4-argon"
+        },
+        {
+          "id": "gemini-3.7-flash"
+        },
+        {
+          "id": "gemini-3.1-pro-preview"
+        },
+        {
+          "id": "gemini-3-pro-preview"
+        },
+        {
+          "id": "gemini-3.6-flash"
+        },
+        {
+          "id": "gemini-3.1-flash-lite-preview"
+        }
+      ]
+    },
+    "zai": {
+      "models": [
+        {
+          "id": "glm-5.3"
+        },
+        {
+          "id": "glm-5.3-flash"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-5v-turbo"
+        },
+        {
+          "id": "glm-5-turbo"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "glm-4.5"
+        },
+        {
+          "id": "glm-4.5-flash"
+        }
+      ]
+    },
+    "nvidia": {
+      "models": [
+        {
+          "id": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b"
+        },
+        {
+          "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "nvidia/nemotron-3.5-lightning-30b-a3b"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+        },
+        {
+          "id": "z-ai/glm-5.3"
+        },
+        {
+          "id": "z-ai/glm-5.2"
+        },
+        {
+          "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "minimaxai/minimax-m3"
+        }
+      ]
+    },
+    "kimi-coding": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-for-coding"
+        },
+        {
+          "id": "kimi-for-coding-highspeed"
+        },
+        {
+          "id": "kimi-k2-thinking"
+        },
+        {
+          "id": "kimi-k2-thinking-turbo"
+        },
+        {
+          "id": "kimi-k2-turbo-preview"
+        },
+        {
+          "id": "kimi-k2-0905-preview"
+        }
+      ]
+    },
+    "kimi-coding-cn": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.7-code-highspeed"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-k2-thinking"
+        },
+        {
+          "id": "kimi-k2-turbo-preview"
+        },
+        {
+          "id": "kimi-k2-0905-preview"
+        }
+      ]
+    },
+    "stepfun": {
+      "models": [
+        {
+          "id": "step-3.7-flash"
+        },
+        {
+          "id": "step-3.5-flash"
+        },
+        {
+          "id": "step-3.5-flash-2603"
+        }
+      ]
+    },
+    "moonshot": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-k2-thinking"
+        },
+        {
+          "id": "kimi-k2-turbo-preview"
+        },
+        {
+          "id": "kimi-k2-0905-preview"
+        }
+      ]
+    },
+    "minimax": {
+      "models": [
+        {
+          "id": "MiniMax-M3"
+        },
+        {
+          "id": "MiniMax-M2.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        },
+        {
+          "id": "MiniMax-M2.1"
+        },
+        {
+          "id": "MiniMax-M2"
+        }
+      ]
+    },
+    "minimax-oauth": {
+      "models": [
+        {
+          "id": "MiniMax-M3"
+        },
+        {
+          "id": "MiniMax-M2.7"
+        },
+        {
+          "id": "MiniMax-M2.7-highspeed"
+        }
+      ]
+    },
+    "minimax-cn": {
+      "models": [
+        {
+          "id": "MiniMax-M3"
+        },
+        {
+          "id": "MiniMax-M2.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        },
+        {
+          "id": "MiniMax-M2.1"
+        },
+        {
+          "id": "MiniMax-M2"
+        }
+      ]
+    },
+    "anthropic": {
+      "models": [
+        {
+          "id": "claude-fable-5-2"
+        },
+        {
+          "id": "claude-fable-5.1"
+        },
+        {
+          "id": "claude-fable-5"
+        },
+        {
+          "id": "claude-opus-5-5"
+        },
+        {
+          "id": "claude-opus-5"
+        },
+        {
+          "id": "claude-sonnet-5"
+        },
+        {
+          "id": "claude-opus-4-8"
+        },
+        {
+          "id": "claude-opus-4-7"
+        },
+        {
+          "id": "claude-opus-4-6"
+        },
+        {
+          "id": "claude-sonnet-4-6"
+        },
+        {
+          "id": "claude-opus-4-5-20251101"
+        },
+        {
+          "id": "claude-sonnet-4-5-20250929"
+        },
+        {
+          "id": "claude-opus-4-20250514"
+        },
+        {
+          "id": "claude-sonnet-4-20250514"
+        },
+        {
+          "id": "claude-haiku-4-5-20251001"
+        }
+      ]
+    },
+    "deepseek": {
+      "models": [
+        {
+          "id": "deepseek-flash"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        }
+      ]
+    },
+    "xiaomi": {
+      "models": [
+        {
+          "id": "mimo-v2.6-pro"
+        },
+        {
+          "id": "mimo-v2.6-flash"
+        },
+        {
+          "id": "mimo-v2.6-pro-ultraspeed"
+        },
+        {
+          "id": "mimo-v2.5-pro"
+        },
+        {
+          "id": "mimo-v2.5"
+        },
+        {
+          "id": "mimo-v2-pro"
+        },
+        {
+          "id": "mimo-v2-omni"
+        },
+        {
+          "id": "mimo-v2-flash"
+        }
+      ]
+    },
+    "tencent-tokenhub": {
+      "models": [
+        {
+          "id": "hy4-preview"
+        },
+        {
+          "id": "hy3"
+        },
+        {
+          "id": "hy3-preview"
+        }
+      ]
+    },
+    "tencent-tokenplan": {
+      "models": [
+        {
+          "id": "hy4-preview"
+        },
+        {
+          "id": "hy3"
+        },
+        {
+          "id": "hy3-preview"
+        }
+      ]
+    },
+    "arcee": {
+      "models": [
+        {
+          "id": "trinity-large-thinking"
+        },
+        {
+          "id": "trinity-large-preview"
+        },
+        {
+          "id": "trinity-mini"
+        }
+      ]
+    },
+    "gmi": {
+      "models": [
+        {
+          "id": "zai-org/GLM-5.1-FP8"
+        },
+        {
+          "id": "deepseek-ai/DeepSeek-V3.2"
+        },
+        {
+          "id": "moonshotai/Kimi-K2.5"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "anthropic/claude-sonnet-5"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "openai/gpt-5.4"
+        }
+      ]
+    },
+    "opencode-zen": {
+      "models": [
+        {
+          "id": "x-preview-f-free"
+        },
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "gpt-5.6-sol"
+        },
+        {
+          "id": "gpt-5.6-terra"
+        },
+        {
+          "id": "gpt-5.6-luna"
+        },
+        {
+          "id": "gpt-5.5"
+        },
+        {
+          "id": "gpt-5.5-pro"
+        },
+        {
+          "id": "gpt-5.4-pro"
+        },
+        {
+          "id": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5.4-nano"
+        },
+        {
+          "id": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-5.3-codex-spark"
+        },
+        {
+          "id": "gpt-5.2"
+        },
+        {
+          "id": "gpt-5.2-codex"
+        },
+        {
+          "id": "gpt-5.1"
+        },
+        {
+          "id": "gpt-5.1-codex"
+        },
+        {
+          "id": "gpt-5.1-codex-max"
+        },
+        {
+          "id": "gpt-5.1-codex-mini"
+        },
+        {
+          "id": "gpt-5"
+        },
+        {
+          "id": "gpt-5-codex"
+        },
+        {
+          "id": "gpt-5-nano"
+        },
+        {
+          "id": "claude-fable-5"
+        },
+        {
+          "id": "claude-opus-5"
+        },
+        {
+          "id": "claude-sonnet-5"
+        },
+        {
+          "id": "claude-opus-4-8"
+        },
+        {
+          "id": "claude-opus-4-7"
+        },
+        {
+          "id": "claude-opus-4-6"
+        },
+        {
+          "id": "claude-opus-4-5"
+        },
+        {
+          "id": "claude-sonnet-4-6"
+        },
+        {
+          "id": "claude-sonnet-4-5"
+        },
+        {
+          "id": "claude-sonnet-4"
+        },
+        {
+          "id": "claude-haiku-4-5"
+        },
+        {
+          "id": "gemini-3.8-flash"
+        },
+        {
+          "id": "gemini-3.7-flash"
+        },
+        {
+          "id": "gemini-3.6-flash"
+        },
+        {
+          "id": "gemini-3.5-flash"
+        },
+        {
+          "id": "gemini-3.5-flash-lite"
+        },
+        {
+          "id": "gemini-3.1-pro"
+        },
+        {
+          "id": "gemini-3-flash"
+        },
+        {
+          "id": "grok-4.6"
+        },
+        {
+          "id": "grok-4.5"
+        },
+        {
+          "id": "grok-build-0.1"
+        },
+        {
+          "id": "muse-spark-1.2"
+        },
+        {
+          "id": "minimax-m3"
+        },
+        {
+          "id": "minimax-m2.7"
+        },
+        {
+          "id": "minimax-m2.5"
+        },
+        {
+          "id": "glm-5.3"
+        },
+        {
+          "id": "glm-5.3-flash"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "big-pickle"
+        },
+        {
+          "id": "mimo-v2.5-free"
+        },
+        {
+          "id": "nemotron-3-ultra-free"
+        },
+        {
+          "id": "nemotron-3.5-lightning-free"
+        },
+        {
+          "id": "muse-spark-1.2-contributor-free"
+        },
+        {
+          "id": "muse-spark-1.3-contributor-free"
+        }
+      ]
+    },
+    "opencode-go": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "gpt-5.6-luna"
+        },
+        {
+          "id": "grok-4.5"
+        },
+        {
+          "id": "glm-5.3"
+        },
+        {
+          "id": "glm-5.3-flash"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "mimo-v2.5-pro"
+        },
+        {
+          "id": "mimo-v2.5"
+        },
+        {
+          "id": "mimo-v2-pro"
+        },
+        {
+          "id": "mimo-v2-omni"
+        },
+        {
+          "id": "minimax-m3"
+        },
+        {
+          "id": "minimax-m2.7"
+        },
+        {
+          "id": "minimax-m2.5"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "qwen3.8-max"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "hy3"
+        },
+        {
+          "id": "hy3-preview"
+        },
+        {
+          "id": "muse-spark-1.2-contributor"
+        },
+        {
+          "id": "muse-spark-1.3-contributor"
+        }
+      ]
+    },
+    "kilocode": {
+      "models": [
+        {
+          "id": "anthropic/claude-opus-4.6"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "openai/gpt-5.4"
+        },
+        {
+          "id": "google/gemini-3-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-flash-preview"
+        }
+      ]
+    },
+    "alibaba": {
+      "models": [
+        {
+          "id": "qwen3.8-max"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash-0731"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-cn": {
+      "models": [
+        {
+          "id": "qwen3.8-max"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash-0731"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-coding-plan": {
+      "models": [
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-max-2026-01-23"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-coding-plan-cn": {
+      "models": [
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-max-2026-01-23"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-token-plan": {
+      "models": [
+        {
+          "id": "qwen3.8-max-0902"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "deepseek-v3.2"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        }
+      ]
+    },
+    "alibaba-token-plan-cn": {
+      "models": [
+        {
+          "id": "qwen3.8-max-0902"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "deepseek-v3.2"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        }
+      ]
+    },
+    "huggingface": {
+      "models": [
+        {
+          "id": "moonshotai/Kimi-K2.5"
+        },
+        {
+          "id": "Qwen/Qwen3.5-397B-A17B"
+        },
+        {
+          "id": "Qwen/Qwen3.5-35B-A3B"
+        },
+        {
+          "id": "deepseek-ai/DeepSeek-V3.2"
+        },
+        {
+          "id": "MiniMaxAI/MiniMax-M2.5"
+        },
+        {
+          "id": "zai-org/GLM-5"
+        },
+        {
+          "id": "XiaomiMiMo/MiMo-V2-Flash"
+        },
+        {
+          "id": "moonshotai/Kimi-K2-Thinking"
+        },
+        {
+          "id": "moonshotai/Kimi-K2.6"
+        }
+      ]
+    },
+    "bedrock": {
+      "models": [
+        {
+          "id": "us.anthropic.claude-sonnet-5"
+        },
+        {
+          "id": "us.anthropic.claude-opus-5-5"
+        },
+        {
+          "id": "us.anthropic.claude-sonnet-4-6"
+        },
+        {
+          "id": "us.anthropic.claude-opus-4-6-v1"
+        },
+        {
+          "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        },
+        {
+          "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        },
+        {
+          "id": "openai.gpt-6-astra"
+        },
+        {
+          "id": "openai.gpt-6.1-sol"
+        },
+        {
+          "id": "openai.gpt-6.1-terra"
+        },
+        {
+          "id": "openai.gpt-6-sol"
+        },
+        {
+          "id": "openai.gpt-6-luna"
+        },
+        {
+          "id": "openai.gpt-5.5"
+        },
+        {
+          "id": "openai.gpt-5.6-sol"
+        },
+        {
+          "id": "openai.gpt-5.6-terra"
+        },
+        {
+          "id": "openai.gpt-5.6-luna"
+        },
+        {
+          "id": "openai.gpt-5.4"
+        },
+        {
+          "id": "us.amazon.nova-pro-v1:0"
+        },
+        {
+          "id": "us.amazon.nova-lite-v1:0"
+        },
+        {
+          "id": "us.amazon.nova-micro-v1:0"
+        },
+        {
+          "id": "deepseek.v3.2"
+        },
+        {
+          "id": "us.meta.llama4-maverick-17b-instruct-v1:0"
+        },
+        {
+          "id": "us.meta.llama4-scout-17b-instruct-v1:0"
+        }
+      ]
+    },
+    "vertex": {
+      "models": [
+        {
+          "id": "google/gemini-3.8-flash"
+        },
+        {
+          "id": "google/gemini-4-argon"
+        },
+        {
+          "id": "google/gemini-3.7-flash"
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-pro-preview"
+        },
+        {
+          "id": "google/gemini-3.6-flash"
+        },
+        {
+          "id": "google/gemini-3.5-flash"
+        },
+        {
+          "id": "google/gemini-3.5-flash-lite"
+        },
+        {
+          "id": "google/gemini-3-flash-preview"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite"
+        }
+      ]
+    },
+    "novita": {
+      "models": [
+        {
+          "id": "moonshotai/kimi-k2.5"
+        },
+        {
+          "id": "minimax/minimax-m2.7"
+        },
+        {
+          "id": "zai-org/glm-5"
+        },
+        {
+          "id": "deepseek/deepseek-v3-0324"
+        },
+        {
+          "id": "deepseek/deepseek-r1-0528"
+        },
+        {
+          "id": "qwen/qwen3-235b-a22b-fp8"
+        }
+      ]
+    },
+    "ai-gateway": {
+      "models": [
+        {
+          "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "alibaba/qwen3.6-plus"
+        },
+        {
+          "id": "zai/glm-5.1"
+        },
+        {
+          "id": "minimax/minimax-m2.7"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "anthropic/claude-opus-4.7"
+        },
+        {
+          "id": "anthropic/claude-opus-4.6"
+        },
+        {
+          "id": "anthropic/claude-haiku-4.5"
+        },
+        {
+          "id": "openai/gpt-5.4"
+        },
+        {
+          "id": "openai/gpt-5.4-mini"
+        },
+        {
+          "id": "openai/gpt-5.3-codex"
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-flash"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "xai/grok-4.20-reasoning"
         }
       ]
     }

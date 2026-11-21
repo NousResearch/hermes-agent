@@ -221,17 +221,35 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
 
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
-        from hermes_cli.models import pick_silent_default_model
+        from hermes_cli.model_catalog import manifest_additions, shipped_rows_only
+        from hermes_cli.models import pick_silent_default_model, provider_model_ids, static_catalog
+        from hermes_cli.model_switch_providers import configured_model_ids
+        from hermes_cli.models_detect import cached_provenance
 
         # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
-        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
+        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too. So
+        # does the choice: the manifest it consults is the profile's.
         with _config_profile_scope(profile):
             payload = build_models_payload(load_picker_context())
-        for row in payload.get("providers", []):
-            if str(row.get("slug", "")).lower() == slug:
-                models = [str(m) for m in (row.get("models") or [])]
-                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
-        return {"provider": slug, "model": "", "free_tier": None}
+            row = next((r for r in payload.get("providers", []) if str(r.get("slug", "")).lower() == slug), None)
+            if row is None:
+                return {"provider": slug, "model": "", "free_tier": None}
+            models = [str(m) for m in (row.get("models") or [])]
+            if (record := cached_provenance(slug)) is not None:
+                # A row that is in the picker only because of the manifest is offered, never
+                # recommended. Pins from ``providers.<slug>.models`` and the provider's own rows stay.
+                published = record["needs_manifest"] - {mid.lower() for mid in configured_model_ids(slug)}
+                if published:
+                    models = [mid for mid in models if mid.lower() not in published] or list(static_catalog(slug)) or models
+            elif added := manifest_additions(slug, static_catalog(slug)):
+                # A row the manifest added is offered, never recommended. Choose from the list, in
+                # its order, that the picker would have had without the manifest's rows.
+                offered = set(models)
+                with shipped_rows_only():
+                    own = [mid for mid in provider_model_ids(slug) if mid in offered]
+                published = {mid.lower() for mid in added}
+                models = own or [mid for mid in models if mid.lower() not in published] or models
+            return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
     except HTTPException:
         raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
     except Exception:

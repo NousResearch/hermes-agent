@@ -2,7 +2,13 @@
 // env and filesystem are passed as data; nothing touches process.platform.
 import { describe, expect, it } from 'vitest'
 
-import { gitForWindowsSshCandidates, resolveSshBinary, system32OpenSsh, type WindowsSshEnv } from './ssh-binary'
+import {
+  gitForWindowsSshCandidates,
+  nativeOpenSshCandidates,
+  resolveSshBinary,
+  system32OpenSsh,
+  type WindowsSshEnv
+} from './ssh-binary'
 
 const ENV: WindowsSshEnv = {
   systemRoot: 'C:\\Windows',
@@ -14,6 +20,7 @@ const ENV: WindowsSshEnv = {
 const SYSTEM32_SSH = 'C:\\Windows\\System32\\OpenSSH\\ssh.exe'
 const PROGRAM_FILES_GIT_SSH = 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe'
 const PORTABLE_GIT_SSH = 'C:\\Users\\me\\AppData\\Local\\hermes\\git\\usr\\bin\\ssh.exe'
+const PROGRAM_FILES_OPENSSH = 'C:\\Program Files\\OpenSSH\\ssh.exe'
 
 // Compare on win32 separators whatever the host OS joins with.
 const norm = (p: string) => p.replace(/\//g, '\\')
@@ -76,6 +83,12 @@ describe('resolveSshBinary', () => {
     )
   })
 
+  it('prefers an installed-native Win32-OpenSSH client over Git for Windows when System32 is missing', () => {
+    const { fs } = fakeFs([PROGRAM_FILES_OPENSSH, PROGRAM_FILES_GIT_SSH])
+
+    expect(norm(resolveSshBinary({ platform: 'win32', env: ENV, fs }))).toBe(PROGRAM_FILES_OPENSSH)
+  })
+
   it("falls back to Git for Windows' ssh.exe when System32 OpenSSH is missing", () => {
     const { fs } = fakeFs([PROGRAM_FILES_GIT_SSH])
 
@@ -116,6 +129,23 @@ describe('gitForWindowsSshCandidates', () => {
     expect(gitForWindowsSshCandidates({ ...ENV, localAppData: '' }, fs).map(norm)).toEqual([
       PROGRAM_FILES_GIT_SSH,
       'C:\\Program Files (x86)\\Git\\usr\\bin\\ssh.exe'
+    ])
+  })
+})
+
+describe('nativeOpenSshCandidates', () => {
+  it('covers the Win32-OpenSSH install roots, machine-wide before per-user', () => {
+    expect(nativeOpenSshCandidates(ENV).map(norm)).toEqual([
+      PROGRAM_FILES_OPENSSH,
+      'C:\\Program Files (x86)\\OpenSSH\\ssh.exe',
+      'C:\\Users\\me\\AppData\\Local\\Programs\\OpenSSH\\ssh.exe'
+    ])
+  })
+
+  it('skips the per-user root when LOCALAPPDATA is unset', () => {
+    expect(nativeOpenSshCandidates({ ...ENV, localAppData: '' }).map(norm)).toEqual([
+      PROGRAM_FILES_OPENSSH,
+      'C:\\Program Files (x86)\\OpenSSH\\ssh.exe'
     ])
   })
 })

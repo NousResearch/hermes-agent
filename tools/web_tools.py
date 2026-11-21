@@ -324,16 +324,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return tool_error("Interrupted", success=False)
         # Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            if provider is None and backend and selection_exists("web"):
-                error_text = debug_call_data["error"] = _strict_selection_error("search", backend)
-                _finish_debug("web_search_tool", debug_call_data)
-                return json.dumps({"success": False, "error": error_text}, indent=2, ensure_ascii=False)
-            # Never-configured install: legacy availability-walked autodetect.
-            provider = get_active_search_provider()
+        provider, error_text = _resolve_search_provider(_get_search_backend())
+        if error_text is not None:
+            debug_call_data["error"] = error_text
+            _finish_debug("web_search_tool", debug_call_data)
+            return json.dumps({"success": False, "error": error_text}, indent=2, ensure_ascii=False)
 
         if provider is None:
             fallback = "No web search provider configured. Run `hermes tools` to set one up."
@@ -349,6 +344,24 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return result_json
     except Exception as e:
         return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {e!s}")
+
+
+def _resolve_search_provider(backend: str):
+    """Resolve the search provider ``web_search`` dispatches to for *backend*; returns ``(provider, error_text)``.
+
+    The search twin of ``_resolve_extract_provider``, shared with ``hermes doctor`` so the readiness row names
+    the provider a call actually reaches. An unregistered name with a stored web selection is a strict-selection
+    error; otherwise an unregistered or non-search backend falls through to the registry walk (provider may be
+    ``None`` when nothing is registered).
+    """
+    from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
+    provider = _wsp_get_provider(backend) if backend else None
+    if provider is not None and provider.supports_search():
+        return provider, None
+    if provider is None and backend and selection_exists("web"):
+        return None, _strict_selection_error("search", backend)
+    # Never-configured install: legacy availability-walked autodetect.
+    return get_active_search_provider(), None
 
 
 def _memoized_search(provider, query: str, limit: int) -> dict:

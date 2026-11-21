@@ -1436,6 +1436,15 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
                 job, t.runtime_adapter, t.platform_name, t.chat_id, str(delivered_message_id),
                 t.mirror_text,
                 **seed_kwargs)
+    elif t.mirror_this_target and t.thread_id and not t.in_channel_surface and not thread_seeded:
+        # Explicit thread/topic target (``telegram:<chat>:<topic>``): the plain mirror only APPENDS,
+        # so a topic with no session yet (its first automatic message) would drop the brief and
+        # the reply would start blank (#157965). Create-or-reuse the row the reply keys to.
+        _seed_cron_thread_session(
+            job, t.runtime_adapter, t.platform_name, t.chat_id, str(t.thread_id), t.mirror_text,
+            **seed_kwargs,
+        )
+        thread_seeded = True
     elif t.in_channel_surface and not t.inchannel_continuable:
         logger.warning(
             "Job '%s': in_channel delivery to %s:%s is not a "
@@ -1600,10 +1609,8 @@ def _prepare_target_delivery(
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
     origin_user_id = origin.get("user_id") if origin_target else None
 
-    # DM shape for BOTH the flatten gate and seed chat_type (Slack DM ids start with "D").
-    origin_chat_type = str(origin.get("chat_type") or "").lower()
-    is_dm_target = origin_chat_type == "dm" or (
-        not origin_chat_type and str(chat_id).startswith("D"))
+    # DM shape for BOTH the flatten gate and seed chat_type.
+    is_dm_target = _origin.target_is_dm(origin, platform_name, chat_id)
 
     # in_channel gate shared by thread-flatten and flat seed — they MUST match or brief and
     # session land in different places. Origin qualifies unconditionally; others only when the

@@ -204,6 +204,7 @@ def format_token_flow(output_tokens: Any, *, arrow: str = "↓") -> str:
         return ""
     if count < 1000:
         return f"{arrow} {count} tok"
-    if count < 1_000_000:
+    # Pick the unit after rounding: 999_960 rounds to 1000.0k and must read as 1.0M.
+    if count < 1_000_000 and round(count / 1000, 1) < 1000:
         return f"{arrow} {count / 1000:.1f}k tok"
     return f"{arrow} {count / 1_000_000:.1f}M tok"

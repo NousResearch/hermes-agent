@@ -55,6 +55,13 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 if coerced is not value:
                     args[key] = coerced
                     continue
+                salvaged = _salvage_json_stream(value)
+                if salvaged is not None:
+                    logger.warning(
+                        "coerce_tool_args: %s.%s recovered concatenated JSON "
+                        "value(s) from an unparseable array string", tool_name, key)
+                    args[key] = salvaged if isinstance(salvaged, list) else [salvaged]
+                    continue
                 if value.strip().startswith("["):
                     logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "
                                    "but could not be parsed — model may have emitted a "
@@ -133,12 +140,14 @@ def _normalize_json_strings_for_schema(
         trimmed = value.strip()
         expects_array = _schema_accepts_kind(schema, "array", root_schema)
         expects_object = _schema_accepts_kind(schema, "object", root_schema)
-        if not ((expects_array and trimmed.startswith("[")) or (expects_object and trimmed.startswith("{"))):
+        if not (expects_array or expects_object):
             return value
         try:
             parsed = json.loads(trimmed)
         except (ValueError, TypeError):
-            return value
+            parsed = _salvage_json_stream(trimmed)
+            if parsed is None:
+                return value
         if not ((isinstance(parsed, list) and expects_array) or (isinstance(parsed, dict) and expects_object)):
             return value
         value = parsed
@@ -212,6 +221,43 @@ def _coerce_json(value: str, expected_python_type: type):
     logger.warning("coerce_tool_args: JSON-parsed value is %s, expected %s — skipping coercion",
                    type(parsed).__name__, name)
     return value
+
+
+def _salvage_json_stream(text: str) -> Any:
+    """Recover JSON value(s) from a concatenated stream: ``{a}{b}``, ``[a][b]``, ``a, b``.
+
+    Some inference stacks double-encode array-typed tool arguments and lose (or
+    duplicate) the wrapper brackets, so ``json.loads`` dies on ``Extra data``.
+    ``raw_decode`` walks the whole string; returns None unless every remaining
+    byte parses as JSON values — no prose, no truncation. Multiple values
+    become a list (adjacent lists are merged); a single value only counts for
+    object/array-shaped text so plain scalars keep the caller's old path.
+    """
+    t = text.strip()
+    if not t:
+        return None
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    i, n = 0, len(t)
+    while i < n:
+        if t[i] in " \t\r\n,":
+            i += 1
+            continue
+        try:
+            value, i = decoder.raw_decode(t, i)
+        except ValueError:
+            return None
+        values.append(value)
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0] if t[0] in "{[" else None
+    if all(isinstance(v, list) for v in values):
+        merged: list[Any] = []
+        for v in values:
+            merged.extend(v)
+        return merged
+    return values
 
 
 def _coerce_number(value: str, integer_only: bool = False):

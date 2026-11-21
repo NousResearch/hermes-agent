@@ -14,6 +14,7 @@ from tools.arg_coercion import (
     _coerce_value,
     _coerce_number,
     _coerce_boolean,
+    _salvage_json_stream,
     _schema_accepts_kind,
     _normalize_json_strings_for_schema,
 )
@@ -394,3 +395,92 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Salvage for concatenated JSON streams in array-typed args ─────────────
+# Regression: an inference stack double-encoded a `questions` array as a JSON
+# stream whose wrapper brackets were lost ("{q1},{q2}"); json.loads failed with
+# "Extra data" and the old fallback wrapped the raw string into a one-element
+# list, so the tool's own validator rejected the call.
+
+
+class TestSalvageJsonStream:
+    """Unit tests for _salvage_json_stream."""
+
+    def test_concatenated_objects(self):
+        assert _salvage_json_stream('{"a": 1}{"b": 2}') == [{"a": 1}, {"b": 2}]
+
+    def test_comma_separated_objects(self):
+        assert _salvage_json_stream('{"a": 1}, {"b": 2}') == [{"a": 1}, {"b": 2}]
+
+    def test_adjacent_arrays_merge(self):
+        assert _salvage_json_stream("[1, 2][3]") == [1, 2, 3]
+
+    def test_single_object_passes_through(self):
+        assert _salvage_json_stream('{"a": 1}') == {"a": 1}
+
+    def test_plain_text_returns_none(self):
+        assert _salvage_json_stream("git status") is None
+
+    def test_truncated_stream_returns_none(self):
+        assert _salvage_json_stream('{"a": 1}{"b": ') is None
+
+    def test_trailing_prose_returns_none(self):
+        assert _salvage_json_stream('{"a": 1} done') is None
+
+    def test_bare_scalar_single_returns_none(self):
+        assert _salvage_json_stream("42") is None
+
+
+class TestConcatenatedArgCoercion:
+    """End-to-end: an array arg arrives as a concatenated JSON stream."""
+
+    _SCHEMA = {
+        "name": "ask_tool",
+        "description": "test",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string"},
+                            "choices": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    def test_concatenated_objects_recovered(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._SCHEMA):
+            result = coerce_tool_args(
+                "ask_tool", {"questions": '{"question":"a"},{"question":"b"}'}
+            )
+        assert result["questions"] == [{"question": "a"}, {"question": "b"}]
+
+    def test_adjacent_wrapped_arrays_recovered(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._SCHEMA):
+            result = coerce_tool_args(
+                "ask_tool", {"questions": '[{"question":"a"}][{"question":"b"}]'}
+            )
+        assert result["questions"] == [{"question": "a"}, {"question": "b"}]
+
+    def test_plain_text_arg_still_wrapped_raw(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._SCHEMA):
+            result = coerce_tool_args("ask_tool", {"questions": "shall we?"})
+        assert result["questions"] == ["shall we?"]
+
+    def test_truncated_payload_stays_raw(self):
+        raw = '{"question":"a"},{"question":'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._SCHEMA):
+            result = coerce_tool_args("ask_tool", {"questions": raw})
+        assert result["questions"] == [raw]
+
+    def test_nested_concatenated_choices_recovered(self):
+        value = {"questions": [{"question": "a", "choices": '"x","y"'}]}
+        out = _normalize_json_strings_for_schema(value, self._SCHEMA["parameters"])
+        assert out["questions"][0]["choices"] == ["x", "y"]

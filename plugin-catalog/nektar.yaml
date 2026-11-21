@@ -1,0 +1,7 @@
+# draft — plugin-catalog entry for NousResearch/hermes-agent (community tier)
+name: nektar
+description: Verifiable memory market for agents — bounded payments, escrow, checkable receipts (MCP)
+repo: https://github.com/kryptokrates/nektar-hermes
+sha: 52b489da98994623d9386b3b4a23aa30daec82aa
+tier: community
+category: tools

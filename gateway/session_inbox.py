@@ -40,11 +40,14 @@ def handlers(connection):
 
 def continuing_surface(actor, transport):
     """The creation label of the client continuing an item, from what the gateway verified: the Desktop's
-    own declaration on a native ticket (``transport.desktop_local``), else the operator capability a
-    native or dashboard socket holds (the Web app runs the Desktop renderer); anything else is ``cli``."""
-    if getattr(transport, 'desktop_local', False) or 'session:operator' in getattr(actor, 'capabilities', ()):
+    own declaration on a native ticket (``transport.desktop_local``), else the operator capability of a
+    dashboard-listener socket (the Web app and a remote Desktop run the Desktop renderer). A native
+    ticket without the Desktop's declaration is the CLI or TUI: it holds the operator capability too,
+    so that capability alone never makes it ``gui``."""
+    if getattr(transport, 'desktop_local', False):
         return 'gui'
-    return 'cli'
+    native = (getattr(transport, 'auth_identity', None) or {}).get('native_bootstrap') is True
+    return 'gui' if not native and 'session:operator' in getattr(actor, 'capabilities', ()) else 'cli'
 
 
 def _item(store, session_id):
@@ -52,11 +55,14 @@ def _item(store, session_id):
     if record is None or not isinstance(marker := (record.model_config or {}).get(INBOX_MARKER), dict):
         return None
     summary = store.sessions.summary(session_id, compact_rows=True)
+    # Unread means a result not yet seen. A continued item is the user's own chat now: its turns move
+    # the watermark's activity past the read time, which must not re-badge the Inbox.
+    continued = bool((record.model_config or {}).get(CONTINUED))
     return {'session_id': str(session_id), 'job_id': str(marker.get('job_id') or ''),
             'job_name': str(marker.get('job_name') or marker.get('job_id') or ''),
             'delivered_at': float(marker.get('delivered_at') or 0), 'preview': str(marker.get('preview') or ''),
-            'unread': bool(summary.unread) if summary is not None else False,
-            'running': record.ended_at is None and not (record.model_config or {}).get(CONTINUED)}
+            'unread': bool(summary is not None and summary.unread and not continued),
+            'running': record.ended_at is None and not continued}
 
 
 def _list(store, limit):

@@ -93,6 +93,39 @@ async def test_a_running_item_stays_on_its_cron_policy(owner, tmp_path):
     assert owner.persistence.bindings.receipt(sid).policy['source'] == 'cron'
 
 
+@pytest.mark.asyncio
+async def test_a_continued_item_never_badges_the_inbox_again(owner, tmp_path, monkeypatch):
+    """Once the user replies in an item it is their chat: its own turns postdate the read watermark,
+    which must not turn it back into an unread Inbox result."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_inbox import continue_if_inbox, list_items
+    import gateway.session_policy_refresh as refresh
+    monkeypatch.setattr(refresh, '_publish', lambda authority, ref, moved=False: None)
+    sid = _filed_run(owner, tmp_path)
+    await continue_if_inbox(_connection(owner), SessionRef(owner.profile_id, sid))
+    owner.persistence.sessions.set_read(sid, False)  # what the continued turns' activity amounts to
+    listed = await list_items(_connection(owner), None, {})
+    assert listed['unread_count'] == 0 and listed['items'][0]['unread'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('native,continues', [(True, False), (False, True)])
+async def test_only_a_desktop_renderer_continues_an_item_without_the_desktop_declaration(
+        owner, tmp_path, monkeypatch, native, continues):
+    """A native ticket without ``desktop_local`` is the CLI/TUI: its operator capability must not turn
+    the run into a Desktop chat. The same capability on a dashboard-listener socket (Web app) does."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_inbox import continue_if_inbox
+    import gateway.session_policy_refresh as refresh
+    monkeypatch.setattr(refresh, '_publish', lambda authority, ref, moved=False: None)
+    sid = _filed_run(owner, tmp_path)
+    connection = _connection(owner, desktop_local=False, capabilities=(
+        'session:read', 'session:control', 'session:submit', 'session:operator'))
+    connection.transport.auth_identity = {'provider': 'local', 'native_bootstrap': True} if native else {}
+    await continue_if_inbox(connection, SessionRef(owner.profile_id, sid))
+    assert owner.persistence.bindings.receipt(sid).policy['source'] == ('gui' if continues else 'cron')
+
+
 @pytest.mark.parametrize('source,title,given,expected', [
     ('gui', 'standup chat', None, 'inbox'),
     ('gui', 'standup chat', 'origin', 'inbox'),

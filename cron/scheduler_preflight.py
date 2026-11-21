@@ -14,6 +14,7 @@ import logging
 import os
 from typing import Optional
 
+from cron import inbox as _inbox
 from cron.env_settings import cron_env_setting
 
 # Log-record parity with the origin module.
@@ -342,6 +343,8 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 continue
             if _delivery.parse_room_deliver_token(part) is not None:
                 continue  # Group Chat posts write the room store directly; no adapter needed.
+            if _inbox.is_inbox_token(part):
+                continue  # Filing marks the run's own session row; no adapter needed.
             platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None

@@ -50,9 +50,9 @@ def _catalog_names() -> list[str]:
 
 
 def _configured_names() -> list[str]:
-    from hermes_cli.mcp_catalog import installed_servers
+    from hermes_cli.mcp_config import _get_mcp_servers
 
-    return sorted(installed_servers())
+    return sorted(_get_mcp_servers())
 
 
 def validate_mcp_names(action: str, names: list[str]) -> Optional[str]:
@@ -126,7 +126,8 @@ class _CatalogBackend:
     def start_install_oauth(self, name: str, env: dict[str, str]) -> Any:
         """Install an OAuth entry through the card's flow. The configuration is built in memory and
         lands, together with the setup values, only when ``initialize`` accepts the token."""
-        from hermes_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
+        from hermes_cli.mcp_catalog import card_install_config, is_installed
+        from hermes_cli.mcp_config import record_mcp_install
         from tools.connectors import mcp_oauth
 
         fresh = not is_installed(name)

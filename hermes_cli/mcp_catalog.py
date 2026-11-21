@@ -745,20 +745,12 @@ def card_install_config(entry: CatalogEntry) -> dict:
     return cfg
 
 
-def record_mcp_install(source: str, name: Optional[str], outcome: str, *, failure_class: Optional[str] = None,
-                       error: Optional[BaseException] = None) -> None:
-    """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom).
-    A failed one names its ``failure_class`` or passes the raised ``error`` (classified by its type)."""
-    from hermes_cli.observability.shared_metrics_events import record_extension_install
-
-    record_extension_install(kind="mcp_server", source=source, name=name, outcome=outcome,
-                             failure_class=failure_class, error=error)
-
-
 @contextmanager
 def recorded_catalog_install(name: str) -> Iterator[None]:
     """Record a first install of catalog entry *name* once: failed when the body raises, else
     success. A reinstall over an existing ``mcp_servers`` block is not an install."""
+    from hermes_cli.mcp_config import record_mcp_install
+
     fresh = not is_installed(name)
     try:
         yield

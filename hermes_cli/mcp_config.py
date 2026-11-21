@@ -215,6 +215,16 @@ def _get_mcp_servers(config: Optional[dict] = None) -> dict[str, dict]:
     return servers if servers and isinstance(servers, dict) else {}
 
 
+def record_mcp_install(source: str, name: Optional[str], outcome: str, *, failure_class: Optional[str] = None,
+                       error: Optional[BaseException] = None) -> None:
+    """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom).
+    A failed one names its ``failure_class`` or passes the raised ``error`` (classified by its type)."""
+    from hermes_cli.observability.shared_metrics_events import record_extension_install
+
+    record_extension_install(kind="mcp_server", source=source, name=name, outcome=outcome,
+                             failure_class=failure_class, error=error)
+
+
 def _tool_filters(cfg: dict) -> tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
 
@@ -675,8 +685,6 @@ def cmd_mcp_add(args):
     def _record(saved: bool, failure_class: str = "config_rejected") -> None:
         # A save only fails on a suspicious configuration (_save_mcp_server returns False).
         if fresh:
-            from hermes_cli.mcp_catalog import record_mcp_install
-
             record_mcp_install("url" if url else "local", None, "success" if saved else "failed",
                                failure_class=None if saved else failure_class)
 

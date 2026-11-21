@@ -645,6 +645,62 @@ class TestConnectDisconnect(unittest.TestCase):
             if adapter._poll_task:
                 adapter._poll_task.cancel()
 
+    def test_connect_probes_run_off_the_event_loop(self):
+        """The IMAP/SMTP probes are blocking stdlib I/O: `connect()` runs on the gateway
+        event loop, so running them inline froze the loop for the whole exchange and
+        starved every other platform (a 5s Telegram connect deadline expired, then the
+        shutdown watchdog exited 75). They must be dispatched to a worker thread."""
+        import asyncio
+        import threading
+        adapter = self._make_adapter()
+        loop_thread: dict[str, int] = {}
+        probe_threads: dict[str, int] = {}
+        calls: list[str] = []
+
+        def probe_imap(is_reconnect):
+            probe_threads["imap"] = threading.get_ident()
+            calls.append("imap")
+            return True
+
+        def probe_smtp():
+            probe_threads["smtp"] = threading.get_ident()
+            calls.append("smtp")
+            return True
+
+        async def noop_poll():
+            return None
+
+        adapter._probe_imap = probe_imap
+        adapter._probe_smtp = probe_smtp
+        adapter._poll_loop = noop_poll
+        adapter._wire_plugin_handlers = lambda native=None: None
+
+        async def run():
+            loop_thread["id"] = threading.get_ident()
+            return await adapter.connect()
+
+        self.assertTrue(asyncio.run(run()))
+        self.assertEqual(calls, ["imap", "smtp"], "short-circuit order must be preserved")
+        self.assertNotEqual(probe_threads["imap"], loop_thread["id"],
+                            "the IMAP probe must not run on the event loop thread")
+        self.assertNotEqual(probe_threads["smtp"], loop_thread["id"],
+                            "the SMTP probe must not run on the event loop thread")
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    def test_failed_imap_probe_still_skips_smtp(self):
+        """Off-loop dispatch must keep the `or` short-circuit: no SMTP probe after a failed IMAP one."""
+        import asyncio
+        adapter = self._make_adapter()
+        calls: list[str] = []
+
+        adapter._probe_imap = lambda is_reconnect: calls.append("imap") or False
+        adapter._probe_smtp = lambda: calls.append("smtp") or True
+
+        self.assertFalse(asyncio.run(adapter.connect()))
+        self.assertEqual(calls, ["imap"])
+
 
 class TestFetchNewMessages(unittest.TestCase):
     """Test IMAP message fetching logic."""

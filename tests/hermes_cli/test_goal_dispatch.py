@@ -155,3 +155,59 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     assert 'replaced' not in _dispatch(fresh, 'fresh objective').output
     _dispatch(fresh, '--dry-run the migration')
     assert goals.load_goal(mgr.session_id).goal == '--dry-run the migration'
+
+
+@pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('text, suggestion', [
+    ('statu', 'status'), ('stauts', 'status'), ('pasue', 'pause'), ('STATU', 'status'),
+    ('resum', 'resume'), ('shwo', 'show'), ('contine', 'continue'), ('unpasue', 'unpause'),
+    ('clea', 'clear'), ('sto', 'stop'), ('don', 'done'), ('unwiat', 'unwait'),
+    ('wiat', 'wait'), ('gtae', 'gate'), ('draf', 'draft'), ('s', 'show'),
+    ('statux', 'status'), ('statuss', 'status'),
+])
+def test_subcommand_typos_never_mutate_or_kickoff(text, suggestion, existing):
+    from hermes_cli.goal_command import is_goal_control
+
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='typo-check')
+    if existing:
+        mgr.set('original objective')
+        mgr.pause(reason='user-paused')
+    before = goals.load_goal(mgr.session_id)
+    result = _dispatch(mgr, text)
+    assert result.error
+    assert f'did you mean /goal {suggestion}?' in result.output
+    assert '/goal -- <text>' in result.output
+    assert (result.prompt, result.kickoff, result.clear_pending) == (None, False, None)
+    assert goals.load_goal(mgr.session_id) == before
+    assert is_goal_control(text)
+
+
+@pytest.mark.parametrize('surface', ['cli', 'gateway', 'tui'])
+def test_surfaces_reject_typo_without_starting_work(surface, monkeypatch):
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='typo-' + surface)
+    prompts = []
+    execute = _surface(surface, mgr, monkeypatch, prompts)
+    execute('stauts')
+    assert goals.load_goal(mgr.session_id) is None
+    assert prompts == []
+    execute('-- stauts')
+    assert goals.load_goal(mgr.session_id).goal == 'stauts'
+    assert prompts == ['stauts']
+
+
+@pytest.mark.parametrize('text', [
+    'build', 'research', 'document', 'deploy', 'hello', 'drafting',
+    'statu the project', 'pasue and reflect', 'build a useful project',
+    '-- statu', '-- pause', '-- StAtUs',
+])
+def test_free_form_goal_text_still_starts_work(text):
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='free-form')
+    result = _dispatch(mgr, text)
+    expected = text.removeprefix('-- ')
+    assert not result.error
+    assert result.kickoff
+    assert result.prompt == expected
+    assert goals.load_goal(mgr.session_id).goal == expected

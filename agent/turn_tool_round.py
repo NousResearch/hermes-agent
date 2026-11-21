@@ -184,7 +184,7 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
-    if agent._tool_guardrail_halt_decision is not None:
+    if agent._tool_guardrail_halt_decision is not None and not _try_guardrail_rebound(agent):
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
@@ -239,6 +239,24 @@ def run_tool_round(
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
     return _verdict("continue")
+
+
+def _try_guardrail_rebound(agent: Any) -> bool:
+    """Let one refused batch reach the model; terminal halts never recover.
+
+    Consume the turn's chance here, not per call: concurrent refusals share it.
+    Keep failure/progress counters intact, so retrying the blocked path still stops.
+    """
+    decision = agent._tool_guardrail_halt_decision
+    if decision.action != "block" or agent._tool_guardrail_rebound_used:
+        return False
+    agent._tool_guardrail_rebound_used = True
+    agent._tool_guardrail_halt_decision = None
+    agent._tool_guardrails.clear_halt_decision()
+    agent._emit_diagnostic_status(
+        f"⚠️ Tool guardrail blocked {decision.tool_name}; requesting a different strategy"
+    )
+    return True
 
 
 def stage_tool_call_message(

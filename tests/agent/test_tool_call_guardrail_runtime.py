@@ -492,7 +492,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     agent._disable_streaming = True
 
     with (
-        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as dispatch,
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -500,6 +500,9 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
         result = agent.run_conversation("search repeatedly")
 
     assert result["turn_exit_reason"] == "guardrail_halt"
+    assert dispatch.call_count == 2  # Neither refused attempt dispatches.
+    assert agent.client is not None
+    assert agent.client.chat.completions.create.call_count == 4  # First refusal rebounds; second stops.
     halt_text = result["final_response"]
     assert halt_text
 
@@ -510,3 +513,144 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def _run_guardrail_conversation(agent, responses, handler):
+    agent.client.chat.completions.create.side_effect = responses
+    with (
+        patch("model_tools.handle_function_call", side_effect=handler) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("recover without repeating blocked calls")
+    # Every emitted call, including a refused call, must have exactly one result.
+    call_ids = [
+        call["id"]
+        for message in result["messages"]
+        for call in message.get("tool_calls", [])
+    ]
+    result_ids = [
+        message["tool_call_id"] for message in result["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert sorted(call_ids) == sorted(result_ids)
+    assert len(result_ids) == len(set(result_ids))
+    return result, dispatch
+
+
+def _search_round(*queries):
+    return _mock_response(
+        content="", finish_reason="tool_calls",
+        tool_calls=[_mock_tool_call("web_search", json.dumps({"query": query})) for query in queries],
+    )
+
+
+def _search_result(_name, args, _task_id, **_kwargs):
+    if args["query"].startswith("same"):
+        return json.dumps({"error": "boom"})
+    return json.dumps({"ok": args["query"]})
+
+
+def test_first_block_rebounds_to_changed_strategy():
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    result, dispatch = _run_guardrail_conversation(agent, [
+        _search_round("same"), _search_round("same"), _search_round("same"),
+        _search_round("changed"), _mock_response("recovered"),
+    ], _search_result)
+
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"] == "recovered"
+    assert dispatch.call_count == 3
+    assert agent.client.chat.completions.create.call_count == 5
+    assert "guardrail" not in result
+    assert agent._tool_guardrails.halt_decision is None
+    # The recovery request actually includes the refusal, not just another blind API call.
+    recovery = agent.client.chat.completions.create.call_args_list[3].kwargs["messages"]
+    assert any(
+        message.get("role") == "tool" and "repeated_exact_failure_block" in message["content"]
+        for message in recovery
+    )
+
+
+def test_two_blocked_calls_consume_one_rebound():
+    agent = _make_agent("web_search", config=_hard_stop_config(hard_stop_after={
+        "exact_failure": 1, "same_tool_failure": 8, "idempotent_no_progress": 5,
+    }))
+    result, dispatch = _run_guardrail_conversation(agent, [
+        _search_round("same-a", "same-b"), _search_round("same-a", "same-b"),
+        _search_round("changed"), _mock_response("recovered"),
+    ], _search_result)
+
+    assert result["final_response"] == "recovered"
+    assert dispatch.call_count == 3
+    assert agent.client.chat.completions.create.call_count == 4
+    blocked = [m for m in result["messages"] if m.get("role") == "tool"
+               and "repeated_exact_failure_block" in m.get("content", "")]
+    assert len(blocked) == 2
+    assert agent._tool_guardrail_rebound_used is True
+
+
+def test_rebound_stays_spent_after_unblocked_batch():
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    result, dispatch = _run_guardrail_conversation(agent, [
+        _search_round("same"), _search_round("same"), _search_round("same"),
+        _search_round("changed"), _search_round("same"), _mock_response("must not run"),
+    ], _search_result)
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "repeated_exact_failure_block"
+    assert dispatch.call_count == 3
+    assert agent.client.chat.completions.create.call_count == 5
+
+
+def test_terminal_halt_does_not_rebound():
+    agent = _make_agent("web_search", config=_hard_stop_config(hard_stop_after={
+        "exact_failure": 99, "same_tool_failure": 2, "idempotent_no_progress": 99,
+    }))
+    result, dispatch = _run_guardrail_conversation(agent, [
+        _search_round("same-a"), _search_round("same-b"), _mock_response("must not run"),
+    ], _search_result)
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "same_tool_failure_halt"
+    assert dispatch.call_count == 2
+    assert agent.client.chat.completions.create.call_count == 2
+    assert agent._tool_guardrail_rebound_used is False
+
+
+@pytest.mark.parametrize("sequential", [True, False])
+@pytest.mark.parametrize("block_first", [True, False])
+def test_terminal_sibling_wins_over_recoverable_block(block_first, sequential):
+    agent = _make_agent("web_search", config=_hard_stop_config(hard_stop_after={
+        "exact_failure": 1, "same_tool_failure": 2, "idempotent_no_progress": 99,
+    }))
+    queries = ("same-a", "same-b") if block_first else ("same-b", "same-a")
+    execute = agent._execute_tool_calls_sequential if sequential else agent._execute_tool_calls
+    with patch.object(agent, "_execute_tool_calls", side_effect=execute):
+        result, dispatch = _run_guardrail_conversation(agent, [
+            _search_round("same-a"), _search_round(*queries), _mock_response("must not run"),
+        ], _search_result)
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["action"] == "halt"
+    assert result["guardrail"]["code"] == "same_tool_failure_halt"
+    assert dispatch.call_count == 2
+    assert agent.client.chat.completions.create.call_count == 2
+    assert agent._tool_guardrail_rebound_used is False
+    blocked = [m for m in result["messages"] if m.get("role") == "tool"
+               and "repeated_exact_failure_block" in m.get("content", "")]
+    assert len(blocked) == 1
+
+
+def test_rebound_budget_resets_for_next_user_turn():
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    for _ in range(2):
+        previous = agent.client.chat.completions.create.call_count
+        result, dispatch = _run_guardrail_conversation(agent, [
+            _search_round("same"), _search_round("same"), _search_round("same"),
+            _mock_response("recovered"),
+        ], _search_result)
+        assert result["final_response"] == "recovered"
+        assert dispatch.call_count == 2
+        assert agent.client.chat.completions.create.call_count - previous == 4

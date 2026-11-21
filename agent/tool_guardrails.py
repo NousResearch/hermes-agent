@@ -337,15 +337,20 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def clear_halt_decision(self) -> None:
+        """Clear the recoverable decision after the runtime grants a batch rebound."""
+        self._halt_decision = None
+
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
         *, message: str | None = None, **fmt: Any,
     ) -> ToolGuardrailDecision:
-        """Build a warn/block/halt decision; block/halt is also recorded as the turn's halt decision."""
+        """Build a decision; latch stops without replacing an existing terminal halt."""
         if message is None:
             message = _DECISION_MESSAGES[code].format(tool_name=tool_name, count=count, **fmt)
         decision = ToolGuardrailDecision(action, code, message, tool_name, count, signature)
-        if decision.should_halt:
+        current = self._halt_decision
+        if decision.should_halt and (current is None or current.action != "halt"):
             self._halt_decision = decision
         return decision
 
@@ -468,7 +473,7 @@ class ToolCallGuardrailController:
             # The no-progress BLOCK in before_call only covers idempotent_tools; this streak
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
-            if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
+            if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after:
                 self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
 
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
@@ -482,7 +487,7 @@ class ToolCallGuardrailController:
             if cycle is not None:
                 period, laps = cycle
                 notice, kind = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name), "identical_cycle"
-                if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after and self._halt_decision is None:
+                if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after:
                     self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
 
         stub = None

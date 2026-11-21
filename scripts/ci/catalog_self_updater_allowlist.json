@@ -47,5 +47,12 @@
     "path": "tests/godotinstall.test.mjs",
     "sha256": "5ed7b16d794ff07b88270e74de780cde95d180ae9f6fd4bc476d82b2605711bb",
     "why": "unit tests for engine/godotinstall.mjs against an injected fake fetch and temp folders; downloads nothing and writes only test temp files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/LuuMoss/video-xray",
+    "sha": "ae67d00e76a80b00453d91a253aaa16dba4bb98f",
+    "path": "engine/installs.py",
+    "sha256": "0124417b9b1b951cc7ff13afede02172fc3f59ddef502e32dda2f8e03bcc39db",
+    "why": "one-click installers download three engine runtime packs (R2T2 CPU ~50MB, R2T2 CUDA add-on ~490MB, Whisper ~110MB) from the plugin's own GitHub Releases, verify each archive against a SHA-256 pinned in the source and unpack them under HERMES_HOME/asr-*; user-initiated with visible progress, never fetches or replaces the plugin's own files (catalog bump PR for v0.3.3)"
   }
 ]

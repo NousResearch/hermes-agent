@@ -70,6 +70,7 @@ import {
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
+import { startPresenceReporter } from '@/store/presence'
 import {
   $activeGatewayProfile,
   currentProfileSelectionRevision,
@@ -300,6 +301,9 @@ export function useGatewayBoot({
     refreshHermesConfig,
     refreshSessions
   }
+
+  // One presence reporter per window, beside the connection it reports on; it never renders.
+  useEffect(() => startPresenceReporter(), [])
 
   useEffect(() => {
     let cancelled = false

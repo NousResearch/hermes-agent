@@ -227,6 +227,13 @@ def _bound_session_value(name: str) -> Any:
     return _UNSET if var is None else var.get()
 
 
+def bound_session_env(name: str) -> str:
+    """``get_session_env`` without the ``os.environ`` fallback: ``""`` when THIS context never bound
+    *name*, so a caller outside a turn never reads the process's (or another session's) values."""
+    value = _bound_session_value(name)
+    return "" if value is _UNSET else value
+
+
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
     ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""

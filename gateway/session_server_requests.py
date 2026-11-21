@@ -75,11 +75,14 @@ def is_response_frame(frame) -> bool:
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
 
 
-def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
+def resolve(frame, *, session_ok=lambda session_id, events: True, answered=None) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
     ``session_ok(session_id, events)`` lets the caller refuse an answer from a connection not entitled
     to that session: the caller's own authority must own ``events``, the stream the request was sent on
-    (session ids are only unique per profile, and ``_open`` is process-wide)."""
+    (session ids are only unique per profile, and ``_open`` is process-wide). ``answered(session_id)``
+    runs, before the waiter wakes, when the frame is a person's answer to a card: a result (not an
+    error, so no decline) to a request a reconnecting viewer is handed again (not an automatic window
+    request: reads, a preview click, the tour, a theme apply)."""
     with _lock:
         pending = _open.get(frame["id"])
         if pending is None or not session_ok(pending.session_id, pending.events):
@@ -93,6 +96,8 @@ def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
     value = result.get("value") if isinstance(result, dict) else ""
     pending.value = value if isinstance(value, str) else ""
     pending.result = result if isinstance(result, dict) else None
+    if answered is not None and pending.replay and "error" not in frame:
+        answered(pending.session_id)
     pending.event.set()
     return True
 

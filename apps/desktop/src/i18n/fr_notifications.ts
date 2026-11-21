@@ -48,6 +48,14 @@ export const frNotifications = {
       unsupported: "Ce navigateur ne peut pas afficher de notifications. Le titre de l'onglet clignote quand même."
     }
   },
+  phonePresence: {
+    title: 'Cet ordinateur pour les notifications du téléphone',
+    description: 'Ce que cette fenêtre indique à Hermes sur votre présence. Un plugin de notifications sur téléphone décide quoi en faire.',
+    unsupported: 'Sur ce backend, les notifications du téléphone ne dépendent pas de votre activité.',
+    disconnected: 'Non connecté.',
+    watchingComputer: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cet ordinateur pour la dernière fois. Dernière saisie il y a ${time}.`,
+    watchingWindow: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cette fenêtre pour la dernière fois. Dernière saisie il y a ${time}.`
+  },
   test: 'Envoyer une notification de test',
   testTitle: 'Hermes',
   testBody: 'Les notifications fonctionnent.',

@@ -39,6 +39,9 @@ const pushToolRow = (out: Msg[], pending: string[], { content, context, name }: 
   return []
 }
 
+// A resumed failed-turn boundary row is failure copy, not an answer: /copy skips it.
+const noAnswerMark = (displayKind: unknown): Partial<Msg> => (displayKind === 'failed_turn' ? { noAnswer: true } : {})
+
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
     return []
@@ -121,7 +124,13 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (role === 'assistant') {
-      out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
+      out.push({
+        role,
+        text,
+        ...(createdAt !== undefined && { createdAt }),
+        ...(pending.length && { tools: pending }),
+        ...noAnswerMark(display_kind)
+      })
       pending = []
     } else if (role === 'user' || role === 'system') {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...storedRowId(role, row_id) })

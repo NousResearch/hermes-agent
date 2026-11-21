@@ -174,6 +174,8 @@ export interface Msg {
   isLiveReasoning?: boolean
   thinkingTokens?: number
   toolTokens?: number
+  // An assistant row that holds no answer (a bare interrupt marker, a turn-failure card): /copy skips it.
+  noAnswer?: boolean
   tools?: string[]
   todos?: TodoItem[]
   todoIncomplete?: boolean

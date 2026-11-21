@@ -60,6 +60,25 @@ def test_copy_strips_reasoning_blocks_before_copy():
     mock_copy.assert_called_once_with("Visible answer")
 
 
+def test_copy_skips_failed_turn_boundary_notices():
+    """A failed turn closes with a Hermes notice row; bare /copy takes the answer before it (pi#12121)."""
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
+
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {"role": "assistant", "content": "the real answer"},
+        {"role": "user", "content": "again"},
+        {"role": "assistant", "content": "typed notice", "display_kind": FAILED_TURN_DISPLAY_KIND},
+        {"role": "user", "content": "again"},
+        {"role": "assistant", "content": FAILED_TURN_NOTICE},  # stored before closers typed it
+    ]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+        cli_obj.process_command("/copy")
+
+    mock_copy.assert_called_once_with("the real answer")
+
+
 
 
 def test_copy_prefers_osc52_in_ssh_sessions():

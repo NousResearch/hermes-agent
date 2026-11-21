@@ -67,6 +67,7 @@ import {
   describeRpcError,
   describeTurnFailure,
   isBareErrorText,
+  markFailureNoAnswer,
   promptTimeoutNotice,
   stderrLooksLikeProblem,
   stderrProblemActivity
@@ -1847,7 +1848,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setHistoryItems(prev => {
             const at = prev.findLastIndex(m => m.role === 'assistant' && m.text === from)
 
-            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, text: to } : m))
+            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, noAnswer: undefined, text: to } : m))
           })
         }
 
@@ -1877,7 +1878,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               ? finalMessages
               : [{ role: 'assistant', text: finalText }]
 
-          msgs.forEach(appendMessage)
+          markFailureNoAnswer(msgs, payload).forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')

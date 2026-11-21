@@ -216,9 +216,12 @@ class CLICommandsSessionToolsMixin:
                 return _cp(f"  {_t('copy.usage')}")
             if idx < 0 or idx >= len(assistant):
                 return _cp(f"  {_t('copy.invalid_number', max=len(assistant))}")
-        else:  # latest response that has copyable text
+        else:  # latest response that has copyable text, past failed-turn boundary notices
+            from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, untyped_failed_turn_display_kind
             idx = next((i for i in range(len(assistant) - 1, -1, -1)
-                        if _assistant_copy_text(assistant[i].get("content"))), -1)
+                        if _assistant_copy_text(assistant[i].get("content"))
+                        and FAILED_TURN_DISPLAY_KIND not in (assistant[i].get("display_kind"),
+                                                             untyped_failed_turn_display_kind("assistant", assistant[i].get("content")))), -1)
             if idx < 0:
                 return _cp(f"  {_t('copy.nothing_in_responses')}")
         text = _assistant_copy_text(assistant[idx].get("content"))

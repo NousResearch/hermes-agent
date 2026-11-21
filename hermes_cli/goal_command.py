@@ -52,6 +52,15 @@ def _resume(mgr, arg, render):
                              prompt=mgr.next_continuation_prompt())
 
 
+def _recover(mgr, arg, render):
+    """Crash recovery: pick the active goal back up without spending the resume budget reset."""
+    prompt = mgr.continue_after_interruption()
+    if prompt is None:
+        return GoalCommandResult("No active goal with remaining budget to recover. Use /goal resume to unpause or reset the budget.")
+    return GoalCommandResult(render("gateway.goal.continuing", "▶ Goal continuing: {goal}", goal=mgr.state.goal),
+                             prompt=prompt)
+
+
 def _clear(mgr, arg, render):
     had = mgr.has_goal()
     mgr.clear()
@@ -98,12 +107,13 @@ _GATE_HANDLERS = {"add": _gate_add, "remove": _gate_remove, "rm": _gate_remove, 
 _EXACT_HANDLERS = {
     "": _status, "status": _status, "show": _show, "pause": _pause,
     "resume": _resume, "continue": _resume, "unpause": _resume,
+    "recover": _recover,
     "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
 }
 # Non-destructive control verbs: with trailing words the verb still wins, so
 # `/goal resume last goal` resumes instead of silently replacing the goal text.
 # clear/stop/done stay out — guessing wrong would end a goal the user meant to keep.
-_BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "pause", "status", "show", "unwait"})
+_BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "recover", "pause", "status", "show", "unwait"})
 # First words that make a command goal control (the gateway busy path dispatches these).
 _CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
 
@@ -168,7 +178,8 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         against = " against the contract above" if state.has_contract() else ""
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
-                   "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
+                   "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, "
+                   "/goal recover (pick up after a crash without resetting the budget), /goal clear.")
     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
 
 

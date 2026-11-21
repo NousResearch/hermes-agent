@@ -101,6 +101,7 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
+    _deduplicate_provider_models(rows)
 
     rows, local_row = inject_local_runtime_row(rows, ctx)
 
@@ -152,6 +153,16 @@ def build_models_payload(
     drop_unofferable_model_ids(rows)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
+
+
+def _deduplicate_provider_models(rows: list[dict]) -> None:
+    """Keep provider catalog model IDs unique without changing their advertised order."""
+    for row in rows:
+        models = row.get("models") or []
+        unique_models = list(dict.fromkeys(models))
+        if len(unique_models) < len(models):
+            row["models"] = unique_models
+            row["total_models"] = len(unique_models)
 
 
 def _strip_aggregator_overlaps(rows: list[dict]) -> None:

@@ -19,11 +19,13 @@ from pathlib import Path
 import pytest
 
 from scripts.releases import lanes as lane_set
+from tests.ci import workflow_steps
 from tests.ci.desktop_release_roles import (
     CANARY_TAG,
     DOWNLOADABLE_DISPATCHES,
     LINUX_TARGETS,
     NATIVE_TARGETS,
+    SHA,
     admitted,
     evaluate,
     gate,
@@ -31,6 +33,7 @@ from tests.ci.desktop_release_roles import (
     load,
     native_builds,
     selection_gates,
+    stage_step,
     termux_builder,
     termux_builds,
     universal_assembler,
@@ -143,6 +146,57 @@ def test_termux_commit_branch_is_read_only_and_has_no_apt_signing_key_access():
         for step in release_job["steps"]:
             if step.get("name") in ("Write the APT signing key", "Stage the APT repo handoff to R2"):
                 assert not gate(step["if"], inputs, needs, job_if=False), step["name"]
+
+
+_STAGING_STUB = '''import json, os, sys
+with open(os.environ["STAGING_RECEIPTS"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps({{"copy": {copy!r}, "module": __spec__.name, "cwd": os.getcwd(),
+                             "argv": sys.argv[1:]}}) + "\\n")
+'''
+
+
+def _claim_staging_legs():
+    jobs = _workflow("desktop-bundled-release.yml")["jobs"]
+    legs = native_builds(jobs)
+    rows = [(legs[(target, "commit")], target, "apps/desktop/release") for target in NATIVE_TARGETS]
+    return [*rows, (termux_builds(jobs)["commit"], None, "termux-build")]
+
+
+@pytest.mark.parametrize("legacy", ["true", "false"])
+@pytest.mark.parametrize("job_name,target,artifacts", _claim_staging_legs())
+def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
+        tmp_path, job_name, target, artifacts, legacy):
+    """A claim's checkout is unreviewed and may predate claims, so it never stages itself."""
+    job = _workflow("desktop-bundled-release.yml")["jobs"][job_name]
+    checkout = tmp_path / "checkout"
+    for copy, base in (("claimed", checkout), ("controller", checkout / ".build/commit-controller")):
+        for module in ("scripts/bundles/release_artifacts.py", "scripts/releases/handoff.py"):
+            (base / module).parent.mkdir(parents=True, exist_ok=True)
+            (base / module).write_text(_STAGING_STUB.format(copy=copy), encoding="utf-8")
+    (checkout / artifacts).mkdir(parents=True)
+    receipts = tmp_path / "receipts.jsonl"
+    step = stage_step(job)
+    replay = {**step, "env": {**job.get("env", {}), **step.get("env", {}),
+                              "GITHUB_WORKSPACE": str(checkout), "STAGING_RECEIPTS": str(receipts)}}
+    context = {
+        "inputs": _candidate_dispatch(COMMIT_TAG), "matrix": {"target": {"label": target}},
+        "needs": {"validate": {"result": "success", "outputs": {
+            "sha": SHA, "channel-build": "", "archive-tag": COMMIT_TAG, "legacy-commit-build": legacy}}},
+        "github": {"workspace": str(checkout)},
+    }
+    workflow_steps.outputs(replay, context, cwd=checkout)
+
+    calls = [json.loads(line) for line in receipts.read_text(encoding="utf-8").splitlines()]
+    assert {call["module"] for call in calls} == {"scripts.bundles.release_artifacts", "scripts.releases.handoff"}
+    for call in calls:
+        assert call["copy"] == "controller", call
+        argv = call["argv"]
+        for flag in ("--root", "--out"):
+            if flag in argv:
+                path = Path(call["cwd"], argv[argv.index(flag) + 1]).resolve()
+                assert path.is_relative_to((checkout / artifacts).resolve()), (flag, call)
+    (record,) = [call for call in calls if call["module"] == "scripts.bundles.release_artifacts"]
+    assert ("--legacy-commit-build" in record["argv"]) == (legacy == "true")
 
 
 def test_every_cache_save_step_skips_commit_and_channel_claims():

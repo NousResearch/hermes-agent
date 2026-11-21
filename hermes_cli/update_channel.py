@@ -57,6 +57,13 @@ CHANNEL_CANARY = "canary"
 # consumers import it rather than re-typing the shape.
 _VERSION_CORE = r"(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
 _CANARY_TAG_RE = re.compile(rf"^canary\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
+# A commit build's claim tag: the same shape with the ``commit`` kind --
+# ``commit.<YYYYMMDDTHHMMSSZ>-v<pyproject version at the commit>``. The tag points at the built
+# commit (any pushed commit, not only main's), and its version is ``<core>+commit.<stamp>``. Commit
+# builds publish nowhere and their installs refuse updates (install stamp ``source: commit-build``).
+_COMMIT_TAG_RE = re.compile(rf"^commit\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
+# Every prefix-kind claim tag that is its own release identity: kind, stamp, core.
+_KIND_TAG_RE = re.compile(rf"^(?P<kind>canary|commit)\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
 
 # A stable release tag: v<major>.<minor>.<patch>, no suffix. The major is
 # capped at three digits so the historical CalVer tags (v2026.7.20) can never
@@ -101,29 +108,54 @@ def canary_timestamp(tag: Any) -> str | None:
     return match["stamp"] if match else None
 
 
+def is_commit_tag(tag: Any) -> bool:
+    """True for a canonical commit build claim tag (``commit.<stamp>-vX.Y.Z``)."""
+    if not isinstance(tag, str):
+        return False
+    return bool(_COMMIT_TAG_RE.fullmatch(tag.strip()))
+
+
+def commit_timestamp(tag: Any) -> str | None:
+    """Return the UTC claim stamp from a canonical commit build tag."""
+    match = _COMMIT_TAG_RE.fullmatch(tag.strip()) if isinstance(tag, str) else None
+    return match["stamp"] if match else None
+
+
+def tag_kind(tag: Any) -> str | None:
+    """``stable``, ``canary`` or ``commit`` for a release identity tag, else None."""
+    if not isinstance(tag, str):
+        return None
+    value = tag.strip()
+    if STABLE_TAG_RE.fullmatch(value):
+        return "stable"
+    match = _KIND_TAG_RE.fullmatch(value)
+    return match["kind"] if match else None
+
+
 def tag_core(tag: Any) -> str | None:
-    """The stable ``X.Y.Z`` a stable or canary tag builds on, else None."""
+    """The ``X.Y.Z`` a stable, canary or commit tag builds on, else None."""
     if not isinstance(tag, str):
         return None
     value = tag.strip()
     if STABLE_TAG_RE.fullmatch(value):
         return value[1:]
-    match = _CANARY_TAG_RE.fullmatch(value)
+    match = _KIND_TAG_RE.fullmatch(value)
     return match["core"] if match else None
 
 
 def release_version(tag: Any) -> str | None:
-    """The version a stable or canary tag publishes: ``X.Y.Z`` or ``X.Y.Z+canary.<stamp>``.
+    """The version a release identity tag carries: ``X.Y.Z`` (stable), ``X.Y.Z+canary.<stamp>``
+    or ``X.Y.Z+commit.<stamp>``.
 
-    Never derive it by stripping a leading ``v``: a canary tag starts with its kind.
+    Never derive it by stripping a leading ``v``: canary and commit tags start with their kind.
     """
     if not isinstance(tag, str):
         return None
     value = tag.strip()
     if STABLE_TAG_RE.fullmatch(value):
         return value[1:]
-    match = _CANARY_TAG_RE.fullmatch(value)
-    return f"{match['core']}+canary.{match['stamp']}" if match else None
+    match = _KIND_TAG_RE.fullmatch(value)
+    return f"{match['core']}+{match['kind']}.{match['stamp']}" if match else None
 
 
 def canary_tag_for_date(version: str, date_utc: str) -> str:
@@ -138,6 +170,16 @@ def canary_tag_for_date(version: str, date_utc: str) -> str:
     if not re.fullmatch(r"20\d{6}T\d{6}Z", date_utc):
         raise ValueError(f"invalid canary UTC timestamp: {date_utc!r}")
     return f"canary.{date_utc}-v{core}"
+
+
+def commit_tag_for_date(version: str, date_utc: str) -> str:
+    """Return ``commit.<full UTC timestamp>-v<version>`` for a commit build claim."""
+    core = version.removeprefix("v")
+    if not STABLE_TAG_RE.fullmatch("v" + core):
+        raise ValueError(f"invalid version for a commit build: {version!r}")
+    if not re.fullmatch(r"20\d{6}T\d{6}Z", date_utc):
+        raise ValueError(f"invalid commit build UTC timestamp: {date_utc!r}")
+    return f"commit.{date_utc}-v{core}"
 
 
 def install_id(project_root: Optional[Path] = None) -> str:

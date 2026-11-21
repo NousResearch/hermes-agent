@@ -37,6 +37,7 @@ def test_apt_readers_accept_bom_and_keep_archive_bytes(tmp_path, bom):
     ("v126.8.31", "126.8.31-1", "stable"),
     ("v1.234.567", "1.234.567-1", "stable"),
     ("canary.20260831T120000Z-v0.20.6", "0.20.6~canary.20260831T120000Z-1", "canary"),
+    ("commit.20260831T120000Z-v0.20.6", "0.20.6~commit.20260831T120000Z-1", "commit"),
 ])
 def test_tag_mapping(tag, version, channel):
     assert deb_version_for_tag(tag) == version
@@ -71,6 +72,8 @@ def test_malformed_tags_rejected_by_both_mappings(tag):
     (["v9.8.7"], 0, "9.8.7-1"),
     (["--channel", "v9.8.7"], 0, "stable"),
     (["--channel", "canary.20260831T120000Z-v9.8.7"], 0, "canary"),
+    (["--channel", "commit.20260831T120000Z-v9.8.7"], 0, "commit"),
+    (["commit.20260831T120000Z-v9.8.7"], 0, "9.8.7~commit.20260831T120000Z-1"),
 
     (["v1.2"], 1, ""), (["--channel", "v1.2"], 1, ""),
 ])

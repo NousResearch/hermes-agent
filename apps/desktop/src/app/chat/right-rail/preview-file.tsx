@@ -54,6 +54,8 @@ import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
+import { usePreviewTextFocus } from './preview-text-focus'
+
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
@@ -489,12 +491,14 @@ const PREVIEW_REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypePr
 
 export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+  const focusProps = usePreviewTextFocus()
 
   return (
     <PreviewNoteContext.Provider value={filePath}>
       <div
         className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground"
         data-preview-markdown=""
+        {...focusProps}
         data-selectable-text="true"
       >
         <Streamdown
@@ -619,6 +623,7 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
  *  content has no path to reference lines against). */
 export function SourceView({ filePath, language, text }: { filePath?: string; language: string; text: string }) {
   const { t } = useI18n()
+  const focusProps = usePreviewTextFocus(text)
   const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
   const lastChunk = chunks.at(-1)
   const totalLines = lastChunk ? lastChunk.start + lastChunk.lines.length : 0
@@ -697,7 +702,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
   }, [filePath, selection])
 
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef} {...focusProps}>
       <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
         {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
         {visibleChunks.map(chunk => (

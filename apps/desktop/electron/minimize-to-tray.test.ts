@@ -54,6 +54,7 @@ class Window extends EventEmitter {
   destroyed = false
   skipped = false
   focused = false
+  fullScreen = false
   webContents = { send: vi.fn() }
   isDestroyed() {
     return this.destroyed
@@ -63,6 +64,13 @@ class Window extends EventEmitter {
   }
   isMinimized() {
     return this.minimized
+  }
+  isFullScreen() {
+    return this.fullScreen
+  }
+  // macOS leaves fullscreen asynchronously; tests fire the event themselves.
+  setFullScreen(on: boolean) {
+    this.fullScreen = on
   }
   setSkipTaskbar(on: boolean) {
     this.skipped = on
@@ -261,6 +269,34 @@ test('Windows tray hide releases keyboard focus before hiding (#126570)', async 
     expect(main.focused).toBe(false)
     expect(blur).toHaveBeenCalledOnce()
     expect(blur.mock.invocationCallOrder[0]).toBeLessThan(hide.mock.invocationCallOrder[0])
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('macOS close-to-tray leaves fullscreen before hiding, so no empty Space is left behind', async () => {
+  setPlatform('darwin')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    main.fullScreen = true
+    expect(main.close().preventDefault).toHaveBeenCalled()
+    // Hiding now would strand the fullscreen Space: wait for the exit.
+    expect(main.fullScreen).toBe(false)
+    expect(main.visible).toBe(true)
+    main.emit('leave-full-screen')
+    expect(main.visible).toBe(false)
+
+    // A restore during the exit animation cancels the pending hide.
+    main.show()
+    main.fullScreen = true
+    main.close()
+    native.trays[0].emit('double-click')
+    main.emit('leave-full-screen')
+    expect(main.visible).toBe(true)
   } finally {
     restorePlatform()
   }

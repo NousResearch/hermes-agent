@@ -513,7 +513,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                 # child) still runs.
                 if not lock.acquire_checkout(root):
                     raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
-                _finish_source_update(root, current=current, pending=pending)
+                try:
+                    _finish_source_update(root, current=current, pending=pending)
+                except _DeferredSourceUpdate:
+                    # A root-run service cannot own a foreign checkout's repair:
+                    # boot as-is on the previous dependency generation and let
+                    # the service user's own launches finish the tail.
+                    return None
         finally:
             lock.release()
     python = resolve_store_python(root)
@@ -534,6 +540,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
               file=sys.stderr, flush=True)
     return None
+
+
+class _DeferredSourceUpdate(RuntimeError):
+    """A root-run service hit a foreign-owned checkout: the completion is deferred
+    to the service user's own launches, and this launch boots as-is."""
 
 
 def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:
@@ -589,6 +600,20 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         # by its own entry point (the TUI/web freshness gates), not here.
         try:
             _sync_source_dependencies(root, arm=not completed)
+        except RuntimeError as exc:
+            # A system-level service is commonly started by root while its
+            # checkout and venv belong to the account named by User=.  Do not
+            # turn that supervisor handoff into a request to chown the user's
+            # installation or suggest an update that cannot safely run as root:
+            # defer the completion to the service user's own launches.
+            if hasattr(os, "geteuid") and os.geteuid() == 0 and "owned by uid" in str(exc):
+                print(
+                    "hermes: deferring source-update dependency completion to the service user: "
+                    f"{exc}",
+                    file=sys.stderr, flush=True,
+                )
+                raise _DeferredSourceUpdate(str(exc)) from exc
+            raise
         except Exception:
             # The pending marker is armed before this sync. A sync failure is
             # therefore an automatic completion failure too: without recording

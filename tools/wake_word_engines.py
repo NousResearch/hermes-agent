@@ -94,6 +94,10 @@ class _OpenWakeWordEngine(_Engine):
         # v0.5.1 files) inside its wheel, so there is no download_models step.
         if model_ref.lower() in ww._BUNDLED_MODEL_ALIASES:
             model_ref = ww._bundled_wakeword_path()
+        if not os.path.isfile(model_ref):
+            raise ValueError(
+                f"wake word model not found: {model_ref}; use hey_hermes or a path to a .tflite model"
+            )
         # pyopen-wakeword returns a 0..1 score per completed window; sensitivity
         # IS the raw threshold a score must clear. Higher = stricter (fewer
         # false fires). Default 0.6 sits above openWakeWord's permissive 0.5

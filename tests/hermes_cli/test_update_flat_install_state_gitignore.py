@@ -100,6 +100,37 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "backups/2026-09-14T06-00-00-pre-update/state.db",
     "vault.key",
     "vault.json.enc",
+    "installs/install-key/facts.json",
+    "installs/install-key/environments/generation/workspace/pyproject.toml",
+    "tools/python-3.14.9+20261021-win32-x64/Lib/encodings/unicode_escape.py",
+    "tools/llamacpp-cpu-b7000-linux-x64/libllama.so",
+    "tools/node-26.12.1-darwin-arm64/bin/node",
+    "tools/chromium-1208/chrome-win64/chrome.exe",
+    "tools/fetch-0123456789/tool.zip",
+    "tools/.staging-example/manifest.json",
+    "tools/facts.json",
+    "tools/.install.lock",
+    "runtime/bot_live_delivery/ticket.json",
+    "state/gateway.loop-tick.123.sock",
+    "plugin-update-checks/results.json",
+    "source-checks/install-key.json",
+    "weixin/accounts/bot.json",
+    "install_id",
+    ".install_id.lock",
+    "processes.json.lock",
+    "spawn-ledger.json",
+    ".hermes-update-in-progress",
+    ".hermes-update-in-progress.lock",
+    ".hermes-update-paused-gateways.install.json",
+    ".hermes-update-paused-gateways.lock",
+    ".restart_pending.json",
+    ".backup.lock",
+    ".update_exit_code",
+    "cron/.tick.lock",
+    "cron/ticker_last_success",
+    "skills/.bundled_manifest",
+    "skills/.usage.json",
+    "skills/.usage.json.lock",
 )
 
 
@@ -144,17 +175,28 @@ def test_flat_install_runtime_state_is_ignored(flat_install_repo):
     assert status.stdout == "", status.stdout
 
 
-def test_untracked_autostash_cannot_sweep_runtime_state(flat_install_repo):
+@pytest.mark.parametrize("local_ignore_rules", [False, True])
+def test_untracked_autostash_cannot_sweep_runtime_state(flat_install_repo, local_ignore_rules):
     """The exact ``git stash push --include-untracked`` the updater runs must leave
     every runtime state file in the working tree (issue repro, step 6)."""
     # A tracked local change proves the stash really ran: it must be swept away
     # while the runtime state survives.
+    if local_ignore_rules:
+        ignore_file = flat_install_repo / ".gitignore"
+        rules = ignore_file.read_bytes()
+        ignore_file.write_bytes(b"")
+        _run_git(flat_install_repo, "add", ".gitignore")
+        _run_git(flat_install_repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "old rules")
+        ignore_file.write_bytes(rules)
     (flat_install_repo / "app.py").write_text("print('changed')\n")
+    local_tool = flat_install_repo / "tools" / "local_tool.py"
+    local_tool.write_text("print('local tool')\n")
     _run_git(
         flat_install_repo,
         "stash", "push", "--include-untracked", "-m", "hermes-update-autostash",
     )
     assert (flat_install_repo / "app.py").read_text() == "print('hermes')\n"
+    assert not local_tool.exists(), "new tool source must remain stashable"
     missing = [
         rel
         for rel in FLAT_INSTALL_RUNTIME_STATE

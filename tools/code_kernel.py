@@ -269,12 +269,17 @@ class CellAuthority:
     """
 
     def __init__(self, task_id: str, session_id: str | None = None, turn_id: str | None = None,
-                 conversation_id: str | None = None):
+                 conversation_id: str | None = None, tool_call_id: str | None = None):
         import contextvars
         self.task_id = task_id
         self.session_id = session_id
         self.turn_id = turn_id
         self.conversation_id = conversation_id
+        # The owning execute_code call. Inner dispatches mint ``<owner>#<n>`` from it, and the
+        # counter lives here because this object's lifetime IS the cell's; the RPC server thread
+        # outlives the cell, so it cannot own the per-batch numbering.
+        self.owner_tool_call_id = tool_call_id or ""
+        self._child_seq = 0
         self.ctx = contextvars.copy_context()
         self.active = True
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
@@ -295,10 +300,21 @@ class CellAuthority:
         if not self.active:
             return tool_error("No active execute_code cell: the cell this kernel call "
                               "belonged to has settled, so its tool authority is retired.")
-        return self.ctx.run(self._invoke, tool_name, tool_args)
+        return self.ctx.run(self._invoke, tool_name, tool_args, self._mint_child_id())
 
-    def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
+    def _mint_child_id(self) -> str | None:
+        """``<owner>#<n>`` for the n-th dispatched call of this cell; ``None`` without an owner.
+
+        Minted per dispatched call only: the RPC loop refuses unauthorized and over-budget
+        requests before reaching ``dispatch``, so a refusal consumes no number.
+        """
+        if not self.owner_tool_call_id:
+            return None
+        self._child_seq += 1
+        return f"{self.owner_tool_call_id}#{self._child_seq}"
+
+    def _invoke(self, tool_name: str, tool_args: dict, tool_call_id: str | None = None) -> str:
+        from model_tools import handle_function_call, suppress_post_tool_call_hook
         from tools.file_tools_read_tracking import programmatic_file_read
         previous = None
         if self._callbacks:
@@ -316,7 +332,11 @@ class CellAuthority:
                 identity["turn_id"] = self.turn_id
             if self.conversation_id is not None:
                 identity["conversation_id"] = self.conversation_id
-            with programmatic_file_read():
+            if tool_call_id is not None:
+                # Only when this cell owns the batch: an unowned call keeps today's call shape, so
+                # a narrow stand-in for handle_function_call is not broken by an undeclared keyword.
+                identity["tool_call_id"] = tool_call_id
+            with programmatic_file_read(), suppress_post_tool_call_hook(False):
                 return handle_function_call(tool_name, tool_args, task_id=self.task_id, **identity)
         finally:
             if previous is not None:
@@ -1020,6 +1040,7 @@ def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
     session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
@@ -1031,7 +1052,8 @@ def execute_in_session_kernel(
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
                          is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
-                         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+                         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                         tool_call_id=tool_call_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -1047,11 +1069,11 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
               is_interrupted, exec_start: float, state_reset: bool,
               session_id: str | None = None, turn_id: str | None = None,
-              conversation_id: str | None = None) -> str:
+              conversation_id: str | None = None, tool_call_id: str | None = None) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
-    authority = CellAuthority(task_id, session_id, turn_id, conversation_id)
+    authority = CellAuthority(task_id, session_id, turn_id, conversation_id, tool_call_id)
     with kernel.lock:
         try:
             if kernel.proc is None:

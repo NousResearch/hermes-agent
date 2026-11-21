@@ -854,6 +854,10 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         "task_id": ids.task_id, "session_id": ids.session_id, "conversation_id": ids.conversation_id}
     if function_name == "execute_code":
         dispatch_kwargs["turn_id"] = ids.turn_id
+        # The owning call's id. ``_execute_code_handler`` forwards it to ``execute_code``, whose
+        # dispatchers mint ``<owner>#<n>`` per inner call — the identity an observer pairs an
+        # inner call with its own result by. Absent when the call carries no id.
+        dispatch_kwargs["tool_call_id"] = ids.tool_call_id
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names

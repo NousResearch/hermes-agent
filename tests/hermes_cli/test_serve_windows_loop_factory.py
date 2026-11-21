@@ -61,3 +61,25 @@ def test_selector_factory_passes_through(monkeypatch):
     captured = _capture_runner(monkeypatch)
     web_server._run_serve(_noop, _SelectorConfig(), "127.0.0.1", 0)
     assert captured.get("loop_factory") is asyncio.SelectorEventLoop
+
+
+def test_serve_backports_write_send_before_the_loop_starts(monkeypatch):
+    """#140246: the selector loop's ``_write_send`` keeps a refused chunk from the first transport on."""
+    from asyncio.selector_events import _SelectorSocketTransport
+
+    from hermes_cli import web_server
+    from tui_gateway import selector_write_backport
+
+    shipped = _SelectorSocketTransport.__dict__.get("_write_send")
+    if shipped is None or not selector_write_backport.write_send_drops_blocked_chunk(shipped):
+        pytest.skip("this interpreter's _write_send already keeps a refused chunk")
+    monkeypatch.setattr(_SelectorSocketTransport, "_write_send", shipped)
+    seen = {}
+
+    def _fake_runner(main, **kwargs):
+        seen["write_send"] = _SelectorSocketTransport.__dict__["_write_send"]
+        main.close()
+
+    monkeypatch.setattr("uvicorn._compat.asyncio_run", _fake_runner)
+    web_server._run_serve(_noop, _ProactorConfig(), "127.0.0.1", 0)
+    assert seen["write_send"] is selector_write_backport._write_send_keeping_blocked_chunk

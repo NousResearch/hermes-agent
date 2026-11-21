@@ -201,6 +201,15 @@ def _tree_members(entries: list[dict], prefix: str):
             yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
 
 
+def _subtree_sha(entries: list[dict], path: str) -> str:
+    """Git tree sha of directory ``path`` in a recursive tree listing; "" when it is not a directory."""
+    for item in entries:
+        if item.get("path") == path and item.get("type") == "tree":
+            sha = item.get("sha")
+            return sha if isinstance(sha, str) else ""
+    return ""
+
+
 class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
@@ -253,6 +262,8 @@ class GitHubSource(SkillSource):
         # search/install flow so repeated tree lookups cost no API calls.
         self._tree_cache: dict[str, Optional[tuple[str, list[dict]]]] = {}
         self._tree_revisions: dict[str, str] = {}
+        # (repo, recorded tree sha) -> that tree's entries; the update check's subtree comparison.
+        self._revision_trees: dict[tuple[str, str], Optional[list[dict]]] = {}
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
@@ -330,6 +341,45 @@ class GitHubSource(SkillSource):
         repo, _ = split
         self._get_repo_tree(repo)  # populates _tree_revisions
         return self._tree_revisions.get(repo, "")
+
+    def unchanged_since(self, identifier: str, revision: str) -> bool:
+        """Whether the skill's own directory is identical between ``revision`` (the repo tree sha
+        recorded at install) and the default branch now, compared by git subtree sha — no blob GETs.
+
+        ``source_revision`` is the WHOLE repo's tree sha, so in a multi-skill repo any commit anywhere
+        (a sibling skill, a README) moved it and every skill from that repo paid the full download on
+        every update check. A directory's subtree sha changes only when something inside it does, and
+        ``fetch`` builds the bundle from that directory alone (links outside it are dropped), so equal
+        subtree shas mean equal bundle bytes. Costs one extra tree lookup per distinct recorded
+        revision, cached for the check. Any lookup gap answers False: the full fetch decides."""
+        if not revision or (split := _split_repo_id(identifier)) is None:
+            return False
+        repo, skill_path = split
+        now_tree = self._get_repo_tree(repo)
+        now_root = self._tree_revisions.get(repo, "")
+        if now_tree is None or not now_root:
+            return False
+        if now_root == revision:
+            return True
+        skill_dir = skill_path.strip("/")
+        if not skill_dir:
+            return False  # repo-root skill layout: its directory IS the root tree, which moved
+        now_sha = _subtree_sha(now_tree[1], skill_dir)
+        then_entries = self._tree_at_revision(repo, revision)
+        return bool(now_sha) and then_entries is not None and _subtree_sha(then_entries, skill_dir) == now_sha
+
+    def _tree_at_revision(self, repo: str, revision: str) -> Optional[list[dict]]:
+        """Recursive entries of ``repo``'s tree object ``revision``, or None (gone, truncated, or not
+        the tree asked for). Cached per instance, misses included, like ``_get_repo_tree``."""
+        key = (repo, revision)
+        if key in self._revision_trees:
+            return self._revision_trees[key]
+        self._revision_trees[key] = None
+        data = self._github_json(f"{_API}/{repo}/git/trees/{revision}", params={"recursive": "1"}, timeout=30.0)
+        if data is None or data.get("truncated") or data.get("sha") != revision:
+            return None
+        self._revision_trees[key] = entries = data.get("tree", [])
+        return entries
 
     def _add_support_file(self, repo: str, item_path: str, rel_path: str, files: dict, shown: str, **kw) -> bool:
         """Fetch one support file into ``files``; a failed fetch warns (naming ``shown``), is skipped, and

@@ -156,6 +156,13 @@ class SkillSource(ABC):
         revision probe, which keeps update checks on the full-fetch path."""
         return ""
 
+    def unchanged_since(self, identifier: str, revision: str) -> bool:
+        """Whether the skill's upstream content is provably identical to what ``revision`` (the
+        ``source_revision`` recorded at install) served, without downloading it. False means
+        "unknown" and keeps the update check on the full-fetch path. Registries whose revision
+        spans more than one skill override this with a finer, still download-free comparison."""
+        return bool(revision) and self.current_revision(identifier) == revision
+
 
 class GuardedFetchMixin:
     """SSRF/policy-guarded GETs, routed through ``tools.skills_hub`` (test-patchable)."""

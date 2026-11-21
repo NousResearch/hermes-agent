@@ -294,13 +294,14 @@ def _source_matches(source: SkillSource, source_name: str) -> bool:
 
 
 
-def _current_revision_or_empty(src, identifier: str) -> str:
-    """A probe failure must degrade one row to the full-fetch path, not abort the whole check."""
+def _unchanged_upstream(src, identifier: str, recorded: str) -> bool:
+    """``src.unchanged_since`` as a strict bool. A probe failure must degrade one row to the
+    full-fetch path, not abort the whole check."""
     try:
-        return src.current_revision(identifier)
+        return src.unchanged_since(identifier, recorded) is True
     except Exception:
-        logger.debug("current_revision probe failed for %s", identifier, exc_info=True)
-        return ""
+        logger.debug("revision probe failed for %s", identifier, exc_info=True)
+        return False
 
 def check_for_skill_updates(
     name: Optional[str] = None, *, lock: Optional[HubLockFile] = None,
@@ -341,9 +342,10 @@ def check_for_skill_updates(
             continue
         matching = [src for src in sources if _source_matches(src, source_name)]
         recorded = (entry.get("metadata") or {}).get("source_revision", "")
-        if recorded and any(_current_revision_or_empty(src, identifier) == recorded for src in matching):
-            # Same upstream tree as at install time: the bundle bytes cannot differ, so
-            # skip downloading SKILL.md + every support blob just to re-hash them (#101454).
+        if recorded and any(_unchanged_upstream(src, identifier, recorded) for src in matching):
+            # Same upstream content as at install time (same tree, or for GitHub the same skill
+            # subtree): the bundle bytes cannot differ, so skip downloading SKILL.md + every
+            # support blob just to re-hash them (#101454).
             content_hash = entry.get("content_hash", "")
             results.append({**row, "status": "up_to_date", "current_hash": content_hash, "latest_hash": content_hash})
             continue

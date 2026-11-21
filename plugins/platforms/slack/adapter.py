@@ -6397,7 +6397,20 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             return False
         host = (parsed.hostname or "").lower().rstrip(".")
         return bool(host) and parsed.scheme == "https" and (
-            host in cls._SLACK_CDN_EXACT_HOSTS or host.endswith(cls._SLACK_CDN_HOST_SUFFIXES))
+            host in cls._SLACK_CDN_EXACT_HOSTS or host.endswith(cls._SLACK_CDN_HOST_SUFFIXES)
+        ) and not cls._is_slack_web_api_path(parsed.path)
+
+    @staticmethod
+    def _is_slack_web_api_path(path: str) -> bool:
+        """True when *path* reaches Slack's Web API (``/api/<method>``) once Slack normalizes it.
+        Every allowlisted host (files-origin.slack.com included) also serves the Web API, so a
+        forged file URL would otherwise spend the bot token on any method (centaur#2164). Slack
+        decodes %-escapes, collapses ``//`` and resolves dot segments before routing."""
+        import posixpath
+        from urllib.parse import unquote
+        path = re.sub(r"/+", "/", unquote(path or "/"))
+        first = posixpath.normpath("/" + path).lstrip("/").split("/", 1)[0]
+        return first.lower() == "api"
 
     def _resolve_download_token(self, url: str, team_id: str = "") -> str:
         """Download token: explicit team_id, else the team parsed from ``files-pri/<TEAM>-<FILE>/``

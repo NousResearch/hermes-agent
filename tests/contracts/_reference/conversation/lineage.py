@@ -301,7 +301,7 @@ class InMemoryLineageRepository:
         return leases
 
     def _child_row(self, scope: ProfileScope, parent: Mapping[str, Any], child: CompressionChild) -> dict[str, Any]:
-        """The continuation's session row copied from the parent: routing, user, git metadata, display name, origin and the tools pin from the parent; the conversation-wide config keys, pin and archive state too unless the child is a branch or reset copy."""
+        """The continuation's session row copied from the parent: routing, user, git metadata, display name, origin and the tools pin from the parent; the conversation-wide config keys, pin, archive and hidden state too unless the child is a branch or reset copy."""
         continuation = not any(key in (child.model_config or {}) for key in ("_branched_from", "_reset_from"))
         carried = {key: value for key, value in parent["model_config"].items() if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
         row = blank_session_row(str(child.session_id), lineage_kind=SessionLineageKind.NONE, model_config={**carried, **(child.model_config or {})})
@@ -312,6 +312,7 @@ class InMemoryLineageRepository:
             profile_name=child.profile_name or parent.get("profile_name") or self._backend.owner_profile, started_at=datetime.now(UTC), compression_fork=True,
             pinned=bool(parent["pinned"]) and continuation, archived=bool(parent["archived"]) and continuation,
             auto_archived=bool(parent.get("auto_archived")) and continuation,
+            hidden=bool(parent.get("hidden")) and continuation,
         )
         for name in ("git_branch", "git_repo_root", "user_id", "session_key", "chat_id", "chat_type", "thread_id", "display_name", "origin", "tool_pin"):
             row[name] = parent[name]

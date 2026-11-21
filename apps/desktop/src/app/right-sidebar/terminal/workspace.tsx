@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { $backgroundStatusBySession } from '@/store/composer-status'
 
+import { observeAgentProcessState } from './agent-terminal-autoclose'
 import { seedAgentTerminalCommand, syncAgentTerminalSnapshot } from './agent-terminal-stream'
 import { setActiveTerminalId } from './buffer'
 import { AgentTerminalInstance, TerminalInstance } from './instance'
@@ -34,12 +35,14 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
   // Surface the agent's background processes as read-only tabs (once each).
   // Live chunks stream via agent.terminal.output; the process-list snapshot also
   // seeds/falls back so the tab never stays blank if the stream races startup.
+  // Each observed state also feeds the auto-close of finished tabs.
   useEffect(() => {
     for (const list of Object.values(background)) {
       for (const item of list) {
         ensureAgentTerminal(item.id, item.title)
         seedAgentTerminalCommand(item.id, item.title)
         syncAgentTerminalSnapshot(item.id, item.output ?? '')
+        observeAgentProcessState(item.id, item.state)
       }
     }
   }, [background])

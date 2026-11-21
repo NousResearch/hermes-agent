@@ -316,7 +316,7 @@ export function BotsPane() {
   // React Query can briefly report neither loading nor data while the plugin
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
-  const initialRosterLoading = !data && !error && roster.length === 0
+  const rosterDiscoveryPending = (!data || data.fleetPending === true) && !error
 
   const groupKeys = useValue($activeGroupMemberKeys)
 
@@ -513,7 +513,8 @@ export function BotsPane() {
         b,
         staleNotice,
         isLoading,
-        initialRosterLoading,
+        rosterDiscoveryPending,
+        loadingLabel: t.common.loading,
         listedCount: roster.length + gatewayRooms.length,
         error,
         gatewayUp,

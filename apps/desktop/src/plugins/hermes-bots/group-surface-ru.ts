@@ -83,6 +83,7 @@ export const GROUP_SURFACE_RU = {
     groupChats: "Групповые чаты",
     emptyTitle: "Ботов пока нет",
     emptyDesc: "Создайте первого бота.",
+    loadingGatewayBots: "Загрузка ботов шлюза",
     noMatchQuery: query => `Нет ботов или групповых чатов по запросу «${query}»`,
     noMatchQueryOn: (query, gateway) => `Нет ботов или групповых чатов по запросу «${query}» на ${gateway}`,
     noMatchFiltersOn: gateway => `Нет ботов или групповых чатов с такими фильтрами на ${gateway}`,

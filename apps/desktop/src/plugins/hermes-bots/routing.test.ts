@@ -28,6 +28,19 @@ import {
 } from './routing'
 import type { ProfileRoute, RosterRow } from './types'
 
+describe('scoped alias refresh', () => {
+  it.each(['source-b', 'source-a::child'])('preserves alias on %s and clears only the refreshed owner', other => {
+    indexAliasRoutes([
+      { connectionId: 'source-a', mode: 'remote', profile: 'alias-a', targetProfile: 'default' },
+      { connectionId: other, mode: 'remote', profile: 'alias-b', targetProfile: 'default' }
+    ])
+    indexAliasRoutes([], beginAliasRouteIndex(), 'source-a')
+
+    expect(aliasIdentityFor({ connectionId: 'source-a', name: 'default', sourceScoped: true })).toBeNull()
+    expect(aliasIdentityFor({ connectionId: other, name: 'default', sourceScoped: true })?.name).toBe('alias-b')
+  })
+})
+
 const { hostMock } = vi.hoisted(() => ({
   hostMock: {
     request: vi.fn(),

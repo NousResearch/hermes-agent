@@ -37,3 +37,20 @@ export async function resolveRemoteOauthTicket(
     )
   }
 }
+
+export async function withRosterEnumerationDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('roster enumeration timed out')), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+  }
+}

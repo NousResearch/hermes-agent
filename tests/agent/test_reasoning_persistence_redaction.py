@@ -99,6 +99,28 @@ def test_reasoning_fields_persist_redacted_and_signed_details_stay_exact(tmp_pat
     assert source.reasoning_details[0]["summary"] == _THOUGHT
 
 
+def test_inline_encrypted_reasoning_replays_byte_exact(tmp_path, monkeypatch):
+    """#157091: a relay's ``__ENCRYPTED_REASONING__`` ciphertext in ``reasoning_content`` is verified on
+    replay; masking its Fernet-shaped body 400s every tool turn. The readable prefix is still redacted."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
+    sealed = "__ENCRYPTED_REASONING__id=rs_0abc123\ngAAAAA" + "Zm9vYmFy-_" * 240
+    source = _Msg(reasoning_content=f"{_THOUGHT}\n\n{sealed}",
+                  reasoning_details=[{"type": "reasoning.text", "text": f"{_THOUGHT}\n\n{sealed}"}])
+    stored, _rows = _persist(tmp_path, build_assistant_message(_Agent(), source, "stop"))
+    for text in (stored["reasoning_content"], stored["reasoning_details"][0]["text"]):
+        assert text.endswith(sealed)
+        assert _SECRET not in text
+
+
+def test_bare_encrypted_marker_does_not_exempt_readable_text(tmp_path, monkeypatch):
+    """The exemption covers a recognized sealed block only: a model mentioning the marker in
+    readable reasoning, then quoting a credential, must still have the credential masked."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
+    source = _Msg(reasoning_content=f"The relay writes __ENCRYPTED_REASONING__ blocks. {_THOUGHT}")
+    stored, _rows = _persist(tmp_path, build_assistant_message(_Agent(), source, "stop"))
+    assert _SECRET not in stored["reasoning_content"]
+
+
 def test_redaction_off_keeps_reasoning_verbatim(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
     msg = build_assistant_message(_Agent(), _assistant_message(), "stop")

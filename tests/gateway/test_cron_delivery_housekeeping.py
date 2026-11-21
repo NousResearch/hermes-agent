@@ -292,3 +292,35 @@ def test_the_watch_settles_after_the_drain_wrote_its_outcome(tmp_path, monkeypat
     # Hosts whose SQLite runs the queue in WAL mode write to the -wal file first.
     (tmp_path / "deliveries.db-wal").write_bytes(b"frame")
     assert watch.changed() is True
+
+
+def test_drain_lends_routed_platform_to_profile_with_own_bot_on_another_platform(tmp_path, monkeypatch):
+    """The restart-safe drain applies the same per-platform rule as the tick: a profile with its own
+    Slack bot still drains its routed Discord rows through the primary (before: its own map only)."""
+    import hermes_yaml as yaml
+
+    from cron.scheduler_preflight import SharedRouteAdapters
+    from gateway.config import Platform
+
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    (sat_home / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "discord", "chat_id": "C1", "profile": "sat"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+
+    primary, own_slack = object(), object()
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True),
+                             _profile_adapters={"sat": {Platform.SLACK: own_slack}},
+                             _profile_bot_platforms={"sat": {Platform.SLACK}})
+    drained = []
+    monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("sat", sat_home)])
+    monkeypatch.setattr(scheduler, "drain_delivery_queue", lambda adapters, _loop: drained.append(adapters))
+
+    gateway_run._drain_restart_safe_cron_deliveries({Platform.DISCORD: primary}, object(), runner)
+
+    assert len(drained) == 1 and isinstance(drained[0], SharedRouteAdapters)
+    assert drained[0].get(Platform.DISCORD, {"chat_id": "C1"}) is primary
+    assert drained[0].get(Platform.SLACK) is own_slack

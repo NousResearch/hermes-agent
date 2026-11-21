@@ -4372,11 +4372,8 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
             owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
-            if (profile_name is not None and adapters
-                    and not sched_preflight.has_credential_platform(profile_adapters, owned)):
-                shared = sched_preflight.shared_route_adapters_for_current_home(adapters)
-                if shared:
-                    profile_adapters = shared
+            if profile_name is not None:
+                profile_adapters = sched_preflight.cron_delivery_adapters(profile_adapters, owned, adapters)
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 

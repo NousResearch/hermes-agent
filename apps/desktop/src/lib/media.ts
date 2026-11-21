@@ -318,6 +318,12 @@ export function mediaExternalUrl(path: string): string {
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
     }
+
+    // A remote gateway with no bearer token to put in the URL (basic-auth
+    // dashboard, OAuth session) still keeps its files on the gateway machine,
+    // so a file:// link opens nothing on this one. Hand it to the Electron
+    // media proxy, which authenticates each request itself.
+    return mediaGatewayStreamUrl(path)
   }
 
   return /^file:/i.test(path) ? path : pathToLocalFileUrl(path)

@@ -1,8 +1,28 @@
-"""Relay egress discriminators a cron fire carries from its persisted job origin."""
+"""What a cron fire reads from its persisted job origin: the DM shape and relay egress discriminators."""
 
 from __future__ import annotations
 
 from typing import Any
+
+
+def target_is_dm(origin: dict, platform_name: str, chat_id) -> bool:
+    """Whether a delivery target is a DM, for the seed's chat_type and the in_channel gate. The
+    origin's chat_type decides when the target is the origin's chat (any thread in it); any other
+    target, and every target of an origin-less job (a manifest-defined or explicitly targeted
+    one), reads its own id: Slack DM ids start with "D", and a Telegram private chat's id is the
+    user's, always positive (groups and channels are negative). A wrong answer seeds a row the
+    reply never resolves to: ``group`` for a DM-topic reply, ``dm`` for a group-topic one."""
+    from gateway.delivery import looks_like_telegram_private_chat_id
+    origin = origin or {}
+    origin_chat_type = str(origin.get("chat_type") or "").lower()
+    same_chat = (str(origin.get("platform", "")).lower() == str(platform_name).lower()
+                 and str(origin.get("chat_id", "")) == str(chat_id))
+    if origin_chat_type and same_chat:
+        return origin_chat_type == "dm"
+    if str(chat_id).startswith("D"):
+        return True
+    return (str(platform_name).lower() == "telegram"
+            and looks_like_telegram_private_chat_id(str(chat_id)))
 
 
 def stamp_origin_discriminators(t: Any, route_metadata: dict, media_metadata: dict) -> None:

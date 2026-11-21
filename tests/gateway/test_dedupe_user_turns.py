@@ -6,28 +6,24 @@ Telegram message must not stack duplicate user turns in the transcript.
 The dedupe guard checks has_platform_message_id before persisting.
 """
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class TestHasPlatformMessageId:
-    """SessionDB.has_platform_message_id and SessionStore wrapper."""
+    """``messages.has_platform_message_id`` on the store handle."""
 
     def _make_db(self, tmp_path):
-        db = SessionDB(tmp_path / "state.db")
-        db.create_session("s1", "cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "cli")
         return db
 
 
     def test_returns_false_for_different_session(self, tmp_path):
         db = self._make_db(tmp_path)
-        db.create_session("s2", "cli")
-        db.append_message(
-            session_id="s1",
-            role="user",
-            content="hello",
-            platform_message_id="msg-123",
-        )
-        assert not db.has_platform_message_id("s2", "msg-123")
+        seed_session(db, "s2", "cli")
+        seed_messages(db, "s1", {"role": "user", "content": "hello", "platform_message_id": "msg-123"})
+        assert not db.messages.has_platform_message_id("s2", "msg-123")
 
 
 

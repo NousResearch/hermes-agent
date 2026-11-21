@@ -1,0 +1,22 @@
+name: doom
+repo: https://github.com/SilentKnight87/hermes-doom
+sha: 5f9faadd1ba346c52d79bfd9c07c7f3c1908ff38
+title: Doom
+description: "Play Doom in a dashboard tab. The GPL engine runs as plain JavaScript on Freedoom or your own WAD. Disclosure — The Doom engine is Emscripten-compiled JavaScript (doomgeneric, GPL) committed as a generated file and built by hand from the repo's engine/build.sh; clicking \"Download Freedoom\" fetches the 23 MB Freedoom 0.13.0 release zip from github.com/freedoom, checksum-verified, into HERMES_HOME/plugin-data/doom. No tools, hooks or other network calls."
+maintainer: SilentKnight87
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/SilentKnight87/hermes-doom/5f9faadd1ba346c52d79bfd9c07c7f3c1908ff38/docs/doom-in-hermes.png
+platforms: []
+known_issues:
+  - No sound yet, and saved games last only until the tab is reloaded.
+  - First play downloads Freedoom (23 MB) from the Freedoom project's GitHub release when you click the button.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

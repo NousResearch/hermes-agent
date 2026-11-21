@@ -1,0 +1,19 @@
+name: proofly
+repo: https://github.com/0xileri/Proofly
+sha: 9fde65f5e8f5f5ab3ad6a5dc6a9848f119deb444
+title: Proofly
+description: "Checks an agent's claimed Base mainnet transfers against chain evidence: tx hash, receipt status, recipient, token and exact raw amount, over read-only JSON-RPC. It annotates results from the payment tools you list in its payment_tools setting and corrects unsupported \"payment sent\" claims in the final reply; adds the read-only proofly_verify_tx tool and the /proofly command. Disclosure — sends read-only JSON-RPC requests (tx hashes) only to the configured Base RPC endpoint (default https://mainnet.base.org), whose operator sees the hashes and your IP; replaces the results of the payment tools you list in payment_tools with its verdict and rewrites unsupported payment claims in the final reply; stores a verdict ledger (tx hash, verdict, expected and observed transfer fields, HMACs of session and turn ids, newest 300 rows) in plugin-data/proofly; registers transform_llm_output with hold_stream, so every reply in a profile that loads it is shown only after the check; no keys, signing, wallets, .env reads, shell, background processes, self-update or telemetry."
+maintainer: 0xileri
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/0xileri/Proofly/blob/9fde65f5e8f5f5ab3ad6a5dc6a9848f119deb444/README.md
+known_issues:
+  - "Holds every reply in a profile that loads it until the check has run (hold_stream). Tool progress and reasoning are not rewritten; turn them off (display.tool_progress, display.show_reasoning) for strict use."
+  - "Checks only Base mainnet and only the tools named in payment_tools plus proofly_verify_tx. Without exact structured transfer details it reports execution only, never a verified payment."
+capabilities:
+  provides_tools: [proofly_verify_tx]
+  provides_hooks: [post_tool_call, transform_tool_result, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

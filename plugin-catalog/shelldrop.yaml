@@ -1,0 +1,18 @@
+name: shelldrop
+title: Shell Drop
+repo: https://github.com/shelldrop-sh/agent-skills
+sha: dd4e7580a53e7bdac7ce957ec4c4f3973e6d5d2d
+version: "0.1.0"
+description: "Set up a Mac or Linux machine so AI coding agents (Claude Code, Codex, any CLI agent) can be run and checked from an iPhone or iPad over SSH: SSH on, tmux sessions that survive a dropped connection, Tailscale for the route in, the phone's SSH key, then the exact connection details. One skill plus Shell Drop's hosted MCP server (Streamable HTTP at https://mcp.shelldrop.sh/mcp, no key, no sign-in) with four read-only tools: setup_guide, tmux_howto, generate_tmux_conf and troubleshoot_connection. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: the MCP server is a stateless Cloudflare Worker whose source is in the repo; every tool call goes to mcp.shelldrop.sh, which receives only the tool arguments (an OS name, a short task or symptom phrase, tmux.conf options), returns static text, keeps no sessions, stores nothing and does not log inputs; every tool is annotated read-only and the package marks the server untrusted. The skill has the agent run shell commands on the user's own machine under Hermes's normal approvals: it edits ~/.tmux.conf, optionally ~/.zshrc, and ~/.ssh/authorized_keys (public keys the user supplies only), and after asking runs sudo to enable SSH, install tmux or Tailscale (Tailscale's official curl | sh installer on Linux) and stop the machine sleeping. No telemetry, no credentials stored or sent. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: shelldrop-sh
+tier: community
+category: tools
+docs_url: https://github.com/shelldrop-sh/agent-skills#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

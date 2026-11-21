@@ -1,0 +1,22 @@
+name: openrouter-provider-picker
+repo: https://github.com/PotatoWareGit/hermes-openrouter-provider
+sha: afba3e648ecbfd18688f845e9f3ec7cf86315ff5
+description: "Pick which upstream providers serve each OpenRouter model, per model, from a desktop UI (Settings › Plugins › Provider Routing) or an agent tool. Writes provider_routing and provider_routing.models.<id> into the active profile's config.yaml — the keys Hermes already sends as OpenRouter's `provider` request field, and which `hermes config set` cannot address because model ids contain dots. The UI lists each model's real upstream providers with their context window and input price per million tokens, and supports a whitelist, a blacklist, and a per-model sort override. The agent tool exposes the same thing as list / providers / set / clear. OpenRouter only: Nous Portal decides routing centrally and ignores caller-supplied preferences. Disclosure — network calls to the public, unauthenticated openrouter.ai API (/api/v1/models, /api/v1/providers and /api/v1/models/<id>/endpoints) to build the model and provider lists, cached in-process; reads and rewrites the provider_routing block of config.yaml in the active profile via the comment-preserving atomic replace, from the Desktop settings page or from the agent tool, which the model can call without an approval prompt to change per-model or default routing (including data_collection and allow/deny lists); no telemetry, no credentials, no self-update, no other third party."
+maintainer: PotatoWareGit
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/PotatoWareGit/hermes-openrouter-provider#readme
+version: "1.0.1"
+image: https://raw.githubusercontent.com/PotatoWareGit/hermes-openrouter-provider/afba3e648ecbfd18688f845e9f3ec7cf86315ff5/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/PotatoWareGit/hermes-openrouter-provider/afba3e648ecbfd18688f845e9f3ec7cf86315ff5/assets/screenshot-routing.png
+title: "OpenRouter Provider Picker"
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - openrouter_provider_routing
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -145,7 +145,9 @@ class SlashCommandsMixin:
         current_provider, target_provider, new_model = self._switch_model(state, args)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
-        return f"Model switched to: {new_model}\nProvider: {provider_label}"
+        from hermes_cli.model_picker_usage import large_model_notice
+        notice = large_model_notice(new_model, target_provider or "", lang="en")  # window plans only; cache-only read; ACP text is English
+        return f"Model switched to: {new_model}\nProvider: {provider_label}" + (f"\n⚠ {notice}" if notice else "")
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
@@ -264,16 +266,17 @@ class SlashCommandsMixin:
         if request.aggressive:
             return AGGRESSIVE_UNSUPPORTED
         original_session_db = getattr(agent, "_session_db", None)
+        original_persistence = getattr(agent, "persistence", None)
         try:
             # Stable ACP session id: suppress _compress_context's SQLite session split.
-            agent._session_db = None
+            agent._session_db = agent.persistence = None
             result = compress_now(
                 agent, state.history, request, system_message=getattr(agent, "_cached_system_prompt", "") or "",
                 task_id=state.session_id)
         except Exception as e:
             return f"Compression failed: {e}"
         finally:
-            agent._session_db = original_session_db
+            agent._session_db, agent.persistence = original_session_db, original_persistence
         if result.status != "compressed":
             return "\n".join(render_compress_result(result))
         state.history = result.after_messages

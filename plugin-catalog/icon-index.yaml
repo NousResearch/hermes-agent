@@ -1,0 +1,20 @@
+name: icon-index
+repo: https://github.com/minutechreview/hermes-icon-index
+sha: 807e511696189e26cc4aca0a4dca27a7fb3b52a2
+description: "40 free CC0 3D icons in one matching style for websites, apps, slides and videos. Browse them spinning in a Hermes Desktop pane, recolour them (8 presets or any colour) and download the result, and let the agent find an icon by meaning, return embed code (iframe, model-viewer, React, three.js) and download links, show it as a draggable 3D card in chat (::icon-index directive), or save its files into a project folder. Disclosure — the pane, chat card and icon_save fetch icon files (GLB, PNG, MP4) from https://cdn.jsdelivr.net/gh/minutechreview/3d-icons at a pinned commit; the 3D viewer is https://motion.minutechbuilds.com/icons/viewer.html shown in a SandboxedFrame (opaque origin, allow-scripts, plus allow-downloads in the pane so its Download GLB button can save a recoloured model) and it loads three.js from cdn.jsdelivr.net; icon_save writes only into the folder the agent names and never overwrites a file; search, metadata and embed code come from the bundled data/icons.json. No shell, credentials, telemetry or background work."
+maintainer: minutechreview
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+title: "Icon Index"
+platforms: []
+capabilities:
+  provides_tools:
+    - icon_search
+    - icon_get
+    - icon_save
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/minutechreview/hermes-icon-index#readme

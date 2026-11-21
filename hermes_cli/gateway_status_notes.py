@@ -1,6 +1,8 @@
 """Notes `hermes gateway status` prints beside the running/not-running verdict."""
 from __future__ import annotations
 
+import sys
+
 from hermes_cli.config import get_hermes_home
 
 
@@ -42,3 +44,14 @@ def print_standalone_by_config() -> None:
     names = sorted(roster - served - {"default"})
     if names:
         print(f"standalone by config (temporary compatibility shim): {', '.join(names)}")
+
+
+def print_scrubbed_output(result) -> None:
+    """Print a captured status command's stdout/stderr through the support-text redactor.
+    ``systemctl status`` renders the unit's CGroup tree with every child's full argv, so an MCP
+    server launched with ``--api-key <value>`` would otherwise leak into shared status output."""
+    from hermes_cli.debug_redaction import redact_debug_support_text
+    if result.stdout:
+        print(redact_debug_support_text(result.stdout), end="")
+    if result.stderr:
+        print(redact_debug_support_text(result.stderr), end="", file=sys.stderr)

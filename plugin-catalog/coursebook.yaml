@@ -1,0 +1,24 @@
+name: coursebook
+repo: https://github.com/DeseretSaint/hermes-classroom
+sha: 14a2dbb6870e81044dfb644964257fe9ccba992b
+title: Coursebook
+image: "https://raw.githubusercontent.com/DeseretSaint/hermes-classroom/14a2dbb6870e81044dfb644964257fe9ccba992b/docs/media/coursebook-cover-1200x600.jpg"
+description: "A native Hermes Desktop learning workspace where a lesson is governed state rather than chat: one objective at a time, typed checks, bounded grading, transactional transitions, inspectable evidence, and sourced visuals and audio, plus parent-prepared lesson packs. Disclosure — schoolwork, progress and evidence stay on this machine in profile-scoped SQLite under $HERMES_HOME/plugin-data/coursebook/; pack import reads a local archive the user picks and pack export writes a local file. The Workshop \"Share to store\" button publishes a course you wrote: after a confirmation step it uses your local git and gh CLI login to push a branch (forking DeseretSaint/hermes-classroom under your GitHub account if needed) and open a public pull request with the course content. No telemetry, no credential store, no self-update. Provider calls go through Hermes: lesson chat uses the selected chat provider, plan/lesson/Parent Studio generation uses the host plugin LLM route (optionally a configured validator model/provider) with the goal or parent brief and research excerpts, generated illustrations are sent to the host vision tool for review, and research uses the host web_search/web_extract tools. Its own direct requests are limited to downloading generated images from fal.media/fal.run and a first-use download of faster-whisper model weights from Hugging Face; pronunciation practice runs the local ffmpeg binary. It starts background job threads at load that run Desktop-queued generation jobs, injects lesson context into bound lesson chats through pre_llm_call and can block a turn when its lesson state cannot be read, and imports undocumented Hermes modules (hermes_cli.sqlite_util, tools.web_tools) that may break on a Hermes update."
+maintainer: DeseretSaint
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/DeseretSaint/hermes-classroom#install-locally
+readme: true
+version: "0.2.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - coursebook_status
+    - coursebook_due
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

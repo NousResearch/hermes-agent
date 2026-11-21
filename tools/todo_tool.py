@@ -301,7 +301,7 @@ def is_todo_tool_call(tool_call: Any) -> bool:
     only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / agent.tool_executor
     imports: TUI resume and run_agent call this without loading either.
     """
-    from agent.message_sanitization import _tc_field
+    from session_rules.turns import _tc_field
 
     fn = _tc_field(tool_call, "function")
     name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")

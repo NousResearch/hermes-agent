@@ -305,6 +305,41 @@ test('gatewayFileRequestPaths keeps streaming and fallback requests on the same 
   })
 })
 
+test('an explicit backup download route replaces the workspace route and has no data-URL twin', () => {
+  const archive = '/home/u/.hermes/backups/hermes backup.zip'
+  const downloadPath = `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`
+
+  const paths = gatewayFileRequestPaths(
+    archive,
+    requestPath => pathForRegistryBackendRequest(requestPath, 'research', { sharedRemote: true }),
+    undefined,
+    downloadPath
+  )
+
+  const download = new URL(paths.download, 'http://hermes.local')
+  assert.equal(paths.dataUrl, undefined)
+  assert.equal(download.pathname, '/api/ops/backup/download')
+  assert.deepEqual(
+    [...download.searchParams],
+    [
+      ['archive', archive],
+      ['profile', 'research']
+    ]
+  )
+
+  for (const rejected of [
+    '/api/fs/download?path=%2Fetc%2Fpasswd',
+    '/api/ops/backup/download',
+    '/api/ops/backup/download?archive=a.zip&path=%2Fetc%2Fpasswd',
+    'https://evil.example/api/ops/backup/download?archive=a.zip'
+  ]) {
+    assert.throws(
+      () => gatewayFileRequestPaths(archive, requestPath => requestPath, undefined, rejected),
+      /Unsupported/
+    )
+  }
+})
+
 test('isNotFoundError matches only HTTP 404', () => {
   const notFound: any = new Error('404: missing')
 

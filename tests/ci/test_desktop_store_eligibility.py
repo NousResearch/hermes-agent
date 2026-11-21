@@ -1,4 +1,7 @@
-"""Execute the packaging workflow branches; nonstable never builds Store identities."""
+"""Execute the packaging workflow branches; only release candidates build Store identities.
+
+A canary candidate (Stable Release in canary mode) builds the Store bundle like any candidate and
+never submits it; the legacy direct canary dispatch and commit builds never build one."""
 import json
 import os
 import shlex
@@ -14,10 +17,11 @@ from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _work
 
 @pytest.mark.parametrize('tag,commit,store', [
     ('v0.28.0', '', True),
-    ('v0.28.0+canary.20260818T000000Z', '', False),
+    ('canary.20260818T000000Z-v0.28.0', '', False),
+    ('canary.20260818T000000Z-v0.28.0', '', True),
     ('', 'a' * 40, False),
 ])
-def test_bundle_only_requests_store_for_stable(tmp_path, tag, commit, store):
+def test_bundle_only_requests_store_for_release_candidates(tmp_path, tag, commit, store):
     helper = tmp_path / 'bin'
     helper.mkdir()
     log = tmp_path / 'calls.jsonl'
@@ -39,7 +43,7 @@ def test_bundle_only_requests_store_for_stable(tmp_path, tag, commit, store):
     script = next(step['run'] for step in job['steps']
                   if step.get('name') == 'Assemble the signed MSIX bundle without publishing')
     result = subprocess.run([_BASH, '-e', '-o', 'pipefail', '-c', script], env=env, cwd=tmp_path,
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     calls = [json.loads(line) for line in log.read_text(encoding='utf-8-sig').splitlines()]
     assert calls[0][:1] == ['scripts/stage-msixbundle.mjs']
@@ -61,7 +65,7 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     }
     cases = [
         ('v0.28.0', '', True, 'release'),
-        ('v0.28.0+canary.20260818T000000Z', '', False, 'release'),
+        ('canary.20260818T000000Z-v0.28.0', '', False, 'release'),
         ('', 'a' * 40, False, 'commit'),
     ]
     wrapper = tmp_path / 'run.ps1'
@@ -89,6 +93,7 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     result = subprocess.run(
         [powershell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper)],
         env=_child_env(RUNNER_TEMP=str(tmp_path)), capture_output=True, text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     for index, (_, _, store, _) in enumerate(cases):

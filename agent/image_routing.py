@@ -229,9 +229,19 @@ def _resolve_inference_api_key(cfg: Optional[dict[str, Any]], provider: str) -> 
     matches the base URL actually probed; otherwise the local server-type probe hits
     a keyed remote endpoint without Authorization and sprays 401s on every image turn.
 
-    Mirrors :func:`_resolve_inference_base_url`'s resolution order (runtime value, then ``model.api_key``,
-    then the providers blocks) so the key matches the base URL actually being probed. See #89863.
+    The live runtime's key comes first; a credential source there owns authentication, so its failed
+    mint sends no saved key either. For the configured ``model.base_url`` the key is the one the
+    runtime resolver picks for it (:func:`main_endpoint_key_for`: a pool or ``providers:`` entry
+    owning the route before ``model.key_env``, "" where the runtime sends none). Otherwise :func:`_resolve_inference_base_url`'s
+    order (``model.api_key``, then the providers blocks) keeps the key paired with the probed URL. See #89863.
     """
+    runtime_key = _resolve_inference_value(None, provider, "api_key", runtime_ok=lambda _: True)
+    if runtime_key or not isinstance(cfg, dict) or callable(_runtime_main("api_key")):
+        return runtime_key
+    from hermes_cli.runtime_provider_custom import _is_model_base_url, main_endpoint_key_for
+    base_url, model_cfg = _resolve_inference_base_url(cfg, provider), _dict_or_empty(cfg.get("model"))
+    if _is_model_base_url(model_cfg, base_url):
+        return main_endpoint_key_for(model_cfg, base_url)
     return _resolve_inference_value(cfg, provider, "api_key", runtime_ok=lambda _: True)
 
 
@@ -245,10 +255,11 @@ def _should_probe_ollama_vision(provider: str, base_url: str, api_key: str = "")
     if not base_url:
         return False
     try:
-        from agent.model_metadata import detect_local_server_type, is_local_endpoint
+        from agent.model_metadata import detect_local_server_type
+        from agent.process_transport import is_local_server
 
         # Forward the key: an unauthorized probe can never produce a positive verdict.
-        return bool(is_local_endpoint(base_url)) and detect_local_server_type(base_url, api_key=api_key) == "ollama"
+        return is_local_server(base_url, provider) and detect_local_server_type(base_url, api_key=api_key) == "ollama"
     except Exception:
         return False
 
@@ -563,4 +574,31 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs"]
+# A text-mode image note some surface prepended to the typed prompt (gateway ``Runner._enrich_message_with_vision``,
+# the CLI's ``_preprocess_images_with_vision``, the TUI sidecar's ``_build_image_ref_message``): it opens with
+# ``[The user sent|attached an image`` and its last line names the image as ``image_url: <path>]``.
+_IMAGE_NOTE_RE = re.compile(r"\[The user (?:sent|attached) an image[\s\S]*?image_url: ([^\n]+?)(?: ~)?\](?:\n\n|$)")
+# ``build_native_content_parts``'s trailing hints, one line per image, after the caption.
+_NATIVE_HINTS_RE = re.compile(r"\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n?)+)$")
+_NATIVE_HINT_RE = re.compile(r"\[Image attached(?: at)?: ([^\n]+)\]")
+_DEFAULT_IMAGE_CAPTION = "What do you see in this image?"
+
+
+def split_image_notes(text: str) -> tuple[str, list[str]]:
+    """``(typed text, image paths)`` for a stored user prompt: the image notes a surface added for the model
+    (leading vision descriptions or trailing ``[Image attached at: …]`` hints) removed, the images they name
+    returned. Text without such notes comes back unchanged with no paths."""
+    paths: list[str] = []
+    rest = text or ""
+    while match := _IMAGE_NOTE_RE.match(rest):
+        paths.append(match[1].strip())
+        rest = rest[match.end():]
+    if not paths and (hints := _NATIVE_HINTS_RE.search(rest)):
+        paths = [m[1].strip() for m in _NATIVE_HINT_RE.finditer(hints[1])]
+        rest = rest[:hints.start()]
+        if rest.strip() == _DEFAULT_IMAGE_CAPTION:
+            rest = ""
+    return (rest, paths) if paths else (text, [])
+
+
+__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs", "split_image_notes"]

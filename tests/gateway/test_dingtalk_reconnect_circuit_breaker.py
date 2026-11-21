@@ -69,7 +69,7 @@ async def test_real_sdk_start_with_issue_type_error_is_bounded_and_fatal(caplog)
             patch("asyncio.sleep", new=fast_sleep):
         try:
             await asyncio.wait_for(adapter._run_stream(), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
     sdk = [r for r in caplog.records if r.name == "dingtalk_stream.client"]
     assert len(sdk) <= 5, len(sdk)

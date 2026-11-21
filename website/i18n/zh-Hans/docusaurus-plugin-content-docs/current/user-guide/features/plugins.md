@@ -141,7 +141,7 @@ def register(ctx):
 
 `~/.hermes/plugins/model-providers/<name>/` 和 `~/.hermes/plugins/memory/<name>/` 下的用户插件会覆盖同名内置插件 — `register_provider()` / `register_memory_provider()` 中后写者胜出。放入一个目录即可替换内置实现，无需修改仓库。
 
-子分类插件在 `hermes plugins list` 和交互式 `hermes plugins` UI 中以**路径派生的 key** 显示 — 例如 `observability/langfuse`、`image_gen/openai`、`platforms/teams`。该 key（而非 manifest 中的 `name:`）是传给 `hermes plugins enable …` / `disable …` 的值，也是在 `config.yaml` 的 `plugins.enabled` 下填写的字符串。
+子分类插件在 `hermes plugins list` 和交互式 `hermes plugins` UI 中以**路径派生的 key** 显示 — 例如 `image_gen/openai`、`platforms/teams`。该 key（而非 manifest 中的 `name:`）是传给 `hermes plugins enable …` / `disable …` 的值，也是在 `config.yaml` 的 `plugins.enabled` 下填写的字符串。
 
 ## 插件默认关闭（少数例外）
 
@@ -269,11 +269,11 @@ hermes plugins install user/repo --no-enable         # 安装但保持禁用（�
 hermes plugins update my-plugin                      # 拉取最新版本
 hermes plugins remove my-plugin                      # 卸载
 hermes plugins enable my-plugin                      # 添加到允许列表（普通插件）
-hermes plugins enable observability/langfuse         # 添加到允许列表（子分类插件）
+hermes plugins enable image_gen/openai               # 添加到允许列表（子分类插件）
 hermes plugins disable my-plugin                     # 从允许列表移除并添加到禁用列表
 ```
 
-对于子分类目录下的插件（例如 `plugins/observability/langfuse/`、`plugins/image_gen/openai/`），使用完整的 `<category>/<plugin>` key — 这正是 `hermes plugins list` 在 **Name** 列中显示的内容。
+对于子分类目录下的插件（例如 `plugins/image_gen/openai/`、`plugins/platforms/teams/`），使用完整的 `<category>/<plugin>` key — 这正是 `hermes plugins list` 在 **Name** 列中显示的内容。
 
 ### 更新检查、来源与依赖
 
@@ -312,7 +312,6 @@ Plugins
  → [✓] my-tool-plugin — Custom search tool
    [ ] webhook-notifier — Event hooks
    [ ] disk-cleanup — Auto-cleanup of ephemeral files [bundled]
-   [ ] observability/langfuse — Trace turns / LLM calls / tools to Langfuse [bundled]
 
   Provider Plugins
      Memory Provider          ▸ honcho

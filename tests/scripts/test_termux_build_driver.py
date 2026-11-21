@@ -71,6 +71,7 @@ def invoke(build_fixture, *identity, extra=()):
         [sys.executable, str(DRIVER), "--repo", str(repo), "--payload", str(payload),
          "--out", str(out), *identity, *extra],
         cwd=repo.parent, env=env, capture_output=True, text=True, timeout=30,
+        check=False,
     )
 
 
@@ -122,7 +123,7 @@ def test_all_paths_are_explicit(build_fixture, missing):
     args = [value for option, path in paths.items() if option != missing
             for value in (option, str(path))]
     result = subprocess.run([sys.executable, str(DRIVER), *args, "--tag", "v1.2.3"],
-                            cwd=repo.parent, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=repo.parent, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 2
     assert missing in result.stderr
     assert recorded_calls(log) == []
@@ -172,7 +173,7 @@ def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
     bash = shutil.which("bash")
     assert bash is not None
     result = subprocess.run([bash, "-euo", "pipefail", "-c", step["run"]],
-                            cwd=repo, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=repo, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     calls = recorded_calls(log)
     assert [Path(call["args"][0]).name for call in calls] == [
@@ -201,7 +202,7 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
 
     def image():
         result = subprocess.run(["bash", "-c", command, "fixture", str(scripts / "build_builder_image.sh")],
-                                env=env, capture_output=True, text=True, timeout=30)
+                                env=env, capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
         return result.stdout.splitlines()[-1]
 

@@ -91,7 +91,7 @@ class StreamingSession:
 
     def __init__(self, on_partial: Optional[PartialCallback] = None) -> None:
         self._on_partial = on_partial
-        self._audio: "queue.Queue[Optional[bytes]]" = queue.Queue()
+        self._audio: queue.Queue[Optional[bytes]] = queue.Queue()
         self._done = threading.Event()
         self._cancelled = threading.Event()
         self._result: dict[str, Any] = {}
@@ -116,7 +116,7 @@ class StreamingSession:
         return chunk
 
     # ── caller API ──
-    def start(self) -> "StreamingSession":
+    def start(self) -> StreamingSession:
         # copy_context: a plugin session reads secrets from the opener's profile scope.
         ctx = contextvars.copy_context()
         self._worker = threading.Thread(target=ctx.run, args=(self._run,), name=f"stt-stream-{self.provider}",

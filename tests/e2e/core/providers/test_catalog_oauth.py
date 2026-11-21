@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +93,9 @@ class Home:
             "CODEX_HOME": str(self.home / ".codex"),
             # Child HOME is the fixture home, so its state.db is tmp_path's (guard's documented escape).
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            # A turn boots the gateway; like every gateway harness, the hermetic run opts out of
+            # lazy installs (PM downloads).
+            "HERMES_DISABLE_LAZY_INSTALLS": "1",
             **self.sentinel.proxy_env()})
         env.update(extra or {})
         return env
@@ -101,11 +104,11 @@ class Home:
             timeout: float = TURN_TIMEOUT) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(self.home), env=self.env(extra_env),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, check=False)
 
 
 def _iso(delta_s: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=delta_s)).isoformat()
+    return (datetime.now(UTC) + timedelta(seconds=delta_s)).isoformat()
 
 
 def _nous_state(fake: OAuthFake, access: str, refresh: str, ttl_s: int) -> dict[str, Any]:

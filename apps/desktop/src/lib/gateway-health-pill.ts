@@ -43,12 +43,8 @@ export interface GatewayHealthPill {
 const HEALTHY_PLATFORM_STATES = new Set(['connected'])
 const IGNORED_PLATFORM_STATES = new Set(['disabled', 'not_configured', 'not configured'])
 
-function platformLeaf(id: string): string {
-  const sep = id.lastIndexOf(':')
-
-  return sep >= 0 ? id.slice(sep + 1) : id
-}
-
+// Keep the "profile:" prefix a multiplexed gateway puts on secondary profiles'
+// platforms: "whatsapp down" read as the user's own WhatsApp when it was another profile's.
 function unhealthyPlatformNames(platforms: GatewayHealthPillInput['platforms']): string[] {
   return Object.entries(platforms || {})
     .filter(([, platform]) => {
@@ -56,7 +52,7 @@ function unhealthyPlatformNames(platforms: GatewayHealthPillInput['platforms']):
 
       return Boolean(state) && !HEALTHY_PLATFORM_STATES.has(state) && !IGNORED_PLATFORM_STATES.has(state)
     })
-    .map(([id]) => platformLeaf(id))
+    .map(([id]) => id)
 }
 
 function messagingWasConfigured(

@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import SessionQuery
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 MINTED_KEY = "20260828_053121_3427a9"  # the morning's lost session shape
@@ -28,8 +31,8 @@ EXISTING_KEY = "20260827_224618_956bf8"
 
 @pytest.fixture()
 def real_db(monkeypatch, tmp_path):
-    """Real SessionDB behind ``_get_db``, with the heavy resume machinery off."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    """A real store handle behind ``_get_db``, with the heavy resume machinery off."""
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
@@ -63,7 +66,7 @@ def test_resume_materializes_row_for_minted_key(real_db):
     resp = _resume(session_id=MINTED_KEY)
 
     _assert_resumed_ok(resp, MINTED_KEY)
-    row = real_db.get_session(MINTED_KEY)
+    row = session_row(real_db, MINTED_KEY)
     assert row is not None, "resume must materialize the DB row"
     assert row["source"] == "tui"
     assert row["model"] == "test-model"
@@ -77,15 +80,15 @@ def test_resume_materializes_row_for_minted_key(real_db):
 
 def test_resume_existing_row_unaffected(real_db):
     """A persisted session resumes normally and its row is not duplicated."""
-    real_db.create_session(EXISTING_KEY, source="tui", model="test-model")
-    real_db.append_message(EXISTING_KEY, "user", "hello")
+    seed_session(real_db, EXISTING_KEY, "tui", model="test-model")
+    seed_messages(real_db, EXISTING_KEY, {"role": "user", "content": "hello"})
 
     resp = _resume(session_id=EXISTING_KEY)
 
     _assert_resumed_ok(resp, EXISTING_KEY)
     # message_count stays 1 — a second create would have been an INSERT-OR-IGNORE
     # no-op, but the row must remain the same single conversation.
-    assert real_db.get_session(EXISTING_KEY)["message_count"] == 1
+    assert session_row(real_db, EXISTING_KEY)["message_count"] == 1
 
 
 def test_resume_garbage_id_still_4007(real_db):
@@ -94,7 +97,7 @@ def test_resume_garbage_id_still_4007(real_db):
 
     assert resp["error"]["code"] == 4007
     # nothing materialized for arbitrary strings
-    assert len(real_db.list_sessions_rich(source="tui")) == 0
+    assert len(real_db.sessions.list_sessions(SessionQuery(sources=("tui",)))) == 0
 
 
 def test_resume_8hex_runtime_id_still_4007(real_db):
@@ -102,7 +105,7 @@ def test_resume_8hex_runtime_id_still_4007(real_db):
     resp = _resume(session_id="5a81f231")
 
     assert resp["error"]["code"] == 4007
-    assert len(real_db.list_sessions_rich(source="tui")) == 0
+    assert len(real_db.sessions.list_sessions(SessionQuery(sources=("tui",)))) == 0
 
 
 def test_resume_lazy_watch_missing_key_still_4007(real_db):
@@ -110,7 +113,7 @@ def test_resume_lazy_watch_missing_key_still_4007(real_db):
     resp = _resume(session_id=MINTED_KEY, lazy=True)
 
     assert resp["error"]["code"] == 4007
-    assert real_db.get_session(MINTED_KEY) is None
+    assert session_row(real_db, MINTED_KEY) is None
 
 
 def test_resume_minted_key_claimed_by_other_profile_fails_closed(real_db):
@@ -135,7 +138,7 @@ def test_resume_minted_key_claimed_by_other_profile_fails_closed(real_db):
     try:
         resp = _resume(session_id=MINTED_KEY)
         assert resp["error"]["code"] == 4007
-        assert real_db.get_session(MINTED_KEY) is None
+        assert session_row(real_db, MINTED_KEY) is None
     finally:
         with server._sessions_lock:
             server._sessions.pop("live-other-profile", None)

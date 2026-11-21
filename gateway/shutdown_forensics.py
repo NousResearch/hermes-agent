@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
+from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, launchd_job_label, resolve_systemd_timeout_stop_sec
 import contextlib
 
 _SIGNAL_NAME_BY_NUM: dict[int, str] = {
@@ -84,12 +84,16 @@ def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
         "signal_num": int(received_signal) if received_signal is not None else None,
         "pid": pid, "ppid": ppid, "parent": _proc_summary(ppid), "self": _proc_summary(pid),
     }
-    # INVOCATION_ID is set by systemd units; ppid==1 also suggests systemd forwarded the SIGTERM.
     for ctx_key, env_key in (("systemd_invocation_id", "INVOCATION_ID"),
                              ("systemd_journal_stream", "JOURNAL_STREAM")):
         if os.environ.get(env_key):
             ctx[ctx_key] = os.environ[env_key]
-    ctx["under_systemd"] = bool(os.environ.get("INVOCATION_ID")) or ppid == 1
+    # Supervision is read from what the supervisor stamps (systemd: INVOCATION_ID; our launchd
+    # plist: the ai.hermes job label), never from ppid==1: on macOS every orphan (a Desktop- or
+    # terminal-started gateway whose parent quit) is reparented to launchd, pid 1, so ppid==1 read
+    # "under_systemd=yes" on a gateway nothing would revive (#103236).
+    ctx["under_systemd"] = bool(os.environ.get("INVOCATION_ID"))
+    ctx["supervisor"] = "systemd" if ctx["under_systemd"] else ("launchd" if launchd_job_label() else "none")
     # High load points at "something crushing the box" rather than an external killer.
     with contextlib.suppress(OSError, AttributeError):
         ctx["loadavg_1m"] = os.getloadavg()[0]
@@ -160,6 +164,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
             [*bound, "bash", "-c", script], stdout=fd,
+            # detached-spawn: ok — forensics dump runs while the gateway dies; bounded by timeout(1)
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:
@@ -184,6 +189,7 @@ def format_context_for_log(ctx: dict[str, Any]) -> str:
     extras_str = (" " + " ".join(extras)) if extras else ""
     return (
         f"signal={ctx.get('signal', '?')} under_systemd={'yes' if ctx.get('under_systemd') else 'no'} "
+        f"supervisor={ctx.get('supervisor') or '?'} "
         f"parent_pid={parent.get('pid') or '?'} parent_name={parent.get('name') or '?'} "
         f"loadavg_1m={load_str}{extras_str}"
     )
@@ -232,6 +238,7 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue

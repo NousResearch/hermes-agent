@@ -48,7 +48,7 @@ def run_probe(script: str, args: list[str], repo: str, timeout: int = 240) -> tu
     env["PYTHONPATH"] = repo + os.pathsep + env.get("PYTHONPATH", "")
     cmd = [sys.executable, str(HERE / script), *[a.format(repo=repo) for a in args]]
     try:
-        p = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        p = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env, check=False)
         return p.returncode, (p.stdout + "\n" + p.stderr)
     except subprocess.TimeoutExpired:
         return 124, "TIMEOUT"

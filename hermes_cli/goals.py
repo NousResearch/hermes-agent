@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -299,7 +299,7 @@ class GoalContract:
         return {f: getattr(self, f) for f in _CONTRACT_FIELDS}
 
     @classmethod
-    def from_dict(cls, data: Optional[dict[str, Any]]) -> "GoalContract":
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> GoalContract:
         if not isinstance(data, dict):
             return cls()
         return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS})
@@ -358,7 +358,7 @@ class GoalGate:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Optional[dict[str, Any]]) -> "GoalGate":
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> GoalGate:
         if not isinstance(data, dict):
             return cls(command="")
         return cls(
@@ -403,6 +403,7 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> tuple[bool, int, s
         proc = subprocess.run(
             gate.command, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=max(1, int(gate.timeout_seconds)), cwd=cwd or None,
+            check=False,
         )
         combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         return proc.returncode == 0, proc.returncode, combined[-_GATE_OUTPUT_TAIL_CHARS:]
@@ -455,7 +456,7 @@ class GoalState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "GoalState":
+    def from_json(cls, raw: str) -> GoalState:
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
@@ -495,7 +496,7 @@ class GoalState:
         self.waiting_since = 0.0
 
 
-# ── Persistence (SessionDB state_meta) ────────────────────────────────
+# ── Persistence (state_meta) ──────────────────────────────────────────
 
 def _meta_key(session_id: str) -> str:
     return f"goal:{session_id}"
@@ -506,7 +507,7 @@ _DB_BOOTSTRAP_LOCK = threading.Lock()
 _DB_BOOTSTRAP_INFLIGHT: dict[str, threading.Event] = {}
 
 # How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap before degrading to None.
-# Normal SessionDB init is ~10-100ms so a mid-bootstrap call usually picks the cached instance up;
+# A normal store open is ~10-100ms so a mid-bootstrap call usually picks the cached handle up;
 # a contended init (locked state.db mid-migration) exceeds it and degrades. Far under the
 # watchdog's probe window.
 _DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
@@ -519,11 +520,11 @@ _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 
 
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
-    """Construct SessionDB off-loop and populate the cache (worker thread)."""
+    """Open the store handle off-loop and populate the cache (worker thread)."""
     try:
         db = _acquire_session_db(home)
     except Exception as exc:  # pragma: no cover
-        logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
+        logger.debug("GoalManager: background store open raised (%s)", exc)
         db = None
     with _DB_BOOTSTRAP_LOCK:
         if db is not None and home not in _DB_CACHE:
@@ -536,9 +537,9 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
 
 
 def _get_session_db() -> Optional[Any]:
-    """Cached SessionDB per HERMES_HOME (profile switches pick the right DB); None on any failure.
+    """Cached store handle per HERMES_HOME (profile switches pick the right store); None on any failure.
 
-    Never constructs SessionDB on an event-loop thread: a cache miss there kicks a one-shot background
+    Never opens the store on an event-loop thread: a cache miss there kicks a one-shot background
     bootstrap and waits a bounded grace window (the kick call waits ``_DB_BOOTSTRAP_INIT_WAIT_S`` so a
     healthy cold init completes and the first write isn't dropped).
     """
@@ -547,18 +548,12 @@ def _get_session_db() -> Optional[Any]:
 
         home = str(get_hermes_home())
     except Exception as exc:  # pragma: no cover
-        logger.debug("GoalManager: SessionDB bootstrap failed (%s)", exc)
+        logger.debug("GoalManager: store bootstrap failed (%s)", exc)
         return None
 
+    # ``hermes profile delete`` force-closes every store under the profile home before rmtree; a
+    # cached handle opens the store again on its next touch, so a same-name recreate writes a live store.
     cached = _DB_CACHE.get(home)
-    if cached is not None and _registry_tore_down(cached):
-        # ``hermes profile delete`` force-closes every handle under the profile home
-        # (``hermes_state_registry.close_all_under``) before rmtree; a same-name recreate in this
-        # process must acquire a fresh handle, not keep writing into the torn-down one.
-        with _DB_BOOTSTRAP_LOCK:
-            if _DB_CACHE.get(home) is cached:
-                del _DB_CACHE[home]
-        cached = None
     if cached is not None:
         return cached
 
@@ -587,7 +582,7 @@ def _get_session_db() -> Optional[Any]:
     try:
         db = _acquire_session_db(home)
     except Exception as exc:  # pragma: no cover
-        logger.debug("GoalManager: SessionDB() raised (%s)", exc)
+        logger.debug("GoalManager: store open raised (%s)", exc)
         return None
     with _DB_BOOTSTRAP_LOCK:
         existing = _DB_CACHE.get(home)
@@ -600,26 +595,18 @@ def _get_session_db() -> Optional[Any]:
 
 
 def _acquire_session_db(home: str):
-    """The registry's shared handle for ``home/state.db``. A bare ``SessionDB()`` here was a SECOND
-    writer per profile beside the gateway's registry handle — its own token-writer thread and
-    close-time checkpoint (the #90837 corruption shape), doubled under multiplexing."""
-    from hermes_state_registry import acquire
-    return acquire(Path(home) / "state.db")
+    """A handle on ``home``'s process-shared store, the one writer per profile every handle shares (a
+    second writer beside the gateway's carries its own close-time checkpoint, the #90837 corruption
+    shape). The store opens here, on the calling thread, so an unopenable store raises here."""
+    from persistence_assembly import open_persistence, profile_scope
+    return open_persistence(profile_scope(home=Path(home)), eager=True)
 
 
 def _release_session_db(db) -> None:
-    from hermes_state_registry import release_or_close
     try:
-        release_or_close(db)
+        db.close()
     except Exception:
         pass
-
-
-def _registry_tore_down(db) -> bool:
-    """True once the registry force-closed *db* (``close_all`` / ``close_all_under`` clear the
-    shared-owned flag at teardown); every handle cached here was acquired through the registry, so a
-    cleared flag means the connection is gone and the cache entry is stale."""
-    return getattr(db, "_shared_registry_owned", True) is False
 
 
 def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
@@ -640,7 +627,7 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     if db is None:
         return None
     try:
-        raw = db.get_meta(_meta_key(session_id))
+        raw = db.state_meta.get(_meta_key(session_id))
     except Exception as exc:
         logger.debug("GoalManager: get_meta failed: %s", exc)
         return None
@@ -654,7 +641,7 @@ def load_goal(session_id: str) -> Optional[GoalState]:
 
 
 def save_goal(session_id: str, state: GoalState) -> None:
-    """Persist a goal to SessionDB. No-op if DB unavailable."""
+    """Persist a goal to the session store. No-op if the store is unavailable."""
     if not session_id:
         return
     db = _get_session_db()
@@ -662,7 +649,7 @@ def save_goal(session_id: str, state: GoalState) -> None:
         _warn_dropped_write("GoalManager", "goal", session_id)
         return
     try:
-        db.set_meta(_meta_key(session_id), state.to_json())
+        db.state_meta.set(_meta_key(session_id), state.to_json())
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
 
@@ -928,7 +915,7 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
-        current_time=safe_strftime(datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
+        current_time=safe_strftime(datetime.now(tz=UTC).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
@@ -1004,16 +991,18 @@ def last_user_message_content(history: Any) -> Any:
 
 
 def last_user_message_from_db(session_id: Optional[str]) -> Any:
-    """Newest user message of ``session_id`` from the SessionDB (gateway/TUI surfaces have no live
+    """Newest user message of ``session_id`` from the session store (gateway/TUI surfaces have no live
     history object at slash-command time); ``""`` on any error."""
     if not session_id:
         return ""
     try:
+        from persistence.conversation.messages import TranscriptRead
+
         db = _get_session_db()
         if db is None:
             return ""
-        rows = db.get_messages(str(session_id), limit=20, latest=True)
-        return last_user_message_content(rows)
+        rows = db.messages.read_transcript(str(session_id), TranscriptRead(limit=20, latest=True))
+        return last_user_message_content([row.as_wire_row() for row in rows])
     except Exception:
         return ""
 
@@ -1097,6 +1086,10 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+
+    def refresh(self) -> None:
+        """Re-read state from the DB (another writer, e.g. a tool, moved it)."""
+        self._state = load_goal(self.session_id)
 
     # --- introspection ------------------------------------------------
 

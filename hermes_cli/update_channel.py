@@ -22,6 +22,7 @@ same path, and the channel opt-in must survive that.
   (it knows its own id — the user never types a sha).
 * Shown by ``hermes update --install-id`` and the desktop About page.
 * Source installs select an R2 channel name, or use an explicit branch override.
+  Unconfigured official checkouts track ``stable``; forks and mirrors keep ``main``.
   Bundles derive their channel from their baked identity, never these records.
   ``external`` installs have no configurable channel; the steward owns updates.
 
@@ -48,53 +49,95 @@ CHANNEL_STABLE = "stable"
 CHANNEL_CANARY = "canary"
 
 
-# A canary source identity: the exact stable version plus a full UTC build
-# timestamp in SemVer build metadata. Build metadata is precedence-invisible,
-# so channel movement comes only from the R2 head, never version comparison.
-# THIS is the single authority; producers and consumers import it rather than
-# re-typing the shape.
-_CANARY_TAG_RE = re.compile(
-    r"^v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-    r"\+canary\.20\d{6}T\d{6}Z$"
-)
+# A canary tag: the build kind as a prefix, then a full UTC build timestamp, then the exact stable
+# version it builds on -- ``canary.<YYYYMMDDTHHMMSSZ>-v<stable>``, the same claim shape as a stable
+# release's ``rc.N-v<stable>``. It never matches ``v*``, so nothing that lists release tags mistakes
+# it for one. The canary's *version* (what the app, the Termux package and the feeds report) stays
+# SemVer: ``<stable>+canary.<stamp>`` (release_version). THIS is the single authority; producers and
+# consumers import it rather than re-typing the shape.
+_VERSION_CORE = r"(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+_CANARY_TAG_RE = re.compile(rf"^canary\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
 
 # A stable release tag: v<major>.<minor>.<patch>, no suffix. The major is
 # capped at three digits so the historical CalVer tags (v2026.7.20) can never
 # pass as SemVer and reach a stable feed, Docker publish, or the source
 # updater. THIS is the single authority for the stable shape; every stable
 # selector imports it rather than re-typing the rule.
-STABLE_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")
+STABLE_TAG_RE = re.compile(rf"^v{_VERSION_CORE}$")
+
+
+# The retired canary shape, ``v<stable>+canary.<stamp>``. Nothing produces it; release tooling reads
+# it only in records published before the prefix shape (a channel head's previous manifest, a live
+# macOS feed), so the first prefix-shaped canary can order itself after them and replace them.
+_LEGACY_CANARY_TAG_RE = re.compile(rf"^v(?P<core>{_VERSION_CORE})\+canary\.(?P<stamp>20\d{{6}}T\d{{6}}Z)$")
+
+
+def published_canary_timestamp(tag: Any) -> str | None:
+    """The build stamp of a published canary tag of either shape (ordering against old records)."""
+    if not isinstance(tag, str):
+        return None
+    match = _CANARY_TAG_RE.fullmatch(tag.strip()) or _LEGACY_CANARY_TAG_RE.fullmatch(tag.strip())
+    return match["stamp"] if match else None
+
+
+def published_release_version(tag: Any) -> str | None:
+    """release_version, also reading the retired canary shape of already-published records."""
+    version = release_version(tag)
+    if version is None and isinstance(tag, str) and _LEGACY_CANARY_TAG_RE.fullmatch(tag.strip()):
+        version = tag.strip()[1:]
+    return version
 
 
 def is_canary_tag(tag: Any) -> bool:
-    """True for a canonical canary source identity."""
+    """True for a canonical canary tag (``canary.<stamp>-vX.Y.Z``)."""
     if not isinstance(tag, str):
         return False
-    value = tag.strip()
-    return bool(_CANARY_TAG_RE.fullmatch(value))
+    return bool(_CANARY_TAG_RE.fullmatch(tag.strip()))
 
 
 def canary_timestamp(tag: Any) -> str | None:
-    """Return the UTC receipt stamp from a canonical canary tag."""
-    if not is_canary_tag(tag):
+    """Return the UTC build stamp from a canonical canary tag."""
+    match = _CANARY_TAG_RE.fullmatch(tag.strip()) if isinstance(tag, str) else None
+    return match["stamp"] if match else None
+
+
+def tag_core(tag: Any) -> str | None:
+    """The stable ``X.Y.Z`` a stable or canary tag builds on, else None."""
+    if not isinstance(tag, str):
         return None
-    return tag.strip().split("+canary.", 1)[1]
+    value = tag.strip()
+    if STABLE_TAG_RE.fullmatch(value):
+        return value[1:]
+    match = _CANARY_TAG_RE.fullmatch(value)
+    return match["core"] if match else None
+
+
+def release_version(tag: Any) -> str | None:
+    """The version a stable or canary tag publishes: ``X.Y.Z`` or ``X.Y.Z+canary.<stamp>``.
+
+    Never derive it by stripping a leading ``v``: a canary tag starts with its kind.
+    """
+    if not isinstance(tag, str):
+        return None
+    value = tag.strip()
+    if STABLE_TAG_RE.fullmatch(value):
+        return value[1:]
+    match = _CANARY_TAG_RE.fullmatch(value)
+    return f"{match['core']}+canary.{match['stamp']}" if match else None
 
 
 def canary_tag_for_date(version: str, date_utc: str) -> str:
-    """Return ``v<stable>+canary.<full UTC timestamp>``.
+    """Return ``canary.<full UTC timestamp>-v<stable>``.
 
-    The stable core is unchanged. The suffix is build metadata, so the source
-    identity compares equal to the stable and only the R2 channel head moves a
-    canary subscriber.
+    The stable core is unchanged; the version it publishes carries the stamp only as SemVer build
+    metadata, so only the R2 channel head moves a canary subscriber.
     """
     core = version.removeprefix("v")
     if not STABLE_TAG_RE.fullmatch("v" + core):
         raise ValueError(f"invalid stable version for canary: {version!r}")
     if not re.fullmatch(r"20\d{6}T\d{6}Z", date_utc):
         raise ValueError(f"invalid canary UTC timestamp: {date_utc!r}")
-    return f"v{core}+canary.{date_utc}"
-
+    return f"canary.{date_utc}-v{core}"
 
 
 def install_id(project_root: Optional[Path] = None) -> str:
@@ -139,7 +182,8 @@ def _package_channel(stamp: dict) -> bool:
 def default_channel(project_root: Optional[Path] = None) -> str:
     """The channel an unconfigured install tracks.
 
-    ``self`` source installs follow main (historical behavior).
+    A source checkout of the official repository follows the latest published
+    stable release. Forks, mirrors and checkout-less trees keep following main.
     ``electron-updater`` and ``app-installer`` bundles report their artifact
     channel: a canary artifact tracks canary, every other bundle
     tracks stable. The stamp's ``tag`` is the authority, the same fact
@@ -153,13 +197,49 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     root = Path(project_root) if project_root is not None else install_root()
     stamp = _read_stamp(root)
     if not _package_channel(stamp):
-        return CHANNEL_MAIN
+        return CHANNEL_STABLE if _tracks_official_origin(root) else CHANNEL_MAIN
     if stamp.get("source") == "channel-build":
         request = stamp.get("channelBuild")
         if not isinstance(request, dict):
             raise ValueError("Channel bundle has no baked subscription")
         return validate_name(request.get("channel"))
     return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
+
+
+def _tracks_official_origin(root: Path) -> bool:
+    """True when ``root`` is a git checkout whose ``remote.origin.url`` is the official repo.
+
+    Read from the git config file (no git process: the banner and boot paths call this).
+    Forks, mirrors and local-path origins publish no official releases.
+    """
+    from hermes_cli.source_releases import _GITHUB_ORIGIN, OFFICIAL_REPOSITORY
+    from hermes_cli.update_lock import _git_common_dir
+
+    common = _git_common_dir(root)
+    try:
+        lines = (common / "config").read_text(encoding="utf-8-sig").splitlines() if common else []
+    except OSError:
+        return False
+    in_origin = False
+    for line in lines:
+        text = line.strip()
+        if text.startswith("["):
+            in_origin = text == '[remote "origin"]'
+        elif in_origin and text.partition("=")[0].strip() == "url":
+            match = _GITHUB_ORIGIN.fullmatch(text.partition("=")[2].strip())
+            return bool(match) and match[1].lower() == OFFICIAL_REPOSITORY.lower()
+    return False
+
+
+def rides_default_channel(record: dict, channel: str, project_root: Optional[Path] = None) -> bool:
+    """True when no channel was ever persisted (``record``) and ``channel`` is the default.
+
+    Such an install never consented to a release switch, so it only moves forward: a
+    checkout already newer than the latest release waits for the next one. A transient
+    ``--channel`` naming the default (the Desktop passes the channel its check reported)
+    is still the default; only ``--set-channel`` consents to a downgrade.
+    """
+    return record.get("channel") is None and channel == default_channel(project_root)
 
 
 def resolve_update_channel(
@@ -284,7 +364,7 @@ def _write_channel_record_locked(sha16: str, path: str, channel: str,
     the dotted writer would otherwise turn a scalar into a mapping and
     destroy whatever the user had there.
     """
-    from utils import atomic_roundtrip_yaml_update
+    from hermes_cli.config_backend import write_config_key
 
     from hermes_cli.config import require_readable_config_before_write
     existing = require_readable_config_before_write(config_path)
@@ -300,7 +380,7 @@ def _write_channel_record_locked(sha16: str, path: str, channel: str,
     new_record = dict(record) if isinstance(record, dict) else {}
     new_record["path"] = path  # DATA, for humans + doctor GC
     new_record["channel"] = channel
-    atomic_roundtrip_yaml_update(config_path, f"update.installs.{sha16}", new_record)
+    write_config_key(config_path, f"update.installs.{sha16}", new_record)
     return True
 
 

@@ -81,7 +81,7 @@ def start_flow(
 
     session_id = secrets.token_urlsafe(24)
     flow = DashboardOAuthFlow(
-        flow_id=session_id, server_name=server_name, profile=None, hermes_home=hermes_home,
+        flow_id=session_id, server_name=server_name, hermes_home=hermes_home,
         redirect_uri="", reconnect_live=reconnect_live)
     httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
     rec = register_flow(flow, httpd=httpd)
@@ -114,7 +114,7 @@ def start_flow(
 
 def _lookup(
     session_id: str, server_name: str, hermes_home: Optional[str] = None,
-) -> "tuple[dict[str, Any] | None, str | None]":
+) -> tuple[dict[str, Any] | None, str | None]:
     """Find a session belonging to the caller's resolved profile."""
     from hermes_constants import hermes_home_key
     with _sessions_lock:

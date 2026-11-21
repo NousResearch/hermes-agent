@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from agent.deadline import poll_until
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from pathlib import Path
 from typing import Any
@@ -131,15 +132,13 @@ def _cross_process_init_lock(path: Path):
     handle = lock_path.open("a+b")
     acquired = False
     try:
-        deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
-        while True:
+        def _try_lock() -> bool:
             try:
-                acquired = _try_lock_nb(handle)
+                return _try_lock_nb(handle)
             except OSError:
-                acquired = False
-            if acquired or time.monotonic() >= deadline:
-                break
-            time.sleep(_INIT_LOCK_POLL_SECONDS)
+                return False
+
+        acquired = poll_until(_try_lock, _INIT_LOCK_TIMEOUT_SECONDS, _INIT_LOCK_POLL_SECONDS)
         if not acquired:
             _kb._log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
@@ -642,8 +641,8 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
         conn.text_factory = _kb._lossy_text
         with _INIT_LOCK:
             # WAL doesn't work on network filesystems; the helper falls back to
-            # DELETE with one ERROR log (see hermes_state_wal._WAL_INCOMPAT_MARKERS).
-            from hermes_state_wal import apply_wal_with_fallback
+            # DELETE with one ERROR log (see sqlite_support._WAL_INCOMPAT_MARKERS).
+            from sqlite_support import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
             # FULL (not NORMAL): fsync before each checkpoint to narrow the
             # crash window that can leave a b-tree page header torn.
@@ -764,7 +763,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
         # Read-only file/sidecar preflight first, so a stray read-only kanban.db
         # fails actionably instead of "attempt to write a readonly database".
         # See #12508.
-        from hermes_state import preflight_db_writability
+        from sqlite_support import preflight_db_writability
         preflight_db_writability(path, db_label=f"kanban.db ({path.name})")
         # Cheap byte-level header check before any sqlite connection, then the
         # full integrity probe (cached per path via _INITIALIZED_PATHS).

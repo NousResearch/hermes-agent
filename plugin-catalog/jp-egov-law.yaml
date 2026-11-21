@@ -1,12 +1,13 @@
 name: jp-egov-law
 repo: https://github.com/TakeshiTGAL/hermes-plugin-egov-law
-sha: 5233802cf0b5c29b595c0f1da20abbc823e09c0d
-description: "Japanese laws for Hermes Agent, built on the e-Gov Law API: find a law by name, abbreviation or phrase, read one article as in force today or on a given date, and check amendment history and enforcement dates, with the source credit e-Gov's terms ask for. Disclosure — sends the law names, article numbers, dates and search phrases you look up to laws.e-gov.go.jp (public API, no key); no other host, nothing written to disk."
+sha: f6b91ba736d556e0f3afa42d5afe303fb3d7c09d
+description: "Japanese laws for Hermes Agent, built on the e-Gov Law API: find a law by name, abbreviation or phrase, read one article as in force today or on a given date, and check amendment history and enforcement dates, with the source credit e-Gov's terms ask for. Ask for one Japanese law article, such as Article 32 of the Labor Standards Act, and it returns the official law text with the law number and the date that version took effect. Disclosure — sends the law names, article numbers, dates and search phrases you look up to laws.e-gov.go.jp (public API, no key); no other host, nothing written to disk. Registers blueprint jp-egov-law:weekly-amendments and does not create a cron job. When you create a job from that blueprint, one model turn runs once a week (default Mon 09:00, Hermes tz or the host clock if unset, not converted to Japan). A turn that calls a tool is at least two model requests, and there is no daily cap. The agent can schedule it, and scheduling it twice creates two jobs. Silence is not \"no amendment\". Uninstall leaves the cron until hermes cron remove. Tools stay on every platform, including gateways (a guest can call them; hermes tools disables one). While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off, and its pre_llm_call paragraph is added on those surfaces too. v0.21.4 and v0.21.5 load the tools and skip the blueprint. pre_llm_call adds its paragraph only on a statute question, and adds nothing on other turns. A statute question matches 法令, 法律, 条文, e-Gov, 第N条, or 条 outside 条件, or egov_law_search, egov_law_article, or egov_law_revisions called in the previous turn. A company name alone or an unrelated question does not add it. The paragraph says not to call egov_law_search with an empty query or a company name, that pre_tool_call blocks that search, that no article URL is written and a URL is not guessed, and to call egov_law_article when a law and an article are named and copy source.url; the same paragraph also tells the model not to call tool_describe and not to write 取得しました or 確認できます on that turn. pre_tool_call blocks egov_law_search when the query is empty or, in title mode, does not name a statute. 条 inside 条件 is not a statute name. The block says no article URL was written and a URL was not guessed. A text-mode search and egov_law_article are not blocked."
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-egov-law#readme
-version: "0.1.0"
+version: 0.1.11
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-egov-law/2e96dd28108250b374160077d6e1d9fa4dea55f1/assets/catalog-banner.png
 requires_hermes: ">=0.21.4"
 platforms: []
 capabilities:
@@ -14,6 +15,8 @@ capabilities:
   - egov_law_search
   - egov_law_article
   - egov_law_revisions
-  provides_hooks: []
+  provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
   provides_middleware: []
   requires_env: []

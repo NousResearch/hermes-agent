@@ -48,6 +48,9 @@ SKIP_SIGNATURES = frozenset({"skip_thought_signature_validator", "context_engine
 # Hermes-side config for a home that talks to this fake: the user-facing provider id + model and the
 # key in ``.env`` (``model.base_url`` may pin another Google API version, e.g. ``.../v1``).
 HERMES_ENV = {"GEMINI_API_KEY": API_KEY}
+# This fake speaks the ``generateContent`` dialect only, so its homes pin the provider to it (Gemini 3+
+# defaults to the Interactions API).
+HERMES_CONFIG = {"providers": {"gemini": {"gemini_api": "generate_content"}}}
 
 
 def hermes_model(base_url: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -397,7 +400,7 @@ def _write_tls_material(directory: Path) -> tuple[Path, Path, Path]:
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes-e2e gemini fake CA")])
     ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
@@ -459,7 +462,7 @@ class GeminiFake:
         self._thread = threading.Thread(target=self._server.serve_forever, name="gemini-fake", daemon=True)
 
     # lifecycle ---------------------------------------------------------------------------------
-    def __enter__(self) -> "GeminiFake":
+    def __enter__(self) -> GeminiFake:
         self._thread.start()
         return self
 

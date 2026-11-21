@@ -22,6 +22,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_cli.cli_output import prompt as _prompt_input
 from utils import rmtree_readonly
+from hermes_cli._startup_fast import project_root_str
 
 _MANIFEST_VERSION = 1
 
@@ -138,7 +139,7 @@ class CatalogError(Exception):
 
 def _catalog_root() -> Path:
     """The optional-mcps/ dir: env-var override / packaged location, else the source checkout's."""
-    return get_optional_mcps_dir(Path(__file__).parent.parent / "optional-mcps")
+    return get_optional_mcps_dir(Path(project_root_str()) / "optional-mcps")
 
 
 def _parse_env_spec(raw: Any) -> EnvVarSpec:
@@ -382,8 +383,7 @@ def catalog_diagnostics() -> list[tuple]:
 
 def get_entry(name: str) -> Optional[CatalogEntry]:
     """Look up a single entry by name. ``official/<name>`` prefix accepted."""
-    if name.startswith("official/"):
-        name = name[len("official/"):]
+    name = name.removeprefix("official/")
     return next((e for e in list_catalog() if e.name == name), None)
 
 
@@ -432,7 +432,7 @@ def _run_bootstrap(cwd: Path, commands: list[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure."""
     for cmd in commands:
         _say(f"  $ {cmd}", Colors.DIM)
-        rc = subprocess.run(cmd, cwd=str(cwd), shell=True).returncode
+        rc = subprocess.run(cmd, cwd=str(cwd), shell=True, check=False).returncode
         if rc != 0:
             raise CatalogError(f"bootstrap step failed (exit {rc}): {cmd}", failure_class="bootstrap_failed")
 

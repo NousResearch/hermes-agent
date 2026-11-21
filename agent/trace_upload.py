@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class TraceRedactionError(RuntimeError):
 # --- Conversion: Hermes OpenAI-format messages -> Claude Code JSONL ---
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def _redact(text: Any, enabled: bool) -> Any:
@@ -98,10 +98,11 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> list[dict[str, Any]]
         parsed = _parse_tool_args(fn.get("arguments"))
         if redact:
             try:
-                parsed = json.loads(_redact(json.dumps(parsed), redact))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("Trace upload redacted tool arguments are not valid JSON; refusing upload")
-                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE)
+                from agent.redact_structured import redact_structured
+                parsed = redact_structured(parsed)
+            except Exception as exc:
+                logger.warning("Trace upload structured redaction failed; refusing upload", exc_info=True)
+                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from exc
         blocks.append({"type": "tool_use", "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
                        "name": fn.get("name") or tc.get("name") or "tool", "input": parsed})
     return blocks
@@ -114,7 +115,7 @@ def _git_branch(cwd: str) -> str:
         import subprocess
         r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, check=False)
     except Exception:
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""
@@ -224,16 +225,20 @@ def _do_upload(
 
 
 def load_session_messages(session_id: str, db_path=None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """``(messages, meta)`` from SQLite; ``meta`` is ``{}`` when the session row is missing (a live, untitled
-    session may still have messages)."""
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(db_path or None)
+    """``(messages, meta)`` from the session store; ``meta`` carries the session's ``model`` and is ``{}`` when the
+    session row is missing (a live, untitled session may still have messages)."""
+    from pathlib import Path
+
+    from persistence_assembly import open_persistence, profile_scope
+
+    persistence = open_persistence(profile_scope(home=Path(db_path).parent) if db_path else profile_scope())
     try:
-        resolved = db.resolve_session_id(session_id) or session_id
-        meta = db.get_session(resolved) or {}
-        return db.get_messages_as_conversation(resolved), meta
+        resolved = persistence.sessions.resolve_id(session_id) or session_id
+        record = persistence.sessions.get(resolved)
+        messages = [m.as_openai_message() for m in persistence.messages.read_conversation(resolved)]
+        return messages, {"model": record.model} if record is not None else {}
     finally:
-        release_or_close(db)
+        persistence.close()
 
 
 def upload_session_trace(

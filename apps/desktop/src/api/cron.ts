@@ -1,6 +1,7 @@
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import type {
   AutomationBlueprint,
+  CronCancelResult,
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
@@ -123,6 +124,17 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
     method: 'POST',
     timeoutMs: CRON_TRIGGER_REQUEST_TIMEOUT_MS
+  })
+}
+
+// Asks the job's live run to stop; the run books a 'cancelled' attempt at its next cancel
+// check (a second or two), so callers poll the job list for the ledger to settle.
+export function cancelCronJobRun(jobId: string): Promise<CronCancelResult> {
+  return hermesApi<CronCancelResult>({
+    ...profileScoped(),
+    ...connectionScoped(),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/cancel`,
+    method: 'POST'
   })
 }
 

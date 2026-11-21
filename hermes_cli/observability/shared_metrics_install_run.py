@@ -22,8 +22,7 @@ import os
 import re
 import shutil
 import sqlite3
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +99,7 @@ def _today_start() -> str:
     """Today's package ``period_start``, in the store's stamp format (``shared_metrics._isoformat``)."""
     from .shared_metrics import _isoformat, _utc_now
 
-    return _isoformat(datetime.combine(_utc_now().date(), datetime.min.time(), tzinfo=timezone.utc))
+    return _isoformat(datetime.combine(_utc_now().date(), datetime.min.time(), tzinfo=UTC))
 
 
 def consented_day(home: Path) -> bool:
@@ -147,7 +146,11 @@ def _claim_receipt(path: Path) -> Path | None:
 
 
 def _stale(receipt: dict) -> bool:
-    return time.time() - receipt["finished_at"] > MAX_RECEIPT_AGE_SECONDS
+    # The store's clock, the same one that picks the consented day: a second clock let a receipt
+    # the day logic still considered fresh expire on wall time.
+    from .shared_metrics import _utc_now
+
+    return _utc_now().timestamp() - receipt["finished_at"] > MAX_RECEIPT_AGE_SECONDS
 
 
 def report_pending_installs(home: Path) -> None:

@@ -259,7 +259,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
@@ -422,7 +421,7 @@ class TestDiscordTransportClassification:
         assert not mod._is_discord_transport_error(
             RuntimeError("error code: 50013: Missing Permissions")
         )
-        assert not mod._is_discord_transport_error(asyncio.TimeoutError())
+        assert not mod._is_discord_transport_error(TimeoutError())
 
     @pytest.mark.asyncio
     async def test_send_without_client_reports_send_path_degraded(self):

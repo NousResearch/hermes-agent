@@ -16,6 +16,7 @@ from agent.anthropic_credentials import anthropic_route_is_oauth
 
 OAUTH = "sk-ant-oat01-keycmd-token"
 CONSOLE = "sk-ant-api03-console-key"
+USER_KEY = "sk-ant-usr01-user-scoped-key"
 
 
 def test_route_identity_requires_native_host_and_oauth_shape():
@@ -33,6 +34,9 @@ def test_route_identity_requires_native_host_and_oauth_shape():
     # Third-party hosts and Console keys never qualify; a callable that cannot mint is non-OAuth.
     assert anthropic_route_is_oauth("https://api.minimax.io/anthropic", key_cmd) is False
     assert anthropic_route_is_oauth("https://api.anthropic.com", CONSOLE) is False
+    # Neither do user-scoped sk-ant-usr* API keys: they pay per token, not via a Claude
+    # subscription, so the Claude Code identity must not attach (#133856).
+    assert anthropic_route_is_oauth("https://api.anthropic.com", USER_KEY) is False
     assert anthropic_route_is_oauth("https://notapi.anthropic.com.evil.example", key_cmd) is False
     assert anthropic_route_is_oauth("https://api.anthropic.com", lambda: (_ for _ in ()).throw(RuntimeError("no token"))) is False
     assert len(calls) == 1  # the third-party route never materialised the callable

@@ -128,7 +128,7 @@ def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     env = _make_execute_only_env(["DATABASE_URL"])
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
 
@@ -144,7 +144,7 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     env = _make_execute_only_env(["DATABASE_URL"])
 
     monkeypatch.setenv("DATABASE_URL", "value_from_shell")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
 
@@ -163,7 +163,7 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
     env = _make_execute_only_env(["MY_SECRET"])
 
     monkeypatch.setenv("MY_SECRET", "")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"MY_SECRET": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", lambda: {"MY_SECRET": "value_from_dotenv"})
 
     args = env._build_init_env_args()
 
@@ -179,7 +179,7 @@ def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", dict)
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile"})
     try:
@@ -199,7 +199,7 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", dict)
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({})
     try:
@@ -213,13 +213,30 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
     assert "SERVICE_TOKEN" not in env._init_env_values
 
 
+def test_docker_exec_starts_at_root_before_session_workdir_recovery(monkeypatch):
+    """#62169: a deleted docker run -w must not prevent the bash wrapper from starting."""
+    env = _make_execute_only_env()
+    env.cwd = "/tmp/deleted-original-container-workdir"
+    commands = []
+    monkeypatch.setattr(
+        docker_env, "_popen_bash",
+        lambda cmd, stdin_data=None, **kw: commands.append(cmd) or object(),
+    )
+
+    env._run_bash("pwd")
+
+    # Docker exec otherwise inherits the deleted -w and the OCI runtime aborts
+    # before the wrapper can cd to the nearest surviving ancestor.
+    assert commands[0][:5] == ["/usr/bin/docker", "exec", "-w", "/", "test-container"]
+
+
 def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     """Shared Docker containers must refresh and clear profile-scoped values."""
     from agent import secret_scope as ss
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", dict)
     calls = []
     monkeypatch.setattr(
         docker_env,
@@ -268,7 +285,7 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         encoding="utf-8",
     )
     monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", dict)
 
     def _run_fake_docker_exec(cmd, stdin_data=None, **kwargs):
         """Execute the generated docker exec command in a real local bash."""
@@ -276,7 +293,8 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         # Name-only -e flags (#96268): values come from the client env kwarg.
         client_env = kwargs.get("env") or os.environ
         child_env = os.environ.copy()
-        index = 2
+        assert cmd[2:4] == ["-w", "/"]
+        index = 4
         while index < container_index:
             assert cmd[index] == "-e"
             key = cmd[index + 1]
@@ -378,7 +396,7 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     env._env = {"MY_KEY": "static_value"}
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", dict)
 
     args = env._build_init_env_args()
 
@@ -1361,7 +1379,6 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
-    container_id = env._container_id
     terminal_tool._active_environments["session-close-test"] = env
 
     cleanup_calls = []
@@ -1453,7 +1470,7 @@ def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):
 def _now_iso(offset_seconds: int = 0) -> str:
     """Return an RFC3339 timestamp ``offset_seconds`` in the past."""
     import datetime
-    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=offset_seconds)
+    t = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=offset_seconds)
     # Format like Docker emits — with nanoseconds-style trailing digits.
     return t.isoformat().replace("+00:00", ".123456789Z")
 
@@ -1559,7 +1576,7 @@ def test_container_finished_at_parses_nanosecond_timestamp(monkeypatch):
     result = docker_env._container_finished_at("/usr/bin/docker", "test-cid")
     assert result is not None, "must parse RFC3339 with nanoseconds"
     import datetime
-    assert result.tzinfo == datetime.timezone.utc
+    assert result.tzinfo == datetime.UTC
     assert result.year == 2026 and result.month == 5 and result.day == 28
 
 
@@ -1846,7 +1863,7 @@ def test_forwarded_secret_values_never_in_argv(monkeypatch):
     secret = "s3cr3t-gitlab-token-value"
     env = _make_execute_only_env(["GITLAB_TOKEN"])
     monkeypatch.setenv("GITLAB_TOKEN", secret)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
+    monkeypatch.setattr(docker_env, "load_hermes_env_vars", dict)
 
     # init path
     init_args = env._build_init_env_args()
@@ -1898,3 +1915,36 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+@pytest.mark.parametrize("base", ["default", "profile:research-assistant-for-the-quarterly-ops"])
+def test_workspace_container_labels_identify_it_to_the_orphan_reaper(monkeypatch, base):
+    """The orphan reaper must recognise an idle-STOPPED workspace container from the labels the
+    create path actually stamps. ``hermes-task-id`` is truncated to 63 chars, so a profile name of
+    36+ chars cut the ``_ws_<digest>`` suffix and the next sweep ``docker rm``-ed the container,
+    losing everything installed outside the mounts."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    _make_dummy_env(task_id=f"{base}:ws:0123456789abcdef")
+    labels = dict(lbl.split("=", 1) for lbl in _labels_in_run_args(_run_args_from_calls(calls)))
+
+    def _inspect(cmd, **kwargs):
+        key = re.search(r'Labels "([^"]+)"', cmd[cmd.index("--format") + 1]).group(1)
+        return subprocess.CompletedProcess(cmd, 0, stdout=labels.get(key, "<no value>") + "\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _inspect)
+    assert docker_env._is_idle_workspace_container("/usr/bin/docker", "cid"), labels
+
+
+def test_non_workspace_container_is_not_an_idle_workspace(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    _make_dummy_env(task_id="profile:research-assistant-for-the-quarterly-ops")
+    labels = dict(lbl.split("=", 1) for lbl in _labels_in_run_args(_run_args_from_calls(calls)))
+
+    def _inspect(cmd, **kwargs):
+        key = re.search(r'Labels "([^"]+)"', cmd[cmd.index("--format") + 1]).group(1)
+        return subprocess.CompletedProcess(cmd, 0, stdout=labels.get(key, "<no value>") + "\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _inspect)
+    assert not docker_env._is_idle_workspace_container("/usr/bin/docker", "cid"), labels

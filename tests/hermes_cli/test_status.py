@@ -189,8 +189,9 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod
     import hermes_cli.gateway as gateway_mod
-    import hermes_state
     import time
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
@@ -205,26 +206,26 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", dict, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    class _FakeDB:
-        def __init__(self, **_kwargs):
-            pass
+    import sqlite3
+    from contextlib import closing
 
-        def list_gateway_sessions(self, active_only=True):
-            return [
-                {"id": "gw-old", "last_active": time.time() - 7200},
-                {"id": "gw-new", "last_active": time.time() - 90},
-            ]
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
+    path = tmp_path / "state.db"
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        for sid in ("gw-old", "gw-new"):
+            seed_session(store, sid, "telegram")
+    with closing(sqlite3.connect(path)) as conn:
+        for sid, age in (("gw-old", 7200), ("gw-new", 90)):
+            conn.execute("UPDATE sessions SET session_key=?, started_at=?, last_activity_at=? WHERE id=?",
+                         (sid, time.time() - age, time.time() - age, sid))
+        conn.commit()
+    before = path.read_bytes()
 
     status_mod.show_status(SimpleNamespace(full=True, deep=False))
     output = capsys.readouterr().out
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+    assert path.read_bytes() == before
 
 
 def _status_args(*argv):

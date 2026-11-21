@@ -11,6 +11,7 @@ from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, l
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from datetime import UTC
 
 
 def _dotenv_key_names() -> set[str]:
@@ -44,7 +45,7 @@ def _git_output(project_root: Path, *args: str) -> str:
     """Stripped stdout of ``git <args>`` run in *project_root*, or '' on any failure."""
     try:
         result = subprocess.run(["git", *args], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                                timeout=5, cwd=str(project_root))
+                                timeout=5, cwd=str(project_root), check=False)
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
@@ -87,7 +88,7 @@ def _get_git_commit_date(project_root: Path) -> str:
 
         from hermes_cli.version_info import get_version_info  # deferred: keeps dump cheap on non-dump paths
         commit_date = get_version_info().commit_date
-        return datetime.fromtimestamp(commit_date, tz=timezone.utc).strftime("%Y-%m-%d") if commit_date else ""
+        return datetime.fromtimestamp(commit_date, tz=UTC).strftime("%Y-%m-%d") if commit_date else ""
     except Exception:
         return ""
 

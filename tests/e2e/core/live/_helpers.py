@@ -185,12 +185,12 @@ def install_wire_recorder(monkeypatch: pytest.MonkeyPatch, secret: str) -> WireL
 
     log = WireLog(secret=secret)
 
-    def _carries(request: "httpx.Request") -> bool:
+    def _carries(request: httpx.Request) -> bool:
         if secret in str(request.url):
             return True
         return any(secret in v for v in request.headers.values())
 
-    def _body(request: "httpx.Request") -> Any:
+    def _body(request: httpx.Request) -> Any:
         if request.method != "POST":
             return None
         try:
@@ -198,11 +198,11 @@ def install_wire_recorder(monkeypatch: pytest.MonkeyPatch, secret: str) -> WireL
         except Exception:
             return None
 
-    def _record(request: "httpx.Request", status: int, body: Any, error: str = "") -> None:
+    def _record(request: httpx.Request, status: int, body: Any, error: str = "") -> None:
         log.records.append(WireRecord(request.method, request.url.host, request.url.path, status,
                                       _carries(request), body, error.replace(secret, "<redacted>")[:400]))
 
-    def _error_text(resp: "httpx.Response") -> str:
+    def _error_text(resp: httpx.Response) -> str:
         # Error bodies are small and read eagerly by every SDK anyway; cache them on
         # the response so the caller still sees the same content.
         if resp.status_code < 400:

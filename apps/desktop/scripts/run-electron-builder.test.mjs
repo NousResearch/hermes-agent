@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { recordNativeInputs } from './prepared-native-deps.mjs'
+import { productOutput } from '../../../scripts/build/frontend-common.mjs'
 
 test('validate-only admits real prepared inputs without launching tools and rejects unsafe arguments', async () => {
   const source = path.resolve(import.meta.dirname, '../../..')
@@ -51,6 +52,13 @@ test('source multiarch prepares isolated native and packaging inputs before each
   }
   assert.equal(calls.length, 6)
   assert.notEqual(calls[0][calls[0].indexOf('--out') + 1], calls[3][calls[3].indexOf('--out') + 1])
+  // Each per-target native dir is one stage-native-deps.mjs may publish: its product guard admits
+  // only generated homes in the tree (an arch flag on a source build failed there before staging).
+  const source = path.resolve(import.meta.dirname, '../../..')
+  for (const call of calls.filter(args => args[0].endsWith('stage-native-deps.mjs'))) {
+    const out = call[call.indexOf('--out') + 1]
+    assert.doesNotThrow(() => productOutput(source, out, ['node_modules', 'apps/desktop/node_modules', 'apps/desktop/src', 'apps/desktop/electron']), out)
+  }
   calls.length = 0
   assert.equal(runElectronBuilder(['--dir'], { spawn }), 0)
   assert.equal(calls.filter(args => args[0].endsWith('prepare-packaging-tools.mjs')).length, 1)
@@ -67,15 +75,14 @@ test('strict builder refuses absent inputs before loading electron-builder', () 
   assert.doesNotMatch(result.stdout, /electron-builder\s+version/)
 })
 
-test('npm run builder forwards an apostrophe path to the wrapper verbatim', () => {
+test('pnpm run builder forwards an apostrophe path to the wrapper verbatim', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'builder-'))
   const manifest = path.join(root, "r'y'z", 'missing.json')
-  const windows = process.platform === 'win32'
   try {
-    // Windows needs a shell for npm.cmd, which joins argv unquoted.
-    const result = spawnSync('npm', ['run', 'builder', '--silent', '--ignore-scripts', '--',
-      '--prepared', windows ? `"${manifest}"` : manifest, '--native-deps', 'missing', '--dir'],
-    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8', shell: windows })
+    // pnpm is a native executable (pnpm.exe on Windows): no shell joins argv here.
+    const result = spawnSync('pnpm', ['--silent', 'run', 'builder',
+      '--prepared', manifest, '--native-deps', 'missing', '--dir'],
+    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8' })
     assert.notEqual(result.status, 0)
     assert.ok(result.stderr.includes(manifest), result.stderr)
   } finally {

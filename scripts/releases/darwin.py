@@ -6,9 +6,9 @@ from typing import Any, Callable
 
 from . import r2 as r2_module
 from .semver import compare, is_release_version
-from hermes_cli.update_channel import canary_timestamp, is_canary_tag
+from hermes_cli.update_channel import canary_timestamp, is_canary_tag, published_canary_timestamp
 
-ARCHES = ("arm64", "x64")
+ARCHES = ("arm64",)  # Apple Silicon only: no Intel macOS build ships
 _HASH_PATTERN = re.compile(r"^[A-Za-z0-9+/]{86}==$")
 
 
@@ -57,9 +57,9 @@ def parse_mac_feed(text: str) -> dict[str, Any]:
 
 
 _MAC_URL_PATTERN = re.compile(
-    # Attempt refs (rc.N-vX.Y.Z) key the stable archive; plain and canary
-    # vX.Y.Z[+canary...] tags key the rest.
-    r"^/releases/tag/(?:v|rc\.[1-9]\d*-v)[0-9A-Za-z.+-]+/[0-9A-Za-z._+-]+\.(zip|dmg)$"
+    # Attempt refs (rc.N-vX.Y.Z) key the stable archive, canary tags
+    # (canary.<stamp>-vX.Y.Z) a canary's, plain vX.Y.Z tags the rest.
+    r"^/releases/tag/(?:v|rc\.[1-9]\d*-v|canary\.20\d{6}T\d{6}Z-v)[0-9A-Za-z.+-]+/[0-9A-Za-z._+-]+\.(zip|dmg)$"
 )
 
 
@@ -79,18 +79,21 @@ def mac_feed_references(text: str) -> list[str]:
 
 def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
                     archive: str | None = None) -> dict[str, Any]:
-    """Validate both native legs, merge them, and rewrite artifact URLs into
-    the immutable per-release tag namespace. `archive` keys that namespace
-    (the attempt ref for stable attempts); `tag` stays the version identity."""
+    """Validate the native leg of every ARCHES entry, merge them, and rewrite
+    artifact URLs into the immutable per-release tag namespace. `archive` keys
+    that namespace (the attempt ref for stable attempts); `tag` stays the
+    version identity."""
     import hermes_yaml as yaml  # lazy
 
-    version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
+    from hermes_cli.update_channel import release_version
+
+    version = release_version(tag) or ""
     if not is_release_version(version):
         raise ValueError("Invalid macOS release tag")
     selection = _darwin_feed("canary" if is_canary_tag(tag) else "stable", light)
     expected = [f"{arch}-{selection['fileName']}" for arch in ARCHES]
     if sorted(legs.keys()) != sorted(expected):
-        raise ValueError("Expected exactly one ARM64 and one x64 macOS feed")
+        raise ValueError("Expected exactly one ARM64 macOS feed")
     files: dict[str, dict[str, Any]] = {}
     first: dict[str, Any] | None = None
     for index, name in enumerate(expected):
@@ -144,7 +147,7 @@ def publish_mac_feed(
         next_feed = parse_mac_feed(plan["text"])
         old_url = str(old_feed["files"][0]["url"])
         old_tag = old_url.split("/releases/tag/", 1)[1].split("/", 1)[0]
-        old_canary = canary_timestamp(old_tag)
+        old_canary = published_canary_timestamp(old_tag)
         next_canary = canary_timestamp(plan.get("tag"))
         order = (
             (next_canary > old_canary) - (next_canary < old_canary)
@@ -169,9 +172,14 @@ def publish_mac_feed(
 # finalize (real signed transport)
 # ---------------------------------------------------------------------------
 
-def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None) -> None:
-    """Validate both native legs, verify their streamed bytes, then replace
-    the feed pointer (conditional write, then readback)."""
+def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
+             verify_bytes: bool = True) -> None:
+    """Validate the native legs, verify their streamed bytes, then replace
+    the feed pointer (conditional write, then readback).
+
+    ``verify_bytes=False`` (stable promotion of an accepted candidate, whose
+    artifacts are already bound by receipt sha256) checks each artifact's
+    remote size instead of streaming multi-GB packages back down."""
     if variant and variant != "light":
         raise ValueError("Unknown macOS variant")
     creds, base, bucket = r2_module.credentials()
@@ -202,6 +210,12 @@ def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None
         return {"text": response.text(), "etag": etag}
 
     def verify(key: str, file_entry: dict[str, Any]) -> None:
+        if not verify_bytes:
+            head = r2_module.signed_request(
+                "HEAD", f"{base}/{bucket}/{r2_module.encode_key_path(key)}", creds=creds, now=now)
+            if str(head.header("content-length")) != str(file_entry["size"]):
+                raise ValueError(f"Artifact size mismatch: {key}")
+            return
         r2_module.verify_remote_artifact(
             f"{base}/{bucket}/{r2_module.encode_key_path(key)}",
             creds, now, file_entry["size"], file_entry["sha512"],

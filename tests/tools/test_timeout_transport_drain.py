@@ -79,9 +79,8 @@ def _run(child, monkeypatch, timeout=0.4):
         _active_children=[child],
         _active_children_lock=threading.Lock(),
     )
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: timeout)
-    if hasattr(delegate_tool, "_get_worktree_isolation"):
-        monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: timeout)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
     return delegate_tool._run_single_child(
         task_index=0,
         goal="exercise timeout transport drain",

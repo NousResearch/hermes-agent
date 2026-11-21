@@ -20,7 +20,7 @@ The ``--check`` command is dry-run only: it hits the upstream indexes (small
 HTTP GETs) but never writes the lockfile, the store, or the venv, and never
 downloads an artifact. Real ``pm update`` re-pins changed packages
 (``pm lock``-style artifact hashing), installs them, then refreshes the
-venv (uv sync) — and with the dep legs enabled, uv.lock + package-lock.json.
+venv (uv sync) — and with the dep legs enabled, uv.lock + pnpm-lock.yaml.
 """
 
 from __future__ import annotations
@@ -324,20 +324,21 @@ def llama_app_bucket_versions() -> list[str]:
     return [str(v) for v in versions]
 
 
-def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
+def github_release_tags(repo: str, *, strip_prefix: str = "", include_prereleases: bool = False) -> list[str]:
     """Newest-first release tag names for a GitHub repo (releases, not all
-    tags — no drafts/prereleases, and a rolling 'latest' pseudo-release is
-    skipped). ``strip_prefix`` removes a tag prefix (e.g. 'v', 'b'). Only
+    tags — no drafts, and a rolling 'latest' pseudo-release is skipped).
+    ``strip_prefix`` removes a tag prefix (e.g. 'v', 'b'). Only
     version-shaped tags survive the strip — cua-driver's repo also tags
     sandbox/experimental builds (cua-driver-rs-vsandbox-v0.4.3) that must
-    never appear as update candidates."""
+    never appear as update candidates. ``include_prereleases`` keeps
+    releases GitHub flags as prerelease; drafts are always dropped."""
     tags = []
     for page in range(1, 4):  # up to 90 releases — far beyond any cadence
         data = _get_json(f"https://api.github.com/repos/{repo}/releases?per_page=30&page={page}")
         if not data:
             break
         for release in data:
-            if release.get("draft") or release.get("prerelease"):
+            if release.get("draft") or (release.get("prerelease") and not include_prereleases):
                 continue
             tag = release.get("tag_name", "")
             if tag == "latest":
@@ -363,8 +364,7 @@ def node_latest_versions() -> list[str]:
     out = []
     for entry in _get_json("https://nodejs.org/dist/index.json"):
         v = entry.get("version", "")
-        if v.startswith("v"):
-            v = v[1:]
+        v = v.removeprefix("v")
         if re.fullmatch(r"\d+\.\d+\.\d+", v):
             out.append(v)
     return out

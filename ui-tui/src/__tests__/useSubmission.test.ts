@@ -9,6 +9,7 @@ describe('prepareSubmission', () => {
     const tokens: ComposerToken[] = [{ kind: 'paste', label, text: 'first\nmiddle\nlast' }]
 
     expect(prepareSubmission(`review this: ${label}`, tokens)).toEqual({
+      attachments: [],
       display: `review this: ${label}`,
       text: 'review this: first\nmiddle\nlast'
     })

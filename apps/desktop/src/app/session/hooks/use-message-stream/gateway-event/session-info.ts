@@ -1,3 +1,5 @@
+import { mergeUsage, usageFromTick } from '@hermes/shared'
+
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
@@ -5,6 +7,7 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
 import {
@@ -38,6 +41,7 @@ import {
   sessionInfoStatePatch
 } from '../utils'
 
+import { payTurnEndReport, runningEdge } from './turn-end-report'
 import type { GatewayEventContext } from './types'
 
 /**
@@ -132,6 +136,55 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
   return true
 }
 
+/** Project the runtime's pending-submission receipts onto the durable
+ *  session's composer queue (keyed by stored id when known). */
+function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (sessionId) {
+    const storedId =
+      payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
+
+    // A canonical frame's own place in the session's event order fences absence-based retirement.
+    reconcilePendingSubmissions(
+      storedId,
+      (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq)
+    )
+  }
+}
+
+/** Foreground runtime preferences; workspace ownership is reconciled separately. */
+function reconcileSessionInfoPreferences(payload: GatewayEventContext['payload']): void {
+  if (typeof payload?.terminal_backend === 'string') {
+    setTerminalBackend(payload.terminal_backend)
+  }
+
+  if (typeof payload?.personality === 'string') {
+    setCurrentPersonality(normalizePersonalityValue(payload.personality))
+  }
+
+  if (typeof payload?.reasoning_effort === 'string') {
+    setCurrentReasoningEffort(payload.reasoning_effort)
+  }
+
+  if (typeof payload?.reasoning_effort_wire === 'string') {
+    setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
+  }
+
+  if (typeof payload?.service_tier === 'string') {
+    setCurrentServiceTier(payload.service_tier)
+  }
+
+  if (typeof payload?.fast === 'boolean') {
+    setCurrentFastMode(payload.fast)
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    setYoloActive(payload.yolo)
+  }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -155,6 +208,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
 
+    reconcileSessionInfoPendingSubmissions(ctx)
+
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
     const apply = (explicitSid ? isActiveEvent : !activeSessionIdRef.current) || rebound
@@ -163,13 +218,6 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const modelChanged = typeof payload?.model === 'string'
     const providerChanged = typeof payload?.provider === 'string'
     const runningChanged = typeof payload?.running === 'boolean'
-
-    // Reconnect can miss the structured `compacted` edge. A gateway-authored
-    // running=false is a terminal fact; a running heartbeat is intentionally
-    // not used as a timeout-like guess, so genuine compaction stays visible.
-    if (sessionId && payload?.running === false) {
-      reconcileSessionCompacting(sessionId, 'terminal')
-    }
 
     // The backend stamps model/provider (as strings) on EVERY session.info,
     // so the presence flags above are true on every heartbeat/turn edge —
@@ -240,33 +288,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentBranch(payload.branch)
       }
 
-      if (typeof payload?.terminal_backend === 'string') {
-        setTerminalBackend(payload.terminal_backend)
-      }
-
-      if (typeof payload?.personality === 'string') {
-        setCurrentPersonality(normalizePersonalityValue(payload.personality))
-      }
-
-      if (typeof payload?.reasoning_effort === 'string') {
-        setCurrentReasoningEffort(payload.reasoning_effort)
-      }
-
-      if (typeof payload?.reasoning_effort_wire === 'string') {
-        setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
-      }
-
-      if (typeof payload?.service_tier === 'string') {
-        setCurrentServiceTier(payload.service_tier)
-      }
-
-      if (typeof payload?.fast === 'boolean') {
-        setCurrentFastMode(payload.fast)
-      }
-
-      if (typeof payload?.yolo === 'boolean') {
-        setYoloActive(payload.yolo)
-      }
+      reconcileSessionInfoPreferences(payload)
     }
 
     if (sessionId && (hasStatePatch || payload?.usage)) {
@@ -284,8 +306,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           return {
             ...nextState,
             usage: {
-              ...previousUsage,
-              ...payload.usage,
+              ...mergeUsage({ ...previousUsage }, payload.usage),
               calls: payload.usage.calls ?? previousUsage?.calls ?? 0,
               // session.info is authoritative: omission means unavailable, not
               // "reuse the previous runtime's compression count".
@@ -308,7 +329,28 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // its dot without the user opening it. updateSessionState only
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
-    if (runningChanged && sessionId) {
+    // A completed turn's end-of-turn report, delivered after the next turn's
+    // message.start (ClientSessionState.turnEndReportsOwed): it says nothing about
+    // the turn now live, so it neither ends that turn's compaction phase, nor
+    // clears its prompts, nor settles it.
+    if (runningEdge(ctx, knownState, runningChanged) && sessionId) {
+      // Like every other turn-end edge, drain throttled text before settling:
+      // a delta still waiting on the flush floor would otherwise land after
+      // the settle cleared streamId and seed a fresh pending bubble. Only a
+      // live turn owns that text; with no live turn and no open stream the
+      // queued bytes are orphans of a superseded attempt, which the next
+      // turn boundary drops (#119543).
+      if (!payload!.running && (knownState?.turnLive || knownState?.streamId)) {
+        deps.flushQueuedDeltas(sessionId)
+      }
+
+      // Reconnect can miss the structured `compacted` edge. A gateway-authored
+      // running=false is a terminal fact; a running heartbeat is intentionally
+      // not used as a timeout-like guess, so genuine compaction stays visible.
+      if (!payload!.running) {
+        reconcileSessionCompacting(sessionId, 'terminal')
+      }
+
       // The agent loop's finally block emits running=false even when a
       // reconnect gap or provider crash swallowed message.complete — and
       // message.complete is where the turn-end prompt clear lives. An
@@ -337,8 +379,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
 
       const nextState = updateSessionState(
         sessionId,
-        state => {
+        prior => {
           const busy = Boolean(payload!.running)
+          const state = payTurnEndReport(prior, busy)
 
           if (state.busy === busy && (busy || !state.awaitingResponse)) {
             return state
@@ -400,7 +443,17 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const withinPreStartGrace =
             typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
 
-          if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive && withinPreStartGrace) {
+          // The owner stamps its claimed execution on the event params, not the payload.
+          const authoritative =
+            typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
+
+          if (
+            !authoritative &&
+            state.awaitingResponse &&
+            !state.sawAssistantPayload &&
+            !state.turnLive &&
+            withinPreStartGrace
+          ) {
             return state
           }
 
@@ -477,8 +530,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     if (payload?.usage && (!explicitSid || isActiveEvent)) {
       const usage = payload.usage
       setCurrentUsage(current => ({
-        ...current,
-        ...usage,
+        ...mergeUsage(current, usage),
         compressions: usage.compressions
       }))
     }
@@ -507,16 +559,18 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // Live usage tick emitted while a turn is mid-flight (see tui_gateway
     // _start_usage_ticker) so the status-bar context window tracks growth
     // during the turn instead of only jumping at message.complete.
-    if (payload?.usage && sessionId) {
+    const usage = usageFromTick(payload)
+
+    if (usage && sessionId) {
       // Per-session twin first: a focused secondary tile reads this cache,
       // while the primary-only global mirrors the active session.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: mergeUsage({ calls: 0, input: 0, output: 0, total: 0, ...state.usage }, usage)
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => mergeUsage(current, usage))
       }
     }
 

@@ -1,0 +1,18 @@
+name: preview-text-size
+repo: https://github.com/pandengyao/hermes-preview-text-size
+sha: 258f6491424ccabcd520c2f61499e5cc26b6a51a
+version: "1.0.0"
+title: Preview Text Size
+description: "Larger or smaller text in the Hermes Desktop file preview pane: scales the rendered Markdown from 90% to 175%, independent of Chat Text Size and UI Scale, through a row in Settings → Appearance, three command-palette entries and rebindable shortcuts (⌘⌥=, ⌘⌥-, ⌘⌥0 on macOS; unbound by default on Windows and Linux, where Ctrl+Alt is AltGr). The Source and Diff views keep their size. Disclosure — desktop-only (desktop/plugin.js inside the plugin SDK surface); appends one stylesheet that sets CSS zoom on the preview's [data-preview-markdown] element, removed on disable, so a Desktop release that renames that attribute turns the plugin into a no-op; stores the chosen size in plugin storage; no network calls, credentials, shell commands, background processes or telemetry."
+maintainer: pandengyao
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/pandengyao/hermes-preview-text-size/blob/258f6491424ccabcd520c2f61499e5cc26b6a51a/README.md
+image: https://raw.githubusercontent.com/pandengyao/hermes-preview-text-size/258f6491424ccabcd520c2f61499e5cc26b6a51a/docs/before-after.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

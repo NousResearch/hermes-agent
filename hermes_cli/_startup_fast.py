@@ -53,8 +53,16 @@ def _read_text(path: str) -> str | None:
 
 
 def project_root_str() -> str:
-    """Repo root as a str — the single source for main.py's PROJECT_ROOT."""
-    return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    """Repo root as a str — the single source for main.py's PROJECT_ROOT.
+
+    The root is the folder that holds ``hermes_agent/``: this package's parent today, one level higher
+    once this package moves into ``hermes_agent/``. Stdlib only: it also runs from its file (-I -S).
+    """
+    parent = os.path.dirname(os.path.realpath(os.path.dirname(__file__)))
+    for folder in (parent, os.path.dirname(parent)):
+        if os.path.isdir(os.path.join(folder, "hermes_agent", "compat")):
+            return folder
+    return parent
 
 
 def normalize_hermes_home_env() -> None:
@@ -225,8 +233,12 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
         from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates(passive=True).get("behind")
-        if behind == UPDATE_AVAILABLE_NO_COUNT:
+        status = check_for_updates(passive=True)
+        behind = status.get("behind")
+        if status.get("rollback"):
+            print(f"Newer than stable release v{status.get('sourceVersion')} — "
+                  f"'{recommended_update_command()}' moves back to it")
+        elif behind == UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"

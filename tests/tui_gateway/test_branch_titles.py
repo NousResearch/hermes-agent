@@ -1,27 +1,28 @@
 """Both desktop fork RPCs distinguish inherited titles from explicit user names."""
 
 import importlib
-import json
 import threading
 from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import TranscriptRead, TranscriptView
+from persistence.conversation.sessions import TitleSource
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.mark.parametrize("method", ["session.branch", "session.create"])
 @pytest.mark.parametrize("explicit_title", [None, "My chosen branch"])
 def test_branch_title_provenance(method, explicit_title, monkeypatch, tmp_path):
     server = importlib.import_module("tui_gateway.server")
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     history = [
         {"role": "user", "content": "Build a dashboard"},
         {"role": "assistant", "content": "Use a status overview"},
     ]
-    db.create_session("parent", source="desktop")
-    db.set_session_title("parent", "Dashboard project")
-    db.append_messages_batch("parent", history)
+    seed_session(db, "parent", "desktop", title="Dashboard project")
+    seed_messages(db, "parent", *history)
     agent = SimpleNamespace(model="test-model")
     ready = threading.Event()
     ready.set()
@@ -54,13 +55,14 @@ def test_branch_title_provenance(method, explicit_title, monkeypatch, tmp_path):
         response = server.handle_request({"id": "branch-title", "method": method, "params": params})
         assert "result" in response, response
         key = response["result"]["stored_session_id"]
-        row = db.get_session(key)
+        row = db.sessions.get(key)
         assert row is not None
-        assert row["title_source"] == ("user" if explicit_title else "branch")
-        assert row["title"] == (explicit_title or "Dashboard project #2")
-        assert row["parent_session_id"] == "parent"
-        assert json.loads(row["model_config"])["_branched_from"] == "parent"
-        assert [m["content"] for m in db.get_messages(key)] == [m["content"] for m in history]
-        assert db.get_session_title("parent") == "Dashboard project"
+        assert row.title_source == (TitleSource.USER if explicit_title else TitleSource.BRANCH)
+        assert row.title == (explicit_title or "Dashboard project #2")
+        assert row.parent_session_id == "parent"
+        assert row.model_config["_branched_from"] == "parent"
+        copied = db.messages.read_transcript(key, TranscriptRead(view=TranscriptView.ALL))
+        assert [m.content for m in copied] == [m["content"] for m in history]
+        assert db.sessions.get_title("parent") == "Dashboard project"
     finally:
         db.close()

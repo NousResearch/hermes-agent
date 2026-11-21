@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Audit (and auto-fix) contributor email mappings for a PR branch.
 
-Mirrors the CI gate in .github/workflows/contributor-check.yml so salvage
-branches never bounce off the check-attribution job. Run it from the branch
+Mirrors the CI gate in .github/workflows/repo-guards.yml (its contributor-email
+step) so salvage branches never bounce off it. Run it from the branch
 you are about to push:
 
     python3 scripts/audit_pr_attribution.py            # report only
     python3 scripts/audit_pr_attribution.py --fix      # create mapping files
 
-Logic (kept in sync with contributor-check.yml):
+Logic (kept in sync with that repo-guards.yml step):
   - scans ``git log $(git merge-base origin/main HEAD)..HEAD --format=%ae``
   - skips teknium/bot emails and ``<id>+<login>@users.noreply.github.com``
     (CI auto-resolves those)
@@ -49,6 +49,7 @@ def run(*args: str, check: bool = True) -> str:
     result = subprocess.run(
         list(args), capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}: {result.stderr.strip()}")
@@ -66,11 +67,14 @@ def is_mapped(email: str) -> bool:
         return True
     if ID_NOREPLY_RE.search(email):
         return True
-    if (REPO_ROOT / "contributors" / "emails" / email).is_file():
+    # Case-insensitive: the directory cannot hold two case variants of one email.
+    folded = email.casefold()
+    emails_dir = REPO_ROOT / "contributors" / "emails"
+    if emails_dir.is_dir() and any(p.name.casefold() == folded and p.is_file() for p in emails_dir.iterdir()):
         return True
     authors_py = REPO_ROOT / "scripts" / "releases" / "authors_legacy.py"
     try:
-        if f'"{email}"' in authors_py.read_text(encoding="utf-8-sig", errors="replace"):
+        if f'"{folded}"' in authors_py.read_text(encoding="utf-8-sig", errors="replace").casefold():
             return True
     except OSError:
         pass

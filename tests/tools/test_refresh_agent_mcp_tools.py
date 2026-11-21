@@ -100,12 +100,13 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert added == {"mcp_new_server_tool"}
 
 
-def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
+@pytest.mark.parametrize("disabled_toolset", ["memory", "all", "*"])
+def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch, disabled_toolset):
     """A refresh removes stale provider tools when memory becomes disabled."""
     agent = _agent(
         ["read_file", "memory_search"],
         enabled=["all"],
-        disabled=["memory"],
+        disabled=[disabled_toolset],
     )
     agent._memory_manager = types.SimpleNamespace(
         get_all_tool_schemas=lambda: [
@@ -279,6 +280,52 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     ]
 
 
+def test_preserve_prefix_keeps_sent_tool_schemas_byte_identical(monkeypatch):
+    """A between-turns refresh must not rewrite a tool this session already sent.
+
+    The chat template prints every tool schema before the conversation. A local
+    server reuses the previous prompt only when the next one starts with those
+    exact tokens, so a new description on a tool that was already sent makes the
+    follow-up read the whole prompt again. New tools may append at the tail.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+    sent = json.dumps(agent.tools)
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    fresh["function"]["parameters"] = {
+        "type": "object", "properties": {"path": {"type": "string"}},
+    }
+    _serve(monkeypatch, [fresh, _tool("mcp_late")])
+    _registered(monkeypatch, ["read_file", "mcp_late"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools[:1]) == sent
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file", "mcp_late"]
+
+
+def test_explicit_reload_replaces_a_same_name_schema(monkeypatch):
+    """``/reload-mcp`` takes the fresh schema when the tool name stays the same.
+
+    Between-turns refresh freezes the bytes already sent. Reload is the other
+    path (``preserve_prefix`` off): the user already accepted a cache break, so
+    a new description on ``read_file`` has to be what the next request sends.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    _serve(monkeypatch, [fresh])
+    _registered(monkeypatch, ["read_file"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert agent.tools[0]["function"]["description"] == "Read a file. schema v2"
+
+
 def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     """``tool_search``'s description is derived from the session at build time: the
     deferred-tool count, the embedded listing, and whether ``manage_connections`` was
@@ -308,6 +355,27 @@ def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
 
 
+def test_preserve_prefix_keeps_a_deactivated_bridge_tool_in_place(monkeypatch):
+    """The bridge tools are synthesized by ``assemble_tool_defs``, never registered. When the
+    deferred set shrinks under the activation threshold (an MCP server drops), the fresh
+    snapshot carries no ``tool_search`` at all; the sent one must still hold its slot, or
+    every tool after it moves and the prefix re-prefills. Search reads the live catalog."""
+    built = _tool("tool_search")
+    built["function"]["description"] = "Search 21 additional tools."
+    agent = _agent(["read_file"])
+    agent.tools.append(built)
+    agent.tools.append(_tool("terminal"))
+    agent.valid_tool_names.update({"tool_search", "terminal"})
+    before = json.dumps(agent.tools, sort_keys=True)
+
+    _serve(monkeypatch, [_tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["read_file", "terminal"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools, sort_keys=True) == before
+
+
 # ---------------------------------------------------------------------------
 # tools[] freeze: eviction rebuild + the /reload-mcp re-probe hatch
 # ---------------------------------------------------------------------------
@@ -317,18 +385,18 @@ def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
     """A fresh AIAgent for an EXISTING session must keep the saved tools[] pin.
 
     Gateway agent-cache eviction rebuilds the agent; ``agent_init`` re-probes
-    every ``check_fn`` and ``browser_navigate``'s flips false. The persisted
+    every ``check_fn`` and ``browser_exec``'s flips false. The persisted
     name list stands in for the missing predecessor: the tool is carried
     forward from the registry schema, byte-for-byte in its old slot.
     """
     from tools import registry as registry_mod
 
-    saved = ["read_file", "browser_navigate", "terminal"]
+    saved = ["read_file", "browser_exec", "terminal"]
     entries = {n: types.SimpleNamespace(name=n, schema=_tool(n)["function"]) for n in saved}
     monkeypatch.setattr(registry_mod.registry, "get_all_entries", lambda: list(entries.values()), raising=False)
     monkeypatch.setattr(registry_mod.registry, "get_entry", lambda name, **kw: entries.get(name), raising=False)
 
-    rebuilt = _agent(["read_file", "terminal"])  # probe flipped: browser_navigate gone
+    rebuilt = _agent(["read_file", "terminal"])  # probe flipped: browser_exec gone
     changed = _mcp_agent.restore_agent_tool_prefix(rebuilt, saved)
 
     assert changed is True
@@ -342,7 +410,9 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     PARAMETERS like delegate_task's, the one-shot footprint pruning skill_manage). tools[] heads
     every request, so a pin written by the same code hands back exactly what the session sent;
     one written by other code (``hermes update``) takes the current definitions instead."""
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
     from tools import registry as registry_mod
 
     def _described(name, description, **params):
@@ -363,26 +433,29 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
                         lambda name, **kw: types.SimpleNamespace(name=name, schema=static[name]), raising=False)
     this_surface = [_tool("read_file"), _described("delegate_task", "delegate"),  # drops `group` here
                     _described("tool_search", "Search 5 additional tools.")]
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        sent._session_db = db
+    from persistence_assembly import open_persistence, profile_scope
+
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        sent._session_db, sent.persistence = db, db
         for sid in ("s1", "s2"):
-            db.create_session(sid, source="tui")
+            seed_session(db, sid, "tui")
             sent.session_id = sid
             _mcp_agent.persist_agent_tool_names(sent)
         # Stored once, like the system prompt: a ~50KB array per session row would bloat state.db.
-        stored = db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+        with raw_holder(db)._read_ctx() as conn:
+            stored = conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
 
         resumed = _agent([])
-        resumed.tools, resumed._session_db, resumed.session_id = list(this_surface), db, "s1"
-        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(db.get_session("s1")["tool_names"]))
-        repinned = db.get_session("s1")["tool_names"]
+        resumed.tools, resumed._session_db, resumed.persistence, resumed.session_id = list(this_surface), db, db, "s1"
+        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(session_row(db, "s1")["tool_names"]))
+        repinned = session_row(db, "s1")["tool_names"]
 
         # The pin came from other code: every tool built here takes this build's definition.
         monkeypatch.setattr(_mcp_agent, "tool_pin_version", lambda: "sha-after-hermes-update")
         updated = _agent([])
-        updated.tools, updated._session_db, updated.session_id = list(this_surface), db, "s2"
-        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(db.get_session("s2")["tool_names"]))
-        upgraded_pin = json.loads(db.get_session("s2")["tool_names"])
+        updated.tools, updated._session_db, updated.persistence, updated.session_id = list(this_surface), db, db, "s2"
+        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(session_row(db, "s2")["tool_names"]))
+        upgraded_pin = json.loads(session_row(db, "s2")["tool_names"])
 
     assert json.dumps(resumed.tools) == json.dumps(sent.tools)
     assert resumed.valid_tool_names == {"read_file", "delegate_task", "skill_manage", "tool_search"}
@@ -438,13 +511,20 @@ def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _BotModeDB:
-    def __init__(self, home, title):
-        self.db_path = str(home / "state.db")
+class _BotModeSessions:
+    def __init__(self, title):
         self._title = title
 
-    def get_session_title(self, _session_id):
+    def get_title(self, _session_id):
         return self._title
+
+
+class _BotModePersistence:
+    """The agent's storage interface handle: its profile scope and the session title verb."""
+
+    def __init__(self, home, title):
+        self.scope = types.SimpleNamespace(profile_dir=home)
+        self.sessions = _BotModeSessions(title)
 
 
 @pytest.fixture
@@ -461,7 +541,7 @@ def managed_bot_home(tmp_path):
 
 def _bot_mode_agent(home, *, title="Bot Chat"):
     agent = _agent(["read_file"])
-    agent._session_db = _BotModeDB(home, title)
+    agent.persistence = _BotModePersistence(home, title)
     agent.session_id = "session-1"
     agent._session_title_hint = None
     agent._bot_mode_protocol = True

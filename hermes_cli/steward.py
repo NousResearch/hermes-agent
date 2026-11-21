@@ -165,7 +165,7 @@ def steward_update_message(steward: str) -> str:
     return _STEWARD_UPDATE_FALLBACK.format(steward=steward)
 
 
-def steward_uninstall_message(steward: str, platform: "str | None" = None) -> str:
+def steward_uninstall_message(steward: str, platform: str | None = None) -> str:
     """The uninstall refusal text for a sealed tree."""
     if steward == STEWARD_DESKTOP:
         key = platform if platform is not None else sys.platform
@@ -223,7 +223,7 @@ def sealed_steward(project_root: Path) -> Optional[str]:
     return distribution if isinstance(distribution, str) and distribution else "unknown"
 
 
-def classify_install(project_root: Path) -> "tuple[str, bool]":
+def classify_install(project_root: Path) -> tuple[str, bool]:
     """(steward, code_removal_allowed) for the tree at ``project_root``.
 
     A git checkout reports ``("git", True)``; a sealed tree reports its

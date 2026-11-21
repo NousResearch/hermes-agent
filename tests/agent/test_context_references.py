@@ -72,6 +72,35 @@ def test_parse_typed_references_ignores_emails_and_handles():
     assert refs[2].target == "2"
 
 
+@pytest.mark.parametrize(
+    ("value", "start", "end"),
+    [
+        ("a.py:2:5", 2, 2),
+        ("a.py:2:1-3:9", 2, 3),
+        ("a.py:2:", 2, 2),
+        ("a.py#L4", 4, 4),
+        ("a.py#L2-L3", 2, 3),
+        ("a.py#L2-3", 2, 3),
+        ("a.py#L2-#L3", 2, 3),
+        ('"my a.py"#L2-L3', 2, 3),
+    ],
+)
+def test_file_ref_accepts_pasted_line_suffixes(tmp_path: Path, value: str, start: int, end: int):
+    """Compiler ``path:line:col`` and code-host ``#L10-L25`` anchors are line ranges, not part of
+    the filename: they used to fall through as a missing file."""
+    from agent.context_references import parse_context_references, preprocess_context_references
+
+    (tmp_path / "a.py").write_text("l1\nl2\nl3\nl4\n", encoding="utf-8")
+    (tmp_path / "my a.py").write_text("l1\nl2\nl3\nl4\n", encoding="utf-8")
+    ref = parse_context_references(f"@file:{value}")[0]
+    assert (ref.target, ref.line_start, ref.line_end) == (value.split("#")[0].split(":")[0].strip('"'), start, end)
+
+    result = preprocess_context_references(f"@file:{value}", cwd=tmp_path, context_length=100_000)
+    assert result.warnings == []
+    wanted = "\n".join(f"l{n}" for n in range(start, end + 1))
+    assert wanted in result.message
+
+
 
 
 

@@ -12,6 +12,7 @@ import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.config import Platform
@@ -312,9 +313,9 @@ class GatewayGoalsMixin:
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
         run_generation: int | None = None,
+        authority_owned_wake: bool = False,
     ) -> None:
-        """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
-        continuation through the adapter FIFO so a simultaneous real user message takes priority."""
+        """Judge the goal and enqueue any continuation on the FIFO that owns the turn."""
         def _load():
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
@@ -342,28 +343,39 @@ class GatewayGoalsMixin:
             ),
         )
         msg = decision.get("message") or ""
+        prompt = decision.get("continuation_prompt") or ""
+        continuing = bool(decision.get("should_continue") and prompt and source is not None)
+        durable = continuing and (authority_owned_wake or getattr(source, "platform", None) == Platform.LOCAL)
+        if durable:
+            # A producer without a native waiter has no adapter drain, just like a local turn.
+            from gateway.session_automation import admit_route_wake
+            try:
+                accepted = await admit_route_wake(
+                    self, self._delivery_adapter_for(source), source, prompt, "goal-continuation",
+                    metadata={"gateway_session_id": session_entry.session_id},
+                )
+            except Exception:  # health: allow BLE001 -- refusal must not fail the completed turn
+                logger.debug("goal continuation: authority admission failed", exc_info=True)
+                accepted = False
+            if not accepted and authority_owned_wake:
+                logger.warning("goal continuation: no wake admitted for the background turn")
+                msg = "Goal is still active, but Hermes couldn’t queue the next turn."
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(
                 source, msg, run_generation=run_generation)
-        prompt = decision.get("continuation_prompt") or ""
-        if not decision.get("should_continue") or not prompt or source is None:
-            return
-        if getattr(source, "platform", None) == Platform.LOCAL:
-            # A local session's adapter FIFO has no reader: its turns are authority admissions.
-            # Commit the continuation there, as main's TUI chained it after the turn.
-            from gateway.session_automation import admit_route_wake
-            try:
-                await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
-            except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
-                logger.debug("goal continuation: local admission failed", exc_info=True)
+        if not continuing or durable:
             return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
             adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                event = self._synthetic_prompt_event(source, prompt)
+                # Pinned to the judged session: a /new or reset before the slot drains drops it.
+                event.metadata.update(gateway_session_key=_quick_key, gateway_session_strict=True,
+                                      gateway_session_id=session_entry.session_id)
+                self._enqueue_fifo(_quick_key, event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
@@ -372,6 +384,7 @@ class GatewayGoalsMixin:
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
         from gateway.session_authorities import active_authority
+        from gateway.session_ingress import executing_admission
         from gateway.session_viewer_automation import viewer_driven
         from gateway.platforms.base_post_delivery import turn_run_generation
         if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
@@ -391,7 +404,10 @@ class GatewayGoalsMixin:
         failed = self._turn_failed()
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip() and not failed:
-            hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
+            goal_hook = self._post_turn_goal_continuation
+            if is_internal and executing_admission.get() and not getattr(event, "_adapter_drains_after", False):
+                goal_hook = partial(goal_hook, authority_owned_wake=True)
+            hooks.insert(0, ("goal continuation", goal_hook))
         for label, hook in hooks:
             try:
                 # Both hooks may defer a notice into this turn's post-delivery slot: each needs

@@ -201,3 +201,106 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_available", [True, False])
+async def test_telegram_background_completion_continues_goal_without_user_nudge(tmp_path, monkeypatch, route_available):
+    """A producer-owned Telegram turn has no adapter FIFO reader."""
+    import gateway.run as gr
+    from gateway.config import GatewayConfig
+    from gateway.platforms.base import SendResult
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_ingress_context import register_transport_home
+    from hermes_cli import goals
+    from hermes_state import SessionDB
+    from hermes_state_runtime import list_session_admissions
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    db = SessionDB(tmp_path / "state.db")
+    runner.session_store._db = runner._session_db = db
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="goal-return", db=db)
+    monkeypatch.setattr(goals, "_get_session_db", lambda: db)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fixture", typing_indicator=False))
+    adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}
+    runner._wire_adapter_handlers(adapter)
+    register_transport_home(runner, None, tmp_path)
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append((chat_id, content))
+        return SendResult(success=True, message_id=str(len(sent)))
+
+    monkeypatch.setattr(adapter, "send", send)
+    if not route_available:
+        from gateway import session_automation
+
+        async def refuse_wake(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(session_automation, "admit_route_wake", refuse_wake)
+    calls = []
+
+    async def respond(**kw):
+        message = kw["message"]
+        calls.append(message)
+        if "[Continuing toward your standing goal]" in message:
+            reply = "final read completed"
+        elif "background result arrived" in message:
+            reply = "worker result read"
+        else:
+            reply = "route ready"
+        return {"final_response": reply, "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0}
+
+    verdicts = iter([
+        ("continue", "one final read remains", False, None, False),
+        ("done", "the read is complete", False, None, False),
+    ])
+    monkeypatch.setattr(runner, "_run_agent", respond)
+    monkeypatch.setattr(goals, "judge_goal", lambda *args, **kwargs: next(verdicts))
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    route = runner._session_key_for_source(source)
+
+    try:
+        await adapter.handle_message(MessageEvent(text="seed the read-only route", source=source, message_id="1"))
+        await async_wait_until(lambda: len(calls) == 1 and not adapter._background_tasks, what="human turn delivered")
+        sid = runner.session_store.peek_session_id(route)
+        manager = goals.GoalManager(sid)
+        manager.set("complete the read-only check")
+        live = authority.sessions[sid]
+        assert await runner._inject_watch_notification("[IMPORTANT: background result arrived]", {
+            "type": "async_delegation", "delegation_id": "deleg_fixture", "status": "completed",
+            "parent_session_id": sid, "session_key": route, "platform": "telegram",
+            "chat_type": "dm", "chat_id": "42", "user_id": "42", "output": "read-only result",
+        }) is True
+        await live.task
+
+        rows = list_session_admissions(db, session_id=authority.logical_owner(sid), pending_only=False)
+        expected_turns = 3 if route_available else 2
+        assert len(rows) == expected_turns, [(row["request_id"], row["outcome"]) for row in rows]
+        assert "deleg_fixture" in rows[1]["request_id"]
+        assert [row["outcome"] for row in rows] == ["completed"] * expected_turns
+        assert len(calls) == expected_turns
+        assert sent.count(("42", "worker result read")) == 1
+        assert route not in adapter._pending_messages
+        manager.refresh()
+        if route_available:
+            assert "goal-continuation" in rows[2]["request_id"]
+            assert "[Continuing toward your standing goal]" in calls[-1]
+            assert sent.count(("42", "final read completed")) == 1
+            assert sent[-2:] == [("42", "final read completed"), ("42", "✓ Goal achieved: the read is complete")]
+            assert manager.state.status == "done"
+        else:
+            assert sent[-2:] == [
+                ("42", "worker result read"),
+                ("42", "Goal is still active, but Hermes couldn’t queue the next turn."),
+            ]
+            assert not any("Continuing toward goal" in reply for _, reply in sent)
+            assert manager.state.status == "active"
+    finally:
+        db.close()

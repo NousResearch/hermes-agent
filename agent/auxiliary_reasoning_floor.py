@@ -20,6 +20,8 @@ import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+from agent.reasoning_effort import EFFORT_LADDER
+
 logger = logging.getLogger(__name__)
 
 REASONING_FLOOR_EFFORT = "low"
@@ -45,6 +47,15 @@ def floor_reasoning_config(reasoning_config: Any) -> dict[str, Any]:
     if _is_disabled(reasoning_config):
         return {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
     return reasoning_config
+
+
+def exceeds_reasoning_floor(reasoning_config: Any) -> bool:
+    """Whether *reasoning_config*'s effort ranks above ``REASONING_FLOOR_EFFORT`` on ``EFFORT_LADDER``, so
+    stepping it to the floor lowers it. ``minimal`` (a closed level set that starts there) and ``low`` do
+    not; a missing or unrecognised effort counts as above, since the route default applies."""
+    cfg = reasoning_config if isinstance(reasoning_config, dict) else {}
+    effort = str(cfg.get("effort") or "").strip().lower()
+    return effort not in EFFORT_LADDER or EFFORT_LADDER.index(effort) > EFFORT_LADDER.index(REASONING_FLOOR_EFFORT)
 
 
 def with_reasoning_floor(kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:

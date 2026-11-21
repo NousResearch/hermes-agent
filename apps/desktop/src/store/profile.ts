@@ -340,6 +340,12 @@ let legacyNewChatProfile: null | string = null
 // work that re-homes the draft late compares it to tell a newer intent from
 // its own, even when the newer intent repeats the same route values.
 let newChatIntentRevision = 0
+// A "+ New Chat" activation must remain a draft, unlike a plain profile pick.
+let explicitNewChatIntentRevision: number | null = null
+
+export function isExplicitNewChatIntent(): boolean {
+  return explicitNewChatIntentRevision === newChatIntentRevision
+}
 
 export function currentNewChatIntent(): number {
   return newChatIntentRevision
@@ -1147,6 +1153,7 @@ export function pinNewChatProfile(name: string): string {
 // message lands in the right place.
 export function newSessionInProfile(name: string): void {
   const target = pinNewChatProfile(name)
+  explicitNewChatIntentRevision = newChatIntentRevision
   leaveForeignProjectScope(target)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
@@ -1178,6 +1185,7 @@ export function pinNewChatRoute(route: AgentProfileRoute): AgentProfileRoute {
  * eventual session.create request. */
 export function newSessionInAgent(route: AgentProfileRoute): void {
   const captured = pinNewChatRoute(route)
+  explicitNewChatIntentRevision = newChatIntentRevision
   leaveForeignProjectScope(captured.profile, captured.connectionId)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.

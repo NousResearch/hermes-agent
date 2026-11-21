@@ -48,7 +48,9 @@ def owning_home_root(project_root: Path) -> Path | None:
     checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
     the active root's state is that state (the owner itself, or one of its profiles), and when no
     such root has state for this checkout -- a fresh install, or a custom root that owns its own
-    tree -- so those keep today's behaviour (#123238).
+    tree -- so those keep today's behaviour (#123238). State that merely resolves onto the
+    owner's, through an ``installs`` symlink a borrowing root placed, is not ownership: the
+    borrowing root's own paths die with it.
 
     A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
     cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
@@ -65,9 +67,15 @@ def owning_home_root(project_root: Path) -> Path | None:
         return None
     owner = _launcher_bound_root(root, candidates) or candidates[0]
     try:
+        # Only the active root itself (a profile collapses onto it) may answer
+        # None: a borrowing root can symlink its installs at the owner's, and
+        # equality through that symlink would hand the ephemeral root the
+        # checkout's launchers and update tail (#123238).
+        if dependency_home_root().resolve() != owner.resolve():
+            return owner
         if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
             return None
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         pass
     return owner
 

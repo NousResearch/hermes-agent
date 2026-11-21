@@ -208,3 +208,39 @@ def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completio
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
     assert len(completion_tail) == 1
     assert published == [root]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
+def test_a_borrower_symlinking_the_owners_state_still_borrows(tmp_path, monkeypatch):
+    """A per-task home shares the owner's whole state by symlinking installs and tools
+    at it. State that resolves onto the owner's through that symlink is not ownership: the
+    task root's own paths die with it, so the launch still borrows and a publication under
+    it keeps binding the owner's interpreter -- never a launcher that breaks for every
+    later hermes once the task home is deleted."""
+    import os
+
+    from hermes_cli import _launchers
+
+    default = tmp_path / ".hermes"
+    root = _checkout(tmp_path, monkeypatch)
+    entry = default / "tools" / "python-owner"
+    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (default / "tools" / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
+    _state(default, root)
+    _home(monkeypatch, default)
+    local = root / ".hermes" / "bin"
+    published = {Path(path): Path(path).read_bytes() for path in _launchers.ensure_install_launchers(root, local)}
+    assert published, "the owner published its launchers"
+
+    task = tmp_path / "task-run" / "hermes-home"
+    task.mkdir(parents=True)
+    (task / "installs").symlink_to(default / "installs")
+    (task / "tools").symlink_to(default / "tools")
+    _home(monkeypatch, task)
+    assert owning_home_root(root) == default
+    assert store_root(root) == default / "tools"
+    republished = {Path(path): Path(path).read_bytes() for path in _launchers.ensure_install_launchers(root, local)}
+    assert republished == published, "a publication under the task home rebound the shared launcher"

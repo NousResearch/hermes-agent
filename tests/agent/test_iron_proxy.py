@@ -101,6 +101,28 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     assert "openrouter.ai" in domains  # comes from the mapping
 
 
+def test_build_proxy_config_secrets_require_false_for_synthetic_connect(tmp_path):
+    """The generated secrets rules must carry ``require: false``: iron-proxy
+    v0.39 evaluates ``require`` against the synthetic, header-less CONNECT
+    used for tunnel policy — a request that can never carry the proxy token —
+    so ``require: true`` rejects every mapped-host tunnel pre-MITM and the
+    credential swap never fires (#81281 Finding 2; upstream
+    ironsh/iron-proxy#222).  Verified against the real binary by
+    ``test_iron_proxy_connect_tunnel_to_mapped_host_end_to_end``."""
+    cfg = ip.build_proxy_config(
+        mappings=[_sample_mapping()],
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+    )
+    secrets_rules = cfg["transforms"][1]["config"]["secrets"]
+    assert secrets_rules, "expected generated secrets rules"
+    for rule in secrets_rules:
+        assert rule["replace"]["require"] is False, (
+            "require: true kills mapped-host CONNECT tunnels pre-MITM on the "
+            "pinned iron-proxy v0.39 (#81281)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Default SSRF deny list (regression: docs promise cloud metadata is denied)
 # ---------------------------------------------------------------------------

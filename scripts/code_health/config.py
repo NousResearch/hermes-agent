@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 
 from hermes_agent.compat.paths import original_path
+from scripts.code_health.stdlib_re_exempt import RE_EXEMPT, RE_EXEMPT_FILES
 
 # Master switch, honoured everywhere the ratchet runs (CI, `scripts/check`, the git hooks). It is
 # read from main, never from the branch under test, so a PR cannot relax its own check: CI reads
@@ -180,6 +181,18 @@ RULES: tuple[Rule, ...] = (
          " redacted form (`redact_phone`); the verbatim value goes to `logger.debug`. A content-named"
          " value that holds no user data (a config string) takes `# health: allow HX017 -- <why>`",
          "ast", include=("gateway/*", "plugins/platforms/*")),
+    # Regex engine: product code matches on RE2 through hermes_re (linear time, no catastrophic
+    # backtracking). HX018 is the ratchet until every file is migrated; the ruff ban replaces it then.
+    Rule("HX018", "stdlib `re` import in product code", "use `import hermes_re as re` (RE2;"
+         " website/docs/developer-guide/regex.md) and respell a pattern RE2 refuses. Stdlib `re` stays"
+         " only in tests and in the files of `scripts/code_health/stdlib_re_exempt.py`; a line that"
+         " must hand a stdlib pattern to a third-party API takes `# health: allow HX018 -- <why>`",
+         "ast", exclude=TESTS + RE_EXEMPT + ("hermes_re/*",)),
+    Rule("HX019", "`hermes_re` imported where the regex engine may be absent", "keep stdlib `re`"
+         " in this file: it runs before third-party packages are installed, or old updater processes"
+         " call it, and `hermes_re` cannot match without google-re2"
+         " (`scripts/code_health/stdlib_re_exempt.py`)", "ast",
+         include=RE_EXEMPT_FILES + ("pm/*",), exclude=()),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}

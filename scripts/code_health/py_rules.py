@@ -18,6 +18,7 @@ from scripts.code_health.py_rules_error_predicate import private_error_predicate
 from scripts.code_health.py_rules_log_content import user_content_in_log
 from scripts.code_health.py_rules_sleep import wall_clock_sleep
 from scripts.code_health.py_rules_sqlite import untracked_state_connect
+from scripts.code_health.py_rules_stdlib_re import facade_import, stdlib_re_import
 
 _CAPTURE_CALLS = {
     "get_hermes_home",
@@ -922,4 +923,6 @@ CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX015": untracked_state_connect,
     "HX016": legacy_profile_setter,
     "HX017": user_content_in_log,
+    "HX018": stdlib_re_import,
+    "HX019": facade_import,
 }

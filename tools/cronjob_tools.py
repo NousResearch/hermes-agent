@@ -975,10 +975,10 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         updates["no_agent"] = target_no_agent
     if a["repeat"] is not None:
         # Shared chokepoint coerces string forms ('forever'/'once'/'3') and 0/negative.
+        # Only the run limit: update_job keeps the stored completed count, read under the jobs lock at
+        # save time, so a run finishing while an edit card waits is never rolled back.
         from cron.jobs import normalize_repeat_value
-        repeat_state = dict(job.get("repeat") or {})
-        repeat_state["times"] = normalize_repeat_value(a["repeat"])
-        updates["repeat"] = repeat_state
+        updates["repeat"] = normalize_repeat_value(a["repeat"])
     if a["timezone"] is not None:
         # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
         updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
@@ -1315,24 +1315,34 @@ def _approval_task(job: dict[str, Any]) -> str:
         task = f"{task} (after running script {script})" if script else task
     extras = [f"checks {label} {job[key]} first each run" for key, label in
               (("monitor_script", "script"), ("monitor_url", "URL")) if job.get(key)]
-    extras.append(f"results go to {_audience(job.get('deliver'))}")
+    extras.append(f"results go to {_audience(job, job.get('deliver'))}")
     if job.get("failure_deliver") and job["failure_deliver"] != job.get("deliver"):
-        extras.append(f"failure notices go to {_audience(job['failure_deliver'])}")
+        extras.append(f"failure notices go to {_audience(job, job['failure_deliver'])}")
     return "; ".join([task, *extras])
 
 
 # How a deliver token reads on the card: who will see the result, never a raw address alone.
-_AUDIENCE = {"origin": "this chat", "local": "nowhere (saved to the job's history only)",
-             "all": "every connected home channel"}
+_AUDIENCE = {"local": "nowhere (saved to the job's history only)", "all": "every connected home channel"}
 
 
-def _audience(deliver: Any) -> str:
-    """The card's plain answer to "who sees this": the default (this chat), a named token, or each target
-    of a comma list, so two jobs differing only in audience never read the same."""
-    if not deliver:
-        return _AUDIENCE["origin"]
-    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
-    return ", ".join(_AUDIENCE.get(p.lower()) or (f"{p} (home channel)" if ":" not in p else p) for p in parts)
+def _origin_audience(job: dict[str, Any]) -> str:
+    """Where ``origin`` actually lands for this job, by the scheduler's own resolver: the captured chat,
+    else its fallback home channel, else nowhere (a CLI job with no home channel configured)."""
+    from cron.scheduler import _resolve_delivery_targets
+    targets = _resolve_delivery_targets({**job, "deliver": "origin", "failure_deliver": None})
+    if not targets:
+        return _AUDIENCE["local"]
+    if targets[0].get("_resolved_from") == "origin_fallback":
+        return f"the {targets[0]['platform']} home channel"
+    return "this chat"
+
+
+def _audience(job: dict[str, Any], deliver: Any) -> str:
+    """The card's plain answer to "who sees this": where ``origin`` resolves for this job, a named token,
+    or each target of a comma list, so two jobs differing only in audience never read the same."""
+    parts = [p.strip() for p in str(deliver or "origin").split(",") if p.strip()]
+    return ", ".join(_origin_audience(job) if p.lower() == "origin" else _AUDIENCE.get(p.lower())
+                     or (f"{p} (home channel)" if ":" not in p else p) for p in parts)
 
 
 def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str,
@@ -1384,12 +1394,23 @@ def _approve_new_job(job: dict[str, Any]) -> None:
             "Offer the job again with a later time if it is still wanted.", success=False, declined=True))
 
 
-# Fields a "Change this job?" card lists, old -> new, each as the user reads it.
+# Fields a "Change this job?" card lists, old -> new, each as the user reads it: every field that changes
+# when the job runs, what runs, or who sees it. Cosmetic ones (name, the response wrapper) are not asked.
 _EDIT_CARD_FIELDS = (
     ("prompt", "prompt", lambda j: j.get("prompt") or ""),
+    ("no_agent", "what runs", lambda j: "script only" if j.get("no_agent") else "agent task"),
+    ("skills", "skills", lambda j: ", ".join(j.get("skills") or [])),
+    ("context_from", "reads output of", lambda j: ", ".join(j.get("context_from") or [])),
     ("schedule", "schedule", lambda j: j.get("schedule_display") or ""),
+    ("timezone", "timezone", lambda j: j.get("timezone") or "profile default"),
+    ("grace_minutes", "catch-up window (minutes)", lambda j: "" if j.get("grace_minutes") is None
+     else str(j["grace_minutes"])),
+    ("catch_up", "catch up missed runs", lambda j: "" if j.get("catch_up") is None else str(j["catch_up"])),
     ("repeat", "runs", lambda j: str((j.get("repeat") or {}).get("times") or "forever")),
     ("deliver", "delivers to", lambda j: j.get("deliver") or ""),
+    ("failure_deliver", "failure notices to", lambda j: j.get("failure_deliver") or ""),
+    ("attach_to_session", "copied into the chat's history", lambda j: "" if j.get("attach_to_session") is None
+     else str(j["attach_to_session"])),
     ("monitor", "monitor", lambda j: j.get("monitor_script") or j.get("monitor_url") or ""),
     ("script", "script", lambda j: j.get("script") or ""),
     ("enabled_toolsets", "toolsets", lambda j: "" if j.get("enabled_toolsets") is None else
@@ -1408,7 +1429,7 @@ def _approve_job_edit(job: dict[str, Any], updates: dict[str, Any]) -> None:
     changes = [f"{label}: {show(job) or '(none)'} -> {show(after) or '(none)'}"
                for _key, label, show in _EDIT_CARD_FIELDS if show(job) != show(after)]
     if not changes:
-        return  # only fields the card does not list (name, skills, catch-up...): nothing new to consent to
+        return  # only fields the card does not list (name, response wrapper): nothing new to consent to
     name = job.get("name") or job["id"]
     # Its own key, never persisted (once_only): an "Always allow new jobs" grant does not cover an edit.
     _ask_schedule_card(pattern_key_action="update", name=name, kind="schedule_edit", once_only=True,

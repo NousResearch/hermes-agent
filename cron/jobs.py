@@ -2016,7 +2016,8 @@ def _normalize_job_updates(job: dict[str, Any], updates: dict[str, Any]) -> None
             _rp.setdefault("completed", completed)
             updates["repeat"] = _rp
         else:
-            updates["repeat"] = {"times": normalize_repeat_value(_rp), "completed": completed}
+            updates["repeat"] = {**(job.get("repeat") or {}), "times": normalize_repeat_value(_rp),
+                                 "completed": completed}
 
 
 def _rederive_repeat_for_schedule_change(

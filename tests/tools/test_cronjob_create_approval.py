@@ -29,6 +29,9 @@ def cron_store(tmp_path, monkeypatch):
     with jobs.use_cron_store(tmp_path):
         yield jobs
     terminal_tool.set_approval_callback(None)
+    from tools.approval import clear_session
+    from tools.approval_context import get_current_session_key
+    clear_session(get_current_session_key())  # an "allow new jobs" grant must not outlive its test
 
 
 def _asking(monkeypatch, answer, late=False):
@@ -286,3 +289,50 @@ def test_an_invalid_edit_fails_before_asking(cron_store, monkeypatch):
     result = json.loads(registry.dispatch("cronjob_manage", {
         "action": "update", "job_id": job["id"], "workdir": "relative/dir"}))
     assert result["success"] is False and asked == []
+
+
+@pytest.mark.parametrize("change, shown", [
+    # Changes WHEN it runs without touching the schedule wording.
+    ({"timezone": "Asia/Tokyo"}, "timezone: profile default -> Asia/Tokyo"),
+    # Changes WHAT runs: an agent task becomes a bare script.
+    ({"no_agent": True, "script": "check.py"}, "what runs: agent task -> script only"),
+    ({"failure_deliver": "telegram"}, "failure notices to: (none) -> telegram"),
+])
+def test_an_edit_that_changes_when_what_or_where_asks(cron_store, monkeypatch, change, shown):
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "scripts").mkdir(parents=True, exist_ok=True)
+    (get_hermes_home() / "scripts" / "check.py").write_text("print('ok')\n")
+    job = _existing_job(cron_store)
+    asked = _asking(monkeypatch, "deny")
+    result = json.loads(registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], **change}))
+    assert result.get("declined") is True, result
+    assert [k for k, _ in asked] == ["schedule_edit"] and shown in asked[0][1]
+
+
+def test_a_run_finished_while_the_edit_card_waits_is_kept(cron_store, monkeypatch):
+    """The card waits; a run completing meanwhile must survive the save, or the job gains extra runs."""
+    job = _existing_job(cron_store)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def callback(*_a, **_k):
+        cron_store.update_job(job["id"], {"repeat": {"times": 3, "completed": 2}})  # the scheduler ran twice
+        return "once"
+    terminal_tool.set_approval_callback(callback)
+    assert json.loads(registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], "repeat": 5}))[
+        "success"] is True
+    assert cron_store.get_job(job["id"])["repeat"] == {"times": 5, "completed": 2}
+
+
+@pytest.mark.parametrize("home, shown", [
+    ("12345", "results go to the telegram home channel"),
+    ("", "results go to nowhere (saved to the job's history only)"),
+])
+def test_a_job_with_no_chat_to_return_to_names_where_its_results_go(cron_store, monkeypatch, home, shown):
+    """A CLI job has no captured origin: deliver=origin lands on a home channel, or nowhere, never "this chat"."""
+    from cron import scheduler_delivery
+    monkeypatch.setattr(scheduler_delivery, "_iter_home_target_platforms", lambda: iter(["telegram"]))
+    monkeypatch.setattr(scheduler_delivery, "_get_home_target_chat_id", lambda _p: home)
+    asked = _asking(monkeypatch, "deny")
+    result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, "deliver": "origin"}))
+    assert result.get("declined") is True, result
+    assert shown in asked[0][1] and "this chat" not in asked[0][1]

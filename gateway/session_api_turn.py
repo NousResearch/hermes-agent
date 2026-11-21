@@ -22,6 +22,8 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 _OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
                   'reasoning_callback', 'status_callback', 'interim_assistant_callback')
 _TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
+_SUBAGENT_PROGRESS_EVENTS = frozenset({"subagent.start", "subagent.complete"})
+_API_PROGRESS_EVENTS = _SUBAGENT_PROGRESS_EVENTS | {"tool.started", "tool.completed"}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
@@ -336,12 +338,19 @@ async def observe_api_turn(admitted, **kwargs):
     observers = getattr(authority, 'api_observers', None)
     if observers is None:
         observers = authority.api_observers = {}
-    observer = {key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None}
-    if kwargs.get('tool_progress_callback') is not None and not observer.keys() & _TOOL_SINKS:
-        # Progress-only (the session chat stream): the producer's own tool.started / tool.completed
-        # events with its preview and failure verdict. Structured observers keep only theirs.
-        observer['tool_progress_callback'] = kwargs['tool_progress_callback']
-    registered = observers.setdefault(row['admission_id'], [])
+    observer = {
+        key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None
+    }
+    progress = kwargs.get("tool_progress_callback")
+    if progress is not None:
+        # Structured sinks own ordinary tools. Subagent lifecycle has no structured equivalent,
+        # so retain that part of the progress stream beside them.
+        observer["tool_progress_callback"] = (
+            partial(_notify_subagent_progress, progress)
+            if observer.keys() & _TOOL_SINKS
+            else progress
+        )
+    registered = observers.setdefault(row["admission_id"], [])
     registered.append(observer)
     try:
         authority._publish_pending(ref)
@@ -452,6 +461,11 @@ def _notify_observers(authority, session_id, key, *args, **kwargs):
     return accepted
 
 
+def _notify_subagent_progress(callback, event_type, *args, **kwargs):
+    if event_type in _SUBAGENT_PROGRESS_EVENTS:
+        return callback(event_type, *args, **kwargs)
+
+
 def wire_api_observers(agent, owner, want_interim):
     """Hand this admission's API observers (Chat/Responses SSE, runs) the agent's reasoning,
     status, commentary and tool progress callbacks, the ones the direct API path gave the agent
@@ -481,8 +495,10 @@ def wire_api_observers(agent, owner, want_interim):
     progress = agent.tool_progress_callback
 
     def tool_progress_callback(event_type, *args, **kwargs):
-        if event_type in ('tool.started', 'tool.completed'):
-            publish_api_tool_progress(authority, session_id, generation, event_type, *args, **kwargs)
+        if event_type in _API_PROGRESS_EVENTS:
+            publish_api_tool_progress(
+                authority, session_id, generation, event_type, *args, **kwargs
+            )
         if progress is not None:
             return progress(event_type, *args, **kwargs)
     agent.reasoning_callback = lambda text: publish('reasoning_callback', text)

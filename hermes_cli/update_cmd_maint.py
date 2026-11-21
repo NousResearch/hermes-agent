@@ -1059,6 +1059,10 @@ def _run_post_update_maintenance(
         from hermes_cli.default_plugins import install_and_record
         install_and_record()
 
+    with _best_effort('Installed companion refresh failed: %s'):
+        from hermes_cli.update_companions import update_installed_codex
+        update_installed_codex()
+
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the

@@ -27,14 +27,14 @@ Check the model's actual context window (not "it's Claude so 200K"). Some Sonnet
 
 ## Four-tier degradation model
 
-Monitor your context usage and shift behavior as you climb the tiers. The point is to notice *before* you hit the wall, not when responses start truncating.
+Monitor your context usage and shift behavior as you climb the tiers. The point is to notice *before* you hit the wall, not when responses start truncating. The tiers adjust how you read and delegate — none of them is a reason to abandon the task: Hermes manages context at runtime (turn-start compression, native compaction, micro-compaction), so let that run and keep working until a genuine blocker appears.
 
 | Tier | Usage | Behavior |
 |------|-------|----------|
 | **PEAK** | 0 – 30% | Full operations. Read bodies, spawn multiple agents in parallel, inline results freely. |
 | **GOOD** | 30 – 50% | Normal operations. Prefer frontmatter reads. Delegate aggressively. |
 | **DEGRADING** | 50 – 70% | Economize. Frontmatter-only reads, minimal inlining, **warn the user** about budget. |
-| **POOR** | 70%+ | Emergency mode. **Checkpoint progress immediately.** No new reads unless critical. Finish the current task and stop cleanly. |
+| **POOR** | 70%+ | Emergency mode. Frontmatter-only reads, no inlining, checkpoint recoverable state before the next dispatch, and let runtime compaction manage the window. Stop only on a genuine blocker — compaction unavailable or failing, a binding user limit, an unrecoverable failure — not on the percentage itself. |
 
 ## Early warning signs (before panic thresholds fire)
 

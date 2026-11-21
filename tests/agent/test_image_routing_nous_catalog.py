@@ -92,11 +92,14 @@ def portal(cold_process, monkeypatch):
 
 def test_portal_catalog_decides_auto_image_routing(portal):
     """Image-capable Portal model gets the image; text-only and unstated ones are described;
-    a user override still wins without touching the catalog."""
+    other providers and other endpoints are not answered from it; a user override still wins."""
     assert decide_image_input_mode("nous", SEES, {}) == "native"
     assert decide_image_input_mode("nous", BLIND, {}) == "text"
     assert _lookup_supports_vision("nous", SILENT, {}) is None
     assert _lookup_supports_vision("custom-gateway", SEES, {}) is None
+    # A run pointed at another Portal endpoint gets no verdict from this catalog.
+    other = {"model": {"base_url": "https://staging.example.test/v1"}}
+    assert _lookup_supports_vision("nous", SEES, other) is None
     assert portal.fetches == 1
 
     assert decide_image_input_mode("nous", SEES, {"model": {"supports_vision": False}}) == "text"

@@ -254,9 +254,10 @@ class TestStatusBarWidthSource:
 
         for width in (40, 52, 76, 80, 120, 200):
             mock_app = MagicMock()
+            mock_app._is_running = True
             mock_app.output.get_size.return_value = MagicMock(columns=width)
 
-            with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            with patch("prompt_toolkit.application.current.get_app_or_none", return_value=mock_app):
                 frags = cli_obj._get_status_bar_fragments()
 
             total_text = "".join(text for _, text in frags)
@@ -270,9 +271,10 @@ class TestStatusBarWidthSource:
         cli_obj = self._make_wide_cli()
         cli_obj._pending_title = "weekly-digest"
         mock_app = MagicMock()
+        mock_app._is_running = True
         mock_app.output.get_size.return_value = MagicMock(columns=100)
 
-        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+        with patch("prompt_toolkit.application.current.get_app_or_none", return_value=mock_app):
             frags = cli_obj._get_status_bar_fragments()
 
         text = "".join(value for _, value in frags)

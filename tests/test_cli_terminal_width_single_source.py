@@ -24,11 +24,14 @@ class _FakeOutput:
 
 
 class _FakeApp:
+    _is_running = True
     output = _FakeOutput()
 
 
 def _patch(monkeypatch):
+    import prompt_toolkit.application.current as current
     monkeypatch.setattr(prompt_toolkit.application, "get_app", lambda: _FakeApp())
+    monkeypatch.setattr(current, "get_app_or_none", lambda: _FakeApp())
     monkeypatch.setenv("COLUMNS", "120")
     monkeypatch.setenv("LINES", "30")
 

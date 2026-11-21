@@ -421,13 +421,17 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
 def _terminal_dims(default: tuple[int, int] = (80, 24)) -> tuple[int, int]:
     """Live ``(columns, rows)``: the running prompt_toolkit app's output size wins,
     ``shutil`` is only the fallback. The app can be narrower than shutil reports
-    (Termux, resized terminals), and every chrome row budget must read one source."""
+    (Termux, resized terminals), and every chrome row budget must read one source.
+    ``get_app()`` answers with a DummyApplication (80x40) when none is running, so
+    only a running app counts."""
     try:
-        from prompt_toolkit.application import get_app
-        size = get_app().output.get_size()
-        cols, rows = int(size.columns), int(size.rows)
-        if cols > 0 and rows > 0:
-            return cols, rows
+        from prompt_toolkit.application.current import get_app_or_none
+        app = get_app_or_none()
+        if app is not None and getattr(app, "_is_running", False):
+            size = app.output.get_size()
+            cols, rows = int(size.columns), int(size.rows)
+            if cols > 0 and rows > 0:
+                return cols, rows
     except Exception:
         pass
     return shutil.get_terminal_size(default)

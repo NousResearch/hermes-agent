@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
+import { $settingsRequestProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ModelSelect } from './model-select'
@@ -79,9 +80,21 @@ export function FallbackModelsField({
   const { t } = useI18n()
   const m = t.settings.model
 
+  // The profile this settings page edits (a concrete key; `undefined` only for
+  // a HERMES_HOME outside profiles/). Every sibling settings page reads the
+  // same store — this field was the straggler.
+  const scopeProfile = useStore($settingsRequestProfile)
+
   const modelOptions = useQuery({
-    queryKey: ['model-options', 'global'],
-    queryFn: () => getGlobalModelOptions()
+    // Scope BOTH the request and the cache key. An unscoped fetch resolves to
+    // the backend's LAUNCH home, which is not necessarily the profile this page
+    // edits (`hermes --profile A serve`, editing B) — the "Changes on this page
+    // apply to '<B>'" note keeps naming B while the list comes from A. A key
+    // without the profile also never refetches when "Applies to" changes, so a
+    // stale short catalog sticks for the whole session. Same contract as
+    // model-settings.tsx (#118432 / #90549).
+    queryKey: ['model-options', 'global', scopeProfile ?? '__active__'],
+    queryFn: () => getGlobalModelOptions(undefined, scopeProfile)
   })
 
   const customModels = useStore($customModels)

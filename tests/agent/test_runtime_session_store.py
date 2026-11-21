@@ -63,6 +63,60 @@ def test_outbox_capacity_failure_does_not_advance_or_discard(tmp_path):
             store.close()
 
 
+@pytest.mark.parametrize('raise_error', [
+    lambda: TimeoutError('worker_receipt_timeout'),
+    lambda: WorkerPersistenceError('owner_unavailable'),
+])
+def test_receipt_timeout_is_transient_and_replays(tmp_path, raise_error):
+    """A single missed persist receipt must not poison the turn: the journal replays the
+    pending entry on a fresh owner connection, and only exhaustion latches the failure.
+    Regression for worker_receipt_timeout/owner_unavailable killing kanban/worker runs
+    (managed worker exit 1 at close-time flush)."""
+    scope = {'session_id': 's', 'execution_id': 'w', 'epoch': 1}
+    attempts = []
+
+    def flaky(method, **params):
+        attempts.append(params)
+        if len(attempts) <= 2:
+            raise raise_error()
+        return {'count': 1, 'annotations': [{'_row_id': 42}]}
+
+    store = RuntimeSessionStore(flaky, scope, tmp_path / 'private')
+    try:
+        assert store.append_messages_batch('s', [{'role': 'user', 'content': 'ok'}]) == 1
+        assert store.failure is None
+        assert json.loads(store.path.read_text())['pending'] == []
+    finally:
+        store.close()  # must not raise: the transient timeout never latched
+
+
+@pytest.mark.parametrize('raise_error, expected', [
+    (lambda: TimeoutError('offline'), 'offline'),
+    (lambda: WorkerPersistenceError('owner_unavailable'), 'owner_unavailable'),
+])
+def test_receipt_timeout_exhaustion_still_latches(tmp_path, raise_error, expected):
+    """Persistent receipt timeouts keep the sticky failure contract: the journal freezes the
+    payload, later writes are refused, and close() raises the latched error."""
+    scope = {'session_id': 's', 'execution_id': 'w', 'epoch': 1}
+    calls = []
+
+    def unavailable(method, **params):
+        calls.append(method)
+        raise raise_error()
+
+    store = RuntimeSessionStore(unavailable, scope, tmp_path / 'private')
+    try:
+        with pytest.raises(Exception, match=expected):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'frozen'}])
+        assert len(calls) == 3  # three re-attempts before latching
+        assert store.failure == expected
+        with pytest.raises(WorkerPersistenceError, match=expected):
+            store.queue_token_counts('s', input_tokens=1)
+    finally:
+        with pytest.raises(WorkerPersistenceError, match=expected):
+            store.close()
+
+
 def test_worker_turn_wait_callbacks_remain_local(tmp_path):
     attempts, notices = [], []
     def rpc(method, **params):

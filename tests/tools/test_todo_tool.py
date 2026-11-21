@@ -200,6 +200,42 @@ class TestTodoStoreBounds:
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
 
+    def test_restore_sanitizes_dangling_parents(self):
+        """A restored snapshot can carry a parent ref the list no longer has
+        (the parent sat beyond the truncation head, or a merge deleted it).
+        ``write`` sanitizes; ``restore`` must too — an unsanitized child is
+        neither a root nor a rendered child, so ``format_for_injection``
+        silently drops the WHOLE list and the model loses the plan after
+        compression."""
+        store = TodoStore()
+        store.restore([
+            {"id": "a", "content": "parent task", "status": "completed"},
+            {"id": "b", "content": "child task", "status": "in_progress", "parent": "gone"},
+        ], revision=3)
+
+        assert "parent" not in store.read()[1]
+        injection = store.format_for_injection()
+        assert injection is not None and "child task" in injection
+
+    def test_restore_sanitizes_parents_broken_by_truncation(self):
+        """Truncation itself can orphan a child: the parent lands beyond
+        ``MAX_TODO_ITEMS`` while the child survives in the head."""
+        from tools.todo_tool import MAX_TODO_ITEMS
+
+        items = [{"id": "kid", "content": "kid", "status": "in_progress", "parent": "p"}]
+        items += [{"id": str(i), "content": f"t{i}", "status": "pending"} for i in range(1, MAX_TODO_ITEMS)]
+        items.append({"id": "p", "content": "parent", "status": "pending"})
+
+        store = TodoStore()
+        store.restore(items, revision=9)
+
+        rows = store.read()
+        assert not any(x["id"] == "p" for x in rows)  # parent truncated away
+        kid = next(x for x in rows if x["id"] == "kid")
+        assert "parent" not in kid
+        injection = store.format_for_injection()
+        assert injection is not None and "kid" in injection
+
 
 class TestRejectEmptyContent:
     """Empty or missing content must fail the call instead of substituting

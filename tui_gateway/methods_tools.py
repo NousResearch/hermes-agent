@@ -290,6 +290,14 @@ def _(rid, params: dict, session) -> dict:
     proc_id = str(params.get("process_id") or "")
     if not proc_id:
         return _err(rid, 4012, "process_id required")
+    if proc_id.startswith("tmux:"):
+        sid = getattr(session.get("agent"), "session_id", None)
+        if not sid:
+            return _err(rid, 4044, f"no such process: {proc_id}")
+        from tools.session_tmux import stop_session_pane
+        with _session_profile_runtime_scope(session):
+            result = stop_session_pane(sid, proc_id)
+        return _ok(rid, result) if result.get("status") != "not_found" else _err(rid, 4044, f"no such process: {proc_id}")
     registry = _tools_mod("tools.process_registry").process_registry
     proc = registry.get(proc_id)
     if proc is None or str(getattr(proc, "session_key", "") or "") != str(session.get("session_key") or ""):

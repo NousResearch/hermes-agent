@@ -1896,6 +1896,13 @@ def _session_processes(session: dict) -> list:
         if proc is not None and str(getattr(proc, "session_key", "") or "") == key:
             entry["output_tail"] = (proc.output_buffer or "")[-4000:]  # the 200-char list preview is too thin for the viewer
             owned.append(entry)
+    # The legacy session record's agent carries the physical conversation id; do not
+    # search any tmux server when it has no such owner.
+    sid = getattr(session.get("agent"), "session_id", None)
+    if sid:
+        from tools.session_tmux import list_session_panes
+        with _session_profile_runtime_scope(session):
+            owned.extend(list_session_panes(sid))
     return owned
 
 

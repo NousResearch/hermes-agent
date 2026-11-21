@@ -260,6 +260,24 @@ wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
 whose approval category would change without the `&` are still refused with
 guidance, because Hermes cannot safely tell which part should keep running.
 
+### Local tmux jobs in chat
+
+On a local Unix terminal, a conversation gets its own default tmux server. If a
+build runs in a detached pane, reopening the chat shows the active pane even
+after the launch command and any separate watcher have exited. You can still
+attach or send keys from that conversation. The activity list reports pane
+metadata, not terminal scrollback. Stop on a pane closes that pane.
+
+A tmux command in an ordinary host shell uses a different default server. To
+attach from there, run `tmux display-message -p '#{socket_path}'` in the
+conversation's terminal, then use `tmux -S <that-path> attach` on the host.
+Conversely, to control a pre-existing host tmux session from Hermes, obtain its
+socket path in the host session and pass it explicitly with `tmux -S <path>`.
+Explicitly selected sockets (`-S`, `-L`), jobs started before this feature,
+remote backends and work that detaches from the pane are not discovered.
+Use `background=true` on the actual command for captured logs, exit status
+and completion notifications; a tmux pane is a live activity indicator only.
+
 ### Repeated waits on a quiet process
 
 When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a

@@ -53,8 +53,6 @@ def _make_mock_parent(depth=0):
     return parent
 
 
-
-
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])

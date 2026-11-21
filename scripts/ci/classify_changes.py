@@ -495,6 +495,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_agent/__init__.py",
         "hermes_agent/compat/",
         "hermes_cli/main_install",
+        # The old-backend notice (hermes_cli/update_backend_notice.py) reads the backend-migration marker.
+        "hermes_cli/backend_migration_marker.py",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
         *_UPDATE_DEPENDENCIES,

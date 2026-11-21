@@ -1,0 +1,23 @@
+name: hermes-openui
+title: Hermes OpenUI
+repo: https://github.com/Revenue-Architect/hermes-kaizen-ui
+sha: "69e06a0d98ba0296d03d23f75c2b113e3b336a40"
+subdir: packages/openui
+description: "Interactive OpenUI views and live dashboards in the Hermes Desktop and Webapp chat: charts, tables, cards, forms and galleries, with a text fallback for other clients. Disclosure — no network calls of its own, subprocesses or credentials; a view can load https images the model names; reads local image files the model names and stores a copy in the view's file; a dashboard on screen reads the MCP tools the user lists in dashboard_sources, through Hermes' own client, and nothing is read until a source is listed; saves each view in the plugin's data folder (newest 500, at most 2 GB); clicking a view sends an ordinary message in that chat."
+maintainer: Revenue-Architect
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Revenue-Architect/hermes-kaizen-ui/tree/main/packages/openui#readme
+version: "1.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "A Desktop that connects to Hermes on another machine needs the Desktop half installed there too (Capabilities > Plugins > Install from Git)."
+  - "The Android app receives a readable file instead of the interactive view."
+  - "Live dashboards are off until the user lists MCP tools under plugins.entries.hermes-openui (mcp_allowlist and settings.dashboard_sources)."
+capabilities:
+  provides_tools: [openui_present]
+  provides_hooks: [pre_llm_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

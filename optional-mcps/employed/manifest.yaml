@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: employed
+description: >-
+  Live job postings from employers' own applicant-tracking systems, with
+  employer hiring profiles (Employed by Guaq AI).
+source: https://jobs.guaqai.me/connectors
+
+# Official vendor-hosted remote MCP (URL-only; Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (401 with WWW-Authenticate resource_metadata, RFC 9728 and RFC 8414
+# metadata, RFC 7591 registration, PKCE S256); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://jobs.guaqai.me/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  # Not the bare word "employed": it is ordinary English and would raise the pill on
+  # unrelated drafts.
+  keywords:
+    - guaq
+  hosts:
+    - jobs.guaqai.me
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Employed (or
+  run `hermes mcp login employed`). A free account is enough to start.
+  Approve access, then restart the session so tools load. Search tools
+  are read-only; account tools change only your own Employed profile,
+  application tracker and alerts, and only when you ask.

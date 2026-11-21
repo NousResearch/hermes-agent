@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
+import { type BtwResult, mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -705,10 +705,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         },
         // /btw uses prompt.btw (the TUI's path). It must NOT go through
         // runExec: the slash worker prints the answer after process_command
-        // returns, past the stdout capture window (#99065). The RPC replies
-        // with a task id; the answer arrives later as btw.complete.
+        // returns, past the stdout capture window (#99065). The gateway parses
+        // the flags (agent/side_thread.py): a question or an --explore thread
+        // replies with a task id (an exploration also with its start notice as
+        // text) and answers later as btw.complete; --threads, --stop and
+        // --promote reply text at once, a promotion with the prompt to submit.
         btw: async ctx => {
-          const question = ctx.arg.trim()
+          const arg = ctx.arg.trim()
 
           const resolved = await withSlashOutput(ctx)
 
@@ -716,27 +719,64 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const { render: renderSlashOutput, sessionId } = resolved
+          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
-          if (!question) {
+          if (!arg) {
             renderSlashOutput(
-              'Usage: /btw <question> — answered from a snapshot of this conversation without interrupting it.'
+              [
+                'Usage: /btw <question> — answered from a snapshot of this conversation without interrupting it.',
+                '/btw --explore <task> — investigate with tools in a side thread while the current work continues.',
+                '/btw --threads · /btw --promote [id] [note] · /btw --stop <id>'
+              ].join('\n')
             )
 
             return
           }
 
           try {
-            const result = await requestGateway<{ task_id?: string }>('prompt.btw', {
-              session_id: sessionId,
-              text: question
-            })
+            const result = await requestGateway<BtwResult>('prompt.btw', { session_id: sessionId, text: arg })
 
             renderSlashOutput(
-              result.task_id
-                ? `btw ${result.task_id} — answering from a conversation snapshot`
-                : 'btw — answering from a conversation snapshot'
+              result.text?.trim() ||
+                (result.task_id
+                  ? `btw ${result.task_id} — answering from a conversation snapshot`
+                  : 'btw — answering from a conversation snapshot')
             )
+
+            const prompt = result.prompt?.trim()
+
+            if (!prompt) {
+              return
+            }
+
+            // A promotion is an ordinary next turn on the session this command
+            // resolved against: queued behind a running turn, else submitted now
+            // (the /goal kickoff path).
+            const displayText = `/btw ${arg}`
+
+            const queued = queueKickoffIfSessionBusy({
+              displayText,
+              foregroundBusy: busyRef.current,
+              id: submissionId,
+              sessionId,
+              storedSessionId,
+              text: prompt
+            })
+
+            if (queued !== 'idle') {
+              renderSlashOutput(BUSY_KICKOFF_TEXT[queued])
+
+              return
+            }
+
+            submitted = await submitPromptText(prompt, {
+              ...retryOptions,
+              sessionId,
+              storedSessionId,
+              displayText,
+              submission_id: submissionId,
+              destination
+            })
           } catch (err) {
             // Older gateways without the dedicated RPC still have the
             // slash-worker route — same compatibility fallback as runRpc.

@@ -14,7 +14,7 @@ from gateway.delivery import prime_revived_egress
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_authorities import authority_for_home
 from gateway.session_authority import admission_row
-from gateway.session_automation import _owned_by
+from gateway.session_automation import _owned_by, _route_owner
 from gateway.session_identity import replace_source
 from gateway.session_persistence import authority_persistence
 from persistence.core.errors import AuthorityRefusal
@@ -109,7 +109,9 @@ async def _dispatch_owned(runner, authority, request):
                                             plugin_home=request.plugin_home, plugin_id=request.plugin_id)
         if live is None:
             raise AuthorityRefusal('permission_denied')
-        source, adapter = live.source, runner._adapter_for_source(live.source)
+        from gateway.session_runtime_workers import track_mutation
+        return await asyncio.shield(track_mutation(authority,
+            _dispatch_local(runner, authority, request, live, check)))
     else:
         if not runner._plugin_messaging_session_owned(request.session_key,
                 plugin_home=request.plugin_home, plugin_id=request.plugin_id):
@@ -118,12 +120,26 @@ async def _dispatch_owned(runner, authority, request):
                                                    target=f'session={request.session_key}'):
             raise AuthorityRefusal('permission_denied')
         adapter = runner._delivery_adapter_for(source)
+    return await _dispatch_bound(runner, authority, request, entry, source, adapter, check)
+
+
+async def _dispatch_local(runner, authority, request, live, check):
+    # Reset publishes a new transcript under this gate; keep it until the receipt is committed.
+    async with live.mutation_lock:
+        entry = await runner.async_session_store.lookup_by_session_key(request.session_key)
+        if entry is None:
+            raise AuthorityRefusal('not_found')
+        return await _dispatch_bound(runner, authority, request, entry, live.source,
+                                     runner._adapter_for_source(live.source), check)
+
+
+async def _dispatch_bound(runner, authority, request, entry, source, adapter, check):
     if adapter is None:
         raise AuthorityRefusal('gateway_unavailable')
     store = authority_persistence(authority)
     if not await asyncio.to_thread(_owned_by, store, request.expected_session_id, entry.session_id):
         raise AuthorityRefusal('admission_conflict')
-    owner = authority.logical_owner(entry.session_id)
+    owner = _route_owner(authority, entry)
     row = await asyncio.to_thread(store.admissions.find, principal_id='automation:' + request.session_key,
                                   session_id=owner, request_id=request.identity)
     if row is not None:

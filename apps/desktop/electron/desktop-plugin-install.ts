@@ -538,7 +538,7 @@ export async function probePluginRepo(
         agent: detected.agent,
         desktop: detected.desktop,
         agentName: detected.agentName ?? (detected.agent ? repoFallback : null),
-        desktopName: detected.desktop ? desktopPluginFolderName(gitUrl, subdir) : null,
+        desktopName: detected.desktop ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null,
         warnings,
         insecure,
         sha: await headSha(gitBin, cloneRoot)

@@ -46,3 +46,31 @@ describe('async report hydration', () => {
     expect(hydrate('').metadata.custom.asyncResult).toBeUndefined()
   })
 })
+
+describe('cron result note hydration (#148449)', () => {
+  const card = "Cron job 'News radar' finished"
+  const body = '3 takes are ready.\n\nMEDIA:/tmp/News Radar/animation.gif'
+
+  const note = (content: string, display_metadata: Record<string, unknown>) =>
+    toRuntimeMessage(toChatMessages([{ role: 'user', content, display_kind: 'internal_notification', display_metadata }])[0])
+
+  it('paints a cron note as its card with the job output as the report, media lines intact', () => {
+    const wrapped = `Cronjob Response: News radar\n(job_id: 2f64841b4ac0)\n-------------\n\n${body}\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder News radar").`
+
+    for (const [content, report] of [
+      [wrapped, `${body}\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder News radar").`],
+      [body, body] // cron.wrap_response: false
+    ]) {
+      const message = note(content, { display_text: card, completion_note: ['["cron","k","1"]'] })
+      expect(message.role).toBe('system')
+      expect(message.content).toEqual([{ type: 'text', text: card }])
+      expect(message.metadata.custom.asyncResult).toBe(report)
+    }
+  })
+
+  it('leaves an internal notification without a card as the row it was', () => {
+    const message = note('[IMPORTANT: Background process proc_1 matched a watch pattern]', {})
+    expect(message.role).toBe('user')
+    expect(message.metadata.custom.asyncResult).toBeUndefined()
+  })
+})

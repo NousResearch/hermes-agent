@@ -1853,10 +1853,9 @@ def _deliver_result(
             reached += not room_error
             continue
         if target["platform"] == "local":
-            from gateway.session_cron import deliver_to_local_chat
-            from hermes_constants import get_hermes_home
-            local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
-                                                cleaned_delivery_content, diagnostic=for_failure)
+            from cron.scheduler_delivery_local import deliver_local_note
+            local_error = deliver_local_note(job, target["chat_id"], cleaned_delivery_content,
+                                             media_files, for_failure=for_failure)
             if local_error:
                 delivery_errors.append(local_error)
             reached += not local_error

@@ -1833,7 +1833,9 @@ def review_dispatch_enabled() -> bool:
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
 # tick (``_memory_pressure_level``) because a static cap can't see other
-# tenants. Both fail open: non-Linux / read error → no cap / "unknown".
+# tenants. Neither fails open any more: an unreadable memory sample yields the
+# derived FLOOR (2), and a config home with no ``kanban:`` block refuses the
+# dispatch outright (``dispatch_cap_config``) instead of running uncapped.
 
 # Assumed per-worker footprint for the derived cap; deliberately conservative
 # so the cap errs toward fewer workers on small VMs.
@@ -1859,19 +1861,91 @@ def _system_memory_sample() -> dict:
         return {}
 
 
-def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -> Optional[int]:
+def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -> int:
     """Memory-derived default for ``kanban.max_in_progress`` when unset:
-    ``clamp(MemTotal / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)``. Returns
-    ``None`` (no cap) when total memory is unknown, so macOS/Windows dev
-    machines are unaffected.
+    ``clamp(MemTotal / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)``.
+
+    An unreadable sample (macOS/Windows, or a read error) returns the FLOOR,
+    never ``None``: "memory unknown" must not mean "no cap". The cap is what
+    keeps two workers out of one repo, and the hosts that cannot report their
+    memory are exactly the ones where an unbounded fan-out goes unnoticed.
     """
     if sample is None:
         sample = _system_memory_sample()
     total_kib = sample.get("mem_total_kib")
     if isinstance(total_kib, bool) or not isinstance(total_kib, int) or total_kib <= 0:
-        return None
+        return DERIVED_MAX_IN_PROGRESS_FLOOR
     workers = (total_kib // 1024) // MEMORY_GUARD_MB_PER_WORKER
     return max(DERIVED_MAX_IN_PROGRESS_FLOOR, min(workers, DERIVED_MAX_IN_PROGRESS_CEILING))
+
+
+def _display_config_path() -> str:
+    """Config path of the home this process resolves, for error messages."""
+    try:
+        from hermes_cli.config import get_config_path
+        return str(get_config_path())
+    except Exception:
+        return "<unknown config.yaml>"
+
+
+class UncappedHomeError(RuntimeError):
+    """Dispatch refused: the resolved config home cannot cap it.
+
+    ``kanban.max_in_progress`` and ``kanban.max_in_progress_per_profile`` are
+    read from the config home of the process running the dispatch, not from the
+    home that owns the board. Every profile home ships without a ``kanban:``
+    block, so an unset cap there used to mean "unlimited" — one hand-run
+    ``hermes -p <bot> kanban dispatch`` admitted seven workers in a single pass.
+    """
+
+
+def dispatch_cap_config() -> Mapping[str, Any]:
+    """Return the ``kanban:`` section a dispatch must be capped by, or raise.
+
+    Unset is not unlimited: a home whose own ``config.yaml`` has no ``kanban:``
+    block refuses by name instead of silently running uncapped. A config that
+    fails to load refuses too — that was the third fail-open (``load_config()``
+    raising used to set every cap to ``None``).
+
+    The block is checked on the RAW user file, not on ``load_config()``: the
+    merged config always synthesises a ``kanban:`` section from
+    ``DEFAULT_CONFIG``, so a merged read cannot tell "unset" from "set to the
+    defaults" — the whole defect. Values come from the merged config so managed
+    scope and env expansion still apply.
+    """
+    from hermes_cli.config import load_config, read_raw_config_readonly
+    try:
+        raw = read_raw_config_readonly()
+    except Exception as exc:  # noqa: BLE001 — any load failure must not mean "uncapped"
+        raise UncappedHomeError(
+            f"config could not be read from {_display_config_path()} "
+            f"({exc.__class__.__name__}: {exc})"
+        ) from exc
+    raw_section = raw.get("kanban") if isinstance(raw, dict) else None
+    if not isinstance(raw_section, dict) or not raw_section:
+        raise UncappedHomeError(
+            f"{_display_config_path()} has no kanban: block"
+        )
+    cap_keys = [
+        key for key in ("max_in_progress", "max_in_progress_per_profile")
+        if raw_section.get(key) is not None
+    ]
+    if not cap_keys:
+        # A block that only carries e.g. review_dispatch is still an uncapped
+        # home: this is the shape every profile home has.
+        raise UncappedHomeError(
+            f"{_display_config_path()} sets no kanban.max_in_progress and no "
+            f"kanban.max_in_progress_per_profile"
+        )
+    try:
+        cfg = load_config()
+    except Exception as exc:  # noqa: BLE001 — same refusal, named
+        raise UncappedHomeError(
+            f"config could not be loaded from {_display_config_path()} "
+            f"({exc.__class__.__name__}: {exc})"
+        ) from exc
+    section = cfg.get("kanban") if isinstance(cfg, dict) else None
+    return section if isinstance(section, dict) else raw_section
 
 
 def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:

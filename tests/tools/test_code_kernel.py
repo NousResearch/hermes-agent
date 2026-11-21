@@ -870,3 +870,31 @@ class TestCellStdoutSpill(unittest.TestCase):
         self.assertIn("stdout_spill_path", result)  # host spill of the clipped head
         self.assertIn("Only the first part", result["warning"])
         self.assertIn(result["stdout_spill_path"], result["warning"])
+
+
+class TestFenceLineStripping(unittest.TestCase):
+    """Regression tests for #157155: trailing/leading fence lines are stripped cleanly."""
+
+    def test_trailing_html_closing_fence_stripped_with_note(self):
+        with _kernel_config():
+            result = _run('print("alive")\n</code>')
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("alive", result["output"])
+        self.assertEqual(result.get("note"), "fence line stripped before compile")
+
+    def test_markdown_and_pre_code_fences_stripped(self):
+        for payload in (
+            '```python\nprint("md-ok")\n```',
+            '<pre><code>\nprint("html-ok")\n</code></pre>',
+        ):
+            with _kernel_config():
+                result = _run(payload)
+            self.assertEqual(result["status"], "success", result)
+            self.assertEqual(result.get("note"), "fence line stripped before compile")
+
+    def test_unfenced_code_and_internal_backticks_untouched(self):
+        with _kernel_config():
+            result = _run('s = "hello\\n```\\nworld"\nprint(len(s.splitlines()))')
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("3", result["output"])
+        self.assertNotIn("note", result)

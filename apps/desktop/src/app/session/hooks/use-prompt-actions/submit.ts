@@ -67,6 +67,7 @@ import {
   isForwardedReceipt,
   isProviderSetupError,
   isSessionBusyError,
+  isSessionNotFoundError,
   isTargetSessionBusy,
   isVoiceStoppedReceipt,
   ownershipErrorSurface,
@@ -211,6 +212,40 @@ function isPreAdmissionRefusal(error: unknown): boolean {
   const { code, message } = error as { code?: unknown; message?: unknown }
 
   return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
+}
+
+/** The legacy `prompt.submit` handler refusing a runtime id it no longer holds. It looks the session
+ *  up before it claims a slot or starts a turn, so nothing was admitted. Code and text both, since
+ *  the backend reuses 4001 for unrelated errors. */
+function isStaleRuntimeRefusal(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 4001 && isSessionNotFoundError(error)
+}
+
+/** Resend `params` without the `submission_id` a legacy backend refused. This send has no
+ *  deduplication identity, so `legacyAttempted` is journaled first and stays set after any outcome
+ *  that could hide an admission (timeout, lost socket): recovery then refuses to repeat it. A stale
+ *  runtime refusal is a known outcome, so the flag is cleared and the resume that follows sends
+ *  again. */
+async function submitIdentityless(
+  requestGateway: GatewayRequest,
+  params: Record<string, unknown>,
+  prepared: PreparedSubmission,
+  retryKey: string
+): Promise<SubmitReceipt> {
+  prepared.legacyAttempted = true
+  await writePreparedSubmission(retryKey, prepared)
+  const { submission_id: _id, ...legacyParams } = params
+
+  try {
+    return await requestGateway<SubmitReceipt>('prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+  } catch (error) {
+    if (isStaleRuntimeRefusal(error)) {
+      prepared.legacyAttempted = false
+      await writePreparedSubmission(retryKey, prepared)
+    }
+
+    throw error
+  }
 }
 
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
@@ -1174,15 +1209,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                     throw error
                   }
 
-                  prepared.legacyAttempted = true
-                  await writePreparedSubmission(retryKey, prepared)
-                  const { submission_id: _id, ...legacyParams } = params
-
-                  const result = await requestGateway<SubmitReceipt>(
-                    'prompt.submit',
-                    legacyParams,
-                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-                  )
+                  const result = await submitIdentityless(requestGateway, params, prepared, retryKey)
 
                   legacyAccepted = true
 

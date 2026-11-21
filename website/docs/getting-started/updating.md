@@ -424,6 +424,8 @@ A multiplexed default gateway is one process serving several profiles, so it app
 
 After updating, ask the owner of each manually launched backend to relaunch `hermes serve` or `hermes dashboard`; reconnect Desktop for an SSH backend. Restarting gateways alone does not refresh these processes.
 
+Open `hermes` chat sessions, the standalone TUI and editor agent servers (`hermes-acp`) are never restarted or interrupted by an update. When the update changed the code, it prints a notice after `✓ Update complete!`: it lists the pids of open chat sessions that started before the update, and reminds you that TUI sessions and editor agent servers started before the update need a restart too. Exit each one and start it again to load the new code.
+
 For a verified live backend, the updater saves a reminder before recording its restart as `deferred`. This allows the update to complete if the remaining checks pass. An unknown process identity cannot qualify for fresh deferral.
 
 Reminders live in `serve_restart_pending/` under the active Hermes home, separately from rotating update receipts. Each reminder identifies a process by PID and creation time. Startup warnings retain it while that process is alive or its liveness is unknown, and remove it only when that exact process is confirmed gone. A later update or a healthy gateway does not remove it.

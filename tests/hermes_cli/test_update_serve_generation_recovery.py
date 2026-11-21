@@ -871,6 +871,37 @@ def test_no_survivors_prints_nothing(capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_pre_update_chat_sessions_are_named_never_the_updaters_own(monkeypatch, tmp_path, capsys):
+    psutil = pytest.importorskip("psutil")
+    from hermes_cli import process_identity
+
+    ledger = tmp_path / "spawn-ledger.json"
+    monkeypatch.setattr(process_identity, "_ledger_path", lambda: ledger)
+
+    def cli_row(pid):
+        birth = process_identity.process_birth(psutil.Process(pid))
+        return {"pid": pid, "create_time": birth, "purpose": "cli", "install": process_identity.install_id()}
+
+    def notice(rows, *, since=None, code_changed=True):
+        ledger.write_text(rows if isinstance(rows, str) else json.dumps(rows), encoding="utf-8")
+        abort_recovery._warn_pre_update_sessions(since=since or 4e9, code_changed=code_changed)
+        return capsys.readouterr().out
+
+    chat = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin=subprocess.DEVNULL)
+    try:
+        out = notice([cli_row(chat.pid), cli_row(os.getpid())])
+        assert f"1 open `hermes` chat session(s) still run pre-update code (they started before the update): pid {chat.pid}\n" in out
+        assert "`hermes-acp`" in out
+        assert "chat session" not in notice([cli_row(chat.pid)], since=1.0)  # started after the update began
+        assert notice([cli_row(chat.pid)], code_changed=False) == ""  # an already-up-to-date run
+    finally:
+        chat.kill()
+        chat.wait()
+    for rows in ([], [cli_row(os.getpid())], "{not json"):
+        out = notice(rows)
+        assert "chat session" not in out and "`hermes-acp`" in out
+
+
 # ---------------------------------------------------------------------------
 # Real fresh interpreter
 # ---------------------------------------------------------------------------

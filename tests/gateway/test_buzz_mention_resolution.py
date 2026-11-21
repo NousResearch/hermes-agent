@@ -325,3 +325,67 @@ class TestSendRecovery:
         assert len(sends) == 2
         assert "--mention" not in sends[1][0]
         assert sends[1][1] == "just @\u200b-mention me"
+
+
+# ── interim / non-conversational sends are not summons ──────────────────────────
+
+
+class TestInterimSendsAreNotSummons:
+    """Mid-turn and status output must never wake a member: their @tokens are
+    incidental prose, not a deliberate agent-to-agent summon. The CLI p-tags any
+    bare member-shaped ``@Name`` at publish, so the adapter has to downgrade them
+    to presentation-only text on interim sends the same way it does for tokens the
+    CLI rejects outright."""
+
+    def _sending_adapter(self):
+        adapter = _make_adapter()
+        cli = _wire(adapter, _ScriptedCli())
+        cli.script("channels", "members", _members(FIZZ_PUBKEY))
+        cli.script("users", "get", _profile(FIZZ_PUBKEY, "Fizz"))
+        return adapter, cli
+
+    def _send_calls(self, cli):
+        return [c for c in cli.calls if (c[0][0], c[0][1]) == ("messages", "send")]
+
+    @pytest.mark.asyncio
+    async def test_interim_send_does_not_mention_a_member(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i1"})
+
+        result = await adapter.send(
+            CHANNEL, "⏳ Working — asked @Fizz to recheck the gate",
+            metadata={"_interim_send": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert ["--mention", FIZZ_PUBKEY] not in [sends[0][0][-2:]]
+        assert "@\u200bFizz" in (sends[0][1] or ""), "incidental @name must be presentation-only"
+
+    @pytest.mark.asyncio
+    async def test_non_conversational_send_does_not_mention_a_member(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i2"})
+
+        result = await adapter.send(
+            CHANNEL, "📬 notice: @Fizz should set a home channel",
+            metadata={"non_conversational": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert ["--mention", FIZZ_PUBKEY] not in [sends[0][0][-2:]]
+        assert "@\u200bFizz" in (sends[0][1] or "")
+
+    @pytest.mark.asyncio
+    async def test_final_send_still_summons_deliberately(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i3"})
+
+        result = await adapter.send(CHANNEL, "@Fizz please pick up the review")
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert ["--mention", FIZZ_PUBKEY] == sends[0][0][-2:]
+        assert "@\u200bFizz" not in (sends[0][1] or "")

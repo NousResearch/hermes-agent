@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from agent.portal_tags import get_affinity_scope, get_conversation_context
-from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
 from agent.reasoning_effort import codex_supported_efforts
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
@@ -193,6 +192,11 @@ class OpenRouterProfile(ProviderProfile):
                     extra_body["reasoning"] = clamped
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+        # prompt_cache_scope pulls utils → hermes_yaml → ruamel, which pre-bootstrap
+        # interpreters (PM's runtime, `hermes update`'s tool steps) don't have; discovery
+        # must be able to import this module there, so it loads on first use (#135434).
+        from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
+
         # xAI's prompt cache is pinned per backend server via this header.
         grok_conv_id = _sticky_key(session_id)
         # A cache-parity fork carries the parent's ambient scope; on Grok that key would evict

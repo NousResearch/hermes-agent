@@ -438,16 +438,18 @@ class SQLiteSessionRepository:
     ) -> SessionRecord:
         holder = self._store.holder()
         model_config = dict(model_config) if model_config else None
+        # Same ownership stamp as _insert_session_row: an unowned (NULL) row reads as a legacy session.
+        owner = _own_profile_name(holder)
 
         def _atomic(conn):
             if conflict := create_conflict(conn, session_id):  # one BEGIN IMMEDIATE write: a racing create sees the row
                 return None, conflict
             conn.execute(
                 """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                   id, source, model, model_config, system_prompt, profile_name, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (session_id, source, model, json.dumps(model_config) if model_config else None,
-                 system_prompt, time.time()))
+                 system_prompt, owner, time.time()))
             if title is not None:
                 clean_title = sanitize_title(str(title))
                 if clean_title:

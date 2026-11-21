@@ -1942,8 +1942,8 @@ def test_create_exclusive_writes_the_bare_row_once(backend, scope_a):
     assert store_a.sessions.get(SessionId("sess-ex1")) == record
     # CONTRACT: the row carries the given bare fields and the SANITIZED title; title_source stays unset; visible by default; no activity yet.
     assert (record.session_id, record.source, record.model) == ("sess-ex1", "api_server", "m")
-    # CONTRACT: created_source and profile_name stay unset.
-    assert (record.created_source, record.profile_name) == (None, None)
+    # CONTRACT: created_source stays unset; profile_name is the store owner, as on any row created without one.
+    assert (record.created_source, record.profile_name) == (None, store_a.sessions.store_owner())
     assert dict(record.model_config) == config and record.system_prompt == "be brief"
     assert record.title == "Ops board" and record.title_source is None and record.hidden is False
     summary = store_a.sessions.summary(SessionId("sess-ex1"))

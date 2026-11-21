@@ -259,7 +259,8 @@ class TestDeletedProfileTombstone:
         leftover_path = profile_dir / leftover
         leftover_path.write_text("keep-me\n", encoding="utf-8")
 
-        with pytest.raises(FileExistsError, match="already exists"):
+        # Tombstoned + identity = a delete that did not finish: name it and the retry (#141466).
+        with pytest.raises(FileExistsError, match="Deletion of profile .worker. did not finish"):
             create_profile("worker", no_alias=True, no_skills=True)
 
         assert leftover_path.read_text(encoding="utf-8") == "keep-me\n"

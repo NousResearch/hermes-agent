@@ -13,6 +13,39 @@ import time
 OWNER_RELEASE_WAIT_SECONDS = 60.0
 
 
+def delete_incomplete_message(canon: str, profile_dir: Path | None) -> str | None:
+    """The one refusal every surface gives for a profile whose delete did not finish
+    (``named_profile_delete_incomplete``), else None."""
+    from hermes_constants import named_profile_delete_incomplete
+    if profile_dir is None or not named_profile_delete_incomplete(profile_dir):
+        return None
+    return (f"Deletion of profile '{canon}' did not finish: {profile_dir} still holds its files. "
+            f"Finish it with `hermes profile delete {canon}`, or keep it with "
+            f"`hermes profile rename {canon} <new-name>`.")
+
+
+def delete_failed_error(canon: str, profile_dir: Path, error: Exception) -> RuntimeError:
+    """A delete whose rmtree was refused or failed; names the state it left and how to finish."""
+    # delete_profile recorded the delete as incomplete before its rmtree, so files it left (even with
+    # their identity files already gone) are never mistaken for a shell re-made after a finished delete.
+    left = delete_incomplete_message(canon, profile_dir)
+    return RuntimeError(f"Could not remove profile directory {profile_dir}: {error}" + (f". {left}" if left else ""))
+
+
+def record_delete_finished(profile_dir: Path) -> None:
+    """After a successful rmtree: a plain delete, so a shell a stale writer re-makes is replaceable.
+    Rewrites the existing record only (no ``O_CREAT``): a same-name create in another process may already
+    have cleared it, and recreating it would tombstone the new profile. Best-effort: an ``incomplete``
+    record left by a failed write matches nothing once the directory is gone."""
+    from hermes_constants import profile_tombstone_path
+    with contextlib.suppress(OSError):
+        fd = os.open(profile_tombstone_path(profile_dir), os.O_WRONLY | os.O_TRUNC)
+        try:
+            os.write(fd, b"deleted\n")
+        finally:
+            os.close(fd)
+
+
 def wait_profile_unowned(profile_dir: Path, *, timeout: float | None = None) -> bool:
     """True once no gateway runtime holds ``profile_dir``'s ``gateway.lock`` (taken and released
     through ``exclusive_maintenance``); False when it is still held after ``timeout`` seconds."""

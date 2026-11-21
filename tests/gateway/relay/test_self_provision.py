@@ -163,7 +163,7 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         sent["body"] = json.loads(req.data.decode())
         return _Resp()
 
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("gateway.relay.open_credentialed_url", _fake_urlopen)
 
     # With an instance id -> present in the body.
     relay._post_provision(

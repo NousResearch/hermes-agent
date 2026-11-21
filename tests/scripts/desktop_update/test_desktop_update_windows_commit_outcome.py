@@ -8,6 +8,7 @@ release) must not turn healthy work into a failure.
 """
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,16 @@ def main():
         marker.write_bytes(('\\n'.join(head) + '\\ndelegate:%d ct:%.3f\\n' % (child.pid, ct)).encode())
     if os.environ.get('HANDOFF_HANG'):
         print(os.environ['HANDOFF_HANG'], flush=True)
+        time.sleep(300)
+        # ASCII only: the hand-off runs this child as `python -I`, which ignores PYTHONIOENCODING, so a
+        # piped stdout is cp1252 on Windows and a check mark would raise UnicodeEncodeError before the hang.
+    stamp = os.environ.get('HANDOFF_LOG_THEN_HANG')   # one update.log write, the banner, then silence
+    if stamp:
+        log = Path(os.environ['HERMES_HOME']) / 'logs' / 'update.log'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text('Code updated!\\n', encoding='utf-8')
+        Path(stamp).write_text(repr(time.time()), encoding='utf-8')
+        print('Code updated!', flush=True)
         time.sleep(300)
     receipt = os.environ.get('HANDOFF_RECEIPT')   # this run's finalized receipt: outcome[,correlation]
     if receipt:
@@ -224,3 +235,38 @@ def test_hanging_update_help_probe_is_bounded(tmp_path: Path) -> None:
     )
     assert code == 0, out
     assert argv[0][:2] == ['update', '--yes'] and '--keep-stash' not in argv[0], argv
+
+
+@pytest.mark.platforms('windows')
+def test_watchdog_remaps_a_hang_after_the_code_updated_banner(tmp_path: Path) -> None:
+    """#156217: the restart/verify phase parks after "Code updated!", before "Update complete!"."""
+    code, out, _argv, result, _ = _handoff(
+        tmp_path, '-NoGateway', HANDOFF_HANG='Code updated!',
+        HERMES_UPDATE_STEP_IDLE_SECONDS='3',
+    )
+    assert code == 0, out
+    assert (result['ok'], result['manual']) == (True, True), result
+    assert any('interrupted' in w for w in result['warnings']), result
+
+
+@pytest.mark.platforms('windows')
+def test_idle_ceiling_runs_from_the_last_update_log_write_not_a_second_window(tmp_path: Path) -> None:
+    """A step that wrote update.log once and then went silent is cancelled one window later.
+
+    The ceiling used to compare update.log with the fingerprint from the step's start only
+    when it was reached, so that single early write bought a second full window (#156217).
+    """
+    idle = 12
+    stamp = tmp_path / 'update-log-written-at'
+    code, out, _argv, _result, home = _handoff(
+        tmp_path, '-NoGateway', HANDOFF_LOG_THEN_HANG=str(stamp),
+        HERMES_UPDATE_STEP_IDLE_SECONDS=str(idle), timeout=170,
+    )
+    assert code == 0, out
+    log = (home / 'logs/desktop-update-handoff.log').read_text(encoding='utf-8-sig')
+    stalled = [line for line in log.splitlines() if 'step stalled' in line]
+    assert stalled, log
+    cancelled_at = datetime.fromisoformat(stalled[0].split(' ', 1)[0]).timestamp()
+    waited = cancelled_at - float(stamp.read_text(encoding='utf-8-sig'))
+    # One window plus scheduling slack; a second window would land past 2 * idle.
+    assert idle - 2 <= waited < idle * 1.5, f'cancelled {waited:.1f}s after the last update.log write (window {idle}s)\n{log}'

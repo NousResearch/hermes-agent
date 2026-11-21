@@ -116,6 +116,8 @@ try {
 $script:HandoffLogMutexName = "Global\HermesHandoffLog-$handoffLogHash"
 # Lines the log could not take yet, oldest first (Write-HandoffLog).
 $script:PendingLogLines = New-Object System.Collections.Generic.List[string]
+# Why the last append failed, so a log that never lands is not also silent (Complete-HandoffLog).
+$script:HandoffLogError = $null
 
 function Sync-HandoffLog {
     # Append every pending line in one write, oldest first. False while another process still
@@ -132,11 +134,12 @@ function Sync-HandoffLog {
         }
         try { $held = $mutex.WaitOne(5000) }
         catch [System.Threading.AbandonedMutexException] { $held = $true }  # a writer died mid-append; the wait still granted ownership
-        # AppendData with full sharing: never conflicts with a reader, and lands at end-of-file
-        # atomically even beside a writer that skipped the mutex (its wait timed out).
+        if (-not $held) { return $false }  # WaitOne timed out: do not write without ownership.
+        # Full sharing; FileAccess.Write works on PowerShell 5.1 and 7,
+        # unlike the .NET Framework-only FileSystemRights overload.
         $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append,
-            [System.Security.AccessControl.FileSystemRights]::AppendData,
-            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096, [System.IO.FileOptions]::None)
+            [System.IO.FileAccess]::Write,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096)
         try {
             # Encoded only once the file is open: a held log retried on every poll of a long step
             # must not re-encode the whole growing queue each time.
@@ -144,6 +147,7 @@ function Sync-HandoffLog {
             $fs.Write($bytes, 0, $bytes.Length)
         } finally { $fs.Dispose() }
     } catch {
+        $script:HandoffLogError = $_.Exception.Message
         return $false
     } finally {
         if ($held) { try { $script:HandoffLogMutex.ReleaseMutex() } catch {} }
@@ -156,6 +160,9 @@ function Complete-HandoffLog([int]$Seconds = 10) {
     # Before exiting: a holder that outlives the run would otherwise take the last lines with it.
     $deadline = (Get-Date).AddSeconds($Seconds)
     while (-not (Sync-HandoffLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if ($script:PendingLogLines.Count -gt 0 -and -not $MarkerOp) {
+        Write-Host ("hand-off log not written to {0}: {1}" -f $LogPath, $script:HandoffLogError)
+    }
 }
 
 function Write-HandoffLog([string]$Message) {
@@ -1230,32 +1237,21 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 break
             }
         } elseif (-not $stalled -and $job -ne [IntPtr]::Zero -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
-            # Quiet pipes are how a healthy `hermes update` looks for 40+
-            # minutes: its build output streams to logs/update.log, not the
-            # child's stdout. Growth of that file is progress -- reset the
-            # clock instead of cancelling. Stat'd only once the ceiling is
-            # otherwise reached (at most once per 150ms pass after that), so
-            # the hot drain path never touches the filesystem.
-            $currentLogStamp = Get-StepProgressLogStamp
-            if ($currentLogStamp -ne $progressLogStamp) {
-                $progressLogStamp = $currentLogStamp
-                $lastProgressAt = Get-Date
-            } else {
-                # The child is alive but has produced no observable progress
-                # -- neither on its pipes nor in the update log -- for the
-                # whole bound. Terminate the job, not just its direct process:
-                # retrying while a descendant still mutates the checkout,
-                # venv, or release tree can overlap two installers and
-                # corrupt the install.
-                Write-HandoffLog ("{0}!| step stalled: no stdout/stderr, no update.log growth and no CPU/IO in its process tree for {1}s while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
-                $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
-                if (-not $stalled) {
-                    Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
-                    $script:TreeSafeToFinalize = $false
-                    $script:UnquiescedPids = @([HermesUpdateJob]::ProcessIds($job))
-                    [HermesUpdateJob]::Close($job)
-                    throw "Unable to quiesce stalled update process tree"
-                }
+            # The child is alive but has produced no observable progress --
+            # not on its pipes, not in the update log (folded into
+            # $lastProgressAt by the once-a-second check below), not in the
+            # job's CPU/IO -- for the whole bound. Terminate the job, not just
+            # its direct process: retrying while a descendant still mutates
+            # the checkout, venv, or release tree can overlap two installers
+            # and corrupt the install.
+            Write-HandoffLog ("{0}!| step stalled: no stdout/stderr, no update.log growth and no CPU/IO in its process tree for {1}s while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
+            $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
+            if (-not $stalled) {
+                Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
+                $script:TreeSafeToFinalize = $false
+                $script:UnquiescedPids = @([HermesUpdateJob]::ProcessIds($job))
+                [HermesUpdateJob]::Close($job)
+                throw "Unable to quiesce stalled update process tree"
             }
         }
         # Only idle when both pipes came up empty this pass, and idle on the
@@ -1287,6 +1283,20 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         [void](Sync-HandoffLog)
         if ((Get-Date) -ge $nextStageCheck) {
             Sync-ChildStage
+            # Quiet pipes are how a healthy `hermes update` looks for 40+
+            # minutes: its build output streams to logs/update.log, not the
+            # child's stdout. Growth of that file is progress and moves the
+            # clock WHEN IT HAPPENS. Comparing it only once the ceiling was
+            # reached measured against the fingerprint taken at step start, so
+            # any write before the step went silent (the "Code updated!" line
+            # itself) bought a second full window: a hang there outlived the
+            # 600s ceiling by another 600s. Once a second, off the hot drain
+            # path.
+            $currentLogStamp = Get-StepProgressLogStamp
+            if ($currentLogStamp -ne $progressLogStamp) {
+                $progressLogStamp = $currentLogStamp
+                $lastProgressAt = Get-Date
+            }
             $nextStageCheck = (Get-Date).AddSeconds(1)
         }
     }
@@ -1323,8 +1333,17 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
 # incomplete — …", "✗ <unit> failed to come back after restart" or
 # "verification incomplete" there. \u2717 (✗) stays an escape: Windows
 # PowerShell reads this BOM-less script as ANSI, never as UTF-8.
+# Two banners count. "Update complete!" ends a finished run. "Code updated!" is
+# printed earlier, once the tail has finished the code, dependencies and
+# products (source_completion.complete_source_checkout, after its build step) and
+# BEFORE the gateway restart and verify phases -- the phase that parks. A run
+# that hangs there never prints "Update complete!", so matching only that banner
+# left the exact hang this handler exists for (#156217) reported as a failure.
 function Resolve-HermesUpdateOutcome($StepResult) {
-    $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
+    $banner = -1
+    if ($StepResult.Output) {
+        $banner = [Math]::Max($StepResult.Output.LastIndexOf('Update complete!'), $StepResult.Output.LastIndexOf('Code updated!'))
+    }
     if ($StepResult.Code -eq 124 -and $banner -ge 0 -and $StepResult.Output.Substring($banner) -notmatch 'incomplete|not complete|\u2717') {
         Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
         $StepResult.Code = 0

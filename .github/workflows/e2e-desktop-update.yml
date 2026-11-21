@@ -79,7 +79,7 @@ jobs:
       # runs its own dependency install inside the sandbox.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       - name: Run the update suite under xvfb
         working-directory: apps/desktop
@@ -122,7 +122,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-update-e2e-${{ matrix.cell }}-${{ github.sha }}
+          name: desktop-update-e2e-${{ matrix.cell }}-${{ inputs.commit || github.sha }}
           path: |
             apps/desktop/test-results/update
             apps/desktop/playwright-report/update

@@ -27,6 +27,7 @@ import {
   recordTranscriptBackfillPage,
   tailStateFromPage,
   type TranscriptProfileScope,
+  type TranscriptTailState,
   transcriptTailState
 } from '@/store/transcript-tail'
 import type { SessionMessage, SessionMessagesResponse } from '@/types/hermes'
@@ -568,9 +569,15 @@ export interface BackfillRequest {
   isCurrent: () => boolean
   /** Apply the converted older page to the session's message store. The
    *  callback owns WHERE the messages live (session-state cache vs the global
-   *  draft atom) and must merge via `mergeOlderTranscriptPage`. */
-  applyOlderPage: (olderPage: ChatMessage[]) => void
+   *  draft atom) and must merge via `mergeOlderTranscriptPage`. Return false
+   *  when the page added nothing, so the backfill reads the next one. */
+  applyOlderPage: (olderPage: ChatMessage[]) => boolean | void
+  /** The transcript the store holds now. Without it a click reads one page. */
+  heldMessages?: () => ChatMessage[]
 }
+
+// Held pages one click reads past before it stops; the next click carries on.
+const MAX_HELD_PAGES = 8
 
 // One fetch per stored session at a time. Keyed by stored id (not runtime id)
 // so a mid-fetch runtime rebind cannot double-fetch the same page.
@@ -582,9 +589,84 @@ export function _resetTranscriptBackfillForTests(): void {
 }
 
 /**
+ * Fetch older pages until one adds rows to the store, or older pages run out.
+ *
+ * A refresh records its newest page as the tail, so the offset can point at
+ * pages the store already holds. Pages that add nothing are read past, at most
+ * `MAX_HELD_PAGES` per click; an empty store or a page that repeats the last
+ * one stops the walk. A refresh that replaces the tail mid-walk restarts the
+ * walk from it, at most twice, for a caller that passes `heldMessages`; others
+ * keep the one-page discard. Resolves undefined when the walk was abandoned.
+ */
+async function walkToOlderRows(
+  request: BackfillRequest
+): Promise<{ olderRows: SessionMessage[]; tail: TranscriptTailState } | undefined> {
+  const { profile, storedSessionId } = request
+  let tail = transcriptTailState(storedSessionId, profile)
+  let heldPages = 0
+  let restarts = 0
+  let previousPage = ''
+
+  while (tail?.possiblyTruncated) {
+    let page
+
+    try {
+      page = await getOlderSessionMessages(storedSessionId, tail.profile, tail.nextOffset)
+    } catch {
+      // Non-fatal: the action stays available and the next click retries.
+      return undefined
+    }
+
+    // A route can stay put while rewind or revalidation replaces its tail.
+    // This page belongs to the exact tail generation we fetched against, not
+    // merely the same stored id. Never graft it onto a newer display history.
+    const current = transcriptTailState(storedSessionId, profile)
+
+    if (!request.isCurrent() || !current) {
+      return undefined
+    }
+
+    if (current !== tail) {
+      if (!request.heldMessages || restarts >= 2) {
+        return undefined
+      }
+
+      restarts += 1
+      tail = current
+      heldPages = 0
+      previousPage = ''
+
+      continue
+    }
+
+    const held = request.heldMessages?.() ?? []
+
+    // A response without pagination metadata is a legacy backend that ignored
+    // the paging query and returned the FULL transcript one-shot. The merge
+    // prepends whatever prefix the store is missing, and the recorded state
+    // marks the session fully loaded so the REST action retires.
+    recordTranscriptBackfillPage(storedSessionId, page, profile)
+    const olderRows = unhideOpeningUserRows(page.messages)
+    const added = request.applyOlderPage(toChatMessages(olderRows)) !== false
+    // The same rows as the page before is a backend repeating itself.
+    const pageRows = page.messages.map(row => row.row_id ?? row.id).join(',')
+    const repeated = pageRows === previousPage
+    previousPage = pageRows
+    tail = transcriptTailState(storedSessionId, profile) ?? tail
+
+    if (added || !held.length || repeated || !tail.possiblyTruncated || (heldPages += 1) >= MAX_HELD_PAGES) {
+      return { olderRows, tail }
+    }
+  }
+
+  return undefined
+}
+
+/**
  * Fetch the next older page for a session and prepend it via
- * `applyOlderPage`. Resolves true when a page was applied. Concurrent calls
- * for the same session share one fetch.
+ * `applyOlderPage`. Resolves true when the walk handed a page to
+ * `applyOlderPage`, whether or not it added rows. Concurrent calls for the
+ * same session share one fetch.
  */
 export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<boolean> {
   const { profile, storedSessionId } = request
@@ -596,35 +678,13 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
   }
 
   const run = (async () => {
-    const tail = transcriptTailState(storedSessionId, profile)
+    const walked = await walkToOlderRows(request)
 
-    if (!tail?.possiblyTruncated) {
+    if (!walked) {
       return false
     }
 
-    let page
-
-    try {
-      page = await getOlderSessionMessages(storedSessionId, tail.profile, tail.nextOffset)
-    } catch {
-      // Non-fatal: the action stays available and the next click retries.
-      return false
-    }
-
-    // A route can stay put while rewind or revalidation replaces its tail.
-    // This page belongs to the exact tail generation we fetched against, not
-    // merely the same stored id. Never graft it onto a newer display history.
-    if (!request.isCurrent() || transcriptTailState(storedSessionId, profile) !== tail) {
-      return false
-    }
-
-    // A response without pagination metadata is a legacy backend that ignored
-    // the paging query and returned the FULL transcript one-shot. The merge
-    // below prepends whatever prefix the store is missing, and the recorded
-    // state marks the session fully loaded so the REST action retires.
-    recordTranscriptBackfillPage(storedSessionId, page, profile)
-    const olderRows = unhideOpeningUserRows(page.messages)
-    request.applyOlderPage(toChatMessages(olderRows))
+    const { olderRows, tail } = walked
 
     // #96875: paging can reach the top while the opening USER turn is still
     // missing — the durable row is compaction-projected to display_kind=hidden

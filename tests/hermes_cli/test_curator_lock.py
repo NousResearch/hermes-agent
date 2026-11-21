@@ -41,7 +41,7 @@ def lock_env(tmp_path, monkeypatch):
     importlib.reload(curator_cli)
     # `lock` resolves the name through skill_manage's finder; pin its search roots to this profile.
     monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills])
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills)
+    monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills)
     return {"home": home, "skills": skills, "usage": skill_usage, "cli": curator_cli}
 
 
@@ -100,3 +100,17 @@ def test_status_lists_locked_skills(lock_env):
     code, out = _run(env["cli"], "status")
     assert code == 0, out
     assert "locked (1): coding-standards" in out
+
+
+def test_lock_commands_refuse_to_rewrite_a_damaged_record(lock_env):
+    """A damaged record still holds locks nobody can read: unlock and pin must not save over it, and
+    their errors name the damage, not another cause (#147986)."""
+    env = lock_env
+    _make_skill(env["skills"], "coding-standards")
+    record = env["skills"] / ".usage.json"
+    record.write_text('{"coding-standards": {"locked": true}', encoding="utf-8")
+    for verb in ("unlock", "pin"):
+        code, out = _run(env["cli"], verb, "coding-standards")
+        assert code == 1, (verb, out)
+        assert "damaged" in out, (verb, out)
+    assert record.read_text(encoding="utf-8") == '{"coding-standards": {"locked": true}'

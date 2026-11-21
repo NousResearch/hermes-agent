@@ -71,8 +71,9 @@ def assets_dir() -> Path:
 def staged_in(models_dir: Path, *, require_complete: bool = True) -> list[Path]:
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
-    is not servable and must not surface anywhere as a model."""
-    files = sorted(models_dir.glob("*.gguf"))
+    is not servable and must not surface anywhere as a model. Dangling symlinks and directories
+    are not model files; valid symlinks to files remain supported."""
+    files = sorted(p for p in models_dir.glob("*.gguf") if p.is_file())
     names = {p.name for p in files}
     out = []
     for p in files:

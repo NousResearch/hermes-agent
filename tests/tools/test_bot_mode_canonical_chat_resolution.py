@@ -13,8 +13,8 @@ Standing maintainer rule: canonical-chat identity must FAIL CLOSED — never
 mint on ambiguity. Post-#92129 the contract is name-as-identity:
 
   One bot = ONE canonical forever-chat = (profile, session titled exactly
-  "Bot Chat"). SessionDB title uniqueness (compare-and-swap in
-  ``_set_session_title``, ValueError on conflict) makes that pair a registry
+  "Bot Chat"). The store's title uniqueness (compare-and-swap in
+  ``sessions.set_title``, ValueError on conflict) makes that pair a registry
   of at most one row. Resolution (``session.list {title}`` and
   ``profiles.list``'s ``canonical_session``) is a PURE READ: absent registry
   → empty result / None, and creation is an explicit, separate,
@@ -36,6 +36,8 @@ import threading
 import pytest
 
 import tui_gateway.server as srv
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 CANON = "Bot Chat"
 
@@ -59,12 +61,12 @@ def home(tmp_path, monkeypatch):
     h.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(h))
 
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     handles = []
 
     def _shared_db():
-        database = SessionDB(db_path=h / "state.db")
+        database = open_persistence(profile_scope(home=h), eager=True)
         handles.append(database)
         return database
 
@@ -78,22 +80,21 @@ def home(tmp_path, monkeypatch):
 
 
 def _db(home):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    return SessionDB(db_path=home / "state.db")
+    return open_persistence(profile_scope(home=home), eager=True)
 
 
 def _add_session(db, sid, *, title="", ts=1000, source="cli", hidden=False, text="hi"):
-    db.create_session(sid, source)
-    db.append_message(sid, "user", text, timestamp=ts)
+    seed_session(db, sid, source)
+    seed_messages(db, sid, {"role": "user", "content": text, "timestamp": ts})
     if title:
-        with db._lock:
-            db._conn.execute(
-                "UPDATE sessions SET title = ?, title_source = 'user' WHERE id = ?",
-                (title, sid),
-            )
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET title = ?, title_source = 'user' WHERE id = ?",
+            (title, sid),
+        ))
     if hidden:
-        db.set_session_hidden(sid, True)
+        db.sessions.set_hidden(sid, True)
 
 
 def _count_sessions(home):
@@ -258,7 +259,7 @@ def test_resolution_never_mints(home, state):
 
 
 def test_title_registry_rejects_second_canonical(home):
-    """SessionDB refuses a second "Bot Chat" title (ValueError, not silence).
+    """The store refuses a second "Bot Chat" title (ValueError, not silence).
 
     #90732's fork loop started because set_session_title silently dropped
     conflicting titles; the current CAS raises, which is what lets creators
@@ -266,33 +267,31 @@ def test_title_registry_rejects_second_canonical(home):
     """
     db = _db(home)
     _add_session(db, "forever", title=CANON, ts=1000)
-    db.create_session("pretender", "cli")
+    seed_session(db, "pretender", "cli")
     with pytest.raises(ValueError):
-        db.set_session_title("pretender", CANON)
+        db.sessions.set_title("pretender", CANON)
     db.close()
     assert _canonical_rows(home) == ["forever"]
 
 
 def _adopt_or_mint(home, sid, results, idx):
     """The adopt-before-mint creation algebra plugin.js runs, re-enacted in
-    Python against the real SessionDB: lookup → create+claim → on conflict
+    Python against the real session store: lookup → create+claim → on conflict
     re-lookup and ADOPT. This is the #92692 racing-resolvers shape."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=home / "state.db")
+    db = _db(home)
     try:
-        row = db.get_session_by_title(CANON)
+        row = db.sessions.get_by_title(CANON)
         if row:
-            results[idx] = row["id"]
+            results[idx] = row.session_id
             return
-        db.create_session(sid, "cli")
+        seed_session(db, sid, "cli")
         try:
-            db.set_session_title(sid, CANON)
+            db.sessions.set_title(sid, CANON)
             results[idx] = sid
         except ValueError:
             # Lost the race: adopt the winner, never fork.
-            row = db.get_session_by_title(CANON)
-            results[idx] = row["id"] if row else None
+            row = db.sessions.get_by_title(CANON)
+            results[idx] = row.session_id if row else None
     finally:
         db.close()
 
@@ -342,7 +341,7 @@ def test_recreated_same_name_identity_gets_fresh_session(home):
 
     # Disband: release the name (rename away), then recreate under same name.
     db = _db(home)
-    db.set_session_title("gen1", "Bot Chat (disbanded)")
+    db.sessions.set_title("gen1", "Bot Chat (disbanded)")
     _add_session(db, "gen2", title=CANON, ts=2000, text="second life")
     db.close()
 

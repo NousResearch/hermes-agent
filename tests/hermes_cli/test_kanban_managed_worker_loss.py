@@ -15,7 +15,6 @@ lost attempt:
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from pathlib import Path
 
@@ -26,6 +25,8 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_owner_recovery
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_admission, seed_session
 
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
@@ -51,20 +52,17 @@ def board(tmp_path, monkeypatch):
     kb.init_db()
     conn = kbc.connect()
     ledger = tmp_path / "state.db"
-    with sqlite3.connect(ledger) as store:
-        store.execute(
-            "CREATE TABLE session_admissions "
-            "(target_session_id TEXT, request_id TEXT, status TEXT, outcome TEXT)"
-        )
-    scratch = _Board(conn, ledger)
-    yield scratch
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as store:
+        seed_session(store, "sess-1", "cli")
+        yield _Board(conn, ledger, store)
     conn.close()
 
 
 class _Board:
-    def __init__(self, conn, ledger: Path):
+    def __init__(self, conn, ledger: Path, store):
         self.conn = conn
         self.ledger = ledger
+        self.store = store
 
     # --- seeding ----------------------------------------------------------------------
     def running(
@@ -100,9 +98,7 @@ class _Board:
                        {"db": str(self.ledger), "session_id": "sess-1", "pid": owner_pid or _absent_pid(base=3_950_000),
                         "request_id": request_id}, started + 3)
             if admission:
-                with sqlite3.connect(self.ledger) as store:
-                    store.execute("INSERT INTO session_admissions VALUES ('sess-1', ?, ?, ?)",
-                                  (request_id, admission[0], admission[1]))
+                seed_admission(self.store, "sess-1", request_id, *admission)
         if worker_lost:
             self.event(tid, run_id, "worker_lost",
                        {"reason": worker_lost, "claim_lock": lock, "run_id": run_id,

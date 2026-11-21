@@ -1,0 +1,22 @@
+name: hermes-egm
+title: Hermes EGM
+repo: https://github.com/willbohn/hermes-egm
+sha: 512527c9312adce187cdcffa5ebe44af7c7e8bb8
+description: Fresh-context, tool-free design reviews with checked source evidence and EGM workflow skills.
+maintainer: willbohn
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.4.0"
+docs_url: https://github.com/willbohn/hermes-egm#quickstart
+image: https://raw.githubusercontent.com/willbohn/hermes-egm/512527c9312adce187cdcffa5ebe44af7c7e8bb8/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/willbohn/hermes-egm/512527c9312adce187cdcffa5ebe44af7c7e8bb8/assets/how-it-works.svg
+  - https://raw.githubusercontent.com/willbohn/hermes-egm/512527c9312adce187cdcffa5ebe44af7c7e8bb8/assets/activation-modes.svg
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools: [egm_review]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

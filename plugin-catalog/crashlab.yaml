@@ -1,0 +1,58 @@
+name: crashlab
+title: CrashLab
+repo: https://github.com/dolepee/crashlab
+sha: 40932f8b828f584e64c985ddc8920dfd06d43693
+description: "Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression. Disclosure — After a Hermes approval prompt, runs the `app.start` command declared by a case file or a model-prepared experiment as a local process outside the Hermes sandbox, and drives it with a Node/Playwright runner and a local Chromium launched with `--no-sandbox`; stores runs, experiments, exports and watch files under `~/.local/share/crashlab` (or `CRASHLAB_DATA_DIR`), shared across Hermes profiles; the opt-in `crashlab_experiment_watch` adds a `pre_verify` reminder that asks Hermes to continue after edits in a watched project; the dashboard tab can start an approved run after its own confirmation."
+maintainer: dolepee
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.5.10"
+docs_url: https://github.com/dolepee/crashlab/blob/40932f8b828f584e64c985ddc8920dfd06d43693/README.md
+platforms:
+  - linux
+  - macos
+screenshots:
+  - https://raw.githubusercontent.com/dolepee/crashlab/40932f8b828f584e64c985ddc8920dfd06d43693/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/40932f8b828f584e64c985ddc8920dfd06d43693/docs/dashboard-mobile.png
+known_issues:
+  - "Reconciliation requires one selected original identity and one selected readback query value; missing or repeated selections are rejected."
+  - "Execution needs human approval for the captured plan; trusted local cases and applications remain required."
+  - "Historical bundles require their recorded evaluator; prepare new experiments explicitly after evaluator changes. VERIFIED status never transfers."
+  - "Noninteractive install can require npm ci; local application runtimes and dependencies are separate."
+  - "Restart needs an owned foreground process group and record-level observation; numeric-only HTTP counts are rejected."
+  - "Replay requires identical evaluator hashes and a direct Python launch; dependencies remain separate."
+  - "Kist and Flaskr retain model-repair records; Shiori is a supplied-diagnosis guided model patch with operator verifier runs, not autonomous discovery or adoption."
+  - "Flaskr repair covers fresh databases; existing databases need migration and legacy tokenless POSTs are unprotected."
+  - "Project freshness covers tracked and nonignored untracked files, not ignored files, dependencies or runtime configuration."
+  - "Completion reminders are opt-in, project-scoped and bounded by Hermes continuation limits; they are not an execution barrier."
+  - "The native Desktop pane is view-only; approved execution uses Hermes tools or the web dashboard. The pane is SDK-validated, not visually verified in an installed Desktop app."
+  - "External application templates require their own checkout, dependencies and case configuration."
+  - "HTTP state observers trust application responses; SQLite observers read directly but are not an operating-system isolation boundary."
+  - "Legacy mixed browser/inventory campaigns remain validation-only; inventory uses a deliberate fixture scheduling gate. Recovery campaigns execute supported local apps."
+  - "Requires Node.js 20+, playwright-core and local Chromium; uses --no-sandbox, so run only trusted fixtures in isolation."
+  - "Only the first matching request is interrupted; other fault.occurrence values are unsupported."
+capabilities:
+  provides_tools:
+    - crashlab_validate
+    - crashlab_run
+    - crashlab_compare
+    - crashlab_list
+    - crashlab_campaign_list
+    - crashlab_campaign_validate
+    - crashlab_campaign_run
+    - crashlab_prepare
+    - crashlab_experiment_run
+    - crashlab_experiment_status
+    - crashlab_experiment_watch
+    - crashlab_experiment_report
+    - crashlab_experiment_export
+    - crashlab_experiment_import
+  provides_hooks:
+    - pre_verify
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware:
+    - tool_execution
+  requires_env: []
+

@@ -409,7 +409,11 @@ _SPECS = [
                   "it reads the full board context and replies in its own voice), or "
                   "'wake' (wake the agent only, no passive message). Omit to leave an "
                   "existing subscription's mode unchanged (new subs default to 'notify')."),
-    ], help="Subscribe a gateway source to a task's terminal events (used by /kanban subscribe in the gateway adapter)"),
+        _arg("--progress", action=argparse.BooleanOptionalAction, default=None,
+             help="Also send passive notifications for explicit heartbeat notes. "
+                  "Use --no-progress to disable an existing subscription; omit to "
+                  "leave it unchanged (new subscriptions default off)."),
+    ], help="Subscribe to terminal events and optional progress notes (used by /kanban subscribe)"),
     _cmd("notify-list", [_arg("task_id", nargs="?"), _json_flag()],
          help="List notification subscriptions (optionally for a single task)"),
     _cmd("notify-unsubscribe", [_TASK_ID, *_NOTIFY_TARGET], help="Remove a gateway subscription from a task"),

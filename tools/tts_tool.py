@@ -240,20 +240,20 @@ def _finalize_voice_delivery(
         opted_in = _is_command_tts_voice_compatible(command_provider_config)
     elif provider not in BUILTIN_TTS_PROVIDERS:
         opted_in = _plugin_provider_is_voice_compatible(provider)
-    elif want_opus and provider in _FFMPEG_OPUS_PROVIDERS and not file_str.endswith(".ogg"):
+    elif want_opus and provider in _FFMPEG_OPUS_PROVIDERS and not file_str.lower().endswith(".ogg"):
         opus_path = _convert_to_opus(file_str)
         return (opus_path, True) if opus_path else (file_str, False)
     else:
         native = provider in _NATIVE_OPUS_PROVIDERS
-        return file_str, native and want_opus and file_str.endswith(".ogg")
+        return file_str, native and want_opus and file_str.lower().endswith(".ogg")
     if not opted_in:
         return file_str, False
     # Plugin-registered provider (issue #30398). Voice-bubble delivery opts in via
     # ``TTSProvider.voice_compatible`` (mirrors the command-provider opt-in). Plugins that already write
     # Opus skip the ffmpeg conversion.
-    if not file_str.endswith(".ogg"):
+    if not file_str.lower().endswith(".ogg"):
         file_str = _convert_to_opus(file_str) or file_str
-    return file_str, file_str.endswith(".ogg")
+    return file_str, file_str.lower().endswith(".ogg")
 
 
 # --- Main tool function ---

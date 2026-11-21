@@ -69,6 +69,15 @@ hermes gateway
 
 Home Assistant will appear as a connected platform alongside any other messaging platforms (Telegram, Discord, etc.).
 
+## Community Add-on and Assist Integration
+
+The setup above assumes Hermes is already running and configures the official Home Assistant plugin's platform and tools. Home Assistant users who want a Home Assistant-native install path or Assist voice pipeline can also use these community-maintained projects:
+
+- **[Hermes Agent Home Assistant add-on](https://github.com/WolframRavenwolf/hermes-ha-addon)** - packages Hermes Agent as a Home Assistant add-on/app with sidebar access, persistent storage, dashboard, web terminal, and optional OpenAI-compatible API server.
+- **[Hermes Agent Home Assistant integration](https://github.com/WolframRavenwolf/hermes-ha-integration)** - adds Hermes Agent as a Home Assistant Assist conversation agent for voice assistants and the conversation panel. It talks to Hermes through the OpenAI-compatible API and can point at either the add-on or a standalone Hermes instance.
+
+Use the official plugin integration documented on this page when Hermes should observe or control Home Assistant devices directly. Use the add-on when Home Assistant should host Hermes. Use the custom integration when Home Assistant Assist should use Hermes as its conversation backend.
+
 ## Available Tools
 
 The plugin registers four tools for smart home control in the `homeassistant` toolset:

@@ -5,9 +5,10 @@ the deployment it really routed to in a response header (``x-litellm-model-id``,
 upstream ``x-litellm-model-api-base``). The OpenAI SDK's parsed objects drop headers, so the
 capture rides an ``httpx`` response hook on the client Hermes builds for the agent; it stores
 the header onto ``agent.last_served_model`` (``None`` when the response carried none, so a
-value never outlives the request that produced it). Consumers: ``agent/turn_finalizer.py``
-(result ``served_model`` / ``requested_model``) and the opt-in gateway footer field
-``served_model`` (``gateway/runtime_footer.py``). Fail-open everywhere.
+value never outlives the request that produced it). A gateway that names the served model in
+the response BODY instead of a header is covered by ``capture_served_model``. Consumers:
+``agent/turn_finalizer.py`` (result ``served_model`` / ``requested_model``) and the opt-in
+gateway footer field ``served_model`` (``gateway/runtime_footer.py``). Fail-open everywhere.
 """
 
 from __future__ import annotations
@@ -30,6 +31,50 @@ def served_model_from_headers(headers: Any) -> Optional[str]:
         if value not in (None, ""):
             return str(value).strip()
     return None
+
+
+def served_model_from_response(response: Any) -> Optional[str]:
+    """The model the provider reports in the response BODY, or ``None``.
+
+    Source (c) of ``served_model``. A gateway that routes per request commonly echoes the
+    deployment it really used in the body's ``model`` field instead of a header — e.g. Hive
+    answers ``{"model": "zai-org/glm-5.3-flash"}`` for that exact request while Hermes'
+    ``agent.model`` still holds the model it *asked* for. Headers (:data:`SERVED_MODEL_HEADERS`)
+    remain the first choice because a LiteLLM proxy puts the alias in the body and the
+    deployment in the header; this is the fallback for gateways that do the opposite.
+
+    Returns ``None`` for a missing/empty field or a non-object response, so a provider that
+    reports nothing never fabricates a value. Callers compare against the requested model and
+    skip an equal one, so echoing the request back is harmless.
+    """
+    try:
+        model = response.get("model") if isinstance(response, dict) else getattr(response, "model", None)
+    except Exception:
+        return None
+    if not isinstance(model, str):
+        return None
+    return model.strip() or None
+
+
+def capture_served_model(agent: Any, response: Any) -> None:
+    """Stamp ``agent.last_served_model`` from a provider response BODY (fail-open).
+
+    Body-level counterpart of the ``httpx`` header hook: it runs wherever a normalized
+    response is in hand (``agent/turn_response_intake.py::normalize_model_response``, the one
+    seam every provider path — streaming stubs included — passes through), so gateways that
+    name the served model only in the body are covered too.
+
+    A header value set by the hook for THIS same response wins: the header names the routing
+    deployment, which is strictly more specific than the body's echo.
+    """
+    try:
+        if getattr(agent, "last_served_model", None):
+            return
+        model = served_model_from_response(response)
+        if model:
+            agent.last_served_model = model
+    except Exception:
+        logger.debug("served-model body capture skipped", exc_info=True)
 
 
 def install_served_model_capture(agent: Any, client: Any) -> None:

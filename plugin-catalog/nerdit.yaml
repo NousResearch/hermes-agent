@@ -1,0 +1,18 @@
+name: nerdit
+title: Nerdit
+repo: https://github.com/nerdit-ai/nerdit-hermes
+sha: ca6e576dd65cae40a75cfbb2f0c63012b684f9cf
+version: "0.2.1"
+description: "Hermes puts what it builds online on its own machine and keeps it alive. nerdit_ship deploys a folder to the local Nerdit engine (open source, Docker), waits until it is healthy and returns its URL, with the engine's diagnosis on failure. nerdit_share gives an app a hosted https URL, private by default and public only after the user confirms. A pre_llm_call hook tells the agent when one of its apps is failed, degraded or restarting, once per outage and with no model polling; /apps answers with the status of every app without a model call; the nerdit:watch automation blueprint checks the apps on a schedule, restarts what a restart fixes and reports. Two bundled skills (ship, rescue). Disclosure — requires the Nerdit engine and Docker on the same machine. Each call starts the engine's own `nerdit mcp` process over stdio (fixed argv, no shell; the outage check at most once a minute) with a minimal environment (PATH, HOME, USER, LANG, LC_*, TMPDIR, DOCKER_HOST, DOCKER_CONTEXT, NERDIT_*; none of Hermes's provider keys) and acts with the rights of the user's nerdit CLI token, an admin token unless the user scopes it; the plugin never reads or stores that token. The engine zips and builds the folder the agent names. nerdit_call reaches every engine tool by name; only read tools and restart_service run directly, and every other engine tool, plus public sharing, goes to the human approval prompt. A pre_llm_call hook adds app status and a pointer to nerdit_ship to the agent's context. The plugin makes no network call and has no telemetry; sharing an app outside the machine goes through the optional Nerdit Cloud account."
+maintainer: Nerdit
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://docs.nerdit.ai
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [nerdit_ship, nerdit_apps, nerdit_diagnose, nerdit_logs, nerdit_share, nerdit_call]
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

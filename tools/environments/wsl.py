@@ -195,9 +195,6 @@ class WslEnvironment(BaseEnvironment):
 
         return proc
 
-    def _update_cwd(self, result: dict):
-        self._extract_cwd_from_output(result)
-
     def cleanup(self):
         # Temp files live in WSL's /tmp — unreachable from Windows Python.
         # Remove them via wsl -e rm instead of os.unlink.  Best-effort: if

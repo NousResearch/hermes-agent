@@ -89,7 +89,7 @@ telegram:
   observe_unmentioned_group_messages: true
 ```
 
-启用此模式后，来自明确白名单聊天/话题的未提及群组消息会作为观察上下文追加到共享聊天/话题会话记录中，但不会触发 Agent。`allowed_chats` 控制机器人在哪里响应；`group_allowed_chats` 授权用于观察上下文的共享群组会话，因此在此模式下使用相同的聊天 ID。同一白名单聊天/话题中后续的 `@botname` 提及、对机器人的回复或配置的提及模式可以使用该观察上下文。触发消息还会标记 `[nickname|user_id]`，并获得每轮安全 prompt（提示词），使模型将之前观察到的内容视为上下文而非发给机器人的指令。
+启用此模式后，来自明确白名单聊天/话题的未提及群组消息会作为观察上下文追加到共享聊天/话题会话记录中，但不会触发 Agent。`allowed_chats` 控制机器人在哪里响应；`group_allowed_chats` 授权用于观察上下文的共享群组会话，因此在此模式下使用相同的聊天 ID。同一白名单聊天/话题中后续的 `@botname` 提及、对机器人的回复或配置的提及模式可以使用该观察上下文。触发消息还会标记 `[nickname|user_id]`，并获得每轮安全 prompt（提示词），使模型将之前观察到的内容视为上下文而非发给机器人的指令。在该聊天/话题中发送的斜杠命令（`/new`、`/model`、`/undo`、技能命令）作用于同一个共享会话，而仅限管理员的命令仍按发送者进行检查。
 
 等效环境变量：
 
@@ -901,8 +901,6 @@ gateway:
 这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。`rich_drafts` 控制私聊流式预览是否使用富渲染（`sendRichMessageDraft`），默认关闭，因为 Telegram Desktop/macOS 可能在聊天重绘前视觉叠加富草稿帧；关闭时，预览以纯文本流式显示，最终消息仍以原生富消息送达。
 
 CJK 文本（中文、日文、韩文以及罕见汉字扩展）默认仍走旧版 MarkdownV2 路径，因为受影响的 Telegram Desktop/macOS 客户端曾将 Bot API 富消息渲染成重叠的 CJK 字形。如果你使用不受影响的客户端，并希望 CJK 内容里的表格、任务列表、折叠详情和公式走原生富渲染，可以在 `rich_messages: true` 旁显式设置 `allow_cjk_rich_messages: true`，接受该客户端侧风险。
-
-如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

@@ -131,6 +131,38 @@ def test_quoted_yaml_reads_preserve_source_policy(ops, env, tmp_path, monkeypatc
     assert result["output"] == expected.strip()
 
 
+
+@pytest.mark.parametrize("rel, body", [
+    (".netrc", "machine api.example.com login bob password {pw}\n"),
+    (".pgpass", "db.example.com:5432:app:bob:{pw}\n"),
+    (".aws/credentials", "[default]\naws_secret_access_key = {pw}\n"),
+])
+def test_credential_store_reads_mask_the_stored_secret(ops, env, tmp_path, monkeypatch, rel, body):
+    """read_file and a terminal ``cat`` of a credential store never return its stored value (#124999)."""
+    from tools import file_tools
+    from tools.terminal_tool_result import finalize_foreground_result
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    secret = "hunter2weak"
+    store = tmp_path / rel
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(body.format(pw=secret), encoding="utf-8")
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+    read = json.loads(file_tools.read_file_tool(str(store), task_id="cred-store"))
+    assert not read.get("error") and "1|" in read["content"]
+    assert secret not in read["content"]
+
+    command = "cat " + shlex.quote(str(store))
+    raw = env.execute(command)
+    assert raw["returncode"] == 0 and secret in raw["output"]
+    result = json.loads(finalize_foreground_result(
+        command=command, result=raw, env=env, env_type="local", effective_task_id="cred-store",
+        task_id="cred-store", session_id=None, session_key="cred-store", workdir=str(tmp_path),
+        command_cwd=str(tmp_path), approval_note=None,
+    ))
+    assert secret not in result["output"]
+
+
 class TestHasCommand:
     def test_finds_echo(self, ops):
         assert ops._has_command("echo") is True

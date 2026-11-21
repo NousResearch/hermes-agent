@@ -1,0 +1,24 @@
+name: ctxprune
+repo: https://github.com/riceharvest/ctxprune
+sha: 7b26a3e9ac4ffa05b535ef879fbd634d2c565c04
+subdir: hermes-plugin
+title: ctxprune
+description: "Shrinks tool results before the model reads them, without dropping content: runs of identical lines are counted, JSON record lists with nested values (typical MCP results) become rows on hosted models, read_file/terminal JSON wrappers are unescaped, and every structural rule is kept only if it decodes back to the exact original. patch/edit/memory/todo results are never touched. On claude-opus-* models, an llm_request middleware turns a tool result that repeats an earlier one in the same request into a reference to it. Fails open: on any error or past a 2 s budget Hermes gets the original output. Disclosure — stdlib Python only; no network calls, no shell commands, no child processes, no credentials, no telemetry; rewrites tool results before the model sees them and, on claude-opus-* models, edits repeated tool results in outgoing requests into references; writes a small state store (first-render pins so already-sent results keep their bytes and the prompt cache stays valid, plus a registry of its own outputs) under ~/.cache/ctxprune or $CTXPRUNE_STATE in a 0700 directory shared by all Hermes profiles, and reads only that store and its optional ~/.config/ctxprune/settings.json; CTXPRUNE_OFF=1 disables it."
+image: https://raw.githubusercontent.com/riceharvest/ctxprune/7b26a3e9ac4ffa05b535ef879fbd634d2c565c04/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/riceharvest/ctxprune/7b26a3e9ac4ffa05b535ef879fbd634d2c565c04/docs/media/mcp-before-after.png
+  - https://raw.githubusercontent.com/riceharvest/ctxprune/7b26a3e9ac4ffa05b535ef879fbd634d2c565c04/docs/media/replay-vs-compactors.png
+maintainer: riceharvest
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/riceharvest/ctxprune#readme
+version: "0.3.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_terminal_output
+    - transform_tool_result
+  provides_middleware:
+    - llm_request
+  requires_env: []

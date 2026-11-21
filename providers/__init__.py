@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from hermes_cli.plugins import get_bundled_plugins_dir
 from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,8 @@ class _HomeLayer:
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
+    # ``plugins.disabled`` when the last scan skipped a plugin it names, else None: enabling it changes no dir
+    disabled: frozenset | None = None
     stamp_checked_at: float | None = None
     # name -> when its miss last forced a stamp check (see ``_miss_recheck_due``)
     misses: dict[str, float] = field(default_factory=dict)
@@ -91,6 +94,11 @@ class _HomeLayer:
     # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
     # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
     hosted: set[str] = field(default_factory=set)
+    # plugin module base name -> (tree fingerprint, versioned module name it was imported under), and
+    # profile name -> the base name of the plugin whose registration is live: what
+    # ``providers.plugin_reload`` compares and swaps when a plugin is updated (#153300)
+    trees: dict[str, tuple[str, str]] = field(default_factory=dict)
+    owner: dict[str, str] = field(default_factory=dict)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -107,9 +115,7 @@ _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
-_BUNDLED_PLUGINS_DIR = (
-    Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
-)
+_BUNDLED_PLUGINS_DIR = get_bundled_plugins_dir() / "model-providers"
 
 
 def _sync_auth_registry() -> None:
@@ -427,8 +433,11 @@ def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
 
 def refresh_bound_home() -> None:
     """Re-scan the bound home's plugin dirs now and forget its remembered misses: a plugin was just
-    installed there, and the periodic check (or a name's miss back-off) would hide it for up to a TTL."""
-    _home_layer(force_stamp_check=True).misses.clear()
+    installed or updated there, and the periodic check (or a name's miss back-off) would hide it for up
+    to a TTL. The scan runs even when no plugin dir was added: an update changes files inside one."""
+    layer, home, key = _bound_home_layer()
+    _refresh_home_layer(layer, home, key, force=True, rescan=True)
+    layer.misses.clear()
 
 
 def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
@@ -446,8 +455,10 @@ def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
     return layer, home, key
 
 
-def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force: bool = False) -> bool:
+def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force: bool = False,
+                        rescan: bool = False) -> bool:
     """Re-stat the layer's plugin dirs when due (or *force*d); True when it stat'ed this call.
+    *rescan* scans even when the dir stamps did not move (an update rewrites files inside a plugin).
 
     Stamps are read before the scan: a plugin that lands mid-scan changes them and the next
     check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
@@ -464,10 +475,11 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     ):
         return False
     stamps = _plugin_dir_stamps(home)
-    if stamps != layer.stamps:
+    if rescan or stamps != layer.stamps or _skipped_plugin_enabled(layer):
         # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
         # look settled afterwards and get remembered over an install that landed mid-scan.
         settled = _plugin_dir_stamps_settled(stamps)
+        layer.disabled = None  # the scan records it again if it still skips a plugin
         _scan_home_layer(layer, key)
         # A stamp still inside its mtime tick may not move for an install landing in that same
         # tick, which would hide the plugin until some later change: keep it unremembered so the
@@ -482,6 +494,15 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
             _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
+
+
+def _skipped_plugin_enabled(layer: _HomeLayer) -> bool:
+    """Whether ``plugins.disabled`` moved since a scan skipped a plugin; config is read only in that case."""
+    if layer.disabled is None:
+        return False
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+
+    return frozenset(_get_disabled_plugins()) != layer.disabled
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:
@@ -527,39 +548,41 @@ def _installed_plugins_dir() -> Path | None:
         return None
 
 
-def _declares_model_provider_kind(plugin_dir: Path) -> bool:
-    """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
-
-    Only that kind is imported from the flat install directory — every other
-    plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with ruamel.yaml when available, falling back to a line
-    scan so provider discovery never hard-depends on it.
-    """
+def _manifest_field(plugin_dir: Path, key: str) -> str | None:
+    """Top-level ``key`` of ``plugin_dir``'s manifest, or None. Parsed with ruamel.yaml when available,
+    falling back to a line scan so provider discovery never hard-depends on it."""
     for filename in ("plugin.yaml", "plugin.yml"):
         manifest = plugin_dir / filename
         if not manifest.is_file():
             continue
         try:
             text = manifest.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return False
+        except OSError:
+            return None
+        from hermes_yaml import YAMLError
+        from utils import fast_safe_load
         try:
-            from utils import fast_safe_load
-
             data = fast_safe_load(text)
-            if isinstance(data, dict):
-                return str(data.get("kind", "")).strip() == "model-provider"
-        except Exception:
-            pass
+        except YAMLError:
+            data = None  # malformed third-party manifest: the line scan below recovers the field
+        if isinstance(data, dict):
+            value = data.get(key)
+            return None if value is None else str(value).strip()
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or ":" not in stripped:
                 continue
-            key, _, value = stripped.partition(":")
-            if key.strip() == "kind":
-                return value.strip().strip("\"'") == "model-provider"
-        return False
-    return False
+            name, _, value = stripped.partition(":")
+            if name.strip() == key:
+                return value.strip().strip("\"'")
+        return None
+    return None
+
+
+def _declares_model_provider_kind(plugin_dir: Path) -> bool:
+    """Whether the manifest declares ``kind: model-provider``: only that kind is imported from the flat
+    install directory; every other plugin there belongs to ``PluginManager``."""
+    return _manifest_field(plugin_dir, "kind") == "model-provider"
 
 
 def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
@@ -591,6 +614,23 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
         _discovering = prior_discovering
 
 
+def _plugin_disabled(plugin_dir: Path) -> bool:
+    """Whether ``plugins.disabled`` names this plugin, so its import-time code never runs (#137671).
+    Names mirror ``gate_manifest``: the manifest name, the dir, and ``model-providers/<dir>``."""
+    from hermes_cli.plugins import _get_disabled_plugins
+
+    disabled = _get_disabled_plugins()
+    if not disabled:
+        return False
+    names = {plugin_dir.name, f"model-providers/{plugin_dir.name}", _manifest_field(plugin_dir, "name")}
+    if not names & disabled:
+        return False
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None:
+        layer.disabled = frozenset(disabled)
+    return True
+
+
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     digest = hashlib.sha1(home_key.encode("utf-8")).hexdigest()[:10]
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
@@ -603,27 +643,42 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     """
     if not (plugin_dir / "__init__.py").exists():
         return
-    if source != "bundled":
-        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
-            _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
-            return
-
-    # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
-    # so relative imports within the plugin work. User plugins load via
-    # ``importlib.util.spec_from_file_location`` under a per-home module name so
-    # multiple HERMES_HOME profiles don't alias each other.
+    if source != "bundled" and _plugin_disabled(plugin_dir):
+        logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
+        return
     if source == "bundled":
-        module_name = f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
+        # A stable import path (``plugins.model_providers.<name>``) so relative imports work.
+        _exec_plugin_module(plugin_dir, source, f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}")
+        return
+    # User plugins load under a per-home module name so profiles don't alias each other.
+    _import_user_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
+
+
+def _import_user_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:
+    """Import a ``$HERMES_HOME`` plugin: into the layer being scanned through ``providers.plugin_reload``,
+    which also swaps in an updated tree whole (#153300); outside a scan (``plugin_dev``) directly."""
+    if _REGISTRATION_TARGET.get() is not None:
+        from providers.plugin_reload import import_into_layer
+        import_into_layer(plugin_dir, source, module_name)
     else:
-        module_name = _user_module_name(plugin_dir, home_key)
-    _exec_plugin_module(plugin_dir, source, module_name)
+        _import_user_module(plugin_dir, source, module_name)
 
 
-def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:
+def _import_user_module(plugin_dir: Path, source: str, module_name: str, code_dir: Path | None = None) -> None:
+    """*code_dir*: where in-process code is imported from (a frozen copy of *plugin_dir*), default the dir."""
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
+        _import_hosted_plugin_dir(plugin_dir, source, module_name, code_dir=code_dir)
+    else:
+        _exec_plugin_module(code_dir or plugin_dir, source, module_name)
+
+
+def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str, *,
+                              code_dir: Path | None = None) -> None:
     """Register a plugin's profiles as plugin-host proxies; a profile that cannot cross the host
     boundary (e.g. it overrides ``create_client``) is imported in-process ALONE, with a warning,
-    so it never takes its hosted siblings down with it."""
+    so it never takes its hosted siblings down with it. The host is keyed by *plugin_dir*; that in-process
+    import reads *code_dir* (a frozen copy) when given."""
     global _current_source
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
     layer = _REGISTRATION_TARGET.get()
@@ -646,7 +701,7 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
                            "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
         token = _REGISTRATION_ONLY.set(frozenset(in_process))
         try:
-            _exec_plugin_module(plugin_dir, source, module_name)
+            _exec_plugin_module(code_dir or plugin_dir, source, module_name)
         finally:
             _REGISTRATION_ONLY.reset(token)
         if module_name not in sys.modules:

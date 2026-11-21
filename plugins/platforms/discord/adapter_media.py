@@ -22,6 +22,9 @@ logger = logging.getLogger("plugins.platforms.discord.adapter")
 # effective limit is never taken below this floor. See issue #50846 and
 # https://docs.discord.com/developers/change-log (Sep 3, 2026).
 _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+# A long reply file stays under the smallest attachment cap Discord has had (8 MiB), so it never trips
+# the per-channel upload preflight; a bigger reply goes out as several files.
+_DISCORD_REPLY_FILE_MAX_BYTES = 7 * 1024 * 1024
 
 
 _OPUS_GRANULE_RATE = 48000  # Ogg/Opus granule positions always count 48 kHz samples (RFC 7845 §4)
@@ -54,6 +57,42 @@ def _ogg_opus_duration(data: bytes) -> Optional[float]:
 
 
 class DiscordMediaMixin:
+    REPLY_FILE_MAX_BYTES = _DISCORD_REPLY_FILE_MAX_BYTES
+
+    def reply_message_count(self, content: str, metadata: Optional[dict[str, Any]] = None) -> int:
+        """Messages ``send(content)`` would post (its 2,000-char split of the formatted text)."""
+        formatted = self.format_message(content)
+        return 1 if len(formatted) <= self.MAX_MESSAGE_LENGTH else len(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+
+    async def send_reply_document(
+        self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a long reply file (#152012). Unlike ``send_document``, a message Discord accepted
+        without the attachment is deleted again, so a failed upload leaves nothing in the channel and
+        the caller can send the reply as messages instead."""
+        result = await self._send_local_file(chat_id, file_path, caption, file_name=file_name,
+                                             not_found="File not found", kind="reply file", metadata=metadata)
+        if not result.success and result.message_id:  # accepted without the attachment (#66797)
+            await self.delete_message(chat_id, str(result.message_id))
+            result.message_id = None
+        return result
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a message the bot posted; False when Discord refuses (missing permission, gone)."""
+        from plugins.platforms.discord.adapter import _prompt_target_id
+        if not self._client:
+            return False
+        try:
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, None))
+            if channel is None:
+                return False
+            await channel.get_partial_message(int(message_id)).delete()
+            return True
+        except Exception as e:  # health: allow BLE001 -- best-effort delete: every failure is a logged False
+            logger.debug("[%s] Could not delete Discord message %s: %s", self.name, message_id, e)
+            return False
+
     @staticmethod
     def _discord_upload_limit_bytes(channel: Any) -> int:
         """Return the effective Discord attachment size limit for *channel*.

@@ -12,6 +12,7 @@ import pytest
 import pm
 from pm import client
 from pm import extras
+from tests.fakes.main_era_venv import main_era_venv
 
 
 # ---- per-extra platform gates ([tool.hermes.extras-platforms]) ----
@@ -211,6 +212,32 @@ def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch,
     assert synced == []
 
 
+def test_ensure_import_scoped_prompt_suppression_is_process_wide_and_restores(monkeypatch, synced):
+    import builtins
+
+    monkeypatch.setattr(extras, "available", lambda _: False)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    prompts = []
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda text: prompts.append(text) or "n",
+    )
+
+    with extras.suppress_interactive_install_prompts():
+        assert extras.interactive_install_prompts_suppressed() is True
+        extras.ensure_import("fal")
+
+    assert synced == [["fal"]]
+    assert prompts == []
+    assert extras.interactive_install_prompts_suppressed() is False
+
+    with pytest.raises(pm.InstallError, match="declined"):
+        extras.ensure_import("fal")
+    assert len(prompts) == 1
+
+
 def test_ensure_import_propagates_install_error(monkeypatch):
     def boom(x=None):
         raise pm.InstallError("venv", "lazy installs are disabled")
@@ -256,9 +283,7 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     image generation, a messaging SDK), or the first PM launch prompts to
     reinstall them. Umbrella and gated-off extras are never carried."""
     monkeypatch.setattr(extras, "_PLATFORM_GATES", {"piper": "python_version < '0'"})
-    site = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
-    (site / "fal_client").mkdir(parents=True)
-    (site / "telegram").mkdir()
+    site = main_era_venv(tmp_path, "fal_client", "telegram")
     (site / "piper").mkdir()
     (site / "google").mkdir()
     (site / "google" / "auth").mkdir()

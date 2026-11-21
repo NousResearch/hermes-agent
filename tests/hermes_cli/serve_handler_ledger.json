@@ -2,12 +2,12 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 343
+   "undecided": 349
   },
   "rpc": {
-   "authority": 108,
+   "authority": 113,
    "keep-host-wide": 1,
-   "undecided": 182
+   "undecided": 180
   },
   "websocket": {
    "undecided": 10
@@ -47,6 +47,7 @@
   {"current_path": "hermes_cli.web_routers.ops:delete_webhook", "decision": "undecided", "handler": "DELETE /api/webhooks/{name}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_server_dashboard:_PluginApiHotMount", "decision": "undecided", "handler": "DELETE GET HEAD OPTIONS PATCH POST PUT /api/plugins/{name}/{path:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.webapp_relay_proxy:relay_http", "decision": "undecided", "handler": "DELETE GET HEAD OPTIONS PATCH POST PUT /api/relay/{connection_id}/{path:path}", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.peer:peer_forward", "decision": "undecided", "handler": "DELETE GET PATCH POST /api/peer/{path:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:get_action_status", "decision": "undecided", "handler": "GET /api/actions/{name}/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.analytics:get_models_analytics", "decision": "undecided", "handler": "GET /api/analytics/models", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.analytics:get_usage_analytics", "decision": "undecided", "handler": "GET /api/analytics/usage", "kind": "http", "ref": ""},
@@ -56,6 +57,7 @@
   {"current_path": "hermes_cli.dashboard_auth.routes:api_auth_me", "decision": "undecided", "handler": "GET /api/auth/me", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:api_auth_providers", "decision": "undecided", "handler": "GET /api/auth/providers", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.chat_workspaces:get_chat_workspaces", "decision": "undecided", "handler": "GET /api/chat/workspaces", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.status:list_cloud_agents", "decision": "undecided", "handler": "GET /api/cloud/agents", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_config", "decision": "undecided", "handler": "GET /api/config", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_defaults", "decision": "undecided", "handler": "GET /api/config/defaults", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.analytics:get_config_raw", "decision": "undecided", "handler": "GET /api/config/raw", "kind": "http", "ref": ""},
@@ -139,6 +141,7 @@
   {"current_path": "hermes_cli.web_routers.models:get_moa_models", "decision": "undecided", "handler": "GET /api/model/moa", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.models:get_model_options", "decision": "undecided", "handler": "GET /api/model/options", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.models:get_recommended_default_model", "decision": "undecided", "handler": "GET /api/model/recommended-default", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.transfer:read_dashboard_backup_chunk", "decision": "undecided", "handler": "GET /api/ops/backup/chunk", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:download_dashboard_backup", "decision": "undecided", "handler": "GET /api/ops/backup/download", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:list_checkpoints", "decision": "undecided", "handler": "GET /api/ops/checkpoints", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:list_hooks", "decision": "undecided", "handler": "GET /api/ops/hooks", "kind": "http", "ref": ""},
@@ -175,6 +178,7 @@
   {"current_path": "hermes_cli.web_routers.skills:scan_skill_hub", "decision": "undecided", "handler": "GET /api/skills/hub/scan", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:search_skills_hub", "decision": "undecided", "handler": "GET /api/skills/hub/search", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:list_skills_hub_sources", "decision": "undecided", "handler": "GET /api/skills/hub/sources", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.skills:list_skill_hub_updates", "decision": "undecided", "handler": "GET /api/skills/hub/updates", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_ssh_ownership", "decision": "undecided", "handler": "GET /api/ssh/ownership", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_status", "decision": "undecided", "handler": "GET /api/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_system_stats", "decision": "undecided", "handler": "GET /api/system/stats", "kind": "http", "ref": ""},
@@ -296,6 +300,8 @@
   {"current_path": "hermes_cli.web_routers.ops:run_import_upload", "decision": "undecided", "handler": "POST /api/ops/import-upload", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:run_prompt_size", "decision": "undecided", "handler": "POST /api/ops/prompt-size", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:run_security_audit", "decision": "undecided", "handler": "POST /api/ops/security-audit", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.transfer:append_transfer_chunk", "decision": "undecided", "handler": "POST /api/ops/transfer/chunk", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.transfer:restore_transfer", "decision": "undecided", "handler": "POST /api/ops/transfer/restore", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:approve_pairing", "decision": "undecided", "handler": "POST /api/pairing/approve", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:clear_pending_pairing", "decision": "undecided", "handler": "POST /api/pairing/clear-pending", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:revoke_pairing", "decision": "undecided", "handler": "POST /api/pairing/revoke", "kind": "http", "ref": ""},
@@ -387,6 +393,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "billing.keep_going_on_credits", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "billing.state", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "billing.step_up", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_delivery.list", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "bot_relay.cancel", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_relay.deliver", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_relay.outbox.drain", "kind": "rpc", "ref": ""},
@@ -467,9 +474,9 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.send", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.state", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.stop", "kind": "rpc", "ref": ""},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "handoff.fail", "kind": "rpc", "ref": "D3"},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "handoff.request", "kind": "rpc", "ref": "D3"},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "handoff.state", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "handoff.fail", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "handoff.request", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "handoff.state", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "i18n.catalog", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "i18n.languages", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "image.attach", "kind": "rpc", "ref": "D3"},
@@ -569,6 +576,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "rollback.restore", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "rollback.session_diff", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "runtime.describe", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.account_usage", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.activate", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "session.active_list", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.archive", "kind": "rpc", "ref": "D3"},
@@ -616,6 +624,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_dislike", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_feature_use", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_friction", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_long_frames", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_onboarding", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.set", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.slash_command", "kind": "rpc", "ref": "D3"},

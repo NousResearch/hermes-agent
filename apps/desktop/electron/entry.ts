@@ -8,7 +8,7 @@ import { resolveDesktopHermesHome } from './data-paths'
 import { releasePackagedWorkingDirectory } from './packaged-working-directory'
 import { readDesktopLaunchConfig } from './renderer-heap-flags'
 import { restoreUserProxyEnv } from './updater/system-proxy-env'
-import { wslgLaunchArgs } from './wslg-launch'
+import { hasNvidiaProprietaryDriver, wslgLaunchArgs } from './wslg-launch'
 import { spawnWslgLaunch } from './wslg-launch-process'
 
 // A Desktop relaunched by an update (any rung: hand-off script, staged updater,
@@ -49,22 +49,6 @@ function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
 
 const linux = process.platform === 'linux'
 const electronFlags = linux ? configuredElectronFlags(process.env) : []
-
-// True only when the NVIDIA proprietary kernel module is loaded
-// (not nouveau, not the open kernel module, not WSL's dxg passthrough).
-function hasNvidiaProprietaryDriver() {
-  if (process.platform !== 'linux') {
-    return false
-  }
-
-  try {
-    const version = readFileSync('/proc/driver/nvidia/version', 'utf8') || ''
-
-    return !/Open Kernel Module/.test(version)
-  } catch {
-    return false // no nvidia driver on this box
-  }
-}
 
 const args = wslgLaunchArgs(
   process.argv.slice(1),

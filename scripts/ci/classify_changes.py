@@ -94,6 +94,9 @@ import os
 import subprocess
 import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from hermes_agent.compat.paths import current_path, original_path
+
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
 # key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
@@ -105,9 +108,14 @@ _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
 # Shift every package's tree (pnpm-workspace.yaml carries the overrides).
 _ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
+# The docker_meta lint step runs it; it is not an image input, so it builds no image.
+_DOCKER_LINT = "scripts/ci/lint_docker.sh"
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+# CI configuration outside .github/: workflows run their commands as just recipes
+# through this wrapper, so a change here can break any lane, as a workflow edit can.
+_CI_CONFIG_FILES = {"justfile", "scripts/hermes-python"}
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Published artifacts that live under website/ but that Python asserts about.
@@ -298,6 +306,8 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_launchd.py",
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
+    "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
@@ -310,6 +320,8 @@ _UPDATE_PIPELINE = (
     "gateway/host_rendezvous.py",
     "gateway/shutdown_forensics.py",
     "gateway/restart.py",
+    "gateway/host_topology.py",  # update --force: the served homes of a host multiplexer
+    "tools/process_registry.py",  # update --force: sweeps a killed gateway's background processes
     "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
 )
 # Selectors are owned by the import graph, not remembered. The update
@@ -360,6 +372,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/default_plugins.py",  # the update tail and boot bootstrap install catalog defaults
     "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
@@ -398,7 +411,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_platform/resolver/core.py",
     "agent/curator.py",
     "plugins/memory/__init__.py",
-    "tools/checkpoint_maintenance.py",
+    "agent/checkpoints/maintenance.py",
     "tools/skills_sync.py",
     "tools/environments/local_env_policy.py",
     "pm/progress.py",
@@ -412,7 +425,7 @@ _UPDATE_DEPENDENCIES = (
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
 # unit lanes cover them on every PR and the update suites on every push to main;
-# routing each config.py / utils.py edit through the update suites would make
+# routing each config.py / utils edit through the update suites would make
 # them run on most PRs. Never an update-specific module: own those above.
 HUB_MIN_IMPORTERS = 25
 _SHARED_HUBS = frozenset({
@@ -420,8 +433,8 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/config.py",
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
-    "utils.py",
-    "hermes_state.py",
+    "utils/__init__.py",
+    "persistence_assembly.py",
     "agent/__init__.py",
     "cron/jobs.py",
     "tools/environments/local.py",
@@ -438,12 +451,17 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/e2e/",
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
-        "hermes_state",
+        "persistence/sqlite/",
+        # journal mode, WAL fallback and durability barriers; MOVES folds hermes_state_wal into it, so the
+        # guards see it under that oldest name
+        original_path("sqlite_support.py"),
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_session_terminal_cwd_restart.py",
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_reset_paused_queue_notice.py",
         "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (
@@ -458,16 +476,24 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
-        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
-        "hermes_state_holders.py",
-        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
-        "hermes_state_fts.py",
+        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) and the search-index notice
+        # (hermes_cli/update_cmd_maint.py) read state.db through the store admin: its contract, the
+        # ledger probes and read-only URI, and the stored FTS layout read.
+        "persistence/core/admin.py",
+        "persistence/sqlite/admin/_backup.py",
+        "persistence/sqlite/_state/holders.py",
+        "persistence/sqlite/admin/_maintenance.py",
+        "persistence/sqlite/_schema_ddl.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",
         "hermes_cli/subcommands/update",
         "hermes_cli/install_",
         "hermes_cli/_install_",
+        # The module-rename finder and its table: every update entry point installs it, and a move
+        # changes the table.
+        "hermes_agent/__init__.py",
+        "hermes_agent/compat/",
         "hermes_cli/main_install",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
@@ -535,13 +561,12 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
 def _with_package_inits(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Importing a/b/c.py runs a/__init__.py and a/b/__init__.py first, so a routed module
     routes the package inits above it. A shared hub's inits run whenever the hub is imported, so
-    they are routed too; only an init that is itself a hub stays out."""
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    inits = [f"{'/'.join(parts[:i])}/__init__.py"
+    they are routed too; only an init that is itself a hub stays out. A moved module also runs the
+    inits above where it lives now; each init is listed by its original path, as classify() reads it."""
+    inits = [original_path(f"{'/'.join(parts[:i])}/__init__.py")
              for p in (*paths, *sorted(_SHARED_HUBS)) if p.endswith(".py")
-             for parts in [p.split("/")[:-1]] for i in range(1, len(parts) + 1)]
-    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS
-                                          and os.path.isfile(os.path.join(root, i)))]))
+             for parts in [current_path(p).split("/")[:-1]] for i in range(1, len(parts) + 1)]
+    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS)]))
 
 
 for _lane in ("e2e_upgrade", "e2e_desktop_update"):
@@ -640,7 +665,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     ``run_e2e`` is the pull request's ``run-e2e`` label: it turns every slow
     lane on.
     """
-    files = [f.strip() for f in files if f.strip()]
+    files = [original_path(f.strip()) for f in files if f.strip()]
     catalog = any(_is_catalog_data(f) for f in files)
     code = [f for f in files if not _is_catalog_data(f)]
     python = any(not _py_irrelevant(f) for f in code)
@@ -653,7 +678,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     )
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
-    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) or f == _DOCKER_LINT for f in files)
     
     ret = {
         "python": python,
@@ -679,7 +704,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         inherited = classify(consumers)
         for lane in _FIXTURE_CONSUMER_LANES:
             ret[lane] = ret[lane] or inherited[lane]
-    if not files or any(f.startswith(".github/") for f in files):
+    if not files or any(f.startswith(".github/") or f in _CI_CONFIG_FILES for f in files):
         ret["python"] = True
         ret["python_prod"] = True
         ret["docker_meta"] = True

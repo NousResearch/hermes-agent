@@ -16,6 +16,7 @@ import pm.cli
 from pm import extras, install
 from pm.package import InstallError
 from pm.paths import repo_root
+from tests.fakes.main_era_venv import main_era_venv
 
 
 @pytest.fixture()
@@ -40,9 +41,7 @@ def test_without_drops_a_recorded_extra_from_every_later_selection(synced, tmp_p
     # The update's sync carries recorded extras forward; the dropped one stays out, others stay.
     assert _next_selection(["all", "fal", "matrix"]) == ["all", "fal"]
     # A data root without facts re-scans the main-era venv, which is never deleted.
-    site = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
-    for anchor in (*extras._anchors("matrix"), "fal_client"):
-        (site / anchor).mkdir(parents=True)
+    main_era_venv(tmp_path, *extras._anchors("matrix"), "fal_client")
     assert extras.legacy_selection(tmp_path) == ["all", "fal", "matrix"]
     extras.record_declined_extras(add=["matrix"], project_root=tmp_path)
     assert extras.legacy_selection(tmp_path) == ["all", "fal"]
@@ -196,23 +195,27 @@ def test_without_during_an_opt_in_sync_stays_recorded(monkeypatch):
 def test_without_after_a_failed_first_migration_keeps_the_other_legacy_extras(monkeypatch):
     """A first PM sync that died before writing facts leaves the main-era venv as the only record of
     what was installed: `--without matrix` seeds its sync from that scan and drops only matrix."""
-    calls = []
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+
     monkeypatch.setattr(pm.cli, "_install_names", lambda names, target=None, *, verify=True: 0)
     monkeypatch.setattr(install, "activate", lambda **kwargs: [])
-    monkeypatch.setattr(install, "sync_venv", lambda extras=None, **kwargs: calls.append(list(extras or [])))
+    monkeypatch.setattr(install, "_feature_policy", lambda extras, *, repair: (None, None))
+    root = Path(os.environ["HERMES_HOME"]) / "checkout"
+    package = _BlockingVenv()
+    package.project_root = lambda: root
+    monkeypatch.setattr(install, "get_package", lambda name: package)
+    monkeypatch.setattr(install, "_member_inputs", lambda plugins: {})
     monkeypatch.setattr(pm.cli, "_install_defaults", lambda names, *, verify: None)
     monkeypatch.setattr(pm.cli, "repo_root", lambda: root)
-    root = Path(os.environ["HERMES_HOME"]) / "checkout"
     (root / "pyproject.toml").parent.mkdir(parents=True)
     (root / "pyproject.toml").write_bytes((repo_root() / "pyproject.toml").read_bytes())
-    site = root / "venv" / "lib" / "python3.11" / "site-packages"
-    for anchor in (*extras._anchors("matrix"), "fal_client"):
-        (site / anchor).mkdir(parents=True)
+    main_era_venv(root, *extras._anchors("matrix"), "fal_client")
     monkeypatch.setattr(importlib.import_module("pm.paths"), "repo_root", lambda: root)
 
     assert pm.cli.cmd_install(argparse.Namespace(names=None, tools_only=False, without=["matrix"])) == 0
 
-    assert calls == [["all", "fal"]]
+    assert (Facts(runtime_facts_path(root)).get("venv") or {}).get("extras") == ["all", "fal"]
     assert extras.declined_extras(root) == frozenset({"matrix"})
 
 

@@ -233,6 +233,7 @@ for activation, daily use, dependency changes, and leaving the environment.
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 🔌 [Muse](https://github.com/mikeleke/hermes-muse-plugin) — Autonomous reflection, exploration, knowledge distillation, and reusable skill formation for Hermes Agent.
 
 ---
 

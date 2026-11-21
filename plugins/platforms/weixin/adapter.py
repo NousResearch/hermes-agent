@@ -4,7 +4,7 @@ encrypted CDN; ``qr_login`` backs the gateway setup wizard."""
 
 from __future__ import annotations
 
-import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, textwrap, time, uuid
+import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, time, uuid
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -425,6 +425,45 @@ def _normalize_markdown_blocks(content: str) -> str:
     return "\n".join(result).strip()
 
 
+# CJK scripts are not space-delimited: a space inside that run separates a number from its
+# unit (``约 2 分钟``), not two words, so it is not a break point.
+_CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _is_cjk_neighbour(line: str, idx: int) -> bool:
+    """Whether the space at ``idx`` sits against CJK text on either side."""
+    return (idx > 0 and _CJK_CHAR_RE.match(line, idx - 1) is not None) or _CJK_CHAR_RE.match(line, idx + 1) is not None
+
+
+def _wrap_copy_line(line: str, width: int) -> list[str]:
+    """Greedy copy-friendly wrap that leaves client-rendered units intact.
+
+    A line carrying inline code is handed to the client untouched: WeChat's iLink bubble
+    reflows a split line by hoisting every code pill to the front of the continuation line
+    and stranding the punctuation around it, so the injected ``\\n`` (a hard paragraph break
+    there) damages the message more than the long line does — the client soft-wraps it.
+    """
+    # Native wrapping keeps a CJK-led paragraph intact even around Latin terms.
+    if len(line) <= width or "`" in line or _CJK_CHAR_RE.match(line.lstrip()):
+        return [line]
+    breaks = [idx for idx, ch in enumerate(line) if ch == " " and not _is_cjk_neighbour(line, idx)]
+    if not breaks:
+        return [line]
+    segments: list[str] = []
+    start = 0
+    while len(line) - start > width:
+        fitting = [idx for idx in breaks if start < idx <= start + width]
+        candidate = fitting[-1] if fitting else next((idx for idx in breaks if idx > start), None)
+        if candidate is None:
+            break
+        segments.append(line[start:candidate].rstrip())
+        start = candidate + 1
+        while start < len(line) and line[start] == " ":
+            start += 1
+    segments.append(line[start:].rstrip())
+    return [segment for segment in segments if segment]
+
+
 def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
     """Wrap long display lines that are hard to copy in WeChat clients (not code/table lines)."""
     if not content:
@@ -436,9 +475,7 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
         if keep or _TABLE_RULE_RE.match(stripped):
             wrapped.append(line)
         else:
-            wrapped.extend(textwrap.wrap(
-                line, width=WEIXIN_COPY_LINE_WIDTH, break_long_words=False, break_on_hyphens=False, replace_whitespace=False,
-                drop_whitespace=True) or [line])
+            wrapped.extend(_wrap_copy_line(line, WEIXIN_COPY_LINE_WIDTH))
     return "\n".join(wrapped).strip()
 
 

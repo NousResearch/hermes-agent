@@ -326,7 +326,8 @@ def _seed_cron_session(
 def _seed_cron_thread_session(
     job: dict, adapter, platform_name: str, chat_id: str, thread_id: str, mirror_text: str,
     chat_name: Optional[str] = None, is_dm: bool = False, scope_id: Optional[str] = None,
-) -> None:
+    user_id: str = "system:cron",
+) -> bool:
     """Seed the freshly-opened cron thread's session with the brief (never raises), else the
     user's in-thread reply resolves to a transcript without it. Threads are participant-shared
     (no real user_id); a DM thread must seed ``chat_type="dm"`` — DM-thread replies route through
@@ -335,13 +336,13 @@ def _seed_cron_thread_session(
     (``_THREAD_REPLY_CHAT_TYPE``)."""
     text = (mirror_text or "").strip()
     if not text:
-        return
+        return False
     try:
         ok = _seed_cron_session(
             job, adapter, platform_name, chat_id, text,
             thread_id=str(thread_id),
             chat_type="dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
-            user_id="system:cron", user_name="Cron", chat_name=chat_name, scope_id=scope_id,
+            user_id=user_id, user_name="Cron", chat_name=chat_name, scope_id=scope_id,
             discord_keys_on_thread=True)
         if ok:
             logger.info(
@@ -352,11 +353,36 @@ def _seed_cron_thread_session(
                 "Job '%s': thread seed did NOT land on %s:%s thread=%s — an "
                 "in-thread reply will not see this brief",
                 job.get("id", "?"), platform_name, chat_id, thread_id)
+        return bool(ok)
     except Exception as e:
         # WARNING, not debug: a silent seed failure IS the continuation-amnesia bug.
         logger.warning(
             "Job '%s': seeding cron thread session failed for %s:%s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, thread_id, e)
+        return False
+
+
+def _seed_named_thread(t: _TargetDelivery, seed_kwargs: dict) -> bool:
+    """Seed an explicitly named thread/topic target with the key its reply builds; True = seeded,
+    False = leave it to the plain mirror. Per-user threads (``thread_sessions_per_user``) key on
+    the replier, so the seed carries the scheduling user, and without one the mirror (which
+    resolves that user's existing row) keeps the job. Slack keys carry the workspace id, so an
+    origin-less job resolves it from the target chat (as the handoff path does)."""
+    kwargs = dict(seed_kwargs)
+    user_id = "system:cron"
+    extra = getattr(t.pconfig, "extra", None) or {}
+    if not t.is_dm_target and extra.get("thread_sessions_per_user", False):
+        if not t.origin_user_id:
+            return False
+        user_id = str(t.origin_user_id)
+    if not kwargs.get("scope_id"):
+        resolver = getattr(t.runtime_adapter, "scope_id_for_chat", None)
+        with contextlib.suppress(Exception):
+            scope = resolver(str(t.chat_id)) if callable(resolver) else None
+            kwargs["scope_id"] = scope if isinstance(scope, str) and scope else None
+    return _seed_cron_thread_session(
+        t.job, t.runtime_adapter, t.platform_name, t.chat_id, str(t.thread_id), t.mirror_text,
+        user_id=user_id, **kwargs)
 
 
 def _seed_cron_channel_session(
@@ -1440,11 +1466,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         # Explicit thread/topic target (``telegram:<chat>:<topic>``): the plain mirror only APPENDS,
         # so a topic with no session yet (its first automatic message) would drop the brief and
         # the reply would start blank (#157965). Create-or-reuse the row the reply keys to.
-        _seed_cron_thread_session(
-            job, t.runtime_adapter, t.platform_name, t.chat_id, str(t.thread_id), t.mirror_text,
-            **seed_kwargs,
-        )
-        thread_seeded = True
+        thread_seeded = _seed_named_thread(t, seed_kwargs)
     elif t.in_channel_surface and not t.inchannel_continuable:
         logger.warning(
             "Job '%s': in_channel delivery to %s:%s is not a "

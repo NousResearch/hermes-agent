@@ -9,6 +9,7 @@ the final roll-back. Nothing here imports ``agent.conversation_loop`` at module 
 
 from __future__ import annotations
 
+from copy import copy
 import logging
 import re
 from contextlib import suppress
@@ -310,6 +311,29 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def continuation_suffix(prior: str, candidate: str) -> str:
+    """Remove a substantial replay of the opening, preserving the original suffix."""
+    if min(len(prior), len(candidate)) < 160:
+        return candidate
+
+    # A fragment may end mid-word. Preserve the exact boundary when possible.
+    if candidate.startswith(prior):
+        return candidate[len(prior):]
+    if prior.startswith(candidate):
+        return ""
+
+    # Models also replay with changed capitalization or line breaks. Keep the
+    # original offsets so non-ASCII case folding cannot shift the cut point.
+    matched = 0
+    end = 0
+    for left, right in zip(re.finditer(r"\S+", prior), re.finditer(r"\S+", candidate)):
+        if left.group().casefold() != right.group().casefold():
+            break
+        matched += len(left.group()) + bool(end)
+        end = right.end()
+    return candidate[end:] if matched >= 160 else candidate
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
@@ -321,18 +345,79 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     messages = st.messages
     st.length_continue_retries += 1
     n = st.length_continue_retries
+    filled = st.window_filled
+    can_continue = n < 4 and filled is None
     _interim_content = getattr(assistant_message, "content", None)
     if not _interim_content and not st.is_stub:
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
         agent._ephemeral_reasoning_off = True
     if _interim_content:
-        interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
-        interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
-        append_message(messages, interim_msg)
-        st.truncated_response_parts.append((_interim_content, st.is_stub))
+        restarted = False
+        if st.truncated_response_parts:
+            prior = _join_truncated_parts(st.truncated_response_parts)
+            suffix = continuation_suffix(prior, _interim_content)
+            if suffix != _interim_content:
+                assistant_message = copy(assistant_message)
+                assistant_message.content = suffix
+                _interim_content = suffix
+                restarted = not suffix.strip()
+        if restarted and can_continue:
+            # Do not accept a restarted fragment: feeding it back would make the
+            # next prompt larger while adding no forward progress.
+            turn_start = (st.current_turn_user_idx or 0) + 1
+            correction_sent = any(
+                message.get("_length_continuation_nudge") == "restart"
+                for message in messages[turn_start:]
+            )
+            if not correction_sent:
+                agent._vprint(
+                    f"{agent.log_prefix}↻ Continuation restarted prior text — "
+                    "rejecting it and requesting forward progress once.",
+                    diagnostic=True,
+                )
+                correction = {
+                    "role": "user",
+                    "content": (
+                        "[System: The continuation restarted text already written. "
+                        "Do not repeat the title, introduction, headings, or completed "
+                        "sections. Resume strictly after the last unique completed text "
+                        "and add only new material.]"
+                    ),
+                    "_length_continuation_nudge": "restart",
+                }
+                # Replace the pending nudge so adjacent user messages do not merge.
+                if messages and messages[-1].get("_length_continuation_nudge"):
+                    messages[-1] = correction
+                else:
+                    append_message(messages, correction)
+                agent._session_messages = messages
+                _retry.restart_with_length_continuation = True
+                return st.done("break")
 
-    filled = st.window_filled
-    if n < 4 and filled is None:
+            partial_response = collapse_continuation_trail(
+                agent, messages, st.current_turn_user_idx,
+                finish_reason="length",
+                parts=st.truncated_response_parts,
+            )
+            agent._ephemeral_reasoning_off = False
+            agent._vprint(
+                f"{agent.log_prefix}⚠️ Continuation restarted prior text again — "
+                "stopping without accepting duplicate material.",
+                force=True,
+                diagnostic=True,
+            )
+            return st.end_turn(
+                partial_response or _CEILING_NO_TEXT,
+                "Continuation made no forward progress after corrective retry",
+            )
+
+        if not restarted:
+            interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
+            interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
+            append_message(messages, interim_msg)
+            st.truncated_response_parts.append((_interim_content, st.is_stub))
+
+    if can_continue:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
         if st.is_stub and _dropped_tools:
             agent._vprint(

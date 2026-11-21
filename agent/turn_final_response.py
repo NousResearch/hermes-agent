@@ -100,6 +100,15 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
         if isinstance(frag, dict):
             frag.pop("_length_continuation_fragment", None)
             frag.pop("_length_continuation_nudge", None)
+    from agent.turn_truncation import continuation_suffix
+
+    prior = _join_truncated_parts(parts)
+    suffix = continuation_suffix(prior, final_response) if final_response else final_response
+    if suffix != final_response:
+        if not suffix.strip():
+            return prior, True
+        # The replay boundary was already resolved; preserve the new suffix.
+        return _join_truncated_parts([(prior, False), (suffix, False)]), True
     return _join_truncated_parts([*parts, (final_response, False)]), True
 
 

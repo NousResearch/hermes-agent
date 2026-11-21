@@ -245,7 +245,8 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
     for fetched in results:
         meta = fetched.get("metadata")
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
-        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
+        # The requested source owns the page even when its redirect target is also in this batch.
+        url = next((u for u in (source, fetched.get("url")) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
             stored = extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)

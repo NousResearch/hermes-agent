@@ -1,0 +1,27 @@
+name: seatbelt
+repo: https://github.com/deeworksonline-debug/hermes-seatbelt
+sha: fe7c810479ad7480e04d853da08047c41586d1cc
+subdir: seatbelt
+description: >-
+  Seatbelt enforces your trading limits in front of every trading-looking tool call
+  (perps/futures, prediction markets, NFTs, swaps): allow, block, ask you, or clamp
+  leverage. Includes paper mode (simulated fills), /seatbelt halt, a guided /seatbelt
+  setup, an audit log, tamper protection and YAML venue adapters (Polymarket via
+  hermes-pmxt included). Disclosure - it reads the arguments of every tool call to spot
+  trades; it keeps a local sqlite audit log of redacted arguments in the plugin data
+  directory; no network access and no telemetry; the tamper guard is best effort, not a
+  sandbox; "ask" decisions only reach a human when Hermes approvals.mode is manual
+  (otherwise Seatbelt blocks instead of asking); not verified for tools delivered
+  through MCP.
+maintainer: deeworksonline-debug
+tier: community
+category: tools
+docs_url: https://github.com/deeworksonline-debug/hermes-seatbelt#readme
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: [tool_execution]
+  requires_env: []

@@ -860,6 +860,49 @@ test('no-mux: forward spawns a persistent -N -L child; cancel + close kill it', 
   srv.close()
 })
 
+// ssh.exe is a console program: spawned from the windowless Desktop without windowsHide,
+// Windows opens a console window for every control command and every tunnel child.
+test('every ssh child is spawned with windowsHide', async () => {
+  const options: any[] = []
+
+  const muxSpawn: any = (_cmd, _args, opts) => {
+    options.push(opts)
+
+    return fakeChild({ code: 0 })
+  }
+
+  const mux = new SshConnection({ host: 'box', user: 'me' }, { spawnFn: muxSpawn, mux: true, controlDir: '/tmp/d' })
+  await mux.forward(5000, 6000)
+  await mux.cancelForward(5000, 6000)
+  const controlSpawns = options.length
+  assert.ok(controlSpawns >= 1)
+
+  const tunnelSpawn: any = (_cmd, args, opts) => {
+    options.push(opts)
+    const child: any = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+    child.kill = () => {}
+
+    if (args.includes('-N')) {
+      process.nextTick(() => {
+        child.stderr.emit('data', Buffer.from('Permission denied (publickey).'))
+        child.exitCode = 255
+      })
+    }
+
+    return child
+  }
+
+  const noMux = new SshConnection({ host: 'box', user: 'me' }, { spawnFn: tunnelSpawn, mux: false, forwardTimeoutMs: 2000 })
+  await assert.rejects(noMux.forward(1, 9119))
+  assert.ok(options.length > controlSpawns)
+
+  for (const opts of options) {
+    assert.equal(opts?.windowsHide, true)
+  }
+})
+
 test('no-mux: forward fails fast when the tunnel child dies (bad spec/auth)', async () => {
   const spawnFn: any = (_cmd, args) => {
     const child: any = new EventEmitter()

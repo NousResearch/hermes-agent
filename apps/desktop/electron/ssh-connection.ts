@@ -545,7 +545,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
     let child
 
     try {
-      child = spawnFn(command, args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn(command, args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true })
     } catch (error) {
       reject(error)
 
@@ -1096,7 +1096,7 @@ class SshConnection {
   // cascaded into SIGTERM of a healthy backend (#96266).
   _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
     return new Promise<void>((resolve, reject) => {
-      const child = this._spawnFn(this.sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn(this.sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
       tunnel.child = child
       let stderr = ''
       let readyConfirmed = false

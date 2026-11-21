@@ -170,6 +170,7 @@ describe('TextInput submit clearing', () => {
         // useStdout() resolves to process.stdout, so the fast-echo bypass is armed there.
         vi.stubEnv('TERM_PROGRAM', 'iTerm.app')
         vi.stubEnv('TMUX', '')
+        vi.stubEnv('TERM', 'xterm-256color')
         ;(process.stdout as { isTTY?: boolean }).isTTY = true
         vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
           echoed.push(String(chunk))

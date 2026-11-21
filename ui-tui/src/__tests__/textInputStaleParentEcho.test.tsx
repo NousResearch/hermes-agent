@@ -96,6 +96,7 @@ describe('stale parent own-echo during deferred key-burst flush', () => {
   it('does not rewind local keystrokes when the parent echoes a value older than vRef', async () => {
     vi.stubEnv('TERM_PROGRAM', 'iTerm.app')
     vi.stubEnv('TMUX', '')
+    vi.stubEnv('TERM', 'xterm-256color')
 
     const stdout = new FakeTty()
     const stdin = new FakeTty()
@@ -151,6 +152,7 @@ describe('stale parent own-echo during deferred key-burst flush', () => {
   it('drops a pending key-burst flush when an external value replaces the draft', async () => {
     vi.stubEnv('TERM_PROGRAM', 'iTerm.app')
     vi.stubEnv('TMUX', '')
+    vi.stubEnv('TERM', 'xterm-256color')
 
     const stdout = new FakeTty()
     const stdin = new FakeTty()

@@ -283,6 +283,7 @@ def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
     assert "Alice Work" in observed["prompts"][0]
 
 
+@pytest.mark.platforms("posix")
 def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
     """A monitor script uses the same job-level interpreter as `script`."""
     import stat

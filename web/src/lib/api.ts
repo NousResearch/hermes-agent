@@ -453,10 +453,14 @@ export const api = {
       ),
     );
   },
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
+  getSessionMessages: (
+    id: string,
+    profile = getManagementProfile(),
+    options?: { offset?: number; order?: "oldest" | "latest" },
+  ) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(
-        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=${options?.order ?? "latest"}${options?.offset ? `&offset=${options.offset}` : ""}`,
         profile,
       ),
     ),

@@ -159,6 +159,7 @@ export const ar = defineLocale({
     resumeInChat: "استئناف في المحادثة",
     previousPage: "الصفحة السابقة",
     nextPage: "الصفحة التالية",
+    loadEarlierMessages: "تحميل الرسائل السابقة",
     roles: {
       user: "المستخدم",
       assistant: "المساعد",

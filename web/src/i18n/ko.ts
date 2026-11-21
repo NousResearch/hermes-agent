@@ -183,6 +183,7 @@ export const ko: Translations = {
     workspaceCustom: "다른 경로…",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
+    loadEarlierMessages: "이전 메시지 불러오기",
     roles: {
       user: "사용자",
       assistant: "어시스턴트",

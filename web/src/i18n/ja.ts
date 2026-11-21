@@ -183,6 +183,7 @@ export const ja: Translations = {
     workspaceCustom: "別のパス…",
     previousPage: "前のページ",
     nextPage: "次のページ",
+    loadEarlierMessages: "過去メッセージを読み込み",
     roles: {
       user: "ユーザー",
       assistant: "アシスタント",

@@ -224,6 +224,7 @@ export const en: Translations = {
     workspaceCustom: "Other path…",
     previousPage: "Previous page",
     nextPage: "Next page",
+    loadEarlierMessages: "Load earlier messages",
     roles: {
       user: "User",
       assistant: "Assistant",

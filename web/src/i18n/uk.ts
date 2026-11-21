@@ -183,6 +183,7 @@ export const uk: Translations = {
     workspaceCustom: "Інший шлях…",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
+    loadEarlierMessages: "Завантажити попередні повідомлення",
     roles: {
       user: "Користувач",
       assistant: "Асистент",

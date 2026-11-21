@@ -181,6 +181,7 @@ export const zh: Translations = {
     workspaceCustom: "其他路径…",
     previousPage: "上一页",
     nextPage: "下一页",
+    loadEarlierMessages: "加载更早的消息",
     roles: {
       user: "用户",
       assistant: "助手",

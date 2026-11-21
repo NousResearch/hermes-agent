@@ -183,6 +183,7 @@ export const it: Translations = {
     workspaceCustom: "Altro percorso…",
     previousPage: "Pagina precedente",
     nextPage: "Pagina successiva",
+    loadEarlierMessages: "Carica messaggi precedenti",
     roles: {
       user: "Utente",
       assistant: "Assistente",

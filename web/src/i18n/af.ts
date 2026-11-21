@@ -183,6 +183,7 @@ export const af: Translations = {
     workspaceCustom: "Ander pad…",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
+    loadEarlierMessages: "Laai vorige boodskappe",
     roles: {
       user: "Gebruiker",
       assistant: "Assistent",

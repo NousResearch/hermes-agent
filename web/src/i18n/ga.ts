@@ -183,6 +183,7 @@ export const ga: Translations = {
     workspaceCustom: "Cosán eile…",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
+    loadEarlierMessages: "Teachtaireachtaí roimhe a luchtú",
     roles: {
       user: "Úsáideoir",
       assistant: "Cúntóir",

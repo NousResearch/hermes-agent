@@ -183,6 +183,7 @@ export const zhHant: Translations = {
     workspaceCustom: "其他路徑…",
     previousPage: "上一頁",
     nextPage: "下一頁",
+    loadEarlierMessages: "載入更早的訊息",
     roles: {
       user: "使用者",
       assistant: "助理",

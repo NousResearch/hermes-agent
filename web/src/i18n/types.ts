@@ -239,6 +239,8 @@ export interface Translations {
     workspaceCustom: string;
     previousPage: string;
     nextPage: string;
+    /** Transcript paging: pull the previous page of a long session. */
+    loadEarlierMessages: string;
     roles: {
       user: string;
       assistant: string;

@@ -183,6 +183,7 @@ export const ru: Translations = {
     workspaceCustom: "Другой путь…",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
+    loadEarlierMessages: "Загрузить более ранние сообщения",
     roles: {
       user: "Пользователь",
       assistant: "Ассистент",

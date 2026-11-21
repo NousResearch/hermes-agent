@@ -183,6 +183,7 @@ export const hu: Translations = {
     workspaceCustom: "Másik útvonal…",
     previousPage: "Előző oldal",
     nextPage: "Következő oldal",
+    loadEarlierMessages: "Régebbi üzenetek betöltése",
     roles: {
       user: "Felhasználó",
       assistant: "Asszisztens",

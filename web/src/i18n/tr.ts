@@ -183,6 +183,7 @@ export const tr: Translations = {
     workspaceCustom: "Başka yol…",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
+    loadEarlierMessages: "Önceki mesajları yükle",
     roles: {
       user: "Kullanıcı",
       assistant: "Asistan",

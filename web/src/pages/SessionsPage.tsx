@@ -405,6 +405,12 @@ function SessionRow({
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // T4.6 paging: the first fetch returns the newest page; older pages are
+  // walked back via `offset` and prepended chronologically. A page that
+  // returns fewer rows than the limit means the head is reached.
+  const [olderMessages, setOlderMessages] = useState<SessionMessage[]>([]);
+  const [hasEarlier, setHasEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
@@ -417,7 +423,10 @@ function SessionRow({
     api
       .getSessionMessages(session.id, session.profile)
       .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
+        if (!cancelled) {
+          setMessages(resp.messages);
+          setHasEarlier(resp.pagination?.returned === resp.pagination?.limit);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err));
@@ -426,6 +435,23 @@ function SessionRow({
       cancelled = true;
     };
   }, [isExpanded, session.id, session.profile, messages]);
+
+  const loadEarlierMessages = async () => {
+    if (!messages) return;
+    setLoadingEarlier(true);
+    try {
+      const resp = await api.getSessionMessages(session.id, session.profile, {
+        offset: olderMessages.length + messages.length,
+        order: "latest",
+      });
+      setOlderMessages((prev) => [...resp.messages, ...prev]);
+      setHasEarlier(resp.pagination?.returned === resp.pagination?.limit);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingEarlier(false);
+    }
+  };
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
@@ -680,7 +706,24 @@ function SessionRow({
             </p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <>
+              {hasEarlier && (
+                <Button
+                  ghost
+                  size="sm"
+                  className="mx-auto mb-2 text-text-secondary hover:text-midground"
+                  aria-label={t.sessions.loadEarlierMessages}
+                  disabled={loadingEarlier}
+                  onClick={() => void loadEarlierMessages()}
+                >
+                  {loadingEarlier ? t.common.loading : t.sessions.loadEarlierMessages}
+                </Button>
+              )}
+              <MessageList
+                messages={olderMessages.length > 0 ? [...olderMessages, ...messages] : messages}
+                highlight={searchQuery}
+              />
+            </>
           )}
         </div>
       )}

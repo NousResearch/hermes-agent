@@ -345,7 +345,7 @@ def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, mon
 
     def run(argv, *_args, **_kwargs):
         queries.append(argv)
-        return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key in argv).encode())
+        return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key in " ".join(argv)).encode())
 
     monkeypatch.setattr(service, "_run", run)
     found = service._windows(home, time.monotonic() + 5)
@@ -353,6 +353,58 @@ def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, mon
         assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
     else:
         assert found is None and len(queries) == 1
+
+
+def test_windows_task_launcher_outside_the_oem_code_page_still_verifies(tmp_path, monkeypatch):
+    """The probe child gets a fresh hidden console on the system OEM code page, and ``schtasks``
+    converts its output to that page: characters the page cannot represent became literal ``?``, so an
+    Arabic or CJK account directory inside the task's launcher path was not a legal Windows path and
+    the installed task could never be verified (#150136). The probe runs on a UTF-8 console instead, so
+    the path arrives intact; decoding alone cannot recover a character that was never written."""
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "Users - مؤمن" / ".hermes"
+    home.mkdir(parents=True)
+    script = _installed_vbs(home, str(home))
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
+    out = {"whoami.exe": f'"{account}","{sid}"\r\n', "/XML": _build_scheduled_task_xml(name, script, account),
+           "/FO": f'"\\{name}","N/A","Ready"\r\n'}
+
+    def run(argv, *_args, **_kwargs):
+        command = " ".join(argv)
+        text = next(value for key, value in out.items() if key in command)
+        if "chcp 65001" not in command:  # what a console on the OEM page actually writes
+            text = text.encode("ascii", "replace").decode("ascii")
+        return SimpleNamespace(returncode=0, stdout=text.encode("utf-8"))
+
+    monkeypatch.setattr(service, "_run", run)
+    found = service._windows(home, time.monotonic() + 5)
+    assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
+
+
+def test_windows_unreadable_task_launcher_reports_the_identity_reason(tmp_path, monkeypatch):
+    """A launcher the installed task names but this account cannot open is an identity we cannot
+    prove, not a missing service manager: the OSError used to escape the verifier and be relabelled
+    ``service_manager_unavailable``, which sent the user to diagnose a healthy Task Scheduler
+    (#150136)."""
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
+    out = {"whoami.exe": f'"{account}","{sid}"\r\n',
+           "/XML": _build_scheduled_task_xml(name, home / "gateway-service" / "missing.vbs", account),
+           "/FO": f'"\\{name}","N/A","Ready"\r\n'}
+    monkeypatch.setattr(service, "_run", lambda argv, *a, **k: SimpleNamespace(
+        returncode=0, stdout=next(value for key, value in out.items() if key in " ".join(argv)).encode()))
+    with pytest.raises(service.RuntimeStartError, match="service_identity_unverified"):
+        service._windows(home, time.monotonic() + 5)
 
 
 @pytest.mark.platforms("macos")
@@ -426,12 +478,19 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
         + f'elif "/Query" in sys.argv: print({row!r})\n', encoding='utf-8')
     actual = subprocess.run
     calls = []
+
+    def inner(argv):
+        """The probe argv with the UTF-8 console wrapper stripped: both probes ask for one, because the
+        OEM code page truncates a launcher path it cannot represent (#150136)."""
+        return argv[-1].split('& ', 1)[1] if argv[0] == 'cmd.exe' else ' '.join(argv)
+
     def boundary(argv, **kw):
-        if argv[0] == 'whoami.exe':
+        command = inner(argv)
+        if command.startswith('whoami.exe'):
             return actual(argv, **kw)
-        assert argv[0] == 'schtasks.exe'
-        calls.append(argv)
-        return actual([sys.executable, str(peer), *argv[1:]], **kw)
+        assert command.startswith('schtasks.exe')
+        calls.append(command)
+        return actual([sys.executable, str(peer), *command.split()[1:]], **kw)
     monkeypatch.setattr(subprocess, 'run', boundary)
     if wrong:
         with pytest.raises(service.RuntimeStartError, match='service_account_mismatch'):
@@ -573,7 +632,7 @@ def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, m
     result = runtime.ensure_gateway_runtime(home, timeout=0.3)
     assert result.reason_code != "startup_service_requires_login"
     assert spawned == [home.resolve()]
-    assert all(argv[:2] == ["schtasks.exe", "/Query"] for argv in queries)  # nothing installed or run
+    assert all("schtasks.exe /Query" in " ".join(argv) for argv in queries)  # nothing installed or run
 
 
 @pytest.mark.platforms("windows")
@@ -599,7 +658,7 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     def run(argv, *_args, encoding=None, **_kwargs):
         # Windows subprocess decodes text in a reader thread: a decode error there leaves stdout None
         # (main then read an empty task list and fell through to an unmanaged spawn), it does not raise.
-        data = next(text for key, text in out.items() if key in argv).encode("cp936")
+        data = next(text for key, text in out.items() if key in " ".join(argv)).encode("cp936")
         if encoding:
             try:
                 data = data.decode(encoding)

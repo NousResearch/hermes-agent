@@ -3035,6 +3035,9 @@ web:
   # fails a call, that single call retries on the keyless ring; the next
   # call attempts the chosen backend again (never sticky).
   keyless_rescue: true
+  # Private/local backends (SearXNG, self-hosted, plugins) are fail-closed out of the
+  # keyless rescue; opt in with true. See web-search.md (#155838).
+  local_rescue: false
 
   # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
   # free = always the anonymous endpoint; paid = always the keyed SDK path;

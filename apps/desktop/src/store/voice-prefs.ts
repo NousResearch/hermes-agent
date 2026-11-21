@@ -181,3 +181,30 @@ export function applyThinkingSoundFromConfig(
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
   storeAutoSpeak(enabled, false)
 }
+
+// `stt.enabled` — the switch `transcription_tools.is_stt_enabled` reads
+// (default true, hermes_cli/config_defaults.py). Dictation and a chained voice
+// conversation both depend on it: with it false the backend answers a
+// transcription request with "STT is disabled in config.yaml", so a mic that
+// opens anyway records speech that can never become text.
+export const $sttEnabled = atom<boolean>(true)
+
+// Mirrors `utils.is_truthy_value(..., default=True)`: only an explicit false-ish
+// value disables; an absent or malformed key stays enabled.
+const TRUTHY_STRINGS = new Set(['1', 'true', 'yes', 'on'])
+
+function sttEnabledValue(raw: unknown): boolean {
+  if (raw === undefined || raw === null) {
+    return true
+  }
+
+  return typeof raw === 'string' ? TRUTHY_STRINGS.has(raw.trim().toLowerCase()) : Boolean(raw)
+}
+
+/** Seed the STT gate from a loaded config payload (mount / refresh). */
+export function applySttEnabledFromConfig(config: ConfigPayload) {
+  const stt = (config as { stt?: unknown } | null | undefined)?.stt
+  const raw = stt && typeof stt === 'object' ? (stt as Record<string, unknown>).enabled : undefined
+
+  $sttEnabled.set(sttEnabledValue(raw))
+}

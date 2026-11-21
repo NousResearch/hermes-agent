@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 
 import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
@@ -24,9 +25,11 @@ import {
 import { setShowToolActivityFromConfig } from '@/store/tool-activity'
 import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
+  $sttEnabled,
   applyAutoSpeakFromConfig,
   applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
+  applySttEnabledFromConfig,
   applyThinkingSoundFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
@@ -62,7 +65,6 @@ interface HermesConfigOptions {
 
 export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
-  const [sttEnabled, setSttEnabled] = useState(true)
   const profileRefreshEpochRef = useRef(0)
 
   const refreshHermesConfig = useCallback(
@@ -142,7 +144,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
-        setSttEnabled(config.stt?.enabled !== false)
+        applySttEnabledFromConfig(config)
 
         if (!canPublish()) {
           return
@@ -180,6 +182,10 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
     },
     [activeSessionIdRef]
   )
+
+  // Read, not mirrored: the composer's mic controls subscribe to the same
+  // atom, so the button state and the transcription gate cannot disagree.
+  const sttEnabled = useStore($sttEnabled)
 
   return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
 }

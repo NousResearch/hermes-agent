@@ -10,6 +10,7 @@ import {
   menuMotionClass,
   menuSurfaceClass
 } from '@/components/ui/menu'
+import { usePenTapClick } from '@/hooks/use-pen-tap-click'
 import { cn } from '@/lib/utils'
 
 // Shared class tokens for edge-to-edge menus (use with `p-0` content): rows go
@@ -289,6 +290,7 @@ function DropdownMenuItem({
   variant?: 'default' | 'destructive'
 }) {
   const hoverProps = useRowSearchHover(props)
+  const penTapProps = usePenTapClick(props)
 
   return (
     <DropdownMenuPrimitive.Item
@@ -304,6 +306,7 @@ function DropdownMenuItem({
       data-variant={variant}
       {...props}
       {...hoverProps}
+      {...penTapProps}
     />
   )
 }
@@ -315,6 +318,7 @@ function DropdownMenuCheckboxItem({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
   const hoverProps = useRowSearchHover(props)
+  const penTapProps = usePenTapClick(props)
 
   return (
     <DropdownMenuPrimitive.CheckboxItem
@@ -329,6 +333,7 @@ function DropdownMenuCheckboxItem({
       data-slot="dropdown-menu-checkbox-item"
       {...props}
       {...hoverProps}
+      {...penTapProps}
     >
       {children}
       <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center pl-2 text-foreground">
@@ -348,6 +353,7 @@ function DropdownMenuRadioItem({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
   const hoverProps = useRowSearchHover(props)
+  const penTapProps = usePenTapClick(props)
 
   return (
     <DropdownMenuPrimitive.RadioItem
@@ -361,6 +367,7 @@ function DropdownMenuRadioItem({
       data-slot="dropdown-menu-radio-item"
       {...props}
       {...hoverProps}
+      {...penTapProps}
     >
       {children}
       <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center pl-2 text-foreground">
@@ -456,6 +463,8 @@ function DropdownMenuSubTrigger({
     leave: () => hoverSubmenus?.cancelOpen()
   })
 
+  const penTapProps = usePenTapClick(props)
+
   return (
     <DropdownMenuPrimitive.SubTrigger
       className={cn(
@@ -467,6 +476,7 @@ function DropdownMenuSubTrigger({
       data-slot="dropdown-menu-sub-trigger"
       {...props}
       {...hoverProps}
+      {...penTapProps}
     >
       {children}
       {!hideChevron && <Codicon className="ml-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />}

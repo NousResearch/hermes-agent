@@ -2,6 +2,7 @@ import { ContextMenu as ContextMenuPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { usePenTapClick } from '@/hooks/use-pen-tap-click'
 import { cn } from '@/lib/utils'
 
 function ContextMenu({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
@@ -51,6 +52,8 @@ function ContextMenuItem({
   inset?: boolean
   variant?: 'default' | 'destructive'
 }) {
+  const penTapProps = usePenTapClick(props)
+
   return (
     <ContextMenuPrimitive.Item
       className={cn(
@@ -61,6 +64,7 @@ function ContextMenuItem({
       data-slot="context-menu-item"
       data-variant={variant}
       {...props}
+      {...penTapProps}
     />
   )
 }
@@ -71,6 +75,8 @@ function ContextMenuCheckboxItem({
   checked,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.CheckboxItem>) {
+  const penTapProps = usePenTapClick(props)
+
   return (
     <ContextMenuPrimitive.CheckboxItem
       checked={checked}
@@ -80,6 +86,7 @@ function ContextMenuCheckboxItem({
       )}
       data-slot="context-menu-checkbox-item"
       {...props}
+      {...penTapProps}
     >
       {children}
       <ContextMenuPrimitive.ItemIndicator className="ml-auto flex items-center pl-2 text-foreground">
@@ -128,6 +135,8 @@ function ContextMenuSubTrigger({
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubTrigger> & {
   inset?: boolean
 }) {
+  const penTapProps = usePenTapClick(props)
+
   return (
     <ContextMenuPrimitive.SubTrigger
       className={cn(
@@ -137,6 +146,7 @@ function ContextMenuSubTrigger({
       data-inset={inset}
       data-slot="context-menu-sub-trigger"
       {...props}
+      {...penTapProps}
     >
       {children}
       <Codicon className="ml-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />

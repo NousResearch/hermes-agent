@@ -29,12 +29,14 @@ import { $petActive } from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
+import { createPluginGit, type PluginGit } from './plugin-git'
 import { createPluginFiles, type PluginFiles } from './plugin-files'
 import { createPluginPreview, type PluginPreview } from './plugin-preview'
 import { $pluginRecords } from './plugins-store'
 import { registry } from './registry'
 import { type PluginSettingsPage, settingsPageContribution } from './settings-pages'
 
+export type { PluginGitResult, PluginGitWorktree } from './plugin-git'
 export type { PluginFileEntry, PluginFiles, PluginFilesResult, PluginFolder } from './plugin-files'
 export type { PluginPreview } from './plugin-preview'
 import type { Contribution } from './types'
@@ -182,6 +184,11 @@ export interface PluginContext {
   preview: PluginPreview
   /** Plugin-scoped persistence. */
   storage: PluginStorage
+  /** Worktree door: list, add and remove git worktrees through the app's own
+   *  hardened implementation, so a plugin never reaches the preload bridge.
+   *  Deliberately worktrees only: branch switching and repo scans stay
+   *  app-owned. Feature-detect on older hosts: `ctx.git?.…`. */
+  git: PluginGit
   /** Folder-scoped file access: this plugin's own data folder plus folders
    *  the user grants it through the app's picker, by relative path. The app
    *  checks every call; nothing outside those folders (or inside Hermes'
@@ -401,6 +408,7 @@ export function createPluginContext(
     listActions: listPluginAppActions,
     preview: createPluginPreview(pluginId, capabilities),
     storage: createPluginStorage(pluginId),
+    git: createPluginGit(pluginId),
     files: createPluginFiles(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }

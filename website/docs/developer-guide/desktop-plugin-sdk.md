@@ -1422,6 +1422,9 @@ ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Pr
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 ctx.files.requestFolder()                  // the app's folder picker → { ok, folder: { id, name, path } | null }
 ctx.files.readText(folder, 'notes/a.md')   // folder = 'data' or a granted folder's id; path is relative
+ctx.git.worktreeList(repo)                 // worktrees of a repo, the primary checkout first
+ctx.git.worktreeAdd(repo, { branch, base }) // <main>/.worktrees/<name>; never forces, never reuses
+ctx.git.worktreeRemove(repo, path, opts)   // remove a worktree git knows about
 ctx.pet.say(text, { id?, tone?, ttlMs? })   // line in the core pet's speech bubble → disposer
 ctx.pet.clear(id?)                         // drop one line (or all of yours)
 ctx.pet.visible                            // ReadableAtom<boolean> — is a pet on screen?
@@ -1676,6 +1679,35 @@ exist.
 
 Paths are on the machine running Desktop, not on a remote backend. To work
 with the backend's files, go through your plugin's `ctx.rest` routes.
+
+### Worktrees — `ctx.git` {#plugin-git}
+
+`ctx.git` is the sanctioned way for a plugin to work with git worktrees. The app
+already owns that implementation for its own "Start work" flow: fixed argv, a
+hardened path check, and `.worktrees/<name>` under the primary checkout, all in
+the main process. A plugin may not reach that preload bridge, so this door
+exposes the worktree verbs and nothing else. Branch switching, repository scans
+and the staging/review surface stay app-owned: a plugin that needs one of those
+should ask for that specific verb.
+
+```ts
+const list = await ctx.git.worktreeList('/srv/app')
+// { ok: true, worktrees: [{ path, branch, isMain, detached, locked }] }
+const made = await ctx.git.worktreeAdd('/srv/app', { branch: 'feature', base: 'origin/feature' })
+// { ok: true, path: '/srv/app/.worktrees/feature', branch: 'feature', repoRoot: '/srv/app' }
+await ctx.git.worktreeRemove('/srv/app', made.path, { force: false })
+// { ok: true, removed: '/srv/app/.worktrees/feature' }
+```
+
+`worktreeAdd` takes `{ name?, branch?, base?, existingBranch? }`: an existing
+branch is checked out as it is, a new one starts from `base`, and a
+remote-tracking ref named in `existingBranch` becomes a local branch that tracks
+it. No member throws. Each resolves `{ ok: true, … }` or
+`{ ok: false, error, message }`, where `error` is `unavailable` (an app build
+without the door: feature-detect with `ctx.git?.…`) or `failed`, with git's own
+sentence in `message`. Nothing is forced and nothing is reused: an occupied
+folder is a failure, not a silent replacement, and `force` on
+`worktreeRemove` is the only destructive flag in the door.
 
 ### Pet bubble — `ctx.pet` {#pet-bubble}
 

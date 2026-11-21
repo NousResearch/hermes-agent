@@ -7,7 +7,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
-import { setPluginEnabled } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { LAYOUT_KEYS } from '@/lib/layout-persistence'
@@ -1021,35 +1020,12 @@ export function closeTreePane(paneId: string) {
     return
   }
 
-  const panes = registry.getArea('panes')
-  const source = panes.find(c => c.id === paneId)?.source
-
-  if (source?.startsWith('plugin:')) {
-    // A plugin may own several independent panes. Closing one of them must not
-    // unload every contribution from that plugin (for example, closing Bot
-    // Mode's Cronjobs pane must leave its Bots roster and composer middleware
-    // alive). Dismiss just that pane; Layout reset remains the explicit way to
-    // restore dismissed contributed panes.
-    if (panes.filter(c => c.source === source).length > 1) {
-      dismissTreePane(paneId)
-
-      return
-    }
-
-    // A single-pane plugin keeps the existing symmetric behavior: Close uses
-    // the same switch as Capabilities → Plugins. Its contribution unregisters but
-    // the pane id stays in the tree, so re-enabling restores its exact place.
-    const pluginId = source.slice('plugin:'.length)
-    void setPluginEnabled(pluginId, false)
-    notify({
-      kind: 'info',
-      title: translateNow('zones.pluginDisabled', pluginId),
-      message: translateNow('zones.pluginDisabledBody')
-    })
-
-    return
-  }
-
+  // Closing a pane is always a pane action, never a plugin toggle — even when
+  // the plugin contributes only this one pane. Switching the plugin off here
+  // also removed its sidebar nav row (Capabilities / Artifacts / its own page),
+  // i.e. the very control the user would click to reopen the pane, so "close
+  // this tab" and "uninstall this plugin" became indistinguishable. Reopening
+  // is a reveal (nav row, palette command, `host.revealPane`) or a layout reset.
   dismissTreePane(paneId)
 }
 

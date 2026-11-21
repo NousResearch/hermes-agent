@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from typing import Any
 
@@ -34,6 +35,17 @@ def cmd_proxy_start(args: Any) -> int:
         auth_hint = getattr(adapter, "auth_hint", f"hermes auth add {adapter.name}")
         _err(f"Not logged into {adapter.display_name}. Run `{auth_hint}` first.")
         return 2
+    auth_key_env = str(getattr(args, "auth_key_env", None) or "").strip()
+    inbound_bearer = os.getenv(auth_key_env, "").strip() if auth_key_env else ""
+    if auth_key_env and not inbound_bearer:
+        _err(f"Proxy client key environment variable {auth_key_env} is not set.")
+        return 2
+    if adapter.requires_downstream_auth and not inbound_bearer:
+        _err(
+            f"{adapter.display_name} requires downstream authentication. "
+            "Pass --auth-key-env <ENV_NAME> with a non-empty local client key."
+        )
+        return 2
     from hermes_cli.url_utils import format_url_host
 
     host = getattr(args, "host", None) or DEFAULT_HOST
@@ -42,15 +54,20 @@ def cmd_proxy_start(args: Any) -> int:
         f"Starting Hermes proxy for {adapter.display_name}\n"
         f"  Listening on:  http://{format_url_host(host)}:{port}/v1\n"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
-        f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
+        f"  Client auth:   {'Bearer from ' + auth_key_env if inbound_bearer else 'not required'}\n"
         f"\n"
         f"Press Ctrl+C to stop."
     )
     try:
-        asyncio.run(run_server(adapter, host=host, port=port))
+        asyncio.run(run_server(
+            adapter,
+            host=host,
+            port=port,
+            inbound_bearer=inbound_bearer or None,
+        ))
     except KeyboardInterrupt:
         _err("\nproxy: stopped")
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _err(f"proxy: failed to bind {host}:{port}: {exc}")
         return 1
     return 0
@@ -102,7 +119,8 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645]\n"
+        "  hermes proxy start [--provider nous|openai-codex|xai] [--auth-key-env ENV] "
+        "[--host 127.0.0.1] [--port 8645]\n"
         "      Run the proxy in the foreground.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"

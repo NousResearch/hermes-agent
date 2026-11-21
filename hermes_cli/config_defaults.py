@@ -875,6 +875,7 @@ DEFAULT_CONFIG = {
         # "(empty)" sentinel.
         "turn_completion_explainer": True,
         "show_cost": False,       # $ cost in the status bar
+        "show_cache": True,       # cache-hit % segment in the status bar (◎ pct); false hides it
         "battery": False,         # battery read-out first in status bar; no-op w/o battery
         # Focus view (/focus): display-only. Pins tool_progress to "off", reports per-turn
         # hidden-line count, pins a "focus" status segment. focus_saved_tool_progress holds the mode

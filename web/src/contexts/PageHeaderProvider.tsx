@@ -1,9 +1,38 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+
+function titleRowLayout(afterTitle: ReactNode, isEnvRoute: boolean) {
+  if (afterTitle && isEnvRoute) {
+    return "flex-col items-start sm:flex-row sm:items-center";
+  }
+  if (afterTitle) {
+    return "flex-row flex-wrap items-center";
+  }
+  return "flex-row items-center";
+}
+
+function titleWidth(afterTitle: ReactNode, isEnvRoute: boolean) {
+  if (afterTitle && isEnvRoute) {
+    return "max-w-full sm:min-w-0 sm:shrink sm:truncate";
+  }
+  if (afterTitle) {
+    return "shrink truncate";
+  }
+  return "truncate";
+}
+
+function canUseNativeFullscreen() {
+  return (
+    "requestFullscreen" in document.documentElement &&
+    "exitFullscreen" in document &&
+    !(/Android/i.test(navigator.userAgent) &&
+      /Firefox/i.test(navigator.userAgent))
+  );
+}
 
 export function PageHeaderProvider({
   children,
@@ -17,6 +46,34 @@ export function PageHeaderProvider({
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
+  const [isFullscreen, setIsFullscreen] = useState(
+    () => Boolean(document.fullscreenElement),
+  );
+
+  const [isFocusMode, setIsFocusMode] = useState(false);
+
+  useEffect(() => {
+    const update = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", update);
+    return () => document.removeEventListener("fullscreenchange", update);
+  }, []);
+
+  const toggleFocusMode = () => {
+    setIsFocusMode((current) => !current);
+  };
+
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (error) {
+      console.warn("Fullscreen request failed:", error);
+    }
+  };
+
 
   // Reset before the new route commits: parent layout effects run after child
   // effects, so clearing there would erase the new page's header actions.
@@ -50,12 +107,23 @@ export function PageHeaderProvider({
 
   return (
     <PageHeaderContext.Provider value={value}>
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+        {isFocusMode && (
+          <button
+            type="button"
+            onClick={toggleFocusMode}
+            aria-label="Exit focus mode"
+            className="absolute right-3 top-3 z-50 rounded border border-current/30 bg-background-base px-3 py-2 text-xs"
+          >
+            Exit Focus
+          </button>
+        )}
         <header
           className={cn(
             "z-1 w-full shrink-0",
             "box-border border-b border-current/20",
             "bg-background-base",
+            isFocusMode && "hidden",
             // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
             "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
           )}
@@ -72,21 +140,13 @@ export function PageHeaderProvider({
             <div
               className={cn(
                 "flex min-w-0 flex-1 gap-2 sm:gap-3",
-                afterTitle && isEnvRoute
-                  ? "flex-col items-start sm:flex-row sm:items-center"
-                  : afterTitle
-                    ? "flex-row flex-wrap items-center"
-                    : "flex-row items-center",
+                titleRowLayout(afterTitle, isEnvRoute),
               )}
             >
               <h1
                 className={cn(
                   "font-expanded min-w-0 text-sm font-bold tracking-[0.08em] text-midground",
-                  afterTitle && isEnvRoute
-                    ? "max-w-full sm:min-w-0 sm:shrink sm:truncate"
-                    : afterTitle
-                      ? "shrink truncate"
-                      : "truncate",
+                  titleWidth(afterTitle, isEnvRoute),
                 )}
               >
                 {displayTitle}
@@ -104,6 +164,28 @@ export function PageHeaderProvider({
                 </div>
               ) : null}
             </div>
+
+            <button
+              type="button"
+              onClick={toggleFocusMode}
+              aria-label="Enter focus mode"
+              title="Enter focus mode"
+              className="shrink-0 rounded border border-current/30 px-2 py-1 text-xs"
+            >
+              Focus Mode
+            </button>
+
+            {canUseNativeFullscreen() && (
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                  title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                  className="shrink-0 rounded border border-current/30 px-2 py-1 text-xs"
+                >
+                  {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                </button>
+              )}
 
             {end ? (
               <div

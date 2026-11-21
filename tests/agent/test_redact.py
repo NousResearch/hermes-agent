@@ -719,11 +719,6 @@ class TestElevenLabsTavilyExaKeys:
         result = redact_sensitive_text(text)
         assert "abc123def456ghi" not in result
 
-
-
-
-
-
     def test_tavily_environment_scoped_keys_redacted(self):
         # Current Tavily keys carry a tvly-dev-/tvly-prod- segment (#72925).
         for env in ("dev", "prod"):
@@ -732,9 +727,15 @@ class TestElevenLabsTavilyExaKeys:
                 result = redact_sensitive_text(text)
                 assert "E5fG7hJ9kL1m" not in result, result
 
+    @pytest.mark.parametrize("file_read", [False, True])
+    def test_segmented_tavily_key_redacted_in_bare_text(self, file_read):
+        key = "tvly-abcd-efghi-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0Qz"
+        result = redact_sensitive_text(f"the key is {key} in prose", force=True, file_read=file_read)
+        assert key not in result, result
+
     def test_hyphenated_tavily_names_are_not_keys(self):
-        # Package/file names starting with tvly- are not keys; only an env segment may carry a hyphen.
-        for text in ("pip install tvly-python-client", "tvly-config-file"):
+        # Package/file names starting with tvly- are not keys; a key must end in a long opaque segment.
+        for text in ("pip install tvly-python-client", "tvly-config-file", "tvly-your-key-here"):
             assert redact_sensitive_text(text) == text
 
     def test_all_three_in_env_dump(self):
@@ -755,7 +756,6 @@ class TestElevenLabsTavilyExaKeys:
 
 class TestJWTTokens:
     """JWT tokens start with eyJ (base64 for '{') and have dot-separated parts."""
-
 
     def test_2part_jwt(self):
         text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"

@@ -16,6 +16,9 @@ error message identifying the offending server.
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from tools.mcp_tool_errors import InvalidMcpUrlError, _validate_remote_mcp_url
@@ -55,3 +58,51 @@ class TestInvalidUrlsRejected:
         # So users can find the bad entry when there are multiple configured.
         with pytest.raises(InvalidMcpUrlError, match="my-weird-server"):
             _validate_remote_mcp_url("my-weird-server", "not a url at all")
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+@pytest.mark.parametrize("url", [
+    "http://localhost:abc/mcp",
+    "https://example.com:65536/mcp",
+    "http://[::1]:-1/mcp",
+])
+def test_invalid_ports_fail_before_transport(monkeypatch, transport, url):
+    from tools.mcp_tool import MCPServerTask
+
+    async def run():
+        task = MCPServerTask("broken-port")
+        connect = AsyncMock(side_effect=asyncio.CancelledError)
+        monkeypatch.setattr(task, "_run_http", connect)
+
+        await task.run({"url": url, "transport": transport, "skip_preflight": True})
+
+        connect.assert_not_awaited()
+        assert task._ready.is_set()
+        assert isinstance(task._error, InvalidMcpUrlError)
+        assert "broken-port" in str(task._error)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.com/mcp",
+    "https://example.com:443/mcp",
+    "http://localhost:65535/mcp",
+    "http://[::1]:9000/mcp",
+])
+def test_valid_ports_still_reach_transport(monkeypatch, url):
+    from tools.mcp_tool import MCPServerTask
+
+    async def run():
+        task = MCPServerTask("valid-port")
+        connect = AsyncMock(side_effect=asyncio.CancelledError)
+        monkeypatch.setattr(task, "_run_http", connect)
+        config = {"url": url, "skip_preflight": True}
+
+        with pytest.raises(asyncio.CancelledError):
+            await task.run(config)
+
+        connect.assert_awaited_once_with(config)
+        assert task._error is None
+
+    asyncio.run(run())

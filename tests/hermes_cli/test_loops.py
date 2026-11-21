@@ -92,9 +92,9 @@ class TestParseLoopArgs:
     def test_every_sugar(self):
         from hermes_cli.loops import parse_loop_args
 
-        p = parse_loop_args("every 10m /recap")
+        p = parse_loop_args("every 10m /status")
         assert p["interval_seconds"] == 600
-        assert p["prompt"] == "/recap"
+        assert p["prompt"] == "/status"
 
     def test_self_paced(self):
         from hermes_cli.loops import parse_loop_args
@@ -347,9 +347,34 @@ class TestTickLifecycle:
         from hermes_cli.loops import LoopManager
 
         mgr = LoopManager(session_id="t4")
-        state = mgr.set("/recap", interval_seconds=300)
+        state = mgr.set("/status", interval_seconds=300)
         state.next_due_at = time.time() - 1
-        assert mgr.fire_tick() == "/recap"
+        assert mgr.fire_tick() == "/status"
+
+    def test_help_slash_examples_resolve_to_registered_commands(self, hermes_home):
+        import re
+
+        from hermes_cli.commands import resolve_command
+        from hermes_cli.loops import LoopManager, dispatch_loop_command, parse_loop_args
+
+        help_text = dispatch_loop_command(LoopManager(session_id="help"), "help")["output"]
+        examples = [
+            re.split(r"\s+—\s", line.strip()[len("/loop"):])[0].strip()
+            for line in help_text.splitlines()
+            if line.strip().startswith("/loop ")
+        ]
+        slash_examples = [a for a in examples if parse_loop_args(a)["prompt"].startswith("/")]
+        assert slash_examples, "help should show at least one looped slash command"
+
+        for i, args in enumerate(slash_examples):
+            target = parse_loop_args(args)["prompt"].split()[0]
+            assert resolve_command(target) is not None, f"help example {target} is not a registered command"
+
+            mgr = LoopManager(session_id=f"help-{i}")
+            assert dispatch_loop_command(mgr, args)["created"] is True
+            mgr.state.next_due_at = time.time() - 1
+            raw = mgr.fire_tick()
+            assert raw == parse_loop_args(args)["prompt"]
 
     def test_abandon_tick_rolls_back(self, hermes_home):
         from hermes_cli.loops import LoopManager

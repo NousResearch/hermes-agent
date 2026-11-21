@@ -10,7 +10,7 @@ Python dependency commands on this page use a
 [PM-prepared source checkout](../reference/package-management.md#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
-All settings are stored in the `~/.hermes/` directory for easy access.
+All settings are stored in the `~/.hermes/` directory for easy access. For the size, count and timeout caps you are most likely to hit, with the key that changes each one, see [Limits and Defaults](../reference/limits-and-defaults.md).
 
 :::tip Easiest path to a working `config.yaml`
 Run `hermes setup --portal` — one OAuth gets you a model provider and all four Tool Gateway tools without hand-editing YAML. Portal subscribers also get 10% off token-billed providers. See [Nous Portal](../integrations/nous-portal.md).

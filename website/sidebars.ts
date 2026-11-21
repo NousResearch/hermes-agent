@@ -873,6 +873,7 @@ const sidebars: SidebarsConfig = {
             'reference/environment-variables',
             'reference/mcp-config-reference',
             'reference/model-catalog',
+            'reference/limits-and-defaults',
           ],
         },
         {

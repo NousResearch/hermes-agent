@@ -314,17 +314,30 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     return " ".join(g for g in tool_guidance if g) or None
 
 
+def _cron_proactive_guidance_enabled() -> bool:
+    """``cron.proactive_guidance`` (default on). True on any read failure, the shipped default."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cron_cfg = load_config_readonly().get("cron")
+        return not isinstance(cron_cfg, dict) or bool(cron_cfg.get("proactive_guidance", True))
+    except Exception:
+        return True
+
+
 def _cron_guidance(agent: Any) -> Optional[str]:
     """Proactive-scheduling line when the session can create jobs (directly or through the tool_call bridge)
     AND a new job would be shown on a "Schedule this job?" card first. Withheld wherever the gate would save
     unseen (``tools.approval.schedule_card_skip_reason``: approvals off or already granted, cron runs,
-    ``-q`` one-shots, kanban workers, unattended platforms), so nothing urges a job nobody reviews. The
+    ``-q`` one-shots, kanban workers, unattended platforms), so nothing urges a job nobody reviews, and when
+    the user turned it off (``cron.proactive_guidance: false``), which leaves the cards themselves alone. The
     bridged case reads the toolset selection and the tool's own check, never the built definitions: building
     them runs dynamic schema hooks that load plugins, which a safe-mode worker must never read."""
     from agent.oneshot_footprint import agent_is_oneshot
     from tools.approval import schedule_card_skip_reason
     if agent_is_oneshot(agent) or schedule_card_skip_reason(platform=getattr(agent, "platform", None),
                                                             session_key=""):
+        return None
+    if not _cron_proactive_guidance_enabled():
         return None
     names = agent.valid_tool_names
     if "cronjob_manage" not in names:

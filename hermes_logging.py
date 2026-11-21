@@ -168,6 +168,8 @@ class _RedactingStdio:
     persisted log (``logs/gateway-stdio.log``), and agent status lines (provider error echoes)
     reach it through ``print``, never through ``RedactingFormatter``."""
 
+    _hermes_stdio_inner_attr = "_stream"
+
     def __init__(self, stream):
         self._stream = stream
 
@@ -181,9 +183,11 @@ class _RedactingStdio:
 
 def redact_detached_stdio() -> None:
     """Route a detached process's stdout/stderr through secret redaction (idempotent)."""
+    from agent.stdio_wrappers import find_stdio_wrapper
+
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name)
-        if stream is not None and not isinstance(stream, _RedactingStdio):
+        if stream is not None and find_stdio_wrapper(stream, _RedactingStdio) is None:
             setattr(sys, name, _RedactingStdio(stream))
 
 

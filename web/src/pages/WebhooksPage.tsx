@@ -32,6 +32,7 @@ import { errorMessage } from "@/lib/api-error";
 interface CreatedWebhook {
   url: string;
   secret: string;
+  signature: WebhookSignature;
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -71,6 +72,7 @@ const SIGNATURE_OPTIONS: ReadonlyArray<readonly [WebhookSignature, string]> = [
   ["github", "GitHub"],
   ["gitlab", "GitLab"],
   ["linear", "Linear"],
+  ["bearer", "Bearer token (no replay protection)"],
 ];
 
 function SignatureField({
@@ -250,7 +252,7 @@ export default function WebhooksPage() {
         prompt: prompt.trim() || undefined,
       });
       showToast("Created ✓", "success");
-      setCreated({ url: res.url, secret: res.secret });
+      setCreated({ url: res.url, secret: res.secret, signature });
       resetForm();
       loadWebhooks();
     } catch (e) {
@@ -401,6 +403,17 @@ export default function WebhooksPage() {
                     <CopyButton value={created.secret} />
                   </div>
                 </div>
+
+                {created.signature === "bearer" && (
+                  <div className="grid gap-2">
+                    <Label>Bearer auth header</Label>
+                    <p className="text-xs text-muted-foreground">Use TLS. A captured token can be replayed.</p>
+                    <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
+                      <span className="flex-1 min-w-0 truncate font-mono text-xs">{"Authorization: Bearer " + created.secret}</span>
+                      <CopyButton value={"Authorization: Bearer " + created.secret} />
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex justify-end">
                   <Button

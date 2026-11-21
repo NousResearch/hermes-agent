@@ -70,6 +70,7 @@ _SIGNATURE_SCHEMES: dict[str, frozenset[str]] = {
     "github": frozenset({"github"}),
     "gitlab": frozenset({"gitlab", "standard"}),
     "linear": frozenset({"linear"}),
+    "bearer": frozenset({"bearer"}),
 }
 _UNPINNED_SIGNATURE_FAMILIES = frozenset().union(*_SIGNATURE_SCHEMES.values())
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
@@ -899,8 +900,18 @@ class WebhookAdapter(BasePlatformAdapter):
         family = next((name for name, value in present.items() if value), None)
         route_name = request.match_info.get("route_name", "")
         if family is None:
-            logger.debug("[webhook] Secret configured but no signature header found")
-            return False
+            # An empty recognized signature is still an attempt, not permission to
+            # fall back to a reusable credential. Nonempty signatures retain release precedence.
+            signature_headers = {"svix-signature", "webhook-signature", "linear-signature",
+                                 "x-hub-signature-256", "x-gitlab-token",
+                                 "x-webhook-signature-v2", "x-webhook-signature"}
+            if signature_headers.intersection(name.lower() for name in headers):
+                return False
+            if scheme not in (None, "bearer"):
+                return False
+            auth_scheme, separator, token = _header("Authorization").partition(" ")
+            return bool(separator and auth_scheme.lower() == "bearer" and token.strip()
+                        and secrets_match(token.strip(), secret))
         if family == "v1":
             # Body-only: rejecting it leaves no replayable migration exception after the in-memory
             # delivery cache expires.

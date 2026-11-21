@@ -410,7 +410,7 @@ class WebhookCreate(BaseModel):
     deliver_chat_id: Optional[str] = None
     secret: Optional[str] = None  # omit to auto-generate
     # Omitted: new routes are pinned to generic, an edit keeps the stored pin.
-    signature: Optional[Literal["generic", "github", "gitlab", "linear"]] = None
+    signature: Optional[Literal["generic", "github", "gitlab", "linear", "bearer"]] = None
 
 class WebhookEnabledToggle(BaseModel):
     enabled: bool

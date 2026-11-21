@@ -28,11 +28,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
     wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
     wh_sub.add_argument(
-        "--signature", choices=("generic", "github", "gitlab", "linear"), default=None,
+        "--signature", choices=("generic", "github", "gitlab", "linear", "bearer"), default=None,
         help="Signature scheme this route accepts; every other header family is rejected. generic "
         "(default for new routes) = X-Webhook-Signature-V2 + X-Webhook-Timestamp or Standard Webhooks/Svix; "
         "github = X-Hub-Signature-256; gitlab = X-Gitlab-Token or a GitLab signing token; "
-        "linear = Linear-Signature. Kept on update when omitted.")
+        "linear = Linear-Signature; bearer = Authorization: Bearer <secret> (no replay protection). "
+        "Kept on update when omitted.")
     wh_sub.add_argument(
         "--route-profile", dest="route_profile", default=None, metavar="PROFILE",
         help="Bind the route to a multiplexed profile: only POSTs to /p/PROFILE/webhooks/<name> "

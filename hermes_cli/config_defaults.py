@@ -374,7 +374,7 @@ DEFAULT_CONFIG = {
         "docker_shared_container_key": "",
         # SSH: carry exported env vars between commands (cwd always carries). false = every command
         # starts from the login env, profile functions included. Local: TERMINAL_LOCAL_PERSISTENT.
-        "persistent_shell": True,
+        "persistent_shell": True, "ssh_sync_files": True,
     },
 
     "web": {

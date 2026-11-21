@@ -86,8 +86,10 @@ _PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000
                      "5478da63fccfc0500f000485018084a98c210000000049454e44ae426082")
 
 
-def test_observed_group_photo_points_the_next_addressed_turn_at_the_cached_file(tmp_path) -> None:
-    """Observed context stays text-only, but the agent learns where the photo is and how to look at it."""
+@pytest.mark.parametrize("shape", ["photo", "rich_message"])
+def test_observed_group_photo_points_the_next_addressed_turn_at_the_cached_file(tmp_path, shape) -> None:
+    """Observed context stays text-only, but the agent learns where the photo is and how to look at it,
+    also when the photo arrives as a ``rich_message`` photo block (#155902)."""
     drv = TelegramDriver()
     drv.start()
     director = Director()
@@ -101,9 +103,10 @@ def test_observed_group_photo_points_the_next_addressed_turn_at_the_cached_file(
     try:
         gw.start()
         drv.standin.files["ph-1"], drv.standin.file_paths["ph-1"] = _PNG, "photos/desk.png"
-        drv.standin._inbound({"id": int(gid), "type": "supergroup", "title": "Standin Group"}, int(drv.user_id),
-                             photo=[{"file_id": "ph-1", "file_unique_id": "u-ph-1", "width": 1, "height": 1,
-                                     "file_size": len(_PNG)}], caption="desk sheet")
+        sizes = [{"file_id": "ph-1", "file_unique_id": "u-ph-1", "width": 1, "height": 1, "file_size": len(_PNG)}]
+        fields = ({"photo": sizes, "caption": "desk sheet"} if shape == "photo" else
+                  {"rich_message": {"blocks": [{"type": "photo", "photo": sizes, "caption": {"text": "desk sheet"}}]}})
+        drv.standin._inbound({"id": int(gid), "type": "supergroup", "title": "Standin Group"}, int(drv.user_id), **fields)
         wait_until(lambda: "Cached observed group image" in gw.tail(), "the unmentioned photo was observed")
         drv.group("what was in that image? [in:p1]", mention=True)
         _await_turn(director, "p1")

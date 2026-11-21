@@ -195,7 +195,7 @@ from plugins.platforms.telegram.telegram_text_photo_pairing import (
     wait_text_flush)
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_media_retry import unconfirmed_media_result as _unconfirmed
-from plugins.platforms.telegram import telegram_flood_window as _flood_window
+from plugins.platforms.telegram import telegram_flood_window as _flood_window, telegram_rich_media as _rich_media
 from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -5670,10 +5670,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
             return msg.audio, getattr(msg.audio, "file_name", "") or "", "", "audio"
-        if msg.document:
-            doc = msg.document
+        if doc := msg.document:
             return doc, doc.file_name or "", (doc.mime_type or "").lower(), None
-        return None, "", "", None
+        return _rich_media.rich_observed_source(self, msg)  # a replied-to/observed rich photo (#155902), else Nones
 
     @staticmethod
     def _append_observed_note(existing: Optional[str], note: str) -> str:
@@ -5846,13 +5845,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text (or text-less ``rich_message`` blocks); buffers client-split chunks into one event."""
         msg = self._effective_update_message(update)
-        if not msg or not (msg.text or rich_message_text(msg)):
+        if not msg or not (msg.text or rich_message_text(msg) or _rich_media.rich_media_items(msg)):
             return
         # Auth check first: blocked users must not reach batching, the observed transcript, or the agent.
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if await self.consume_vault_code_reply(msg):  # a one-time code: deleted, handed over, never a turn
+        # A one-time code: deleted, handed over, never a turn. A photo/file inside rich blocks: the media path (#155902).
+        if await self.consume_vault_code_reply(msg) or await _rich_media.handle_rich_media_message(self, msg, update):
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return

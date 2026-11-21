@@ -104,6 +104,7 @@ class StreamCeilingMixin:
         self._accumulated = ""
         self._message_id = None
         self._last_sent_text = ""
+        self._edit_last_pushed_len = 0
 
     def _ceiling_final_cut(self) -> bool:
         """At the final, before the last edit: hand the reply off when that edit (a rich-sized live
@@ -169,6 +170,7 @@ class StreamCeilingMixin:
         logger.info("Long reply delivered as %d file(s); removed up to %d earlier message(s)", len(ids), len(stale))
         self._preview_message_ids -= set(stale)
         self._accumulated, self._message_id, self._last_sent_text = "", None, ""
+        self._edit_last_pushed_len = 0
         self._already_sent = True
         self._mark_final_delivered()
         self._delivered_final_text = self._display_payload(text)
@@ -206,6 +208,7 @@ class StreamCeilingMixin:
         if consumed < 0 or not final.startswith(self._stream_ledger[:consumed]):  # heads rewritten or unmappable
             consumed, live_id, live_text = 0, None, ""
         self._stream_ledger, self._accumulated = final, final[consumed:].lstrip("\n")
+        self._edit_last_pushed_len = 0
         self._message_id, self._last_sent_text = live_id, live_text
         await self._seal_overflow_heads(final=True)
         if self._first_send_overflows():

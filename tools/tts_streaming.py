@@ -316,6 +316,26 @@ class OpenAIStreamer(StreamingTTSProvider):
             yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
 
 
+def _gemini_wav_pcm(wav: bytes) -> tuple[int, bytes]:
+    """``(sample_rate, frames)`` of a mono int16 WAV; the speaker plays bare frames, never a header."""
+    import io
+    import wave
+    try:
+        with wave.open(io.BytesIO(wav), "rb") as audio:
+            channels, width, rate, frames = (
+                audio.getnchannels(), audio.getsampwidth(), audio.getframerate(), audio.getnframes())
+            pcm = audio.readframes(frames)
+    except (wave.Error, EOFError, RuntimeError) as exc:  # wave raises a bare RuntimeError on a short chunk
+        raise RuntimeError(f"Gemini designed voice returned unreadable WAV: {exc!r}") from exc
+    if channels != 1 or width != 2:
+        raise RuntimeError("Gemini TTS designed voice requires mono 16-bit PCM")
+    if not frames:
+        raise RuntimeError("Gemini designed voice returned no audio frames")
+    if len(pcm) != frames * width:
+        raise RuntimeError("Gemini designed voice returned a truncated WAV")
+    return rate, pcm
+
+
 @register("gemini")
 class GeminiStreamer(StreamingTTSProvider):
     """Gemini ``streamGenerateContent?alt=sse`` → SSE feed of base64 PCM chunks (24 kHz), bounded streamed body.
@@ -342,6 +362,14 @@ class GeminiStreamer(StreamingTTSProvider):
         base_url = normalize_gemini_base_url(
             self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
         )
+        if voice.startswith("voice_"):
+            # Stored voices synthesize through Interactions, which answers with one complete WAV:
+            # each sentence is buffered, then replayed as raw PCM at the WAV's own rate.
+            from tools.tts_tool_providers import _request_gemini_designed_voice
+            self.sample_rate, pcm = _gemini_wav_pcm(_request_gemini_designed_voice(
+                text, model, voice, base_url, {"x-goog-api-key": api_key}))
+            yield from _capped((pcm[i:i + 8192] for i in range(0, len(pcm), 8192)), "Gemini designed voice TTS")
+            return
         payload = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {

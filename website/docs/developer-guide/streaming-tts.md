@@ -61,7 +61,7 @@ tts:
 |-------------|---------------------------------------|-------------|-------------|
 | elevenlabs  | chunked HTTP (`pcm_24000`)            | yes         | `ELEVENLABS_API_KEY` / `tts.elevenlabs` |
 | openai      | chunked HTTP (`with_streaming_response`, `pcm`) | yes | `tts.openai.api_key` → env → managed gateway |
-| gemini      | SSE (`streamGenerateContent?alt=sse`) | yes         | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+| gemini      | SSE (`streamGenerateContent?alt=sse`); designed `voice_...` IDs: Interactions WAV, buffered per sentence | yes (designed voices: per sentence) | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | `XAI_API_KEY` preferred, else xAI OAuth (the subscription bearer 403s on metered TTS) |
 | edge, piper, kitten, neutts, mistral, minimax, deepinfra, … | — | no (per-sentence sync fallback) | as usual |
 | plugin `TTSProvider` with `streams_pcm` | the plugin's `stream(format="pcm")` | yes, at its `stream_sample_rate` | the plugin's own |

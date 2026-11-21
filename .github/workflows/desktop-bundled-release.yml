@@ -254,7 +254,7 @@ jobs:
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ (inputs.build_commit != '' || inputs.channel != '' || inputs.release-phase != '') && github.sha || inputs.tag }}
           # Full checkout, always. Commit admission (require_pushed) needs the
@@ -461,7 +461,7 @@ jobs:
       # Check out the SHA the validate job admitted — never the tag ref,
       # which a force-push can move between jobs. This is the privileged
       # (release-signing) build; it must run the reviewed bytes.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
@@ -470,7 +470,7 @@ jobs:
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ github.sha }}
           path: .build/channel-controller
@@ -571,7 +571,7 @@ jobs:
 
       - name: Azure login (OIDC)
         if: vars.AZURE_CLIENT_ID != '' && inputs.skip-signed != true
-        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -845,7 +845,7 @@ jobs:
       # Check out the SHA the validate job admitted — never the tag ref,
       # which a force-push can move between jobs. This is the privileged
       # (release-signing) build; it must run the reviewed bytes.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           # Channel/commit builds derive versions from the request/env, not
@@ -856,7 +856,7 @@ jobs:
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ github.sha }}
           path: .build/channel-controller
@@ -1209,7 +1209,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git ca-certificates
 
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: 0
@@ -1385,7 +1385,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           # Claim custody is re-checked in place: full history and the tags.
@@ -1542,7 +1542,7 @@ jobs:
     steps:
       # Full checkout: stage-msixbundle.mjs imports ./msix-shared.mjs and the
       # job runs it with no checkout at all today — ERR_MODULE_NOT_FOUND.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           # Channel assembly/publishing code stays at the trusted controller.
           ref: ${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}
@@ -1611,7 +1611,7 @@ jobs:
 
       - name: Azure login (OIDC)
         if: inputs.skip-signed != true
-        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -1730,7 +1730,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ github.sha }}
           # require_pushed proves commit-build ancestry from local history;
@@ -1774,7 +1774,7 @@ jobs:
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
       # Use the admitted commit, not a tag that can move after validation.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           # Commit builds only rev-parse HEAD; tag builds verify ancestry.
@@ -2103,7 +2103,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           # Runs from the admitted commit so the renderer matches the built bytes.
           ref: ${{ needs.validate.outputs.sha }}
@@ -2137,7 +2137,7 @@ jobs:
             --summary-out "$GITHUB_STEP_SUMMARY" \
             --summary-failed-legs "$failed" --run-url "$RUN_URL"
       - name: Return to the trusted receipt controller
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -2173,7 +2173,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
       - uses: ./.github/actions/setup-pm
@@ -2209,7 +2209,7 @@ jobs:
       MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
       MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
       - uses: ./.github/actions/setup-pm
@@ -2260,7 +2260,7 @@ jobs:
       ]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ github.sha }}
       - name: Require every phase job

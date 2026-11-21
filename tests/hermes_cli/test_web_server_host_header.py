@@ -566,3 +566,153 @@ def test_a_loopback_public_url_behind_a_host_rewriting_proxy(
             with client.websocket_connect(url, headers=headers):
                 pass
         assert exc.value.code == 4403
+
+
+@pytest.mark.parametrize("origin, trusted", [
+    ("https://hermes.tailnet.ts.net", True),     # canonical public_url
+    ("https://hermes.example.com", True),        # extra_public_urls
+    ("https://other.example.com", False),        # not declared
+    ("https://hermes.example.com.evil.test", False),
+])
+def test_extra_public_urls_are_trusted_host_and_origin(monkeypatch, tmp_path, origin, trusted):
+    """A dashboard reachable under a second hostname lists it in dashboard.extra_public_urls; its
+    Host and WebSocket Origin pass the DNS-rebinding guard, an undeclared host still does not,
+    and the malformed entry in the list is skipped without dropping the valid ones."""
+    import json
+    import types
+
+    from hermes_cli.web_server_boundary import _dashboard_public_hosts, ws_host_origin_reason
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(json.dumps({"dashboard": {
+        "public_url": "https://hermes.tailnet.ts.net",
+        "extra_public_urls": ["not a url", "hermes.example.com", "https://hermes.example.com/"],
+    }}))
+
+    hosts = _dashboard_public_hosts()
+    assert hosts == {"hermes.tailnet.ts.net", "hermes.example.com"}
+    state = types.SimpleNamespace(
+        bound_host="127.0.0.1", bound_port=9119, auth_required=True, trusted_public_hosts=hosts)
+    host = origin.split("://", 1)[1]
+    sock = types.SimpleNamespace(headers={"host": host, "origin": origin})
+    assert (ws_host_origin_reason(sock, state) is None) is trusted
+
+
+def test_extra_public_urls_never_feed_the_oauth_redirect(monkeypatch, tmp_path):
+    import json
+
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(json.dumps({"dashboard": {
+        "public_url": "https://hermes.tailnet.ts.net",
+        "extra_public_urls": ["https://hermes.example.com"],
+    }}))
+    assert resolve_public_url() == "https://hermes.tailnet.ts.net"
+
+
+def _write_dashboard_cfg(monkeypatch, tmp_path, dashboard):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(json.dumps({"dashboard": dashboard}))
+
+
+def test_a_public_extra_url_engages_the_auth_gate_on_a_loopback_bind(monkeypatch, tmp_path):
+    from hermes_cli.web_server import should_require_dashboard_auth
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {"extra_public_urls": ["https://hermes.example.com"]})
+    assert should_require_dashboard_auth("127.0.0.1") is True
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {"extra_public_urls": ["http://localhost:3000"]})
+    assert should_require_dashboard_auth("127.0.0.1") is False
+
+
+def test_no_provider_message_names_extra_public_urls_when_it_is_the_trigger(monkeypatch, tmp_path):
+    from hermes_cli.web_server import _no_auth_provider_message
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {
+        "public_url": "http://localhost:3000",
+        "extra_public_urls": ["https://hermes.example.com"],
+    })
+    msg = _no_auth_provider_message("127.0.0.1")
+    assert "dashboard.extra_public_urls is set to https://hermes.example.com" in msg
+    assert "remove dashboard.extra_public_urls" in msg
+
+
+def test_a_malformed_extra_url_warns_without_the_oauth_redirect_claim(monkeypatch, tmp_path, caplog):
+    from hermes_cli.dashboard_auth import prefix
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {
+        "public_url": "https://hermes.tailnet.ts.net",
+        "extra_public_urls": ["hermes.example.com"],
+    })
+    prefix._warned_malformed_public_urls.clear()
+    with caplog.at_level("WARNING"):
+        assert prefix.resolve_extra_public_urls() == ()
+    text = caplog.text
+    assert "hermes.example.com" in text and "extra_public_urls" in text
+    assert "redirect" not in text.lower()
+
+
+@pytest.mark.parametrize("entry, shown", [
+    ("https://hermes.example.com:not-a-port", "hermes.example.com:not-a-port"),
+    ("https://hermes.example.com:99999", "hermes.example.com:99999"),
+    ("https://:8443", ":8443"),
+    ("   ", "<empty>"),
+])
+def test_an_extra_url_with_a_bad_authority_or_blank_is_skipped_with_a_warning(
+        monkeypatch, tmp_path, caplog, entry, shown):
+    from hermes_cli.dashboard_auth import prefix
+    from hermes_cli.web_server_boundary import _dashboard_public_hosts
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {"extra_public_urls": [entry]})
+    prefix._warned_malformed_public_urls.clear()
+    with caplog.at_level("WARNING"):
+        assert prefix.resolve_extra_public_urls() == ()
+    assert shown in caplog.text and "extra_public_urls" in caplog.text
+    assert "hermes.example.com" not in _dashboard_public_hosts()
+
+
+@pytest.mark.parametrize("origin, trusted", [
+    ("https://localhost:8443", True),    # extra_public_urls: a second loopback proxy
+    ("https://localhost:8444", False),   # another loopback port
+])
+def test_a_loopback_extra_public_url_is_a_trusted_origin_for_cors_and_sockets(
+        monkeypatch, tmp_path, origin, trusted):
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import hermes_cli.web_server as ws
+
+    _write_dashboard_cfg(monkeypatch, tmp_path, {
+        "public_url": "http://localhost:3000",
+        "extra_public_urls": ["https://localhost:8443"],
+    })
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    for name in ("trusted_public_hosts", "trusted_public_origins", "auth_required"):
+        monkeypatch.setattr(ws.app.state, name, None, raising=False)
+    if hasattr(ws.app.state, "listener_public_url"):
+        monkeypatch.delattr(ws.app.state, "listener_public_url")
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9120, raising=False)
+    monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    ws._configure_auth_gate("127.0.0.1", False, None, None)
+    assert ws.app.state.auth_required is False
+    client = TestClient(ws.app)
+
+    headers = {"Host": "127.0.0.1:9120", "Origin": origin}
+    grant = client.get("/api/status", headers=headers)
+    assert (grant.headers.get("access-control-allow-origin") == origin) is trusted
+    url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+    if trusted:
+        with client.websocket_connect(url, headers=headers):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert exc.value.code == 4403

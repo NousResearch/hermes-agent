@@ -27,14 +27,18 @@ _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
 def _dashboard_public_hosts() -> frozenset[str]:
-    """Return the exact hostname declared by ``dashboard.public_url``.
+    """Return the exact hostnames declared by ``dashboard.public_url`` and
+    ``dashboard.extra_public_urls``.
 
-    One source of truth for OAuth redirects, Host and WS Origin validation.
-    Malformed or unset values fail closed as an empty set.
+    One source of truth for Host and WS Origin validation (OAuth redirects use ``public_url``
+    alone). Malformed or unset values fail closed as an empty set.
     """
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_cli.dashboard_auth.prefix import resolve_extra_public_urls, resolve_public_url
 
-    return public_url_hosts(resolve_public_url())
+    hosts = public_url_hosts(resolve_public_url())
+    for url in resolve_extra_public_urls():
+        hosts |= public_url_hosts(url)
+    return hosts
 
 
 def public_url_hosts(public_url: str) -> frozenset[str]:
@@ -228,10 +232,13 @@ def public_url_origins(public_url: str) -> frozenset[tuple[str, str, int]]:
 
 
 def _dashboard_public_origins() -> frozenset[tuple[str, str, int]]:
-    """:func:`public_url_origins` of ``dashboard.public_url``."""
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    """:func:`public_url_origins` of ``dashboard.public_url`` and ``dashboard.extra_public_urls``."""
+    from hermes_cli.dashboard_auth.prefix import resolve_extra_public_urls, resolve_public_url
 
-    return public_url_origins(resolve_public_url())
+    origins = public_url_origins(resolve_public_url())
+    for url in resolve_extra_public_urls():
+        origins |= public_url_origins(url)
+    return origins
 
 
 def is_trusted_local_origin(origin: str, state) -> bool:

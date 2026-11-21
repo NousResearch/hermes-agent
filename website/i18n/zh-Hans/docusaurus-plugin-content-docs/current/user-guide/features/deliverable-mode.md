@@ -53,11 +53,16 @@ Agent 需要使用的机制很简单：将文件渲染到绝对路径（例如 `
 kanban_complete(
     summary="rendered Q3 revenue chart and report",
     artifacts=[
-        "/tmp/q3-revenue.png",
-        "/tmp/q3-report.pdf",
+        "$HERMES_KANBAN_WORKSPACE/q3-revenue.png",
+        "$HERMES_KANBAN_WORKSPACE/q3-report.pdf",
     ],
 )
 ```
+
+Worker 应将可交付成果写入自己的任务工作区（`$HERMES_KANBAN_WORKSPACE`）。
+这是 kernel 唯一会复制到任务持久附件中的位置。工作区之外的路径会按原样
+记录、不会被复制——因此放在共享 `~/.hermes/cache/scratch` 目录中的可交付成果
+不会被保留，而且该目录在最后一次写入 24 小时后就会被删除。
 
 当 gateway 通知器将"任务完成"消息发送给在 Slack/Telegram 等平台订阅该任务的用户时，也会将每个 artifact 作为原生附件上传到对应聊天中。用户在同一位置获得可交付成果和摘要。
 

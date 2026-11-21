@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
+from utils.files import read_regular_text
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
@@ -383,7 +384,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
-    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
+    frontmatter, body = _parse_frontmatter(read_regular_text(skill_md))
     # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
     if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
         return
@@ -618,7 +619,7 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
         if skill_md is None or not skill_md.is_file():
             continue
         try:
-            parsed, _ = _parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
+            parsed, _ = _parse_frontmatter(read_regular_text(skill_md, errors="replace"))
         except OSError:
             continue
         # Offer from the file we will actually load, not registration-time hints.

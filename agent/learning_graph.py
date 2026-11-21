@@ -95,7 +95,8 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
             if EXCLUDED_SKILL_DIRS.intersection(skill_md.relative_to(root).parts):
                 continue
             try:
-                text = skill_md.read_text(encoding="utf-8-sig")[:4000]
+                from utils.files import read_regular_text
+                text = read_regular_text(skill_md)[:4000]
             except OSError:
                 continue
             try:

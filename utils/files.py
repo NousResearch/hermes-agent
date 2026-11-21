@@ -50,14 +50,38 @@ def content_digest(data: bytes) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
+class NotRegularFileError(OSError):
+    """The path names a FIFO, socket or device, not a regular file."""
+
+
+def read_regular_bytes(path: str | Path) -> bytes:
+    """The bytes of ``path``, refusing (:class:`NotRegularFileError`) anything that is not a regular
+    file. Opened with ``O_NONBLOCK`` and judged by ``fstat`` on that descriptor, so a named pipe
+    returns at once instead of waiting for a writer, and a link to ``/dev/zero`` is refused before
+    a read that would never end. For files Hermes discovers by name in user-controlled trees
+    (``SKILL.md``, ``plugin.yaml``), where one such entry hung every listing and prompt build."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegularFileError(errno.EINVAL, "not a regular file", str(path))
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            return f.read()
+    finally:
+        os.close(fd)
+
+
+def read_regular_text(path: str | Path, *, encoding: str = "utf-8-sig", errors: str = "strict") -> str:
+    """:func:`read_regular_bytes` decoded; ``utf-8-sig`` drops a Notepad BOM."""
+    return read_regular_bytes(path).decode(encoding, errors)
+
+
 def _file_digest(path: str | Path) -> str:
     """:func:`content_digest` of the file's bytes. A file that stats but cannot be read here
-    (permission, removed since the stat, a directory) gets ``<ErrorName>``, which no hex digest
-    matches: the key differs from any cached one, so the caller's own read runs and meets the error
-    in its normal recovery, as it did when the key was stat-only and never opened the file."""
+    (permission, removed since the stat, a directory, a FIFO or device) gets ``<ErrorName>``,
+    which no hex digest matches: the key differs from any cached one, so the caller's own read runs
+    and meets the error in its normal recovery, as it did when the key was stat-only."""
     try:
-        with open(path, "rb") as f:
-            return content_digest(f.read())
+        return content_digest(read_regular_bytes(path))
     except OSError as exc:
         return f"<{type(exc).__name__}>"
 

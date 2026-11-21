@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
-import { shouldRefreshSessions } from "@/lib/session-refresh";
+import { sessionsSignature, shouldRefreshSessions } from "@/lib/session-refresh";
 import {
   importSummary,
   parseImportSessions,
@@ -829,7 +829,7 @@ export default function SessionsPage() {
     [allSourceOptions],
   );
 
-  const sessionQueryOptions = useMemo(() => {
+  const sessionFilterOptions = useMemo(() => {
     if (selectedSources !== null) {
       if (selectedSources.length === 0) {
         return allSourceNames.length > 0
@@ -858,6 +858,14 @@ export default function SessionsPage() {
     }
     return {};
   }, [selectedSources, sessionCategory, allSourceNames]);
+
+  // Order by last activity, like the sidebar's Recent Sessions list. The API
+  // default is creation time, which buries a long-lived conversation under
+  // every session created since (cron runs especially).
+  const sessionQueryOptions = useMemo(
+    () => ({ ...sessionFilterOptions, order: "recent" as const }),
+    [sessionFilterOptions],
+  );
 
   const categoryDefaultSources = useMemo(() => {
     return allSourceNames.filter((source) =>
@@ -1029,12 +1037,12 @@ export default function SessionsPage() {
     loadStats();
   }, [loadStats]);
 
-  // Refs for the overview poll's new-session detection. The poll effect
+  // Refs for the overview poll's change detection. The poll effect
   // below is mounted once with stable deps, so it reads the current page
-  // and the last-seen newest session id through refs instead of capturing
-  // stale values. ``newestSeenRef`` starts null so the first poll sets a
-  // baseline without triggering a redundant reload (mount already loads).
-  const newestSeenRef = useRef<string | null>(null);
+  // and the last-seen ordered session ids through refs instead of capturing
+  // stale values. ``overviewSignatureRef`` starts null so the first poll sets
+  // a baseline without triggering a redundant reload (mount already loads).
+  const overviewSignatureRef = useRef<string | null>(null);
   const pageRef = useRef(page);
 
   useEffect(() => {
@@ -1069,16 +1077,18 @@ export default function SessionsPage() {
           setOverviewSessions(r.sessions);
           // The dashboard server and a terminal CLI are separate
           // processes sharing one session DB — there is no push channel,
-          // so we detect sessions created in another process here. The
-          // overview poll already fetches the 50 newest sessions, so we
-          // reuse its head id as a cheap change signal: when it changes,
-          // silently refresh the paginated list so the new session shows
-          // up in real time without a visible loading flicker.
-          const newest = r.sessions[0]?.id ?? null;
-          if (shouldRefreshSessions(newestSeenRef.current, newest)) {
+          // so we detect sessions created or continued in another process
+          // here. The overview poll already fetches the 50 most recently
+          // active sessions, so we reuse their ordered ids as a cheap change
+          // signal: when it changes (a new head, or sessions behind an
+          // unchanged head swapping places), silently refresh the paginated
+          // list so the new activity shows up in real time without a
+          // visible loading flicker.
+          const signature = sessionsSignature(r.sessions);
+          if (shouldRefreshSessions(overviewSignatureRef.current, signature)) {
             loadSessions(pageRef.current, true);
           }
-          newestSeenRef.current = newest;
+          overviewSignatureRef.current = signature;
         })
         .catch(() => {});
     };

@@ -637,3 +637,190 @@ class TestDefaultUserAgent:
         finally:
             await client.aclose()
         assert caller == {"user-agent": "custom-agent/1.0"}
+
+
+# security.proxy_fake_ip_cidrs: an egress proxy's fake-IP DNS range (opt-in)
+# ---------------------------------------------------------------------------
+
+_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
+               "NO_PROXY", "no_proxy")
+_FAKE = "198.18.0.0/15"
+
+
+def _dns(mapping):
+    """getaddrinfo that answers *mapping* names and leaves everything else (the test proxy) to the real resolver."""
+    real = socket.getaddrinfo
+
+    def fake(host, port, *args, **kwargs):
+        if host in mapping:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (mapping[host], port or 0))]
+        return real(host, port, *args, **kwargs)
+
+    return patch("socket.getaddrinfo", side_effect=fake)
+
+
+class TestProxyFakeIpCidrs:
+    """Some sandbox runtimes answer every DNS query with a synthetic 198.18.x address and resolve the real name
+    at their HTTP proxy. The opt-in lets such answers through ONLY for proxied requests."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch):
+        for var in (*_PROXY_VARS, "HERMES_ALLOW_PRIVATE_URLS"):
+            monkeypatch.delenv(var, raising=False)
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def _optin(self, monkeypatch, cidrs=_FAKE):
+        cfg = {"security": {"proxy_fake_ip_cidrs": cidrs}}
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: cfg)
+        _reset_allow_private_cache()
+
+    def test_allowed_with_opt_in_and_a_proxy(self, monkeypatch):
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with _resolves_to("198.18.0.42"):
+            assert is_safe_url("https://files.example.com/files-pri/T1-F1/download/a.png") is True
+
+    def test_refused_without_the_opt_in(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with _resolves_to("198.18.0.42"):
+            assert is_safe_url("https://files.example.com/x") is False
+
+    def test_refused_with_the_opt_in_but_no_proxy(self, monkeypatch):
+        self._optin(monkeypatch)
+        with _resolves_to("198.18.0.42"):
+            assert is_safe_url("https://files.example.com/x") is False
+        # A proxy for the other scheme, or NO_PROXY covering the host, is no proxy for this request.
+        monkeypatch.setenv("HTTP_PROXY", "http://10.200.0.1:3128")
+        with _resolves_to("198.18.0.42"):
+            assert is_safe_url("https://files.example.com/x") is False
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        monkeypatch.setenv("NO_PROXY", ".example.com")
+        with _resolves_to("198.18.0.42"):
+            assert is_safe_url("https://files.example.com/x") is False
+
+    @pytest.mark.parametrize("ip", ["10.0.0.5", "192.168.1.9", "127.0.0.1", "169.254.169.254", "100.100.100.200",
+                                    "172.16.0.1", "198.51.100.7", "::1"])
+    def test_other_private_loopback_and_metadata_still_refused_with_the_opt_in(self, monkeypatch, ip):
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with _resolves_to(ip):
+            assert is_safe_url("https://files.example.com/x") is False
+        assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+        with _resolves_to("198.18.0.42", ip):  # one bad answer among fake ones still blocks
+            assert is_safe_url("https://files.example.com/x") is False
+
+    @pytest.mark.parametrize("wrapped", ["::ffff:198.18.0.42", "::ffff:0:c612:2a"])
+    def test_ipv4_wrapped_fake_answer_is_read_through(self, monkeypatch, wrapped):
+        """A resolver may answer the fake IPv4 inside an IPv6 wrapper (mapped or translated)."""
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with _resolves_to("198.18.0.42", wrapped):
+            assert is_safe_url("https://files.example.com/x") is True
+        with _resolves_to("::ffff:10.0.0.5"):
+            assert is_safe_url("https://files.example.com/x") is False
+
+    def test_upstream_fake_ip_ranges_is_independent(self, monkeypatch):
+        """security.fake_ip_ranges (a local TUN proxy) is a separate knob: unset, the proxy opt-in
+        alone does not make the range dialable at connect time."""
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with patch("hermes_cli.config.read_raw_config", return_value={"security": {"proxy_fake_ip_cidrs": [_FAKE]}}):
+            with _resolves_to("198.18.0.42"):
+                assert is_safe_url("https://files.example.com/x") is True
+                with pytest.raises(SSRFConnectionBlocked):
+                    _resolved_http_connect_ips("files.example.com", 443, "https")
+
+    def test_metadata_hostname_still_refused_with_the_opt_in(self, monkeypatch):
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with _resolves_to("198.18.0.42"):
+            assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+
+    @pytest.mark.parametrize("cidrs", ["0.0.0.0/0", "127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/7", "::/0",
+                                       "fe80::/10", "not-a-cidr", "198.0.0.0/7",
+                                       # the classes security.fake_ip_ranges refuses are refused here too
+                                       "10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"])
+    def test_unsafe_or_malformed_ranges_are_ignored(self, monkeypatch, cidrs):
+        from tools.url_safety import _proxy_fake_ip_networks
+
+        self._optin(monkeypatch, cidrs)
+        assert _proxy_fake_ip_networks() == ()
+
+    def test_config_key_is_read(self, monkeypatch):
+        from tools.url_safety import _proxy_fake_ip_networks
+
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"security": {"proxy_fake_ip_cidrs": [_FAKE, "127.0.0.0/8"]}}):
+            assert [str(n) for n in _proxy_fake_ip_networks()] == [_FAKE]
+        _reset_allow_private_cache()
+        with patch("hermes_cli.config.read_raw_config", return_value={"security": {}}):
+            assert _proxy_fake_ip_networks() == ()
+
+    def test_direct_connect_to_a_fake_ip_is_refused_even_with_the_opt_in(self, monkeypatch):
+        """The connect-time guard only sees DIRECT connects: the opt-in never applies there."""
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        with _dns({"files.example.test": "198.18.0.42"}):
+            with pytest.raises(SSRFConnectionBlocked, match="private/internal"):
+                _resolved_http_connect_ips("files.example.test", 443, "https")
+
+    def test_real_download_goes_through_the_proxy_and_a_direct_one_is_refused(self, monkeypatch):
+        """End to end with the guarded client: the proxy (a private address itself) carries the request; without
+        the proxy env the same fetch dials the fake address directly and is refused."""
+        import http.server
+        import threading
+
+        from tools.url_safety import create_ssrf_safe_client
+
+        seen = []
+
+        class Proxy(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                body = b"file-bytes"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Proxy)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        url = "http://files.example.test/files-pri/T1-F1/download/a.png"
+        try:
+            self._optin(monkeypatch)
+            monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{srv.server_port}")
+            with _dns({"files.example.test": "198.18.0.42"}):
+                assert is_safe_url(url) is True
+                with create_ssrf_safe_client(timeout=10) as client:
+                    r = client.get(url)
+                assert r.status_code == 200 and r.content == b"file-bytes" and seen == [url]
+            monkeypatch.delenv("HTTP_PROXY")
+            with _dns({"files.example.test": "198.18.0.42"}):
+                assert is_safe_url(url) is False
+                with create_ssrf_safe_client(timeout=10) as client:
+                    with pytest.raises(SSRFConnectionBlocked):
+                        client.get(url)
+            assert seen == [url]
+        finally:
+            srv.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_redirect_into_a_private_range_is_refused(self, monkeypatch):
+        from gateway.platforms.base import ssrf_redirect_guard as _ssrf_redirect_guard
+
+        self._optin(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.200.0.1:3128")
+        monkeypatch.setenv("HTTP_PROXY", "http://10.200.0.1:3128")
+        for target in ("http://10.0.0.5/internal", "http://169.254.169.254/latest/meta-data", "http://127.0.0.1:8080/"):
+            resp = _FakeResponse(is_redirect=True, location=target, url="https://files.example.com/a")
+            with pytest.raises(ValueError, match="Blocked redirect"):
+                await _ssrf_redirect_guard(resp)
+        # A redirect to another name the sandbox DNS fakes is fine through the proxy.
+        resp = _FakeResponse(is_redirect=True, location="https://files-origin.example.com/a", url="https://files.example.com/a")
+        with _dns({"files-origin.example.com": "198.18.0.77"}):
+            await _ssrf_redirect_guard(resp)

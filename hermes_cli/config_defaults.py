@@ -1712,10 +1712,10 @@ DEFAULT_CONFIG = {
     },
     "security": {  # Security: URL/private-network guards, redaction and approval presentation.
         "allow_private_urls": False,  # private IPs for web/vision/media + cloud/CDP browsers; not local/sidecar Chromium
-        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
-        # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
-        # dials them instead of rejecting them as private. Empty = normal private-address verdict.
+        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced): its sentinels,
+        # not internal hosts, so the guard dials them instead of rejecting them. Empty = normal private verdict.
         "fake_ip_ranges": [],
+        "proxy_fake_ip_cidrs": [],  # an egress proxy's fake-IP DNS range: passes only for a request that proxy carries
         "redact_secrets": True,
         "redact_phone_numbers": True,  # false: E.164 numbers shown in replies/chat only, never other secrets
         # Ack for unattended model overrides on a vendor-trains-on-prompts tier (startup still warns).

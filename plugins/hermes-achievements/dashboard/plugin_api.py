@@ -152,10 +152,10 @@ def _data_dir() -> Path:
     migrate on first read (see ``_data_file``)."""
     try:
         from plugins.plugin_storage import plugin_data_dir
-        return plugin_data_dir("hermes-achievements")
-    except Exception:
+    except ImportError:
         # Standalone dashboard import (no plugins package on sys.path): same layout, computed locally.
         return mkdir_under_hermes_home(get_hermes_home() / "plugin-data" / "hermes-achievements")
+    return plugin_data_dir("hermes-achievements")
 
 
 def _data_file(name: str) -> Path:

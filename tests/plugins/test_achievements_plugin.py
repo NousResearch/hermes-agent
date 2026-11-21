@@ -341,7 +341,7 @@ def test_scan_sessions_names_the_store_it_could_not_open(plugin_api):
 
 @pytest.mark.parametrize("move", ("delete", "rename"))
 def test_data_dir_refuses_a_deleted_or_renamed_profile_home(plugin_api, tmp_path, monkeypatch, move):
-    """The standalone fallback refuses too: its ``except Exception`` also catches plugin_data_dir's refusal."""
+    """plugin_data_dir's refusal reaches the caller; the standalone fallback is for a missing import only."""
     from tests.fixtures.dead_profile_home import dead_named_home
 
     home = dead_named_home(tmp_path / "dead", move)
@@ -349,6 +349,31 @@ def test_data_dir_refuses_a_deleted_or_renamed_profile_home(plugin_api, tmp_path
     with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
         plugin_api._data_dir()
     assert not home.exists()
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_data_dir_falls_back_only_when_plugin_storage_is_missing(plugin_api, tmp_path, monkeypatch, move):
+    """A refusal from plugin_data_dir is not a missing import: _data_dir must not retry it locally."""
+    import builtins
+
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path / "dead", move)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fallback = []
+    monkeypatch.setattr(plugin_api, "mkdir_under_hermes_home", lambda path: fallback.append(path) or path)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        plugin_api._data_dir()
+    assert fallback == []
+    real_import = builtins.__import__
+
+    def no_plugin_storage(name, *args, **kwargs):
+        if name == "plugins.plugin_storage":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", no_plugin_storage)
+    assert plugin_api._data_dir() == home / "plugin-data" / "hermes-achievements"
+    assert fallback == [home / "plugin-data" / "hermes-achievements"]
 
 
 @pytest.mark.parametrize("move", ("delete", "rename"))

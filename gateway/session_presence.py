@@ -14,7 +14,9 @@ One socket can serve several profiles, and session ids are unique only per profi
 input is kept for the profile whose authority saw it. A report names sessions by id alone, so it is
 kept unresolved and resolved at read time: it counts for the one profile this connection is attached
 to that id in, and for none while the id names attached sessions in more than one (no evidence is
-made up). Resolving at read time also counts a report that raced ahead of its attach.
+made up). Resolving at read time also counts a report that raced ahead of its attach. Once the
+connection is attached to no session of an id, its report for that id is dropped (``detached``), so
+it never counts for another profile's same-id session attached later.
 
 A record is read only while its connection is attached to that session (``viewers``), so a detached
 or closed client is never a viewer. Nothing is persisted: a restarted owner knows nobody. No
@@ -92,6 +94,10 @@ class ClientPresence:
         with self._lock:
             self._records.clear()
 
+    def forget_report(self, session_id):
+        with self._lock:
+            self._records.pop((_REPORTED, session_id), None)
+
     def read(self, profile_id, session_id, now, *, reported=True):
         """``(idle_seconds, basis, can_alert)`` for *session_id* of *profile_id*, or None when nothing
         was seen: the newer of its owner-seen input and, when *reported*, the last report naming it."""
@@ -168,15 +174,27 @@ def report(transport, params) -> str | None:
     return None
 
 
+def _attached(authority, transport, session_id):
+    live = authority.sessions.get(session_id)
+    return live is not None and any(authority.events.get(actor.transport_id) is transport
+                                    for actor in list(live.subscribers.values()))
+
+
 def _attached_elsewhere(authority, transport, session_id):
     """Whether *transport* is also attached to a same-id session of another profile in this process."""
     from gateway.session_authorities import all_authorities
-    for other in all_authorities(getattr(authority, 'runner', None)):
-        live = other.sessions.get(session_id) if other is not authority else None
-        if live is not None and any(other.events.get(actor.transport_id) is transport
-                                    for actor in list(live.subscribers.values())):
-            return True
-    return False
+    return any(_attached(other, transport, session_id)
+               for other in all_authorities(getattr(authority, 'runner', None)) if other is not authority)
+
+
+def detached(authority, transport, session_id):
+    """*transport* left *session_id* on *authority*. Once it is attached to no session of that id in
+    this process its report for the id is dropped, so the report never counts for another profile's
+    same-id session it attaches later; a report sent before the first attach still counts."""
+    presence = getattr(transport, 'client_presence', None)
+    if presence is not None and not (_attached(authority, transport, session_id)
+                                     or _attached_elsewhere(authority, transport, session_id)):
+        presence.forget_report(session_id)
 
 
 def viewers(authority, session_id) -> list[dict]:

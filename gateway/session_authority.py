@@ -428,6 +428,8 @@ class SessionAuthority:
         for subscription, member in list(live.subscribers.items()):
             if self.events.get(member.transport_id) is transport:
                 del live.subscribers[subscription]
+        from gateway.session_presence import detached
+        detached(self, transport, session_id)
 
     async def detach(self, actor, subscription_id, *, end_reason=None, orphaned=False):
         for session_id, live in self.sessions.items():
@@ -438,6 +440,8 @@ class SessionAuthority:
                 transport = self.events.get(actor.transport_id)
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
+                    from gateway.session_presence import detached
+                    detached(self, transport, session_id)
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
                     live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable

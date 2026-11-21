@@ -2431,8 +2431,8 @@ def _env_write_lock(env_path: Path):
         yield
 
 
-def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> None:
-    """Atomically replace ``.env`` (tmp file + fsync + rename).
+def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool, newline: Optional[str] = None) -> None:
+    """Atomically replace ``.env`` (tmp file + fsync + rename); ``newline=""`` keeps the lines' own endings.
     ``preserve_mode`` keeps the original file mode (e.g. 0640 for Docker volume mounts) instead of
     letting ``_secure_file`` tighten to 0600; a new file is always secured."""
     original_mode = None
@@ -2442,7 +2442,7 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
         pass
     fd, tmp_path = mkstemp_beside(env_path, suffix=".tmp", prefix=".env_")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())

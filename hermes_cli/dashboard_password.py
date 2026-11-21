@@ -243,18 +243,100 @@ def _inherited_shadows() -> list[str]:
     return [name for name in SHADOWING_ENV if (environ_before_dotenv(name) or "").strip()]
 
 
+def _dotenv_bindings(text: str) -> list:
+    """*text*'s assignments, comments and errors as python-dotenv (the loader's parser) reads them, in file
+    order; their ``original.string`` values joined give *text* back."""
+    import io
+
+    from dotenv.parser import parse_stream
+    return list(parse_stream(io.StringIO(text)))
+
+
+def _multiline_env(env_path: Path) -> Optional[bytes]:
+    """*env_path*'s bytes when it holds a quoted value over several lines, else None. The line-by-line
+    ``remove_env_value`` would cut such a value after its first line, or remove a look-alike line inside it.
+    Read as latin-1, like the loader reads a file that is not UTF-8: every line break and quote is ASCII."""
+    try:
+        raw = env_path.read_bytes()
+    except OSError:
+        return None
+    for binding in _dotenv_bindings(raw.decode("latin-1").removeprefix("\u00ef\u00bb\u00bf")):
+        if binding.key is not None and not binding.error and "\n" in binding.original.string.strip():
+            return raw
+    return None
+
+
+def _multiline_refusal() -> Optional[str]:
+    """Why the overrides cannot be removed from this home's ``.env`` without changing other bytes, or None:
+    it holds a value over several lines, is not UTF-8 text (which the rewrite would re-encode) and has an
+    override assignment to remove. With none to remove, the file is left alone, as on main."""
+    from hermes_cli.config import get_env_path
+    raw = _multiline_env(get_env_path())
+    if raw is None:
+        return None
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        if not _overrides_in(raw):
+            return None
+        return (f"{get_env_path()} holds a quoted value over several lines and is not UTF-8 text, so "
+                f"{', '.join(SHADOWING_ENV)} cannot be removed from it safely: remove them there by hand")
+    return None
+
+
+def _overrides_in(raw: bytes) -> list[str]:
+    """The :data:`SHADOWING_ENV` names python-dotenv reads as assignments in *raw* (latin-1, as the loader
+    reads a file that is not UTF-8); a look-alike line inside another quoted value is not one."""
+    text = raw.decode("latin-1").removeprefix("\u00ef\u00bb\u00bf")
+    return [b.key for b in _dotenv_bindings(text) if b.key in SHADOWING_ENV and not b.error]
+
+
+def _remove_complete_assignments(env_path: Path, text: str) -> list[str]:
+    """Remove every :data:`SHADOWING_ENV` assignment python-dotenv reads in *text* (the file's content),
+    whole, and write every other byte back as it was (the blank lines before one included); returns the
+    names removed. A look-alike line inside another quoted value is part of that value, so it stays."""
+    from hermes_cli.config import _publish_env_value, _write_env_lines, invalidate_env_cache
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    kept, removed = [bom], []
+    for binding in _dotenv_bindings(text[len(bom):]):
+        if binding.key in SHADOWING_ENV and not binding.error:
+            own = binding.original.string
+            lead = own[:len(own) - len(own.lstrip())]
+            kept.append(lead[:lead.rfind("\n") + 1])
+            removed.append(binding.key)
+        else:
+            kept.append(binding.original.string)
+    if removed:
+        _write_env_lines(env_path, ["".join(kept)], preserve_mode=True, newline="")  # its own line endings, once
+    for name in set(removed):
+        _publish_env_value(name, None)
+    invalidate_env_cache()
+    return [name for name in SHADOWING_ENV if name in removed]
+
+
 def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
-    """Remove the names in :data:`SHADOWING_ENV` from this home's ``.env``; return (removed, still there)."""
-    from hermes_cli.config import load_env, remove_env_value
-    in_dotenv = [name for name in SHADOWING_ENV if name in load_env()]
-    removed, left = [], []
-    for name in in_dotenv:
-        try:
-            gone = remove_env_value(name)
-        except OSError:
-            gone = False
-        (removed if gone else left).append(name)
-    return removed, left
+    """Remove the names in :data:`SHADOWING_ENV` from this home's ``.env``; return (removed, still there).
+    A ``.env`` with a quoted value over several lines loses whole assignments as python-dotenv reads them,
+    under the ``.env`` write lock; any other goes through ``remove_env_value`` line by line, as before."""
+    from hermes_cli.config import _env_write_lock, get_env_path, load_env, remove_env_value
+    env_path = get_env_path()
+    with _env_write_lock(env_path):  # reentrant: remove_env_value takes it again
+        raw = _multiline_env(env_path)
+        if raw is not None:
+            try:
+                return _remove_complete_assignments(env_path, raw.decode("utf-8")), []
+            except UnicodeDecodeError:  # not UTF-8: _multiline_refusal let it through, so none to remove
+                return [], _overrides_in(raw)
+            except OSError:  # unwritable
+                return [], [name for name in SHADOWING_ENV if name in load_env()]
+        removed, left = [], []
+        for name in [name for name in SHADOWING_ENV if name in load_env()]:
+            try:
+                gone = remove_env_value(name)
+            except OSError:
+                gone = False
+            (removed if gone else left).append(name)
+        return removed, left
 
 
 def _hermes_command(home) -> str:
@@ -331,7 +413,7 @@ def cmd_dashboard_password(args) -> int:
     from hermes_cli._startup_fast import project_root_str
     from hermes_cli.config import get_env_path
     project_env = Path(project_root_str()) / ".env"
-    refusal = (_case_variant_refusal([get_env_path(), project_env]) or _shadow_refusal()
+    refusal = (_case_variant_refusal([get_env_path(), project_env]) or _shadow_refusal() or _multiline_refusal()
                or _managed_config_refusal(username) or _checkout_refusal(project_env))
     if refusal:
         print(f"✗ {refusal}; nothing was changed.", file=sys.stderr)

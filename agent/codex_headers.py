@@ -43,11 +43,15 @@ def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BAS
     endpoint gets Hermes' originator and version, custom endpoints keep the
     codex_cli_rs compatibility identity. The account headers come from the
     OAuth JWT (see :func:`codex_account_headers`).
+
+    The version comes from :func:`advertised_base_version`, never from a live git probe:
+    these headers are built while an agent client is constructed, and a git call there
+    can block a worker's whole boot (#518).
     """
     if is_official_codex_base_url(base_url):
-        from hermes_cli.version_info import get_version_info
+        from hermes_cli.version_info import advertised_base_version
         headers = {
-            "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+            "User-Agent": f"HermesAgent/{advertised_base_version()}",
             "originator": "hermes-agent",
         }
     else:

@@ -12,13 +12,16 @@ Resolution order:
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from hermes_cli.steward import UPDATE_MECHANISMS
+from hermes_cli.steward import UPDATE_MECHANISMS, read_install_stamp
 from hermes_cli.update_channel import STABLE_TAG_RE
 from hermes_cli._startup_fast import project_root_str
 
@@ -59,16 +62,73 @@ def _derived_version(
     return base_version
 
 
-def _run_git(repo_dir: Path, *args: str) -> str | None:
+_GIT_TIMEOUT_SECONDS = 3
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Best-effort kill of a probe that overran its budget, children included.
+
+    Killing only the direct child is not enough: the probe's own children (a lazy
+    fetch, a hook, a credential helper) outlive it and keep its handles open.
+    """
     try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
-            check=False,
-        )
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.wait(timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _run_bounded_process(command: list[str], *, cwd: Path, timeout: float) -> tuple[int, str] | None:
+    """Run ``command`` under a hard wall-clock bound; ``(returncode, stdout)`` or None.
+
+    Output lands in a temp file, never in a pipe. A ``capture_output`` pipe only reaches
+    EOF when EVERY holder of its write end has exited, so a command that leaves a child
+    behind holds the reader thread open past ``timeout=``; ``subprocess.run`` then blocks
+    forever in its post-timeout ``communicate()`` retry, which waits on that thread with
+    no timeout (this hung Codex client construction in a worker for minutes on Windows,
+    #518). A file sink has no reader to pin: the bounded ``wait`` is the only clock, and
+    an overrun kills the tree and reports failure.
+    """
+    try:
+        with tempfile.TemporaryFile() as sink:
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=sink,
+                stderr=subprocess.DEVNULL,
+                cwd=str(cwd),
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                start_new_session=os.name != "nt",
+            )
+            try:
+                returncode = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(proc)
+                return None
+            sink.seek(0)
+            raw = sink.read()
     except (OSError, subprocess.SubprocessError):
         return None
-    value = (result.stdout or "").strip()
-    return value if result.returncode == 0 and value else None
+    return returncode, raw.decode("utf-8", "replace")
+
+
+def _run_git(repo_dir: Path, *args: str) -> str | None:
+    result = _run_bounded_process(["git", *args], cwd=repo_dir, timeout=_GIT_TIMEOUT_SECONDS)
+    if result is None:
+        return None
+    returncode, stdout = result
+    value = stdout.strip()
+    return value if returncode == 0 and value else None
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -215,28 +275,17 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     commit_date: int | None = None
     if commit_date_raw and commit_date_raw.isdigit():
         commit_date = int(commit_date_raw)
-    try:
-        # -uno: skip the untracked-file scan. This runs on the startup-banner
-        # path, and a full working-tree walk costs real time on large or cold
-        # checkouts. Same semantics as write_install_stamp.py.
-        # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
-        # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
-        # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
-        # no optional lock.
-        status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
-        if not include_untracked:
-            status_command.append("-uno")
-        dirty_result = subprocess.run(
-            status_command,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=3,
-            cwd=str(repo_dir),
-            check=False,
-        )
-        dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
-    except (OSError, subprocess.SubprocessError):
-        dirty = False
+    # -uno: skip the untracked-file scan. This runs on the startup-banner
+    # path, and a full working-tree walk costs real time on large or cold
+    # checkouts. Same semantics as write_install_stamp.py.
+    # The 3 s bound kills a slow status (a partial clone lazily fetching a tree, a cold or
+    # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
+    # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
+    # no optional lock.
+    status_args = ["--no-optional-locks", "status", "--porcelain"]
+    if not include_untracked:
+        status_args.append("-uno")
+    dirty = _run_git(repo_dir, *status_args) is not None
 
     tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
     releases = [
@@ -311,6 +360,30 @@ def get_version_info() -> VersionInfo:
 
     _cached_version_info = info
     return info
+
+
+def advertised_base_version() -> str:
+    """The release version outbound request identity advertises — never runs git.
+
+    Client construction asks for it (``codex_cloudflare_headers`` and siblings), inside a
+    worker's boot path where a wedged probe costs the whole worker (#518), and a
+    User-Agent only needs the release the build shipped. The install stamp already
+    carries that; its live-commit check is provenance hygiene for :func:`get_version_info`,
+    not request identity, so it is skipped here rather than paid for. Falls back to the
+    identity this process has already resolved (never a new resolution), then "unknown".
+    """
+    try:
+        from pm.paths import repo_root
+
+        base = str(read_install_stamp(repo_root()).get("baseVersion") or "").strip()
+    except (ImportError, OSError, ValueError):
+        # pm is not importable from a pre-PM editable tree; identity must still answer.
+        base = ""
+    if base:
+        return base
+    if _cached_version_info is not None:
+        return _cached_version_info.base_version
+    return "unknown"
 
 
 def hermes_user_agent(product: str = "hermes-cli") -> str:

@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import advertised_base_version
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ class TestCodexCloudflareHeaders:
     def test_user_agent_advertises_hermes_version(self):
         from agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
+        assert headers["User-Agent"] == f"HermesAgent/{advertised_base_version()}"
         assert headers["originator"] == "hermes-agent"
 
 
@@ -171,7 +172,7 @@ class TestPrimaryClientWiring:
             headers = agent._client_kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-rotation"
-            assert headers.get("User-Agent") == f"HermesAgent/{get_version_info().base_version}"
+            assert headers.get("User-Agent") == f"HermesAgent/{advertised_base_version()}"
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
         """Switching AWAY from chatgpt.com must drop the codex headers."""
@@ -227,7 +228,7 @@ class TestAuxiliaryClientWiring:
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-aux-try-codex"
-            assert headers.get("User-Agent") == f"HermesAgent/{get_version_info().base_version}"
+            assert headers.get("User-Agent") == f"HermesAgent/{advertised_base_version()}"
 
     def test_resolve_provider_client_raw_codex_passes_codex_headers(self, monkeypatch):
         """The ``raw_codex=True`` branch (used by the main agent loop for direct
@@ -251,4 +252,38 @@ class TestAuxiliaryClientWiring:
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-aux-raw-codex"
-            assert headers.get("User-Agent") == f"HermesAgent/{get_version_info().base_version}"
+            assert headers.get("User-Agent") == f"HermesAgent/{advertised_base_version()}"
+
+
+# ---------------------------------------------------------------------------
+# #518 — identity must not shell out while a client is being constructed
+# ---------------------------------------------------------------------------
+
+class TestCodexHeadersDoNotShellOut:
+    def test_official_endpoint_builds_identity_without_a_git_probe(self, monkeypatch):
+        """These headers are built during client construction, inside a worker's boot.
+
+        The version used to come from ``get_version_info()``, which checks the install
+        stamp against live git. ``git rev-parse`` itself finished in ~30 ms, but the probe
+        left a child holding its output pipe, so the pipe never reached EOF and
+        ``subprocess.run``'s post-timeout ``communicate()`` retry waited on the reader
+        thread with no timeout — the worker hung for minutes. Identity reads the build
+        stamp instead, and a User-Agent never needs a live git call.
+        """
+        from agent import codex_headers
+        from hermes_cli import version_info
+
+        def _no_subprocess(*args, **kwargs):
+            raise AssertionError(f"codex identity shelled out: {args!r}")
+
+        prior_identity = version_info._cached_version_info
+        version_info._reset_version_info_cache()
+        monkeypatch.setattr(subprocess, "Popen", _no_subprocess)
+        try:
+            headers = codex_headers.codex_cloudflare_headers(_make_codex_jwt())
+        finally:
+            version_info._cached_version_info = prior_identity
+
+        assert headers["User-Agent"] == f"HermesAgent/{advertised_base_version()}"
+        assert headers["originator"] == "hermes-agent"
+        assert headers["ChatGPT-Account-ID"] == "acct-test-123"

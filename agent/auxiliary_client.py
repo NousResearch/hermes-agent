@@ -2234,6 +2234,9 @@ def _profile_default_headers(provider: str) -> Optional[dict]:
 # Provider resolution helpers
 
 _paid_lane_warned: set = set()
+# Separate once-flags for the chat lane: a deliberate main-lane route to a paid OpenRouter model is
+# not the auxiliary spend the free_only policy guards against, so it must not consume the warning.
+_paid_main_fallback_logged: set = set()
 
 
 def _is_free_model(model: Optional[str]) -> bool:
@@ -2269,19 +2272,39 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
+# Lane marker for resolve_provider_client() calls that belong to the chat lane — the primary
+# runtime or its ``fallback_providers`` chain — rather than to an auxiliary task. ``auxiliary.free_only``
+# is an *auxiliary* spend policy; it must never veto the provider/model the user configured for the
+# conversation itself. Callers pass it as ``task=``; ``resolve_provider_client`` strips the marker before
+# any task-specific routing, cache key or auto-discovery policy can see it.
+MAIN_FALLBACK_TASK = "main_fallback"
+
+
 def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
-                    explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
+                    explicit_base_url: Optional[str] = None, task: Optional[str] = None,
+                    main_fallback: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
-    if free_only and not _is_free_model(or_model):
+    # The free_only gate belongs to the auxiliary lane only (#75803). The chat-lane fallback reached
+    # through ``bind_route_entry`` proves it is main-lane with ``main_fallback=True``; without that
+    # marker the auxiliary gate keeps deciding, so paid auxiliary calls stay blocked.
+    if free_only and not main_fallback and not _is_free_model(or_model):
         logger.warning(
-            "Auxiliary client: auxiliary.free_only is enabled but the OpenRouter fallback model %r is "
+            "Auxiliary client: auxiliary.free_only is enabled but the OpenRouter %s model %r is "
             "not a :free SKU — skipping the OpenRouter fallback. Set auxiliary.openrouter_model to a "
             ":free model (e.g. nvidia/nemotron-3-ultra-550b-a55b:free) or disable auxiliary.free_only.",
-            or_model,
+            f"task {task!r}" if task else "fallback", or_model,
         )
         return None, None
-    if not _is_free_model(or_model):
+    if not _is_free_model(or_model) and main_fallback:
+        # The chat lane is allowed to use the paid model the user configured; say so once, at debug
+        # level, instead of firing the auxiliary spend warning for a deliberate main-lane route.
+        _log_once_debug(
+            _paid_main_fallback_logged, or_model,
+            "OpenRouter main fallback: model %r is not a :free SKU; auxiliary.free_only does not "
+            "apply to the chat lane", or_model,
+        )
+    elif not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) is
     # authoritative over both the pool row and the canonical host (#121359).
@@ -2308,11 +2331,12 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
     ), or_model
 
 
-def _describe_openrouter_unavailable(model: str | None = None) -> str:
+def _describe_openrouter_unavailable(model: str | None = None, *,
+                                     main_fallback: bool = False) -> str:
     """Return the policy or credential reason OpenRouter was unavailable."""
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
-    if free_only and not _is_free_model(or_model):
+    if free_only and not main_fallback and not _is_free_model(or_model):
         return (
             f"auxiliary.free_only rejected non-free model {or_model!r}; "
             "the request was skipped before provider availability checks"
@@ -4688,6 +4712,7 @@ class _ResolveRequest(NamedTuple):
     is_vision: bool
     task: Optional[str]
     pool_choice: Optional[Any] = None  # hermes_cli.runtime_provider.PoolChoice
+    main_fallback: bool = False
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
@@ -4808,10 +4833,12 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
 def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
     """OpenRouter."""
     client, default = _try_openrouter(explicit_api_key=req.explicit_api_key, model=req.model,
-                                      explicit_base_url=req.explicit_base_url)
+                                      explicit_base_url=req.explicit_base_url, task=req.task,
+                                      main_fallback=req.main_fallback)
     if client is None:
         logger.warning("resolve_provider_client: openrouter requested but %s",
-                       _describe_openrouter_unavailable(model=req.model))
+                       _describe_openrouter_unavailable(model=req.model,
+                                                        main_fallback=req.main_fallback))
         return None, None
     return _route_client(req, client, _normalize_resolved_model(req.model or default, req.provider))
 
@@ -5230,6 +5257,12 @@ def resolve_provider_client(
     provider takes its key from its credential pool the way a direct pick does, and the pick is left
     on it. Returns (client, resolved_model) or (None, None)."""
     _validate_proxy_env_urls()
+    # The chat lane marks itself through ``task`` so one resolver can serve both lanes without a
+    # parallel code path. Strip the marker immediately: it is a lane flag, not an auxiliary task, and
+    # must not reach task-specific routing, auto-discovery policy or the client cache key.
+    main_fallback = (task or "").strip() == MAIN_FALLBACK_TASK
+    if main_fallback:
+        task = None
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
@@ -5286,6 +5319,7 @@ def resolve_provider_client(
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task, pool_choice,
+        main_fallback,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     alias_identity = original_provider.removeprefix("custom:")
@@ -5351,7 +5385,8 @@ def _deepinfra_strict_vision_backend(model: Optional[str]) -> tuple[Optional[Any
 # through resolve_provider_client so anthropic/* picks wrap onto /v1/messages (a bare _try_nous
 # client 404s). openai-codex has no safe default model; callers set auxiliary.<task>.model.
 _STRICT_VISION_BACKENDS: dict[str, Callable[[Optional[str]], tuple[Optional[Any], Optional[str]]]] = {
-    "openrouter": lambda model: _try_openrouter(model=model),
+    # Vision is an auxiliary task: it stays behind the auxiliary.free_only gate.
+    "openrouter": lambda model: _try_openrouter(model=model, task="vision"),
     "nous": lambda model: resolve_provider_client("nous", model, is_vision=True),
     "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
     "anthropic": lambda model: _try_anthropic(requested_model=model),

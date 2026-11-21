@@ -33,7 +33,7 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     the chat-completions adapter for Codex/Responses providers. A registry API-key provider's key
     comes from its credential pool the way a direct pick takes it; the pool is not touched until the
     caller commits ``pool_choice``."""
-    from agent.auxiliary_client import resolve_provider_client
+    from agent.auxiliary_client import MAIN_FALLBACK_TASK, resolve_provider_client
     from agent.chat_completion_helpers import _fallback_api_mode_hint
     from hermes_cli.fallback_config import resolve_entry_api_key
     from hermes_cli.runtime_provider import PoolChoice
@@ -48,9 +48,11 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
         from agent.secret_scope import get_secret
         api_key_hint = get_secret("OLLAMA_API_KEY") or None
     choice = PoolChoice(model) if provider != "moa" else None  # MoA keys stay with the preset's own resolution
+    # task=MAIN_FALLBACK_TASK marks the chat lane: ``auxiliary.free_only`` is an auxiliary spend
+    # policy and must not veto the fallback the operator configured for the conversation itself.
     client, _resolved_model = resolve_provider_client(
         provider, model=model, raw_codex=raw_codex, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
-        api_mode=api_mode, pool_choice=choice)
+        api_mode=api_mode, pool_choice=choice, task=MAIN_FALLBACK_TASK)
     if client is not None and provider != "moa":
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider

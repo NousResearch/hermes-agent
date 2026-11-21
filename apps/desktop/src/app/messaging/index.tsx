@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Switch } from '@/components/ui/switch'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
@@ -892,13 +893,39 @@ function DirectSetupSections({
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const effectiveValues = Object.fromEntries(
+    platform.env_vars.map(field => [field.key, edits[field.key] || field.value || field.default_value || ''])
+  )
+
+  const isVisible = (field: MessagingEnvVarInfo) => {
+    const condition = field.visible_when
+
+    return !condition || condition.values.includes(effectiveValues[condition.key] || '')
+  }
+
+  const choiceFields = platform.env_vars.filter(field => (field.options?.length ?? 0) > 0 && isVisible(field))
+  const requiredFields = platform.env_vars.filter(field => field.required && isVisible(field))
+  const optionalFields = platform.env_vars.filter(
+    field => !field.required && !field.options?.length && isVisible(field) && !fieldCopy(field, m).advanced
+  )
+  const advancedFields = platform.env_vars.filter(
+    field => !field.required && !field.options?.length && isVisible(field) && fieldCopy(field, m).advanced
+  )
   const hiddenCount = advancedFields.length
 
   return (
     <>
+      {choiceFields.map(field => (
+        <MessagingField
+          edits={edits}
+          field={field}
+          key={field.key}
+          onClear={onClear}
+          onEdit={onEdit}
+          saving={saving}
+        />
+      ))}
+
       {platform.id === 'telegram' && (
         <section>
           <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
@@ -1113,6 +1140,8 @@ function MessagingField({
   const m = t.messaging
   const copy = fieldCopy(field, m)
   const fieldId = `messaging-field-${field.key}`
+  const options = field.options || []
+  const selectedValue = edits[field.key] || field.value || field.default_value || options[0]?.value || ''
 
   const tools = (
     <>
@@ -1144,7 +1173,13 @@ function MessagingField({
   return (
     <ListRow
       action={
-        field.is_list ? (
+        options.length > 0 ? (
+          <SegmentedControl
+            onChange={value => onEdit(field.key, value)}
+            options={options.map(option => ({ id: option.value, label: option.label }))}
+            value={selectedValue}
+          />
+        ) : field.is_list ? (
           <AllowlistField
             field={field}
             fieldId={fieldId}

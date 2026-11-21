@@ -452,17 +452,22 @@ def named_profile_is_live(profile_home: str | Path) -> bool:
 
 
 def named_profile_delete_incomplete(profile_home: str | Path) -> bool:
-    """A delete that did not finish: the tombstone is down, but the dir still carries identity.
-    ``profile delete`` writes the tombstone before its rmtree; a refused or failed rmtree leaves
-    the profile in this state until the delete is retried (or the profile is renamed)."""
+    """A tombstoned home left by a delete, even if rmtree already removed its identity files."""
     home = Path(profile_home)
-    return home.is_dir() and named_profile_is_deleted(home) and named_profile_has_identity(home)
+    if not home.is_dir() or not named_profile_is_deleted(home):
+        return False
+    if named_profile_has_identity(home):  # legacy tombstones from before delete recorded its state
+        return True
+    try:
+        return profile_tombstone_path(home).read_bytes() == b"incomplete\n"
+    except OSError:
+        return False
 
 
-def mark_named_profile_deleted(profile_home: str | Path) -> None:
+def mark_named_profile_deleted(profile_home: str | Path, *, incomplete: bool = False) -> None:
     marker = profile_tombstone_path(Path(profile_home))
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("deleted\n", encoding="utf-8")
+    marker.write_bytes(b"incomplete\n" if incomplete else b"deleted\n")
 
 
 def clear_named_profile_deleted(profile_home: str | Path) -> None:

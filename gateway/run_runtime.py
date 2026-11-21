@@ -336,6 +336,10 @@ TURN_SETTLE_SECONDS = 45.0
 # What a stop keeps of its watchdog leash for the phases after the settle (adapter teardown, executor
 # quiesce, SessionDB close, exit-state writes): the settle never spends it.
 STOP_TAIL_RESERVE_SECONDS = 10.0
+# How often the settle wait sends the in-process Stop again. The stop's first sweep reaches the agents
+# that exist when it runs; a turn whose agent is built a few seconds into the stop (a message admitted
+# just before the signal, a cron run) is reached by the next send, not by the end of the wait.
+STOP_RESEND_SECONDS = 0.5
 
 
 def managed_turn_count(runner):
@@ -369,8 +373,19 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     signalled += _stop_spawning_managed(authority, workers, reason)
     if not in_process:
         return signalled
+    return signalled + stop_in_process_turns(authority)
+
+
+def stop_in_process_turns(authority, seen=None):
+    """Hard-interrupt the running agent of each executing in-process turn, or latch the generation
+    ``adopt_agent`` consumes before it exists. A stop that waits sends it again every half second
+    (``_wait_sending_stop``) with a ``seen`` set of the agents already interrupted, so an agent that
+    became visible after the first send is reached by the next and none is interrupted twice (each
+    interrupt aborts the active request and logs a line). Returns how many turns it addressed."""
     from agent.interrupt_compat import request_hard_interrupt
     from gateway.run import _AGENT_PENDING_SENTINEL
+    signalled = 0
+    workers = getattr(authority, '_managed_workers', {})
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
@@ -381,8 +396,10 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
             agent = running.get(live.route)
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             authority.pending_stops[sid] = generation
-        else:
+        elif seen is None or id(agent) not in seen:
             request_hard_interrupt(agent, 'Profile stopping', tool_reason='gateway shutdown')
+            if seen is not None:
+                seen.add(id(agent))
         signalled += 1
     return signalled
 
@@ -847,6 +864,33 @@ async def drain_gateway_runtime(runner):
             adapter.set_message_handler(None)
 
 
+async def _wait_sending_stop(authorities, tasks, wait):
+    """``asyncio.wait(tasks, timeout=wait)`` that sends every authority's in-process Stop first and
+    again every STOP_RESEND_SECONDS, so a turn whose agent is built after the first sweep is still
+    stopped. The Stop used to reach such a turn only in ``join_authority_work``, after the whole wait.
+    ``(done, pending)`` as ``asyncio.wait`` returns them."""
+    from gateway.session_runtime_workers import stop_in_process_work
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait
+    done, pending, failed, seen = set(), set(tasks), False, set()
+    while pending:
+        for authority in authorities:
+            try:
+                stop_in_process_work(authority, seen)
+            except Exception:
+                # The send is best-effort here: ``join_authority_work`` sends it again after the wait.
+                if not failed:
+                    logger.warning('In-process Stop not sent to %s; the join after the wait sends it',
+                                   getattr(authority, 'profile_id', '?'), exc_info=True)
+                failed = True
+        left = deadline - loop.time()
+        if left <= 0:
+            break
+        finished, pending = await asyncio.wait(pending, timeout=min(STOP_RESEND_SECONDS, left))
+        done |= finished
+    return done, pending
+
+
 async def settle_gateway_runtime(runner, budget=None, reason=None):
     """Keep authority tasks alive until their last durable settlement write, within a bound.
 
@@ -866,7 +910,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))
     deadline = asyncio.get_running_loop().time() + wait
     if tasks:
-        done, pending = await asyncio.wait(tasks, timeout=wait) if wait > 0 else (set(), set(tasks))
+        done, pending = await _wait_sending_stop(authorities, tasks, wait) if wait > 0 else (set(), set(tasks))
         for task in done:
             if not task.cancelled():
                 task.exception()

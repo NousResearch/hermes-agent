@@ -192,13 +192,29 @@ def physical_workers(authority):
 
 def stop_authority_work(authority):
     from gateway.run_runtime import stop_authority_turns
-    from agent.interrupt_compat import request_hard_interrupt
     stop_authority_turns(authority, in_process=True)
+    _stop_turn_workers_and_cron(authority)
+
+
+def _stop_turn_workers_and_cron(authority, seen=None):
+    from agent.interrupt_compat import request_hard_interrupt
     for _, holder in [*physical_workers(authority), *side_agents(authority)]:
-        if holder and holder[0] is not None:
+        if holder and holder[0] is not None and (seen is None or id(holder[0]) not in seen):
             request_hard_interrupt(holder[0], 'Profile runtime is stopping')
+            if seen is not None:
+                seen.add(id(holder[0]))
     for cancel in getattr(authority, '_cron_cancellations', {}).values():
         cancel.set()
+
+
+def stop_in_process_work(authority, seen=None):
+    """The half of ``stop_authority_work`` that runs in this process: each executing in-process turn,
+    turn worker and side agent gets a hard interrupt and every cron run its cancellation. It is meant
+    to be repeated: a turn whose agent is built a few seconds into a stop is reached by the next send,
+    not only after the whole wait. ``seen`` (agent ids) makes the repeat interrupt each agent once."""
+    from gateway.run_runtime import stop_in_process_turns
+    stop_in_process_turns(authority, seen)
+    _stop_turn_workers_and_cron(authority, seen)
 
 
 async def join_authority_work(authority, timeout):

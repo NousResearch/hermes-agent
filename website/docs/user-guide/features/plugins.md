@@ -1155,6 +1155,134 @@ Only grant gateway injection to plugins you trust. Hermes checks this host API p
 This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
 :::
 
+### Durable submission receipts
+
+A background plugin that needs to distinguish scheduling from durable admission can use
+`ctx.submit_message(content, *, session_key, expected_session_id, request_id)` and
+`ctx.submission_status(*, session_key, expected_session_id, request_id)`. Both return plain
+JSON-compatible dictionaries and work with in-process and host-isolated plugins. They require
+the same `allow_gateway_injection` permission and current route authorization as gateway injection.
+They target an existing gateway-owned conversation with committed provenance; they do not create
+sessions or fall back to the classic CLI or a separate TUI host.
+
+These methods block until admission or observation, **not until the agent finishes**. Call them
+from an independent worker thread; calling them on the gateway event loop returns
+`requires_worker_thread`. A synchronous hosted callback that blocks that loop also refuses.
+Do **not** use `asyncio.to_thread()` or the gateway loop's default executor: admission and
+storage use that pool too, so concurrent blocking callers can exhaust the workers they need.
+For an async plugin, own a separate waiter pool for the plugin's lifetime:
+
+```python
+import asyncio
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+
+# Create during register(ctx), not at module import.
+waiters = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plugin-receipts")
+ctx.on_unload(partial(waiters.shutdown, wait=False, cancel_futures=True))
+
+async def host_call(method, *args, **kwargs):
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        waiters, partial(context.run, method, *args, **kwargs)
+    )
+
+receipt = await host_call(
+    ctx.submit_message,
+    "Review the failing tests and report the cause",
+    session_key=session_key,
+    expected_session_id=session_id,
+    request_id=request_id,
+)
+# Later, using the same captured identities:
+receipt = await host_call(
+    ctx.submission_status,
+    session_key=session_key,
+    expected_session_id=session_id,
+    request_id=request_id,
+)
+```
+
+Preserve the caller's context when offloading. Pool shutdown cancels only calls that have not
+started; it does not cancel an admission already scheduled on the gateway. A cancelled wait or
+lost response leaves the outcome uncertain until the same request identity is observed again.
+
+Capture the session and a stable, nonempty request ID (at most 256 characters) before submitting.
+IDs are scoped to the plugin,
+profile and conversation; retry with the **same ID and content** after a lost response. Reusing
+an ID with different text returns `admission_conflict`. A valid compression continues the same
+conversation; a reset or unrelated resume returns `admission_conflict`, so an old request cannot
+start work in the replacement conversation. Obtain a fresh binding for new work after a reset.
+
+Every response contains `ok`, `status`, `request_id`, `session_id`, `admission_id`, `outcome`, and
+`result`. A successful receipt has `ok: true` and the authority's `queued`, `started`, `unknown`,
+or `terminal` status. `queued` means durable admission, not completion. `unknown` can mean an
+interrupted execution awaiting the session owner's decision; do not submit replacement work blindly.
+A terminal receipt exposes the exact stored outcome and, when retained, a `result` containing
+`final_response` (at most 16,000 characters) and `truncated`. It never infers completion from a
+nearby assistant message and does not include tool transcripts or internal routing provenance.
+This describes the submitted turn; background work it starts can outlive that turn.
+
+An explicit refusal has `ok: false`, `status: "refused"`, and an `error` code. If the 30-second
+observation deadline expires, the response instead has `status: "unknown"`, `error: "timeout"`:
+the write may still commit. Poll or retry the same identity; a timeout does not cancel work.
+Results follow the gateway's existing admission retention. These methods do not approve prompts,
+execute slash commands, interrupt turns, or grant additional tools.
+
+### Exact tool batches
+
+A plugin with its own model can request a native tool round without another host-model inference:
+
+```python
+catalog = await host_call(
+    ctx.conversation_tools, session_key=session_key, expected_session_id=session_id,
+)
+receipt = await host_call(
+    ctx.execute_tools,
+    [{"call_id": "read-status", "name": "terminal", "arguments": {"command": "git status --short"}}],
+    session_key=session_key, expected_session_id=session_id,
+    request_id="status-request", text="Inspect the working tree status.",
+    require_background=True,
+)
+```
+
+Both methods use the same gateway injection consent, profile ownership, session pin and current
+route authorization as submission receipts. Use the independent waiter pool and `host_call` helper
+above, never the gateway loop or its default executor. The catalog returns
+`ok`, `session_id`, flat OpenAI function schemas in `tools`, and `catalog_source`: `session_pin`
+when a persisted tool snapshot exists, otherwise `configuration`. Discovery is advisory: reloads
+and current native execution policy can still refuse a listed tool.
+
+`execute_tools` accepts one to 32 calls with unique, nonempty `call_id` values, `name` and dictionary
+`arguments`. `text` describes the plugin-requested operation; it need not pretend to be a verbatim
+human transcript. Calls, text and the background requirement are durably admitted together. Repeat
+**the same method with the same identity and arguments** to observe its receipt; changed arguments
+conflict. These requests have their own identity namespace, so `submission_status` and parent-message
+controls do not target them. A terminal receipt includes `outputs`, a list of `{call_id, output}`
+from that exact admission's tool trace, sharing a 64,000-character budget. `outputs_truncated` and
+an affected output's `truncated` flag identify omitted content. Outputs follow the normal persisted-result secret redaction.
+Tool-level refusal is returned in the tool output; a completed turn does not imply every tool succeeded.
+
+Execution uses the normal agent tool loop, session serialization, approvals and tool hooks.
+Supported host API modes are Chat Completions and Codex Responses; other modes refuse instead of
+falling back to inference. This does not expose native Codex engine tool execution. It adds no
+model tool, changes no session prompt and grants no extra tool permissions. The normal transcript
+retains the request and tool trace; a silent completion marker avoids an extra gateway reply.
+
+`require_background=True` affects delegation in this parent round only. A `delegate_task` spawn
+must detach or return a refusal: joined-session policy, unavailable completion delivery or a full
+pool cannot silently turn it into synchronous work. A partial dispatch retains accepted child IDs
+and reports refused children. Native `delegate_task` list/steer/stop actions remain available, with
+its returned child IDs and ordinary ownership checks. Steering is queued and observed at the next
+supported child boundary; it cannot interrupt an uninterruptible tool or provider call immediately.
+
+A single parent session still has one writer. A long synchronous parent turn queues later exact
+rounds. For responsive hybrid clients, start long work as a native background child, then issue
+short parent operations while that child runs. These APIs do not classify a tool's duration or make
+concurrent workspace edits safe. Restart recovery follows the existing durable admission policy;
+unknown execution must be resolved before retrying under a new identity.
+
 ## Plugin code inside the gateway
 
 Hooks, tools and injected turns of every chat and every local session (CLI, TUI, Desktop) run in the one gateway process, not in the client you launched. Some process-level habits from the classic CLI do not carry over:

@@ -117,7 +117,13 @@ class PluginCapabilityCtxMixin:
         effective = min(max(float(effective), 0.5), MAX_TIMEOUT)
         try:
             from hermes_cli.auth import read_credential_pool
-            rows = read_credential_pool("openrouter")
+            # Bind the pool read to THIS manager's immutable profile home. The
+            # ambient home may belong to another profile in a multiplexed
+            # process; an opaque scope id alone must never authorize the use of
+            # a token from a different profile. The documented global-root
+            # fallback inside read_credential_pool remains intact.
+            with _plugin_home_scope(self._manager.home_path):
+                rows = read_credential_pool("openrouter")
         except Exception:  # health: allow BLE001 -- unreadable pool state is 'scope unavailable', fail closed
             logger.debug("quota_fetch: credential pool unreadable")
             return _unavailable("pool_unavailable")

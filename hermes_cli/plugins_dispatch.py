@@ -339,7 +339,15 @@ class PluginDispatchMixin:
                 key = (owner, cap)
                 if key not in cache:
                     try:
-                        cache[key] = bool(plugin_capability_granted(owner, cap)) if plugin_capability_granted else False
+                        if plugin_capability_granted is None:
+                            cache[key] = False
+                        else:
+                            # Consent belongs to THIS manager's profile, not to
+                            # whichever home happens to be ambient while the
+                            # hook is delivered (multiplexed gateway profiles).
+                            from hermes_cli.plugins_loader import _plugin_home_scope
+                            with _plugin_home_scope(self.home_path):
+                                cache[key] = bool(plugin_capability_granted(owner, cap))
                     except Exception:  # health: allow BLE001 -- fail closed
                         cache[key] = False
                 out[cap] = cache[key]

@@ -61,7 +61,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
-    from .block_kit import render_blocks, sanitize_blocks
+    from .block_kit import extract_agent_blocks, render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
@@ -75,7 +75,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_forwarded import (  # type: ignore
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
         slack_file_marker as _slack_file_marker)
-    from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from block_kit import extract_agent_blocks, render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
@@ -2213,7 +2213,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             stream_result = await self._try_finalize_stream(chat_id, content, metadata)
             if stream_result is not None:
                 return stream_result
-            formatted = self.format_message(content)
+            formatted = self.format_message(self._agent_text(content))
             if not formatted or not formatted.strip():
                 # Slack returns ``no_text`` for blank posts; still the end of a
                 # delivery attempt, so the "is thinking..." status must clear.
@@ -2369,7 +2369,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         if blocked:
             return blocked
         try:
-            formatted = self.format_message(content)
+            formatted = self.format_message(self._agent_text(content) if finalize else content)
             # chat.update has postMessage's ~40k limit but cannot split, so truncate to fit
             # (an oversized payload fails the whole edit with ``msg_too_long``).
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -2677,7 +2677,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         else:
             # A reopened stream's message starts at ``base``; the sealed one before it already
             # shows the prefix. (A ``replace`` rewrite is not prefix-aligned, so use it whole.)
-            shown = text if replace else text[stream.get("base", 0):]
+            # An agent card is extracted from the whole answer: a reopen can split its fence.
+            shown = text if replace or self._agent_card(text) else text[stream.get("base", 0):]
             edited = await self.edit_message(chat_id, ts, shown, finalize=True, metadata=metadata)
             committed = edited.success or (sealed and not replace)
             if not sealed:
@@ -3071,14 +3072,34 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             return [*blocks, self._feedback_block()]
         return blocks
 
+    def _agent_card(self, content: str) -> Optional[tuple]:
+        """``(fallback text, blocks)`` of the reply's ```slack-blocks card when ``agent_blocks`` is on
+        and the fallback fits one message (blocks ride only on a single-chunk post), else ``None``."""
+        if not (content and self._extra_flag("agent_blocks")):
+            return None
+        agent = extract_agent_blocks(content)
+        if agent and len(self.format_message(agent[0])) <= self.MAX_MESSAGE_LENGTH:
+            return agent
+        return None
+
+    def _agent_text(self, content: str) -> str:
+        """``content`` without its card fence when it carries a sendable card (the blocks hold the
+        payload, this text is their fallback), else ``content`` as is, fence and all."""
+        agent = self._agent_card(content)
+        return agent[0] if agent else content
+
     def _maybe_blocks(self, content: str) -> Optional[list]:
-        """Block Kit for ``content``: ``markdown_blocks`` (native block, "platform AI" apps only,
+        """Block Kit for ``content``: agent-authored blocks (``agent_blocks``: the reply's own
+        ```slack-blocks payload), then ``markdown_blocks`` (native block, "platform AI" apps only,
         12k cap) over ``rich_blocks`` (local renderer). ``None`` when disabled or declined — a
         ``text`` fallback always accompanies blocks, so ``None`` is safe at any point.
 
         1. ``markdown_blocks`` — Slack's native ``markdown`` block renders the *raw* standard markdown
         (tables, headers, code fences with syntax highlighting) with Slack doing the translation (#8552). 2.
         """
+        agent = self._agent_card(content)
+        if agent:
+            return sanitize_blocks(self._append_feedback_block(agent[1]))
         if self._extra_flag("markdown_blocks"):
             md_blocks = self._markdown_block_payload(content)
             if md_blocks:

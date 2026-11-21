@@ -28,6 +28,7 @@ adapter state — so it is trivially unit-testable.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -658,3 +659,105 @@ def sanitize_blocks(blocks: Optional[list[Block]]) -> Optional[list[Block]]:
     except Exception:
         # A sanitizer bug must never take down the send path.
         return None
+
+
+# ----------------------------------------------------------------------------
+# Agent-authored blocks (opt-in: ``slack.extra.agent_blocks: true``)
+# ----------------------------------------------------------------------------
+#
+# The markdown renderer above can't express what newer Block Kit offers (a ``layout`` row of
+# numbers, ``data_visualization`` charts, ``table`` column settings, buttons). With this opt-in an
+# agent writes the blocks itself: one fenced code block tagged ``slack-blocks`` in its reply,
+# holding a JSON list of blocks or ``{"blocks": [...], "text": "..."}``. The adapter sends those
+# blocks; the reply without the fence (else the payload's ``text``) is the ``text`` fallback, so a
+# rejected payload (``invalid_blocks``) still delivers the words.
+
+AGENT_BLOCKS_LANG = "slack-blocks"
+_AGENT_FENCE_OPEN_RE = re.compile(r"(`{3,}|~{3,})[ \t]*" + re.escape(AGENT_BLOCKS_LANG))
+_BROADCAST_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE)
+
+
+def _defuse_broadcasts(node: Any) -> Any:
+    """``node`` with every @channel / @here / @everyone made inert: in mrkdwn strings the ``<`` is
+    escaped, and a rich_text ``broadcast`` element becomes plain text. An agent's reply can carry
+    text it read elsewhere; the plain ``text`` path escapes these too (``format_message``)."""
+    if isinstance(node, str):
+        return _BROADCAST_RE.sub(lambda m: "&lt;" + m.group(0)[1:], node)
+    if isinstance(node, list):
+        return [_defuse_broadcasts(x) for x in node]
+    if isinstance(node, dict):
+        if node.get("type") == "broadcast":
+            return {"type": "text", "text": "@" + str(node.get("range") or "channel")}
+        return {k: _defuse_broadcasts(v) for k, v in node.items()}
+    return node
+
+
+_FENCE_LINE_RE = re.compile(r"(`{3,}|~{3,})(.*)")
+
+
+def _closes(stripped: str, opener: str) -> bool:
+    """CommonMark closer: the opener's character only, at least as long, nothing else on the line."""
+    return len(stripped) >= len(opener) and set(stripped) == {opener[0]}
+
+
+def _agent_fences(content: str) -> list[tuple[int, int, str]]:
+    """``(start, end, body)`` of each closed ```slack-blocks fence outside any other code block, in
+    one pass over the lines. A ``slack-blocks`` example quoted inside an ordinary (e.g. four-backtick)
+    fence is code, not a card; an opener with no matching closer is not a fence."""
+    spans: list[tuple[int, int, str]] = []
+    opened: Optional[tuple[int, str, int, bool]] = None   # (start, fence string, body start, is agent)
+    pos = 0
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if opened is None:
+            m = _FENCE_LINE_RE.fullmatch(stripped)
+            if m:
+                is_agent = _AGENT_FENCE_OPEN_RE.fullmatch(stripped) is not None
+                opened = (pos, m.group(1), pos + len(line), is_agent)
+        elif _closes(stripped, opened[1]):
+            if opened[3]:
+                spans.append((opened[0], pos + len(line), content[opened[2]:pos]))
+            opened = None
+        pos += len(line)
+    return spans
+
+
+def _blocks_summary(blocks: list[Block]) -> str:
+    """A one-line ``text`` for blocks that came without one: the header, else the first section."""
+    for block in blocks:
+        text_obj = block.get("text")
+        if block.get("type") in ("header", "section") and isinstance(text_obj, dict):
+            text = (text_obj.get("text") or "").strip()
+            if text:
+                return text.splitlines()[0][:MAX_HEADER_TEXT]
+    return "(Block Kit message)"
+
+
+def extract_agent_blocks(content: str) -> Optional[tuple[str, list[Block]]]:
+    """``(text, blocks)`` when ``content`` holds exactly one ```slack-blocks fenced JSON payload, else
+    ``None``. ``text`` is ``content`` without the fence, else the payload's ``text``, else a summary
+    of the blocks. The blocks are sanitized (:func:`sanitize_blocks`) with broadcast mentions made
+    inert. A payload that won't parse (or nests deeper than the JSON parser allows), or two of them,
+    returns ``None`` and the reply is sent as plain text, fence and all, so nothing is lost."""
+    if not content or AGENT_BLOCKS_LANG not in content:
+        return None
+    fences = _agent_fences(content)
+    if len(fences) != 1:
+        return None
+    start, end, body = fences[0]
+    try:
+        payload = json.loads(body)
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or "").strip()
+            payload = payload.get("blocks")
+        if not isinstance(payload, list):
+            return None
+        defused = _defuse_broadcasts(payload)
+    except (ValueError, RecursionError):
+        return None
+    blocks = sanitize_blocks(defused)
+    if not blocks:
+        return None
+    rest = (content[:start] + content[end:]).strip()
+    return rest or _defuse_broadcasts(text) or _blocks_summary(blocks), blocks

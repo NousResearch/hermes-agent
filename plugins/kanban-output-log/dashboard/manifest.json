@@ -1,0 +1,12 @@
+{
+  "name": "kanban-output-log",
+  "label": "Kanban output log",
+  "description": "Read-only live transcript feed for a Kanban card's worker (progress, tool calls and thinking). Renders inside the Desktop board's card drawer via the kanban.card.drawer area.",
+  "icon": "Output",
+  "version": "1.0.0",
+  "tab": {
+    "hidden": true
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -396,11 +396,12 @@ What's the weather in Las Vegas?                    3d ago        tele   2025030
 | Format | Output | Use it for |
 |--------|--------|------------|
 | `jsonl` (default) | one JSON object per session | backups, machine round-trip |
+| `csv` | one row per message in a single file | spreadsheet review, tabular analysis |
 | `md` / `qmd` | one Markdown/Quarto file per session + manifest | readable archives, notes |
 | `html` | single self-contained page (sidebar for multi-session) | sharing, browsing |
 | `trace` | Claude Code JSONL | HF Agent Trace Viewer, `--upload` |
 
-Plus `--only user-prompts` for a prompts-only view (jsonl or md).
+Plus `--only user-prompts` for a prompts-only view (jsonl, md or csv).
 
 All formats share the same selection knobs: `--session-id` for one session, or the full `prune`/`archive` filter set for bulk — `--older-than` / `--newer-than` / `--before` / `--after` (durations like `5h`/`2d`/`1w`, bare days, or ISO timestamps), `--source`, `--title`, `--model`, `--provider`, `--cwd`, `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`, `--user`, `--chat-id`, `--chat-type`, `--branch`, `--end-reason`. `--dry-run` previews the match set without writing. `--redact` scrubs secrets (API keys, tokens, credentials) from exported content on any format — recommended for anything you plan to share. Note: bulk filters match *ended* sessions; unfiltered `export` dumps everything, including active ones.
 
@@ -430,6 +431,32 @@ Filtered exports include matching pinned and archived sessions. Pinning protects
 
 Each record also carries a `timings` block derived from the message timestamps, so a reader of an export attached to a bug report can tell a single long model gap from many small tool round-trips without reconstructing it by hand. It holds only ids, roles, counts and durations — `wall_clock_ms`, `largest_gap_ms`, `role_counts`, `tool_calls_emitted` and per-message `intervals` — never prompt text, tool arguments or results, so it survives `--redact` unchanged. Hermes does not persist a model/tool stopwatch, so `complete` is always `false`; when a session has no timestamped messages, `available` is `false` and `unavailable_reason` says why. The block is rebuilt on every export and ignored (and not counted toward size limits) on import.
 
+#### CSV
+
+```bash
+hermes sessions export transcript.csv --format csv --session-id 20250305_091523_a1b2c3d4
+hermes sessions export - --format csv --source telegram --only user-prompts --redact
+```
+
+CSV writes UTF-8 with a header, one message per row, and these columns:
+`session_id`, `index`, `created_at`, `role`, `content`, `tool_calls`, `tool_call_id`,
+`tool_name`. The index starts at 1 in each session's exported view; timestamps are
+UTC ISO 8601 when valid (missing values are blank; malformed values remain text).
+Structured content uses the shared
+text rendering, and `tool_calls` holds JSON. An empty selection writes only the
+header. OUTPUT can be a file, a directory for a default-named file, or `-` for stdout.
+
+This is a transcript, not a backup: compaction-archived history is included, while
+system messages and rows removed by undo/rewind/edit are omitted. With
+`--only user-prompts`, tool metadata columns are empty and indexes count prompts.
+
+CSV quoting preserves commas, quotes and embedded newlines, but **does not prevent
+spreadsheet formulas**. CSV therefore prefixes text cells with an apostrophe when
+they start with `=`, `+`, `-` or `@` (including after leading whitespace/control
+characters), or have leading control characters. This intentionally changes such
+values; use JSONL for raw machine-readable content and round-trip backups. Use
+`--redact` before sharing, and review the export for sensitive information.
+
 #### HTML
 
 `--format html` writes a single self-contained HTML file — no remote dependencies — with styled message bubbles, collapsible tool output, and (for multi-session exports) a sidebar to switch between sessions:
@@ -454,7 +481,7 @@ hermes sessions export prompts.jsonl --session-id 20250305_091523_a1b2c3d4 --onl
 hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-prompts --format md
 ```
 
-Works with `--format jsonl` (default) or `md`, honors the same filters for bulk export, and combines with `--redact`.
+Works with `--format jsonl` (default), `md` or `csv`, honors the same filters for bulk export, and combines with `--redact`.
 
 #### Traces (HF Agent Trace Viewer)
 

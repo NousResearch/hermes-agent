@@ -260,6 +260,109 @@ class TestCapabilityProbe:
         assert report.ok, report.failures
 
 
+def _memory_provider_plugin(tmp_path: Path, *, body: str, manifest: dict | None = None) -> Path:
+    """A plugin whose only registration is one memory provider.
+
+    ``body`` is the indented body of ``get_tool_schemas``. ``initialize``
+    raises: the probe must not call it (schemas are read first, and
+    ``initialize`` may open a connection).
+    """
+    init = (
+        "class _P:\n"
+        "    def initialize(self):\n"
+        "        raise RuntimeError('init should not run')\n"
+        "    def get_tool_schemas(self):\n"
+        f"{body}"
+        "def register(ctx):\n"
+        "    ctx.register_memory_provider(_P())\n"
+    )
+    return _make_plugin(
+        tmp_path,
+        manifest=dict(BASE_MANIFEST) if manifest is None else manifest,
+        init_py=init,
+    )
+
+
+_X_RECALL_SCHEMA = (
+    "        return [{'name': 'x_recall', 'description': 'recall', "
+    "'parameters': {'type': 'object', 'properties': {}}}]\n"
+)
+
+
+class TestMemoryProviderTools:
+    """Tools from ``get_tool_schemas()`` are agent tools. Missing
+    ``provides_tools`` entries are warnings, not failures."""
+
+    def test_undeclared_memory_provider_tool_stays_ok_and_warns(self, tmp_path):
+        d = _memory_provider_plugin(
+            tmp_path,
+            body=_X_RECALL_SCHEMA,
+            manifest=dict(BASE_MANIFEST, provides_tools=[]),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert any(
+            name == "declared tools" and ok and detail == "matches registrations"
+            for name, ok, detail in report.checks
+        ), report.checks
+        joined = " ".join(report.warnings)
+        assert "x_recall" in joined
+        assert "provides_tools" in joined
+
+    def test_declared_memory_provider_tool_does_not_warn(self, tmp_path):
+        d = _memory_provider_plugin(
+            tmp_path,
+            body=_X_RECALL_SCHEMA,
+            manifest=dict(BASE_MANIFEST, provides_tools=["x_recall"]),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert report.warnings == []
+
+    def test_wrapped_schema_is_read_and_nameless_schema_is_skipped(self, tmp_path):
+        d = _memory_provider_plugin(
+            tmp_path,
+            body=(
+                "        return [\n"
+                "            {'type': 'function', 'function': {'name': 'x_recall',\n"
+                "             'description': 'recall',\n"
+                "             'parameters': {'type': 'object', 'properties': {}}}},\n"
+                "            {'description': 'no name'},\n"
+                "        ]\n"
+            ),
+            manifest=dict(BASE_MANIFEST, provides_tools=[]),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert report.warnings == [
+            "memory provider tool(s) not in provides_tools: "
+            "x_recall. Add them to provides_tools"
+        ]
+
+    def test_get_tool_schemas_exception_stays_ok_and_warns(self, tmp_path):
+        d = _memory_provider_plugin(
+            tmp_path,
+            body="        raise RuntimeError('schema boom')\n",
+            manifest=dict(BASE_MANIFEST, provides_tools=[]),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert any(
+            name == "capability probe" and ok for name, ok, _detail in report.checks
+        ), report.checks
+        assert any("schema boom" in warning for warning in report.warnings)
+
+    def test_none_get_tool_schemas_stays_ok_and_warns(self, tmp_path):
+        d = _memory_provider_plugin(
+            tmp_path,
+            body="        return None\n",
+            manifest=dict(BASE_MANIFEST, provides_tools=[]),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert any("get_tool_schemas() raised" in warning for warning in report.warnings)
+
+
 class TestModelProviderKind:
     def test_import_time_register_provider_is_the_entry_point(self, tmp_path):
         """``kind: model-provider`` plugins register at import via providers.register_provider and

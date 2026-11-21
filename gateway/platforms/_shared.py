@@ -25,6 +25,11 @@ from gateway.bridged_env import YAML_ENV_LOCK as _YAML_ENV_LOCK
 
 logger = logging.getLogger(__name__)
 
+# A core-issued value at this optional approval metadata key is the adapter-facing capability for
+# a forwarded approval. It supplies authorize(...), log_refusal(...), and async respond(...);
+# adapters use those methods instead of resolving through the ordinary session approval queue.
+FORWARDED_APPROVAL_METADATA_KEY = "_kanban_approval_binding_v1"
+
 # How far a signed webhook/callback timestamp may drift from now (either way) before the request is
 # treated as a replay. Providers retry within seconds; per-message dedup caches expire long before
 # a captured request stops verifying, so the signature alone never bounds replay.

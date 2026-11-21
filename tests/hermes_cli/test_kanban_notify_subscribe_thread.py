@@ -48,6 +48,21 @@ def test_a_subscribe_from_the_topic_session_targets_that_topic(task, monkeypatch
     assert "Subscribed telegram:8631530276:42" in capsys.readouterr().out
 
 
+def test_approval_opt_in_from_a_topic_roundtrips_the_inferred_thread(task, monkeypatch):
+    for name, value in (("PLATFORM", "telegram"), ("CHAT_ID", DM), ("THREAD_ID", "42")):
+        monkeypatch.setenv(f"HERMES_SESSION_{name}", value)
+    _subscribe(task, "--platform", "telegram", "--chat-id", DM,
+               "--user-id", "operator", "--allow-approvals")
+    with kbc.connect() as conn:
+        [sub] = kbn.list_notify_subs(conn, task)
+    assert sub["thread_id"] == "42"
+    assert sub["user_id"] == "operator"
+    assert sub["delivery_metadata"]["kanban_approval_forwarding"] == "v1"
+    assert sub["delivery_metadata"]["kanban_approval_task_id"] == task
+    assert _unsubscribe(task, "--platform", "telegram", "--chat-id", DM) == 0
+    assert _threads(task) == []
+
+
 def test_an_existing_threaded_subscription_is_inherited_deterministically(task, capsys):
     with kbc.connect() as conn:
         for topic in ("topic2", "topic1"):

@@ -324,6 +324,13 @@ async def connect(self) -> bool:
 `get_pending()` returns `None` once the clarify was answered, timed out or cleared, so compare the
 result by identity with the entry your card was rendered for before acting on a click.
 
+A core-forwarded approval arrives through the same `ExecApprovalPrompt` path with
+`FORWARDED_APPROVAL_METADATA_KEY` in its metadata. The core-issued binding supplies
+`authorize(adapter, **callback_context)`, `log_refusal(reason, **callback_context)`, and async
+`respond(choice, **callback_context)`. Re-check the binding on every tap and resolve only through it;
+do not call the ordinary session resolver, move the card to another audience, or persist the binding.
+The binding remains internal to the live in-process adapter even though its metadata key is public.
+
 ### Read a conversation's model settings
 
 `BasePlatformAdapter.get_session_model_settings(source)` is a synchronous, read-only

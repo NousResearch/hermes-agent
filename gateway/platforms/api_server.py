@@ -2387,11 +2387,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         category), the same set ``/skills list`` shows."""
         try:
             from tools.skills_tool import find_all_skills, sort_skills
-            skills = sort_skills(
-                find_all_skills(
-                    skip_disabled=False, include_editorial=True
-                )
-            )
+            # `find_all_skills` accepts only `skip_disabled` (tools/skills_tool.py). Passing an
+            # extra keyword raised TypeError here, the bare `except` swallowed it, and every
+            # client's GET /v1/skills answered 500 instead of the catalogue.
+            skills = sort_skills(find_all_skills(skip_disabled=False))
         except Exception:
             logger.exception("GET /v1/skills failed")
             return _error_response("Failed to enumerate skills", 500, err_type="server_error")

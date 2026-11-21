@@ -973,6 +973,25 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_call_matches_the_real_signature(self, adapter):
+        """The mocked test above cannot catch keyword drift in the handler's own call.
+
+        `find_all_skills` takes keyword-only `skip_disabled`. The handler passed an extra
+        `include_editorial=True` for long enough to matter: the real function raised TypeError,
+        the route's bare `except` turned it into a 500 for every client, and the mock above
+        accepted the unknown keyword so the suite stayed green. `autospec=True` gives the mock the
+        real signature, so an argument the function does not accept fails here instead of on a
+        user's phone.
+        """
+        with patch("tools.skills_tool.find_all_skills", autospec=True) as mocked:
+            mocked.return_value = [{"name": "github", "description": "GitHub skill", "category": "github"}]
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 200
+                mocked.assert_called_once_with(skip_disabled=False)
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio

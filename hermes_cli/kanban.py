@@ -427,6 +427,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
+            exclude_status=getattr(args, "not_status", None) or None,
         )
     if _json_out(args, [_task_to_dict(t) for t in tasks]):
         return 0

@@ -34,10 +34,33 @@ export function catalogCategories(entries: CatalogEntry[]) {
     values.set(entry.category, { label: entry.categoryLabel, count: (values.get(entry.category)?.count ?? 0) + 1 })
   }
 
-  return [...values].sort((a, b) => categoryRank(a) - categoryRank(b) || a[1].label.localeCompare(b[1].label))
+  return [...values].sort(byCategoryOrder)
 }
 
 const categoryRank = (row: [string, { label: string }]) => (row[0] === 'other' || row[1].label.toLowerCase() === 'other' ? 1 : 0)
+
+const byCategoryOrder = (a: [string, { label: string }], b: [string, { label: string }]) =>
+  categoryRank(a) - categoryRank(b) || a[1].label.localeCompare(b[1].label)
+
+/** One `[key, label, entries]` section per category, in `catalogCategories` order, entries in feed order.
+ *  Grouped in a single pass, because a filter per category rereads the whole catalog once per category. */
+export function categorySections(entries: CatalogEntry[]): [string, string, CatalogEntry[]][] {
+  const sections = new Map<string, { label: string; items: CatalogEntry[] }>()
+
+  for (const entry of entries) {
+    const section = sections.get(entry.category)
+
+    if (section) {
+      // The last label seen wins, as in `catalogCategories`.
+      section.label = entry.categoryLabel
+      section.items.push(entry)
+    } else {
+      sections.set(entry.category, { label: entry.categoryLabel, items: [entry] })
+    }
+  }
+
+  return [...sections].sort(byCategoryOrder).map(([key, { label, items }]) => [key, label, items])
+}
 
 /** The most common tags plus whatever is selected; search covers the long tail. */
 export function catalogTags(entries: CatalogEntry[], selected: string[], limit: number): FacetRow[] {

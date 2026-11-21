@@ -58,16 +58,20 @@ class TestWriteFileHandler:
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
     @patch("tools.file_tools._get_file_ops")
-    def test_rejects_read_file_line_numbered_content(self, mock_get):
-        """#19798 — do not persist read_file's LINE_NUM|CONTENT display format."""
+    def test_rejects_read_file_line_numbered_content(self, mock_get, caplog):
+        """#19798, #136835 — reject and log read_file display text once."""
         from tools.file_tools import write_file_tool
 
         content = " 1|setting: new_value\n 2|other: thing\n"
-        result = json.loads(write_file_tool("/tmp/config.yaml", content))
+        with caplog.at_level(logging.WARNING, logger="tools.file_tools"):
+            result = json.loads(write_file_tool("/tmp/config.yaml", content))
 
         assert "error" in result
         assert "line-number" in result["error"].lower()
         mock_get.assert_not_called()
+        refusals = [record.getMessage() for record in caplog.records
+                    if "write_file refused" in record.getMessage()]
+        assert refusals == ["write_file refused: read_file display text path=/tmp/config.yaml"]
 
 
 

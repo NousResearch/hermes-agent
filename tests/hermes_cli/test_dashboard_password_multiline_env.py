@@ -131,15 +131,14 @@ def _windows_newlines(monkeypatch):
 
 
 def test_the_multiline_cleanup_writes_crlf_once_with_windows_newline_translation(tmp_path, monkeypatch):
-    from hermes_cli.dashboard_password import _remove_complete_assignments
-    for name in ("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",):
-        monkeypatch.delenv(name, raising=False)
+    from hermes_cli.config import remove_env_value
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", raising=False)
     _windows_newlines(monkeypatch)
     dotenv = tmp_path / ".env"
     dotenv.write_bytes(b'KEEP="a\r\nb"\r\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD=old\r\nLF_LINE=c\n')
 
-    assert _remove_complete_assignments(dotenv, dotenv.read_bytes().decode("utf-8")) == [
-        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"]
+    assert remove_env_value("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD") is True
     assert dotenv.read_bytes() == b'KEEP="a\r\nb"\r\nLF_LINE=c\n'
 
 

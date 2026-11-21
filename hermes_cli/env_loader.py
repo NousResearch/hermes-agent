@@ -759,6 +759,62 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
+class DotenvNotUtf8(OSError):
+    """A ``.env`` with a quoted value over several lines that is not UTF-8: removing an assignment from it would
+    re-encode every other byte, so it is refused."""
+
+
+def _dotenv_bindings(raw: bytes) -> list:
+    """*raw*'s assignments, comments and errors as python-dotenv (this loader's parser) reads them, in file
+    order, decoded as latin-1 like a file that is not UTF-8 (every line break and quote is ASCII); their
+    ``original.string`` values joined give the text back."""
+    from dotenv.parser import parse_stream
+    return list(parse_stream(io.StringIO(raw.decode("latin-1").removeprefix("\u00ef\u00bb\u00bf"))))
+
+
+def dotenv_multiline(raw: bytes) -> bool:
+    """Whether the ``.env`` *raw* holds a quoted value over several lines, which a line-by-line edit would cut
+    after its first line (or remove a look-alike line from)."""
+    return any(b.key is not None and not b.error and "\n" in b.original.string.strip() for b in _dotenv_bindings(raw))
+
+
+def dotenv_assigned(raw: bytes) -> list[str]:
+    """The names python-dotenv reads as assignments in the ``.env`` *raw* (a look-alike line inside another
+    quoted value is not one)."""
+    return [b.key for b in _dotenv_bindings(raw) if b.key is not None and not b.error]
+
+
+def remove_whole_dotenv_assignments(env_path: Path, key: str, write) -> bool | None:
+    """Remove every assignment of *key* from the ``.env`` at *env_path* whole, as python-dotenv reads it, when the
+    file holds a quoted value over several lines; every other byte stays (the blank lines before one included),
+    written once by ``write(path, lines, preserve_mode=True, newline="")``. Returns whether one was removed, or
+    None for a file without such a value (the line-by-line edit is exact there). A file that is not UTF-8 with
+    an assignment to remove raises :class:`DotenvNotUtf8`; with none it is left alone."""
+    raw = env_path.read_bytes()
+    if not dotenv_multiline(raw):
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        if key in dotenv_assigned(raw):
+            raise DotenvNotUtf8(f"{env_path} holds a quoted value over several lines and is not UTF-8 text, so "
+                                f"{key} cannot be removed from it safely: remove it there by hand") from None
+        return False
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    kept, found = [bom], False
+    from dotenv.parser import parse_stream
+    for binding in parse_stream(io.StringIO(text[len(bom):])):
+        if binding.key == key and not binding.error:
+            lead = binding.original.string[:len(binding.original.string) - len(binding.original.string.lstrip())]
+            kept.append(lead[:lead.rfind("\n") + 1])
+            found = True
+        else:
+            kept.append(binding.original.string)
+    if found:
+        write(env_path, ["".join(kept)], preserve_mode=True, newline="")  # its own line endings, once
+    return found
+
+
 def _load_user_dotenv(path: Path, *, load_pass: int, override: bool = True) -> bool:
     """Load a profile env file (``.env``, or ``.op.env`` with ``override=False``); False when it exists
     but cannot be read and managed scope pins ``terminal.backend``. A sandbox launcher withholds the

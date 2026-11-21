@@ -112,7 +112,23 @@ def _load_openai_cls() -> type:
     """Import and cache ``openai.OpenAI``."""
     global _OPENAI_CLS_CACHE
     if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _OPENAI_CLS_CACHE
+        try:
+            from openai import OpenAI as _OPENAI_CLS_CACHE
+        except ImportError as e:
+            # A core dependency is absent from the live env: an env swap
+            # (interrupted update, or a gateway started on a stale env) removed
+            # it from site-packages. Per-turn RuntimeErrors would leave a
+            # "healthy"-looking gateway serving nothing. Under systemd, fail
+            # hard with the supervised-handoff exit code: RestartForceExitStatus=75
+            # restarts within seconds, and each fresh start re-resolves the env,
+            # so the gateway self-heals as soon as the new env is complete.
+            import logging
+            import os
+            logging.getLogger(__name__).exception(
+                "Core dependency import failed (openai); live env is stale or mid-swap")
+            if os.environ.get("HERMES_SUPERVISED_CHILD") and not sys.flags.interactive:
+                os._exit(75)
+            raise
     return _OPENAI_CLS_CACHE
 
 

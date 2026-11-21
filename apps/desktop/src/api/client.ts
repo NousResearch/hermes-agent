@@ -169,6 +169,9 @@ export class HermesGateway extends JsonRpcGatewayClient {
     for (const handler of this.promptHandlers) {
       if (handler(request) !== false) { return }
     }
+
+    // No renderer accepted this request. Leave authoritative replay eligible.
+    this.deliveredPrompts.delete(id)
   }
 
   private async recoverCanonicalPrompt(id: string, sessionId: string, profile: string, generation: number): Promise<void> {

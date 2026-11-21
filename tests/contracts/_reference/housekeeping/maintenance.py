@@ -26,6 +26,7 @@ from persistence.housekeeping.maintenance import (
     IMPORT_MAX_SESSIONS,
     ORPHAN_REAP_END_REASON,
     SESSION_PROJECTION_FIELDS,
+    TOOL_PAYLOAD_TOMBSTONE,
     ForeignImportResult,
     ForeignOrigin,
     ForeignTurn,
@@ -380,6 +381,24 @@ class InMemoryMaintenance:
                 if row["parent_session_id"] in doomed:
                     row["parent_session_id"] = None
         return PruneResult(count=len(doomed), deleted_ids=tuple(SessionId(sid) for sid in doomed))
+
+    def elide_tool_payloads(self, *, cutoff: float) -> int:
+        tail = self._pinned_tail()
+        transcripts = _messages_namespace(self._backend, self._scope)["transcripts"]
+        floor = len(TOOL_PAYLOAD_TOMBSTONE.encode())
+        changed = 0
+        for sid, row in self._rows().items():
+            ended = _epoch(row["ended_at"])
+            if (ended is None or ended >= cutoff or row.get("pinned") or sid in tail
+                    or self._recency(row) >= cutoff or self._guarded(sid) or sid not in transcripts):
+                continue
+            for stored in transcripts[sid].rows:
+                m = stored.message
+                size = len((m.content if isinstance(m.content, str) else json.dumps(m.content)).encode())
+                if m.role == "tool" and stored.epoch < cutoff and m.content is not None and size > floor:
+                    stored.message = dataclasses.replace(m, content=TOOL_PAYLOAD_TOMBSTONE, api_content=None)
+                    changed += 1
+        return changed
 
     def prune_empty_ghost_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
         cutoff = datetime.now(UTC) - GHOST_SESSION_MIN_AGE

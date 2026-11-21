@@ -1095,17 +1095,28 @@ def _system_player_candidates(file_path: str) -> list[list[str]]:
     return players
 
 
-def _run_system_player(cmd: list[str]) -> bool:
+def _system_player_timeout(file_path: str, env: dict) -> float:
+    """Seconds to wait for a system player: probed duration plus headroom, else 300.
+    Long-form TTS is combined into one file, so a flat cap cut long replies short."""
+    from tools.transcription_audio import _probe_audio_duration
+
+    duration = _probe_audio_duration(file_path, env=env)
+    return duration + 30.0 if duration else 300.0
+
+
+def _run_system_player(cmd: list[str], file_path: str) -> bool:
     """Run one player to completion (interruptible via stop_playback)."""
     proc = None
     try:
         # Sibling of the TTS/STT credential scrub: players must not inherit tokens/keys.
         # See #56332, #70342.
         from tools.environments.local import hermes_subprocess_env
+        env = hermes_subprocess_env(inherit_credentials=False)
+        timeout = _system_player_timeout(file_path, env)
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                                env=hermes_subprocess_env(inherit_credentials=False))
+                                env=env)
         _set_active_playback(proc)
-        proc.wait(timeout=300)
+        proc.wait(timeout=timeout)
         rc = proc.returncode
         if rc == 0:
             return True
@@ -1131,7 +1142,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
     for cmd in _system_player_candidates(file_path):
-        if shutil.which(cmd[0]) and _run_system_player(cmd):
+        if shutil.which(cmd[0]) and _run_system_player(cmd, file_path):
             return True
     logger.warning("No audio player available for %s", file_path)
     return False

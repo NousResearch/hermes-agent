@@ -126,6 +126,26 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     return data
 
 
+_RESTART_COMMAND_INTENT_PROMPT = (
+    "(System note: the user issued /restart.) The restart is complete. "
+    "Look at the most recent turns and decide whether there is a clearly unfinished next step "
+    "the user is waiting on. If there is, continue that step, then report what you did and where "
+    "you stopped. If there is not, reply with one line confirming the session is back. "
+    "Do not re-run tool calls that already completed, and do not start new work."
+)
+
+
+def _same_restart_route(origin, source) -> bool:
+    """Same platform + chat + thread; how a /restart finds the session it interrupted."""
+    if origin is None or source is None:
+        return False
+    return (
+        getattr(origin, "platform", None) == getattr(source, "platform", None)
+        and str(getattr(origin, "chat_id", "") or "") == str(getattr(source, "chat_id", "") or "")
+        and str(getattr(origin, "thread_id", "") or "") == str(getattr(source, "thread_id", "") or "")
+    )
+
+
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
@@ -542,6 +562,43 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return t("gateway.platform.resumed", name=name)
 
+    def _session_key_for_restart_source(self, source):
+        """Routing key of the chat that issued /restart, or None when it has no session yet."""
+        try:
+            store = self.session_store
+            with store._lock:
+                store._ensure_loaded_locked()
+                for key, entry in store._entries.items():
+                    if _same_restart_route(getattr(entry, "origin", None), source):
+                        return key
+        except Exception as exc:  # health: allow BLE001 -- never block a restart on this lookup
+            logger.debug("/restart: session route lookup failed: %s", exc, exc_info=True)
+        return None
+
+    async def _register_restart_boot_intent(self, event) -> None:
+        """Give a user-typed /restart the same continuity as a planned restart.
+
+        The command runs outside a model turn, so there is no concrete next step to record: the
+        intent asks the resumed turn to look first and only continue work that is clearly unfinished.
+        """
+        try:
+            from gateway import boot_intents as store
+
+            key = self._session_key_for_restart_source(event.source)
+            if not key:
+                logger.debug("/restart: no session route for this source; boot intent skipped")
+                return
+            item = store.add_intent(
+                key,
+                _RESTART_COMMAND_INTENT_PROMPT,
+                profile=getattr(event.source, "profile", None),
+                ttl_seconds=1800,
+                source="restart_command",
+            )
+            logger.info("Registered boot intent %s for /restart on %s", item["id"], key)
+        except Exception as exc:  # health: allow BLE001 -- a failed intent must not cancel a restart
+            logger.debug("/restart: boot intent registration failed: %s", exc, exc_info=True)
+
     async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply | None:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
@@ -590,6 +647,9 @@ class GatewaySlashCommandsMixin(
 
         # Save the requester's routing info so the new gateway process can notify them once back.
         await _write_marker(".restart_notify.json", _notify_payload, "notify file")
+        # Local patch: a user-typed /restart continues this session after boot — the user must not
+        # have to send "any message" to wake it.
+        await self._register_restart_boot_intent(event)
         # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
         # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.

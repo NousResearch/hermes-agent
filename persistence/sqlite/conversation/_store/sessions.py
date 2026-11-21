@@ -20,7 +20,7 @@ from persistence.sqlite.conversation._store.sql_common import (
     _placeholders as _session_ids_placeholders, _source_match_clause, launch_stub_filter_sql,
 )
 from persistence.sqlite.conversation._store.compression import (
-    _CHAIN_CAP, _UNSET_CREATED_SQL, get_compression_chain, get_compression_tip,
+    _CHAIN_CAP, _UNSET_CREATED_SQL, _projected_tip_source_sql, get_compression_chain, get_compression_tip,
 )
 from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, _delete_unreferenced_system_prompts, _session_row_dict
 from persistence.sqlite.conversation._store.messages import _bump_conversation_generation, _display_messages_from_conn, _is_explicit_fork_child_row
@@ -109,12 +109,11 @@ def _session_filter_where(
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
+    workspace_key: str | None = None, source_sql: str = "s.source",
 ) -> tuple[list[str], list[Any]]:
-    """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
-    hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
+    """Shared ``sessions s`` WHERE builder aligns counts and listing; clause order is fixed.
+    ``exclude_children`` hides sub-agents/compression continuations, keeps branch/reset children (``_LISTABLE_CHILD_SQL``).
+    ``include_subagents`` re-admits sub-agents (``sessions.show_subagents``); ``source_sql`` selects the source expression."""
     where: list[str] = []
     params: list[Any] = []
     if exclude_children and include_subagents:
@@ -130,11 +129,11 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
-    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
+    source_clause, source_params = _source_match_clause(include_sources, local_created_sources, source_sql=source_sql)
     for clause, values in (
         (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
-        (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
+        (f"{source_sql} NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
@@ -1280,11 +1279,13 @@ def list_sessions_rich(
     archived must still return. ``local_created_sources`` restricts ``source='local'``
     rows to those surfaces before LIMIT/OFFSET. ``workspace_key``: the ``hermes -c`` folder rule."""
     holder.flush_for_read()  # rows carry token/cost totals
+    # Filter on the live tip before pagination so cross-source chains remain visible (#75625).
+    source_sql = _projected_tip_source_sql("s") if project_compression_tips and not include_children else "s.source"
     where_clauses, params = _session_filter_where(
         exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
         exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
-        local_created_sources=local_created_sources, workspace_key=workspace_key,
+        local_created_sources=local_created_sources, workspace_key=workspace_key, source_sql=source_sql,
     )
     # The archived-only view is the recovery surface for rows that dropped out of every
     # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1393,7 +1394,7 @@ def list_sessions_rich(
             session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
             min_message_count=min_message_count, archived_only=False, include_archived=True,
             include_subagents=include_subagents, local_created_sources=local_created_sources,
-            workspace_key=workspace_key,
+            workspace_key=workspace_key, source_sql=source_sql,
         )
         if not include_hidden and not archived_only:
             pinned_clauses.append("s.hidden = 0")
@@ -1542,12 +1543,13 @@ def session_count(
     exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
     local_created_sources: Sequence[str] | None = None,
 ) -> int:
-    """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+    """Count listing membership; ``exclude_children`` applies source filters to the live tip (#75625)."""
+    source_sql = _projected_tip_source_sql("s") if exclude_children else "s.source"
     where_clauses, params = _session_filter_where(
         exclude_children=exclude_children, source=source, sources=sources,
         exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
-        local_created_sources=local_created_sources,
+        local_created_sources=local_created_sources, source_sql=source_sql,
     )
     if exclude_children:
         from persistence.sqlite.conversation._store.local import exclude_superseded_segments
@@ -1564,7 +1566,7 @@ def session_count_by_source(
     holder: StoreHolder, *, include_archived: bool = False, archived_only: bool = False,
     exclude_children: bool = False,
 ) -> dict[str, int]:
-    """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
+    """``{source: count}`` in one GROUP BY; ``exclude_children`` mirrors visible live-tip membership."""
     where_clauses, params = _session_filter_where(
         exclude_children=exclude_children, archived_only=archived_only,
         include_archived=include_archived,
@@ -1572,13 +1574,14 @@ def session_count_by_source(
     if exclude_children:
         from persistence.sqlite.conversation._store.local import exclude_superseded_segments
         exclude_superseded_segments(holder, where_clauses, params)
+    source_sql = _projected_tip_source_sql("s") if exclude_children else "COALESCE(NULLIF(s.source, ''), 'cli')"
     with holder._read_ctx() as conn:
         if holder._conn is None:
             raise RuntimeError("SessionDB connection is closed")
         rows = conn.execute(
-            "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
-            f"FROM sessions s{_where_sql(where_clauses, ' ')} "
-            "GROUP BY COALESCE(NULLIF(s.source, ''), 'cli') ORDER BY count DESC", params,
+            "SELECT projected_source AS source, COUNT(*) AS count FROM ("
+            f"SELECT {source_sql} AS projected_source FROM sessions s{_where_sql(where_clauses, ' ')}"
+            ") GROUP BY projected_source ORDER BY count DESC, projected_source ASC", params,
         ).fetchall()
     return {str(row["source"]): int(row["count"] or 0) for row in rows}
 

@@ -543,3 +543,137 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     assert len(warnings) == 1
     assert "['alice']" in warnings[0]
     assert "bob" not in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# 10. Read receipts: the only native "I got it" signal SimpleX offers
+#     (the protocol has no typing indicator at all)
+# ---------------------------------------------------------------------------
+
+def _direct_text_item(text: str = "hello", *, item_id: int = 300) -> dict:
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 3, "profile": {"displayName": "TS", "fullName": "TS"}},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": item_id, "itemTs": "2026-11-02T07:00:00Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": text}},
+        },
+    }
+
+
+def _group_text_item(text: str = "hi group", *, item_id: int = 301, group_id: int = 77) -> dict:
+    return {
+        "chatInfo": {
+            "type": "group",
+            "groupInfo": {"groupId": group_id, "groupProfile": {"displayName": "g"}},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv",
+                        "groupMember": {"memberId": 5, "memberProfile": {"displayName": "m"}}},
+            "meta": {"itemId": item_id, "itemTs": "2026-11-02T07:00:00Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": text}},
+        },
+    }
+
+
+def _read_probe(adapter):
+    """Capture the commands the adapter fires without awaiting a response."""
+    sent: list[str] = []
+
+    async def _faf(command: str) -> None:
+        sent.append(command)
+
+    adapter._send_fire_and_forget = _faf
+    return sent
+
+
+def _delivery_probe(adapter, monkeypatch):
+    delivered: list = []
+
+    async def _handle(event):
+        delivered.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", _handle)
+    monkeypatch.setattr(adapter, "_enqueue_text_event", lambda e: delivered.append(e))
+    return delivered
+
+
+@pytest.mark.asyncio
+async def test_live_message_marks_the_chat_read(monkeypatch):
+    adapter = _adapter_with_ws()
+    delivered = _delivery_probe(adapter, monkeypatch)
+    sent = _read_probe(adapter)
+
+    await adapter._handle_chat_item(_direct_text_item())
+
+    assert "/_read chat @3" in sent, f"expected a read receipt, got {sent}"
+    assert len(delivered) == 1, "marking read must not cost the message"
+
+
+@pytest.mark.asyncio
+async def test_group_message_marks_the_group_read(monkeypatch):
+    adapter = _adapter_with_ws()
+    adapter.group_allow_from = {"*"}
+    _delivery_probe(adapter, monkeypatch)
+    sent = _read_probe(adapter)
+
+    await adapter._handle_chat_item(_group_text_item())
+
+    assert "/_read chat #77" in sent, f"expected a group read receipt, got {sent}"
+
+
+@pytest.mark.asyncio
+async def test_read_receipt_failure_never_blocks_delivery(monkeypatch):
+    adapter = _adapter_with_ws()
+    delivered = _delivery_probe(adapter, monkeypatch)
+
+    async def _boom(command: str) -> None:
+        raise RuntimeError("daemon refused")
+
+    adapter._send_fire_and_forget = _boom
+    await adapter._handle_chat_item(_direct_text_item())
+
+    assert len(delivered) == 1, "a failed read receipt must not swallow the message"
+
+
+@pytest.mark.asyncio
+async def test_ignored_group_message_is_not_marked_read(monkeypatch):
+    """The receipt only fires once the item is accepted, never for a chat we drop."""
+    adapter = _adapter_with_ws()
+    adapter.group_allow_from = set()
+    delivered = _delivery_probe(adapter, monkeypatch)
+    sent = _read_probe(adapter)
+
+    await adapter._handle_chat_item(_group_text_item())
+
+    assert sent == [], f"a dropped group message must not be marked read: {sent}"
+    assert delivered == []
+
+
+@pytest.mark.asyncio
+async def test_own_echo_is_not_marked_read(monkeypatch):
+    adapter = _adapter_with_ws()
+    _delivery_probe(adapter, monkeypatch)
+    sent = _read_probe(adapter)
+    item = _direct_text_item()
+    item["chatItem"]["chatDir"] = {"type": "directSnd"}
+
+    await adapter._handle_chat_item(item)
+
+    assert sent == [], f"our own message must not be marked read: {sent}"
+
+
+@pytest.mark.asyncio
+async def test_read_receipt_does_not_wait_for_a_correlated_reply():
+    adapter = _adapter_with_ws()
+    adapter._send_ws = AsyncMock()
+
+    await adapter._mark_chat_read("4")
+
+    adapter._send_ws.assert_awaited_once()
+    payload = adapter._send_ws.await_args.args[0]
+    assert payload["cmd"] == "/_read chat @4"
+    assert payload["corrId"], "the receipt still needs a corrId, it just awaits no response"

@@ -1,0 +1,26 @@
+name: hermes-3d
+repo: https://github.com/numengames/numinia-hermes-plugin
+sha: a957189ca899a6468dced8c1dd9ad7626b1a8ae5
+title: "Hermes 3D"
+description: "Turn your Hermes into a 3D game world you can walk through. Your scheduled jobs, conversations and system health become places to explore, right on your own computer. Anything that changes Hermes, like pausing a job, waits for your approval. Built on the Numinia Engine by Numen Games."
+maintainer: numengames
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0, <0.24"
+version: "0.8.3"
+docs_url: https://github.com/numengames/numinia-hermes-plugin#readme
+platforms: [linux, macos]
+image: https://raw.githubusercontent.com/numengames/numinia-hermes-plugin/a957189ca899a6468dced8c1dd9ad7626b1a8ae5/assets/hermes-3d.jpg
+screenshots: []
+known_issues:
+  - "Disclosure: one download, only when you ask. `hermes 3d install-engine` fetches the pinned Numinia Engine release from github.com/numengames/numinia-engine, shows its size, asks you to confirm and checks its sha256 before unpacking. Nothing else leaves your machine."
+  - "Disclosure: the 3D world is served on 127.0.0.1 only."
+  - "Disclosure: a world action that changes Hermes (pause/resume a cron job) is only requested through Hermes' own approval; the `read_only` setting (off by default) refuses every such action."
+  - "Needs Node 22.18+, which Hermes' package manager provides."
+  - "Cron pause/resume from the world works through polling `hermes cron list --all` (upstream cron hooks are not available yet)."
+  - "Spend and projects need `allow_direct_db_read` (off by default): Hermes has no public API for them."
+capabilities:
+  provides_tools: [hermes3d_state, hermes3d_cron_action]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, pre_api_request, subagent_start, subagent_stop, on_session_start, on_session_end, on_session_finalize]
+  provides_middleware: []
+  requires_env: []

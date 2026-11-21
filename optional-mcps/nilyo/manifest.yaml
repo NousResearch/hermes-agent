@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: nilyo
+description: >-
+  Your own LinkedIn, WhatsApp, Instagram, Telegram, Email and Calendar
+  accounts, plus realtime event destinations.
+source: https://nilyo.com/setup-for-agents
+
+# Nilyo-hosted remote MCP (URL-only — Hermes never spawns a local process
+# for this entry). Native OAuth 2.1 + Dynamic Client Registration + PKCE;
+# Hermes's MCP client + mcp_oauth_manager handle discovery, token exchange,
+# and refresh.
+transport:
+  type: http
+  url: https://nilyo.com/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - nilyo
+    - linkedin
+    - whatsapp
+    - instagram
+    - telegram
+  hosts:
+    - nilyo.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Nilyo.
+  From there, connect the LinkedIn/WhatsApp/Instagram/Telegram/Email/
+  Calendar accounts you want the agent to use, then restart the session
+  so tools load.

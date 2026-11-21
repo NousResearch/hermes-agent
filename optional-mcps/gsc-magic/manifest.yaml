@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: gsc-magic
+description: 'GSC Magic: Google Search Console, Bing Webmaster Tools, GA4 and Core Web Vitals with ready-made SEO reports.'
+source: https://gscmagic.com/integrations
+
+# Vendor-hosted remote MCP (URL-only, Hermes never spawns a local process for
+# this entry). Native OAuth 2.1 + Dynamic Client Registration over Streamable
+# HTTP: RFC 9728 protected-resource metadata at
+# https://mcp.gscmagic.com/.well-known/oauth-protected-resource/mcp points to
+# the authorization server https://api.gscmagic.com (registration_endpoint,
+# PKCE S256, loopback redirect URIs accepted). Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.gscmagic.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - gsc magic
+    - search console
+    - bing webmaster
+  hosts:
+    - gscmagic.com
+  examples:
+    - Find queries in positions 4 to 20 with lots of impressions
+    - Explain which pages lost organic clicks last week
+    - Check whether the URLs in my sitemap are indexed
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to GSC Magic
+  (or run `hermes mcp login gsc-magic`). Sign in with Google or e-mail and
+  allow access, then restart the session so tools load. New accounts pick
+  which Search Console properties to import; only imported properties are
+  visible to the agent (free plan: 1 site, 200 tool calls a month).
+
+  Bing data needs your Bing Webmaster API key and GA4 data needs a property
+  linked to the site, both under Sources at https://app.gscmagic.com/sources.
+
+  Tools are read-only unless you turn on write mode in the GSC Magic
+  dashboard (paid plans). Re-run the tool checklist any time with:
+    hermes mcp configure gsc-magic

@@ -16,6 +16,7 @@ import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { isActiveStatus } from './local-models-actions'
 import { LocalModelsBrowseSection } from './local-models-browse'
+import { LocalModelsEngineSection } from './local-models-engine-section'
 import { LocalModelsHardwareSection } from './local-models-hardware-section'
 import { LocalModelsModelsSection } from './local-models-models-section'
 import { LocalModelsOwnerProvider, useScopedLocalModelsOwner } from './local-models-owner'
@@ -121,6 +122,7 @@ function ScopedLocalModelsSettings(): ReactElement {
     <SettingsContent>
       <ActiveProfileNote className="mb-5" />
       <LocalModelsRuntimeSection jobs={jobs} lastError={lastError} status={status} />
+      <LocalModelsEngineSection />
       <LocalModelsHardwareSection hardware={hardware} />
       <LocalModelsModelsSection catalog={catalog} jobs={jobs} lastError={lastError} status={status} />
       <LocalModelsBrowseSection />

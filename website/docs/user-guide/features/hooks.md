@@ -2312,6 +2312,8 @@ Headers:
 | `X-Hermes-Event` | The hook event name |
 | `X-Hermes-Delivery` | Unique id per delivery — same value as `delivery_id` in the body |
 | `X-Hermes-Signature-256` | `sha256=<hex>` — HMAC-SHA256 of the raw body, GitHub-style; only present when a secret is configured |
+| `X-Request-ID` | Same value as `X-Hermes-Delivery`; a Hermes inbound webhook route dedupes on it |
+| `X-Webhook-Timestamp` / `X-Webhook-Signature-V2` | Unix seconds / hex HMAC-SHA256 of `"<timestamp>.<body>"`; only present when a secret is configured. This is the timestamp-bound generic scheme Hermes's own [webhook routes](../messaging/webhooks.md) verify, so a target can be another Hermes instance's route (including one pinned to `signature: generic`) |
 
 Verify the signature exactly as you would a GitHub webhook:
 

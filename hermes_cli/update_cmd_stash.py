@@ -76,6 +76,60 @@ def _reset_hard(git_cmd: list[str], cwd: Path) -> None:
     run_git(git_cmd, ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True)
 
 
+def _worktree_clean(git_cmd: list[str], cwd: Path) -> bool:
+    """True only when ``git status --porcelain`` is empty; the update never claims a clean tree
+    it has not measured (#147245: a conflicted restore printed "reset to clean state" while the
+    stash's untracked files sat in the tree)."""
+    status = _git_quiet(git_cmd, ["status", "--porcelain"], cwd, text=True)
+    return status is not None and status.returncode == 0 and not status.stdout.strip()
+
+
+def _stash_untracked_paths(git_cmd: list[str], cwd: Path, stash_ref: str) -> Optional[set[str]]:
+    """Paths the stash's untracked tree (``<ref>^3``) carries; empty when it has none, ``None``
+    when git cannot read it (caller must then leave the tree alone)."""
+    probe = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{stash_ref}^3"], cwd)
+    if probe is None:
+        return None
+    if probe.returncode != 0:
+        return set()
+    return _git_paths_z(git_cmd, ["ls-tree", "-r", "--name-only", "-z", f"{stash_ref}^3"], cwd)
+
+
+def _remove_conflicted_restore_leftovers(
+    git_cmd: list[str], cwd: Path, stash_ref: str, preexisting_untracked: Optional[set[str]],
+) -> set[str]:
+    """Delete the untracked files a conflicted restore already wrote; return the ones removed.
+
+    ``git stash apply`` checks the stash's untracked tree out before it merges the tracked diff,
+    so the ``git reset --hard`` that undoes a conflict leaves those files in the tree while the
+    update reports "reset to clean state" and hands back a ``git stash apply`` that then refuses
+    every path ("already exists, no checkout", #147245). Only paths the stash itself carries and
+    that were absent before the restore are removed; the content stays in the stash, which a
+    conflicted restore keeps either way.
+    """
+    if preexisting_untracked is None:
+        return set()
+    current = _git_untracked_paths(git_cmd, cwd)
+    if current is None:
+        return set()
+    leftover = current - preexisting_untracked
+    if not leftover:
+        return set()
+    carried = _stash_untracked_paths(git_cmd, cwd, stash_ref)
+    if carried is None:
+        return set()
+    doomed = leftover & carried
+    if not doomed:
+        return set()
+    clean = _git_quiet(git_cmd, ["clean", "-fd", "-q", "--", *sorted(doomed)], cwd)
+    if clean is None or clean.returncode != 0:
+        return set()
+    after = _git_untracked_paths(git_cmd, cwd)  # report only what is measurably gone
+    if after is None:
+        return set()
+    return doomed - after
+
+
 def _print_nonempty(text: str, prefix: str = "") -> None:
     if text.strip():
         print(f"{prefix}{text.strip()}")
@@ -322,7 +376,7 @@ def _unrestored_autostash_notice() -> Optional[str]:
     return (f"⚠ hermes update stashed {file_count} local modification(s) and did NOT restore them.\n"
             f"  Stash ref: {stash_ref}\n"
             f"  Review with: git stash show --stat {stash_ref}\n"
-            f"  Re-apply with: git stash show -p {stash_ref} | git apply --3way")
+            f"  Re-apply with: git stash apply {stash_ref}")
 
 
 def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
@@ -584,14 +638,19 @@ def _confirm_restore(stash_ref: str, input_fn) -> bool:
     return False
 
 
-def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str, checkout_move=None) -> list[str] | None:
+def _apply_stash(
+    git_cmd: list[str], cwd: Path, stash_ref: str, checkout_move=None, *,
+    preexisting_untracked: Optional[set[str]] = None,
+) -> list[str] | None:
     """``git stash apply``; the untracked paths the update replaced (empty on a full restore), or
     None (tree reset, stash kept) on conflicts or any failure other than the already-exists class.
-    ``checkout_move`` binds the apply (and a conflict's reset) to the paused gateways' tree gate."""
+    ``checkout_move`` binds the apply (and a conflict's reset) to the paused gateways' tree gate;
+    ``preexisting_untracked`` is the conflict cleanup's baseline (see _apply_stash_step)."""
     from hermes_cli.update_cmd_git import _no_move
     print("→ Restoring local changes...")
     with (checkout_move or _no_move)(stash_ref) as step:
-        restore, conflicted_files = _apply_stash_step(git_cmd, cwd, stash_ref)
+        restore, conflicted_files, leftovers = _apply_stash_step(
+            git_cmd, cwd, stash_ref, preexisting_untracked)
         # Tracked changes applied in full (the already-exists class refuses only untracked files):
         # the tree this changed is the restore's result, not a tear.
         step["whole"] = not conflicted_files and (
@@ -613,26 +672,43 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str, checkout_move=No
         print("\nConflicted files:")
         for f in conflicted_files.splitlines():
             print(f"  • {f}")
+    if leftovers:
+        print(f"\nRemoved {len(leftovers)} untracked file(s) the interrupted restore had already written:")
+        for path in sorted(leftovers)[:10]:
+            print(f"  • {path}")
+        if len(leftovers) > 10:
+            print(f"  … and {len(leftovers) - 10} more")
+        print("  Their content is still in the stash below, untracked files included.")
     print("\nYour stashed changes are preserved — nothing is lost.")
     print(f"  Stash ref: {stash_ref}")
-    print("Working tree reset to clean state.")
+    # Never claim a clean tree without measuring it: a restore that leaves files behind makes the
+    # recovery command below fail on every one of them (#147245).
+    if _worktree_clean(git_cmd, cwd):
+        print("Working tree reset to clean state.")
+    else:
+        print("⚠ Working tree is NOT clean — inspect `git status` before restoring your changes.")
     print(f"Restore your changes later with: git stash apply {stash_ref}")
     _record_stash_disposition("parked", stash_ref, "restore hit conflicts")
     return None  # code update succeeded; cmd_update continues (deps, skills, gateway)
 
 
-def _apply_stash_step(git_cmd: list[str], cwd: Path, stash_ref: str):
-    """``git stash apply`` and its conflicted paths. Any failure but the already-exists class is
-    reset to the clean tree here, inside the bound step: conflict markers make hermes unrunnable,
-    and the changes stay in the stash."""
+def _apply_stash_step(
+    git_cmd: list[str], cwd: Path, stash_ref: str, preexisting_untracked: Optional[set[str]] = None,
+):
+    """``git stash apply``, its conflicted paths and the untracked files it left behind. Any failure
+    but the already-exists class is reset to the clean tree here, inside the bound step: conflict
+    markers make hermes unrunnable, and the changes stay in the stash."""
     from hermes_cli.update_cmd_git import _git_run
     restore = _git_run(git_cmd, ["stash", "apply", stash_ref], cwd)
     unmerged = _git_run(git_cmd, ["diff", "--name-only", "--diff-filter=U"], cwd)  # conflicts can exist even on rc 0
     conflicted_files = unmerged.stdout.strip()
+    leftovers: set[str] = set()
     if conflicted_files or (restore.returncode != 0
                             and not _stash_apply_failed_only_on_existing_untracked(restore.stderr)):
         _reset_hard(git_cmd, cwd)
-    return restore, conflicted_files
+        leftovers = _remove_conflicted_restore_leftovers(
+            git_cmd, cwd, stash_ref, preexisting_untracked)
+    return restore, conflicted_files, leftovers
 
 
 def _drop_restored_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> None:
@@ -667,7 +743,8 @@ def _restore_stashed_changes(
         _record_stash_disposition("parked", stash_ref, "untracked baseline unknown")
         return False
     clean_import_failures = _critical_module_import_failures(cwd, report_runtime_errors=True)
-    replaced = _apply_stash(git_cmd, cwd, stash_ref, checkout_move)
+    replaced = _apply_stash(git_cmd, cwd, stash_ref, checkout_move,
+                            preexisting_untracked=preexisting_untracked)
     if replaced is None:
         return False  # disposition already recorded inside _apply_stash
 

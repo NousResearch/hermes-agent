@@ -2,6 +2,8 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
+import type { ClientSessionState } from '@/app/types'
 import { getGlobalModelInfo } from '@/hermes'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -761,6 +763,270 @@ describe('useModelControls', () => {
 
     // Until session.info re-stamps it, the tile pill must not present the old route's clamp.
     expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
+  })
+
+  it('repaints the primary live session slice so the collapsed pill follows the pick', async () => {
+    // The composer pill reads view.$model, which prefers the LIVE session
+    // slice (state.model) over the composer draft atom. Painting only the
+    // globals leaves the pill on the old model until the next session.info
+    // heartbeat — the expanded menu, fed by the optimistic options cache,
+    // already shows the new one. The slice must be painted optimistically,
+    // exactly like a tile pick.
+    let primaryState: Record<string, unknown> = {
+      model: 'fast-model',
+      provider: 'workbuddy',
+      reasoningEffortWire: 'high'
+    }
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        primaryState = update(primaryState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('fast-model')
+    setCurrentProvider('workbuddy')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'deep-model' }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(result.current.selectModel({ model: 'deep-model', provider: 'workbuddy' })).resolves.toBe(true)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(primaryState).toMatchObject({ model: 'deep-model', provider: 'workbuddy', reasoningEffortWire: '' })
+    expect($currentModel.get()).toBe('deep-model')
+    expect($currentProvider.get()).toBe('workbuddy')
+  })
+
+  it('restores the primary live session slice when the switch fails', async () => {
+    let primaryState: Record<string, unknown> = {
+      model: 'fast-model',
+      provider: 'workbuddy',
+      reasoningEffortWire: 'high'
+    }
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        primaryState = update(primaryState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({
+      'runtime-a': { model: 'fast-model', provider: 'workbuddy', reasoningEffortWire: 'high' }
+    } as never)
+    setCurrentModel('fast-model')
+    setCurrentProvider('workbuddy')
+    setCurrentReasoningEffortWire('high')
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(result.current.selectModel({ model: 'bogus', provider: 'workbuddy' })).resolves.toBe(false)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(primaryState).toMatchObject({ model: 'fast-model', provider: 'workbuddy', reasoningEffortWire: 'high' })
+  })
+
+  it('restores the live pill and composer from the live session when a model switch fails', async () => {
+    const runtimeId = 'runtime-live'
+    const liveSelection = { model: 'live-model', provider: 'live-provider', reasoningEffortWire: 'high' }
+    $activeSessionId.set(runtimeId)
+    SessionStates.$sessionStates.set({ [runtimeId]: liveSelection } as never)
+    setCurrentModel('stale-draft-model')
+    setCurrentProvider('stale-draft-provider')
+    setCurrentReasoningEffortWire('low')
+    tile.delegate = {
+      updateSession: (id: string, update: (state: ClientSessionState) => ClientSessionState) => {
+        const states = SessionStates.$sessionStates.get()
+        const updated = update(states[id])
+        SessionStates.$sessionStates.set({ ...states, [id]: updated })
+
+        return updated
+      }
+    }
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('live-model')
+      await expect(result.current.selectModel({ model: 'unavailable-model', provider: 'unavailable-provider' })).resolves.toBe(
+        false
+      )
+
+      expect(requestGateway).toHaveBeenCalledWith('config.set', {
+        session_id: runtimeId,
+        key: 'model',
+        value: 'unavailable-model --provider unavailable-provider'
+      })
+      expect({
+        model: PRIMARY_SESSION_VIEW.$model.get(),
+        provider: PRIMARY_SESSION_VIEW.$provider.get(),
+        reasoningEffortWire: PRIMARY_SESSION_VIEW.$reasoningEffortWire.get()
+      }).toEqual(liveSelection)
+      expect({
+        model: $currentModel.get(),
+        provider: $currentProvider.get(),
+        reasoningEffortWire: $currentReasoningEffortWire.get()
+      }).toEqual(liveSelection)
+    } finally {
+      tile.delegate = null
+    }
+  })
+
+  it('restores the live pill and composer from the live session when a CONFIRMED guarded switch fails', async () => {
+    const runtimeId = 'runtime-live'
+    const liveSelection = { model: 'live-model', provider: 'live-provider', reasoningEffortWire: 'high' }
+    $activeSessionId.set(runtimeId)
+    SessionStates.$sessionStates.set({ [runtimeId]: liveSelection } as never)
+    setCurrentModel('stale-draft-model')
+    setCurrentProvider('stale-draft-provider')
+    setCurrentReasoningEffortWire('low')
+    tile.delegate = {
+      updateSession: (id: string, update: (state: ClientSessionState) => ClientSessionState) => {
+        const states = SessionStates.$sessionStates.get()
+        const updated = update(states[id])
+        SessionStates.$sessionStates.set({ ...states, [id]: updated })
+
+        return updated
+      }
+    }
+    // First answer asks for confirmation; the confirmed resend is then refused.
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        confirm_message: 'This contributor model trains on your data.',
+        confirm_required: true,
+        key: 'model',
+        value: 'muse-spark-1.2-contributor'
+      })
+      .mockRejectedValueOnce(new Error('no such model'))
+    confirmMock.mockResolvedValueOnce(true)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(
+        result.current.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })
+      ).resolves.toBe(false)
+
+      // The confirmed retry repaints optimistically, then fails: the rollback
+      // baseline for that retry is the LIVE slice, never the stale draft globals.
+      await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+      expect(requestGateway).toHaveBeenLastCalledWith('config.set', {
+        confirm_expensive_model: true,
+        key: 'model',
+        session_id: runtimeId,
+        value: 'muse-spark-1.2-contributor --provider opencode-go'
+      })
+      await waitFor(() =>
+        expect({
+          model: PRIMARY_SESSION_VIEW.$model.get(),
+          provider: PRIMARY_SESSION_VIEW.$provider.get(),
+          reasoningEffortWire: PRIMARY_SESSION_VIEW.$reasoningEffortWire.get()
+        }).toEqual(liveSelection)
+      )
+      expect({
+        model: $currentModel.get(),
+        provider: $currentProvider.get(),
+        reasoningEffortWire: $currentReasoningEffortWire.get()
+      }).toEqual(liveSelection)
+    } finally {
+      tile.delegate = null
+    }
+  })
+
+  it('does not repaint a stale slice over the session the user switched to while the pick was in flight', async () => {
+    // The pick is made on runtime-live, then the user activates runtime-next
+    // while `config.set` is still pending. runtime-next may already be running
+    // its own model, so the failed pick's rollback must leave its slice alone.
+    const runtimeId = 'runtime-live'
+    $activeSessionId.set(runtimeId)
+    SessionStates.$sessionStates.set({
+      [runtimeId]: { model: 'live-model', provider: 'live-provider', reasoningEffortWire: 'high' },
+      'runtime-next': { model: 'next-model', provider: 'next-provider', reasoningEffortWire: 'max' }
+    } as never)
+    setCurrentModel('live-model')
+    setCurrentProvider('live-provider')
+    tile.delegate = {
+      updateSession: (id: string, update: (state: ClientSessionState) => ClientSessionState) => {
+        const states = SessionStates.$sessionStates.get()
+        const updated = update(states[id])
+        SessionStates.$sessionStates.set({ ...states, [id]: updated })
+
+        return updated
+      }
+    }
+    const switchAttempt = deferred()
+    const requestGateway = vi.fn((_method: string, _params?: Record<string, unknown>) =>
+      switchAttempt.promise.then(() => ({}) as never)
+    )
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      const picking = result.current.selectModel({ model: 'pending-model', provider: 'pending-provider' })
+
+      $activeSessionId.set('runtime-next')
+      await act(async () => {
+        switchAttempt.reject(new Error('no such model'))
+      })
+
+      await expect(picking).resolves.toBe(false)
+
+      expect(SessionStates.$sessionStates.get()['runtime-next']).toMatchObject({
+        model: 'next-model',
+        provider: 'next-provider',
+        reasoningEffortWire: 'max'
+      })
+      expect(SessionStates.$sessionStates.get()[runtimeId]).toMatchObject({
+        model: 'live-model',
+        provider: 'live-provider',
+        reasoningEffortWire: 'high'
+      })
+    } finally {
+      tile.delegate = null
+    }
+  })
+
+  it('shows no wire stamp on the pill when the live slice carries none, even if the draft globals do', async () => {
+    // The wire stamp belongs to the route the session is actually running. A
+    // slice with no stamp must not inherit the stale draft's stamp while the
+    // pick is in flight or after it fails.
+    const runtimeId = 'runtime-live'
+    const liveSelection = { model: 'live-model', provider: 'live-provider', reasoningEffortWire: '' }
+    $activeSessionId.set(runtimeId)
+    SessionStates.$sessionStates.set({ [runtimeId]: liveSelection } as never)
+    setCurrentModel('live-model')
+    setCurrentProvider('live-provider')
+    setCurrentReasoningEffortWire('max')
+    tile.delegate = {
+      updateSession: (id: string, update: (state: ClientSessionState) => ClientSessionState) => {
+        const states = SessionStates.$sessionStates.get()
+        const updated = update(states[id])
+        SessionStates.$sessionStates.set({ ...states, [id]: updated })
+
+        return updated
+      }
+    }
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(result.current.selectModel({ model: 'unavailable-model', provider: 'unavailable-provider' })).resolves.toBe(
+        false
+      )
+
+      expect(PRIMARY_SESSION_VIEW.$reasoningEffortWire.get()).toBe('')
+      expect(SessionStates.$sessionStates.get()[runtimeId].reasoningEffortWire).toBe('')
+    } finally {
+      tile.delegate = null
+    }
   })
 
   it('rolls a failed focused-B selection back only in B cache', async () => {

@@ -32,7 +32,7 @@ def github(tmp_path, monkeypatch):
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
-                runs = [] if state.get("missing") else [run]
+                runs = state.get("runs", [] if state.get("missing") else [run])
                 value = [{"total_count": 100 + len(runs), "check_runs": [
                     {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
                     for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
@@ -107,6 +107,49 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("posix")
+def test_pr_completion_uses_latest_required_check_rerun(github):
+    """A cancelled attempt cannot poison its successful rerun at the same head."""
+    sha = "a" * 40
+    base = {
+        "name": "required", "head_sha": sha, "app": {"id": 1},
+        "status": "completed", "html_url": "https://github.com/acme/repo/actions/runs/42",
+    }
+    github["runs"] = [
+        {**base, "id": 41, "conclusion": "cancelled"},
+        {**base, "id": 42, "conclusion": "success"},
+    ]
+    with connect() as conn:
+        tid = kb.create_task(conn, title="rerun", completion_contract="acme/repo")
+        assert kb.complete_task(
+            conn, tid, result="done",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,),
+        ).fetchone()[0])
+
+    assert receipt["classification"] == "success"
+    assert [(check["id"], check["classification"]) for check in receipt["checks"]] == [(42, "success")]
+
+    github["runs"] = [
+        {**base, "id": 41, "conclusion": "success"},
+        {**base, "id": 42, "conclusion": "cancelled"},
+    ]
+    with connect() as conn:
+        tid = kb.create_task(conn, title="newest cancelled", completion_contract="acme/repo")
+        assert not kb.complete_task(
+            conn, tid, result="done",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,),
+        ).fetchone()[0])
+
+    assert receipt["classification"] == "infra"
+    assert [(check["id"], check["classification"]) for check in receipt["checks"]] == [(42, "infra")]
 
 
 @pytest.mark.platforms("linux")

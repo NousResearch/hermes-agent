@@ -71,7 +71,7 @@ body:
     id: hermes-version
     attributes:
       label: Hermes Version
-      description: Output of `hermes version` (if install got that far)
+      description: Output of `hermes --version` (if install got that far)
       placeholder: "2.1.0"
 
   - type: textarea

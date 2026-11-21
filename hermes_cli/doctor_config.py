@@ -231,6 +231,7 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 _VENDOR_SLUG_PROVIDERS = {
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
     "fireworks", "deepinfra",
+    "novita",
 }
 
 

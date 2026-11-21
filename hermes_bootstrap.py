@@ -253,9 +253,6 @@ def apply_windows_utf8_bootstrap() -> bool:
     return True
 
 
-_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-
-
 def enable_windows_vt(streams=None) -> bool:
     """Opt the console behind stdout/stderr in to ANSI escape processing.
 
@@ -271,23 +268,11 @@ def enable_windows_vt(streams=None) -> bool:
     """
     if not _IS_WINDOWS:
         return True
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
+    from hermes_cli.colors import enable_windows_ansi
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     enabled = True
     for stream in (sys.stdout, sys.stderr) if streams is None else streams:
-        try:
-            handle = msvcrt.get_osfhandle(stream.fileno())
-        except (AttributeError, OSError, ValueError):
-            continue  # no fd (None under pythonw, StringIO in embedders)
-        mode = wintypes.DWORD()
-        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            continue
-        if mode.value & _ENABLE_VIRTUAL_TERMINAL_PROCESSING:
-            continue
-        if not kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+        if enable_windows_ansi(stream) is False:
             enabled = False
     if not enabled:
         os.environ.setdefault("NO_COLOR", "1")

@@ -122,6 +122,7 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
+        self._last_post_unsent = False  # POST-only: the server certainly did not create it (see _api)
         self._dedup = MessageDeduplicator()
 
     def _is_configured_bot_user(self, user_id: str) -> bool:
@@ -151,7 +152,7 @@ class MattermostAdapter(BasePlatformAdapter):
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         is_post = method == "POST"
         if is_post:
-            self._last_post_status, self._last_post_error = None, ""
+            self._last_post_status, self._last_post_error, self._last_post_unsent = None, "", False
         kwargs: dict[str, Any] = {"headers": self._headers()}
         if payload is not None:
             kwargs["json"] = payload
@@ -165,12 +166,15 @@ class MattermostAdapter(BasePlatformAdapter):
                     body = await resp.text()
                     if is_post:
                         self._last_post_error = body or ""
+                        self._last_post_unsent = resp.status == 429
                     logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])  # health: allow HX017 -- server error body, not a message
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
             if is_post:
                 self._last_post_error = str(exc)
+                # A 429 or a failed connect never created the post; a 5xx or a dropped response may have.
+                self._last_post_unsent = isinstance(exc, aiohttp.ClientConnectorError)
             logger.error("MM API %s %s network error: %s", method, path, exc)
             return {}
 
@@ -285,12 +289,35 @@ class MattermostAdapter(BasePlatformAdapter):
         """Send a message (or multiple chunks) to a channel; reply_to / metadata["thread_id"] is the root post."""
         if not content:
             return SendResult(success=True)
+        return await self._send_chunks(
+            chat_id, self.truncate_message(self.format_message(content), MAX_POST_LENGTH), [], reply_to, metadata)
+
+    async def _send_chunks(self, chat_id: str, chunks: list[str], delivered: list[str], reply_to: Optional[str],
+                           metadata: _Metadata) -> SendResult:
+        """Post ``chunks`` in order after the ``delivered`` post ids; a failure after any post landed is a
+        partial result (see :meth:`_with_partial_send`) so the visible head is never posted again."""
         result = SendResult(success=True)
-        for chunk in self.truncate_message(self.format_message(content), MAX_POST_LENGTH):
+        for i, chunk in enumerate(chunks):
             result = _post_result(await self._post_message(chat_id, chunk, reply_to, metadata), "Failed to create post")
             if not result.success:
-                break
+                unsent = self._last_post_unsent
+                result = self._with_partial_send(result, chunks[i:], delivered, tail_certain=unsent)
+                # Head on screen: only an in-process resume completes the reply once (a ledger
+                # redelivery re-sends the whole text), so a certainly-unsent tail is retried.
+                result.retryable = unsent and bool(delivered)
+                return result
+            delivered.append(result.message_id)
         return result
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: _Metadata,
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered:
+            return None
+        return await self._send_chunks(
+            chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to, metadata)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         data = await self._api_get(f"channels/{chat_id}")

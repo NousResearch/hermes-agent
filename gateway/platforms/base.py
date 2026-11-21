@@ -438,6 +438,7 @@ if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
+from gateway.platforms.base_chunking import is_partial_delivery, partial_tail_uncertain, with_partial_send
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
@@ -3513,7 +3514,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result):
+        if result.success or self._send_retry_is_final(result) or partial_tail_uncertain(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
@@ -3562,7 +3563,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result):
+                if self._send_retry_is_final(result) or partial_tail_uncertain(result):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
@@ -3620,13 +3621,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
 
-    @staticmethod
-    def _is_partial_delivery(result: SendResult) -> bool:
-        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
-        head must never be sent again."""
-        raw = getattr(result, "raw_response", None)
-        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+    # The partial-delivery record of a split send (base_chunking): read by the retry loop and the stream consumer.
+    _is_partial_delivery = staticmethod(is_partial_delivery)
+    _with_partial_send = staticmethod(with_partial_send)
 
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Any) -> Optional[SendResult]:

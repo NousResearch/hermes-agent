@@ -34,6 +34,22 @@ class StreamingWaitMonitor:
     _lifetime = StreamLifetime(0.0)  # opt-in agent.stream_max_lifetime; real clock set when the monitor starts
     _lifetime_kill = None  # (attempt id, elapsed s) of the latest cap kill
     _released_attempt = 0  # the attempt the worker's except path last caught (it let go of it)
+    # True while a retry queues on our own provider limit: no request is open, so the
+    # monitor must not read that wait as provider silence.
+    admission_waiting = False
+
+    def _readmit_retry(self) -> None:
+        """A retry is a new physical request: take its admission before the attempt, and do
+        not count the queueing as the stream's silence."""
+        from agent.llm_concurrency import readmit_prepaid
+
+        self.admission_waiting = True
+        try:
+            readmit_prepaid(self.agent.provider, cancelled=lambda: bool(self.agent._interrupt_requested))
+        finally:
+            # Restart the response clock before the monitor may judge silence again.
+            self.last_chunk_time["t"] = time.time()
+            self.admission_waiting = False
 
     def _claims_liveness(self) -> bool:
         since = self._liveness_withheld_at
@@ -112,7 +128,6 @@ class StreamingWaitMonitor:
         else:  # the copy names the setting, like a cap kill that did unwind
             self._abandon_error = StreamLifetimeExceeded(elapsed, self._lifetime.cap)
         self._call_done.set()
-
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
         instead of the 60s neutral "waiting on <model>" notice. Polled ~1s only while no
@@ -278,6 +293,10 @@ class StreamingWaitMonitor:
             if sleep_watch is not None:
                 self._skip_sleep(sleep_watch.slept())
             _hb_now = time.time()
+            if self.admission_waiting:
+                # A retry queued on our own provider limit has no request open: nothing to warn,
+                # kill or strike. Interrupts still apply (the admission wait polls the flag too).
+                self.last_chunk_time["t"] = _hb_now
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue
             # Reasoning callbacks do not clear the classic CLI spinner. The empty

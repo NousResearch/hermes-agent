@@ -107,60 +107,8 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
-# Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
-# transcript meta row is logging-only — neither reaches the model, but both are the head a
-# fail-closed payload keeps.
-_HYGIENE_SETUP_ROLES = ("system", "session_meta")
 
-
-def bound_model_input_without_hygiene(history: list[Any], limit: int) -> list[Any]:
-    """Fail-closed in-context bound for a turn where hygiene has not landed (#111988).
-
-    Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail, total <= ``limit``.
-    Deterministic (the same transcript always yields the same cut) and payload-only: the stored
-    transcript is never touched, so the agent's durable-prefix slice (``history_offset``) is
-    unaffected. Returns ``history`` unchanged — same object — when nothing needs dropping, so the
-    landed-compression and below-the-limit paths stay byte-identical.
-    """
-    if len(history) <= limit:
-        return history
-    head_end = 0
-    while (head_end < len(history) and isinstance(history[head_end], dict)
-           and history[head_end].get("role") in _HYGIENE_SETUP_ROLES):
-        head_end += 1
-    # Always leave room for the newest row: a setup-only payload would answer nothing.
-    head_end = min(head_end, limit - 1)
-    tail_start = len(history) - (limit - head_end)
-    # Never start the kept tail on a tool result: its parent assistant(tool_calls) row is dropped
-    # with it, and an orphaned tool result is an invalid sequence for every provider.
-    while (tail_start < len(history) and isinstance(history[tail_start], dict)
-           and history[tail_start].get("role") == "tool"):
-        tail_start += 1
-    return history[:head_end] + history[tail_start:]
-
-
-def hygiene_no_commit_reason(agent) -> str:
-    """Name WHY a hygiene compression left the session id unchanged with no in-place commit.
-    The terminal ``else`` used to blame "no session_db on the hygiene agent" for every route into it,
-    but that is one of several causes (#71097): an attempt that ABORTED before any commit boundary
-    (lock skip, transient cooldown, summary timeout, codex thread interrupted) leaves
-    ``_last_compression_attempt_in_place`` at ``None``; a DB-less agent is only the case when
-    ``_session_db`` really is missing. Read the per-attempt signals the compressor sets, in that order."""
-    if not bool(getattr(agent, "_last_compression_attempt_recorded", False)):
-        return "compression did not run"
-    lock_skip = getattr(agent, "_compression_skipped_due_to_lock", None)
-    if lock_skip is True or isinstance(lock_skip, str):
-        return "attempt skipped: compression lease held by another process"
-    blocked = getattr(agent, "_compression_blocked_transient", None)
-    if blocked:
-        return f"attempt blocked: {blocked}"
-    if getattr(agent, "_last_compression_attempt_in_place", None) is None:
-        detail = "summary timed out" if getattr(agent, "_last_compression_timed_out", False) else "aborted before commit"
-        warning = getattr(agent, "_last_compression_summary_warning", None)
-        return f"attempt {detail}" + (f": {warning}" if warning else "")
-    if getattr(agent, "_session_db", None) is None:
-        return "no session_db on the hygiene agent"
-    return "in-place commit did not complete"
+from gateway.run_turn_hygiene import bound_model_input_without_hygiene, hygiene_no_commit_reason
 
 
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
@@ -819,7 +767,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             _platform_config_key,
         )
         from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
+        from gateway.display_config import (
+            interim_assistant_messages_allowed, resolve_display_setting, resolve_tool_progress,
+        )
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         from gateway.session_policy import policy_for_source, policy_turn_toolsets
         policy = policy_for_source(self, source)
@@ -896,7 +846,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         interim_assistant_messages_mode = _display_surface_mode(
             "interim_assistant_messages", default=True, require_platform_override_for={Platform.MATTERMOST},
         )
-        interim_assistant_messages_enabled = not is_webhook and not bot_peer and interim_assistant_messages_mode != "off"
+        interim_assistant_messages_enabled = interim_assistant_messages_allowed(
+            user_config, platform_key, is_webhook=is_webhook, bot_peer=bot_peer,
+            mode=interim_assistant_messages_mode,
+        )
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off" and not bot_peer

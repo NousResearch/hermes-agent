@@ -2198,6 +2198,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a message to a Slack channel or DM."""
+        from .adapter_message_style import style_public_message
+        content = style_public_message(content, metadata, self.config.extra)
         blocked = self._outbound_blocked(chat_id, "outbound generic send to")
         if blocked:
             return blocked

@@ -263,7 +263,7 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
         _registered = _registered_adapter_secret_env() | _home_declared_key_env()
     if upper in _registered:
         return True
-    base = re.sub(r"(?:_\d+)+$", "", upper)
+    base = _NUMBERED_SIBLING_RE.sub("", upper)
     return base != upper and (base in _HERMES_PROVIDER_ENV_BLOCKLIST or base in _registered)
 
 

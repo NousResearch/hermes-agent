@@ -1,7 +1,8 @@
 """Result caching for web_search / web_extract; both caches TTL-bounded (default 20 min,
 ``web.cache_ttl_minutes``; disable with ``web.cache_enabled: false``), only successful responses cache.
 * **Search memo** — in-memory, per-process, single-flighted: concurrent identical queries share one
-  paid request. Limits bucket to 10/20/50/100 so near-identical requests share an entry.
+  paid request. Limits bucket to 10/20/50/100 so near-identical requests share an entry. Entries and
+  in-flight locks are per served profile (one process serves many under multiplexing).
 * **Extract cache** — disk-backed under ``cache/web`` (cross-process) with a JSON sidecar index:
   URL digest → (file, fetched_at, title). Hits re-run the normal truncate pipeline.
 Lives here, not in tool dispatch, so hits sit *after* every safety check and skip only the vendor call.
@@ -88,13 +89,23 @@ class SearchMemo:
         self._key_locks: dict[tuple, threading.Lock] = {}
 
     @staticmethod
-    def _key(provider: str, query: str, limit: int) -> tuple:
-        return (provider, normalize_query(query), bucket_limit(limit))
+    def _key(provider: str, query: str, limit: int) -> Optional[tuple]:
+        """Memo key, or None to bypass the memo. A response is paid for with one profile's provider
+        key and config, so another profile served by this process must neither read it nor wait on
+        its request (#158297). Same boundary as the check_fn cache; an unresolvable served profile
+        bypasses rather than share a bucket."""
+        from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope
+        scope = check_fn_cache_scope()
+        if scope == CHECK_FN_CACHE_BYPASS:
+            return None
+        return (scope, provider, normalize_query(query), bucket_limit(limit))
 
     def lookup(self, provider: str, query: str, limit: int) -> Optional[dict]:
         if not cache_enabled():
             return None
         key = self._key(provider, query, limit)
+        if key is None:
+            return None
         with self._store_lock:
             hit = self._store.get(key)
             if hit is None or time.monotonic() >= hit[0]:
@@ -108,6 +119,8 @@ class SearchMemo:
         if not cache_enabled() or not isinstance(response, dict) or not response.get("success"):
             return
         key = self._key(provider, query, limit)
+        if key is None:
+            return
         with self._store_lock:
             now = time.monotonic()  # opportunistic expiry sweep bounds memory
             for k in [k for k, (exp, _) in self._store.items() if now >= exp]:
@@ -117,6 +130,8 @@ class SearchMemo:
     def flight_lock(self, provider: str, query: str, limit: int) -> threading.Lock:
         """Per-key lock held around lookup-miss → paid request → store."""
         key = self._key(provider, query, limit)
+        if key is None:
+            return threading.Lock()  # memo bypassed: nothing to coalesce with
         with self._store_lock:
             lock = self._key_locks.get(key)
             if lock is None:

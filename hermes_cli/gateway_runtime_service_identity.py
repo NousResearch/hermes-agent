@@ -169,6 +169,102 @@ def subprocess_command(argv: list[str]) -> str:
     return subprocess.list2cmdline(argv)
 
 
+# systemd's shell_maybe_quote(): v234+ quotes as $'...'; v249+ adds the other C escapes.
+_POSIX_QUOTED = re.compile(rb"\$'((?:[^\\']|\\(?:[abfnrtv\\']|[0-3][0-7]{2}))*)'")
+_C_ESCAPES = {
+    b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n",
+    b"r": b"\r", b"t": b"\t", b"v": b"\v",
+    b"\\": b"\\", b"'": b"'",
+}
+# A backslash systemd never writes.
+_BAD_ESCAPE = re.compile(rb"\\(?![abfnrtv\\']|[0-3][0-7]{2})(.)")
+# env_name_is_valid: D-Bus rejects any other name.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def manager_environment_pairs(value: str) -> dict[str, str]:
+    """Decode the text form of ``systemctl show-environment``."""
+    quoting = _has_quoted_value(value)
+    result = {}
+    last = None
+    # split on "\n" only: str.splitlines() also breaks on \x0b, \x1c-\x1e, U+2028.
+    for line in value.split("\n"):
+        if not line:
+            continue
+        key, separator, val = line.partition("=")
+        if not separator:
+            if last is None or quoting:
+                _unverified("the manager environment has a line that is not an assignment")
+            result[last] += "\n" + line
+            continue
+        if not key or not _ENV_NAME.fullmatch(key):
+            _unverified(f"the manager environment names {key!r}, which is not a valid variable name")
+        if val.startswith("$'"):
+            val = _decode_ansi_c(val, key)
+        elif quoting and ("\\" in val or "'" in val):
+            _unverified(f"the manager environment value of {key!r} carries a backslash or quote outside ANSI-C quoting")
+        result[key] = val
+        last = key
+    return result
+
+
+def _has_quoted_value(value: str) -> bool:
+    """Whether any assignment in *value* carries an ANSI-C quoted value."""
+    for line in value.split("\n"):
+        _, separator, val = line.partition("=")
+        if separator and val.startswith("$'"):
+            return True
+    return False
+
+
+def _decode_ansi_c(val: str, key: str) -> str:
+    """Decode a ``$'...'`` value, or refuse it."""
+    raw = os.fsencode(val)
+    quoted = _POSIX_QUOTED.fullmatch(raw)
+    if not quoted:
+        _unverified(f"the manager environment value of {key!r} {_quoted_problem(raw)}")
+    return os.fsdecode(
+        re.sub(
+            rb"\\([0-7]{3}|.)",
+            lambda m: _C_ESCAPES.get(m[1]) or bytes([int(m[1], 8)]),
+            quoted[1],
+        )
+    )
+
+
+def _quoted_problem(raw: bytes) -> str:
+    """Why a ``$'...'`` value does not decode."""
+    bad = _BAD_ESCAPE.search(raw[2:-1] if raw.endswith(b"'") else raw[2:])
+    if bad:
+        if bad[1].isdigit():
+            return "carries an incomplete octal escape"
+        # The byte itself is never named: it is a piece of the value, and the
+        # refusal must not carry the value out.
+        return "carries an escape systemd does not write"
+    if _POSIX_QUOTED.match(raw):
+        return "closes its ANSI-C quote before the end of the value"
+    return "opens an ANSI-C quote it never closes"
+
+
+def manager_environment_pairs_json(value: str) -> dict[str, str]:
+    """Decode the JSON form of ``systemctl show-environment``."""
+    try:
+        data = json.loads(value)
+    except ValueError:
+        _unverified("the manager environment is not the JSON object systemctl printed")
+    if not isinstance(data, dict):
+        _unverified("the manager environment JSON is not an object")
+    result = {}
+    for key, val in data.items():
+        # json.loads gives every key as a str, so only the value can be off.
+        if not isinstance(val, str):
+            _unverified(f"the manager environment JSON holds a non-string value for {key!r}")
+        if not _ENV_NAME.fullmatch(key):
+            _unverified(f"the manager environment names {key!r}, which is not a valid variable name")
+        result[key] = val
+    return result
+
+
 def environment_pairs(value: str) -> dict[str, str]:
     # systemctl uses C escapes for unusual bytes. Do not silently reinterpret
     # those with shell escaping (not the same grammar).
@@ -183,7 +279,7 @@ def environment_pairs(value: str) -> dict[str, str]:
     return result
 
 
-def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, system: bool) -> None:
+def verify_systemd(props: dict[str, str], manager_env: dict[str, str], home: Path, *, system: bool) -> None:
     import pwd
 
     # systemd 259 omits empty exec-command lists and EnvironmentFiles from
@@ -209,8 +305,10 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
         service_uid = 0 if system else uid
     if service_uid != uid:
         raise ValueError("service_account_mismatch")
-    inherited = environment_pairs(manager_env)
-    env = inherited if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
+    inherited = manager_env
+    # A copy: the unit's own Environment= and UnsetEnvironment= must not reach the
+    # caller's mapping, which it keeps for the other scope.
+    env = dict(inherited) if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
     env.update(environment_pairs(props["Environment"]))
     for item in shlex.split(props["UnsetEnvironment"]):
         key, sep, value = item.partition("=")

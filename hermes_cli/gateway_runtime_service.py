@@ -105,6 +105,29 @@ def _exists(path: Path) -> bool:
         return False
 
 
+def _manager_environment(command: tuple[str, ...] | list[str], deadline: float) -> dict[str, str]:
+    """Read the manager's environment block; the shape of the output picks the reader."""
+    from hermes_cli.gateway_runtime_service_identity import (
+        manager_environment_pairs,
+        manager_environment_pairs_json,
+    )
+    # Bytes, not text: a value can hold a raw CR (v234-248 wrote the control
+    # bytes raw inside the quotes), and text mode would turn it into a line
+    # break and split the value in two.
+    result = _run([*command, "show-environment", "--output=json"], deadline, encoding=None)
+    if result.returncode:
+        # A build that refuses the flag still has the plain text form.
+        result = _run([*command, "show-environment"], deadline, encoding=None)
+        if result.returncode:
+            raise RuntimeStartError("service_identity_unverified", detail=_child_failure(
+                [*command, "show-environment"], result.returncode,
+                (result.stderr or result.stdout).decode("utf-8", "surrogateescape")))
+        return manager_environment_pairs(result.stdout.decode("utf-8", "surrogateescape"))
+    if result.stdout.startswith(b"{"):
+        return manager_environment_pairs_json(result.stdout.decode("utf-8", "surrogateescape"))
+    return manager_environment_pairs(result.stdout.decode("utf-8", "surrogateescape"))
+
+
 def _systemd(home: Path, deadline: float) -> ExistingService | None:
     from hermes_cli import gateway as gw
     from hermes_cli.service_manager import _s6_running
@@ -143,12 +166,9 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_state_unknown")
         if state == "failed":
             raise RuntimeStartError("service_failed")
-        environment = _run([*command, "show-environment"], deadline)
-        if environment.returncode:
-            raise RuntimeStartError("service_identity_unverified", detail=_child_failure(
-                [*command, "show-environment"], environment.returncode, environment.stderr or environment.stdout))
         try:
-            verify_systemd(props, environment.stdout, home, system=system)
+            environment = _manager_environment(command, deadline)
+            verify_systemd(props, environment, home, system=system)
         except ForeignRoot:
             # A unit named like ours but pinned to another HOME root belongs to a
             # different install (a sandbox HOME beside a real one); it neither serves

@@ -1,0 +1,18 @@
+name: babelii-diofis
+title: Babelii-Diofis
+repo: https://github.com/diofis-enterprise/babelii-hermes
+sha: 512dcb430e03e1890343d941c31bde2e897c2776
+version: "0.2.0"
+description: "Buy Indonesian digital products (pulsa, data vouchers and packages, PLN tokens, bill payments, e-wallet top-ups, game vouchers) from Babelii through its hosted commerce MCP server (Streamable HTTP at https://babelii.diofis.net/mcp/commerce/, no sign-in, no keys in config) plus one buying-workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no local code. Disclosure — hosted-only connector: every tool call goes to babelii.diofis.net, which receives the destination phone number or account identifier and the buyer name the user gives, to place the order; the plugin itself never contacts a payment provider, it hands the buyer a payment link that opens in the buyer's own browser. execute_purchase places a real order that becomes payable; agent orders are limited by the server (currently Rp25,000 per order and 3 per hour per identity). The package marks the server untrusted, so Hermes asks before every tool that is not annotated read-only (prepare_purchase, inquire_purchase, execute_purchase, renew_purchase) and refuses them where nobody can answer. No shell commands, no background processes, no files read outside the plugin, no stored credentials, no telemetry. Buyers with a Babelii account can instead add https://babelii.diofis.net/mcp/account/ with OAuth sign-in to pay from their balance; this package does not sign anyone in. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: diofis-enterprise
+tier: community
+category: tools
+docs_url: https://github.com/diofis-enterprise/babelii-hermes#readme
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

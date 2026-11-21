@@ -56,18 +56,14 @@ describe('markdown prose renders tilde ranges and unknown tags literally', () =>
     expect(container.textContent).toContain('2<3')
   })
 
-  it('renders autolinks for urls (tilde-in-url is a streamdown remend quirk, asserted loosely)', () => {
-    const { container } = render(
-      <MarkdownTextContent isRunning={false} text={'Docs at https://example.com/a_b/c~d/page'} />
-    )
+  it.each([
+    'Docs at https://example.com/~alice/report~draft',
+    '<https://example.com/~alice/report~draft>',
+    '[Report](https://example.com/~alice/report~draft)'
+  ])('preserves the complete rendered URL: %s', source => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text={source} />)
 
-    const link = container.querySelector('a')
-
-    expect(link).not.toBeNull()
-    // Streamdown's tailBoundedRemend escapes `~` even inside autolinks
-    // (pre-existing library behaviour, unchanged by this fix) — assert the link
-    // itself mounted and points at the host, not byte-exact URL round-trip.
-    expect(link?.getAttribute('href')).toContain('example.com')
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/~alice/report~draft')
   })
 
   it('still renders intentional ~~strikethrough~~', () => {

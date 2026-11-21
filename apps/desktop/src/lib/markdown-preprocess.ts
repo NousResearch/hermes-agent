@@ -822,7 +822,7 @@ const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufa
  * (`$x = 变量$`) renders as literal prose. Losing one equation is far cheaper
  * than corrupting a sentence's copy-out.
  */
-function escapeCjkProseDollars(text: string): string {
+function escapeCjkProseDollars(text: string, protectedAt?: boolean[]): string {
   let out = ''
   let copiedThrough = 0
 
@@ -839,7 +839,9 @@ function escapeCjkProseDollars(text: string): string {
 
     const body = text.slice(cursor + 1, closingIndex)
 
-    if (!CJK_RE.test(body)) {
+    // A `$` inside inline code is text the span renders verbatim: pairing may still use it as
+    // this span's closer, but the escape itself never lands there (#148859).
+    if (!CJK_RE.test(body) || protectedAt?.[cursor]) {
       cursor = closingIndex
 
       continue
@@ -850,6 +852,36 @@ function escapeCjkProseDollars(text: string): string {
   }
 
   return out + text.slice(copiedThrough)
+}
+
+/**
+ * Apply `rewrite` to the stretches between inline code spans; the spans stay verbatim.
+ *
+ * A capturing split puts the delimiters at the odd indexes, and `startsWith('`')` names them
+ * (the same test `normalizeVisibleProse` uses). Inline code renders its content as written, so a
+ * backslash any rewrite inserts there would show up on screen and be copied out (#148859).
+ */
+function mapOutsideInlineCode(text: string, rewrite: (segment: string) => string): string {
+  return text
+    .split(INLINE_CODE_SPLIT_RE)
+    .map(part => (part.startsWith('`') ? part : rewrite(part)))
+    .join('')
+}
+
+/** Which character indexes of `text` sit inside an inline code span, delimiters included. */
+function inlineCodeMask(text: string): boolean[] {
+  const mask = new Array<boolean>(text.length).fill(false)
+  let offset = 0
+
+  for (const part of text.split(INLINE_CODE_SPLIT_RE)) {
+    if (part.startsWith('`')) {
+      mask.fill(true, offset, offset + part.length)
+    }
+
+    offset += part.length
+  }
+
+  return mask
 }
 
 /**
@@ -969,10 +1001,20 @@ function normalizeProseMath(text: string): string {
   // a source of the hugging form: a multi-line `\[…\]` comes out of it as
   // `$$\begin{aligned}…\end{aligned}$$`. Running afterwards catches both the
   // hugging math the model emitted and the hugging math the rewrite produced.
-  const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
-  const cjkEscaped = escapeCjkProseDollars(normalized)
+  //
+  // Inline code renders verbatim, so the two INLINE rewrites only see text
+  // outside a span: a backslash they insert there is visible and copied out
+  // (#148859). The line-based passes keep seeing the whole text — a
+  // delimiter-only line never sits inside an inline span.
+  const normalized = splitHuggingDisplayMath(
+    mapOutsideInlineCode(normalizeDisplayMathForMarkdown(text), normalizeMathDelimiters)
+  )
 
-  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
+  // The CJK escape pairs a prose `$` with a closer that may sit inside a later code span, so it
+  // has to read whole lines; only the escape itself skips a `$` inside code.
+  const cjkEscaped = escapeCjkProseDollars(normalized, inlineCodeMask(normalized))
+
+  return mapOutsideInlineCode(cjkEscaped, escapeCurrencyDollarsPreservingMath)
 }
 
 function extend(out: string[], lines: string[]) {

@@ -25,6 +25,8 @@ separate.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # parse_available_output_tokens_from_error — unit tests
 # ---------------------------------------------------------------------------
@@ -102,6 +104,19 @@ class TestContextOverflowLimitSelection:
         error_msg = "maximum context length is 1000000 tokens"
 
         assert get_context_length_from_provider_error(error_msg, 272_000) is None
+
+    @pytest.mark.parametrize("input_count,limit", [(135_538, 131_072), (35_868, 32_768)])
+    def test_gemini_api_overflow_selects_the_allowed_limit(self, input_count, limit):
+        """The Gemini API words the overflow differently from the Vertex "supports up to N"
+        phrasing; the allowed maximum is the window, never the larger input count."""
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        error_msg = (
+            f"The input token count ({input_count}) exceeds the maximum number of tokens "
+            f"allowed ({limit})."
+        )
+
+        assert get_context_length_from_provider_error(error_msg, 1_048_576) == limit
 
 # ---------------------------------------------------------------------------
 # build_anthropic_kwargs — output cap clamping

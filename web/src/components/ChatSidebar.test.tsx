@@ -169,6 +169,27 @@ afterEach(async () => {
 })
 
 describe('ChatSidebar event socket', () => {
+  it('reconnects the gateway sidecar and events feed when the chat channel changes', async () => {
+    const { ChatSidebar } = await import('./ChatSidebar')
+    await render(<ChatSidebar channel="chat-1" />)
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    await vi.waitFor(() => expect(gatewayMocks.request).toHaveBeenCalledTimes(1))
+    expect(container.textContent).toContain('live')
+
+    apiMocks.buildWsUrl.mockResolvedValue('ws://localhost/api/events?channel=chat-2')
+    await act(async () => root.render(<ChatSidebar channel="chat-2" />))
+
+    await vi.waitFor(() => expect(apiMocks.buildWsUrl).toHaveBeenCalledWith('/api/events', {
+      channel: 'chat-2'
+    }))
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
+    expect(FakeWebSocket.instances[0].closed).toBe(true)
+    expect(gatewayMocks.close).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(gatewayMocks.request).toHaveBeenLastCalledWith('session.create', expect.any(Object)))
+    expect(container.textContent).toContain('live')
+  })
+
   it('routes loopback 4401 closes through stale-token recovery', async () => {
     const { ChatSidebar } = await import('./ChatSidebar')
 

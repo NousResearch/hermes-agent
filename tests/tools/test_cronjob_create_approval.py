@@ -212,6 +212,20 @@ def test_an_interactive_session_gets_the_line_and_the_card(cron_store, monkeypat
     assert len(asked) == 1
 
 
+def test_turning_the_guidance_off_drops_the_line_and_keeps_the_card(cron_store, monkeypatch):
+    from agent.system_prompt import _cron_guidance
+    from hermes_cli import config as hermes_config
+    real = hermes_config.load_config_readonly
+    monkeypatch.setattr(hermes_config, "load_config_readonly",
+                        lambda *a, **k: {**real(*a, **k), "cron": {"proactive_guidance": False}})
+    asked = _asking(monkeypatch, "deny")
+    agent = SimpleNamespace(platform="cli", valid_tool_names={"cronjob_manage"}, _oneshot_session=False)
+    assert _cron_guidance(agent) is None
+    result = json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))
+    assert len(asked) == 1 and result["declined"] is True
+    assert cron_store.load_jobs() == []
+
+
 # --- A model-initiated update asks on a "Change this job?" card -------------------------------------
 
 def _existing_job(cron_store):

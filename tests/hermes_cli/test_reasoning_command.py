@@ -8,6 +8,7 @@ Combines functionality from:
 - PR #790 (0xbyt4): reasoning display toggle and rendering
 """
 
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -188,6 +189,12 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
 
 class TestReasoningPreviewBuffering(unittest.TestCase):
+    @staticmethod
+    def _plain(rendered: str) -> str:
+        """Label and body now paint in separate escapes (thinking text is coloured
+        per token), so compare what the terminal actually shows."""
+        return re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+
     def _make_cli(self):
         from cli import HermesCLI
 
@@ -212,7 +219,7 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
 
         self.assertEqual(mock_cprint.call_count, 1)
         rendered = mock_cprint.call_args[0][0]
-        self.assertIn("[thinking] Let me think about this.", rendered)
+        self.assertIn("[thinking] Let me think about this.", self._plain(rendered))
 
     @patch("cli._cprint")
     def test_pending_reasoning_flushes_when_thinking_stops(self, mock_cprint):
@@ -230,7 +237,7 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
 
         self.assertEqual(mock_cprint.call_count, 1)
         rendered = mock_cprint.call_args[0][0]
-        self.assertIn("[thinking] see how this plays out", rendered)
+        self.assertIn("[thinking] see how this plays out", self._plain(rendered))
 
 
 

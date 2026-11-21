@@ -12,11 +12,17 @@ bootstrap frontend iterates manifest stages and always pairs the flag;
 standalone dispatch is the long-standing contract).
 
 Boundary: the test generates a PowerShell wrapper that defines stub
-functions (New-Object intercepting WScript.Shell, icacls, ie4uinit.exe)
-and then DOT-SOURCES the real install.ps1 with -Stage desktop — the full
+functions (New-Object intercepting WScript.Shell, icacls, ie4uinit.exe) and
+then DOT-SOURCES the real install.ps1 with -Stage desktop — the full
 stage runs in one real PowerShell process against a temp home/install
 dir, with every external effect either fake (compiled external bootstrap python)
-or logged instead of written. Nothing touches the user's known folders.
+or logged instead of written. Nothing touches the user's known folders, and the
+registry is part of that boundary: the stage's user-PATH write point
+(``Set-UserPathValue``) is replaced by a logger *and* the real
+``HKCU\\Environment\\Path`` (raw value + registry type) is bracketed before and
+after the run. It has to be both — until 2026-10-10 the wrapper intercepted
+icacls / ie4uinit / WScript.Shell but not the registry, and this stage really
+rewrote the operator's persisted PATH while this file stayed 5✓ green.
 If the artifact check fails, the assertion message carries the fake
 python's actual logged arguments for debugging.
 """
@@ -130,6 +136,17 @@ function ie4uinit.exe {
 # Load the definitions, then execute the real stage dispatcher.
 . $InstallerPath -InstallDir $InstallDir -HermesHome $HermesHome
 function Get-BootstrapPython { return $env:FAKE_BOOT_PY }
+
+# The user-PATH write point is the one external effect a PowerShell wrapper
+# cannot intercept by name -- it is a .NET static setter -- which is exactly why
+# install.ps1 exposes it as the named function Set-UserPathValue. Replaced here
+# the same way as Get-BootstrapPython so "nothing outside the temp dirs is
+# touched" is a claim this test can actually make. (2026-10-10: it could not,
+# and this stage rewrote the operator's real HKCU\Environment\Path.)
+function Set-UserPathValue([string]$value) {
+    Add-Content -Path $env:USERPATH_LOG -Value $value
+}
+
 Invoke-StageByName 'desktop'
 exit $LASTEXITCODE
 '''
@@ -172,6 +189,33 @@ def _run(powershell: str, tmp_path: Path, args: list[str], env: dict[str, str] |
 def _manifest_stages(run) -> list[str]:
     assert run.returncode == 0, run.stdout + run.stderr
     return [s["name"] for s in json.loads(run.stdout)["stages"]]
+
+
+def _raw_user_path() -> tuple[str, int] | None:
+    """The stored User PATH AND its registry type -- never the expanded form.
+
+    Same reading as ``tests/hermes_cli/test_windows_user_path_isolation.py``:
+    ``REG_EXPAND_SZ`` vs ``REG_SZ`` is half of what the fourth write point
+    damages, so comparing expanded values would hide it.
+    """
+    import winreg  # lazy: the module must stay importable off Windows
+
+    with winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ
+    ) as key:
+        try:
+            value, kind = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            return None
+        return str(value), int(kind)
+
+
+def _describe_user_path(snapshot: tuple[str, int] | None) -> str:
+    if snapshot is None:
+        return "absent"
+    value, kind = snapshot
+    name = {1: "REG_SZ", 2: "REG_EXPAND_SZ"}.get(kind, str(kind))
+    return f"{len(value)} chars / {len([e for e in value.split(';') if e])} entries / {name}"
 
 
 def test_manifest_without_flag_lists_no_desktop(tmp_path: Path) -> None:
@@ -224,8 +268,8 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     runs the CURRENT path: the shared completion tail (source_completion.py
     --desktop, the same call `hermes update` makes) builds the products; the produced
     artifact is probed, ACL-granted, and shortcut-ed — with icacls,
-    ie4uinit.exe, and WScript.Shell intercepted in the wrapper boundary so
-    nothing outside the temp dirs is touched."""
+    ie4uinit.exe, WScript.Shell **and the User-PATH registry write** intercepted
+    in the wrapper boundary so nothing outside the temp dirs is touched."""
     powershell = shutil.which("powershell")
     if not powershell:
         pytest.skip("Windows PowerShell is required")
@@ -236,6 +280,7 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     py_log = tmp_path / "fake-python.log"
     wsh_log = tmp_path / "wsh.log"
     icacls_log = tmp_path / "icacls.log"
+    userpath_log = tmp_path / "user-path-writes.log"
     fake_python = scripts / "python.exe"
     _compile_fake_python(powershell, fake_python)
 
@@ -255,7 +300,14 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
         "FAKE_INSTALL_DIR": str(install_dir),
         "WSH_LOG": str(wsh_log),
         "ICACLS_LOG": str(icacls_log),
+        "USERPATH_LOG": str(userpath_log),
+        # The hermetic conftest's subprocess-surviving marker, set explicitly so
+        # this test does not depend on who exported it. It is what makes
+        # install.ps1's user-PATH write point inert; without it the stage below
+        # would write the operator's real PATH (that is the 2026-10-10 leak).
+        "HERMES_TEST_ISOLATION": "1",
     }
+    registry_before = _raw_user_path()
     run = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(wrapper),
@@ -297,3 +349,19 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
         assert line.startswith("SAVED:"), shortcuts
         target = line.split("|")[0][len("SAVED:"):]
         assert target == str(exe), shortcuts
+    # 7. the boundary includes the registry. The stage's user-PATH write point
+    #    (install.ps1::Set-UserPathValue) logged nothing, AND the operator's real
+    #    HKCU\Environment\Path is byte-identical -- raw value and registry type --
+    #    across a full desktop stage. Both halves matter: the log proves the seam
+    #    was not reached, the bracket proves nothing else wrote either, and the
+    #    bracket is the half that fails on a tree without the guard.
+    assert not userpath_log.exists(), (
+        "the desktop stage wrote the operator's user PATH: "
+        + userpath_log.read_text(encoding="utf-8-sig")
+    )
+    registry_after = _raw_user_path()
+    assert registry_after == registry_before, (
+        "the desktop stage rewrote the operator's persisted User PATH "
+        f"(HKCU\\Environment\\Path): {_describe_user_path(registry_before)} -> "
+        f"{_describe_user_path(registry_after)}"
+    )

@@ -203,6 +203,84 @@ class TestOpenCodeGoGLM52Reasoning:
         assert top_level == {"reasoning_effort": "max"}
 
 
+class TestOpenCodeGoGLM53Reasoning:
+    """GLM-5.3's graded low..max knob on OpenCode Go (zai twin: #91789). The relay
+    accepts every level, but the profile previously emitted nothing, so requests
+    silently ran at the relay's max-tier default."""
+
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("max", "max"),
+            ("xhigh", "max"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_graded_efforts_pass_through(self, opencode_go_profile, effort, expected):
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+        )
+        assert top_level == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["glm-5.3", "glm-5.3-flash", "glm-5-3", "glm-5p3", "opencode-go/glm-5.3"],
+    )
+    def test_alias_spellings_get_graded_scale(self, opencode_go_profile, model):
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_disable_maps_to_lowest_tier(self, opencode_go_profile):
+        """GLM-5.3 rejects thinking.type=disabled (#85890); its lightest tier is the
+        closest translation — dropping the field would leave the relay's max default."""
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.3",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize(
+        "reasoning_config",
+        [None, {"enabled": True}, {"enabled": True, "effort": "none"}],
+    )
+    def test_unset_preserves_server_default(self, opencode_go_profile, reasoning_config):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model="glm-5.3",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_glm_5_2_still_clamps_low_to_high(self, opencode_go_profile):
+        """The 5.3 widening must not leak into 5.2's two-level wire."""
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model="glm-5.2",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_low_reaches_chat_completions_request(self, opencode_go_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "low"},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert kwargs["reasoning_effort"] == "low"
+
+
 class TestOpenCodeGoModelGating:
     """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM controls."""
 

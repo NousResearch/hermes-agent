@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -23,9 +22,15 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+    # No ``sys.modules`` surgery here: deleting ``hermes_cli*``/``hermes_state``
+    # modules splits the plugin-manager singleton — test files (imported once at
+    # collection) keep the pre-delete module objects, while call-time imports
+    # inside the dispatcher resolve the fresh re-imports. Subscribers registered
+    # on the stale manager (e.g. the tick_hook tests' captured callbacks) are
+    # then invisible to ``_fire_dispatch_tick_hook``. Env is already
+    # monkeypatched and home resolution reads HERMES_HOME dynamically on every
+    # call (``get_default_hermes_root`` memo is keyed on the env value), so the
+    # re-import buys nothing.
     yield test_home
 
 

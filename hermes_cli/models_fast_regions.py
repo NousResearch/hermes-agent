@@ -10,6 +10,9 @@ https://developers.openai.com/api/docs/guides/fast-mode#is-fast-mode-compatible-
 
 from typing import Optional
 
+from agent.reasoning_effort import on_gpt62_contract
+from hermes_cli.model_catalog import in_model_set
+
 # Host -> documented Fast models; None = every model the global endpoint accepts.
 _FAST_REGION_MODELS: dict[str, Optional[frozenset[str]]] = {
     "us.api.openai.com": None,
@@ -29,6 +32,6 @@ def openai_fast_region_allows(base_url: Optional[str], model_id: Optional[str], 
     models = _FAST_REGION_MODELS[host]
     base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
     # GPT-6.2 Fast supports EU residency, but Ultrafast supports US residency only.
-    if host == "eu.api.openai.com" and tier == "ultrafast" and base in {"gpt-6.2-astra", "gpt-6.2-sol"}:
+    if host == "eu.api.openai.com" and tier == "ultrafast" and on_gpt62_contract(base):
         return False
-    return models is None or base in models
+    return models is None or in_model_set(f"openai_fast_{host.split('.')[0]}", models, base)

@@ -13,6 +13,8 @@ import functools
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -95,6 +97,101 @@ def _finished_task_in_open_session(session_id: str = "open-session") -> None:
 
 def _wait_for(home: Path, metric: str) -> None:
     wait_until(lambda: metric in _metric_names(home), what=f"{metric} in the store")
+
+
+def _otel_span_names(path: Path) -> list[str]:
+    names = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        names.extend(
+            span["name"]
+            for resource in payload.get("resourceSpans", [])
+            for scope in resource.get("scopeSpans", [])
+            for span in scope.get("spans", [])
+        )
+    return names
+
+
+def _run_gateway_hard_exit_relay_child(
+    tmp_path: Path,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    _require_native_relay()
+    from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
+    from hermes_cli.relay_plugin_migrate import dumps_toml
+    from nemo_relay import observability as obs
+
+    home = tmp_path / "home"
+    output = tmp_path / "otel"
+    span_file = output / "spans.jsonl"
+    home.mkdir()
+    output.mkdir()
+    otel = obs.OpenTelemetrySectionConfig(
+        enabled=True,
+        file_sinks=[obs.OpenTelemetryFileSinkConfig(
+            output_directory=str(output),
+            filename=span_file.name,
+            type="full",
+            format="json_lines",
+            mode="append",
+            scheduled_delay_millis=10,
+        )],
+    )
+    spec = obs.ComponentSpec(config=obs.ObservabilityConfig(opentelemetry=otel))
+    plugins = tmp_path / "plugins.toml"
+    plugins.write_text(
+        dumps_toml({"version": 1, "components": [spec.to_dict()]}),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update({
+        "HERMES_HOME": str(home),
+        RELAY_PLUGINS_CONFIG_ENV: str(plugins),
+        "HERMES_TEST_SPAN_FILE": str(span_file),
+    })
+    child = """
+import os
+from pathlib import Path
+from agent import relay_runtime
+from gateway.run import _exit_after_graceful_shutdown
+from tests.waiting import wait_until
+
+coordinator = relay_runtime.SESSION_COORDINATOR
+lease = coordinator.acquire_conversation(
+    profile_key=relay_runtime.current_profile_key(),
+    session_id="hard-exit-session",
+    platform="gateway",
+)
+turn = coordinator.begin_turn(lease, turn_id="hard-exit-turn", task_id="hard-exit-task")
+coordinator.end_turn(turn, outcome="success")
+coordinator.release_conversation(lease)
+span_file = Path(os.environ["HERMES_TEST_SPAN_FILE"])
+wait_until(
+    lambda: span_file.exists() and span_file.stat().st_size > 0,
+    timeout=5,
+    what="turn span export",
+)
+_exit_after_graceful_shutdown(0)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", child],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        timeout=20,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    return completed, span_file
+
+
+def test_graceful_gateway_hard_exit_exports_core_relay_session(tmp_path):
+    """The hard-exit funnel closes the root scope that normal atexit would close."""
+    completed, span_file = _run_gateway_hard_exit_relay_child(tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    names = _otel_span_names(span_file)
+    assert "hermes.turn" in names
+    assert "hermes.session" in names
 
 
 def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, monkeypatch):

@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -602,10 +603,12 @@ def _split_volume_spec(spec: str) -> tuple[str, str] | None:
 
 
 def _container_mount_taken(volume_args: list[str], mount: str) -> bool:
-    target = mount.rstrip("/") or "/"
+    # Docker cleans container paths using POSIX semantics on every host.
+    # Strip leading slashes after normpath, which preserves a double slash.
+    target = posixpath.normpath(mount).lstrip("/")
     for arg in volume_args:
         parsed = _split_volume_spec(arg)
-        if parsed and (parsed[1].rstrip("/") or "/") == target:
+        if parsed and posixpath.normpath(parsed[1]).lstrip("/") == target:
             return True
     return False
 
@@ -866,7 +869,7 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
                 continue
             volume_args.extend(["-v", vol])
-        workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
+        workspace_explicitly_mounted = _container_mount_taken(volume_args, "/workspace")
 
         host_cwd_abs = _abs_host_cwd(host_cwd) if host_cwd else ""
         windows_cwd = _is_windows_drive_path(host_cwd or "") or _is_windows_drive_path(host_cwd_abs)

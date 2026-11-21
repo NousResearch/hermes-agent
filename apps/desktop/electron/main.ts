@@ -706,6 +706,7 @@ import {
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
+  currentBootIdentity,
   decideWindowsSandboxLaunch,
   fallbackMarker,
   grantAllApplicationPackagesAcl,
@@ -930,13 +931,19 @@ const NVIDIA_DRIVER_VERSION = parseNvidiaDriverVersion(NVIDIA_PROC_VERSION)
 // Every Linux launch's boot clock, NVIDIA or not; set at the first window reveal.
 const linuxGpuBootWindow = createLinuxGpuBootWindow()
 
+// One artifact identity for every recovery witness in this launch: source
+// builds report version 0.0.0, so the commit/build time is what tells a
+// rebuild (which should re-probe) apart from the same build (which must stay
+// sticky). Shared by the NVIDIA EGL witness and the sandbox marker.
+const DESKTOP_BUILD_IDENTITY = launchBuildIdentity({ appVersion: app.getVersion(), installStamp: INSTALL_STAMP })
+
 const nvidiaEglRecovery = createNvidiaEglRecovery({
   bootWindow: linuxGpuBootWindow,
   driverMajor: NVIDIA_DRIVER_MAJOR,
   driverVersion: NVIDIA_DRIVER_VERSION,
   userData: app.getPath('userData'),
   appVersion: app.getVersion(),
-  buildIdentity: launchBuildIdentity({ appVersion: app.getVersion(), installStamp: INSTALL_STAMP }),
+  buildIdentity: DESKTOP_BUILD_IDENTITY,
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
@@ -1078,7 +1085,9 @@ if (IS_WINDOWS || process.platform === 'linux') {
     argv: process.argv,
     env: process.env,
     marker: priorMarker,
-    appVersion: app.getVersion()
+    appVersion: app.getVersion(),
+    bootIdentity: currentBootIdentity(),
+    buildIdentity: DESKTOP_BUILD_IDENTITY
   })
 
   windowsSandboxFallbackActive = sandboxDecision.enable
@@ -1122,7 +1131,10 @@ if (IS_WINDOWS || process.platform === 'linux') {
     windowsSandboxFallbackReason = 'gpu-breakpoint'
 
     try {
-      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+      writeSandboxMarker(
+        app.getPath('userData'),
+        fallbackMarker('gpu-breakpoint', app.getVersion(), DESKTOP_BUILD_IDENTITY)
+      )
     } catch {
       void 0
     }
@@ -1174,7 +1186,10 @@ if (IS_WINDOWS || process.platform === 'linux') {
       windowsSandboxFallbackReason = 'gpu-breakpoint'
 
       try {
-        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+        writeSandboxMarker(
+          app.getPath('userData'),
+          fallbackMarker('gpu-breakpoint', app.getVersion(), DESKTOP_BUILD_IDENTITY)
+        )
       } catch {
         void 0
       }
@@ -13269,7 +13284,8 @@ function createWindow() {
             markerAfterSuccessfulBoot({
               fallbackActive: windowsSandboxFallbackSticky,
               reason: windowsSandboxFallbackReason,
-              appVersion: app.getVersion()
+              appVersion: app.getVersion(),
+              buildIdentity: DESKTOP_BUILD_IDENTITY
             })
           )
         } catch (error) {
@@ -13498,7 +13514,10 @@ function createWindow() {
         windowsSandboxFallbackReason = 'renderer-crash-loop'
 
         try {
-          writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
+          writeSandboxMarker(
+            app.getPath('userData'),
+            fallbackMarker('renderer-crash-loop', app.getVersion(), DESKTOP_BUILD_IDENTITY)
+          )
         } catch {
           void 0
         }

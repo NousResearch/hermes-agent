@@ -75,6 +75,8 @@ export function InAppOfferDialog() {
     return null
   }
 
+  const claimBy = offer.claimable_until ? formatClaimDeadline(offer.claimable_until) : null
+
   return (
     <Dialog
       onOpenChange={open => {
@@ -92,6 +94,7 @@ export function InAppOfferDialog() {
           <DialogDescription className="sr-only">{t.inAppOffer.describedBy}</DialogDescription>
         </DialogHeader>
         <p className="text-sm whitespace-pre-line break-words">{offer.body}</p>
+        {claimBy && <p className="text-xs text-muted-foreground">{t.inAppOffer.claimBy(claimBy)}</p>}
         <DialogFooter>
           <Button onClick={() => dismissInAppOffer(offer.id, requestGateway)} size="sm" variant="outline">
             {t.inAppOffer.dismiss}
@@ -110,4 +113,25 @@ export function InAppOfferDialog() {
       </DialogContent>
     </Dialog>
   )
+}
+
+/** "Dec 15, 2026, 12:00 PM UTC": the Portal's own deadline wording (claimDeadlineLabel there), in
+ * UTC so the dialog, the Portal's Billing card and its claim page name the same instant. */
+export function formatClaimDeadline(iso: string): string | null {
+  const at = new Date(iso)
+
+  if (Number.isNaN(at.getTime())) {
+    return null
+  }
+
+  const date = new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+    timeZone: 'UTC',
+    year: 'numeric'
+  }).format(at)
+
+  return `${date} UTC`
 }

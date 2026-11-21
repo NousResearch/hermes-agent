@@ -221,7 +221,8 @@ export const zhHantOverrides = {
   },
   inAppOffer: {
     dismiss: '稍後再說',
-    describedBy: '來自 Nous 團隊的訊息。'
+    describedBy: '來自 Nous 團隊的訊息。',
+    claimBy: (deadline: string) => `請在 ${deadline} 前領取`
   },
 } satisfies TranslationOverrides
 

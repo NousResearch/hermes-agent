@@ -200,6 +200,8 @@ class InAppOfferPayload(OpenModel):
     body: str
     cta_label: str
     cta_url: str
+    # ISO instant the offer's promo stops being claimable; absent with no deadline.
+    claimable_until: str | None = None
 
 
 class FreeTierStatusResult(Result):

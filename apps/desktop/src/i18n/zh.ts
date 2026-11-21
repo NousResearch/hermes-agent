@@ -3884,7 +3884,8 @@ export const zhOverrides = {
   },
   inAppOffer: {
     dismiss: '以后再说',
-    describedBy: '来自 Nous 团队的消息。'
+    describedBy: '来自 Nous 团队的消息。',
+    claimBy: (deadline: string) => `请在 ${deadline} 前领取`
   },
 
   modelPicker: {

@@ -100,6 +100,24 @@ describe('InAppOfferDialog on the Webapp (browser host)', () => {
     expect(localStorage.getItem('hermes.in-app-offer.dismissed-v1')).toContain(OFFER.id)
   })
 
+  it('names the claim deadline when the offer has one, in UTC', async () => {
+    $freeTierStatus.set(status({ ...OFFER, claimable_until: '2026-12-15T17:30:00.000Z' }))
+    render(<InAppOfferDialog />)
+
+    await act(async () => vi.advanceTimersByTimeAsync(IDLE_SETTLE_MS))
+
+    expect(screen.getByText('Claim by Dec 15, 2026, 5:30 PM UTC')).toBeTruthy()
+  })
+
+  it('shows no deadline line for an offer without one', async () => {
+    $freeTierStatus.set(status())
+    render(<InAppOfferDialog />)
+
+    await act(async () => vi.advanceTimersByTimeAsync(IDLE_SETTLE_MS))
+
+    expect(screen.queryByText(/^Claim by/)).toBeNull()
+  })
+
   it('stays closed while the user is typing in the composer', async () => {
     $composerDraft.set('half a sentence')
     $freeTierStatus.set(status())

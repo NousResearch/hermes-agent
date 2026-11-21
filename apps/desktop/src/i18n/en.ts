@@ -4034,7 +4034,8 @@ export const en: Translations = {
   },
   inAppOffer: {
     dismiss: 'Maybe later',
-    describedBy: 'A message from the Nous team.'
+    describedBy: 'A message from the Nous team.',
+    claimBy: (deadline: string) => `Claim by ${deadline}`
   },
 
   modelPicker: {

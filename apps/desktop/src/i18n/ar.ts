@@ -158,7 +158,8 @@ export const arOverrides = {
   },
   inAppOffer: {
     dismiss: 'لاحقًا',
-    describedBy: 'رسالة من فريق Nous.'
+    describedBy: 'رسالة من فريق Nous.',
+    claimBy: (deadline: string) => `اطلبه قبل ${deadline}`
   },
 } satisfies TranslationOverrides
 

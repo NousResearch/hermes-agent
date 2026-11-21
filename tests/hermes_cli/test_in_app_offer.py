@@ -345,3 +345,14 @@ def test_an_unreadable_dismissed_file_reads_as_none(_home):
     in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
 
     assert in_app_offer.pending_offer() == OFFER
+
+
+def test_keeps_a_valid_claim_deadline_and_drops_a_malformed_one():
+    in_app_offer.record_from_account_payload(
+        {"in_app_offer": {**OFFER, "claimable_until": "2026-12-15T12:00:00.000Z"}}
+    )
+    assert in_app_offer.pending_offer()["claimable_until"] == "2026-12-15T12:00:00.000Z"
+
+    in_app_offer.record_from_account_payload({"in_app_offer": {**OFFER, "claimable_until": "next week"}})
+    # The offer still shows; only the unusable deadline is dropped.
+    assert in_app_offer.pending_offer() == OFFER

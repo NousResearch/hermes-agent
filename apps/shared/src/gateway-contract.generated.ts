@@ -700,6 +700,7 @@ export interface InAppOfferPayload {
   body: string
   cta_label: string
   cta_url: string
+  claimable_until?: string | null
   [key: string]: unknown
 }
 export interface FreeTierChallengeResultParams {

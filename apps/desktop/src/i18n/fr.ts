@@ -4484,7 +4484,8 @@ export const frOverrides = {
   },
   inAppOffer: {
     dismiss: 'Peut-être plus tard',
-    describedBy: "Un message de l'équipe Nous."
+    describedBy: "Un message de l'équipe Nous.",
+    claimBy: (deadline: string) => `À réclamer avant le ${deadline}`
   },
   modelPicker: {
     title: 'Changer de modèle',

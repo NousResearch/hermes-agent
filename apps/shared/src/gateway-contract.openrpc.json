@@ -22202,6 +22202,18 @@
           "cta_url": {
             "title": "Cta Url",
             "type": "string"
+          },
+          "claimable_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claimable Until"
           }
         },
         "required": [

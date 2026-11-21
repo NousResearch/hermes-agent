@@ -3846,7 +3846,8 @@ export const jaOverrides = {
   },
   inAppOffer: {
     dismiss: '後で',
-    describedBy: 'Nous チームからのメッセージ。'
+    describedBy: 'Nous チームからのメッセージ。',
+    claimBy: (deadline: string) => `${deadline} までに受け取ってください`
   },
 } satisfies TranslationOverrides
 

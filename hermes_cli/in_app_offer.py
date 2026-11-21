@@ -224,7 +224,22 @@ def _validated(value: Any) -> Optional[dict[str, str]]:
     if url.scheme != "https" or not url.hostname:
         return None
     checked["cta_url"] = checked["cta_url"].strip()
+    # Optional: when the offer's promo stops being claimable, for "Claim by ..." copy. Kept only as
+    # a parseable ISO instant; anything else is dropped (the offer itself still shows).
+    until = value.get("claimable_until")
+    if isinstance(until, str) and _iso_instant(until):
+        checked["claimable_until"] = until
     return checked
+
+
+def _iso_instant(text: str) -> bool:
+    from datetime import datetime
+
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
 
 #: What the client tells the Portal about an offer, for the campaign's counts.

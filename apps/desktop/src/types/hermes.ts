@@ -214,6 +214,8 @@ export interface InAppOfferPayload {
   body: string
   cta_label: string
   cta_url: string
+  /** ISO instant the offer's promo stops being claimable; absent with no deadline. */
+  claimable_until?: string
 }
 
 export interface MemoryProviderOAuthStatus {

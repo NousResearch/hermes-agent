@@ -4475,7 +4475,8 @@ export const deOverrides = {
   },
   inAppOffer: {
     dismiss: 'Vielleicht später',
-    describedBy: 'Eine Nachricht vom Nous-Team.'
+    describedBy: 'Eine Nachricht vom Nous-Team.',
+    claimBy: (deadline: string) => `Einlösbar bis ${deadline}`
   },
   modelPicker: {
     title: 'Modell wechseln',

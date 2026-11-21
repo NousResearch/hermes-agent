@@ -3941,7 +3941,8 @@ export const ruOverrides = {
   },
   inAppOffer: {
     dismiss: 'Может быть, позже',
-    describedBy: 'Сообщение от команды Nous.'
+    describedBy: 'Сообщение от команды Nous.',
+    claimBy: (deadline: string) => `Получите до ${deadline}`
   },
 } satisfies TranslationOverrides
 

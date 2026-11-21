@@ -28,6 +28,13 @@ def test_write_creates_file_with_content(tmp_path):
     assert target.read_text(encoding="utf-8") == "hello\n"
 
 
+def test_write_can_preserve_provider_newlines(tmp_path):
+    target = tmp_path / "page.txt"
+    content = "LF\nCRLF\r\nCR\rUnicode: \u00e9\n"
+    write_text_exclusive(target, content, newline="")
+    assert target.read_bytes() == content.encode("utf-8")
+
+
 @posix_only
 def test_private_file_is_0600(tmp_path):
     target = tmp_path / "spill.txt"

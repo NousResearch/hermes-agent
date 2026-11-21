@@ -100,8 +100,9 @@ def test_an_uncached_refetch_never_retargets_the_old_entry(monkeypatch):
     assert later.calls == 1 and not result.get("cached"), "the old blocked page was served from cache"
 
 
-def test_crlf_page_round_trips_through_the_cache(monkeypatch):
-    """A page with CRLF line endings (Tavily passes text through untouched) must hit on the next
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_page_line_endings_round_trip_through_the_cache(monkeypatch, ending):
+    """A page with provider-supplied line endings (Tavily passes text through untouched) must hit on the next
     call, not miss forever and re-buy the vendor fetch."""
     check, safe = _policy()
     monkeypatch.setattr("tools.website_policy.check_website_access", check)
@@ -110,12 +111,14 @@ def test_crlf_page_round_trips_through_the_cache(monkeypatch):
     class _Crlf(_RedirectingProvider):
         async def extract(self, urls, format=None):
             self.calls += 1
-            body = "line one\r\nline two\r\n"
+            body = f"line one{ending}line two{ending}"
             return [{"url": TARGET, "content": body, "raw_content": body, "metadata": {"sourceURL": urls[0]}}]
 
     provider = _Crlf()
     _extract(provider)
-    assert _extract(provider)[0].get("cached") is True
+    hit = _extract(provider)[0]
+    assert hit.get("cached") is True
+    assert hit["content"] == "line one\nline two\n"
     assert provider.calls == 1
 
 

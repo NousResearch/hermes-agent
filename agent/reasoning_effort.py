@@ -127,15 +127,21 @@ def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     )
 
 
+def is_kimi_coding_preview(model: Optional[str]) -> bool:
+    """The Code plan's K2.8 alias, not the K2.7 Highspeed model."""
+    return (model or "").strip().lower().rsplit("/", 1)[-1] == "kimi-for-coding"
+
+
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for a Moonshot/Kimi slug (bare ``k3``, ``k3-256k``, ``kimi-k3*`` → K3).
 
     K3 is served as the bare slug ``k3``, plan variants like ``k3-256k``, and the ``kimi-k3*`` aliases; its
-    documented set is low/high/max. Everything earlier speaks low/medium/high. Boundary-matched so K2-era
+    documented set is low/high/max, shared by K2.8 Preview (``kimi-for-coding``). Other
+    K2-era names retain low/medium/high. Boundary-matched so K2-era
     names (``kimi-k2.6``) never match (detection regex from #76427 by @ruizanthony).
     """
     m = (model or "").strip().lower().split("/")[-1]
-    return KIMI_K3_EFFORTS if _KIMI_K3_SLUG_RE.search(m) else KIMI_K2_EFFORTS
+    return KIMI_K3_EFFORTS if _KIMI_K3_SLUG_RE.search(m) or is_kimi_coding_preview(model) else KIMI_K2_EFFORTS
 
 
 def clamp_effort(

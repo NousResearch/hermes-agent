@@ -12,8 +12,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
-    GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
-    clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
+    GEMINI4_THINKING_LEVELS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
+    clamp_reasoning_config, is_kimi_coding_preview, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
@@ -594,12 +594,13 @@ class ChatCompletionsTransport(ProviderTransport):
         thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
         _e = requested_effort(reasoning_config)
         if is_kimi and not thinking_off:
-            # K3 = low/high/max (server default high), K2-era = low/medium/high (default medium).
+            # K2.8 Preview defaults to max; K3 defaults to high.
             _supported = kimi_supported_efforts(model)
-            is_k3 = _supported is KIMI_K3_EFFORTS
+            supports_max = "max" in _supported
+            default_effort = "max" if is_kimi_coding_preview(model) else "high" if supports_max else "medium"
             api_kwargs["reasoning_effort"] = (
-                ("high" if is_k3 else "medium") if _e is None
-                else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if is_k3 else None)
+                default_effort if _e is None
+                else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if supports_max else None)
             )
         if params.get("is_tokenhub", False) and not thinking_off:
             api_kwargs["reasoning_effort"] = tokenhub_effort(_e)

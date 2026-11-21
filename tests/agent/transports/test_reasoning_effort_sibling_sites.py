@@ -16,6 +16,8 @@ sibling sites fixed in the same sweep:
 """
 
 from agent.transports import get_transport
+import pytest
+
 import agent.transports.chat_completions
 import agent.transports.codex
 
@@ -80,6 +82,26 @@ class TestKimiEffortVocabulary:
     def test_disabled_omits_effort(self):
         kw = _kimi_kwargs("kimi-k3", {"enabled": False})
         assert "reasoning_effort" not in kw
+
+
+    @pytest.mark.parametrize("model", ["kimi-for-coding", "kimi/kimi-for-coding", " KIMI-FOR-CODING "])
+    @pytest.mark.parametrize(("effort", "wire"), [
+        (None, "max"), ("low", "low"), ("medium", "high"), ("high", "high"),
+        ("xhigh", "max"), ("max", "max"), ("ultra", "max"), (False, None),
+    ])
+    def test_coding_preview_preserves_documented_effort_and_default(self, model, effort, wire):
+        config = None if effort is None else {"enabled": effort is not False, "effort": effort}
+        kwargs = _kimi_kwargs(model, config)
+        if wire is None:
+            assert "reasoning_effort" not in kwargs
+            assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+        else:
+            assert kwargs["reasoning_effort"] == wire
+
+    def test_other_coding_slugs_keep_legacy_clamping(self):
+        for model in ("kimi-for-coding-highspeed", "kimi-for-coding-extra", "kimi-k2.6"):
+            assert _kimi_kwargs(model, None)["reasoning_effort"] == "medium"
+            assert _kimi_kwargs(model, {"enabled": True, "effort": "max"})["reasoning_effort"] == "high"
 
 
 class TestTokenHubEffortVocabulary:

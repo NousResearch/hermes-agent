@@ -59,3 +59,18 @@ def test_marker_neutralized_in_tool_result_content():
 def test_returns_false_when_no_marker_present():
     messages = [{"role": "user", "content": "no markers here"}]
     assert _sanitize_messages_media_markers(messages) is False
+
+
+def test_auxiliary_kwargs_builder_neutralizes_markers():
+    """Aux calls (title generation, compression, session search) assemble their own kwargs
+    via _build_call_kwargs, bypassing assemble_api_request; the marker must be gone from
+    the outgoing copy there too (review feedback on #108762)."""
+    from agent.auxiliary_client import _build_call_kwargs
+
+    messages = [
+        {"role": "user", "content": "dump props"},
+        {"role": "tool", "tool_call_id": "c1", "content": f"media_marker: {RANDOM_MARKER}"},
+    ]
+    kwargs = _build_call_kwargs("custom", "qwen-27b", messages, base_url="http://192.168.1.21:30068")
+    assert RANDOM_MARKER not in kwargs["messages"][1]["content"]
+    assert kwargs["messages"][0]["content"] == "dump props"

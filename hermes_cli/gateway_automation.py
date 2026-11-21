@@ -102,6 +102,10 @@ class GatewayGoalManager(_Remote):
             kwargs["contract"] = contract.to_dict()
         return self._rpc("set", goal, **kwargs)
 
+    def edit(self, goal, *, contract=None):
+        kwargs = {"contract": contract.to_dict()} if contract is not None else {}
+        return self._rpc("edit", goal, **kwargs)
+
     def pause(self, reason="user-paused"):
         return self._rpc("pause", reason=reason)
 

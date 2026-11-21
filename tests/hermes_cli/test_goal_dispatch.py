@@ -61,7 +61,7 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
     'show', 'draft', 'draft build it', 'drafting docs', 'wait', 'wait nope',
     'wait {pid} build', 'unwait', 'gate add true', 'gate remove 1',
     'gate clear', 'gate list', 'pause', 'resume', 'clear', 'stop', 'done',
-    'build it\nverify: test passes', 'status', '',
+    'build it\nverify: test passes', 'status', '', 'edit reworded', 'edit',
 ])
 def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
     monkeypatch.setattr(goals, 'draft_contract', lambda objective: goals.GoalContract())
@@ -155,3 +155,26 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     assert 'replaced' not in _dispatch(fresh, 'fresh objective').output
     _dispatch(fresh, '--dry-run the migration')
     assert goals.load_goal(mgr.session_id).goal == '--dry-run the migration'
+
+
+def test_edit_rewords_goal_in_place_keeping_progress():
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='edit-in-place')
+    mgr.set('ship the parser', contract=goals.GoalContract(verification='pytest passes'))
+    mgr.add_subgoal('keep the CLI flags')
+    mgr.add_gate('true')
+    mgr.state.turns_used = 4
+    mgr.pause(reason='user-paused')
+    from hermes_cli.goal_command import is_goal_control
+    assert is_goal_control('edit ship the parser and the lexer')  # allowed mid-run on the gateway
+    result = _dispatch(goals.GoalManager(session_id=mgr.session_id), 'edit ship the parser and the lexer')
+    state = goals.load_goal(mgr.session_id)
+    assert (state.goal, state.status, state.turns_used) == ('ship the parser and the lexer', 'paused', 4)
+    assert state.subgoals == ['keep the CLI flags'] and len(state.gates) == 1
+    assert state.contract.verification == 'pytest passes'
+    assert 'was: ship the parser' in result.output
+    _dispatch(goals.GoalManager(session_id=mgr.session_id), 'edit lexer only\nverify: lexer tests pass')
+    assert goals.load_goal(mgr.session_id).contract.verification == 'lexer tests pass'
+    mgr.clear()
+    fresh = goals.GoalManager(session_id=mgr.session_id)
+    assert _dispatch(fresh, 'edit something').error and goals.load_goal(mgr.session_id).status == 'cleared'

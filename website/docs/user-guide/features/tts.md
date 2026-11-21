@@ -56,6 +56,12 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
+    language_code: "en"                 # Not supported by eleven_multilingual_v2; see below
+    voice_settings:                     # Also used by streaming TTS
+      stability: 0.5
+      similarity_boost: 0.8
+    convert_options:
+      seed: 42                          # Advanced SDK options are validated
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -112,6 +118,41 @@ tts:
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
 ```
+
+Eleven v4 examples:
+
+```yaml
+# Highest quality
+tts:
+  provider: elevenlabs
+  elevenlabs:
+    model_id: eleven_v4
+    language_code: en
+    voice_settings: {stability: 0.5, similarity_boost: 0.8}
+
+# Real-time streaming
+tts:
+  provider: elevenlabs
+  elevenlabs:
+    model_id: eleven_v4
+    streaming_model_id: eleven_v4_turbo
+    language_code: en
+    voice_settings: {stability: 0.5, similarity_boost: 0.8}
+```
+
+Hermes forwards the options you set (`language_code`, `voice_settings`, `convert_options`) to
+ElevenLabs unchanged for whichever model is selected; it does not allow or block settings by model
+name. Whether a model supports, ignores or rejects an option is ElevenLabs' decision, and a
+rejection is reported as ElevenLabs' own error. Hermes never retries, switches models or removes a
+configured setting on its own. Accepted requests are not evidence that a model audibly honors
+every setting.
+
+`language_code` is the one documented limit: the
+[ElevenLabs convert reference](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)
+says it is not supported for `eleven_multilingual_v2` (the default model) and is ignored by models
+that do not support the given language. Hermes still passes it, but do not rely on it for those
+models. `speed` is clamped into the ElevenLabs 0.7–1.2 band, and non-numeric or non-finite values
+fail before the request.
 
 KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
 

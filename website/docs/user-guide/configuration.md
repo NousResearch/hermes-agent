@@ -2368,6 +2368,12 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"
     model_id: "eleven_multilingual_v2"
+    language_code: "en"        # Optional ISO 639-1 hint; not supported by eleven_multilingual_v2 (see below)
+    voice_settings:
+      stability: 0.5
+      similarity_boost: 0.8
+    convert_options:            # Advanced ElevenLabs SDK options are validated before use
+      seed: 42
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -2397,6 +2403,19 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+Hermes passes the ElevenLabs options you configure (`language_code`, `voice_settings`,
+`convert_options`) to the ElevenLabs API for the selected `model_id`, and for
+`streaming_model_id` when set. It does not filter them by model name: whether a model
+honors, ignores or rejects an option is decided by ElevenLabs and reported with ElevenLabs' own
+error. In particular, the [ElevenLabs convert reference](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)
+states that `language_code` is not supported for `eleven_multilingual_v2` (the default model) and
+is ignored when the model does not support the given language, so do not rely on it for that model.
+Hermes does not retry, switch models or drop settings when a request fails.
+
+ElevenLabs accepts `speed` from 0.7 to 1.2, so a global `tts.speed` tuned for another provider is
+clamped into that band instead of being rejected by the API; non-numeric or non-finite values
+fail before the request.
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
 

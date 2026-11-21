@@ -153,6 +153,33 @@ def test_isolated_auth_from_a_profile_without_its_own_logins_copies_the_roots_it
     assert isolated.warnings == []
 
 
+@pytest.mark.parametrize("share_auth", [True, False], ids=["shared", "isolated-auth"])
+def test_a_clone_source_gone_before_the_logins_step_copies_no_logins(launch, monkeypatch, share_auth):
+    """The source is re-read for its logins after the core create. If it is gone by then, the profile gets
+    no auth.json: never the named launch profile's, which would sign it in as that profile's account."""
+    _named_source(launch)
+    launch_profile = launch / "profiles" / "lp"
+    launch_profile.mkdir(parents=True)
+    (launch_profile / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {"openrouter": '
+                                              '[{"id": "launch-key", "auth_type": "api_key", "access_token": "x"}]}}')
+    monkeypatch.setenv("HERMES_HOME", str(launch_profile))
+    created, resolve = profiles.create_profile, profiles._resolve_clone_source
+
+    def create_then_lose_the_source(*args, **kwargs):
+        path = created(*args, **kwargs)
+        def gone(clone_from):
+            raise FileNotFoundError(f"Source profile '{clone_from}' does not exist")
+        monkeypatch.setattr(profiles, "_resolve_clone_source", gone)
+        return path
+    monkeypatch.setattr(profiles, "create_profile", create_then_lose_the_source)
+    result = provision_profile(ProfileCreateRequest(name="c", clone_from="src", clone_config=True,
+                                                    share_auth=share_auth))
+    assert not (result.path / "auth.json").exists()
+    assert result.mirrored["auth"] == "shared"
+    assert result.warnings == ["logins source: Source profile 'src' does not exist"]
+    assert resolve is not profiles._resolve_clone_source
+
+
 def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     (launch / "auth.json").unlink(missing_ok=True)
     result = provision_profile(ProfileCreateRequest(name="work", share_auth=False))

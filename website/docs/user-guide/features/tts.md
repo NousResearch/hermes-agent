@@ -56,6 +56,7 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
+    collection_id: ""           # Optional: restrict the ElevenLabs voice dropdown to a collection
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -123,6 +124,30 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### ElevenLabs Voice Dropdown Collections
+
+Optionally set `tts.elevenlabs.collection_id` to an ElevenLabs collection ID in the
+profile whose voice dropdown you want to filter. For example:
+
+```bash
+hermes config set tts.elevenlabs.collection_id YOUR_COLLECTION_ID
+# For a named profile:
+hermes -p YOUR_PROFILE config set tts.elevenlabs.collection_id YOUR_COLLECTION_ID
+```
+
+With a non-empty ID, the desktop/dashboard voice dropdown fetches that collection
+through ElevenLabs' paginated `/v2/voices` API. Voices are deduplicated by ID and
+retain their existing alphabetical labels, including category names. An empty
+collection produces an empty dropdown. Upstream or pagination errors never fall
+back to the unfiltered voice list; 401/403 responses report the integration as
+unavailable. Pagination rejects missing/repeated cursors and is capped at 100
+pages rather than displaying an incomplete list.
+
+The default is `""` (unset), which preserves the existing `/v1/voices` dropdown.
+This setting only filters menu choices: it does **not** select a voice, change
+`tts.elevenlabs.voice_id`, switch `tts.provider`, or affect speech synthesis or
+other providers. `ELEVENLABS_API_KEY` remains a secret in the profile's `.env`.
 
 ### Gemini Persona Prompts
 

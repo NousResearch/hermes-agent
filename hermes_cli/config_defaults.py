@@ -1055,8 +1055,7 @@ DEFAULT_CONFIG = {
     },
     # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
     # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
-    # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
-    # NeuTTS/KittenTTS 2000).
+    # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
@@ -1077,6 +1076,7 @@ DEFAULT_CONFIG = {
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
             "model_id": "eleven_multilingual_v2",
+            "collection_id": "",  # Optional collection filter for the voice dropdown only.
         },
         "openai": {
             "model": "gpt-4o-mini-tts",

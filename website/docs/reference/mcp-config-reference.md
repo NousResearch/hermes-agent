@@ -45,7 +45,7 @@ mcp_servers:
 
 | Key | Type | Applies to | Meaning |
 |---|---|---|---|
-| `command` | string | stdio | Executable to launch |
+| `command` | string | stdio | Executable to launch. Hermes manages only the local process tree it starts; a command such as `ssh host mcp-server` needs remote-host supervision or cleanup for the process it starts there. |
 | `args` | list | stdio | Arguments for the subprocess |
 | `env` | mapping | stdio | Environment passed to the subprocess |
 | `url` | string | HTTP | Remote MCP endpoint |

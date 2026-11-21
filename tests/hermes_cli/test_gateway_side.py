@@ -57,3 +57,35 @@ def test_a_failed_side_task_raises_the_gateways_error():
             wait()
     finally:
         conn.close()
+
+
+class _ExploreClient(_Client):
+    async def rpc(self, method, *, _timeout=None, **params):
+        self.calls.append((method, params))
+        if params["text"].startswith("--promote"):
+            return {"text": "bringing it in", "prompt": "PROMOTED TURN"}
+        for kind, text in (("btw.progress", "terminal · rg retry"), ("btw.complete", self.text)):
+            await self.events.put({"jsonrpc": "2.0", "method": "event", "params": {
+                "type": kind, "session_id": SID, "payload": {"task_id": "btw_1", "text": text}}})
+        return {"task_id": "btw_1"}
+
+
+def test_an_exploration_streams_progress_before_its_report():
+    conn = _connection(_ExploreClient("the report"))
+    steps = []
+    try:
+        task_id, wait, reply = gateway_side.start_btw(conn, SID, "--explore find it", on_progress=steps.append)
+        assert (task_id, reply) == ("btw_1", None)
+        assert wait() == "the report"
+        assert steps == ["terminal · rg retry"]
+    finally:
+        conn.close()
+
+
+def test_a_thread_command_replies_at_once_with_the_turn_to_submit():
+    conn = _connection(_ExploreClient(""))
+    try:
+        assert gateway_side.start_btw(conn, SID, "--promote") == (
+            None, None, {"text": "bringing it in", "prompt": "PROMOTED TURN"})
+    finally:
+        conn.close()

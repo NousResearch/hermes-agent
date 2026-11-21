@@ -2526,6 +2526,7 @@ export const ruOverrides = {
       sessionActions: 'Действия с сеансом',
       sessionRunning: 'Сеанс выполняется',
       needsInput: 'Нужен ваш ввод',
+      needsYouBadge: 'Ждёт вас',
       waitingForAnswer: 'Ждёт вашего ответа',
       finishedUnread: 'Завершён — не прочитан',
       backgroundRunning: 'Фоновая задача выполняется',

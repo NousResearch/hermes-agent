@@ -3732,6 +3732,7 @@ export const deOverrides = {
       sessionActions: 'Session-Aktionen',
       sessionRunning: 'Session läuft',
       needsInput: 'Braucht Ihre Eingabe',
+      needsYouBadge: 'Wartet auf Sie',
       waitingForAnswer: 'Wartet auf Ihre Antwort',
       finishedUnread: 'Abgeschlossen – ungelesen',
       backgroundRunning: 'Hintergrundaufgabe läuft',

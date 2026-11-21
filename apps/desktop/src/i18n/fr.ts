@@ -3739,6 +3739,7 @@ export const frOverrides = {
       sessionActions: 'Actions de session',
       sessionRunning: 'Session en cours',
       needsInput: 'Nécessite votre saisie',
+      needsYouBadge: 'Vous attend',
       waitingForAnswer: 'En attente de votre réponse',
       finishedUnread: 'Terminée — non lue',
       backgroundRunning: 'Tâche en arrière-plan en cours',

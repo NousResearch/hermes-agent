@@ -611,7 +611,7 @@ class A2AAdapter(BasePlatformAdapter):
             try:
                 reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=input_id or task_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
-                return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
+                return self._stored_task(task_id, context_id, state, reply, rec["created_iso"]), None
             finally:
                 self._pop_pending(task_id)
         if self._loop is None or self._message_handler is None:
@@ -706,11 +706,19 @@ class A2AAdapter(BasePlatformAdapter):
         return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
+    def _stored_task(self, task_id: str, context_id: str, state: str, reply: str, created_iso: str) -> dict:
+        """The finished Task as later GetTask reads render it (same ids and timestamp), when the
+        store still holds this outcome."""
+        rec = self.tasks.get(task_id)
+        if rec and rec["state"] == state and rec.get("reply", "") == reply:
+            return protocol.TaskStore.to_task(rec)
+        return protocol.build_task(task_id, context_id, state, reply, created_at=created_iso)
+
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+            task = self._stored_task(pending["task_id"], pending["context_id"], state, reply, pending["created_iso"])
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
     @staticmethod

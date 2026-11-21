@@ -766,6 +766,23 @@ class TestTaskRpcHandlers:
         # Turn counter went back to zero: next track() is turn 1.
         assert adapter._turns.track("ctx-loopy") == 1
 
+    def test_finished_task_renders_the_same_on_every_read(self, monkeypatch):
+        """artifactId, status messageId and status.timestamp are fixed when the task finishes:
+        the SendMessage response, GetTask and ListTasks all return the same values."""
+        ticks = iter(range(1000))
+        monkeypatch.setattr(protocol, "now_iso", lambda: f"2026-01-01T00:00:{next(ticks):02d}.000Z")
+        adapter = _bare_adapter()
+        rec = adapter.tasks.create("task-s", "ctx-s", "peer")
+        adapter.tasks.set_state("task-s", protocol.STATE_WORKING)
+        adapter.tasks.complete("task-s", protocol.STATE_COMPLETED, "done")
+        sent = adapter._stored_task("task-s", "ctx-s", protocol.STATE_COMPLETED, "done", rec["created_iso"])
+        first = adapter._rpc_tasks_get(1, {"taskId": "task-s"})["result"]
+        second = adapter._rpc_tasks_get(2, {"taskId": "task-s"})["result"]
+        listed = adapter._rpc_tasks_list(3, {"contextId": "ctx-s", "includeArtifacts": True})["result"]["tasks"][0]
+        assert sent == first == second == listed
+        assert first["artifacts"][0]["artifactId"]
+        assert first["status"]["message"]["messageId"]
+
     def test_cancel_terminal_task_not_cancelable(self):
         adapter = _bare_adapter()
         adapter.tasks.create("task-t", "ctx-t", "peer")

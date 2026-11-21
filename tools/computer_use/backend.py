@@ -17,7 +17,7 @@ from agent.provider_base import ProviderBase
 class UIElement:
     """One interactable element on the current screen."""
 
-    index: int                       # 1-based SOM index
+    index: int                       # driver element index (what element= targets)
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
     bounds: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
@@ -29,13 +29,15 @@ class UIElement:
     # stale token errors instead of silently re-resolving to a different element. None on older drivers.
     # None for pre-#1961 drivers that didn't carry the field.
     element_token: Optional[str] = None
+    # Index of the parent element in the same capture; None for a root or when the driver gave no tree shape.
+    parent_index: Optional[int] = None
 
 
 @dataclass
 class CaptureResult:
     """Result of a screen capture call. mode="vision" → png_b64 only; mode="ax" → elements
-    only; mode="som" (default) → both: the PNG already carries numbered overlays drawn by
-    the backend and `elements` holds the matching index → element mapping."""
+    only; mode="som" (default) → both: a plain screenshot (no overlays drawn) and `elements`,
+    the index → element mapping the model acts on."""
 
     mode: str
     width: int                      # screenshot width (logical px, pre-Anthropic-scale)

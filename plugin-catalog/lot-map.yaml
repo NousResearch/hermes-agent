@@ -1,0 +1,24 @@
+name: lot-map
+title: Lot Map for Hermes
+repo: https://github.com/thanhduy1706/lot-map-hermes
+sha: a16459b093953342dfe780cb8751a5f2a968fb8e
+description: "Original Lot Map SVG and braille activity visualization adapted for Hermes Desktop and TUI. Disclosure: MIT upstream renderers with Hermes event adapters; passive hooks write bounded profile-local tool metadata; no runtime network, shell, credentials or telemetry."
+maintainer: thanhduy1706
+tier: community
+category: desktop
+requires_hermes: ">=0.23.3"
+version: "0.1.0"
+docs_url: https://github.com/thanhduy1706/lot-map-hermes#readme
+screenshots:
+  - https://raw.githubusercontent.com/thanhduy1706/lot-map-hermes/a16459b093953342dfe780cb8751a5f2a968fb8e/docs/preview.png
+readme: true
+known_issues:
+  - "TUI widget requires an explicit copy step; see README. Desktop surface is opt-in."
+  - "Scanner cautions for upstream Unicode sanitizer and command-classification text are disclosed in docs/validation-notes.md."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -149,7 +149,9 @@ describe('reconcileUnifiedDesktopHalves', () => {
     }
   )
 
-  it('keeps the mtime gate for an installed (non-linked) package', async () => {
+  it('re-syncs an installed (non-linked) package on any byte change, whatever the clock says', async () => {
+    // A timestamp gate misses a `cp -p` / `git stash pop` / restore that lands the same or an
+    // older mtime on changed content, and the copy would stay stale silently.
     const home = makeHome()
     const appRoot = path.join(home, 'desktop-plugins')
     const source = path.join(home, 'plugins', 'media', 'desktop', 'plugin.js')
@@ -161,7 +163,57 @@ describe('reconcileUnifiedDesktopHalves', () => {
     write(source, 'v2')
     const past = new Date(Date.now() - 3_600_000)
     fs.utimesSync(source, past, past)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v2')
+
+    write(source, 'v3')
+
+    const recorded = new Date(
+      JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8')).sourceMtimeMs
+    )
+
+    fs.utimesSync(source, recorded, recorded)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v3')
+  })
+
+  it('skips an installed package whose bytes match, even with a newer mtime', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const source = path.join(home, 'plugins', 'media', 'desktop', 'plugin.js')
+    write(source, 'v1')
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    const markerBefore = fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8')
+
+    const future = new Date(Date.now() + 3_600_000)
+    fs.utimesSync(source, future, future)
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+    expect(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8')).toBe(markerBefore)
+  })
+
+  it('repairs an installed copy whose entry point went missing', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'v1')
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    fs.rmSync(path.join(appRoot, 'media', 'plugin.js'))
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v1')
+  })
+
+  it('repairs a corrupt marker timestamp without re-copying matching bytes', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'v1')
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    const markerFile = path.join(appRoot, 'media', PACKAGE_MARKER)
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
+    fs.writeFileSync(markerFile, JSON.stringify({ ...marker, sourceMtimeMs: null }))
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+    expect(typeof JSON.parse(fs.readFileSync(markerFile, 'utf8')).sourceMtimeMs).toBe('number')
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v1')
   })
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(

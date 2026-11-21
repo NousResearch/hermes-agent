@@ -1,5 +1,6 @@
 import { stripAnsi } from '@hermes/shared/ansi'
 import { compactNumber } from '@hermes/shared/format'
+import type { BtwResult } from '@hermes/shared/gateway-events'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -132,20 +133,34 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'ask a side question about this conversation',
+    help: 'ask a side question, or explore one with tools (--explore), beside the current work',
     name: 'btw',
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.transcript.sys(t('slashCmd.session.btw.usage'))
       }
 
-      ctx.gateway.rpc<BackgroundStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
-        ctx.guarded<BackgroundStartResponse>(r => {
-          if (!r.task_id) {
+      // The gateway parses the flags (agent/side_thread.py): a question or an --explore thread
+      // replies with a task id (an exploration also with its start notice as text); --threads,
+      // --stop and --promote reply text at once, a promotion with the prompt to submit.
+      ctx.gateway.rpc<BtwResult>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
+        ctx.guarded<BtwResult>(r => {
+          if (r.text) {
+            ctx.transcript.sys(r.text)
+          } else if (r.task_id) {
+            ctx.transcript.sys(t('slashCmd.session.btw.answering', r.task_id))
+          }
+
+          if (!r.prompt) {
             return
           }
 
-          ctx.transcript.sys(t('slashCmd.session.btw.answering', r.task_id))
+          // A promotion is an ordinary next turn: queued behind a running one, else sent now.
+          if (ctx.ui.busy) {
+            ctx.composer.enqueue(r.prompt)
+          } else {
+            ctx.transcript.send(r.prompt, true, `/btw ${arg}`)
+          }
         })
       )
     }

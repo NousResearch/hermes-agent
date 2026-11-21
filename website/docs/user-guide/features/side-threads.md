@@ -33,6 +33,7 @@ lists the conversation's threads:
 | `/btw --threads` (`--list`) | List this conversation's side threads with status, elapsed time, tool count and (while running) the latest step. |
 | `/btw --promote [id] [note]` (`-p`) | Bring a finished thread's report into the main conversation as your next message. Without an id, the most recent finished thread. The optional note is appended as your instruction. |
 | `/btw --stop <id>` | Stop a running thread. |
+| `/btw --open [id]` (`-o`) | **Desktop:** open a finished thread as a side chat — its own tab docked to the right of the conversation, which you can keep talking to. Elsewhere, points you at `--promote`. |
 | `/btw -- <text>` | Ask a classic question that starts with `--`. |
 
 Thread ids accept the full id (`btw_3f9a01`), the id without `btw_`, or a unique prefix of at least
@@ -111,6 +112,21 @@ Its report and `/btw --threads` land as rows of their own:
 `/btw --promote` sends the report as your next message (queued if the agent is busy):
 
 ![Promoting a side thread in the Desktop app](/img/docs/side-threads/desktop-promoted.png)
+
+### Side chats (Desktop)
+
+`/btw --open` turns a finished side thread into a chat of its own, opened as a second tab docked to
+the right of the conversation, like two browser tabs side by side. It starts from the conversation
+the thread forked from, then the side task and its report, and you can keep talking to it while the
+main chat works. It is a child session: it nests under its parent in the sidebar and survives a
+restart. Opening the same thread again returns the same side chat.
+
+![A side chat docked beside the conversation](/img/docs/side-threads/desktop-side-chat-open.png)
+
+![Continuing the conversation in the side chat](/img/docs/side-threads/desktop-side-chat-followup.png)
+
+Nothing flows back on its own: bring a finding into the main conversation with `/btw --promote`, or
+copy what you need. The side chat opens only when you ask; it never opens by itself.
 
 Because the fork replays the conversation verbatim, its first request repeats what the main
 conversation already sent — the part a provider's prompt cache can serve. A `/bg` task on the same

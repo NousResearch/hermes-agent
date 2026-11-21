@@ -7,6 +7,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
+from urllib.parse import unquote
 
 from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
@@ -108,14 +110,51 @@ def require_squirrel_downloadable(package: Path) -> None:
     print(f"macOS update ZIP: {size:,} bytes, {(SQUIRREL_ZIP_LIMIT - size) / 1e6:.0f} MB under the 1 GiB limit")
 
 
+def _probe_windows_product_version(executable: Path) -> str:
+    # -Command joins trailing argv into the script text, so $args stays empty.
+    return subprocess.check_output([
+        "powershell", "-NoProfile", "-Command",
+        "(Get-Item -LiteralPath $env:RECORD_EXECUTABLE).VersionInfo.ProductVersion",
+    ], env={**os.environ, "RECORD_EXECUTABLE": str(executable)},
+        text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=30).strip()
+
+
+def _packaged_windows_executable_version(
+    archive: zipfile.ZipFile,
+    executable_relpath: str,
+    *,
+    probe=None,
+) -> str:
+    """Extract the manifest's declared executable from the MSIX itself and probe its version.
+
+    Reading ``*-unpacked/`` on disk is unsafe when a later variant build (such as the
+    Store build on a canary) overwrites the unpacked directory with a different quad.
+    """
+    if not executable_relpath:
+        raise ValueError("MSIX application manifest has no Executable attribute")
+    target = PureWindowsPath(executable_relpath).as_posix().lstrip("/")
+    # MakeAppx percent-encodes part names: "Hermes Agent.exe" is stored as Hermes%20Agent.exe.
+    entry = single(
+        name for name in archive.namelist()
+        if unquote(name.replace("\\", "/")).lstrip("/").casefold() == target.casefold()
+    )
+    probe = probe or _probe_windows_product_version
+    with tempfile.TemporaryDirectory() as temp:
+        extracted = Path(temp) / PureWindowsPath(entry).name
+        with archive.open(entry) as src, extracted.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return probe(extracted)
+
+
 def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
-           *, channel_request: dict | None = None) -> None:
+           *, channel_request: dict | None = None, executable_version_probe=None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
     row: dict = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
     if platform == "windows":
         package = single(p for p in root.glob(f"*-win-{arch}.msix") if not p.name.startswith("Store-"))
         if channel_request is None and not package.name.endswith(f"-{release_version(tag)}-win-{arch}.msix"):
             raise ValueError("Windows artifact filename differs from release tag")
+        version_sidecar = root / f"version-info-{arch}.json"
         with zipfile.ZipFile(package) as archive:
             manifest = ET.fromstring(archive.read("AppxManifest.xml"))
             identity = manifest.find("{*}Identity")
@@ -123,25 +162,21 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             stamp_name = single(n for n in archive.namelist() if n.replace("\\", "/").endswith("/resources/install-stamp.json"))
             stamp = json.loads(archive.read(stamp_name))
             stamp_matches(stamp, tag, commit, channel_request=channel_request)
-        if identity.attrib["ProcessorArchitecture"].lower() != arch:
-            raise ValueError("MSIX architecture differs from release target")
-        row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
-                   applicationId=application.attrib["Id"], version=identity.attrib["Version"])
-        version_sidecar = root / f"version-info-{arch}.json"
-        if version_sidecar.is_file():
-            row["executableVersion"] = json.loads(
-                version_sidecar.read_text(encoding="utf-8-sig"),
-            )["productVersion"]
-        elif os.name == "nt":
-            # The stamp carries no executable name; the package's own manifest does.
-            executable_name = PureWindowsPath(application.attrib["Executable"]).name
-            executable = single(root.glob(f"*-unpacked/{executable_name}"))
-            # -Command joins trailing argv into the script text, so $args stays empty.
-            row["executableVersion"] = subprocess.check_output([
-                "powershell", "-NoProfile", "-Command",
-                "(Get-Item -LiteralPath $env:RECORD_EXECUTABLE).VersionInfo.ProductVersion",
-            ], env={**os.environ, "RECORD_EXECUTABLE": str(executable)},
-                text=True, encoding="utf-8", stdin=subprocess.DEVNULL).strip()
+            if identity.attrib["ProcessorArchitecture"].lower() != arch:
+                raise ValueError("MSIX architecture differs from release target")
+            row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
+                       applicationId=application.attrib["Id"], version=identity.attrib["Version"])
+            if version_sidecar.is_file():
+                row["executableVersion"] = json.loads(
+                    version_sidecar.read_text(encoding="utf-8-sig"),
+                )["productVersion"]
+            elif executable_version_probe is not None or os.name == "nt":
+                # The stamp carries no executable name; the package's own manifest does.
+                row["executableVersion"] = _packaged_windows_executable_version(
+                    archive,
+                    application.attrib.get("Executable", ""),
+                    probe=executable_version_probe,
+                )
         if stamp.get("receiverProtocol") == 1:
             row["receiverProtocol"] = 1
     elif platform == "macos":

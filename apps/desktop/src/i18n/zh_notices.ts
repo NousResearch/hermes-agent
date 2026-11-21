@@ -39,8 +39,12 @@ export const zhNotices = {
     openBilling: '打开账单',
     addCredits: '添加额度',
     dismiss: '忽略'
+  },
+  sessionPins: {
+    pinFailed: '无法置顶会话',
+    unpinFailed: '无法取消置顶会话'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sessionPins'
 >

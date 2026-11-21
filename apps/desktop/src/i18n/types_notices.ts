@@ -36,6 +36,8 @@ export interface NoticeTranslations {
   keepAwakeOffer: { title: string; message: string; action: string }
   /** The sign-in offer after apps connect on the free tier without the welcome trial. */
   connectorOffer: { heading: string; body: string }
+  /** Error toast titles when the server refuses a sidebar pin or unpin. */
+  sessionPins: { pinFailed: string; unpinFailed: string }
 }
 
 export interface SessionCommandNotices {

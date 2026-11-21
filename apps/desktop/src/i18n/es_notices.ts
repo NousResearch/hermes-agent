@@ -45,8 +45,12 @@ export const esNotices = {
     openBilling: 'Abrir facturación',
     addCredits: 'Añadir créditos',
     dismiss: 'Descartar'
+  },
+  sessionPins: {
+    pinFailed: 'No se pudo fijar la sesión',
+    unpinFailed: 'No se pudo desfijar la sesión'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sessionPins'
 >

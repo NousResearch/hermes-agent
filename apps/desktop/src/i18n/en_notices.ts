@@ -41,8 +41,12 @@ export const enNotices = {
   connectorOffer: {
     heading: 'Keep your connected apps',
     body: 'Sign in with a free Nous account to keep the apps you connected, like Gmail or Slack, on your account.'
+  },
+  sessionPins: {
+    pinFailed: 'Could not pin session',
+    unpinFailed: 'Could not unpin session'
   }
 } satisfies Pick<
   Translations,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer' | 'sessionPins'
 >

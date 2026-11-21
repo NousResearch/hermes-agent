@@ -123,6 +123,21 @@ def test_pin_fails_loudly_when_write_does_not_land(pin_env, capsys, monkeypatch)
     assert "pin" in out.lower(), "refusal must mention the pin outcome"
 
 
+def test_pin_missing_skill_reports_not_found(pin_env):
+    """A typo must not be reported as an ineligible skill or sent to list-unmanaged."""
+    cli = pin_env["cli"]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = cli._cmd_pin(_Args("does-not-exist"))
+    out = buf.getvalue()
+
+    assert rc == 1
+    assert out.strip() == "curator: skill 'does-not-exist' not found"
+    assert "not curation-eligible" not in out
+    assert "list-unmanaged" not in out
+    assert pin_env["usage"].get_record("does-not-exist")["pinned"] is False
+
+
 # ---------------------------------------------------------------------------
 # Test 2 — successful pin on eligible-but-unmanaged skill must be VISIBLE
 # ---------------------------------------------------------------------------

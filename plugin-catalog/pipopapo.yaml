@@ -1,0 +1,18 @@
+name: pipopapo
+title: PipoPapo
+repo: https://github.com/ut0s/hermes-pipopapo
+sha: 25155fa64c4446eabeca2b238dd9e2eb95570329
+description: Local electronic audio cues when Hermes finishes a turn or needs human input. Requires the separately installed PipoPapo CLI.
+maintainer: ut0s
+tier: community
+category: voice
+requires_hermes: ">=0.23.3"
+version: "0.1.0"
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_llm_call
+    - on_human_input_request
+  provides_middleware: []
+  requires_env: []

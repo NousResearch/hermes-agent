@@ -470,7 +470,7 @@ def side_chat_seed(thread: SideThread) -> dict[str, Any]:
     add("user", f"/btw --explore {thread.task}")
     footer = " · ".join(part for part in (thread.thread_id, _tool_tally(thread.tool_calls)) if part)
     add("assistant", f"{thread.answer}\n\n— {footer}")
-    return {"title": f"btw: {task_preview(thread.task, 48)}", "messages": rows}
+    return {"thread_id": thread.thread_id, "title": f"btw: {task_preview(thread.task, 48)}", "messages": rows}
 
 
 def run_thread_command(session_id: str, request: BtwRequest) -> ThreadCommandResult:

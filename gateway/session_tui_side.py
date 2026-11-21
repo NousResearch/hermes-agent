@@ -210,6 +210,8 @@ async def btw(connection, ref, params):
         # The thread registry is keyed by the owning profile's home.
         with owner_scope(authority):
             result = run_thread_command(ref.session_id, request)
+        if result.side_chat is not None:
+            return await _open_side_chat(connection, ref, result)
         return result.reply()
     if not request.text:
         raise RuntimeStoreError('invalid_params')
@@ -236,6 +238,25 @@ async def btw(connection, ref, params):
                                         on_fork=handle.set_fork, should_stop=handle.stopped.is_set) or ''
 
     return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': question}, holder=[handle])
+
+
+async def _open_side_chat(connection, ref, result):
+    """``/btw --open`` on the shared owner: the side chat is a seeded local child of this session
+    (``hermes_state_side_chat``), created here because a client cannot seed a canonical session,
+    and it may be created while this session's turn runs. The requesting window is attached to it
+    (as a branch's viewer is), so its first message is not refused as a stranger's."""
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_contract import SessionRef
+    from hermes_state_side_chat import create_side_chat
+    seed, authority = result.side_chat, connection.authority
+    child = await asyncio.to_thread(create_side_chat, authority.db, ref.session_id,
+                                    request_id=f'btw-open:{ref.session_id}:{seed["thread_id"]}',
+                                    title=seed['title'], messages=seed['messages'])
+    if child not in authority.sessions:
+        restore_local_session(authority, child)
+    if child not in connection.subscriptions:
+        await connection.resume(SessionRef(ref.profile_id, child), {})
+    return {**result.reply(), 'stored_session_id': child}
 
 
 def _btw_explore(authority, ref, policy, task_id, agent, snapshot, task):

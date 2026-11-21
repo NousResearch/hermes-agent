@@ -200,6 +200,9 @@ def test_preview_restart_history_trims_a_plain_message_list():
     assert _preview_restart_history([]) == [] and _preview_restart_history(None) == []
 
 
+MAIN_TURN_RELEASE = threading.Event()
+
+
 class ExploringModel(BaseHTTPRequestHandler):
     """A /btw --explore fork tries ``write_file`` (outside the exploration whitelist), then reports
     whether the dispatch-side guard denied it. Every other request answers its own turn."""
@@ -211,7 +214,13 @@ class ExploringModel(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         last = (body.get('messages') or [{}])[-1]
         message = {'role': 'assistant', 'content': 'WARM_ACK'}
-        if last.get('role') == 'tool':
+        if 'SLOW_MAIN' in str(last.get('content')):
+            # The main turn holds until the test has opened the side chat: it is provably running.
+            MAIN_TURN_RELEASE.wait(timeout=60)
+            message['content'] = 'SLOW_DONE'
+        elif 'SIDE_FOLLOWUP' in str(last.get('content')):
+            message['content'] = 'SIDE_CHAT_REPLY'
+        elif last.get('role') == 'tool':
             message['content'] = 'DENIED_OK' if 'denied' in str(last.get('content')).lower() else 'WRITE_ESCAPED'
         elif 'Side task: EXPLORE_TASK' in str(last.get('content')):
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
@@ -278,5 +287,51 @@ def test_btw_explore_runs_a_guarded_side_thread_and_promotes_by_reply(tmp_path):
             asyncio.run(probe())
         assert not list(tmp_path.rglob('SIDE_ESCAPE.txt'))
     finally:
+        model.shutdown()
+        model.server_close()
+
+
+@pytest.mark.platforms("linux")
+def test_btw_open_creates_a_side_chat_while_the_main_turn_runs(tmp_path):
+    """--open on the shared owner: a seeded local child created WHILE the parent's turn runs (a
+    branch would refuse: busy), holding the conversation plus the side task and its report; the
+    requesting window can talk to it at once, and the parent's transcript never changes."""
+    model = ThreadingHTTPServer(('127.0.0.1', 0), ExploringModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{model.server_port}/v1'
+    try:
+        with owner(tmp_path, {'model': {'provider': 'custom', 'default': 'explore-fixture', 'base_url': url}}) as (
+                home, _peer, desc):
+            async def probe():
+                async with websocket(home, desc) as ws:
+                    sid = (await rpc(ws, 'session.create', request_id='sc', source='tui',
+                                     toolsets=['file']))['result']['session_id']
+                    await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_TURN')
+                    await settled(home)
+                    reply, _event = await call_and_await_event(ws, 'prompt.btw', 'btw.complete',
+                                                               session_id=sid, text='--explore EXPLORE_TASK')
+                    task = reply['result']['task_id']
+                    MAIN_TURN_RELEASE.clear()
+                    await rpc(ws, 'prompt.submit', session_id=sid, input_id='slow', text='SLOW_MAIN')
+                    opened = (await rpc(ws, 'prompt.btw', session_id=sid, text=f'--open {task}'))['result']
+                    child = opened['stored_session_id']
+                    assert child != sid and opened['side_chat']['thread_id'] == task, opened
+                    again = (await rpc(ws, 'prompt.btw', session_id=sid, text=f'--open {task}'))['result']
+                    assert again['stored_session_id'] == child  # idempotent: the same side chat
+                    seeded = [(m['role'], m['content']) for m in
+                              (await rpc(ws, 'session.resume', session_id=child))['result']['messages']]
+                    assert seeded[0] == ('user', 'WARM_TURN')
+                    assert ('user', '/btw --explore EXPLORE_TASK') in seeded
+                    assert seeded[-1][0] == 'assistant' and 'DENIED_OK' in seeded[-1][1], seeded
+                    await rpc(ws, 'prompt.submit', session_id=child, input_id='side', text='SIDE_FOLLOWUP')
+                    MAIN_TURN_RELEASE.set()
+                    await settled(home)
+                    after = [m['content'] for m in (await rpc(ws, 'session.resume', session_id=child))['result']['messages']]
+                    assert after[-1] == 'SIDE_CHAT_REPLY', after
+                    parent = [m['content'] for m in (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']]
+                    assert parent == ['WARM_TURN', 'WARM_ACK', 'SLOW_MAIN', 'SLOW_DONE'], parent
+            asyncio.run(probe())
+    finally:
+        MAIN_TURN_RELEASE.set()
         model.shutdown()
         model.server_close()

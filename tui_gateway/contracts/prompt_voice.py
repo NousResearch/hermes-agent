@@ -256,6 +256,7 @@ class BtwSideChat(Result):
     """A finished side thread as a child session: the conversation it forked from, then the side
     task and its report (``agent.side_thread.side_chat_seed``)."""
 
+    thread_id: str
     title: str
     messages: list[BtwSideChatMessage]
 
@@ -274,6 +275,9 @@ class BtwResult(Result):
     # cannot dock a second chat shows ``fallback_text`` instead of ``text``.
     side_chat: BtwSideChat | None = None
     fallback_text: str | None = None
+    # The shared owner creates the side chat itself (a seeded local child that may be made while
+    # the parent works) and returns its id: the client opens THAT session as a docked tab.
+    stored_session_id: str | None = None
 
 
 method("prompt.btw", params=SideAgentParams, result=BtwResult,

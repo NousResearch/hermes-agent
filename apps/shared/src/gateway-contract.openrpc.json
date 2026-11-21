@@ -7775,6 +7775,18 @@
             ],
             "default": null,
             "title": "Fallback Text"
+          },
+          "stored_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stored Session Id"
           }
         },
         "title": "BtwResult",
@@ -7784,6 +7796,10 @@
         "additionalProperties": false,
         "description": "A finished side thread as a child session: the conversation it forked from, then the side\ntask and its report (``agent.side_thread.side_chat_seed``).",
         "properties": {
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -7797,6 +7813,7 @@
           }
         },
         "required": [
+          "thread_id",
           "title",
           "messages"
         ],

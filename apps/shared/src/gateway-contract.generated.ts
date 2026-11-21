@@ -3012,9 +3012,11 @@ export interface BtwResult {
   prompt?: string | null
   side_chat?: BtwSideChat | null
   fallback_text?: string | null
+  stored_session_id?: string | null
 }
 /** A finished side thread as a child session: the conversation it forked from, then the side task and its report (``agent.side_thread.side_chat_seed``). */
 export interface BtwSideChat {
+  thread_id: string
   title: string
   messages: BtwSideChatMessage[]
 }

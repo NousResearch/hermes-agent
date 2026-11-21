@@ -15,7 +15,7 @@ import pytest
 from gateway.run_turn_runner import TurnRunner
 
 
-def _wire(user_config, **runner_attrs):
+def _wire(user_config, platform_key=None, platform="telegram", **runner_attrs):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
     agent = types.SimpleNamespace()
     ctx = types.SimpleNamespace(
@@ -33,7 +33,7 @@ def _wire(user_config, **runner_attrs):
         _status_adapter=None,
         session_key="",
         user_config=user_config,
-        source=types.SimpleNamespace(platform="telegram"),
+        source=types.SimpleNamespace(platform=platform),
         mute_notification_reply=False,
         _thinking_enabled=False,
         agent_holder=[None],
@@ -56,7 +56,7 @@ def _wire(user_config, **runner_attrs):
         _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
     )
-    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False, platform_key=platform_key)
     return agent
 
 
@@ -69,6 +69,20 @@ def test_null_or_missing_display_falls_back_to_on(user_config):
 def test_memory_notifications_setting_still_applies():
     agent = _wire({"display": {"memory_notifications": "verbose"}})
     assert agent.memory_notifications == "verbose"
+
+
+def test_memory_notifications_per_platform_override_applies():
+    """display.platforms.<platform>.memory_notifications is documented and must win (#149680)."""
+    config = {"display": {"memory_notifications": "on",
+                          "platforms": {"whatsapp": {"memory_notifications": False}}}}
+    assert _wire(config, platform="whatsapp").memory_notifications == "off"
+    assert _wire(config, platform="telegram").memory_notifications == "on"
+
+
+def test_memory_notifications_uses_the_turn_platform_key():
+    """The turn's resolved platform key (e.g. a session policy's) is what selects the override."""
+    config = {"display": {"platforms": {"discord": {"memory_notifications": "verbose"}}}}
+    assert _wire(config, platform_key="discord", platform="telegram").memory_notifications == "verbose"
 
 
 def test_owner_surface_is_recorded_apart_from_the_daybreak_switch():

@@ -252,16 +252,18 @@ hermes profile export <name> [options]
 | 参数 / 选项 | 描述 |
 |-------------------|-------------|
 | `<name>` | 要导出的 profile。 |
-| `-o`, `--output <path>` | 输出文件路径（默认：`<name>.tar.gz`）。 |
+| `-o`, `--output <path>` | 输出文件路径。省略时会在专用目录中保存带时间戳的归档，并打印其路径。 |
 
 **示例：**
 
 ```bash
 hermes profile export work
-# 在当前目录创建 work.tar.gz
+# 打印保存路径，通常为 <默认 Hermes 主目录>/profile-exports/work-<时间戳>.tar.gz
 
 hermes profile export work -o ./work-2026-03-29.tar.gz
 ```
+
+不指定 `-o` 时，导出位置不会默认为当前目录。导入或复制归档时请使用命令打印的路径；如果自定义 Hermes 主目录位于 Git 检出目录内，则需要使用检出目录以外的备用目录。详见[导出和导入 profile 文件（英文）](https://hermes-agent.nousresearch.com/docs/user-guide/profile-distributions#export-and-import-a-profile-file)。
 
 ## `hermes profile import`
 

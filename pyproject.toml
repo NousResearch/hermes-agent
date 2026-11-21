@@ -750,6 +750,8 @@ include = [
   "persistence.*",
   "session_rules",
   "session_rules.*",
+  "hermes_re",
+  "hermes_re.*",
   "tools",
   "tools.*",
   "utils",

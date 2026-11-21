@@ -23,6 +23,68 @@ from agent.turn_truncation import boosted_output_cap
 
 logger = logging.getLogger("agent.conversation_loop")
 
+# Attribute on the agent holding the fallback-walk summary stashed when the rebuilt-restart
+# cap trips (attempted vs never-attempted rungs); read by the turn-completion explainer.
+FALLBACK_WALK_SUMMARY_ATTR = "_fallback_walk_summary"
+
+
+def _fallback_rung_label(entry: Any) -> str:
+    """``model (provider)`` for one fallback-chain entry, tolerant of odd shapes."""
+    if not isinstance(entry, dict):
+        return str(entry)
+    model = str(entry.get("model") or "").strip() or "unknown-model"
+    provider = str(entry.get("provider") or "").strip()
+    return f"{model} ({provider})" if provider else model
+
+
+def fallback_walk_snapshot(agent: Any) -> dict:
+    """Attempted vs never-attempted rungs of the fallback walk, plus the primary.
+
+    ``attempted`` counts chain entries the walk consumed (``_fallback_index`` advanced past
+    them). ``untried`` are entries the walk never reached — under a healthy bound that set is
+    empty when the turn dies on the cap, and non-empty exactly when the turn was cut short.
+    """
+    chain = list(getattr(agent, "_fallback_chain", None) or [])
+    index = int(getattr(agent, "_fallback_index", 0) or 0)
+    attempted = [
+        {"provider": str(e.get("provider") or ""), "model": str(e.get("model") or ""),
+         "label": _fallback_rung_label(e)}
+        for e in chain[:index] if isinstance(e, dict)
+    ]
+    untried = [
+        {"provider": str(e.get("provider") or ""), "model": str(e.get("model") or ""),
+         "label": _fallback_rung_label(e)}
+        for e in chain[index:] if isinstance(e, dict)
+    ]
+    primary = {
+        "provider": str(getattr(agent, "provider", "") or ""),
+        "model": str(getattr(agent, "model", "") or ""),
+    }
+    return {"attempted": attempted, "untried": untried, "primary": primary}
+
+
+def _stash_fallback_walk_summary(agent: Any, *, restart_count: int, cap: int) -> None:
+    """Record why the rebuilt-restart cap tripped, for the final turn log + explainer."""
+    summary = fallback_walk_snapshot(agent)
+    summary["restart_count"] = restart_count
+    summary["cap"] = cap
+    setattr(agent, FALLBACK_WALK_SUMMARY_ATTR, summary)
+
+
+def _fallback_walk_summary_text(agent: Any) -> str:
+    """One line for logs: how far the walk got before the cap killed it."""
+    summary = getattr(agent, FALLBACK_WALK_SUMMARY_ATTR, None)
+    if not isinstance(summary, dict):
+        return ""
+    parts = [f"primary={summary.get('primary', {}).get('provider') or '?'}"]
+    attempted = [e.get("label") or "?" for e in summary.get("attempted", [])]
+    untried = [e.get("label") or "?" for e in summary.get("untried", [])]
+    if attempted:
+        parts.append("attempted=" + ", ".join(attempted))
+    if untried:
+        parts.append("untried=" + ", ".join(untried))
+    return "; ".join(parts)
+
 
 def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
     """True when ``messages[idx]`` is this turn's user row (verbatim, or its user-originated view)."""
@@ -524,15 +586,25 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
-            # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
-            # iteration budget and re-issuing, or a runaway turn holds the turn lease
-            # indefinitely (rebuilt restarts previously had no bound).
+        # Scale the rebuilt-restart bound to the fallback chain: every rebuilt restart
+        # follows a successful fallback activation, and once a rung binds the chain
+        # index only moves forward (primary-transport recovery is refused while
+        # ``_fallback_activated``), so the walk is finite at ``max_retries + chain``.
+        # A flat ``max_retries`` killed chains longer than ``max_retries + 1`` rungs one
+        # switch before testing the next provider (2026-11-10 incident: rungs 6-8 of an
+        # 8-rung chain were unreachable by construction). Redirect restarts keep the flat
+        # bound above — they are user actions, not chain progress.
+        _chain_cap = max_retries + len(getattr(agent, "_fallback_chain", None) or [])
+        if restart_count > _chain_cap:
+            # Re-arming beyond the whole chain is a ping-pong, not chain progress: stop
+            # refunding the iteration budget and re-issuing, or a runaway turn holds the
+            # turn lease indefinitely.
             _turn_exit_reason = "rebuilt_restart_limit_exceeded"
+            _stash_fallback_walk_summary(agent, restart_count=restart_count, cap=_chain_cap)
             logger.warning(
                 "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
-                "refunding the iteration budget indefinitely.",
-                max_retries,
+                "refunding the iteration budget indefinitely. %s",
+                _chain_cap, _fallback_walk_summary_text(agent),
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

@@ -30,6 +30,42 @@ def empty_response_explanation(model: str = "") -> str:
     return t("explainer.empty_response", model=model or t("explainer.shared.the_model"))
 
 
+def explain_fallback_walk_exhaustion(agent) -> str:
+    """Honest explanation for a ``rebuilt_restart_limit_exceeded`` turn: names the rungs the
+    walk actually sent requests to and the ones it never reached.
+
+    ``every provider in the fallback chain kept failing over`` was untrue whenever the cap
+    cut the walk short — the 2026-11-10 incident had three untried rungs — and sent readers
+    hunting the wrong chain for nine days. Reads the summary the trip site stashed on the
+    agent (``FALLBACK_WALK_SUMMARY_ATTR``), falling back to a fresh snapshot of the chain.
+    """
+    from agent.turn_iteration_prep import FALLBACK_WALK_SUMMARY_ATTR, fallback_walk_snapshot
+
+    walk = getattr(agent, FALLBACK_WALK_SUMMARY_ATTR, None)
+    if not isinstance(walk, dict):
+        walk = fallback_walk_snapshot(agent)
+    return TurnExplainersMixin._format_turn_completion_explanation(
+        "rebuilt_restart_limit_exceeded",
+        model=str(getattr(agent, "model", "") or ""),
+        fallback_walk=walk,
+    )
+
+
+def _fallback_walk_rungs_line(fallback_walk) -> str:
+    """Locale line naming attempted vs never-attempted providers, "" when no walk data."""
+    if not isinstance(fallback_walk, dict):
+        return ""
+    attempted = [str(e.get("label") or "?") for e in fallback_walk.get("attempted", []) or []]
+    untried = [str(e.get("label") or "?") for e in fallback_walk.get("untried", []) or []]
+    if not attempted and not untried:
+        return ""
+    return t(
+        "explainer.exit.rebuilt_restart_limit_exceeded_rungs",
+        attempted=", ".join(attempted) or "—",
+        untried=", ".join(untried) or "—",
+    )
+
+
 # Exact ``turn_exit_reason`` → catalog key of the explanation body (prefixed with the no-reply marker).
 _EXIT_REASON_EXPLANATIONS: dict[str, str] = {
     "empty_response_exhausted": "explainer.empty_response",
@@ -234,11 +270,14 @@ class TurnExplainersMixin:
     @staticmethod
     def _format_turn_completion_explanation(
         turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
+        fallback_walk=None,
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
         ``text_response(...)`` is the healthy terminal; unknown/diagnostic-only reasons (e.g.
         ``guardrail_halt``, which surfaces its own message) are not second-guessed.
+        ``fallback_walk`` (from ``fallback_walk_snapshot``) appends the attempted-vs-untried
+        rung list to the rebuilt-restart explanation.
         """
         if not turn_exit_reason:
             return ""
@@ -253,6 +292,10 @@ class TurnExplainersMixin:
                     break
         if key is not None:
             body = t(key, model=model or t("explainer.shared.the_model"))
+            if reason == "rebuilt_restart_limit_exceeded":
+                _rungs = _fallback_walk_rungs_line(fallback_walk)
+                if _rungs:
+                    body = body + "\n" + _rungs
         elif reason == "session_persistence_failed":
             from hermes_constants import display_hermes_home, profile_cli_selector
             from storage_user_copy import STORAGE_RECOVERY_DOCS_URL

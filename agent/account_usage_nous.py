@@ -7,6 +7,8 @@ reads the portal account. Late-imports the facade's snapshot types.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import time
@@ -210,6 +212,26 @@ def _fetch_portal_account(timeout: float, *, stored_token_only: bool = False):
         raise
     finally:
         pool.shutdown(wait=False)
+
+
+def _fetch_nous_account_usage_read_only(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Read the scoped profile's stored Portal login, never refreshing it. An explicit inference key
+    cannot identify that Portal account: refuse it rather than silently reporting another credential.
+    ``base_url`` is an inference endpoint, not a Portal override; the stored login owns the Portal URL.
+    The caller's shared fail-open guard handles Portal errors and the wall-clock deadline."""
+    if api_key:
+        return None
+    account = _fetch_portal_account(timeout=10.0, stored_token_only=True)
+    snapshot = build_nous_credits_snapshot(account)
+    if snapshot is None or not account.org_id or not account.privy_did:
+        return snapshot
+    # Match the Portal principal (host + org + member), not a refreshable credential or email.
+    # Hash only these non-secret fields: no tokens, raw payload or plaintext member PII escapes.
+    principal = (account.portal_base_url or "https://portal.nousresearch.com", account.org_id, account.privy_did)
+    digest = hashlib.sha256(json.dumps(principal, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return replace(snapshot, identity=f"nous:{digest}")
 
 
 def _header_gauge_percent(bp: Any) -> Optional[float]:

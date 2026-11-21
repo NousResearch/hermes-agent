@@ -45,6 +45,19 @@ def test_app_block_parses_into_one_appdef_per_os():
     assert decl.requires_app is True and decl.min_version == "2.3.0"
 
 
+def test_msix_package_location_parses_under_win32():
+    decl = parse_declaration("vendor-mcp", {
+        "win32": {
+            "presence": "executable",
+            "location": [{"kind": "msix_package", "package_family_name": "Vendor.App_abc123", "file": "vendor.exe"}],
+            "version": {"kind": "pe_resource"},
+        },
+    }, None, where=WHERE)
+    win = decl.app_for("win32")
+    assert win is not None
+    assert win.locations == (AppLocation("msix_package", "Vendor.App_abc123", "vendor.exe"),)
+
+
 @pytest.mark.parametrize("raw_app, raw_requires, message", [
     (None, {"app": True}, "no 'app' block"),
     (None, {"min_version": "1.0\n"}, "dotted numeric"),
@@ -76,6 +89,10 @@ def test_app_block_parses_into_one_appdef_per_os():
      "location\\[0\\].name must be a bare name"),
     ({"win32": {"presence": "executable", "location": [{"kind": "uninstall_registry", "display_name_prefix": "Thing"}]}},
      None, "location\\[0\\].file must be a relative path"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "msix_package", "package_family_name": "Vendor.App_abc123", "file": "vendor.exe"}]}},
+     None, "only valid under app.win32"),
+    ({"win32": {"presence": "executable", "location": [{"kind": "msix_package", "package_family_name": "../Vendor", "file": "vendor.exe"}]}},
+     None, "location\\[0\\].package_family_name must be a bare name"),
     ({"linux": {"presence": "executable", "location": "/usr/bin/thing"}}, {"app": True, "min_version": "1.0"},
      "needs a version source under app.linux"),
 ])

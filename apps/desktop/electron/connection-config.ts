@@ -311,6 +311,11 @@ function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
 }
 
+// SSH tunnel / ownership scope for a profile: its connection scope key, '' for the global connection.
+function sshScopeKey(profile) {
+  return connectionScopeKey(profile) || ''
+}
+
 /** Which Hermes profile the remote SSH dashboard should actually run as.
  *  Registry pool keys (`conn:mac-mini::default`) are desktop routing labels —
  *  they must never be sent to the remote as a profile name. `default` and
@@ -1229,6 +1234,7 @@ export {
   RT_COOKIE_VARIANTS,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
+  sshScopeKey,
   tokenPreview,
   translateSelfProfileQuery,
   withTransientRetries

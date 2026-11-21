@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
+  relayOwnerId: () => ipcRenderer.invoke('hermes:relay-owner-id'),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of

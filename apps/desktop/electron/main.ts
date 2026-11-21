@@ -178,6 +178,7 @@ import {
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
+  sshScopeKey,
   tokenPreview,
   withTransientRetries
 } from './connection-config'
@@ -9082,10 +9083,6 @@ const sshBootstrapCoordinator = createBootstrapCoordinator()
 
 const sshTeardowns = createSshTeardownTracker()
 
-function sshScopeKey(profile) {
-  return connectionScopeKey(profile) || ''
-}
-
 function sshOwnershipKey(profile) {
   return sshOwnershipId(desktopInstallationId, sshScopeKey(profile))
 }
@@ -14104,6 +14101,8 @@ ipcMain.handle('hermes:local-backend:probe', async () => {
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
+// Bot-relay identity of THIS installation (scoped hash, never the raw id); see host.relayOwnerId.
+ipcMain.handle('hermes:relay-owner-id', () => sshOwnershipId(desktopInstallationId, 'bot_relay'))
 ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
   const fallbackProfileNames = Array.isArray(rawProfileNames)
     ? rawProfileNames

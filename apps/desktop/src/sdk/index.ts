@@ -1344,6 +1344,11 @@ export const host = {
   /** One-shot system status snapshot (platforms, versions, …). */
   status: async () => getStatus(),
 
+  /** This installation's bot-relay identity (a scoped hash, never the installation id), or "" on a shell
+   *  that predates the door: the gateway tells apart Desktops that each call their machine `local`. */
+  relayOwnerId: async (): Promise<string> =>
+    String((await window.hermesDesktop?.relayOwnerId?.().catch(() => '')) || ''),
+
   /** Credential-free routes across every current registry source. Identity is
    *  the (connectionId, profile) pair; endpoint/auth details stay in Electron. */
   profileRoutes: async () => {

@@ -486,7 +486,7 @@ whole migration.
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
-`attachments`, `middleware`, `contextMenu`) let a plugin add controls around the message
+`attachments`, `middleware`, `contextMenu`, `nonProse`) let a plugin add controls around the message
 composer, provide an attachment source, or transform a draft before it is sent
 (`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
 banner strip above the input and `bottom` a row below the input grid, both
@@ -577,6 +577,103 @@ only one bounded word: letters, combining marks, digits and inner `'` / `-`,
 at least one letter, at most 64 characters. Anything else resolves `false`
 without touching the dictionary; so does an older desktop shell. There is no
 way to list or read the dictionary.
+
+### Composer non-prose ranges — regions the spell checker skips {#composer-non-prose}
+
+`COMPOSER_AREAS.nonProse` lets a plugin declare which parts of the draft are
+**not prose** — a code span, a path, a flag — so the app can paint them as
+elements Chromium's spell checker will not underline. It is the counterpart of
+`host.spellcheck.addWord`: that one teaches the dictionary a word, this one
+tells the renderer a region is not a word at all.
+
+The only way to suppress one squiggle is the DOM: Chromium paints from the tree
+it holds, `spellcheck` is an inherited per-element attribute, and there is no
+per-range opt-out. So the app renders the region — **you never touch the
+editor**. A contribution is data: a `ranges(context)` function that returns
+half-open `[start, end)` offsets into the draft the app is about to paint.
+
+```javascript
+import { COMPOSER_AREAS } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'code-spans',
+  area: COMPOSER_AREAS.nonProse,
+  data: {
+    // { text, sessionId } — the draft as the app serializes it, and the surface
+    // it is painting. Pure and fast: it runs per paint, not per keystroke.
+    ranges: ({ text }) =>
+      [...text.matchAll(/`[^`\n]+`/g)].map(match => ({
+        start: match.index,
+        end: match.index + match[0].length,
+        kind: 'code'
+      }))
+  }
+})
+```
+
+```ts
+interface ComposerNonProseContext {
+  text: string // the draft exactly as submit would send it
+  sessionId: string // the surface's session ('' for a fresh draft)
+}
+
+interface ComposerNonProseRange {
+  start: number // UTF-16 offset, inclusive
+  end: number // UTF-16 offset, exclusive
+  kind?: 'code' | 'path' | 'other' // paint hint; every kind is skipped alike
+}
+
+interface ComposerNonProseProvider {
+  ranges: (context: ComposerNonProseContext) => readonly ComposerNonProseRange[]
+}
+```
+
+**What the app owns.** Everything but the offsets. It calls `ranges` from its
+own render and reconcile passes, clamps each range to the text, drops empty and
+inverted ones, splits any range crossing a line break (a wrapper cannot straddle
+a `<br>`), merges overlaps and neighbours into one span, and caps what it keeps:
+**at most 64 wrappers per provider** — counted per PIECE, so a single range over
+a 400-line draft still yields 64 wrappers, not 400 — and **256 per pass**,
+handed out round-robin across providers so one provider's long declaration
+cannot crowd the others out. A range edge that falls inside a surrogate pair
+snaps outward, so a wrapper never holds half an emoji. Each surviving range
+becomes `<span data-composer-nonprose="code" spellcheck="false">…</span>` — no
+styling, no monospace, no background: the attribute is the hook, and a plugin
+that wants code to look like code ships its own CSS for
+`[data-composer-nonprose]`. A chip always wins an overlap, so a range never
+swallows an `@`-ref or `/command` pill.
+
+**What you get for free.** The wrapper is editable and carries no
+`data-ref-text`, so it serializes as its own text: submit, undo, draft restore
+and the `@` / `/` scanners all see exactly the string they see today. The app also
+owns the node afterwards — when the user edits a span out of shape, when your
+`ranges` stops covering it, or when your plugin unloads, the app unwraps it
+(immediately for an unload, otherwise on the next reconcile) instead of leaving
+a stale element behind, and the caret stays where it was: the selection is
+mapped across the un-wrap, including the shape it takes when it sits just AFTER
+the span — what `End`, Ctrl+A and a click below the last line leave. Nothing is
+written from the plugin side, so there is no second writer on the composer's DOM
+and no caret jump. When your `ranges` change, the next pass re-paints to match —
+an existing span is clipped, extended or moved rather than dropped — so a code
+span keeps its styling on the keystroke that changed it.
+
+**Gating — and a dependency.** A provider is only consulted on a composer
+surface that has spell checking ON — read from the effective `spellcheck`
+attribute, the one Chromium consults (it is inherited, so a `false` anywhere
+above the editor turns the seam off for that surface) — and only while at least
+one `composer.nonProse` contribution is registered. With none registered there
+is no provider call, no attribute and no DOM change at all; on a surface with
+spelling off, a range changes nothing on screen, so none is painted. An IME
+composition in flight defers re-decoration until it commits (or until the
+editor loses focus).
+
+That gate is why **this seam is inert until the composer turns spell checking
+on**, and both desktop composers hard-code `spellcheck="false"` today (`ChatBar`
+and `UserEditComposer`, #44415). The switch is `host.composer.setSpellcheck`,
+added by plugin-sdk PR **#143057**; until that lands, a `composer.nonProse`
+contribution is registered and never asked for a single range. Target a shell
+that ships #143057 or later, and read "nothing is decorated" on an older shell
+as the gate, not as a bug in your offsets.
 
 ### Composer draft API — read and write the live input
 
@@ -2487,7 +2584,7 @@ pipeline as a trust boundary.
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `ComposerNonProseProvider` (+ `ComposerNonProseContext`, `ComposerNonProseRange`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

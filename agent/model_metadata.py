@@ -1046,7 +1046,11 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if local:
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
+                native_models = _lmstudio_native_models(normalized, headers)
+                # Proxies may also expose /api/v1/models without LM Studio's schema.
+                # Empty native metadata must not suppress the existing /models fallback.
+                if native_models:
+                    return _remember_endpoint_models(memo_key, native_models)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)

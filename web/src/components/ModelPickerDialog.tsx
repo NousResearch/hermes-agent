@@ -21,6 +21,7 @@ import {
   resolveInitialProviderSlug,
   resolvePickerCurrent,
 } from "@/lib/model-picker-current";
+import { isImeComposing } from "@/lib/ime";
 
 /**
  * Two-stage model picker modal.
@@ -195,7 +196,8 @@ export function ModelPickerDialog(props: Props) {
   // Esc closes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // Escape that cancels an IME composition in the search field keeps the dialog open.
+      if (e.key === "Escape" && !isImeComposing(e)) {
         e.preventDefault();
         onClose();
       }

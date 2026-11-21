@@ -48,6 +48,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { ProfileCreationReceipt, type CreationReceipt } from "./ProfileCreationReceipt";
+import { isImeComposing, isSubmitEnter } from "@/lib/ime";
 
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
@@ -863,7 +864,7 @@ export default function ProfilesPage() {
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") handleCreate();
+                    if (isSubmitEnter(e)) handleCreate();
                   }}
                   aria-invalid={
                     newName.trim() !== "" &&
@@ -1056,6 +1057,7 @@ export default function ProfilesPage() {
                         value={renameTo}
                         onChange={(e) => setRenameTo(e.target.value)}
                         onKeyDown={(e) => {
+                          if (isImeComposing(e)) return;
                           if (e.key === "Enter") handleRenameSubmit();
                           if (e.key === "Escape") setRenamingFrom(null);
                         }}

@@ -252,3 +252,21 @@ def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkey
     assert detect_unclean_exit(home=tmp_path) is None
     _write_sentinel(tmp_path, {**live, "start_time": 4000.0})  # born after the claim → reuser → death
     assert detect_unclean_exit(home=tmp_path) is not None
+
+
+def test_unclean_exit_warning_points_at_the_fatal_signal_evidence(tmp_path, caplog):
+    """The respawn-storm-adjacent warning must tell the operator where a fatal-signal crash left
+    its traceback — the gateway log or gateway_faulthandler.log (#126099)."""
+    import logging
+
+    _write_sentinel(tmp_path, {
+        "phase": "running",
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+        "started_at": "2026-07-11T04:30:00+00:00",
+    })
+
+    with caplog.at_level(logging.WARNING):
+        record_startup(home=tmp_path)
+
+    assert "gateway_faulthandler.log" in caplog.text

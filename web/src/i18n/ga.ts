@@ -86,6 +86,8 @@ export const ga: Translations = {
     openDocumentation: "Oscail an doiciméadú i gcluaisín nua",
     openNavigation: "Oscail an nascleanúint",
     pluginNavSection: "Plugins",
+    consoleOutputTruncated: "Rómh {count} beit de aschur consóla — Úsáid Aschur Lán le haghaidh gach rud.",
+    consoleShowFullOutput: "Aschur Lán",
     sectionNav: "Réiteacht",
     skipToContent: "Sealt go ábhar",
     sessionsActiveCount: "{count} gníomhach",

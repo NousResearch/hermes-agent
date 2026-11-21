@@ -381,6 +381,11 @@ class HermesConsoleEngine:
         self.output_limit = output_limit
         self.history: list[str] = []
         self.commands: dict[tuple[str, ...], ConsoleCommand] = {}
+        # T4.7: the last command's uncapped output, so a UI that was shown a
+        # capped frame can fetch the whole buffer (chat_ws serves frame
+        # {"type": "full"}); `last_output_omitted` counts what was cut.
+        self.last_full_output = ""
+        self.last_output_omitted = 0
         self._register_defaults()
 
     def execute(self, line: str, *, confirmed: bool = False) -> ConsoleResult:
@@ -483,6 +488,8 @@ class HermesConsoleEngine:
         return _BLOCKED_PAIRS.get(tuple(tokens[:2]), "")
 
     def _cap_output(self, output: str) -> str:
+        self.last_full_output = output
+        self.last_output_omitted = max(0, len(output) - self.output_limit)
         if len(output) <= self.output_limit:
             return output
         omitted = len(output) - self.output_limit

@@ -86,6 +86,8 @@ export const ar = defineLocale({
     openDocumentation: "فتح التوثيق في تبويب جديد",
     openNavigation: "فتح التنقل",
     pluginNavSection: "المكوِّنات الإضافية",
+    consoleOutputTruncated: "تم حذف {count} بايت من مخرجات Console. استخدم عرض المخرجات الكاملة.",
+    consoleShowFullOutput: "عرض المخرجات الكاملة",
     sectionNav: "الأقسام",
     skipToContent: "تخطي إلى المحتوى",
     sessionsActiveCount: "{count} نشطة",

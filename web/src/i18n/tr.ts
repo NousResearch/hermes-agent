@@ -86,6 +86,8 @@ export const tr: Translations = {
     openDocumentation: "Dokümantasyonu yeni sekmede aç",
     openNavigation: "Gezintiyi aç",
     pluginNavSection: "Eklentiler",
+    consoleOutputTruncated: "{count} bayt konsol çıktısı atlandı. Tümünü görmek için Tam çıkışı göster kullanın.",
+    consoleShowFullOutput: "Tam çıkışı göster",
     sectionNav: "Bölümler",
     skipToContent: "İçeriğe geç",
     sessionsActiveCount: "{count} aktif",

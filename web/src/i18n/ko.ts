@@ -86,6 +86,8 @@ export const ko: Translations = {
     openDocumentation: "새 탭에서 문서 열기",
     openNavigation: "내비게이션 열기",
     pluginNavSection: "플러그인",
+    consoleOutputTruncated: "콘솔 출력 {count}바이트가 생략되었습니다. 전체 출력 보기로 전체를 확인할 수 있습니다.",
+    consoleShowFullOutput: "전체 출력 보기",
     sectionNav: "섹션",
     skipToContent: "본문으로 건너뛰기",
     sessionsActiveCount: "{count}개 활성",

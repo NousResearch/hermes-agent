@@ -86,6 +86,8 @@ export const ja: Translations = {
     openDocumentation: "ドキュメントを新しいタブで開く",
     openNavigation: "ナビゲーションを開く",
     pluginNavSection: "プラグイン",
+    consoleOutputTruncated: "コンソール出力 {count} バイトが省略されました。「全文表示」で全文を確認できます。",
+    consoleShowFullOutput: "全文表示",
     sectionNav: "セクション",
     skipToContent: "本文へ移動",
     sessionsActiveCount: "{count} 件アクティブ",

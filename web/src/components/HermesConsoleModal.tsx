@@ -19,6 +19,8 @@ import {
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { consoleTruncationNotice } from "@/lib/console-output-truncation";
 
 type ConsoleFrame =
   | {
@@ -30,6 +32,11 @@ type ConsoleFrame =
       type: "output";
       data?: string;
       stream?: string;
+      /** T4.7: engine capped this frame at output_limit. */
+      truncated?: boolean;
+      omitted_bytes?: number;
+      /** T4.7: uncapped buffer served for a {"type":"full"} request. */
+      full?: boolean;
     }
   | {
       type: "error";
@@ -122,8 +129,12 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
   // console redials the same /api/console socket without closing the modal.
   const [connectNonce, setConnectNonce] = useState(0);
   const [consoleProfile, setConsoleProfile] = useState("current");
+  // T4.7: true while the last output frame was capped; drives the
+  // "Show full output" button that asks the server for the uncapped buffer.
+  const [showFullButton, setShowFullButton] = useState(false);
   const { profile } = useProfileScope();
   const { theme } = useTheme();
+  const { t } = useI18n();
 
   const redrawInput = useCallback((line = lineRef.current) => {
     const term = termRef.current;
@@ -185,6 +196,9 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       historyRef.current = [...historyRef.current, line].slice(-200);
       activeCommandRef.current = true;
       setConnectionState("running");
+      // A new command replaces the capped view; the full-buffer offer no
+      // longer refers to this run.
+      setShowFullButton(false);
       if (!sendFrame({ type: "input", line })) {
         activeCommandRef.current = false;
         writeLine(term, "\x1b[31mConsole is not connected.\x1b[0m");
@@ -287,6 +301,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         hasReadyFrameRef.current = true;
         setConsoleProfile(frame.profile || "current");
         activeCommandRef.current = false;
+        setShowFullButton(false);
         setConnectionState("ready");
         term.clear();
         showPrompt();
@@ -295,6 +310,12 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
 
       if (frame.type === "output") {
         if (frame.data) writeBlock(term, frame.data);
+        // T4.7: the engine capped this frame — say how much, in the user's
+        // locale, and offer the full buffer instead of only the ASCII marker.
+        if (frame.truncated) {
+          setShowFullButton(true);
+          writeLine(term, `\x1b[33m${consoleTruncationNotice(t, frame.omitted_bytes ?? 0)}\x1b[0m`);
+        }
         return;
       }
 
@@ -539,6 +560,16 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
                   aria-label="Reconnect console"
                 >
                   Reconnect
+                </Button>
+              )}
+              {showFullButton && (
+                <Button
+                  size="sm"
+                  outlined
+                  aria-label={t.app.consoleShowFullOutput}
+                  onClick={() => sendFrame({ type: "full" })}
+                >
+                  {t.app.consoleShowFullOutput}
                 </Button>
               )}
             </div>

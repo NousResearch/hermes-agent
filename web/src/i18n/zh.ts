@@ -85,6 +85,8 @@ export const zh: Translations = {
     openDocumentation: "在新标签页中打开文档",
     openNavigation: "打开导航",
     pluginNavSection: "插件",
+    consoleOutputTruncated: "控制台输出省略了 {count} 字节。使用“显示完整输出”查看全部。",
+    consoleShowFullOutput: "显示完整输出",
     sectionNav: "版块",
     skipToContent: "跳到主要内容",
     sessionsActiveCount: "{count} 个活跃",

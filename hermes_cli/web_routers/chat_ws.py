@@ -191,15 +191,22 @@ class _ConsoleSender:
         await self.error(message, id=command_id, command=command)
         await self.complete(status, command, command_id)
 
-    async def send_result(self, result: Any, *, command_id: int) -> None:
+    async def send_result(self, result: Any, *, command_id: int, omitted_bytes: int = 0) -> None:
         command = result.command or ""
         status = result.status
         if status == "ok":
             if result.output:
-                await self.send({
+                frame = {
                     "type": "output", "id": command_id, "stream": "stdout",
                     "data": result.output, "command": command,
-                })
+                }
+                # T4.7: say so in the frame when the engine capped the output,
+                # so the UI can raise a localized notice instead of letting
+                # the ASCII marker be the only signal.
+                if omitted_bytes:
+                    frame["truncated"] = True
+                    frame["omitted_bytes"] = omitted_bytes
+                await self.send(frame)
             await self.complete("ok", command, command_id)
         elif status == "error":
             await self.error_then_complete(result.output or "Command failed.", command, command_id, "error")
@@ -271,9 +278,12 @@ async def console_ws(ws: WebSocket) -> None:
     active_task: asyncio.Task | None = None
     pending_confirmation: Optional[str] = None
     command_generation = 0
+    # T4.7: uncapped output of the last finished command, served on a
+    # {"type": "full"} frame (the capped frame already reached the UI).
+    full_buffer = ""
 
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
-        nonlocal active_task, pending_confirmation, command_generation
+        nonlocal active_task, pending_confirmation, command_generation, full_buffer
         scope = InterruptScope()
         worker = _get_console_executor().submit(
             _execute_console_line, engine, line, confirmed=confirmed, profile=profile, scope=scope,
@@ -299,7 +309,10 @@ async def console_ws(ws: WebSocket) -> None:
             if command_id != command_generation:
                 return
             pending_confirmation = result.command if result.status == "confirm_required" else None
-            await out.send_result(result, command_id=command_id)
+            full_buffer = getattr(engine, "last_full_output", "") or ""
+            await out.send_result(
+                result, command_id=command_id, omitted_bytes=getattr(engine, "last_output_omitted", 0),
+            )
             if result.status == "exit":
                 await ws.close(code=1000)
         finally:
@@ -330,6 +343,11 @@ async def console_ws(ws: WebSocket) -> None:
             frame_type = str(payload.get("type") or "").strip().lower()
             if frame_type == "ping":
                 await out.prompt(type="pong")
+                continue
+
+            if frame_type == "full":
+                # T4.7: the whole buffer of the last command, uncapped.
+                await out.send({"type": "output", "stream": "stdout", "data": full_buffer, "full": True})
                 continue
 
             if frame_type == "cancel":

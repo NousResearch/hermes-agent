@@ -86,6 +86,8 @@ export const es: Translations = {
     openDocumentation: "Abrir documentación en una nueva pestaña",
     openNavigation: "Abrir navegación",
     pluginNavSection: "Complementos",
+    consoleOutputTruncated: "{count} bytes de salida de consola omitidos. Usa Ver salida completa para verlo todo.",
+    consoleShowFullOutput: "Ver salida completa",
     sectionNav: "Secciones",
     skipToContent: "Saltar al contenido",
     sessionsActiveCount: "{count} activas",

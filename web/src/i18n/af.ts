@@ -86,6 +86,8 @@ export const af: Translations = {
     openDocumentation: "Maak dokumentasie in 'n nuwe oortjie oop",
     openNavigation: "Maak navigasie oop",
     pluginNavSection: "Inproppe",
+    consoleOutputTruncated: "{count} bytes konsole-uitvoer is weggelaten. Gebruik Volledige uitvoer om alles te sien.",
+    consoleShowFullOutput: "Volledige uitvoer",
     sectionNav: "Afdelings",
     skipToContent: "Gaan na inhoud",
     sessionsActiveCount: "{count} aktief",

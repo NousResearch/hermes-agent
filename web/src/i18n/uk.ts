@@ -86,6 +86,8 @@ export const uk: Translations = {
     openDocumentation: "Відкрити документацію в новій вкладці",
     openNavigation: "Відкрити навігацію",
     pluginNavSection: "Плагіни",
+    consoleOutputTruncated: "Пропущено {count} байтів виведення консолі. Натисніть Показати повне виведення, щоб побачити все.",
+    consoleShowFullOutput: "Показати повне виведення",
     sectionNav: "Розділи",
     skipToContent: "Перейти до вмісту",
     sessionsActiveCount: "{count} активних",

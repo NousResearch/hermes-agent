@@ -112,6 +112,10 @@ export interface Translations {
     openDocumentation: string;
     openNavigation: string;
     pluginNavSection: string;
+    /** Notice when a /api/console output frame arrived with `truncated: true`. */
+    consoleOutputTruncated: string;
+    /** Button label that requests the uncapped console buffer. */
+    consoleShowFullOutput: string;
     /** Label for the sidebar's inner nav list — distinct from the `navigation`
         landmark label so the two regions are not announced as duplicates. */
     sectionNav: string;

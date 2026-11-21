@@ -86,6 +86,8 @@ export const zhHant: Translations = {
     openDocumentation: "在新分頁開啟文件",
     openNavigation: "開啟導覽",
     pluginNavSection: "外掛",
+    consoleOutputTruncated: "主控台輸出省略 {count} 位元組。使用「顯示完整輸出」檢視全部。",
+    consoleShowFullOutput: "顯示完整輸出",
     sectionNav: "區塊",
     skipToContent: "跳至主要內容",
     sessionsActiveCount: "{count} 個使用中",

@@ -508,9 +508,10 @@ def _prune_idle_entries(
                 )
             continue
         denied: list[str] = []
+        unsealed: list[str] = []
         try:
             if entry.is_dir() and not entry.is_symlink():
-                denied = stuck.rmtree_collecting_permission_errors(entry)
+                denied = stuck.rmtree_collecting_permission_errors(entry, unsealed=unsealed)
             else:
                 entry.unlink()
         except OSError as exc:
@@ -524,8 +525,9 @@ def _prune_idle_entries(
         try:
             os.lstat(entry)
             if denied and stuck.tracking_supported():
-                stuck.record(root, entry, denied, audit)
+                stuck.record(root, entry, denied, audit, unsealed=unsealed)
             else:
+                stuck.log_unsealed(audit, entry, unsealed, "left")
                 audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
             continue
         except FileNotFoundError:
@@ -533,6 +535,8 @@ def _prune_idle_entries(
         except OSError:
             audit.info("scratch prune: could not confirm removal of %r", os.fspath(entry))
             continue
+        # This user's own read-only tree (a published generation), not foreign residue; no-op when none.
+        stuck.log_unsealed(audit, entry, unsealed, "removed")
         audit.info("scratch prune: removed %r (%d bytes)", os.fspath(entry), size)
         removed += 1
     release_git_worktrees(repos)

@@ -3666,12 +3666,20 @@ def _launch_external_cron_worker(job: dict) -> bool:
     repo_root = Path(project_root_str())
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
+    # A terminal-tool call with no TERMINAL_CWD falls back to os.getcwd()
+    # (tools/terminal_tool_config.py _safe_getcwd), and with docker_mount_cwd_to_workspace
+    # that cwd becomes the job's persistent Docker /workspace bind mount. So the worker
+    # starts in an empty, owner-only directory: never the checkout (source tree) and never
+    # HERMES_HOME itself (.env, auth, state DB). `-m cron.scheduler` resolves through the
+    # pin above, not through cwd.
+    worker_cwd = profile_home / "cron" / "workspace"
     try:
+        worker_cwd.mkdir(mode=0o700, parents=True, exist_ok=True)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             process = subprocess.Popen(
                 dispatch.argv,
-                cwd=str(repo_root),
+                cwd=str(worker_cwd),
                 env=worker_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

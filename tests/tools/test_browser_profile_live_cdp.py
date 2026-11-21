@@ -90,22 +90,30 @@ def test_each_profile_drives_and_reaps_its_own_harness_daemon(profiles, monkeypa
     """The harness names a daemon by BU_NAME alone (unnamed exec: ``default``) and reuses a live one, so
     with one shared runtime dir B's exec drove A's connected browser and A's reap stopped B's daemon."""
     import json
-    import stat
+    import sys
     from tools import browser_use_cli as bu_cli
 
     a, b = profiles
     shared = tmp_path / "harness-runtime"
-    cli = tmp_path / "browser-harness"  # one daemon per (runtime dir, BU_NAME) latches its first endpoint
-    cli.write_text(f'''#!/bin/sh
-dir="${{BH_RUNTIME_DIR:-{shared}}}"; mkdir -p "$dir"; latch="$dir/bu-${{BU_NAME:-default}}"
-if [ "${{1:-}}" = "--reload" ]; then rm -f "$latch"; exit 0; fi
-cat > /dev/null
-[ -f "$latch" ] || echo "$BU_CDP_URL" > "$latch"
-cat "$latch"
-''')
-    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    # One daemon per (runtime dir, BU_NAME) latches its first endpoint. A Python stand-in driven by
+    # THIS interpreter has the same semantics on every platform; a `#!/bin/sh` file means nothing
+    # to Windows, and an extensionless file is not executable there either.
+    cli = tmp_path / "browser-harness.py"
+    cli.write_text(f'''import os, sys
+from pathlib import Path
+name = os.environ.get("BU_NAME", "default")
+latch = Path(os.environ.get("BH_RUNTIME_DIR") or {str(shared)!r}) / ("bu-" + name)
+if sys.argv[1:] == ["--reload"]:
+    latch.unlink(missing_ok=True)
+    raise SystemExit(0)
+sys.stdin.read()
+latch.parent.mkdir(parents=True, exist_ok=True)
+if not latch.exists():
+    latch.write_text(os.environ.get("BU_CDP_URL", ""), encoding="utf-8")
+print(latch.read_text(encoding="utf-8").strip())
+''', encoding="utf-8")
     monkeypatch.setenv("BH_RUNTIME_DIR", str(shared))
-    monkeypatch.setattr(bu_cli, "_find_cli", lambda: [str(cli)])
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: [sys.executable, str(cli)])
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
     monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
     monkeypatch.setattr(bs_cdp, "resolve_cdp_override", lambda url: url)

@@ -619,7 +619,7 @@ def _check_trusted_inbound(report: ValidationReport, recorded: Optional[dict]) -
             report.add("trusted inbound", True, f"platform '{name}' is trusted_inbound: its events skip user allowlists and pairing")
 
 
-_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json", "dashboard/manifest.json")
 
 
 def _check_loadable(report: ValidationReport, plugin_dir: Path, manifest: Optional[dict] = None) -> None:
@@ -632,7 +632,8 @@ def _check_loadable(report: ValidationReport, plugin_dir: Path, manifest: Option
     report.add(
         "loadable", bool(present),
         f"entry: {', '.join(present)}" if present else
-        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json or provides_locales + locales/ beside "
+        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json, dashboard/manifest.json or "
+        "provides_locales + locales/ beside "
         "plugin.yaml (pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
     )
 

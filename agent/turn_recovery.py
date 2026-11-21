@@ -467,8 +467,9 @@ def _recover_format_errors(
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
     the request was repaired and should be retried."""
-    # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
-    # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
+    # Upstream mutation can invalidate a thinking signature. Native Anthropic and Claude on Bedrock
+    # Converse have multiple replay carriers (Converse replays its ordered ``bedrock_content_blocks``
+    # sidecar ahead of ``reasoning_details``), so suppress the rejected opaque blocks across all
     # carriers and persist that suppression. Other transports keep their established one-request
     # repair: drop reasoning_details only.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
@@ -477,7 +478,7 @@ def _recover_format_errors(
 
         if tracks_rejected_thinking(agent):
             removed = remember_rejected_thinking(agent, api_messages)
-            detail = "suppressed rejected Anthropic replay blocks"
+            detail = "suppressed rejected Claude replay blocks"
         else:
             removed = 0
             for message in api_messages:

@@ -122,16 +122,35 @@ terminal("cd spikes/001-websocket-streaming && python main.py")
 # Observe output, iterate.
 ```
 
-**Parallel comparison spikes (002a / 002b) — delegate.** When two approaches can run in parallel and both need real engineering (not 10-line prototypes), fan out with `delegate_task`:
+**Parallel comparison spikes (002a / 002b) — delegate.** When two approaches can run in parallel and both need real engineering (not 10-line prototypes), use `delegate_task` if the current tool contract and remaining session budget permit both children. Otherwise build them inline; splitting a batch does not reset a cumulative child limit.
 
-```
+For the default schema (also used when results are joined in the call):
+
+```python
 delegate_task(tasks=[
-    {"goal": "Build 002a-pdf-parse-pdfjs: ...", "toolsets": ["terminal", "file", "web"]},
-    {"goal": "Build 002b-pdf-parse-camelot: ...", "toolsets": ["terminal", "file", "web"]},
+    {"goal": "Build 002a-pdf-parse-pdfjs: ...",
+     "context": "Work only in spikes/002a-pdf-parse-pdfjs; report evidence and a verdict."},
+    {"goal": "Build 002b-pdf-parse-camelot: ...",
+     "context": "Work only in spikes/002b-pdf-parse-camelot; report evidence and a verdict."},
 ])
 ```
 
-Each subagent returns its own verdict; you write the head-to-head.
+When the active schema exposes `group` (`delegation.independent_completions`
+for background delivery), give both tasks the same group: the comparison needs
+both verdicts. Omit `group` when it is not advertised, including joined delivery.
+
+```python
+delegate_task(tasks=[
+    {"goal": "Build 002a-pdf-parse-pdfjs: ...", "group": "pdf-comparison",
+     "context": "Work only in spikes/002a-pdf-parse-pdfjs; report evidence and a verdict."},
+    {"goal": "Build 002b-pdf-parse-camelot: ...", "group": "pdf-comparison",
+     "context": "Work only in spikes/002b-pdf-parse-camelot; report evidence and a verdict."},
+])
+```
+
+Children inherit the parent's toolsets subject to child restrictions; the default task schema has no per-task `toolsets` field. Put scope and constraints in `goal`/`context`, but do not describe those instructions as a permission sandbox.
+
+Follow the returned delivery mode: joined results can be compared immediately. For background dispatch, finish independent work and end the turn to receive completion messages; do not poll transcripts or files, or wait inside the active turn. Once both verdicts arrive, verify their evidence and write the head-to-head.
 
 ### 5. Verdict
 

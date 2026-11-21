@@ -2159,3 +2159,51 @@ class TestStreamingRenderFormatError:
         e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
         result = classify_api_error(e, provider="lm-studio", model="x")
         assert result.reason != FailoverReason.format_error
+
+
+class TestEmptyStreamFailsOver:
+    """A zero-chunk SSE drop must reach the fallback chain.
+
+    ``EmptyStreamError`` is raised when a stream ends with no finish_reason and no
+    content, reasoning, refusal or tool calls — the server or an intermediate proxy
+    closed it cleanly, so no transport exception is raised and
+    ``try_recover_primary_transport`` declines it. The empty-response patterns say
+    "empty RESPONSE" while the error says "empty STREAM", so these fell through to
+    ``unknown`` and ended the turn terminally instead of cascading to the next
+    provider. Self-hosted OpenAI-compatible proxies hit this routinely.
+    """
+
+    @pytest.mark.parametrize("message", [
+        "Provider returned an empty stream with no finish_reason "
+        "(possible upstream error or malformed SSE response).",
+        "Provider returned an empty stream with no stop_reason "
+        "(possible upstream error or malformed event stream).",
+        "Provider returned an empty stream with no events "
+        "(possible upstream error or malformed event stream).",
+    ])
+    def test_empty_stream_variants_fall_back(self, message):
+        from agent.errors import EmptyStreamError
+
+        result = classify_api_error(EmptyStreamError(message), provider="custom", model="x")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_empty_response_advisory_unchanged(self):
+        """Guard: the pre-existing 'empty RESPONSE' wording keeps retrying the same
+        provider and must NOT gain fallback from the new stream patterns."""
+        result = classify_api_error(
+            MockAPIError("Provider returned an empty response"), provider="custom", model="x")
+        assert result.reason == FailoverReason.server_error
+        assert result.should_fallback is False
+
+    def test_bedrock_incomplete_stream_unchanged(self):
+        """Guard: Bedrock raises EmptyStreamError when converse() may still have
+        completed, so it keeps its own handling and must not be rerouted."""
+        from agent.errors import EmptyStreamError
+
+        result = classify_api_error(
+            EmptyStreamError("Bedrock Converse stream ended before messageStop; "
+                             "response is incomplete"),
+            provider="bedrock", model="x")
+        assert result.should_fallback is False

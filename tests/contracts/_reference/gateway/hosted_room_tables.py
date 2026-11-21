@@ -226,6 +226,8 @@ def prepare_event(tables: HostedTables, room: Mapping[str, Any], event_id: str, 
 
 def insert_event(tables: HostedTables, room_id: str, seq: int, event_id: str, kind: str, actor_json: str, epoch: int | None, payload_json: str, now: float) -> None:
     """The ``hosted_room_events`` INSERT."""
+    if kind == "message.user":
+        tables["hosted_rooms"][room_id]["last_user_seq"] = seq
     tables.rows("hosted_room_events", room_id)[seq] = {
         "room_id": room_id, "seq": seq, "event_id": event_id, "kind": kind, "actor_json": actor_json,
         "authority_epoch": epoch, "payload_json": payload_json, "created_at": now}

@@ -569,6 +569,11 @@ class HostedRoomRepository(Protocol):
         """One room with ``latest_seq`` and, when one exists, ``authority_claim``: the newest ``authority.claimed`` event at the room's epoch. ``RoomNotFoundError`` or ``RoomHistoryExpiredError``."""
         ...
 
+    def has_user_message_after(self, *, placement: HostedPlacement, room_id: str, seq: int) -> bool:
+        """Whether the live room has a user event strictly after this log cursor, without reading payloads.
+        A missing room or a cursor beyond the log refuses as in read_events."""
+        ...
+
     def read_events(self, *, placement: HostedPlacement, room_id: str, since_seq: int = 0, limit: int = 100, include_disbanded: bool = False) -> Mapping[str, JsonValue]:
         """A monotonic log page after ``since_seq`` within the 2 MiB page budget: ``{events, cursor, latest_seq, has_more, authority}``. ``since_seq`` past the log refuses ``HostedRoomError('since_seq is ahead of the hosted room log')``."""
         ...

@@ -1,7 +1,7 @@
 import { Button, Codicon, ConfirmDialog, Input, Tip } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
-import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster, hasCanonicalGroupPendingWork } from './canonical-group-activity'
 import type { GroupMethods } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalPeerJoinRows } from './canonical-group-peer-join'
@@ -25,7 +25,7 @@ interface CanonicalGroupHeaderProps {
   onDetails: () => void
   onDisband: () => Promise<void>
   onRename: (name: string) => void
-  onStop: () => void
+  onStop: () => Promise<void>
   room?: CanonicalRoom
   stopping: boolean
   statuses: Map<string, MemberStatus>
@@ -39,6 +39,8 @@ export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, 
   const peerBadges = new Map(peerMemberStates(room?.members, driver?.peer_routes).map(({ member, status }) => [member.member_id, badges[status]]))
   const [renaming, setRenaming] = useState<null | string>(null)
   const [ending, setEnding] = useState(false)
+  const [confirmingStop, setConfirmingStop] = useState(false)
+  const waiting = hasCanonicalGroupPendingWork(driver)
 
   const rename = (name: string) => {
     setRenaming(null)
@@ -54,7 +56,8 @@ export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, 
     </Tip>
 
   return <>
-    <RoomHeader backLabel={labels.back} onBack={onBack} onStop={canStop ? onStop : undefined} onTitle={onDetails}
+    <RoomHeader backLabel={labels.back} canStop={canStop && (working || waiting)} onBack={onBack}
+      onStop={() => { if (working) {void onStop().catch(() => undefined)} else {setConfirmingStop(true)} }} onTitle={onDetails}
       stopDisabled={stopping} stopLabel={labels.stopGroup} title={room?.name || labels.loadingGroup} titleExpanded={detailsOpen} titleLabel={labels.groupDetails} trailing={<>
         {canRename && action(labels.rename, 'edit', () => setRenaming(room?.name ?? ''), busy || !room)}
         {canDisband && action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
@@ -75,5 +78,7 @@ export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, 
     {ending && <ConfirmDialog busyLabel={labels.disbanding} confirmLabel={labels.disband}
       description={<span>{labels.disbandDescPrefix}<span className="font-medium text-foreground">{room?.name}</span>{labels.disbandDescSuffix(room?.members?.length ?? 0)}</span>}
       destructive doneLabel={labels.disbandDone} onClose={() => setEnding(false)} onConfirm={onDisband} open title={labels.disbandTitle} />}
+    {confirmingStop && <ConfirmDialog confirmLabel={labels.stopGroup} description={labels.stopWaitingDescription}
+      destructive onClose={() => setConfirmingStop(false)} onConfirm={onStop} open title={labels.stopWaitingTitle} />}
   </>
 }

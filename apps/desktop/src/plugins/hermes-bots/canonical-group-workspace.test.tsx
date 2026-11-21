@@ -686,7 +686,7 @@ it('keeps one cancellation intent until Stop is confirmed, and fences again behi
   expect(new Set(cancelIds.slice(1)).size).toBe(3)
 })
 
-it('follows a retried Stop that replayed its lost fence with a fresh one when the room still works', async () => {
+it('reuses a lost Stop fence even when the room still looks busy', async () => {
   let stops = 0
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { working: true } }}
@@ -712,9 +712,7 @@ it('follows a retried Stop that replayed its lost fence with a fresh one when th
   fireEvent.click(stop)
   await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   const ids = request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)
-  expect(ids).toHaveLength(3)
-  expect(ids[1]).toBe(ids[0])
-  expect(ids[2]).not.toBe(ids[0])
+  expect(ids).toEqual([ids[0], ids[0]])
 })
 
 it('holds the next Send until a Stop still fencing behind the last one has finished', async () => {

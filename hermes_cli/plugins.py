@@ -150,7 +150,9 @@ VALID_HOOKS: set[str] = {
     # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
-    "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # pre_keyless_rescue: before a failed web rescue leaves for the cloud keyless ring; kwargs: kind,
+    # backend_name, error, and query or urls. pre_tool_call's directives: block vetoes, approve asks the user.
+    "pre_approval_request", "post_approval_response", "pre_keyless_rescue", "on_human_input_request", "on_human_input_resolved",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

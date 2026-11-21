@@ -7,6 +7,7 @@ rescue-served response, or the one-shot rescue becomes sticky for a whole TTL. L
 """
 
 import logging
+from typing import Any
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -28,6 +29,66 @@ def _keyless_rescue_enabled() -> bool:
     except Exception as exc:
         logger.debug("keyless rescue tier check failed: %s", exc)
         return False
+
+
+def annotate_pre_keyless_rescue_refusal(backend_name: str, reason: str, result) -> None:
+    """Surface a refused rescue (plugin block, denied or unanswered approval) so it is visible, not silent."""
+    if result is None:
+        return
+    logger.warning("pre_keyless_rescue kept backend '%s' failure off the keyless ring: %s",
+                   backend_name, (reason or "")[:200])
+    note = f" [keyless cloud rescue not used: {reason}]"
+    if isinstance(result, dict) and result.get("error"):
+        result["error"] = f"{result['error']}{note}"
+    elif isinstance(result, list):
+        for entry in result:
+            if isinstance(entry, dict) and entry.get("error"):
+                entry["error"] = f"{entry['error']}{note}"
+
+
+def _pre_keyless_rescue_refusal(*, kind: str, backend_name: str, error: str, query: str | None = None,
+                                urls: list[str] | None = None) -> str | None:
+    """Fire ``pre_keyless_rescue``; return None to let the rescue run, else why it does not.
+
+    Same directives and the same human gate as ``pre_tool_call``: ``{"action": "block", "message"}``
+    vetoes, ``{"action": "approve", "message", "rule_key"?}`` asks the user through
+    ``request_tool_approval`` (deny, timeout, or nobody to answer keep the data home), and
+    block > approve > none. ``None`` and irrelevant returns are no opinion; a bare ``False`` is a veto.
+    A callback that raises or times out is a veto (fail closed, like ``pre_tool_call``): the call
+    then keeps its own error, which is what it returns without the rescue anyway.
+    """
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        from hermes_cli.plugins import _PreToolCallDirective, _resolve_block_from_details
+    except ImportError:
+        return None
+    payload: dict[str, Any] = {"kind": kind, "backend_name": backend_name, "error": (error or "")[:500]}
+    if query is not None:
+        payload["query"] = query
+    if urls is not None:
+        payload["urls"] = list(urls)
+    try:
+        results = invoke_hook("pre_keyless_rescue", **payload)
+    except Exception as exc:
+        logger.warning("pre_keyless_rescue hook dispatch failed; keeping the failure local", exc_info=True)
+        return f"pre_keyless_rescue dispatch failed: {type(exc).__name__}"
+    if any(result is False for result in results):
+        return "vetoed by a pre_keyless_rescue plugin"
+    approve = None
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        action, message = result.get("action"), result.get("message")
+        message = message if isinstance(message, str) and message else None
+        if action == "block" and message:
+            return message
+        if action == "approve" and approve is None:
+            rule_key = result.get("rule_key")
+            approve = _PreToolCallDirective(action="approve", message=message,
+                                            rule_key=rule_key.strip() or None if isinstance(rule_key, str) else None)
+    if approve is None:
+        return None
+    return _resolve_block_from_details(approve, "web_search" if kind == "search" else "web_extract")
 
 
 def _ring_vendor_keyless(name: str) -> bool:
@@ -93,6 +154,13 @@ def _rescue_eligible(provider) -> bool:
 def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
     """Rescue a failed search via the ring; annotate the result with the original failure."""
     from plugins.web.keyless_mcp import search_with_failover
+    refusal = _pre_keyless_rescue_refusal(
+        kind="search", backend_name=provider_name, error=original_error, query=query,
+    )
+    if refusal:
+        failed = {"success": False, "error": original_error or "search failed"}
+        annotate_pre_keyless_rescue_refusal(provider_name, refusal, failed)
+        return failed
     logger.warning(
         "web_search backend '%s' failed (%s); one-shot keyless rescue",
         provider_name, (original_error or "")[:200],
@@ -141,6 +209,12 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     rescue_urls = [urls[i] for i in rescue_idx] if parity else list(urls)
     errors = (results[i].get("error") for i in rescue_idx if results[i].get("error"))
     original_error = next(errors, "extract failed")
+    refusal = _pre_keyless_rescue_refusal(
+        kind="extract", backend_name=provider_name, error=original_error, urls=rescue_urls,
+    )
+    if refusal:
+        annotate_pre_keyless_rescue_refusal(provider_name, refusal, results)
+        return results
     logger.warning(
         "web_extract backend '%s' failed all %d URL(s) (%s); one-shot keyless rescue",
         provider_name, len(rescue_urls), (original_error or "")[:200],

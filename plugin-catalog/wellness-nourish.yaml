@@ -1,0 +1,21 @@
+name: wellness-nourish
+repo: https://github.com/davidmosiah/wellness-nourish
+sha: 438e079efc63a3cc4bc1b7c806592ca0115e7e8b
+subdir: agent-plugin
+description: Local food search, meal and water logging, barcode lookup and nutrition goals through a portable MCP server.
+maintainer: davidmosiah
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.9.0"
+title: "Nourish"
+docs_url: https://github.com/davidmosiah/wellness-nourish/tree/438e079efc63a3cc4bc1b7c806592ca0115e7e8b/agent-plugin
+known_issues:
+  - Requires Node.js 20+ and npx. First launch downloads the version-pinned npm runtime and its dependencies.
+  - The diary and shared wellness profile use the OS home, not PLUGIN_DATA; Hermes profiles sharing that home also share those data.
+  - Food lookups send requested queries or barcodes to USDA FoodData Central or Open Food Facts. Nutrition estimates are informational, not medical advice.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

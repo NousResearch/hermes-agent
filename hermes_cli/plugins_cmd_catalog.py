@@ -91,8 +91,18 @@ def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry, sha: Optional
 def _install_record(plugin_dir: Path) -> Optional[dict]:
     """The installer-owned ``.install-metadata.json`` record for a dir under the plugins dir, else ``None``."""
     from hermes_cli.plugins_cmd import PluginOperationError, _plugins_dir, _read_install_metadata
-    if plugin_dir.parent != _plugins_dir():
-        return None
+    # Both spellings of the plugins dir: callers hand this the RESOLVED plugin dir
+    # (``_sanitize_plugin_name``) while ``_plugins_dir()`` keeps the home's own spelling, so on a
+    # junctioned/symlinked HERMES_HOME an unresolved compare never matches and every catalog install
+    # reads as an unprivileged Git checkout (#152443).
+    plugins_dir = _plugins_dir()
+    if plugin_dir.parent != plugins_dir:
+        try:
+            same_slot = plugin_dir.parent.resolve() == plugins_dir.resolve()
+        except OSError:  # a symlink loop cannot be one of the installer's slots
+            same_slot = False
+        if not same_slot:
+            return None
     try:
         record = _read_install_metadata().get(plugin_dir.name)
     except PluginOperationError:

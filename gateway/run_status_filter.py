@@ -21,16 +21,32 @@ _CANONICAL_COUNT = r"(?:0|[1-9][0-9]{0,2}(?:,[0-9]{3})*)"
 def _status_template_to_regex(template: str) -> str:
     """Compile a compression status template constant into a regex source.
 
-    Literal text is escaped verbatim (wording drift can't diverge from the matcher); ``{field}`` -> numeric."""
-    parts = re.split(r"\{[^{}]*\}", template)
+    Literal text is escaped verbatim (wording drift can't diverge from the matcher); ``{field}`` -> numeric.
+    A field is ``{...}`` with no brace inside. String code, not ``re.split``: this runs while ``gateway.run``
+    is imported, and importing must not need the regex engine."""
+    parts, start, opened = [], 0, template.find("{")
+    while opened != -1:
+        closed, reopened = template.find("}", opened), template.find("{", opened + 1)
+        if closed != -1 and (reopened == -1 or closed < reopened):
+            parts.append(template[start:opened])
+            start = closed + 1
+            opened = template.find("{", start)
+        else:
+            opened = reopened
+    parts.append(template[start:])
     return r"[\d,]+".join(re.escape(part) for part in parts)
 
 
 def _template_regex(template: str) -> re.Pattern[str]:
-    """Full-match regex for one emit-site template: literal text escaped, counts canonical, reason free-form."""
+    """Full-match regex for one emit-site template: literal text escaped, counts canonical, reason free-form.
+
+    The fields are replaced in the escaped text (no ``re.split``): this runs at import, and importing must
+    not need the regex engine."""
     fields = {"{tokens:,}": _CANONICAL_COUNT, "{threshold:,}": _CANONICAL_COUNT, "{reason}": r"[\s\S]+?"}
-    parts = re.split(r"(\{tokens:,\}|\{threshold:,\}|\{reason\})", template)
-    return re.compile("".join(fields.get(part) or re.escape(part) for part in parts))
+    source = re.escape(template)
+    for field, pattern in fields.items():
+        source = source.replace(re.escape(field), pattern)
+    return re.compile(source)
 
 
 # The empty-response ladder's buffered lines (agent/turn_empty_response.py), flushed when the turn ends

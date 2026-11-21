@@ -4,7 +4,6 @@
 from __future__ import annotations
 import json
 import logging
-import re
 from typing import Any
 from session_rules.turns import (
     MODEL_ONLY_DISPLAY_METADATA_KEY,
@@ -27,8 +26,9 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
 
+# String code, not a regex: this runs at import, and importing must not need the regex engine.
 _MESSAGE_WRITE_COLUMNS = tuple(
-    re.findall(r"\w+", _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0])
+    name.strip() for name in _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0].split(",")
 )
 
 

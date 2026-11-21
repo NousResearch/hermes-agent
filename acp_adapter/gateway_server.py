@@ -383,16 +383,36 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._editor_mcp[session_id] = resume_params['editor']
         from acp_adapter.server import _history_replay_updates
         if self._conn:
-            # The editor replays the live transcript in stored order, as main's ACP did; archived rows
-            # (summarized away by a compression) are display-only.
-            live = sorted((m for m in snapshot["messages"] if not m.get("archived")), key=lambda m: m.get("row_id") or 0)
-            for update in _history_replay_updates(live):
+            for update in _history_replay_updates(self._replayed_rows(snapshot["messages"])):
                 await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
         await self._notify_unknown(session_id)
         await self._request_live_reasoning(client, session_id)
         return await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id)
+
+    @staticmethod
+    def _replayed_rows(messages):
+        """The rows of a resume snapshot a reopened editor replays, in stored (``row_id``) order: the live
+        transcript and each safety-refused turn (#149708), which is archived: out of the model's context,
+        still on screen. Every other archived row (summarized away by a compression) is display-only, and so
+        is a refusal from before the latest compression: the compression wrote the turns it kept as fresh
+        rows, so stored order would put the refusal above them. A compression shows in the snapshot as an
+        archived row of another kind with a lower ``row_id`` than the first live row (the snapshot may list it
+        after that row: a protected head copy comes first), or as older rows the resume budget left out."""
+        from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
+
+        def row_id(message):
+            return message.get("row_id") or 0
+
+        def refused(message):
+            return message.get("display_kind") == CONTENT_REFUSED_DISPLAY_KIND
+
+        first_live = min((row_id(m) for m in messages if not m.get("archived")), default=0)
+        compressed = any(m.get("archived_truncated") or (m.get("archived") and not refused(m) and row_id(m) < first_live)
+                         for m in messages)
+        return sorted((m for m in messages if not m.get("archived")
+                       or (refused(m) and not (compressed and row_id(m) < first_live))), key=row_id)
 
     @staticmethod
     def _moved(info, cwd):

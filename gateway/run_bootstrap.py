@@ -591,6 +591,21 @@ def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayCon
     return reloaded
 
 
+def _refuse_profile_run_elsewhere() -> None:
+    """Exit 78 before reading any config when a plugin runs this profile's backend elsewhere
+    (``hermes_cli.profiles_run_elsewhere``). The host gateway runs as the default profile, so a
+    marked ``default`` keeps it down; a marked named profile is also left out of its served set."""
+    from gateway.run import get_hermes_home
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    elsewhere = run_elsewhere_for_home(get_hermes_home())
+    if elsewhere is None:
+        return
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    logger.error("Refusing to start the gateway: %s", elsewhere.message())
+    print(elsewhere.message())
+    raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
 def _start_gateway_resolve_terminal_cwd() -> None:
     """Messaging-only defaults belong to startup, not incidental imports by the TUI."""
     import os
@@ -768,6 +783,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         os,
         threading,
     )
+    _refuse_profile_run_elsewhere()
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
     from hermes_cli.update_proxy_env import restore_user_proxy_env

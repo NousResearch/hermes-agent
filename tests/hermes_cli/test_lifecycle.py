@@ -48,6 +48,49 @@ def test_finalize_session_closes_core_before_plugin_export(monkeypatch):
     }
 
 
+def test_finalize_session_drains_outbound_queue_last(monkeypatch):
+    """Regression: webhook delivery is a fire-and-forget daemon thread; without the
+    bounded drain at finalize, a session close during process shutdown enqueued its
+    event and exited before the POST left — subscribers never saw the retire."""
+    import agent.outbound_webhooks as outbound
+
+    calls = []
+    manager = SimpleNamespace(
+        invoke_hook=lambda name, **kwargs: calls.append(("plugin", name)) or []
+    )
+    monkeypatch.setattr(
+        observability,
+        "observe_lifecycle",
+        lambda name, **kwargs: calls.append(("builtin", name)),
+    )
+    monkeypatch.setattr(plugins, "invoke_hook", manager.invoke_hook)
+    monkeypatch.setattr(
+        outbound, "flush", lambda timeout=5.0: calls.append(("drain", timeout)) or True
+    )
+
+    lifecycle.finalize_session(session_id="", platform="cli")
+
+    # Builtin observers first (they enqueue), plugins next, drain last so the
+    # FIFO — including this finalize — is fully handed off before returning.
+    assert [call[0] for call in calls] == ["builtin", "plugin", "drain"]
+    assert calls[2][1] <= 5.0  # bounded: shutdown must never hang on a wedged endpoint
+
+
+def test_finalize_session_survives_drain_failure(monkeypatch):
+    """A flush that raises (import trouble, wedged queue) is swallowed: session close
+    never turns into a shutdown crash."""
+    import agent.outbound_webhooks as outbound
+
+    def _boom(timeout=5.0):
+        raise RuntimeError("endpoint wedged")
+
+    monkeypatch.setattr(observability, "observe_lifecycle", lambda name, **kwargs: None)
+    monkeypatch.setattr(plugins, "invoke_hook", lambda name, **kwargs: ["msg"])
+    monkeypatch.setattr(outbound, "flush", _boom)
+
+    assert lifecycle.finalize_session(session_id=None, platform="cli") == ["msg"]
+
+
 def test_plugin_only_dispatch_does_not_reenter_builtin_observers(monkeypatch):
     manager = SimpleNamespace(invoke_hook=lambda name, **kwargs: [name, kwargs])
     monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)

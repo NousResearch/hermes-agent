@@ -44,6 +44,7 @@ def test_worker_main_verifies_image_before_extraction(tmp_path, monkeypatch):
     bad.write_bytes(b"not an elf appimage")
     monkeypatch.setattr(appimage_checks.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(appimage_checks.socket, "if_nameindex", lambda: [(1, "lo")])
+    monkeypatch.setattr(fcntl, "ioctl", _make_fake_ioctl({"lo": 0x9}, {"lo"}))
     extracted = []
     monkeypatch.setattr(appimage_checks.subprocess, "run", lambda *a, **kw: extracted.append(a))
     with pytest.raises(ValueError, match="type 2 AppImage"):
@@ -97,6 +98,12 @@ def test_worker_main_allows_down_unaddressed_kernel_tunnels(tmp_path, monkeypatc
         "ioctl",
         _make_fake_ioctl({"lo": 0x9, "tunl0": 0x80, "sit0": 0x80, "ip6tnl0": 0x80, "gre0": 0x80}, {"lo"}),
     )
+    net = tmp_path / "net"
+    net.mkdir()
+    _write_proc_net(net)
+    sandbox_problem = appimage_checks._sandbox_problem
+    monkeypatch.setattr(appimage_checks, "_sandbox_problem", lambda: sandbox_problem(net))
+    monkeypatch.setattr(appimage_checks, "_ipv6_available", lambda: True)
     extracted = []
     monkeypatch.setattr(appimage_checks.subprocess, "run", lambda *a, **kw: extracted.append(a))
     with pytest.raises(ValueError, match="type 2 AppImage"):

@@ -282,3 +282,57 @@ def test_seed_publishes_archives_before_the_links_into_them(payload_cache_with_w
 
     assert not _seeded_link(machine).is_symlink(), "a wheel link was published before its archive"
     assert not (machine / ".seeded").exists()
+
+
+def test_seed_bytes_measure_the_pending_merge_without_writing_it(payload_cache_with_wheel_link):
+    """A refresh sizes the merge before it starts it: what a seed would copy, and nothing once merged."""
+    machine = payload_cache_with_wheel_link
+
+    pending = packages.uv_cache_seed_bytes()
+    assert pending == 2 * 4096  # module.py and the .http entry, one block each; the link is no file
+    assert not machine.exists()  # measuring wrote nothing
+
+    packages.uv_cache_dir()
+    assert packages.uv_cache_seed_bytes() == 0
+
+
+def test_seed_bytes_count_a_link_that_leaves_the_cache(payload_cache):
+    """The seed copies the bytes of a link into the payload venv, so sizing the merge counts them."""
+    payload = paths.store_root().parent
+    installed = payload / "venv" / "lib" / "site-packages" / "pkg" / "core.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(b"x" * 5000)
+    shipped = payload / "uv-cache" / "archive-v0" / "bucket" / "pkg" / "core.py"
+    shipped.parent.mkdir(parents=True)
+    _symlink_or_skip(os.path.relpath(installed, shipped.parent), shipped)
+
+    assert packages.uv_cache_seed_bytes() == 3 * 4096  # module.py, and core.py's 5000 bytes
+    packages.uv_cache_dir()
+    assert packages.uv_cache_seed_bytes() == 0
+
+
+def test_seed_bytes_skip_what_a_killed_seed_already_copied_whole(payload_cache):
+    """A retry after a seed died part-way copies only the rest, so only the rest is counted."""
+    cache = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket"
+    (cache / "big.py").write_bytes(b"x" * 9000)
+    done = payload_cache / "archive-v0" / "bucket"
+    done.mkdir(parents=True)
+    (done / "module.py").write_text("seeded = True\n", encoding="utf-8")
+
+    assert packages.uv_cache_seed_bytes() == 3 * 4096  # big.py only
+
+
+def test_seed_bytes_skip_a_file_link_inside_the_cache(payload_cache):
+    """A link that stays in the cache is recreated as a link: it takes no blocks."""
+    bucket = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket"
+    _symlink_or_skip("module.py", bucket / "alias.py")
+
+    assert packages.uv_cache_seed_bytes() == 4096  # module.py only
+
+
+def test_seed_bytes_skip_a_dangling_link(payload_cache):
+    """Sizing must not raise where the target is gone: the refresh would fall back for no reason."""
+    bucket = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket"
+    _symlink_or_skip("../../../venv/gone.py", bucket / "gone.py")
+
+    assert packages.uv_cache_seed_bytes() == 4096  # module.py only

@@ -29,6 +29,18 @@ def _load_checkpoints_enabled(cfg: dict | None = None) -> bool:
     return bool(cp_cfg.get("enabled", DEFAULT_CONFIG["checkpoints"]["enabled"]))
 
 
+def resolve_checkpoint_limits(cfg: dict | None = None) -> dict:
+    """``AIAgent`` checkpoint size/count limits from the ``checkpoints`` config section, falling
+    back to ``DEFAULT_CONFIG`` per key (same keys the CLI and messaging gateway pass)."""
+    cp_cfg = (cfg or {}).get("checkpoints", {})
+    if not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+    from hermes_cli.config import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG["checkpoints"]
+    return {f"checkpoint_{key}": cp_cfg.get(key, defaults[key])
+            for key in ("max_snapshots", "max_total_size_mb", "max_file_size_mb")}
+
+
 def resolve_checkpoints_enabled(cfg: dict | None = None) -> bool:
     """Resolve checkpoint enablement with the env-var override first.
 

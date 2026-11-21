@@ -398,7 +398,7 @@ Counters increment when:
 - `use_count`: the skill is loaded into a conversation's prompt.
 - `patch_count`: `skill_manage patch/edit/write_file/remove_file` runs on the skill.
 
-Bundled and hub-installed skills are explicitly excluded from telemetry writes.
+Usage telemetry covers every skill on disk regardless of provenance: bundled and hub-installed skills accrue view/use/patch counts like local ones. Only lifecycle curation (archive/adopt/pin) excludes them — their upstream owns them, the curator does not.
 
 ## Per-run reports
 

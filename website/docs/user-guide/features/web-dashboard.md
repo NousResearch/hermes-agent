@@ -489,7 +489,10 @@ stops and says to restart that backend with the updated hermes, then run the dry
 The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
 take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address
 stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
-copied into `.env` (names only; values are never printed), the public URL it would copy into
+copied into `.env` (names only; values are never printed; one `.env` already sets is not copied, and a
+`.env` line that sets a sign-in setting as a `${VAR}` template reading a VAR from outside the `.env` blocks
+the move when the gateway's service would not start with the value VAR has for the old backend: put the
+literal value in `.env`, or set VAR where the gateway runs), the public URL it would copy into
 `webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this

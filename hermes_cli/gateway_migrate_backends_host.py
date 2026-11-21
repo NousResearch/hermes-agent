@@ -645,6 +645,20 @@ class SystemHost:
             return "systemd"
         return "launchd" if gw.is_macos() else None
 
+    def gateway_environment(self) -> tuple[dict[str, str], Optional[str]]:
+        """The environment the gateway's service starts with, before it loads the home's ``.env`` (values stay
+        in memory), and why it cannot be told (None when it can): a systemd user service gets the user
+        manager's environment, then its unit's ``Environment=`` and ``EnvironmentFile=`` (one ``gateway install``
+        has yet to write has the manager's alone); a LaunchAgent its plist's ``EnvironmentVariables``."""
+        from hermes_cli import gateway as gw
+        kind = self.gateway_kind()
+        if kind == "systemd":
+            return self.unit_environment(gw.get_service_name(), "user")
+        if kind == "launchd":
+            path = gw.get_launchd_plist_path()
+            return (plist_environment(str(path)) if path.exists() else {}), None
+        return {}, "the gateway does not run as a service of this machine's service manager"
+
     def gateway_state(self) -> dict:
         from gateway.status import live_gateway_pid_for_home
         from hermes_cli import gateway as gw

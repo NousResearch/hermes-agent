@@ -25,6 +25,15 @@ APPLY_STEPS = ("preflight", "manifest", "webapp_bundle", "write_config", "gatewa
 _NEVER_TOUCHED = frozenset({"desktop-ssh", "desktop-local"})
 _AUTH_PREFIX = "HERMES_DASHBOARD_"
 _SECRET_KEY = "HERMES_DASHBOARD_BASIC_AUTH_SECRET"
+# The HERMES_DASHBOARD_* names the bundled sign-in providers read when they register: the ``_settings`` of
+# plugins/dashboard_auth/{basic,self_hosted,nous,drain,session_token} (basic's secret via ``_resolve_secret``).
+_SIGN_IN_KEYS = frozenset({
+    "HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+    "HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", "HERMES_DASHBOARD_OAUTH_CLIENT_ID", "HERMES_DASHBOARD_PORTAL_URL",
+    "HERMES_DASHBOARD_OIDC_ISSUER", "HERMES_DASHBOARD_OIDC_CLIENT_ID", "HERMES_DASHBOARD_OIDC_SCOPES",
+    "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET", "HERMES_DASHBOARD_SESSION_TOKEN",
+})
 
 # Supervisors this command cannot drive itself: what the operator does instead.
 _UNSUPPORTED = {
@@ -500,13 +509,16 @@ def _manual_launcher_env(item: Optional[BackendItem], kind: str, host) -> dict:
 
 def _manual_public_url(plan: BackendPlan, host) -> None:
     """A by-hand plan copies the old backend's public URL too: one the gateway refuses blocks it, with
-    the automatic plan's words, until webapp.public_url is set to an accepted one."""
+    the automatic plan's words, until webapp.public_url is set to an accepted one. Its steps copy no key the
+    ``.env`` sets either, so a ``.env`` template the move would resolve differently blocks it the same way."""
     item = plan.unsupported[0][0]
     if item is None:
         return
     env = _manual_launcher_env(item, _supervisor_kind(item, host), host)
     if problem := resolve_public_url(host.effective_config(), backend_url_env(host, env))[1]:
         plan.blockers.append(_url_blocker(problem))
+    if blocker := launcher_template_blocker(host, env or None):
+        plan.blockers.append(blocker)
 
 
 def _select(plan: BackendPlan, items: list[BackendItem], address, host) -> None:
@@ -589,6 +601,62 @@ def _credentials(plan: BackendPlan, env: Optional[dict], host, cfg: dict) -> Non
     has_secret = bool(launcher.get(_SECRET_KEY) or dotenv.get(_SECRET_KEY) or os.environ.get(_SECRET_KEY)
                       or (isinstance(basic, dict) and basic.get("secret")))
     plan.generate_secret = not has_secret
+    if blocker := launcher_template_blocker(host, env):
+        plan.blockers.append(blocker)
+
+
+def launcher_template_blocker(host, launcher: Optional[dict]) -> Optional[str]:
+    """Why the move would change a sign-in setting (:data:`_SIGN_IN_KEYS`) that the home's ``.env`` sets as a
+    ``${VAR}`` template, or None. The ``.env`` loads over the launch environment with ``${VAR}`` read from that
+    environment (``env_loader``), so the old backend resolved it against its launcher's (*launcher*; None
+    when unreadable) and the gateway resolves it against its service's (``host.gateway_environment``). Only a
+    value that depends on a variable from outside the ``.env`` (:func:`_outside_reads`) can differ; an unknown
+    environment refuses only such a value. A key the managed ``.env`` sets is not the home ``.env``'s. Since
+    the plan copies no key the ``.env`` sets, a template that resolves differently (a blank password: the
+    Webapp's sign-in no longer accepts the old credential) refuses the move."""
+    from hermes_cli.env_loader import _parse_dotenv_file, _resolve_dotenv_assignments
+    try:
+        assignments = _parse_dotenv_file(host.home / ".env")
+    except OSError:
+        return None
+    managed = host.managed_env()
+    outside = _outside_reads(assignments)
+    reads = {name: outside[name] for name, _value in assignments
+             if name in _SIGN_IN_KEYS and name not in managed and outside[name]}
+    if not reads:
+        return None
+    gateway_env, why = host.gateway_environment()
+    old = _resolve_dotenv_assignments(assignments, launcher, override=True) if launcher is not None else {}
+    new = _resolve_dotenv_assignments(assignments, gateway_env, override=True)
+    keys = sorted(k for k in reads if launcher is None or why is not None or old.get(k) != new.get(k))
+    if not keys:
+        return None
+    variables = sorted({v for k in keys for v in reads[k]})
+    unknown = ("the old backend's launch environment cannot be read" if launcher is None
+               else f"{why}, so its value there cannot be told" if why else "")
+    reason = f" ({unknown})" if unknown else ""
+    env_file = host.home / ".env"
+    return (f"{', '.join(keys)} in {env_file} is a ${{...}} template that reads {', '.join(variables)} from the "
+            f"environment the backend starts with, and the gateway would not start with the old backend's value"
+            f"{reason}: after the move it would resolve differently, and the Webapp's sign-in would not take the "
+            f"old credential. Put the literal value in {env_file} (chmod 600), or set {', '.join(variables)} where "
+            f"the gateway runs (its service's environment), then re-run. Nothing changed.")
+
+
+def _outside_reads(assignments: list) -> dict[str, set[str]]:
+    """For each name the ``.env`` *assignments* set, the variables from outside the file its final value reads,
+    followed the way the loader resolves them (``env_loader._resolve_dotenv_assignments`` with override): a
+    line sees the lines before it, which win over the environment, so ``${VAR}`` or ``${VAR:-default}`` of a
+    name set earlier reads only what that line read; any other name comes from the environment."""
+    from dotenv.variables import Variable, parse_variables
+    outside: dict[str, set[str]] = {}
+    for name, value in assignments:
+        reads: set[str] = set()
+        for atom in parse_variables(value or ""):
+            if isinstance(atom, Variable):
+                reads |= outside.get(atom.name, {atom.name})
+        outside[name] = reads
+    return outside
 
 
 def resolve_public_url(cfg: dict, env: Optional[dict]) -> tuple[Optional[str], Optional[str]]:

@@ -7,15 +7,49 @@ from unittest.mock import MagicMock
 import pytest
 
 from cli import HermesCLI
-from hermes_state import SessionDB
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages
 
 
 @pytest.fixture
-def browser_cli():
-    # The autouse fixture pins both HERMES_HOME and SessionDB's default path.
-    db = SessionDB()
+def store():
+    """A writable handle on the test home's state.db (the autouse fixture pins HERMES_HOME) for seeding."""
+    from hermes_constants import get_hermes_home
+
+    handle = open_persistence(profile_scope(home=get_hermes_home()))
+    yield handle
+    handle.close()
+
+
+def _seed(store, session_id, source="cli", *, message=None):
+    store.sessions.create(NewSession(session_id=session_id, source=source))
+    if message is not None:
+        seed_messages(store, session_id, {"role": "user", "content": message})
+
+
+@pytest.fixture
+def browser_cli(store):
+    """The CLI on its gateway session store, as main runs it: reads go through the read-only reader on
+    the same state.db; the gateway double admits every ``session.resume``."""
+    from hermes_cli.gateway_connection import GatewayConnection
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+
+    _seed(store, "current")
+
+    def gateway(method, **params):
+        if method == "session.resume":
+            sid = params["session_id"]
+            return {"stored_session_id": sid, "subscription_id": f"sub-{sid}", "info": {}}
+        return {}
+
+    conn = GatewayConnection()
+    conn.start = lambda *_a, **_k: None
+    session_store = GatewaySessionStore(conn)
+    session_store.call = gateway
+    session_store.attach("current")
     obj = HermesCLI.__new__(HermesCLI)
-    obj._session_db = db
+    obj._session_db = session_store
     obj.session_id = "current"
     obj.agent = None
     obj.conversation_history = []
@@ -25,22 +59,20 @@ def browser_cli():
     obj._agent_running = False
     obj._app = None
     obj.resume_display = "minimal"
-    db.create_session("current", "cli")
     yield obj
-    db.close()
+    session_store.close_reader()
 
 
-def test_browser_listing_has_no_recency_cap_and_keeps_cli_policy(browser_cli):
-    db = browser_cli._session_db
+def test_browser_listing_has_no_recency_cap_and_keeps_cli_policy(browser_cli, store):
     eligible = {f"session_{i:04d}" for i in range(1015)}
     for sid in sorted(eligible):
-        db.create_session(sid, "cli")
+        _seed(store, sid)
     for source in ("telegram", "tool", "oneshot", "kanban", "subagent"):
-        db.create_session(f"excluded_{source}", source)
-    db.create_session("hidden", "cli")
-    db.set_session_hidden("hidden", True)
-    db.create_session("archived", "cli")
-    db.set_session_archived("archived", True)
+        _seed(store, f"excluded_{source}", source)
+    _seed(store, "hidden")
+    store.sessions.set_hidden("hidden", True)
+    _seed(store, "archived")
+    store.sessions.set_archived("archived", True)
 
     rows = browser_cli._list_recent_sessions(limit=None)
 
@@ -50,13 +82,11 @@ def test_browser_listing_has_no_recency_cap_and_keeps_cli_policy(browser_cli):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("command", ["/sessions", "/resume", "/sessions list", "/resume list", "/resume ls", "/resume browse"])
-def test_slash_browser_resumes_exact_selected_id_after_listing_changes(browser_cli, monkeypatch, command):
+def test_slash_browser_resumes_exact_selected_id_after_listing_changes(browser_cli, store, monkeypatch, command):
     import curses
 
-    db = browser_cli._session_db
     for i in range(15):
-        db.create_session(f"saved_{i:02d}", "cli")
-        db.append_message(f"saved_{i:02d}", "user", f"message {i}")
+        _seed(store, f"saved_{i:02d}", message=f"message {i}")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(curses, "curs_set", lambda *_: None)
@@ -68,7 +98,7 @@ def test_slash_browser_resumes_exact_selected_id_after_listing_changes(browser_c
     def read_key():
         key = next(keys)
         if key == 10:
-            db.create_session("arrived_during_browse", "cli")
+            _seed(store, "arrived_during_browse")
         return key
 
     screen.get_wch.side_effect = read_key
@@ -92,7 +122,7 @@ def test_slash_browser_resumes_exact_selected_id_after_listing_changes(browser_c
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("caller", ["worker", "ui_loop"])
-async def test_worker_browser_suspends_real_prompt_toolkit_and_restores_on_cancel(browser_cli, monkeypatch, caller):
+async def test_worker_browser_suspends_real_prompt_toolkit_and_restores_on_cancel(browser_cli, store, monkeypatch, caller):
     import asyncio
     import threading
 
@@ -103,7 +133,7 @@ async def test_worker_browser_suspends_real_prompt_toolkit_and_restores_on_cance
 
     from hermes_cli import cli_session_browser, sessions_cmd_browse
 
-    browser_cli._session_db.create_session("other", "cli")
+    _seed(store, "other")
     observed = []
     picked = asyncio.Event()
     with create_pipe_input() as pipe:
@@ -136,14 +166,12 @@ async def test_worker_browser_suspends_real_prompt_toolkit_and_restores_on_cance
 
 
 @pytest.mark.parametrize("command", ["/sessions", "/resume"])
-def test_noninteractive_listing_is_nonblocking_and_cell_width_bounded(browser_cli, monkeypatch, capsys, command):
+def test_noninteractive_listing_is_nonblocking_and_cell_width_bounded(browser_cli, store, monkeypatch, capsys, command):
     import shutil
     from wcwidth import wcswidth
 
-    db = browser_cli._session_db
-    db.create_session("other", "cli")
-    db.set_session_title("other", "界🙂" * 25)
-    db.append_message("other", "user", "Long preview " + "界🙂" * 30)
+    _seed(store, "other", message="Long preview " + "界🙂" * 30)
+    store.sessions.set_title("other", "界🙂" * 25)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(shutil, "get_terminal_size", lambda *_, **kwargs: os.terminal_size((40, 24)))
     monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("noninteractive commands must not prompt"))
@@ -160,11 +188,11 @@ def test_noninteractive_listing_is_nonblocking_and_cell_width_bounded(browser_cl
 @pytest.mark.parametrize("command", ["/sessions", "/resume"])
 @pytest.mark.parametrize("failure", ["missing_curses", "bad_terminal"])
 def test_unavailable_picker_renders_static_choices_without_reading_input(
-    browser_cli, monkeypatch, capsys, command, failure
+    browser_cli, store, monkeypatch, capsys, command, failure
 ):
     import curses
 
-    browser_cli._session_db.create_session("fallback_target", "cli")
+    _seed(store, "fallback_target")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("classic fallback must not read input"))
@@ -184,10 +212,10 @@ def test_unavailable_picker_renders_static_choices_without_reading_input(
 
 
 @pytest.mark.platforms("posix")
-def test_picker_cancel_is_not_an_unavailable_terminal(browser_cli, monkeypatch, capsys):
+def test_picker_cancel_is_not_an_unavailable_terminal(browser_cli, store, monkeypatch, capsys):
     import curses
 
-    browser_cli._session_db.create_session("cancel_target", "cli")
+    _seed(store, "cancel_target")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(curses, "wrapper", lambda _run: None)  # initialized picker, no selection
@@ -197,10 +225,9 @@ def test_picker_cancel_is_not_an_unavailable_terminal(browser_cli, monkeypatch, 
 
 
 @pytest.mark.parametrize("title", ["list", "ls", "browse"])
-def test_resume_alias_keeps_existing_title_resolution(browser_cli, monkeypatch, title):
-    db = browser_cli._session_db
-    db.create_session("named_session", "cli")
-    db.set_session_title("named_session", title)
+def test_resume_alias_keeps_existing_title_resolution(browser_cli, store, monkeypatch, title):
+    _seed(store, "named_session")
+    store.sessions.set_title("named_session", title)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     from hermes_cli import sessions_cmd_browse
@@ -214,13 +241,12 @@ def test_resume_alias_keeps_existing_title_resolution(browser_cli, monkeypatch, 
 
 
 @pytest.mark.parametrize("command", ["/sessions", "/resume"])
-def test_numeric_resume_uses_the_last_displayed_snapshot_beyond_ten(browser_cli, monkeypatch, command):
+def test_numeric_resume_uses_the_last_displayed_snapshot_beyond_ten(browser_cli, store, monkeypatch, command):
     from hermes_cli import cli_session_browser, sessions_cmd_browse
 
     db = browser_cli._session_db
     for i in range(25):
-        db.create_session(f"numbered_{i:02d}", "cli")
-        db.append_message(f"numbered_{i:02d}", "user", f"message {i}")
+        _seed(store, f"numbered_{i:02d}", message=f"message {i}")
     snapshots = []
 
     def cancelled_picker(sessions, **kwargs):
@@ -232,8 +258,7 @@ def test_numeric_resume_uses_the_last_displayed_snapshot_beyond_ten(browser_cli,
         monkeypatch.setattr(browser_cli, method, lambda *_: None)
     browser_cli.process_command(command)
     expected_id = snapshots[0][22]["id"]
-    db.create_session("newer_arrival", "cli")
-    db.append_message("newer_arrival", "user", "arrived after the browser closed")
+    _seed(store, "newer_arrival", message="arrived after the browser closed")
 
     browser_cli.process_command("/resume 23")
 

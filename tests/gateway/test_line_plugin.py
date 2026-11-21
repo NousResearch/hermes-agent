@@ -367,6 +367,41 @@ class TestSlowLLMPostbackRegression:
         assert "Uchat-a" not in adapter._pending_buttons
 
 
+class TestPublicUrlFreshness:
+    """A long-running gateway keeps the LINE_PUBLIC_URL it read at construction.
+
+    Quick tunnels (ngrok, ``cloudflared`` quick tunnels, a reverse proxy that is
+    re-pointed) change their hostname while the process is up. Outbound media URLs
+    then name a host that no longer resolves: LINE's own fetch fails silently — no
+    delivery error, no log line — so images stop arriving while text keeps working.
+    """
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        monkeypatch.setenv("LINE_PUBLIC_URL", "https://first-tunnel.example")
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"})
+        ad = LineAdapter(cfg)
+        return ad
+
+    def test_rotated_public_url_is_used_for_media_urls(self, adapter, monkeypatch):
+        token = adapter._register_media(__file__)
+        assert adapter._media_url(token, "x.png").startswith("https://first-tunnel.example/")
+        monkeypatch.setenv("LINE_PUBLIC_URL", "https://second-tunnel.example")
+        url = adapter._media_url(token, "x.png")
+        assert url.startswith("https://second-tunnel.example/"), url
+        assert adapter.public_base_url == "https://second-tunnel.example"
+
+    def test_constructed_value_survives_a_scoped_miss(self, adapter, monkeypatch):
+        # A miss (unset env) must NOT wipe a value supplied by config: the adapter
+        # would then fall back to a localhost URL and every image would 404.
+        monkeypatch.delenv("LINE_PUBLIC_URL", raising=False)
+        token = adapter._register_media(__file__)
+        assert adapter._media_url(token, "x.png").startswith("https://first-tunnel.example/")
+
+
 class TestEnvEnablement:
 
     def test_returns_none_without_credentials(self, monkeypatch):

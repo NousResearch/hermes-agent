@@ -38,6 +38,9 @@ export function stableToolKey(message: ChatMessage): string | null {
  * messages that share a reused first call id, e.g. providers reusing
  * "terminal_0" across turns). Six fields, the backend's tuple in order:
  * role | content | timestamp | tool_call_id | tool_calls | tool_name.
+ * Same-uid rows pair in electDedupeRepresentatives before this key applies;
+ * it remains the bridge that carries a uid-less live residue to its
+ * rehydrated twin.
  */
 export function displayDedupeKey(message: ChatMessage): string | null {
   // Settled-key guard: only timestamp-bearing rows participate. A live stream
@@ -70,7 +73,7 @@ export function displayDedupeKey(message: ChatMessage): string | null {
 }
 
 /**
- * One pass over the settled rows to elect a representative per content key.
+ * One pass over the settled rows to elect a representative per logical row.
  * Additive rank (review #123294: "select the durable, non-pending
  * representative"): +2 durable rowId, +1 visible, -1 pending. The common
  * shapes land at durable+visible+settled (3) > durable hidden OR durable
@@ -78,25 +81,121 @@ export function displayDedupeKey(message: ChatMessage): string | null {
  * ties: a durable PENDING row scores 2, above a plain settled live row (1),
  * because durability outweighs stream state. Keeping the first occurrence
  * had left the live id, dropped the durable row's rowId/reactions and stuck
- * the runtime message in running. Earliest top-rank copy wins ties; the
- * winner renders at the FIRST occurrence's position (swap-in in the render
- * loop).
+ * the runtime message in running. Earliest top-rank copy wins ties, except
+ * between same-uid rows where the NEWER generation wins; the winner renders
+ * at the FIRST occurrence's position (swap-in in the render loop).
  */
 function rankRepresentative(message: ChatMessage): number {
   return (message.rowId !== undefined ? 2 : 0) + (!message.hidden ? 1 : 0) - (message.pending ? 1 : 0)
 }
 
-function electDedupeRepresentatives(messages: ChatMessage[]): Map<string, ChatMessage> {
-  const byKey = new Map<string, ChatMessage>()
-  for (const message of messages) {
-    const key = displayDedupeKey(message)
-    if (key === null) continue
-    const incumbent = byKey.get(key)
-    if (incumbent === undefined || rankRepresentative(message) > rankRepresentative(incumbent)) {
-      byKey.set(key, message)
+/**
+ * The later of two same-uid generations. Every re-insert (compaction
+ * generation, rotation handoff, replacement) allocates a fresh, higher row
+ * id, and the id is the store's address for the row; the timestamp — the
+ * copy's commit time, later than the original's (#123985) — decides only
+ * when neither row carries an id.
+ */
+function isNewerGeneration(candidate: ChatMessage, incumbent: ChatMessage): boolean {
+  if (candidate.rowId !== undefined && incumbent.rowId !== undefined) {
+    return candidate.rowId > incumbent.rowId
+  }
+  return (candidate.timestamp ?? 0) > (incumbent.timestamp ?? 0)
+}
+
+interface DedupeElection {
+  /** Group root per row index — a lone row is its own group. */
+  rootOf: number[]
+  /** The elected representative of each group root. */
+  representative: Map<number, ChatMessage>
+}
+
+/**
+ * Group the rows that are the same logical message and elect one
+ * representative per group. Two rows merge when they share a `messageUid` —
+ * the backend casts one uid per logical row (agent/message_metadata.py
+ * stamp_message_uid) and re-writes it on every re-insert, so #123985's
+ * original plus its commit-time-stamped copy share a uid and merge even
+ * though their content keys differ. Distinct uids are distinct rows however
+ * equal the content. A pair where one side lacks a uid (a live stream
+ * residue against its rehydrated twin) keeps the content-key pairing
+ * exactly as before.
+ */
+function electDedupeRepresentatives(messages: ChatMessage[]): DedupeElection {
+  // Union-find over rows sharing a logical identity: same uid unions two
+  // generations; a shared content key unions only while one side has no uid
+  // to pair by.
+  const parent = messages.map((_, index) => index)
+
+  const find = (index: number): number => {
+    let root = index
+    while (parent[root] !== root) {
+      parent[root] = parent[parent[root]]
+      root = parent[root]
+    }
+    return root
+  }
+
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left)
+    const rightRoot = find(right)
+    if (leftRoot !== rightRoot) {
+      parent[Math.max(leftRoot, rightRoot)] = Math.min(leftRoot, rightRoot)
     }
   }
-  return byKey
+
+  const firstByUid = new Map<string, number>()
+  const firstByContentKey = new Map<string, number>()
+
+  messages.forEach((message, index) => {
+    if (message.messageUid !== undefined) {
+      const first = firstByUid.get(message.messageUid)
+      if (first === undefined) {
+        firstByUid.set(message.messageUid, index)
+      } else {
+        union(first, index)
+      }
+    }
+
+    const contentKey = displayDedupeKey(message)
+    if (contentKey !== null) {
+      const first = firstByContentKey.get(contentKey)
+      if (first === undefined) {
+        firstByContentKey.set(contentKey, index)
+      } else if (message.messageUid === undefined || messages[first].messageUid === undefined) {
+        union(first, index)
+      }
+    }
+  })
+
+  const representative = new Map<number, ChatMessage>()
+
+  messages.forEach((message, index) => {
+    const root = find(index)
+    const incumbent = representative.get(root)
+    if (incumbent === undefined) {
+      representative.set(root, message)
+      return
+    }
+
+    const rank = rankRepresentative(message)
+    const incumbentRank = rankRepresentative(incumbent)
+    if (
+      rank > incumbentRank ||
+      // A rank tie between same-uid rows is two durable generations of one
+      // row: the re-insert the compaction wrote is the generation the store
+      // still resolves, so it wins — electing the rewound original would
+      // strand rowId and reactions on a row future reads no longer return.
+      (rank === incumbentRank &&
+        message.messageUid !== undefined &&
+        message.messageUid === incumbent.messageUid &&
+        isNewerGeneration(message, incumbent))
+    ) {
+      representative.set(root, message)
+    }
+  })
+
+  return { rootOf: messages.map((_, index) => find(index)), representative }
 }
 
 /**
@@ -125,36 +224,38 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     // occurrence's slot, so a later duplicate must skip on the WINNER's id.
     // Order-dependent by design: whatever lost the election is dropped here,
     // never re-rendered at its own position.
-    // Content-level dedup for settled messages only (#101938): after a
-    // context compression, the same logical message can reach this boundary
-    // twice with different ids (a streaming copy without a rowId and a
-    // rehydrated copy with one). The id-only gate above misses that collision
-    // and both render as visible duplicates. The key mirrors the backend's
-    // display identity (_display_dedupe_key + _stable_tool_key); a durable
-    // non-pending copy is elected representative and is SWAPPED INTO the
-    // first occurrence's slot, so rowId/reactions survive and a live row
-    // never leaks into the settled transcript.
+    // Logical-row dedup for settled messages (#101938, #123985): after a
+    // context compression the same logical message can reach this boundary
+    // twice with different ids — a streaming copy without a rowId and a
+    // rehydrated copy with one, or two re-inserted generations of one row.
+    // The id-only gate above misses that collision and both render as
+    // visible duplicates. Rows pair by messageUid first; the content key
+    // (the backend's _display_dedupe_key + _stable_tool_key) carries the
+    // pairs where a row has no uid. A durable non-pending copy is elected
+    // representative and is SWAPPED INTO the first occurrence's slot, so
+    // rowId/reactions survive and a live row never leaks into the settled
+    // transcript.
     const coalesced = coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)
-    const electedByKey = electDedupeRepresentatives(coalesced)
-    const renderedKeys = new Set<string>()
+    const { rootOf, representative } = electDedupeRepresentatives(coalesced)
+    const renderedRoots = new Set<number>()
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of coalesced) {
+    for (let index = 0; index < coalesced.length; index += 1) {
+      const message = coalesced[index]
       let messageToRender = message
-      const contentKey = displayDedupeKey(message)
-      if (contentKey !== null) {
-        // Settled copy of a logical message: if an earlier slot already
-        // rendered this key, skip (later duplicate generation); otherwise
-        // swap in the ELECTED representative — the durable, non-pending
-        // copy — so its rowId/reactions render at the first occurrence's
-        // position instead of a streaming residue's.
-        if (renderedKeys.has(contentKey)) {
-          continue
-        }
-        renderedKeys.add(contentKey)
-        messageToRender = electedByKey.get(contentKey) ?? message
+      // Settled row of a logical message: if an earlier slot already
+      // rendered this group, skip (later duplicate generation); otherwise
+      // swap in the ELECTED representative — the durable, non-pending copy,
+      // or the newer generation of a same-uid pair — so its rowId and
+      // reactions render at the first occurrence's position instead of a
+      // streaming residue's or a rewound original's.
+      const root = rootOf[index]
+      if (renderedRoots.has(root)) {
+        continue
       }
+      renderedRoots.add(root)
+      messageToRender = representative.get(root) ?? message
 
       // A repeated id is a transcript bug upstream, but it must not reach the
       // repository: MessageRepository throws on the second link ("A message

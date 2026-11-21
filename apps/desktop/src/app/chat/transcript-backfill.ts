@@ -379,7 +379,10 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
       // fold's first row carries tool calls, not because the copy is live. A
       // page that cuts the turn re-emits none of the leading uid, so the
       // window's whole fold stays put; the page's partial copy is dropped in
-      // dropPageFoldsCutByTheBoundary instead.
+      // dropPageFoldsCutByTheBoundary instead. Short of that cut, EVERY uid of
+      // the fold must land in the same page bubble — mirroring the rowId
+      // cover's sourceIds.every — so a first-uid match alone can never graft
+      // a differently-folded page copy onto this slot.
       const uidFolded = sourceUids.length ? refreshedByUid.get(sourceUids[0]) : undefined
 
       // A completed live reply is addressed by its final row; hydration can
@@ -395,7 +398,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
         ((message.durableComplete !== false &&
           folded?.role === message.role &&
           sourceIds.every(id => refreshedBySource.get(id) === folded)) ||
-          uidFolded?.role === message.role)
+          (uidFolded?.role === message.role && sourceUids.every(uid => refreshedByUid.get(uid) === uidFolded)))
 
       const rowId = covered ? (folded?.rowId ?? uidFolded?.rowId ?? message.rowId) : message.rowId
 

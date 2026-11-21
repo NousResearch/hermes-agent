@@ -22,24 +22,28 @@ import { useRuntimeMessageRepository } from './runtime-repository'
  * and the page share one post-compaction row id — not on the row shape itself.
  *
  * Case 1 is the one neither client PR covers: the merge keeps both generations,
- * and only a content-level key at the repository boundary collapses them.
- * Cases 3 and 4 are guards on that key.
+ * and only a logical-row key at the repository boundary collapses them.
+ * Case 3 is a guard on that key; case 4 pins the uid rule both ways — same
+ * uid merges two generations of one row, distinct uids stay two rows.
  */
 
 const TIMESTAMP = 1_771_500_000
 
-/** A hydrated chat row: distinct string ids, durable `rowId` per backend row. */
+/** A hydrated chat row: distinct string ids, durable `rowId` per backend row,
+ *  and the row's `messageUid` whenever the fixture models a backend row. */
 const chat = (
   id: string,
   rowId: number,
   role: 'user' | 'assistant',
   text: string,
-  timestamp: number | null = TIMESTAMP
+  timestamp: number | null = TIMESTAMP,
+  messageUid?: string
 ): ChatMessage => ({
   id,
   role,
   parts: [{ type: 'text', text }],
   rowId,
+  ...(messageUid !== undefined ? { messageUid } : {}),
   ...(timestamp === null ? {} : { timestamp })
 })
 
@@ -70,6 +74,10 @@ const render = (messages: ChatMessage[]): string[] =>
       part.type === 'text' && part.text !== undefined ? [part.text] : []
     )
   )
+
+/** The repository items themselves, for asserting which representative won. */
+const repositoryItems = (messages: ChatMessage[]) =>
+  renderHook(() => useRuntimeMessageRepository(messages)).result.current.messages
 
 describe('compaction generations reaching the transcript', () => {
   it('renders one copy when the window shares a post-compaction row id with the refreshed page', () => {
@@ -115,16 +123,16 @@ describe('compaction generations reaching the transcript', () => {
     // chat-messages/hydration.ts), and desktop live rows stamp occurredAt
     // (use-message-stream). A compaction copy arrives with the commit time,
     // never with an absent timestamp. Expected: 2 rows. Neither row carries a
-    // message_uid, so uid-based generation folding never applies either; the
-    // timestamp-undefined guard is the whole defense. The case stays as a
-    // tripwire — a key that substituted a placeholder for a missing
-    // timestamp would merge two unrelated rows here.
+    // messageUid, so the pair takes the uid-less branch of the repository
+    // rule — the `timestamp === undefined` guard is the whole defense. The
+    // case stays as a tripwire — a key that substituted a placeholder for a
+    // missing timestamp would merge two unrelated rows here.
     const messages = [live('a-1', 'assistant', 'same words'), live('a-2', 'assistant', 'same words', null)]
 
     expect(render(messages)).toEqual(['same words', 'same words'])
   })
 
-  it('keeps a commit-time-stamped compaction copy apart from its original (#123985 on latest main)', () => {
+  it('merges a commit-time-stamped compaction copy into its original by shared uid (#123985)', () => {
     // The producing path on latest main: the gateway replay keeps the durable
     // timestamp on user rows only (gateway/run.py _build_gateway_agent_history,
     // preserve_timestamp=(role == "user"); tool rows have it stripped), so the
@@ -132,16 +140,35 @@ describe('compaction generations reaching the transcript', () => {
     // _carry_parent_timestamps cannot donate (the originals were rewound
     // before it runs — a documented no-op for a clean compaction), and
     // _insert_message_rows stamps the copy with the commit time. Original and
-    // copy therefore arrive with DIFFERENT timestamps; the key — which keeps
-    // the timestamp, exactly like the backend's _display_dedupe_key — must
-    // hold both apart (2 rows). Once the backend keeps durable timestamps on
-    // replay (ee8ec14184, bb/desktop-render-wave2, unmerged), the pair shares
-    // one timestamp and case 1's collapse applies. Until then the duplicate
-    // is #123985 and belongs to the backend, not to this key.
-    const original = chat('a-orig', 101, 'assistant', 'the answer', TIMESTAMP)
-    const copy = chat('a-copy', 901, 'assistant', 'the answer', TIMESTAMP + 5_000)
+    // copy therefore arrive with DIFFERENT timestamps — and the SAME
+    // message_uid: stamp_message_uid casts one uid per logical row and every
+    // re-insert re-writes it (agent/message_metadata.py), so per latkinw-wq
+    // (2026-11-17) the pair is two generations of ONE row and merges. The
+    // copy is the generation the store still resolves, so it wins the rank
+    // tie and its rowId rides the single rendered slot.
+    const original = chat('a-orig', 101, 'assistant', 'the answer', TIMESTAMP, 'm101')
+    const copy = chat('a-copy', 901, 'assistant', 'the answer', TIMESTAMP + 5_000, 'm101')
 
-    expect(render([original, copy])).toEqual(['the answer', 'the answer'])
+    expect(render([original, copy])).toEqual(['the answer'])
+
+    // The newer generation won the election — future reads and actions
+    // resolve its row id.
+    const [item] = repositoryItems([original, copy])
+    const custom = (item.message.metadata as { custom?: { rowId?: number } }).custom
+    expect(custom?.rowId).toBe(901)
+  })
+
+  it('keeps two same-content rows with distinct uids apart (the #123985 shape, two rows)', () => {
+    // The uid rule cuts both ways: distinct uids are distinct logical rows,
+    // so the compaction shape with DIFFERENT uids stays two rows — the
+    // "two identical replies at different times" semantics, now held by uid
+    // identity rather than by the timestamp alone (these rows differ in
+    // timestamp too, so the content key would hold them apart anyway; the
+    // uid rule holds them apart even if the timestamps were to align).
+    const original = chat('a-orig', 101, 'assistant', 'the answer', TIMESTAMP, 'm101')
+    const twin = chat('a-twin', 901, 'assistant', 'the answer', TIMESTAMP + 5_000, 'm999')
+
+    expect(render([original, twin])).toEqual(['the answer', 'the answer'])
   })
 
   it('keeps two identical replies at different timestamps apart', () => {

@@ -19,6 +19,7 @@ import {
   createBoundedMessageStore,
   extractBridgeEvent,
   inboundReadReceiptKeys,
+  isOggOpus,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
@@ -624,6 +625,20 @@ import {
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.quotedText, 'Example appointment at 11:40');
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
+}
+
+// -- voice notes: only real Opus skips conversion -------------------------
+{
+  // Hand-built first Ogg pages: 27-byte header, one lacing byte, then the codec header.
+  const page = (payload) => Buffer.concat([
+    Buffer.from('OggS'), Buffer.alloc(22), Buffer.from([1, payload.length]), payload,
+  ]);
+  assert.equal(isOggOpus(page(Buffer.from('OpusHead\x01\x01'))), true);
+  assert.equal(isOggOpus(page(Buffer.from('\x01vorbis\x00\x00', 'latin1'))), false,
+    'Ogg/Vorbis behind a .ogg name must be converted, not sent as codecs=opus');
+  assert.equal(isOggOpus(page(Buffer.from('\x7fFLAC\x01\x00', 'latin1'))), false);
+  assert.equal(isOggOpus(Buffer.from('ID3\x04mp3-bytes-here-padding-padding', 'latin1')), false);
+  console.log('  ✓ voice notes: Ogg/Vorbis and Ogg/FLAC are not mistaken for Opus');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

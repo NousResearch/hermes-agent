@@ -21,6 +21,7 @@ from hermes_cli.local_runtime.context_policy import (
     initial_window,
     ladder,
     launch_args,
+    plan_launch,
     recurrent_spill_blocks,
     spill_overrides,
     ub_logits_bytes,
@@ -81,6 +82,22 @@ def test_full_attention_linear_in_window():
     b32, b64, b128 = (ctx_bytes(p, w * KIB) for w in (32, 64, 128))
     assert abs(b64 / b32 - 2) < 0.01
     assert abs(b128 / b64 - 2) < 0.01
+
+
+def test_explicit_window_override_can_cap_below_policy_floor():
+    plan = plan_launch(dense(), card(24), requested_window=16 * KIB)
+
+    assert isinstance(plan.decision, WindowDecision)
+    assert plan.decision.window == 16 * KIB
+    assert plan.decision.reasons == ["window cap (16K)"]
+
+
+def test_explicit_window_override_marks_restored_growth():
+    plan = plan_launch(dense(), card(24), requested_window=96 * KIB)
+
+    assert isinstance(plan.decision, WindowDecision)
+    assert plan.decision.window == 96 * KIB
+    assert plan.decision.reasons == ["grown window restored (96K)"]
 
 
 def test_recurrent_state_constant_in_window():

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+from datetime import datetime
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -40,6 +42,71 @@ def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> 
     return f"## {heading}\n{intro}\n\n```\n{body}\n```\n\n{prompt}"
 
 
+# A shorter lateness than this is normal ticker slip, not an observation gap: it mirrors the
+# scheduler's own on-time tolerance (``_LATE_DISPATCH_TOLERANCE_SECONDS``).
+_LATENESS_NOTICE_SECONDS = 300.0
+
+
+def _humanize_age(seconds: float) -> str:
+    """Compact age label for injected data (``45s`` / ``12m`` / ``3.4h`` / ``2.1d``)."""
+    if seconds < 90:
+        return f"{int(seconds)}s"
+    if seconds < 5400:
+        return f"{int(seconds // 60)}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+def _clock_label(stamp: object) -> str:
+    """An ISO dispatch stamp as ``YYYY-MM-DD HH:MM``; the raw value when it does not parse."""
+    try:
+        return datetime.fromisoformat(str(stamp)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return str(stamp or "unknown")
+
+
+def _dispatch_lateness_block(job: dict) -> Optional[str]:
+    """Provenance frame: when this run was due versus when it actually started.
+
+    The due scan already persists ``last_dispatch`` (``scheduled_at`` / ``dispatched_at`` /
+    ``lateness_seconds`` / ``kind``), but only the CLI ever read it — the model, which decides
+    what "today's close" or "tomorrow" means, never saw it. A job that fires hours late otherwise
+    reasons against a world it believes is the scheduled moment; a collapsed backlog
+    additionally hides that earlier occurrences were skipped outright.
+    """
+    if job.get("manual_run_at"):
+        return None  # operator-triggered run: lateness has no meaning
+    stamp = job.get("last_dispatch")
+    if not isinstance(stamp, dict):
+        return None
+    try:
+        lateness = float(stamp.get("lateness_seconds") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if lateness < _LATENESS_NOTICE_SECONDS:
+        return None
+    catch_up = str(stamp.get("kind") or "") == "catch_up"
+    notice = (
+        "## Run Timing\n"
+        f"This run was scheduled for {_clock_label(stamp.get('scheduled_at'))} but started at "
+        f"{_clock_label(stamp.get('dispatched_at'))} — {_humanize_age(lateness)} late"
+        f"{' (catch-up after downtime)' if catch_up else ''}."
+    )
+    if catch_up:
+        notice += (
+            " Because the backlog was collapsed, one or more scheduled occurrences were skipped "
+            "and only this single run happened."
+        )
+    notice += (
+        "\nTreat the gap as unobserved time: prices, flows and announcements you read now may be "
+        "newer than the moment these instructions assume, and anything scheduled inside the gap "
+        "may already have happened. Label every data point with the timestamp it actually carries, "
+        "and never describe a stale snapshot as current or a late run as on time.\n"
+    )
+    return notice
+
+
 def _job_skill_names(job: dict) -> list[str]:
     """Normalized skill names from ``skills`` (list or str) or the legacy singular ``skill``."""
     skills = job.get("skills")
@@ -59,8 +126,9 @@ _SELF_CONTEXT_INTRO = (
     "run left off."
 )
 _UPSTREAM_CONTEXT_INTRO = (
-    "The following is the most recent output from a preceding cron job. Use it as context for "
-    "your analysis."
+    "The following is the most recent output from a preceding cron job; its heading states how "
+    "long ago it was written. Use it as context for your analysis, and treat an output older than "
+    "this run as stale history rather than as the current state."
 )
 
 # Run-document length frames. The writer (``cron.scheduler.run_job``) stamps
@@ -164,7 +232,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 (output_dir / source_job_id).glob("*.md"), key=lambda f: f.stat().st_mtime,
                 reverse=True,
             )
-            latest_output = ""
+            picked = None
             for output_file in output_files:
                 candidate = output_file.read_text(encoding="utf-8-sig")
                 # Only the run header describes suppression; script/agent payloads can
@@ -180,18 +248,24 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 answer = _archive_answer(candidate)
                 if answer is None:
                     continue  # [SILENT]/blank response — try an older archive
-                latest_output = answer
+                picked = (output_file, answer)
                 break
-            if not latest_output:
-                continue  # silent skip — no archive with a usable answer
+            if picked is None:
+                continue  # every archive was silent or blank — nothing to inject
+            newest_path, latest_output = picked
             latest_output = _clip_to_context_budget(latest_output)
+            try:
+                age = _humanize_age(max(0.0, time.time() - newest_path.stat().st_mtime))
+            except OSError:
+                age = "unknown"
             if is_self:
                 prompt = _prepend_context_block(
-                    prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
+                    prompt, f"Your previous run's output (written {age} ago)",
+                    _SELF_CONTEXT_INTRO, latest_output)
             else:
                 prompt = _prepend_context_block(
-                    prompt, f"Output from job '{source_job_id}'", _UPSTREAM_CONTEXT_INTRO,
-                    latest_output,
+                    prompt, f"Output from job '{source_job_id}' (written {age} ago)",
+                    _UPSTREAM_CONTEXT_INTRO, latest_output,
                 )
             injected = True
         except (OSError, PermissionError) as e:
@@ -359,6 +433,10 @@ def _build_job_prompt(
     if notepad_section:
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
+
+    timing_block = _dispatch_lateness_block(job)
+    if timing_block:
+        prompt = f"{timing_block}\n{prompt}"
 
     prompt = _CRON_HINT + _run_time_line(job) + prompt
     skill_names = _job_skill_names(job)

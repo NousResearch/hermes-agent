@@ -43,10 +43,18 @@ def _runtime_trees_hidden_by(exclude: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(hidden)
 
 
+def _revision_has_path(repo: Path, ref: str, path: str) -> bool:
+    probe = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}:{path}"],
+        cwd=repo, check=False, timeout=60,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return probe.returncode == 0
+
+
 def _write_git_archive(repo: Path, ref: str, archive: Path, paths: list[str]) -> None:
     subprocess.run(
         ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *paths],
-        cwd=repo, check=True)
+        cwd=repo, check=True, timeout=600)
 
 
 def _extract_archive(archive: Path, destination: Path) -> None:
@@ -68,6 +76,8 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
         destination.mkdir(parents=True)
         _extract_archive(archive, destination)
         for index, tree in enumerate(_runtime_trees_hidden_by(exclude)):
+            if not _revision_has_path(repo, ref, tree):
+                continue
             runtime = temp_dir / f"runtime-{index}.tar"
             _write_git_archive(repo, ref, runtime, [tree])
             _extract_archive(runtime, destination)

@@ -129,5 +129,37 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def test_pinned_plain_dir_inside_checkout_becomes_real_worktree(kanban_home, tmp_path):
+    """An existing plain directory inside the main checkout is not a worktree.
 
+    It shares the repo's git common dir, but reusing it would run the worker
+    on the main checkout's branch instead of the task's own branch.
+    """
+    repo = _make_repo(tmp_path)
+    pinned = repo / "pinned"
+    pinned.mkdir()
 
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="pinned worktree",
+            workspace_kind="worktree",
+            workspace_path=str(pinned),
+        )
+        task = kb.get_task(conn, tid)
+
+    workspace = kbw.resolve_workspace(task)
+
+    def _rev(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", *args],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    assert Path(_rev("--show-toplevel")).resolve() == pinned.resolve()
+    assert _rev("--abbrev-ref", "HEAD") == f"wt/{tid}"
+    main_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert main_head == "main"

@@ -190,14 +190,18 @@ model:
   #       X-Client-Name: "hermes-agent"
   #
   # session_affinity_header: NAME of a header that carries Hermes' conversation
-  # id on every request to that provider (all api_modes + auxiliary calls). Off
-  # unless set. For session-aware proxies that otherwise treat each agent-loop
-  # request as a new conversation and replay the whole history upstream.
+  # id on every request to that provider (all api_modes + auxiliary calls), or `true`
+  # to emit standard Hermes headers (`x-hermes-session-id` for conversation affinity
+  # and `x-hermes-trace-id` for turn tracing). Off unless set. For session-aware proxies
+  # that otherwise treat each agent-loop request as a new conversation and replay the
+  # whole history upstream.
   #
   # providers:
   #   my-proxy:
   #     base_url: "http://127.0.0.1:4000/v1"
-  #     session_affinity_header: x-litellm-session-id
+  #     session_affinity_header: true  # emits x-hermes-session-id & x-hermes-trace-id
+  #     # or name a specific proxy header:
+  #     # session_affinity_header: x-litellm-session-id
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1

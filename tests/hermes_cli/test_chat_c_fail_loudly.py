@@ -27,7 +27,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from hermes_cli import gateway_session_store
 
-    def create_titled(title):
+    def create_titled(title, args=None):
         from persistence_assembly import open_persistence, profile_scope
         from tests.fixtures.storage_seed import seed_session
         with open_persistence(profile_scope()) as store:
@@ -147,7 +147,8 @@ class TestChatCFailLoudlyOnStderr:
 
         created = []
         monkeypatch.setattr(store_mod, "create_titled_session",
-                            lambda title: created.append(title) or "local-" + "a" * 64, raising=False)
+                            lambda title, run=None: created.append((title, run)) or "local-" + "a" * 64,
+                            raising=False)
         args = type(
             "Args",
             (),
@@ -155,13 +156,17 @@ class TestChatCFailLoudlyOnStderr:
                 "continue_last": "Bot Chat",
                 "resume": None,
                 "create_if_missing": True,
+                "toolsets": "file",
+                "model": "m2",
             },
         )()
 
         main_mod._resolve_continue_arg(args, use_tui=False)
 
         assert args.resume == "local-" + "a" * 64, "resume should be set to the new session id"
-        assert created == ["Bot Chat"]
+        assert [title for title, _launch in created] == ["Bot Chat"]
+        # The run's arguments reach the create: the resume that follows never sends -t/-m.
+        assert created[0][1] is args
         assert not (isolated_home / "state.db").exists(), "the CLI must not write the titled row itself"
 
     def test_tui_create_if_missing_keeps_the_local_titled_row(self, isolated_home):
@@ -176,3 +181,21 @@ class TestChatCFailLoudlyOnStderr:
 
         with open_persistence(profile_scope()) as store:
             assert store.sessions.get_title(args.resume) == "Bot Chat"
+
+    def test_tui_create_if_missing_creates_with_the_run_launch_flags(self, isolated_home, monkeypatch):
+        """``chat -c NAME --create-if-missing -t file -m m2`` under the TUI: the same resume follows
+        the create, so the TUI's create must carry the run's ``-t``/``-m`` as the classic CLI's does,
+        or that resume is refused as a policy mismatch."""
+        import hermes_cli.main as main_mod
+        import hermes_cli.gateway_session_store as store_mod
+
+        seen = []
+        stand_in = store_mod.create_titled_session
+        monkeypatch.setattr(store_mod, "create_titled_session",
+                            lambda title, args=None: seen.append((title, args)) or stand_in(title, args))
+        args = type("Args", (), {"continue_last": "Bot Chat", "resume": None, "create_if_missing": True,
+                                 "toolsets": "file", "model": "m2"})()
+        main_mod._resolve_continue_arg(args, use_tui=True)
+
+        assert args.resume, "resume should be set to the new session id"
+        assert seen == [("Bot Chat", args)]

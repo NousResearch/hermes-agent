@@ -710,13 +710,16 @@ def session_store():
     return GatewaySessionStore()
 
 
-def create_titled_session(title):
-    """``chat -c <title> --create-if-missing`` for the classic CLI: the gateway's ``session.create``
-    with ``title`` (it resolves-or-creates under one owner lock), so this process writes no row.
-    Main's ``_create_titled_session`` minted the id and wrote the row itself, with no cwd stamp
-    (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
-    "could not be created" copy)."""
-    params = _creation_policy({})
+def create_titled_session(title, args=None):
+    """``chat -c <title> --create-if-missing``, classic CLI and TUI alike: the gateway's
+    ``session.create`` with ``title`` (it resolves-or-creates under one owner lock), so this process
+    writes no row. Main's ``_create_titled_session`` minted the id and wrote the row itself, with no
+    cwd stamp (``row_cwd`` ""). ``args`` is the run's parsed arguments: the caller resumes the new
+    session next, and a resume may only repeat the creation policy, so ``-t``/``-m``/... must be on
+    this create or the resume is refused as a policy mismatch. Returns the id, or None when the
+    gateway refused (the caller prints main's "could not be created" copy)."""
+    launch = {key: getattr(args, key, None) for key in (*_LAUNCH_POLICY, "run_budget", "verbose")}
+    params = _creation_policy(launch)
     params["cwd"] = _launch_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""

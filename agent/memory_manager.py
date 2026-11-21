@@ -96,6 +96,105 @@ def _scrub(text: str, *, urls: bool = True) -> str:
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_\-./+]{16,}")
+# Characters a token may contain — used for the boundary test when a learned secret is
+# re-masked in other strings of the same hand-off.
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-./+")
+# Letters that can follow a backslash as a C/JSON escape. In a JSON-escaped payload a newline
+# is the two characters ``\\`` + ``n``, so a token that starts right after one begins with
+# that letter and comes out as ``nHINDSIGHT_...`` — a string that occurs nowhere in the
+# source. Learning such a phantom secret rewrote unrelated prose: ``\\nHINDSIGHT_...``
+# collapsed to ``\\[redacted]``, so a config key lost its name inside stored memory.
+_ESCAPE_LETTERS = frozenset("nrtbfv0\\\"'/")
+
+
+def _tokens(text: str) -> list:
+    """``_TOKEN_RE`` matches with a leading escape-sequence letter stripped off.
+
+    ``sk-abc...`` inside a JSON-escaped payload is spelled ``\\nsk-abc...``; the regex starts
+    at the ``n``, so the naive token would be ``nsk-abc...``. Dropping that letter keeps the
+    learned set aligned with the strings that really occur in the text.
+    """
+    out = []
+    for m in _TOKEN_RE.finditer(text):
+        token, start = m.group(0), m.start()
+        # Strip only a *phantom* leading letter: when the token as written is not itself a
+        # credential, the letter belongs to the escape. A real secret that happens to begin
+        # with one of those letters stays whole, so it is still masked in full.
+        if (start and text[start - 1] == "\\" and len(token) > 1
+                and token[0] in _ESCAPE_LETTERS and not _is_learnable_secret(token)):
+            token = token[1:]
+        out.append(token)
+    return out
+
+
+def _is_learnable_secret(token: str) -> bool:
+    """Whether *token* is a credential rather than collateral from a greedy value match.
+
+    Masking one ``NAME=value`` assignment can swallow neighbouring ``=...`` pairs, so the set
+    of strings that merely *disappeared* also holds innocent identifiers, config keys and
+    model names. Learning those rewrote them everywhere in the hand-off — a config key such as
+    ``HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS`` (its ``TOKENS`` tail matches the ENV
+    secret-name pattern) or a model id such as ``cn:glm-5.3-flash``. So a token is learned when
+    the scrub masks it by itself, or when it is not identifier-shaped: no ``.``/``/``/``:``
+    (model ids, versions, paths, URLs) and not an underscore-separated identifier.
+    """
+    if _scrub(token) != token:
+        return True
+    # A token that starts with a lowercase escape letter glued to a SCREAMING_SNAKE body is
+    # the escape plus an identifier (``nHINDSIGHT_API_...``), not a secret.
+    core = token
+    if (len(token) > 1 and token[0] in _ESCAPE_LETTERS and token[0].islower()
+            and "_" in token and token[1:].upper() == token[1:]):
+        core = token[1:]
+    if any(c in "./:" for c in core):
+        return False            # model ids, versions, paths, URLs
+    if "_" in core and (core.upper() == core or core.lower() == core):
+        return False            # SCREAMING_SNAKE env names, snake_case identifiers
+    return True
+
+
+# Trailing characters that may ride on a token without making it a different token: sentence
+# punctuation. ``_TOKEN_RE`` admits ``.``/``/``/``+`` because model ids and versions contain
+# them, so ``Ab8...oIr.`` at the end of a sentence matches as one token.
+_TOKEN_TRAILING_PUNCT = ".,;:!?)]}'\""
+
+
+def _mask_learned(text: str, learned: set) -> str:
+    """Mask each learned secret where it appears as a whole token in *text*.
+
+    Re-tokenises *text* with the same regex the learned set was built from and compares whole
+    tokens, instead of running a bare substring ``sub``. That is what keeps an innocent string
+    that merely contains a learned secret — a longer identifier, a path, a model id sharing a
+    prefix — byte-identical. Two allowances keep the mask complete: a token may carry trailing
+    sentence punctuation (``Ab8...oIr.``), and a token may be an escape letter glued to the
+    secret (``\\nsk-...``); in both cases only the secret itself is replaced.
+    """
+    if not learned:
+        return text
+    ordered = sorted(learned, key=len, reverse=True)
+    out, cursor = [], 0
+    for m in _TOKEN_RE.finditer(text):
+        start = m.start()
+        token = m.group(0)
+        offset = 0
+        if (start and text[start - 1] == "\\" and len(token) > 1
+                and token[0] in _ESCAPE_LETTERS
+                and token.rstrip(_TOKEN_TRAILING_PUNCT) not in learned):
+            offset = 1
+        core = token[offset:]
+        hit = core if core in learned else None
+        if hit is None:
+            for secret in ordered:
+                if core.startswith(secret) and not core[len(secret):].strip(_TOKEN_TRAILING_PUNCT):
+                    hit = secret
+                    break
+        if hit is None:
+            continue
+        out.append(text[cursor:start + offset])
+        out.append("[redacted]")
+        cursor = start + offset + len(hit)
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def _redact_for_provider(*values: Any, urls: bool = True) -> Any:
@@ -106,7 +205,8 @@ def _redact_for_provider(*values: Any, urls: bool = True) -> Any:
     tool args) goes through ``_scrub``; tool args pass ``urls=False`` because the provider may act on them. Walks dicts/lists/tuples so tool-call arguments and multimodal text
     parts are covered; ``data:`` URLs (inline media) pass through. A value the scrub masked anywhere in the
     hand-off is then masked everywhere in it, so a key detected in a tool result is also caught where the
-    model repeats it bare in prose. Never mutates the caller's objects: unchanged values come back as-is,
+    model repeats it bare in prose — but only where it stands alone: see ``_is_learnable_secret`` and
+    ``_mask_learned``. Never mutates the caller's objects: unchanged values come back as-is,
     changed containers as shallow copies. One value in → one value out; several → a tuple.
     """
     learned: set = set()
@@ -127,13 +227,13 @@ def _redact_for_provider(*values: Any, urls: bool = True) -> Any:
     def scrub(text: str) -> str:
         out = _scrub(text, urls=urls)
         if out != text:
-            learned.update(set(_TOKEN_RE.findall(text)) - set(_TOKEN_RE.findall(out)))
+            learned.update(t for t in set(_tokens(text)) - set(_tokens(out))
+                           if _is_learnable_secret(t))
         return out
 
     scrubbed = [walk(v, scrub) for v in values]
     if learned:
-        pattern = re.compile("|".join(re.escape(t) for t in sorted(learned, key=len, reverse=True)))
-        scrubbed = [walk(v, lambda t: pattern.sub("[redacted]", t) if pattern.search(t) else t) for v in scrubbed]
+        scrubbed = [walk(v, lambda t: _mask_learned(t, learned)) for v in scrubbed]
     return scrubbed[0] if len(scrubbed) == 1 else tuple(scrubbed)
 
 

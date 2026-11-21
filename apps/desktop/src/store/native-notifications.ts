@@ -220,32 +220,47 @@ export interface NativeNotificationInput {
   notifyId?: string
 }
 
-/** Returns true when the notification passed every guard and was handed to the
- *  OS bridge — callers registering per-notification state (plugin handlers)
- *  must only do so on true, or suppressed/throttled notifications leak it. */
+export interface NativeNotificationResult {
+  /** Native bridge handoff only; accepted does not prove OS display or activation. */
+  status: 'accepted' | 'suppressed' | 'failed' | 'unknown'
+}
+
+/** Legacy synchronous guard result; it does not report bridge acceptance. */
 export function dispatchNativeNotification(input: NativeNotificationInput): boolean {
+  return dispatchNativeNotificationAttempt(input).dispatched
+}
+
+function dispatchNativeNotificationAttempt(input: NativeNotificationInput): {
+  dispatched: boolean
+  result: Promise<NativeNotificationResult>
+} {
+  const suppressed = {
+    dispatched: false,
+    result: Promise.resolve<NativeNotificationResult>({ status: 'suppressed' })
+  }
+
   const prefs = $nativeNotifyPrefs.get()
 
   if (!prefs.enabled || !prefs.kinds[input.kind]) {
-    return false
+    return suppressed
   }
 
   if (withinNativeNotifyBaseline()) {
-    return false
+    return suppressed
   }
 
   if (!shouldFire(input.kind, input.sessionId, input.global)) {
-    return false
+    return suppressed
   }
 
   if (throttled(`${input.kind}:${input.sessionId ?? input.tag ?? (input.global ? 'global' : '')}`, Date.now())) {
-    return false
+    return suppressed
   }
 
   const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
   const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
 
-  void window.hermesDesktop?.notify({
+  const result = invokeNativeNotification({
     actions: input.actions,
     activate: input.activate,
     body: input.body,
@@ -260,7 +275,25 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     title
   })
 
-  return true
+  return { dispatched: true, result }
+}
+
+async function invokeNativeNotification(
+  payload: Parameters<NonNullable<Window['hermesDesktop']>['notify']>[0]
+): Promise<NativeNotificationResult> {
+  const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+  if (!bridge?.notify) {
+    return { status: 'failed' }
+  }
+
+  try {
+    const accepted = await bridge.notify(payload)
+
+    return { status: accepted === true ? 'accepted' : accepted === false ? 'failed' : 'unknown' }
+  } catch {
+    return { status: 'unknown' }
+  }
 }
 
 // -- the plugin door (`ctx.os.notify`) ----------------------------------------
@@ -292,11 +325,21 @@ export interface PluginNativeNotificationInput {
 }
 
 interface PendingPluginNotify {
+  pluginId: string
   onActivate?: () => void
   actions: Map<string, () => void>
 }
 
 const pendingPluginNotify = new Map<string, PendingPluginNotify>()
+
+/** Retire every callback owned by one plugin when it unloads. */
+export function clearPluginNotifyHandlersForPlugin(pluginId: string): void {
+  for (const [notifyId, pending] of pendingPluginNotify) {
+    if (pending.pluginId === pluginId) {
+      pendingPluginNotify.delete(notifyId)
+    }
+  }
+}
 
 function mintNotifyId(pluginId: string): string {
   return `${pluginId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
@@ -346,6 +389,13 @@ export function clearPluginNotifyHandlers(notifyId?: string): void {
  *  user is away from Hermes — the in-app toast (`host.notify`) covers the
  *  foreground case. */
 export function dispatchPluginNativeNotification(pluginId: string, input: PluginNativeNotificationInput): void {
+  void dispatchPluginNativeNotificationWithResult(pluginId, input)
+}
+
+export function dispatchPluginNativeNotificationWithResult(
+  pluginId: string,
+  input: PluginNativeNotificationInput
+): Promise<NativeNotificationResult> {
   const activate = resolveHermesOpenPath(input.activate) ?? undefined
   const notifyId = input.onActivate || input.actions?.some(a => a.onAction) ? mintNotifyId(pluginId) : undefined
 
@@ -355,7 +405,7 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
     text: action.label
   }))
 
-  const fired = dispatchNativeNotification({
+  const { dispatched, result } = dispatchNativeNotificationAttempt({
     actions,
     activate,
     body: input.body,
@@ -369,10 +419,9 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
     title: input.title
   })
 
-  // Register renderer callbacks only for notifications that actually reached
-  // the OS — a throttled/suppressed one can never be clicked, so registering
-  // first would leak the closures for the window's lifetime.
-  if (fired && notifyId) {
+  // Register before IPC settles so an activation cannot outrun its callback.
+  // Unknown handoffs may still activate; known failures retire their handlers.
+  if (dispatched && notifyId) {
     const handlers = new Map<string, () => void>()
 
     for (const action of input.actions ?? []) {
@@ -381,8 +430,16 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
       }
     }
 
-    pendingPluginNotify.set(notifyId, { actions: handlers, onActivate: input.onActivate })
+    pendingPluginNotify.set(notifyId, { actions: handlers, onActivate: input.onActivate, pluginId })
   }
+
+  return result.then(outcome => {
+    if (outcome.status === 'failed' && notifyId) {
+      pendingPluginNotify.delete(notifyId)
+    }
+
+    return outcome
+  })
 }
 
 // Resolve a pending approval from a notification button, mirroring the in-app

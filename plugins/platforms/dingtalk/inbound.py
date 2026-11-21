@@ -32,6 +32,22 @@ def _ext_content(message: Any) -> Optional[dict]:
     return content if isinstance(content, dict) else None
 
 
+def _reply_container(message: Any) -> dict:
+    """Return the dict that actually carries ``isReplyMsg`` / ``repliedMsg``.
+
+    The same callback lands in different keys depending on client and SDK version:
+    mobile puts it under ``extensions['content']``, the Mac client under
+    ``extensions['text']`` (with ``extensions['content']`` holding a plain string).
+    Accept only a dict that owns one of the two reply fields.
+    """
+    ext = _extensions(message)
+    for key in ("content", "text", "richText"):
+        cand = ext.get(key)
+        if isinstance(cand, dict) and ("isReplyMsg" in cand or "repliedMsg" in cand):
+            return cand
+    return {}
+
+
 def _rich_list(message: Any) -> Optional[list]:
     """Rich-text item list from either SDK shape (``rich_text_content.rich_text_list`` or legacy ``rich_text``)."""
     rich_text = getattr(message, "rich_text_content", None) or getattr(message, "rich_text", None)
@@ -91,6 +107,65 @@ def _rich_item_text(item: Any) -> str:
     return getattr(item, "text", "") or ""
 
 
+def _quoted_text(message: Any) -> str:
+    """引用回复：钉钉把被引用消息放在 ``extensions['content'].repliedMsg``。
+
+    报文形态（实测 2026-10-30）：``content = {"isReplyMsg": true, "repliedMsg":
+    {"msgId": ..., "msgType": "text", "content": {"text": "..."}}, "richText": [...]}``。
+    注意这是 ``content`` 子字段，不是顶层字段，SDK 的 ChatbotMessage 不认识它，只落进 extensions。
+    """
+    ext = _reply_container(message)
+    if not ext.get("isReplyMsg"):
+        return ""
+    replied = ext.get("repliedMsg") or {}
+    if not isinstance(replied, dict):
+        return ""
+    inner = replied.get("content") or {}
+    text = ""
+    if isinstance(inner, dict):
+        text = (inner.get("text") or "").strip()
+        if not text:
+            rich = inner.get("richText") or inner.get("rich_text") or []
+            if isinstance(rich, list):
+                text = " ".join(
+                    str(item.get("text", "")).strip() for item in rich if isinstance(item, dict)
+                ).strip()
+        if not text:
+            text = _inline_card_text(inner)
+    elif isinstance(inner, str):
+        text = inner.strip()
+    return text
+
+
+def _inline_card_text(inner: dict) -> str:
+    """Pull plain text out of an AI card reply (``content = {"cardContent": [...]}``).
+
+    AI cards nest their message under ``cardContent``; each text node is
+    ``{"elementType": "TEXT", "value": "..."}``. Never truncate: the quote *is*
+    the context, and a cut-off quote is worse than a few hundred more tokens.
+    """
+    cards = inner.get("cardContent") or inner.get("card_content") or []
+    if not isinstance(cards, list):
+        return ""
+    out: List[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if str(node.get("elementType", "")).upper() == "TEXT":
+                val = str(node.get("value", "")).strip()
+                if val:
+                    out.append(val)
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(cards)
+    return " ".join(out).strip()
+
+
 def extract_text(message: Any) -> str:
     """Extract plain text from a DingTalk chatbot message. Handles both SDK shapes: legacy ``message.text`` dict ``{"content": ...}`` and >= 0.20 ``TextContent``
     (whose ``__str__`` is ``"TextContent(content=...)"`` — always read ``.content`` first)."""
@@ -102,7 +177,11 @@ def extract_text(message: Any) -> str:
     fallback = _EMPTY_TEXT_FALLBACKS.get(getattr(message, "message_type", "")) if not content else None
     # Do NOT strip "@bot": the mention is routed structurally (callback ``isInAtList``), and
     # regex-stripping @handles would damage e-mails, SSH URLs and literal "@openai" references.
-    return fallback(message) if fallback else content
+    body = fallback(message) if fallback else content
+    quoted = _quoted_text(message)
+    if quoted and body:
+        return f"[引用] {quoted}\n\n{body}"
+    return body or (f"[引用] {quoted}" if quoted else "")
 
 
 def extract_media(message: Any) -> tuple[MessageType, list[str], list[str]]:

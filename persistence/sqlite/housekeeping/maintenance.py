@@ -22,6 +22,7 @@ from persistence.housekeeping.maintenance import (
 )
 
 from .._backend import SQLiteStore, register_repository, translated
+from .._schema_ddl import SESSIONS_LIST_REVISION_KEY, SESSIONS_LIST_REVISION_TRIGGERS
 from ..conversation._store.core import _delete_unreferenced_system_prompts
 from ..conversation._store.retirement import retire_prunable
 from ..conversation._store.sessions import _cwd_prefix_clause, _set_lineage_column_in_transaction
@@ -465,6 +466,32 @@ class SQLiteSessionMaintenance(SessionPortability):
         if message_count > max_messages:
             raise ExportTooLarge(session_id, message_count, max_messages)
         return message_count
+
+    def session_projection_revision(self, *, busy_timeout_s: float = 0.05) -> Optional[tuple[int, int]]:
+        with translated(), self._store.holder()._read_ctx_with_timeout(busy_timeout_s) as conn:
+            own_snapshot = not conn.in_transaction
+            if own_snapshot:
+                conn.execute("BEGIN")
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='state_meta'"
+                ).fetchone() is None:
+                    return None
+                row = conn.execute(
+                    "SELECT COALESCE((SELECT value FROM state_meta WHERE key=?), '0') "
+                    "WHERE (SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='sessions' "
+                    "AND name IN (?, ?, ?)) = ?",
+                    (SESSIONS_LIST_REVISION_KEY, *SESSIONS_LIST_REVISION_TRIGGERS, len(SESSIONS_LIST_REVISION_TRIGGERS)),
+                ).fetchone()
+                if row is None:
+                    return None
+                # SQLite backup() changes the destination cookie, even when the copied revision ties.
+                # Read it in the same snapshot so a concurrent commit cannot mix generations.
+                cookie = conn.execute("PRAGMA main.schema_version").fetchone()[0]
+                return int(row[0]), int(cookie)
+            finally:
+                if own_snapshot and conn.in_transaction:
+                    conn.rollback()
 
     def session_projection_digest(self, *, busy_timeout_s: float = 0.05) -> Optional[tuple[tuple[str, ...], bytes]]:
         with translated(), self._store.holder()._read_ctx_with_timeout(busy_timeout_s) as conn:

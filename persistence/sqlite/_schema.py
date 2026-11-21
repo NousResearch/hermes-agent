@@ -36,6 +36,7 @@ from ._schema_ddl import (
     DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY,
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
+    SESSIONS_LIST_REVISION_KEY, SESSIONS_LIST_REVISION_SQL, SESSIONS_LIST_REVISION_TRIGGERS,
     _ephemeral_child_sql, _sql_json_extract, base_index_recognised, base_source_view_is_stale,
     fts_layout_current, fts_layout_drift, fts_trigram_session_sql,
 )
@@ -401,6 +402,34 @@ def _execute_ddl_script_transactional(cursor: sqlite3.Cursor, ddl: str) -> None:
             statement = ""
     if statement.strip():
         raise sqlite3.OperationalError("incomplete FTS DDL statement")
+
+
+def _ensure_session_list_revision(cursor: sqlite3.Cursor) -> None:
+    """Installing a missing trigger invalidates any revision read before the gap."""
+    count_triggers = (
+        "SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='sessions' "
+        "AND name IN (?, ?, ?)"
+    )
+    names = SESSIONS_LIST_REVISION_TRIGGERS
+    if cursor.execute(count_triggers, names).fetchone()[0] == len(names):
+        return
+    cursor.execute("SAVEPOINT install_sessions_list_revision")
+    try:
+        # Acquire the writer and recheck in the same statement, so a concurrent opener that
+        # already repaired the triggers doesn't cause a second invalidation. A reader sees
+        # either the missing trigger (digest fallback) or the repaired and bumped revision.
+        bumped = cursor.execute(
+            f"INSERT INTO state_meta(key, value) SELECT ?, 1 WHERE ({count_triggers}) < ? "
+            "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1",
+            (SESSIONS_LIST_REVISION_KEY, *names, len(names)),
+        )
+        if bumped.rowcount:
+            _execute_ddl_script_transactional(cursor, SESSIONS_LIST_REVISION_SQL)
+    except BaseException:
+        cursor.execute("ROLLBACK TO install_sessions_list_revision")
+        raise
+    finally:
+        cursor.execute("RELEASE install_sessions_list_revision")
 
 
 def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, *, legacy: bool) -> None:
@@ -1113,6 +1142,7 @@ def _init_schema(holder: StoreHolder):
     except sqlite3.OperationalError as exc:
         logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
     _execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+    _ensure_session_list_revision(cursor)
 
     # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
     # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A

@@ -22,6 +22,7 @@ from tests.fixtures.storage_holder import (
     browse_budgets,
     browse_integrity_scan,
     forget_slow_scans,
+    omit_session_list_revision,
     raw_holder,
     schema_version,
 )
@@ -40,6 +41,7 @@ def _pre_merge_store(path, *, version=31):
         seed_messages(store, "kept", {"role": "user", "content": "history survives"})
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("DROP TRIGGER IF EXISTS sessions_runtime_ledger_delete_guard")
+        omit_session_list_revision(conn)
         for table in reversed(_ADDED_TABLES):
             conn.execute(f"DROP TABLE {table}")
         conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
@@ -215,6 +217,7 @@ def _drop_session_column(path, column):
     with closing(sqlite3.connect(path)) as conn:
         # SQLite refuses DROP COLUMN while an index references it; a pre-column store has neither.
         conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
+        omit_session_list_revision(conn)
         conn.execute(f"ALTER TABLE sessions DROP COLUMN {column}")
         conn.commit()
 
@@ -287,6 +290,7 @@ def _lagging_store_with_history(home, rows=400):
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
+        omit_session_list_revision(conn)
         conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
         conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

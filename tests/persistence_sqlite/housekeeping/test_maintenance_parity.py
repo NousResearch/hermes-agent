@@ -10,6 +10,7 @@ import pytest
 
 from persistence.housekeeping.maintenance import SESSION_PROJECTION_FIELDS, PruneCriteria
 from persistence.sqlite.conversation._store.sessions import create_session
+from tests.fixtures.storage_holder import omit_session_list_revision
 
 
 NOW = time.time()
@@ -79,18 +80,82 @@ def test_session_projection_digest_matches_legacy_probe(seeded):
 
     store = seeded(_seed_selection)
     maintenance = store.maintenance
+    store.holder()._execute_write(omit_session_list_revision)
+    assert maintenance.session_projection_revision() is None
     digest = maintenance.session_projection_digest()
     assert digest is not None and digest[0] == SESSION_PROJECTION_FIELDS
-    assert digest == _session_db_content_sig(store.store_path)
+    _, watched_digest = _session_db_content_sig(store.store_path)
+    assert digest == watched_digest
     # The activity columns the heartbeat restamps are not part of it; a projected column is.
     store.holder()._write_sql("UPDATE sessions SET last_activity_at = ? WHERE id = 'old-a'", (NOW,))
     assert maintenance.session_projection_digest(busy_timeout_s=1.0) == digest
     store.holder()._write_sql("UPDATE sessions SET title = 'renamed' WHERE id = 'old-a'")
     changed = maintenance.session_projection_digest()
-    assert changed != digest and changed == _session_db_content_sig(store.store_path)
+    _, watched_changed = _session_db_content_sig(store.store_path)
+    assert changed != digest and changed == watched_changed
     # The read connection's own busy budget is restored after the probe.
     with store.holder()._read_ctx() as conn:
         budget = conn.execute("PRAGMA busy_timeout").fetchone()[0]
     maintenance.session_projection_digest(busy_timeout_s=0.01)
     with store.holder()._read_ctx() as conn:
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == budget
+
+
+@pytest.mark.parametrize('caller_snapshot', [False, True], ids=['repo-owned', 'caller-owned'])
+def test_session_projection_stamp_uses_one_wal_snapshot(tmp_path, monkeypatch, caller_snapshot):
+    """A committed DDL plus title change must not yield a mixed revision/cookie."""
+    import sqlite3
+    from contextlib import closing, contextmanager
+
+    from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+
+    path = tmp_path / 'state.db'
+    with open_persistence(profile_scope(home=tmp_path), eager=True):
+        with closing(sqlite3.connect(path)) as writer, writer:
+            assert writer.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
+            writer.execute("INSERT INTO sessions (id, source, started_at, title) VALUES ('s', 'cli', 1, 'old')")
+
+    def stamp(conn):
+        revision = conn.execute("SELECT value FROM state_meta WHERE key='sessions_list_revision'").fetchone()[0]
+        return int(revision), conn.execute('PRAGMA main.schema_version').fetchone()[0]
+
+    with closing(sqlite3.connect(path)) as writer, open_persistence_reader(path) as reader:
+        old = stamp(writer)
+        holder = raw_holder(reader)
+        native = holder._read_ctx_with_timeout
+        commits = []
+        after_probe = []
+
+        def commit_between_reads(statement):
+            if statement.casefold() != 'pragma main.schema_version' or commits:
+                return
+            with writer:
+                writer.execute("UPDATE sessions SET title='new' WHERE id='s'")
+                writer.execute('CREATE TABLE extra_schema_object (id INTEGER)')
+            commits.append(stamp(writer))
+
+        @contextmanager
+        def interleave(timeout):
+            with native(timeout) as conn:
+                if caller_snapshot:
+                    conn.execute('BEGIN')
+                    assert stamp(conn) == old
+                conn.set_trace_callback(commit_between_reads)
+                try:
+                    yield conn
+                    after_probe.append(conn.in_transaction)
+                    if caller_snapshot:
+                        assert stamp(conn) == old
+                finally:
+                    conn.set_trace_callback(None)
+                    if conn.in_transaction:
+                        conn.rollback()
+
+        with monkeypatch.context() as schedule:
+            schedule.setattr(holder, '_read_ctx_with_timeout', interleave)
+            observed = reader.maintenance.session_projection_revision()
+        assert observed == old
+        assert commits and commits[0][0] != old[0] and commits[0][1] != old[1]
+        assert after_probe == [caller_snapshot]
+        assert reader.maintenance.session_projection_revision() == commits[0]

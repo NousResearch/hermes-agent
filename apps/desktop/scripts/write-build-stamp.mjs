@@ -252,11 +252,12 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     '': 'self',
     bootstrap: 'self',
     store: 'microsoft-store',
-    bundled: { win32: 'app-installer', darwin: 'electron-updater' }[platform] || 'external',
+    // Linux bundles ship only an AppImage; the app falls back to external when it runs as anything else.
+    bundled: { win32: 'app-installer', darwin: 'electron-updater', linux: 'electron-updater' }[platform] || 'external',
     light: platform === 'darwin' ? 'electron-updater' : 'external'
   }[variant]
   if (!updateMechanism) throw new Error(`Unknown desktop variant: ${variant}`)
-  if (channelBuild && updateMechanism === 'external') throw new Error('Channel builds require a supported native update owner')
+  if (channelBuild && (updateMechanism === 'external' || platform === 'linux')) throw new Error('Channel builds require a supported native update owner')
   const bundled = variant === 'bundled' || variant === 'store'
   if (bundled && !payload?.runtime?.commands?.hermes) {
     throw new Error('PM payload has no completed launch contract; stage the bundle before packaging')

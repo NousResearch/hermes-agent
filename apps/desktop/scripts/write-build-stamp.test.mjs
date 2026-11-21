@@ -126,7 +126,7 @@ test('buildStampPayload keeps schemaVersion + provenance in the staged shape', (
 })
 
 test('commit builds retain exact provenance without entering an update channel', () => {
-  for (const platform of ['win32', 'darwin']) {
+  for (const platform of ['win32', 'darwin', 'linux']) {
     const env = { HERMES_DESKTOP_VARIANT: 'bundled', HERMES_BUILD_COMMIT: baseStamp.commit }
     const payload = buildStampPayload(baseStamp, env, platform, { runtime })
     assert.equal(payload.commit, baseStamp.commit)

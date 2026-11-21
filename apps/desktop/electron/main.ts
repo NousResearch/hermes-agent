@@ -656,9 +656,9 @@ import { ChannelStrategy } from './updater/channel-strategy'
 import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { type CheckoutStrategy, createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, sourceChannelName, type SourceUpdate } from './updater/checkout-source'
+import { createElectronUpdaterStrategy, type ElectronUpdaterClientDeps } from './updater/electron-updater-client'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
-import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
 import { UpdateOperation } from './updater/operation'
 import {
   type ConsumedRelaunch,
@@ -3484,7 +3484,7 @@ function createNativePackagedStrategy(
   target?: ChannelTarget
 ): UpdaterStrategy {
   if (mechanism === 'electron-updater') {
-    const deps: Parameters<typeof createMacStrategy>[0] = {
+    const deps: ElectronUpdaterClientDeps = {
       channel: resolveUpdaterChannelFromStamp(),
       light: isLightVariant(),
       feedBaseUrl: resolveDesktopFeedBaseUrl(),
@@ -3495,7 +3495,7 @@ function createNativePackagedStrategy(
       onInstallFailure: restoreBundledBackend
     }
 
-    return target ? createChannelMacStrategy(deps, target) : createMacStrategy(deps)
+    return createElectronUpdaterStrategy(deps, target)
   }
 
   if (mechanism === 'app-installer') {

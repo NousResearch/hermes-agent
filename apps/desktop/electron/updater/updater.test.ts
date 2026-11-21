@@ -27,7 +27,7 @@ describe('build stamp → update ownership', () => {
     ['darwin', 'bundled', 'electron-updater', 'electron-updater'],
     ['darwin', 'light', 'electron-updater', 'electron-updater'],
     ['darwin', 'store', 'microsoft-store', 'microsoft-store'],
-    ['linux', 'bundled', 'external', 'external'],
+    ['linux', 'bundled', 'electron-updater', 'electron-updater'],
     ['linux', 'light', 'external', 'external'],
     ['win32', '', 'self', 'windows-handoff'],
     ['darwin', '', 'self', 'posix-handoff'],

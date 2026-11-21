@@ -374,6 +374,8 @@ async def execute_admission(authority, ref, row):
                     event.text = '\n'.join(part['text'] for part in prepared['content'] if part.get('type') == 'text')
                 event.allow_gateway_control = False
                 event.internal = True  # trust comes from the private binding and preclaim, never client JSON
+                # Trust bypass is not notification authorship; only a committed API input is a user row.
+                event._api_user_input = "api_turn_v1" in row["payload"]
             response = await authority.runner._handle_message(event)
             result = captured.get('terminal_result', captured.get('result'))
             if result is None:

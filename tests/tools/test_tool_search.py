@@ -111,6 +111,21 @@ class TestClassification:
             assert name not in _HERMES_CORE_TOOLS
 
 
+    def test_kanban_tools_never_defer(self):
+        """Every registered Kanban tool is core, so tool_search never hides one from a worker:
+        a deferred kanban_schedule read as missing and workers blocked instead (#151443)."""
+        from tools.registry import discover_builtin_tools, registry
+        from tools.tool_search import is_deferrable_tool_name
+        from toolsets import _HERMES_CORE_TOOLS
+
+        discover_builtin_tools()
+        kanban = sorted(n for n, ts in registry.get_tool_to_toolset_map().items() if ts == "kanban")
+        assert "kanban_schedule" in kanban
+        for name in kanban:
+            assert name in _HERMES_CORE_TOOLS, name
+            assert not is_deferrable_tool_name(name), name
+
+
     def test_defer_override_restores_legacy_direct_gui(self):
         """tools.tool_search.defer: [] restores the everything-eager legacy:
         GUI tools alone no longer activate the bridge."""

@@ -450,7 +450,11 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         if reply_text and not has_reply_context:  # quote-only message: the quote becomes the text
             text = reply_text
         if not text and not media_urls:
-            logger.info("[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r", self.name, is_group, chat_id, body.get("msgtype"))
+            # Container shape (keys/types only — url sign tokens are never logged) for
+            # payload forensics: distinguishes "no url key" from "not a dict" from "download/decrypt failed".
+            _mf = {k: (sorted(v.keys()) if isinstance(v, dict) else type(v).__name__)
+                   for k, v in body.items() if k in ("image", "file", "video", "voice", "mixed")}
+            logger.info("[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r body_keys=%s media_fields=%s", self.name, is_group, chat_id, body.get("msgtype"), sorted(body.keys()), _mf)
             return
         source = self.build_source(chat_id=chat_id, chat_type="group" if is_group else "dm", user_id=sender_id or None, user_name=sender_id or None,
                                    message_id=msg_id)
@@ -520,6 +524,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             return MessageType.DOCUMENT
         if any(mtype.startswith("image/") for mtype in media_types):
             return MessageType.TEXT if text else MessageType.PHOTO
+        if any(mtype.startswith("video/") for mtype in media_types):
+            return MessageType.TEXT if text else MessageType.VIDEO
         if str(body.get("msgtype") or "").lower() == "voice":
             return MessageType.VOICE
         return MessageType.TEXT

@@ -296,13 +296,16 @@ def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _find_binary(ctx, "typescript", ("typescript-language-server",), "typescript-language-server")
     if bin_path is None:
         return None
-    base: dict[str, Any] = {}
+    # Hermes only sends semantic requests (diagnostics), so the server's default second, syntax-only
+    # tsserver and its typingsInstaller (npm @types downloads) are dead weight: 4 processes -> 2.
+    tsserver: dict[str, Any] = {"useSyntaxServer": "never"}
     if not ctx.trusted:
         sdk = _typescript_sdk_dir(_node_modules_trees(bin_path, None))
         if sdk is None:
             _warn_once("ts-untrusted", _TS_UNTRUSTED_MSG)
             return None
-        base = {"tsserver": {"path": sdk}}
+        tsserver["path"] = sdk
+    base = {"tsserver": tsserver, "disableAutomaticTypingAcquisition": True}
     return _make_spec(root, ctx, "typescript", [bin_path, "--stdio"], base, seed=True)
 
 

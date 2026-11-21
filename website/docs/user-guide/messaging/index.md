@@ -264,6 +264,7 @@ a margin. A large multi-profile boot can therefore run past systemd's default
 | `/rollback [number]` | List or restore filesystem checkpoints |
 | `/bg <prompt>` | Run a prompt in a separate background session |
 | `/btw <question>` | Ask a side question about the current conversation without interrupting it |
+| `/btw --explore <task>` | Explore a side task with tools while the chat's work continues; `/btw --promote` brings the report in ([Side Threads](../features/side-threads.md)) |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |

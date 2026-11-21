@@ -20,6 +20,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /snapshot [sub]          Create/restore Hermes config+state snapshots (CLI)
 /bg <prompt>              Run a prompt in a separate background session
 /btw <question>           Ask a side question about the current conversation without interrupting it
+/btw --explore <task>     Explore a side task with tools beside the main turn; /btw --promote [id] brings it in
 /queue (/q) <prompt>     Queue prompt for next turn
 /steer <prompt>          Inject a message after the next tool call
 /agents (/tasks)         Show active agents and running tasks

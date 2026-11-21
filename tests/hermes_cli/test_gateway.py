@@ -372,6 +372,7 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
     monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+    monkeypatch.setattr(gateway, "_preflight_user_systemd", lambda: None)  # reachable user bus (CI macOS has none)
 
     gateway.systemd_install(force=False)
 

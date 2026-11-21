@@ -90,11 +90,13 @@ class TestCheckPackageForMalware:
         with osv_check._cache_lock:
             osv_check._cache.clear()
             osv_check._disk_cache_loaded = False
+            osv_check._breaker_until = 0.0
         (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
         yield
         with osv_check._cache_lock:
             osv_check._cache.clear()
             osv_check._disk_cache_loaded = False
+            osv_check._breaker_until = 0.0
         (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
     def test_clean_package(self):
         """Clean package returns None (allow)."""
@@ -174,6 +176,7 @@ class TestCheckPackageForMalware:
 
     def test_network_failure_not_cached(self):
         """Fail-open results must not be cached — retry once network is back."""
+        from tools import osv_check
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({"vulns": []}).encode()
         mock_response.__enter__ = lambda s: s
@@ -184,12 +187,98 @@ class TestCheckPackageForMalware:
             side_effect=OSError("network down"),
         ):
             assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
-        # Network is back: the next check must hit OSV, not a cached fail-open.
+        with osv_check._cache_lock:
+            assert ("PyPI", "mcp-server-time", None) not in osv_check._cache
+        # Network is back and the breaker window has lapsed: the next check must
+        # hit OSV, not a cached fail-open.
+        with osv_check._cache_lock:
+            osv_check._breaker_until = 0.0
         with patch(
             "tools.osv_check.urllib.request.urlopen", return_value=mock_response
         ) as mock_url:
             assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
         assert mock_url.call_count == 1
+
+    def test_network_failure_opens_breaker(self):
+        """One failed query opens the breaker: further spawns fail open without
+        re-paying the 10s network timeout (#139641) — for ANY package."""
+        from tools import osv_check
+
+        with patch(
+            "tools.osv_check.urllib.request.urlopen",
+            side_effect=OSError("network down"),
+        ) as mock_url:
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+            # Same package and a different one: neither touches the network again.
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+            assert check_package_for_malware("npx", ["some-npm-server"]) is None
+        assert mock_url.call_count == 1
+        with osv_check._cache_lock:
+            assert time.time() < osv_check._breaker_until
+
+    def test_breaker_expires_and_retries(self):
+        """After the cooldown lapses the preflight queries OSV again."""
+        from tools import osv_check
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch(
+            "tools.osv_check.urllib.request.urlopen",
+            side_effect=OSError("network down"),
+        ):
+            check_package_for_malware("uvx", ["mcp-server-time"])
+        # Cooldown window elapses.
+        with osv_check._cache_lock:
+            osv_check._breaker_until = time.time() - 1
+        with patch(
+            "tools.osv_check.urllib.request.urlopen", return_value=mock_response
+        ) as mock_url2:
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+        assert mock_url2.call_count == 1
+
+    def test_breaker_closes_on_success(self):
+        """A successful query closes an open breaker, so a later failure opens a
+        fresh window instead of inheriting a stale one."""
+        from tools import osv_check
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch(
+            "tools.osv_check.urllib.request.urlopen",
+            side_effect=OSError("network down"),
+        ):
+            check_package_for_malware("npx", ["another-pkg"])
+        # Cooldown window lapses; the endpoint answers again.
+        with osv_check._cache_lock:
+            osv_check._breaker_until = time.time() - 1
+        with patch(
+            "tools.osv_check.urllib.request.urlopen", return_value=mock_response
+        ) as mock_url:
+            check_package_for_malware("npx", ["another-pkg"])
+        assert mock_url.call_count == 1
+        with osv_check._cache_lock:
+            assert osv_check._breaker_until == 0.0
+
+    def test_breaker_disabled_via_env(self, monkeypatch):
+        """OSV_CHECK_BREAKER_S=0 restores the always-retry behavior."""
+        from tools import osv_check
+
+        monkeypatch.setenv("OSV_CHECK_BREAKER_S", "0")
+        with patch(
+            "tools.osv_check.urllib.request.urlopen",
+            side_effect=OSError("network down"),
+        ) as mock_url:
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+        assert mock_url.call_count == 2
+        with osv_check._cache_lock:
+            assert osv_check._breaker_until == 0.0
 
     def test_cache_expiry_requeries(self, monkeypatch):
         """Expired entries re-query instead of serving stale verdicts."""

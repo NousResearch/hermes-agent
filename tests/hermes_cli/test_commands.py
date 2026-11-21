@@ -390,6 +390,35 @@ class TestStackedSkillCompletion:
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
 
+def test_model_suggests_reset_but_never_its_value_placeholder():
+    """`/model` has exactly one real subcommand. A model name is free text, so the hint must not
+    offer the placeholder as a verb — `/model model` sends the literal word to the gateway, which
+    answers `4001 model_resolution_failed` — while the composer must go on accepting an arbitrary
+    name, which is why `argument_mode` stays ``text`` beside the subcommand list."""
+    from hermes_cli.commands import SUBCOMMANDS, infer_argument_mode, resolve_command
+
+    assert SUBCOMMANDS.get("/model") == ["reset"]
+    cmd = resolve_command("model")
+    assert cmd is not None
+    assert infer_argument_mode(cmd) == "text"
+
+
+def test_hint_fallback_never_offers_the_command_own_name():
+    """A pipe pattern in ``args_hint`` becomes the tab-completable subcommands (the fallback in
+    ``hermes_cli.commands``), so a VALUE written that way — ``[model|reset]`` — makes every
+    client offer ``/model model``. Picking it sends the literal word ``model`` to the gateway,
+    which answers ``4001 model_resolution_failed``: the value placeholder is not a verb.
+
+    Only the fallback is judged: a command that DECLARES ``fast`` (``/fast``) means it."""
+    from hermes_cli.commands import COMMAND_REGISTRY, SUBCOMMANDS
+
+    offenders = sorted(
+        f"/{cmd.name} {cmd.name}"
+        for cmd in COMMAND_REGISTRY
+        if not cmd.subcommands  # explicit declarations win, and may name the command
+        and cmd.name in SUBCOMMANDS.get(f"/{cmd.name}", ())
+    )
+    assert offenders == []
 
 
 # ── Subcommand tab completion ───────────────────────────────────────────

@@ -666,6 +666,11 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Attach the thread behind up to three pasted Slack message links (root,
+  # linked reply, latest replies) when the poster and everyone here can see
+  # the source; otherwise a short refusal note. Disabled by default.
+  resolve_permalinks: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -839,6 +844,21 @@ Failure buckets:
 - `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
 
 If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
+
+### Pasted message links (`resolve_permalinks`)
+
+Set `slack.resolve_permalinks: true` to let Hermes read up to three Slack message links (`https://<workspace>.slack.com/archives/<channel>/p<ts>`) that an authorized user pastes into a message to the bot. For each link Hermes attaches the thread root, the linked message and the latest five replies of that thread, as untrusted quoted data. With the default `false`, the agent only sees whatever preview Slack chose to unfurl.
+
+Hermes attaches a link's content only when nobody gains access they did not have:
+
+- a link into the conversation the message was posted in is always read;
+- a link into another channel is read only when the bot **and** the poster are both members of that channel;
+- a link into a **private** channel is read only when every member of the destination conversation is also a member of the source;
+- links into DMs and group DMs are read only inside that same conversation.
+
+Anything else gets a one-line refusal note instead of the content (for example `the source is private and not everyone in this conversation can see it`). All reads for one message share a 10-second budget; a link that runs out gets a `timed out` note.
+
+Reads use the event workspace's bot token (`conversations.replies`, plus `conversations.info` and `conversations.members` for the access check on links to another channel) and need the matching history and read scopes (`channels:history`/`channels:read`, `groups:history`/`groups:read`, `im:history`, `mpim:history`). `links:read` is not required. API reads require a non-empty requester ID and a positive gateway sender-authorization result; denials and authorization errors fail closed. `allowed_channels` also restricts link targets. Each linked message is collapsed to one inert line; authors that fail the sender authorization check, bots and webhooks are marked `[unverified]`, and ASCII square brackets become full-width brackets so linked content cannot forge the framing.
 
 ### Channel allowlist (`allowed_channels`)
 

@@ -68,6 +68,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_vault_code import SlackVaultCodeMixin
     from .adapter_image_batch import collect_image_uploads
+    from .permalinks import append_permalink_context
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
         slack_file_marker as _slack_file_marker)
@@ -82,6 +83,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
+    from permalinks import append_permalink_context  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -4766,6 +4768,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # Thread-root media is delivered ahead of the trigger message's own files.
         media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
+        if not is_command_text:  # links in the trigger only; quoted context goes in this turn
+            text = await append_permalink_context(
+                self, text, original_text, channel_id, ts, team_id, user_id, is_dm=is_one_to_one_dm, is_bot=sender_is_bot)
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
@@ -5930,12 +5935,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 return (await _fmt(cached.messages, after_ts=after_ts))[0]
             return cached.content
         try:
-            result = await self._conversations_replies_with_backoff(
-                channel_id,
-                thread_ts,
-                limit + 1,
-                team_id,  # +1: includes the current message
-            )
+            # +1: includes the current message
+            result = await self._conversations_replies_with_backoff(channel_id, thread_ts, limit + 1, team_id)
             if result is None:
                 return ""
             messages = result.get("messages", [])
@@ -5974,13 +5975,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         return next((m for m in messages if m.get("ts", "") == thread_ts), None)
 
     async def _conversations_replies_with_backoff(
-        self, channel_id: str, thread_ts: str, limit: int, team_id: str) -> Any:
+        self, channel_id: str, thread_ts: str, limit: int, team_id: str, cursor: str = "") -> Any:
         """``conversations.replies`` with 1s/2s backoff on Tier-3 rate limits (429)."""
         client = self._get_client(channel_id, team_id=team_id)
         for attempt in range(3):
             try:
-                return await client.conversations_replies(
-                    channel=channel_id, ts=thread_ts, limit=limit, inclusive=True)
+                return await client.conversations_replies(channel=channel_id, ts=thread_ts, limit=limit,
+                                                          inclusive=True, **({"cursor": cursor} if cursor else {}))
             except Exception as exc:
                 err_str = str(exc).lower()
                 is_rate_limit = (
@@ -6573,12 +6574,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
     # and free_response_channels (wake checks still apply); ignored_channels: never touched.
     _slack_free_response_channels = _extra_or_env_channel_set_getter(
         "free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", coerce_scalar=True)
-    _slack_allowed_channels = _extra_or_env_channel_set_getter(
-        "allowed_channels", "SLACK_ALLOWED_CHANNELS")
-    _slack_require_mention_channels = _extra_or_env_channel_set_getter(
-        "require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS")
-    _slack_ignored_channels = _extra_or_env_channel_set_getter(
-        "ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
+    _slack_allowed_channels = _extra_or_env_channel_set_getter("allowed_channels", "SLACK_ALLOWED_CHANNELS")
+    _slack_require_mention_channels = _extra_or_env_channel_set_getter("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS")
+    _slack_ignored_channels = _extra_or_env_channel_set_getter("ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
 
     def _slack_mention_patterns(self) -> list[re.Pattern]:
         """Compile (cached) wake-word regexes from ``slack.mention_patterns`` (list/str) or

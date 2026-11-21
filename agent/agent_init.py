@@ -227,6 +227,87 @@ def _merge_custom_provider_extra_body(agent, custom_providers: list[dict[str, An
     agent.request_overrides = overrides
 
 
+_SAMPLING_RANGES = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+}
+
+
+def _validated_sampling_value(name: str, value):
+    """Return ``value`` as a float when it is a number inside its allowed range, else None.
+
+    YAML happily accepts ``temperature: -5`` or ``top_p: 2.5``; without this the mistake
+    surfaces later as an opaque provider 400 with nothing pointing back at the config.
+    """
+    if value is None:
+        return None
+    lo, hi = _SAMPLING_RANGES[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        logger.warning("model.request_overrides.%s=%r ignored: expected a number", name, value)
+        return None
+    if not lo <= float(value) <= hi:
+        logger.warning(
+            "model.request_overrides.%s=%r ignored: must be within [%s, %s]", name, value, lo, hi
+        )
+        return None
+    return float(value)
+
+
+def _merge_model_request_overrides(agent, model_cfg: Optional[Dict[str, Any]]) -> None:
+    """Merge ``model.request_overrides`` from config.yaml into ``agent.request_overrides``.
+
+    Mirrors ``delegation.request_overrides`` for the main loop: top-level keys are API kwargs
+    (``temperature`` / ``top_p`` / ``service_tier`` …) and an ``extra_body`` sub-dict is
+    deep-merged one level. Explicit values win over provider-derived extras, so this must run
+    AFTER ``_merge_custom_provider_extra_body``.
+
+    A model that manages sampling server-side (the ``OMIT_TEMPERATURE`` contract — Kimi,
+    OpenAI reasoning families, routes that previously rejected the key) keeps the last word:
+    a configured ``temperature`` is dropped with a warning instead of earning a provider 400.
+    """
+    if not isinstance(model_cfg, dict):
+        return
+    raw_overrides = model_cfg.get("request_overrides")
+    if not isinstance(raw_overrides, dict) or not raw_overrides:
+        return
+
+    overrides = dict(raw_overrides)
+    for name in _SAMPLING_RANGES:
+        if name not in overrides:
+            continue
+        value = _validated_sampling_value(name, overrides.get(name))
+        if value is None:
+            overrides.pop(name)
+        else:
+            overrides[name] = value
+
+    if "temperature" in overrides:
+        with suppress(Exception):
+            from agent.auxiliary_client import OMIT_TEMPERATURE, _fixed_temperature_for_model
+
+            managed = _fixed_temperature_for_model(
+                agent.model, getattr(agent, "base_url", None), getattr(agent, "provider", None)
+            )
+            if managed is OMIT_TEMPERATURE:
+                logger.warning(
+                    "model.request_overrides.temperature ignored for %r: this model manages temperature "
+                    "server-side", agent.model,
+                )
+                overrides.pop("temperature")
+
+    if not overrides:
+        return
+
+    merged = dict(getattr(agent, "request_overrides", {}) or {})
+    user_extra_body = overrides.pop("extra_body", None)
+    merged.update(overrides)
+    if isinstance(user_extra_body, dict) and user_extra_body:
+        extra_body = dict(merged.get("extra_body") or {})
+        extra_body.update(user_extra_body)
+        merged["extra_body"] = extra_body
+    agent.request_overrides = merged
+
+
 def _normalize_run_budget_seconds(value) -> Optional[float]:
     """Positive float or None (feature off). ``bool`` rejected: YAML ``true`` → 1s budget."""
     if value is None or isinstance(value, bool):
@@ -2178,6 +2259,9 @@ def init_agent(
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
+    # ``model.request_overrides`` (temperature / top_p / extra_body …) applies to every
+    # main-loop request and wins over provider-derived extras.
+    _merge_model_request_overrides(agent, _cfg_dict(_agent_cfg, "model"))
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)

@@ -415,6 +415,17 @@ model:
 # is spawned with the bundled sdlc-review skill and can approve, request changes
 # back to the original implementer, or escalate a genuine external blocker.
 # Disable this only when every review is performed manually from the dashboard.
+
+  # Per-request sampling / provider kwargs applied to EVERY main-loop request.
+  # Same shape as `delegation.request_overrides`: top-level keys are API kwargs,
+  # and an `extra_body` sub-dict is merged into the request's extra_body.
+  # Explicit values win over provider-derived extras. `temperature` must be within
+  # [0.0, 2.0] and `top_p` within [0.0, 1.0]; out-of-range or non-numeric values are
+  # warned about and ignored. Models that manage temperature server-side (Kimi,
+  # OpenAI reasoning families) ignore a configured temperature by design.
+  # request_overrides:
+  #   temperature: 0.4
+  #   top_p: 0.95
 kanban:
   review_dispatch: true
 

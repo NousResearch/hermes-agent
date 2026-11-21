@@ -1,0 +1,71 @@
+name: continuum
+title: Continuum
+repo: https://github.com/aidonerightcorp/continuum
+sha: 765aad799e520ce7f9cb60329b0d60675fa82c4b
+description: >-
+  Hermes sizes itself to each Task. Continuum fingerprints every Task, finds
+  similar past Tasks in its local records, and sends the Task to the cheapest
+  of your own models that your marks on similar Tasks support (no marks: no
+  change). It records every model
+  attempt, returns a failed turn to your own model, and checks its own policy
+  on held-out records. Disclosure: with your consent (llm.model_override) it
+  changes your provider request: the model and its request settings, one added
+  context block with your own recorded answer to a near-identical Task
+  (recall), and, when you set size_tools on, the tool list. With
+  llm.side_question it asks your own model one PASS or FAIL question on a
+  share of the cheaper model's turns, which spends that model's tokens; a FAIL
+  counts against the cheaper model, a PASS is weak evidence. By default it stores Task
+  text and replies in one SQLite file in its own plugin data folder
+  (text is removed after 90 days; store_text false keeps fingerprints and
+  outcomes only; mode off stores nothing). No network call of its own, no
+  subprocess, no credentials.
+maintainer: aidonerightcorp
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aidonerightcorp/continuum#readme
+readme: true
+image: https://raw.githubusercontent.com/aidonerightcorp/continuum/765aad799e520ce7f9cb60329b0d60675fa82c4b/docs/continuum-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/aidonerightcorp/continuum/765aad799e520ce7f9cb60329b0d60675fa82c4b/docs/continuum-overview.png
+  - https://raw.githubusercontent.com/aidonerightcorp/continuum/765aad799e520ce7f9cb60329b0d60675fa82c4b/docs/continuum-dashboard.png
+version: "2.0.0"
+platforms:
+  - linux
+  - macos
+  - windows
+known_issues:
+  - A model switch inside a session loses the provider's prompt cache for that turn; /continuum pin keeps a session on one model.
+  - When the provider refuses a request for the cheaper model and Hermes does not try again, that one turn ends with the provider's error and the session stays on your own model. A model the provider does not know or does not allow is then blocked until /continuum unblock.
+capabilities:
+  provides_tools:
+    - continuum_recall
+    - continuum_fission_dag
+    - continuum_claim_and_fence
+    - continuum_verify_record
+    - continuum_compile_cartridge
+    - continuum_analyze_spectrum
+    - continuum_surgical_edit
+    - continuum_coupling_step
+    - continuum_morphism_transfer
+    - continuum_calibrate_effort
+    - continuum_manifold_status
+    - continuum_context_grep
+    - continuum_attractor_recall
+    - continuum_sheaf_consistency_audit
+    - continuum_conformal_calibrate
+    - continuum_hyperlora_modulate
+    - continuum_probe_latent_state
+    - continuum_steer_nullspace_vector
+    - continuum_compose_omninode
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+    - on_session_end
+    - on_session_finalize
+  provides_middleware:
+    - llm_request
+  requires_env: []

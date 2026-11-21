@@ -476,6 +476,10 @@ _EMPTY_PROVIDER_RESPONSE_PATTERNS = (
     "model returning empty responses", "empty response stream",
 )
 
+# Relays can exhaust the output budget before emitting an answer (#158133).
+# Their advice mentions max_tokens; shrinking the input cannot restore the answer.
+_REASONING_BUDGET_EXHAUSTED_PATTERNS = ("budget was exhausted during reasoning",)
+
 # Timeout wording from generic exception types the type heuristics would miss.
 _TIMEOUT_MESSAGE_PATTERNS = (
     "timed out", "turn timed out", "request timed out", "deadline exceeded", "operation timed out",
@@ -571,6 +575,7 @@ _V_GUARDRAIL_BLOCKED = _v(_R.guardrail_blocked, **_ABORT_FALLBACK)
 # Another account in the same pool may hold the entitlement; the credential itself is healthy.
 _V_MODEL_ENTITLEMENT = _v(_R.model_entitlement, retryable=False, **_ROTATE_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
+_V_INCOMPLETE_RESPONSE = _v(_R.incomplete_response, **_ABORT_FALLBACK)
 # A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
 _V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, **_ABORT_FALLBACK)
 _V_SSL_CERT = _v(_R.ssl_cert_verification, **_ABORT_FALLBACK)
@@ -723,6 +728,7 @@ _IMAGE_TOOL_RULES = (
 # Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /
 # model-load OOM as 503). Empty-response advisories must not enter compression.
 _OVERFLOW_AS_5XX_RULES = (
+    (_REASONING_BUDGET_EXHAUSTED_PATTERNS, _V_INCOMPLETE_RESPONSE),
     (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
@@ -755,6 +761,7 @@ _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
 # instead of rotating; policy block before model_not_found; timeout/connection
 # wording last, classified as transport (never compression).
 _MESSAGE_TAIL_RULES = (
+    (_REASONING_BUDGET_EXHAUSTED_PATTERNS, _V_INCOMPLETE_RESPONSE),
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_ACCOUNT_WALL_PATTERNS, _billing_hints),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),
@@ -1046,7 +1053,7 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     from agent.errors import InvalidProviderResponseError, MoAPresetNotFoundError
     if isinstance(c.error, MoAPresetNotFoundError):
         return _v(_R.model_not_found, retryable=False)
-    return _v(_R.incomplete_response, **_ABORT_FALLBACK) if isinstance(c.error, InvalidProviderResponseError) else None
+    return _V_INCOMPLETE_RESPONSE if isinstance(c.error, InvalidProviderResponseError) else None
 
 
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:

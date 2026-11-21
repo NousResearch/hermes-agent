@@ -19,7 +19,7 @@ from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text, sanitize_command_for_display
 from agent.tool_result_classification import (
-    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_user_decline)
 
 logger = logging.getLogger(__name__)
 
@@ -1038,7 +1038,8 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     # A harness REFUSAL of a redundant call (repeated identical read/search) is not a
     # failed call. This is the ``failed`` the executor hands the loop guardrail, so
     # counting it would escalate refusals into ``repeated_exact_failure_block``.
-    if is_guardrail_refusal(data):
+    # A user's Deny on an approval card is an answer, not a failed call (``is_user_decline``).
+    if is_guardrail_refusal(data) or is_user_decline(data):
         return False, ""
 
     # A denied/timed-out approval carries one human sentence; show it instead of the model-facing

@@ -264,9 +264,10 @@ SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skil
 # model describes it; without this line frontier models only OFFERED to schedule ("I can set up a reminder if you
 # like"). "Instead of offering" is the load-bearing clause: the approval prompt already is the user's yes/no.
 CRON_PROACTIVE_GUIDANCE = (
-    "When the user mentions something time-bound or worth watching (a trip, appointment, deadline, habit, a reply "
-    "they owe, a price or page to re-check), create a cronjob_manage job that would help instead of offering one, "
-    "usually a one-shot or a few runs. The user approves each job before it is saved."
+    "Be proactive with cronjob_manage: when the user mentions something time-bound or worth watching (a trip, "
+    "appointment, deadline, habit, a reply they owe, a price or page to re-check), create a job that would help "
+    "without waiting to be asked, usually a one-shot or a few runs, then tell the user in one line what you "
+    "scheduled. Here each new job is shown to the user on an approval card before it is saved."
 )
 
 KANBAN_GUIDANCE = (

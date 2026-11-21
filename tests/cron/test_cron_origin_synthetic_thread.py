@@ -120,7 +120,7 @@ class TestNearHorizonSlackThreadKept:
         monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
         # Thread capture is under test, not the user's approval of the job (a live gateway turn
         # answers that card through its notifier; this harness has none).
-        monkeypatch.setattr(cronjob_tools, "_creation_approval_error", lambda args: None)
+        monkeypatch.setattr(cronjob_tools, "_approve_new_job", lambda job: None)
         with jobs.use_cron_store(tmp_path / "cron"), _session_env(_TOP_LEVEL_SLACK):
             result = json.loads(cronjob_tools.registry.dispatch("cronjob_manage", {
                 "action": "create", "schedule": _run_at_in(1), "prompt": "remind me"}))

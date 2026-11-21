@@ -13,7 +13,7 @@ import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/
 
 /** What the Electron main process said about this target's LOCAL filesystem
  * state (#101683). `null` keeps the stock card — remote-backend targets keep
- * Download, and a bridge-less dev server can't classify. */
+ * Download, and an unavailable filesystem or bridge can't classify yet. */
 type LocalTargetState = { path: string; type: 'directory' | 'file' } | { type: 'missing' } | null
 
 async function classifyLocalTarget(rawTarget: string, cwd?: string | null): Promise<LocalTargetState> {
@@ -28,7 +28,11 @@ async function classifyLocalTarget(rawTarget: string, cwd?: string | null): Prom
   try {
     const resolved = await bridge.normalizePreviewTarget(rawTarget, cwd || undefined)
 
-    if (!resolved || resolved.previewKind === 'missing') {
+    if (!resolved) {
+      return null
+    }
+
+    if (resolved.previewKind === 'missing') {
       return { type: 'missing' }
     }
 

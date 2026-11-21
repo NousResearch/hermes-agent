@@ -249,7 +249,10 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
-    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). The per-profile names
+    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). A trailing
+    ``_<digits>`` suffix matches too: the credential pool reads ``VAR_2``, ``VAR_3``, ... for
+    every declared VAR (``agent/credential_pool.py`` ``_env_key_var_candidates``), so
+    ``NVIDIA_API_KEY_2`` is the same credential as ``NVIDIA_API_KEY``. The per-profile names
     (adapter secrets, config-declared key holders) default to :func:`_registered_adapter_secret_env`
     | :func:`_home_declared_key_env`; loops pass ``_registered`` so they are read once per env, not
     once per key."""
@@ -258,7 +261,10 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
         return True
     if _registered is None:
         _registered = _registered_adapter_secret_env() | _home_declared_key_env()
-    return upper in _registered
+    if upper in _registered:
+        return True
+    base = re.sub(r"(?:_\d+)+$", "", upper)
+    return base != upper and (base in _HERMES_PROVIDER_ENV_BLOCKLIST or base in _registered)
 
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``

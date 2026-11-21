@@ -457,14 +457,75 @@ hermes gateway migrate --backends --dry-run --json   # the same report as JSON
 
 For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
 label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
-`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet. The report never
+`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet; when one of them
+serves this home, the report ends with the command that shows the plan for moving it (see
+[Planning a move to the gateway](#planning-a-move-to-the-gateway-dry-run)). The report never
 stops, restarts or kills anything, never edits or writes a service file, unit, plist or ledger, and opens no network
 connection; it exits 0 even when a scan fails. Normal Hermes startup still runs first, as for any
 `hermes` command: it creates the `HERMES_HOME` layout and a default `SOUL.md` if missing, records the
 install under `HERMES_HOME/installs/`, opens `logs/agent.log` and `logs/errors.log`, and prunes
 `cache/scratch`. Running backends are found by what they run, whatever the unit is called; units
 that are enabled but not running are listed only when they are named `hermes-serve*`,
-`hermes-dashboard*` or `hermes-backend*`.
+`hermes-dashboard*` or `hermes-backend*`. On macOS a backend started through the install's `hermes`
+launcher is found too, and its `runs:` line shows the launcher's inline source as
+`'<inline launcher source>'`.
+
+### Planning a move to the gateway (dry run)
+
+```bash
+hermes gateway migrate --backends --apply --dry-run          # the plan and every blocker
+hermes gateway migrate --backends --apply --dry-run --json   # the same plan as JSON
+```
+
+The dry run prints what moving this home's old `hermes dashboard` / `hermes serve` backend onto the
+gateway's Webapp would do. The command itself changes nothing: no file, unit, plist, config, `.env` or
+process. It reads `GET /api/health` and, when sign-in is required, `GET /api/auth/providers` for
+interactive sign-in choices. A failed provider-list read leaves those choices unknown. A backend from Hermes before v2026.7.30 has no `/api/health`: the dry run then
+stops and says to restart that backend with the updated hermes, then run the dry run again. The move
+itself is not available in this version; `--apply`
+without `--dry-run` exits 2.
+
+The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
+take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address
+stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
+copied into `.env` (names only; values are never printed), the public URL it would copy into
+`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
+state of the gateway service and the
+Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
+out it probes the old backend on its address as above and reads `systemctl show` / `launchctl`
+and `/proc`; normal Hermes startup runs first, as for the report. Options: `--address HOST:PORT` (plan
+for one backend when several serve this home), `--keep-webapp-address` (keep an already enabled Webapp
+where it is), `--force-interrupt` (plan the move although a turn is running), `--json`.
+
+Exit codes: 0 the move could run, or no old backend serves this home; 2 invalid invocation; 3 blocked
+(the blockers are listed, for example a running turn, an address that matches no backend, a bind the
+gateway would refuse, a public URL it would refuse, or the Webapp already enabled on another address);
+6 this kind of backend cannot be migrated automatically (Nix, s6 or another container, a systemd
+system unit, Windows, or a host where the gateway cannot be a service). Exit 6 prints the steps to do
+it by hand, one per line, each `hermes` command naming this home (`hermes -p PROFILE ...`; for the default
+home `hermes -p default ...`, so a profile chosen with `hermes profile use` does not redirect it; under a
+Hermes root other than the standard one they also set it, e.g. `HERMES_HOME=/srv/team-hermes hermes -p work ...`, or
+`$env:HERMES_HOME='C:\Teams\hermes'; hermes -p work ...` in PowerShell). They stop the old backend first, then install, start or restart the gateway by the line `hermes
+gateway status` prints (the steps quote it), and end with `hermes webapp --status`. A gateway that has just
+started takes a few seconds to serve the address; until then that prints "The gateway is not running", so
+wait a few seconds and run it again. A by-hand move passes the same checks as an automatic one: an address the gateway
+would refuse, a Webapp already enabled elsewhere, or a `webapp:` block the gateway would still refuse
+after the move blocks it (exit 3) with no steps printed. A named profile whose gateway is another home's (the live host gateway serves it) is not
+planned: the dry run names that gateway and stops. When it cannot tell which gateway serves the profile
+(no service of its own and no running gateway serving it), it blocks and asks you to identify it. For a system unit only one line, `sudo
+systemctl disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix
+and containers the steps say what to change in the Nix configuration or the container definition
+instead (Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where
+the gateway cannot be a service, the last step is `hermes gateway run`, for the supervisor you use. A
+stopped system unit counts for this home only when it runs as you (`User=`) and pins no other
+`HERMES_HOME`, judged by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`
+in order, the later value winning); when a file it needs cannot be read, the dry run is blocked instead
+of guessing. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
+Startup-folder entry whose target and arguments are exactly the backend's command (when more than one
+matches, or a matching entry may not be what started it, the steps say so and ask you to pick). The
+steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set the entry
+aside before the gateway is installed; they run as typed in PowerShell or Command Prompt. On macOS a
+LaunchAgent is planned like a systemd user unit.
 
 ## `/reload` Slash Command
 
@@ -719,7 +780,7 @@ Since the June 2026 hardening, `--insecure` no longer bypasses dashboard authent
 
 If the gate would engage but **no** `DashboardAuthProvider` is registered (no Nous plugin, no custom plugin), `hermes dashboard` refuses to bind with an explicit error message. There is no "default-deny but accept everything" fallback — a misconfigured gated dashboard never starts.
 
-When you run `hermes dashboard --host 0.0.0.0` **interactively** (a real terminal) and no provider is configured yet, Hermes doesn't just fail — it offers to set one up on the spot: pick **username & password** (writes `dashboard.basic_auth` to `config.yaml` and you're running in seconds) or **OAuth** (points you at `hermes dashboard register`). Non-interactive callers — Docker/s6, CI, piped runs — skip the prompt and hit the fail-closed error above, so an unattended deploy still never starts without auth.
+When you run `hermes dashboard --host 0.0.0.0` **interactively** (a real terminal) and no provider is configured yet, Hermes doesn't just fail — it offers to set one up on the spot: pick **username & password** (writes `dashboard.basic_auth` to `config.yaml` and you're running in seconds) or **OAuth** (points you at `hermes dashboard register`). Non-interactive callers — Docker/s6, CI, piped runs — skip the prompt and hit the fail-closed error above, so an unattended deploy still never starts without auth. To set or change the username and password without that prompt (from a script, or before starting a service), run [`hermes dashboard password`](#setting-the-password-from-the-command-line).
 
 ### Default provider: Nous Research
 
@@ -855,6 +916,16 @@ dashboard:
 :::caution Set an explicit `secret` for stable sessions
 When `secret` is empty, a random per-process signing key is generated. That's fine for a single process, but it means **every session is invalidated on restart** and sessions **don't span multiple workers**. Set an explicit `secret` for restart-surviving / multi-worker deployments.
 :::
+
+#### Setting the password from the command line
+
+`hermes dashboard password` writes `username`, `password_hash` and (when missing) `secret` under `dashboard.basic_auth`, the same fields the interactive prompt writes, and never stores or prints the password. It asks on the terminal, or reads the first line of standard input with `--password-stdin`, so it works in scripts, containers and service setups:
+
+```bash
+hermes dashboard password --username admin --password-stdin < /run/secrets/dashboard_password
+```
+
+The gateway's Webapp and `hermes dashboard` / `hermes serve` all sign in with these credentials. Each reads them when it starts: restart a running one. Starting with a new password ends every earlier sign-in. Add `-p <profile>` for a named profile's own sign-in; it is used by that profile's `--isolated` dashboard and by a gateway the profile runs by itself, while the machine dashboard and a gateway serving several profiles use the credentials of the home they were started from. See the [CLI reference](../../reference/cli-commands.md#hermes-dashboard-password) for every option.
 
 The `/auth/password-login` endpoint is rate-limited per client IP (default 10 attempts/minute → HTTP 429) and returns a single generic `401 Invalid credentials` for both unknown users and wrong passwords, so it can't be used as a username-enumeration oracle.
 

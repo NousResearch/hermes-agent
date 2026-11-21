@@ -6,11 +6,14 @@ here was set up by someone else: a systemd unit copied from the docs, a hand-wri
 the Nix ``hermes-backend`` unit (NixOS and Home Manager), the Docker image's s6 ``dashboard``
 longrun or the Compose ``dashboard`` sidecar, a Desktop SSH ``serve`` backend, or a process started
 by hand. The report says which supervisor owns each backend, by what the process runs and which
-unit's ``MainPID`` it is, never by unit name (Nix calls it ``hermes-backend``).
+unit's ``MainPID`` it is, never by unit name (Nix calls it ``hermes-backend``). On Windows without
+``wmic`` (11 24H2 and later) the scan reads the process table through psutil and names the Task
+Scheduler task or Startup-folder entry that starts a backend (``gateway_migrate_backends_windows``).
 
 The report itself never stops, restarts or kills anything, never edits or writes a service file,
 unit, plist or ledger, and opens no network connection: it only runs ``ps``, reads ``/proc`` and
-plists, and issues ``systemctl show`` / ``list-unit-files`` / ``launchctl print`` queries. The spawn
+plists, and issues ``systemctl show`` / ``list-unit-files`` / ``launchctl print`` / ``schtasks /Query``
+queries. The spawn
 ledger is deliberately not read, because reading a corrupt ledger quarantines (renames) it.
 
 Normal Hermes startup still runs first, exactly as for any other ``hermes`` command (e.g.
@@ -40,6 +43,9 @@ _ENABLED_STATES = frozenset({"enabled", "enabled-runtime", "linked", "linked-run
                              "generated", "alias", "indirect"})
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "libpod", "kubepods", "/lxc/")
 _NOT_APPLIED = "Report only: changes no service; backend migration is not available yet."
+#: The report's last line when this home has a backend the migration can plan for (never Desktop's own).
+NEXT_STEP = ("To see what moving it to the gateway would do (changes nothing): "
+             "{hermes} gateway migrate --backends --apply --dry-run")
 
 # Present ownership facts, not migration instructions.
 _OWNERSHIP = {
@@ -53,6 +59,8 @@ _OWNERSHIP = {
     "desktop-local": "It is owned by the Desktop app.",
     "detached": "No supervisor owns it.",
     "manual": "It was started from a shell or another program.",
+    "scheduled-task": "It is started by a Task Scheduler task (Hermes never creates one).",
+    "startup-folder": "An entry in the Startup folder starts exactly this command (Hermes never creates one).",
     "unknown": "Its supervisor could not be identified.",
 }
 
@@ -215,10 +223,49 @@ def _running_backends() -> list[tuple[int, str]]:
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     try:
         rows = _iter_process_table()
+        if not rows and _windows_without_wmic():  # Windows 11 24H2+: psutil reads the same table
+            from hermes_cli.gateway_migrate_backends_windows import process_rows
+            rows = process_rows()
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):  # same failures the update sweep tolerates
         return []
-    me = os.getpid()
-    return [(pid, cmd) for pid, cmd in rows if pid != me and _hermes_holder_subcommand(cmd) in ("serve", "dashboard")]
+    recover = os_family() == "darwin"  # only macOS ``ps`` loses the launcher's argv boundaries
+    found = []
+    # This process is listed too when it is a backend itself: a `hermes dashboard` that runs the scan for
+    # its own pages is the backend being asked about. The CLI's own row (`hermes gateway migrate ...`)
+    # never matches, so the report lists exactly what it listed before.
+    for pid, cmd in rows:
+        if _hermes_holder_subcommand(cmd) in ("serve", "dashboard"):
+            found.append((pid, cmd))
+        elif recover and " -c " in cmd and "hermes" in cmd and (exact := _exact_argv(pid)) and \
+                _hermes_holder_subcommand(shlex.join(exact)) in ("serve", "dashboard"):
+            found.append((pid, shlex.join(exact)))
+    if _windows_without_wmic():
+        from hermes_cli.gateway_migrate_backends_windows import drop_launchers
+        found = drop_launchers(found)  # hermes.exe runs the backend as a child with the same argv
+    return found
+
+
+def _windows_without_wmic() -> bool:
+    """Windows without ``wmic`` (11 24H2 and later): only there the scan and the ownership come from
+    psutil and the Windows module. Where wmic works, the report reads and prints what main does."""
+    if os_family() != "win32":
+        return False
+    from hermes_cli.gateway_migrate_backends_windows import wmic_missing
+    return wmic_missing()
+
+
+def _exact_argv(pid: int) -> Optional[list[str]]:
+    """*pid*'s argv exactly as exec'd, or None when unreadable.
+
+    macOS ``ps`` prints a process's arguments joined by spaces and spells newlines ``\\012``, so the
+    install launcher's ``python -I -c <multi-line bootstrap> dashboard ...`` loses the boundaries of
+    its inline source and the token matcher cannot see the subcommand behind it. The kernel's argv
+    (psutil: ``KERN_PROCARGS2``) keeps them. Linux ``ps`` text still matches, so it is never read there."""
+    with contextlib.suppress(Exception):
+        import psutil
+        argv = psutil.Process(pid).cmdline()
+        return [str(a) for a in argv] if argv else None
+    return None
 
 
 def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids, desktop_pids,
@@ -230,7 +277,14 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         _launchd_job_owning_backend,
         _systemd_owner_for_pid,
     )
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     argv = _dashboard_cmdline_for_pid(pid)
+    if argv and os_family() == "darwin" and _hermes_holder_subcommand(shlex.join(argv)) is None:
+        argv = None  # macOS ``ps`` text lost the launcher's argv boundaries; *command* is the exact argv then
+    if not argv and _windows_without_wmic():
+        from hermes_cli.gateway_migrate_backends_windows import argv_of
+        argv = argv_of(pid)
+    exact_argv = argv
     if not argv:
         try:
             argv = shlex.split(command)
@@ -261,14 +315,20 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         item.supervisor = "desktop-local"
     elif _container_cgroup(pid) or _in_container():
         item.supervisor = "container"
-    elif os_family() != "win32":
+    elif os_family() == "win32":
+        if _windows_without_wmic():
+            from hermes_cli.gateway_migrate_backends_windows import supervisor
+            item.supervisor, item.unit, item.unit_path = supervisor(pid, item.argv)
+    else:
         ppid = _process_ppid(pid)
         # On macOS launchd is the parent of every job and every orphan: ppid 1 proves no supervisor.
         orphan = ppid is not None and ppid <= 1 and os_family() != "darwin"
         item.supervisor = "detached" if orphan else ("manual" if ppid and ppid > 1 else "unknown")
     with contextlib.suppress(Exception):
         from hermes_cli.dashboard_procs import _hermes_home_for_pid
-        item.hermes_home = _hermes_home_for_pid(pid) or item.hermes_home
+        home = (_hermes_home_for_pid(pid, argv_reader=lambda _: exact_argv) if _windows_without_wmic() and exact_argv
+                else _hermes_home_for_pid(pid))
+        item.hermes_home = home or item.hermes_home
     return item
 
 
@@ -325,6 +385,13 @@ def collect_backends() -> list[BackendItem]:
 # --------------------------------------------------------------------------- output
 
 
+def _display_argv(argv: list[str]) -> str:
+    """*argv* for the macOS report: the install launcher's multi-line inline source is a placeholder.
+    Elsewhere the ``runs:`` line is the whole argv, as before (Windows spells it as a Windows command)."""
+    return shlex.join("<inline launcher source>" if i and argv[i - 1] == "-c" and "\n" in a else a
+                      for i, a in enumerate(argv))
+
+
 def format_report(items: list[BackendItem]) -> list[str]:
     lines = ["Serve/dashboard background services (report only; nothing was changed)", ""]
     if not items:
@@ -335,7 +402,9 @@ def format_report(items: list[BackendItem]) -> list[str]:
         scope = f" ({item.scope})" if item.scope else ""
         lines.append(f"• {item.supervisor}{where}{scope}: {head}")
         if item.argv:
-            lines.append(f"    runs:    {shlex.join(item.argv)}")
+            runs = subprocess.list2cmdline(item.argv) if _windows_without_wmic() else \
+                _display_argv(item.argv) if os_family() == "darwin" else shlex.join(item.argv)
+            lines.append(f"    runs:    {runs}")
         if item.unit_path:
             lines.append(f"    file:    {item.unit_path}")
         if item.state:
@@ -345,6 +414,10 @@ def format_report(items: list[BackendItem]) -> list[str]:
             lines.append(f"    home:    {item.hermes_home}{mine}")
         lines.append(f"    report:  {item.not_applied}")
         lines.extend(f"    note:    {n}" for n in item.notes)
+    if any(i.this_home and i.supervisor not in ("desktop-ssh", "desktop-local") for i in items):
+        from hermes_cli.gateway_migrate_backends_plan import hermes_command
+        from hermes_constants import get_hermes_home
+        lines += ["", NEXT_STEP.format(hermes=hermes_command(str(get_hermes_home()), powershell=os.name == "nt"))]
     return lines
 
 

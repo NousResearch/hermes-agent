@@ -256,7 +256,20 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--backends", dest="backends",
         help="Report serve/dashboard background services and their ownership; "
         "changes no service (normal Hermes startup bookkeeping still runs)")
-    _flag(gateway_migrate, "--json", dest="json", help="With --backends: print the report as JSON")
+    _flag(gateway_migrate, "--json", dest="json",
+        help="With --backends: print the report (or, with --apply --dry-run, the plan) as JSON")
+    _flag(gateway_migrate, "--apply", dest="apply",
+        help="With --backends --dry-run: print the plan for moving this home from the old dashboard/serve "
+        "backend to the gateway's Webapp on the same address, and every blocker; changes nothing")
+    gateway_migrate.add_argument("--address", dest="address", metavar="HOST:PORT",
+        help="With --backends --apply --dry-run: plan for the old backend on this address "
+        "when several serve this home")
+    _flag(gateway_migrate, "--keep-webapp-address", dest="keep_webapp_address",
+        help="With --backends --apply --dry-run: plan to retire the old backend but keep the Webapp "
+        "on its current address")
+    _flag(gateway_migrate, "--force-interrupt", dest="force_interrupt",
+        help="With --backends --apply --dry-run: plan the move although a turn is running on the old backend "
+        "(a move would interrupt it)")
 
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
     # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.

@@ -37,10 +37,13 @@ class LiveGateway:
     def cli(self, *argv: str, stdin: str | None = None, extra_env: dict | None = None,
             timeout: float = 120) -> subprocess.CompletedProcess:
         """``hermes <argv>`` in this home, stdout and stderr merged."""
-        env = {**self.env, **(extra_env or {})}
-        return subprocess.run([sys.executable, "-m", "hermes_cli.main", *argv], cwd=REPO_ROOT, env=env,
-                              input=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                              timeout=timeout, check=False)
+        return run_cli({**self.env, **(extra_env or {})}, *argv, stdin=stdin, timeout=timeout)
+
+
+def run_cli(env: dict, *argv: str, stdin: str | None = None, timeout: float = 120) -> subprocess.CompletedProcess:
+    """``hermes <argv>`` with *env*, stdout and stderr merged."""
+    return subprocess.run([sys.executable, "-m", "hermes_cli.main", *argv], cwd=REPO_ROOT, env=env, input=stdin,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
 
 
 # ``python -c AUDITED LOG ARGV...`` runs ``hermes ARGV...`` and appends every AF_UNIX path the CLI
@@ -88,9 +91,10 @@ def write_config(home: Path, extra: dict | None = None) -> None:
 
 @contextlib.contextmanager
 def live_gateway(tmp_path: Path, *, webapp: bool = True, webapp_host: str | None = None,
-                 config: dict | None = None):
+                 config: dict | None = None, prepare=None):
     """Boot the gateway; yields once its control socket says ``ready``. Stops it by its own pid.
-    *webapp_host* sets ``webapp.host`` (the default is 127.0.0.1); *config* adds top-level keys."""
+    *webapp_host* sets ``webapp.host`` (the default is 127.0.0.1); *config* adds top-level keys.
+    *prepare* ``(home, env)`` runs before the gateway starts (to set up sign-in, for example)."""
     home, user = tmp_path / "state", tmp_path / "user"
     home.mkdir(mode=0o700)
     user.mkdir()
@@ -98,6 +102,8 @@ def live_gateway(tmp_path: Path, *, webapp: bool = True, webapp_host: str | None
     block = {"enabled": True, "port": port, **({"host": webapp_host} if webapp_host else {})}
     write_config(home, {**({"webapp": block} if webapp else {}), **(config or {})})
     env = home_env(home, user)
+    if prepare is not None:
+        prepare(home, env)
     log_path = tmp_path / "gateway.log"
     with log_path.open("w+") as log:
         process = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=REPO_ROOT, env=env,

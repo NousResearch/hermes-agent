@@ -47,5 +47,12 @@
     "path": "tests/godotinstall.test.mjs",
     "sha256": "5ed7b16d794ff07b88270e74de780cde95d180ae9f6fd4bc476d82b2605711bb",
     "why": "unit tests for engine/godotinstall.mjs against an injected fake fetch and temp folders; downloads nothing and writes only test temp files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/LuuMoss/yache-local-voice",
+    "sha": "77ac57bee597d76c89655922c0c9c6917de99198",
+    "path": "dashboard/download.py",
+    "sha256": "d2e2b99ae4b4d65675cff4f8fdb36fa0ef32e86bd68b3d5976a19b62e561a609",
+    "why": "plugin setup/runtime weight + runtime downloads, not the self-updater: dashboard/download.py fetches pinned GitHub release assets from the plugin's own repo (LuuMoss/yache-local-voice cuda-pack-v1 CUDA acceleration pack, sha256-checked against its shipped metadata.json) and HuggingFace weights (Qwen3-TTS 1.7B base + GGUF quants via hf-mirror.com/HuggingFace; faster-whisper models from the official Systran HF repos), plus an optional user-configured OpenAI-compatible STT endpoint (off by default); all downloads are user-initiated from the panel with progress bars"
   }
 ]

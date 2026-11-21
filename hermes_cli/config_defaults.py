@@ -1901,10 +1901,10 @@ DEFAULT_CONFIG = {
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.
     "bot_mode": {
-        # Drain-time TTL (seconds): older envelopes are NOT delivered on drain; the sender gets an
-        # error reply (reason 'queued_expired') so a DM can't land hours late as a zombie. 0 = no
-        # drain-time expiry (the 6h stale-artifact sweep still applies).
+        # Drain-time TTL (seconds): older envelopes are NOT delivered on drain; the sender gets a
+        # 'queued_expired' error, never a zombie DM hours late. 0 = off (6h stale sweep still applies).
         "envelope_ttl_seconds": 900,
+        "consult_roster": [],  # teammates message_agent(mode="consult") may ask (tools/bot_mode_consult.py)
         # How long a second delivery into a busy target profile queues behind the current turn
         # before failing with a structured 'target_busy' error. Deliveries are serialized per
         # profile with a cross-process file lock.

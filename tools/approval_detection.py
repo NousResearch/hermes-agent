@@ -8,101 +8,60 @@ import bisect
 import fnmatch
 import functools
 import os
-import re
+import hermes_re as re
 import shlex
 import tempfile
 import unicodedata
 
-from agent.file_safety import SHELL_RC_FILES
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
-from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
+from tools.approval_git_options import (
+    _GIT, GitCommandMatcher, GitPushMatcher, _GIT_PUSH, _GIT_PUSH_ARGS, _GIT_PUSH_NOT_OPTION_VALUE,
+    _join_escaped_word_chars,
+)
 from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
 from tools.approval_env_split import _env_split_payload
-from tools.approval_fetch_exec import (
-    _PIPE_PATH_PREFIX_RE,
-    _PIPE_WRAPPERS_RE,
-    DownloadThenRunMatcher,
-    heredoc_scan_sources,
+from tools.approval_fetch_exec import DownloadThenRunMatcher, heredoc_scan_sources
+from tools.approval_pipe_launchers import (
+    _PIPE_BARE_SINK_RE, _PIPE_FETCH_RE, _PIPE_LOOKUP_ONLY_RE, _PIPE_ONLY_OPERATOR_RE, _PIPE_OPERATOR_RE,
+    _PIPE_SHELL_TOKEN_RE, _PIPE_SINK_RE, _PIPE_WRAPPERS_RE, _SHELL_NAMES, _SHELL_NAMES_RE,
 )
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
-from tools.approval_hermes_store import _HERMES_HOME_BARE, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT
+from tools.approval_hermes_store import (
+    _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
+    _SQLITE3_STORE_WRITE,
+)
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
+from tools.approval_sensitive_paths import (
+    _COMMAND_TAIL, _CREDENTIAL_FILES, _HERMES_CONFIG_PATH, _HERMES_ENV_PATH, _HOME_PREFIX, _HOME_SENSITIVE_CREATE_FILE,
+    _HOME_SENSITIVE_CREATE_TARGET, _LN_FILE_TAIL, _LN_TAIL, _PROJECT_ENV_PATH, _PROJECT_SENSITIVE_WRITE_TARGET,
+    _SECRET_FILE_NAMED, _SECRET_KEY_FILE, _SECRET_PATH_FILE, _SECRET_VAR, _SENSITIVE_WRITE_DIR, _SENSITIVE_WRITE_FILE,
+    _SENSITIVE_WRITE_TARGET, _SSH_SENSITIVE_PATH, _SYSTEM_CONFIG_PATH, _USER_SENSITIVE_WRITE_TARGET,
+    _WRITE_TARGET_BOUNDARY,
+)
 from tools.approval_shell_tokens import _shell_tokens_with_spans
-from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
+from tools.approval_windows_hardline import (
+    WhatIfExemptMatcher, whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns,
+)
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
 from tools.approval_quoted_newlines import _mask_quoted_newlines
 from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 from tools.approval_wmic import WmicShadowDeleteMatcher
 
 
-# Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
-# home is folded into these forms at detection time by _normalize_command_for_detection(), so no
-# import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
-# A Hermes home: the default root or a named profile under it (profiles/<name>/ has its own config.yaml/.env).
-_HERMES_HOME_DIR = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'(?:profiles/[^/\s"\'`]+/)?'
-)
-_HERMES_ENV_PATH = (
-    _HERMES_HOME_DIR + r'(?:\.op)?\.env\b'
-)
-# ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
-# so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
-_HERMES_CONFIG_PATH = (
-    _HERMES_HOME_DIR + r'config\.yaml\b'
-)
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
-_PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
-_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
-_HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
-_SECRET_FILE = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
-    rf'|{_HOME_PREFIX}\.(?:aws/credentials|git-credentials|config/gh/hosts\.yml|docker/config\.json|kube/config)\b'
-    r'|/etc/(?:shadow|passwd)\b|\bid_(?:rsa|ed25519|ecdsa|dsa)\b)'
-)
-_SECRET_VAR = r'\$\{?\w*(?:key|token|secret|passwd|password|credential)\w*\}?'
 # Flags whose argument becomes a request body / uploaded file. Case-sensitive: curl -D dumps headers, -f fails.
-_UPLOAD_FLAG = (r'(?<!\S)(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
-                r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
+_UPLOAD_FLAG_NAMES = (r'(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
+                      r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
+_UPLOAD_FLAG = r'(?<!\S)' + _UPLOAD_FLAG_NAMES
 _INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
 _CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wget (possible exfiltration)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
-# its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
-# flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
-# GIL for minutes (#129281). Whole groups still backtrack to expose the target flag or verb.
-_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
-# macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
-# "/etc/" check. Match both forms.
-_MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
-_SYSTEM_CONFIG_PATH = rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
-_SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH}|'
-    rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
-)
-_USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
-# touch/mkdir/ln: the home-side targets only; /etc is out of their scope (#85321) and admin commands
-# like `mkdir -p /etc/apt/keyrings` would be mislabelled as credential/SSH/shell-rc writes.
-_HOME_SENSITIVE_WRITE_TARGET = rf'(?:{_USER_SENSITIVE_WRITE_TARGET}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
-# Same set for touch/mkdir/ln, but a named FILE must end the shell word: `ln -s a ~/.bashrc.bak` /
-# `touch ~/.bashrc.d/x` name a sibling, not the startup or credential file (`~/.ssh/` is a directory: any entry;
-# a bare `~/.ssh` operand anywhere in the command names the directory itself, `~/.sshx` does not).
-# A glued redirect (`touch ~/.bashrc>/dev/null`) ends the word too; the ln rule also allows trailing redirects.
-_HOME_SENSITIVE_CREATE_TARGET = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|(?:{_HOME_PREFIX}\.ssh|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
-    r'(?=["\'\s;&|)`<>]|$))'
-)
-_PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
-# cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
-# `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
-_COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
-# `>`/`>>`/tee: the path is ALWAYS a write target regardless of what follows, so only require a
-# shell word boundary (_COMMAND_TAIL let `echo x > .env extra` / `echo x > .env # note` slip past).
-# `#` is deliberately NOT a boundary: a glued `#` is part of the filename (`.env#backup`).
-_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
+# the rest of its word, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
+# flag (it is a word that does not start with '-', or a lone '-'), so a long run that never reaches
+# the subcommand fails in linear time (#129281). Whole groups may still be given up to expose the
+# target flag or verb.
+_GLOBAL_FLAGS = r'(?:-\S+(?:\s+(?:[^\s-]\S*|-))?\s+)*'
 
 # ---- Hardline (unconditional) blocklist ---------------------------------------------------
 # Commands that NEVER run via the agent, regardless of --yolo, approvals.mode=off, or cron approve
@@ -118,24 +77,27 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
 # The verb is argv[1] for multi-call binaries; options before it are not applet selection (busybox --help reboot).
 # A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses the `)`
-# closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data. Every run is possessive so a failed
-# match never re-splits a whitespace / path / busybox run (cubic on blank-line runs; re.search holds the GIL), and only
-# the last newline of a whitespace run starts a match (earlier ones reach the same word, rescanning once per newline).
+# closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data. The engine never backtracks, so no
+# run needs a possessive quantifier. A newline starts a match only as the last newline of a whitespace run (it is
+# followed by non-newline whitespace and then the command), so a blank-line run is not a row of command starts.
 # A segment holds no `=` / `<` / `>`: `HERMES_HOME=/tmp/x hermes` and `socat>/tmp/log` are not program paths.
-_CMD_PATH = r'(?:/?+(?:[^\s/)=<>]++/)*+)?+'
-_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
+_CMD_PATH = r'(?:/?(?:[^\s/)=<>]+/)*)?'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s+)?'
 
-# Every run is possessive: a failed command-name match must not re-split a whitespace run between the
-# leading and trailing \s (cubic on a long blank-line run, and re.search holds the GIL while it runs).
-# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
-# reaches the same command word, so trying each would rescan the run once per newline.
+# A sudo flag is any dash-led word. A dash-led word that is also a slash path ending in the command word
+# (`sudo -x/bin/find .`) can be read either way, so such a line counts as the command.
 _CMDPOS = (
-    r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
-    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
+    r'(?:(?:^|`|\$\()\s*|\n[^\S\n]*)'  # start position, optional whitespace
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
     + _MULTI_CALL_PREFIX  # other wrappers (nice, timeout, command ...) are peeled by tools.approval_wrappers
     + _CMD_PATH
 )
+# After a _CMDPOS verb: the rest of the verb's own word, then (_VERB_ARGS) its arguments up to a blank. The verb
+# must end as a word (`rmdir` is not `rm`) and its word may not run on into a `/`: in `./install/setup.sh` or
+# `rm-old/x` the verb is a directory of a longer program path, which _CMD_PATH would have consumed.
+_VERB_WORD_REST = r'(?:[^\w\s/)=<>;|&][^\s/)=<>;|&]*)?'
+_VERB_ARGS = _VERB_WORD_REST + r'(?:(?:[^\S\n]|[)=<>])[^;|&\n]*)?\s'
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -143,11 +105,11 @@ _CMDPOS = (
 # A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
 # `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root. The components
 # may be quoted too (`"$HOME"'/'`, `"/"'./'"/"*`), but a quoted `*` is a literal name, not a glob.
-# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear. Bare dots may
+# Each piece ends at `/` or a quote, so the scan stays linear. Bare dots may
 # also end at a quote whose segment starts the slash (`"/"..'/'` is `/../`), never one that adds dots (`...`).
-_RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*+(?:\.\.?)?'
-_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|\.\.?(?=["\']/)|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
-                          r'(?:\.\.?)?\**+(?=\s|$|[)`;|&])')
+_RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*(?:\.\.?)?'
+_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|\.\.?(?:"/{_RM_COLLAPSE_SEG}"|\'/{_RM_COLLAPSE_SEG}\')|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*'
+                          r'(?:\.\.?)?\**(?=\s|$|[)`;|&])')
 
 
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
@@ -156,7 +118,7 @@ def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
 
 # Protected system roots whose recursive deletion has no recovery path.
 # A trailing slash names the same dir (`/etc/`, dequoted `"/etc"/`); `.`/`..` before the glob climb (`/etc/../*` is `/*`).
-_HARDLINE_SYSTEM_DIRS = r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/++(?:\.\.?+/++)*+\*?)?+'
+_HARDLINE_SYSTEM_DIRS = r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/+(?:\.\.?/+)*\*?)?'
 # A quoted root glued to a system dir name is one shell word: `rm -rf "/"etc` deletes /etc, and so do
 # `"/""etc"` / `"/"e"tc"` (quotes in the name are removed). One closing quote: the tail owns `""` pairs (a run was quadratic).
 _QUOTED_ROOT_SYSTEM_DIR = (r'["\']/+["\']["\']*(?:' + '|'.join(r'["\']*'.join(name) for name in (
@@ -169,7 +131,33 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm(?:\.exe)?\s+(-[^\s]*\s+)*'
 # Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
 # not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
 # and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
-_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*[^\S\r\n]-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
+# RE2 has no lookahead to test this inside the rule, so both parts are matched from the delete's first argument.
+_PS_INCLUDE_VOID_RE = re.compile(r'(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$))', re.IGNORECASE | re.DOTALL)
+_PS_INCLUDE_NARROWS_RE = re.compile(
+    r'(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*[^\S\r\n]-inc[a-z]*(?::|\s+)["\']?'
+    r'[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.][^\s,;&|"\'$`(){}@]*["\']?(?:[;&|)]|\s+(?:[^\s,]|\Z)|\Z)',
+    re.IGNORECASE | re.DOTALL)
+# A quoted bare drive (`"C:"`) is the root only when the next bare or quoted segment starts the slash (`"C:"'/'`).
+_QUOTED_BARE_DRIVE = (r'["\'][a-z]:["\'](?:/|"/' + _RM_COLLAPSE_SEG + r'"|\'/' + _RM_COLLAPSE_SEG + r'\')'
+                      + _RM_ROOT_COLLAPSE_TAIL)
+
+
+class _IncludeVetoedRule:
+    """A hardline delete rule that a narrowing -Include vetoes; *rule* captures the delete's arguments as group 1."""
+
+    def __init__(self, rule: str):
+        self._rule = re.compile(rule, re.IGNORECASE | re.DOTALL)
+
+    def search(self, text: str):
+        pos = 0
+        while (match := self._rule.search(text, pos)) is not None:
+            args = match.start(1)
+            if _PS_INCLUDE_VOID_RE.match(text, args) or not _PS_INCLUDE_NARROWS_RE.match(text, args):
+                return match
+            pos = match.start() + 1  # vetoed: a later delete in the same text still counts
+        return None
+
+
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -184,7 +172,8 @@ HARDLINE_PATTERNS = [
     # PowerShell's `rm` alias with a literal narrowing `-Include` (`rm -r C:/* -Include *.tmp`) deletes only matches.
     # Caveat: Hermes runs the bare command through bash, where GNU rm rejects `-Include` unless POSIXLY_CORRECT is
     # set; then getopt stops at the root operand and `-Include` is a file name, so that delete only prompts.
-    (_CMDPOS + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(-[^\s]*\s+)*' + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*|[a-z]:(?=["\']["\']?/)'),
+    (_IncludeVetoedRule(_CMDPOS + r'rm\s+((?:-[^\s]*\s+)*(?:' + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*')
+                        + '|' + _QUOTED_BARE_DRIVE + '))'),
      "recursive delete of drive root"),
     (_RM_FLAG_PREFIX + '(?:' + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS) + '|' + _QUOTED_ROOT_SYSTEM_DIR + ')',
      "recursive delete of system directory"),
@@ -192,11 +181,11 @@ HARDLINE_PATTERNS = [
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?(?=(?:[^\w\s/)=<>][^\s/)=<>]*)?(?:[\s)=<>]|$))', "format filesystem (mkfs)"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS + r'dd(?:[^\w\s/)=<>][^\s/)=<>]*)?(?:(?:[^\S\n]|[)=<>])(?:[^\n]*[^\w\n])?|[^\w\s/)=<>])of=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -210,7 +199,7 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))', "system shutdown/reboot"),
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)(?=(?:\.exe(?:[^\w\s/)=<>][^\s/)=<>]*)?|[^\w\s/)=<>.-][^\s/)=<>]*)?(?:[\s)=<>]|$))', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
@@ -222,10 +211,14 @@ HARDLINE_PATTERNS = [
 _RE_FLAGS = re.IGNORECASE | re.DOTALL
 # Positionless hardline rules matched against quote-masked variants (see above).
 _QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({"redirect to raw block device", "fork bomb"})
-HARDLINE_PATTERNS_COMPILED = [
-    (re.compile(p, _RE_FLAGS), d, d in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS) for p, d in HARDLINE_PATTERNS
-]
 _WHATIF_STRICT = windows_whatif_strict_patterns(_CMDPOS)
+# A -WhatIf-exempt rule is its strict pattern behind a matcher that reads the exemption (RE2 has no lookahead);
+# an entry that is already a matcher object (not a string) is kept as it is.
+HARDLINE_PATTERNS_COMPILED = [
+    (WhatIfExemptMatcher(re.compile(p, _RE_FLAGS)) if d in _WHATIF_STRICT
+     else re.compile(p, _RE_FLAGS) if isinstance(p, str) else p,
+     d, d in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS) for p, d in HARDLINE_PATTERNS
+]
 _HARDLINE_PATTERNS_NO_WHATIF = [
     (re.compile(_WHATIF_STRICT[d], _RE_FLAGS), d, q) if d in _WHATIF_STRICT else (r, d, q)
     for r, d, q in HARDLINE_PATTERNS_COMPILED
@@ -233,53 +226,6 @@ _HARDLINE_PATTERNS_NO_WHATIF = [
 # Commands that hand a quoted argument to another shell to EXECUTE: quoted text is code, not
 # prose, so quote-masked hardline rules scan the raw string.
 _SHELL_CARRIER_NAMES = frozenset({"eval", "sh", "bash", "zsh", "ksh", "dash", "source", "."})
-# The shell members of _SHELL_CARRIER_NAMES, as one tuple plus alternation shared by every
-# pipe/decode/process-substitution/heredoc pattern and the structural -c payload scan, so
-# the shell-name list cannot drift between them again (the drift let `curl url | zsh` and
-# `dash -c` through while bash/sh were flagged).
-_SHELL_NAMES = ("bash", "sh", "zsh", "ksh", "dash")
-_SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
-# Pipe-to-shell sink: the shell may sit behind launcher words (`sudo -u root -E`, `env -i A=1`,
-# `/usr/bin/env`, `timeout 60`, `busybox`), be path-qualified (/bin/sh, ./zsh,
-# C:\\msys64\\...\\bash.exe), quoted, .exe-suffixed, or followed by a redirect instead of
-# whitespace. The lookahead terminator keeps `shred`, `shellcheck` and `bash-helper` out.
-# fish/csh/tcsh read a script on stdin too, so they count here (they take no part in the -c
-# payload scan). Launcher tokens fall in disjoint classes (a flag that takes a value -- sudo/env
-# `-u USER`, `-g`, `-C` ... -- a bare flag, VAR=value, a duration) inside atomic/possessive
-# groups, so each token has one parse and the scan stays linear; `sudo -u bash cat` reads `bash`
-# as the user, not the shell.
-_PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
-_PIPE_SHELL_TOKEN_RE = (
-    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)`]|$)"
-)
-# A stdin-reading interpreter with no script argument (or `-`) runs the piped text as code;
-# `python3 -m json.tool` / `node script.js` name their own program and stay out. Output redirects
-# (`> out.txt`, `2>&1`, `&>> log`) leave stdin alone; an input redirect replaces it and stays out.
-_PIPE_OUTPUT_REDIRECT_RE = r"\s*+(?:[0-9]*+>>?|&>>?)\s*+(?:&[0-9-]|[^\s;&|<>()`]++)"
-_PIPE_INTERPRETER_TOKEN_RE = (
-    rf"{_PIPE_PATH_PREFIX_RE}(?:python[0-9.]*|node|perl|ruby|php)(?:\.exe)?(?:\s++-)?"
-    rf"(?:{_PIPE_OUTPUT_REDIRECT_RE})*+(?=\s*+(?:[;&|)`}}]|$))"
-)
-# Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
-# must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.
-_PIPE_LOOKUP_ONLY_RE = re.compile(
-    rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-(?-i:[^\W\dugUCDhpRrtT])*l|--list))\b",
-    re.IGNORECASE,
-)
-# `| (bash)` / `| { bash; }`: a subshell or group opener in front of the sink still feeds it stdin.
-_PIPE_SINK_RE = re.compile(
-    rf"(?:\|&?\s*|>\(\s*)(?:[({{]\s*+)*+{_PIPE_WRAPPERS_RE}(?:{_PIPE_SHELL_TOKEN_RE}|{_PIPE_INTERPRETER_TOKEN_RE})",
-    re.IGNORECASE,
-)
-_PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
-_PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
-# The widened sink skips `||` (an or-list, not a pipe); main's raw sink keeps the old operator.
-_PIPE_ONLY_OPERATOR_RE = re.compile(r"(?<!\|)\|(?!\|)&?\s*|>\(\s*")
-
-
-# main's original sink (bare or slash-prefixed shell), scanned on the RAW text: a quoted payload handed
-# to any carrier (su -c, ssh, xargs, docker exec ...) stays flagged exactly as before.
-_PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)", re.IGNORECASE)
 
 
 _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
@@ -327,6 +273,29 @@ class _DevSocketRedirectMatcher:
             _, _, word = _read_shell_word(text, op.end())
             if _DEV_SOCKET_RE.match(_deobfuscate_shell_word_for_detection(word)):
                 return op
+        return None
+
+
+_SQL_DELETE_FROM_RE = re.compile(r'\bDELETE\s+FROM\b', _RE_FLAGS)
+_SQL_WHERE_RE = re.compile(r'\bWHERE\b', _RE_FLAGS)
+# Where a DELETE's own statement text ends (see the "SQL DELETE without WHERE" entry): a newline, a statement or
+# shell separator, a redirection, a comment start, a quote, or a dollar-quote opener ($tag$; bare $VAR is not one).
+_SQL_STATEMENT_END_RE = re.compile(r'[\n;&|#<>\'"`]|--|/\*|\$[A-Za-z_0-9\x80-\U0010ffff]*\$')
+
+
+class _SqlDeleteWithoutWhereMatcher:
+    """A DELETE FROM whose own statement text holds no WHERE (the table regex needs a negative lookahead)."""
+
+    def search(self, text: str):
+        pos, stop = 0, -1
+        while (delete := _SQL_DELETE_FROM_RE.search(text, pos)) is not None:
+            if delete.end() > stop:
+                end = _SQL_STATEMENT_END_RE.search(text, delete.end())
+                stop = end.start() if end else len(text)
+            where = _SQL_WHERE_RE.search(text, delete.end())
+            if where is None or where.start() >= stop:
+                return delete
+            pos = where.end()  # every DELETE before this WHERE shares the statement text, so it is cleared too
         return None
 
 
@@ -479,14 +448,14 @@ _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 # `(){}` and backticks so a run of them is not re-scanned from every position (quadratic). Likewise
 # for blank-line runs: the whitespace before the program is possessive (the prefix class excludes
 # whitespace, so nothing is lost) and, as in _CMDPOS, only the last newline of a run starts a match.
-_PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
+_PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*)?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
-    r"(?:^|[;&|({`]|\n(?![^\S\n]*+\n)"
-    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    r"(?:^|[;&|({`]|\n"
+    r"|(?:^|[;&|({`]|\n)\s*(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
     + _PS_LAUNCHER_OPTIONS + r"\s"
     r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
-    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
-    r"\s*+(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+    r"|(?:^|[;&|({`]|\n)[^\S\n]*ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
+    r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?"
 )
 
 # An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
@@ -494,6 +463,20 @@ _GIT_PUSH_ARG_START = r'''\s["']?'''
 _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
 # PowerShell verbs/aliases that write a registry key when given a provider path.
 _REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
+_SHELL_WORD_CHAR = r'[^\s;&|]'
+
+
+def _word_other_than(literal: str) -> str:
+    """A possibly empty run of shell-word characters that is not exactly *literal* (letters only)."""
+    longer = _word_other_than(literal[1:]) if literal[1:] else _SHELL_WORD_CHAR + '+'
+    return rf'(?:[^\s;&|{literal[0]}]{_SHELL_WORD_CHAR}*|{literal[0]}{longer})?'
+
+
+# The last shell word before a touch/mkdir operand when it is not `-r` / `--reference`. RE2 has no lookbehind to
+# veto the flag after the fact, so the word is spelled out: it leaves the flag's spelling at some character,
+# stops short of it, or runs past it.
+_NOT_REFERENCE_FLAG = (rf'(?:[^\s;&|-]{_SHELL_WORD_CHAR}*|-(?:[^\s;&|r-]{_SHELL_WORD_CHAR}*|r{_SHELL_WORD_CHAR}+|-'
+                       + _word_other_than('reference') + r')?)?')
 
 DANGEROUS_PATTERNS = [
     # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
@@ -504,7 +487,8 @@ DANGEROUS_PATTERNS = [
     # cannot cross a command separator (so `rm foo | grep -r` is not attributed to rm), a quote,
     # or a bare ` -- ` end-of-options (after which `-rf` is a literal filename). The flag token
     # must follow whitespace so the `r` in long options like `--registry` does not count.
-    (r'\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s' r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
+    (r'\brm\s+(?:(?:[^\s"\';|&-][^\s"\';|&]*|-(?:[^\s"\';|&-][^\s"\';|&]*|-[^\s"\';|&]+)?)?[^\S\n])*'
+     r'(?:[^\s"\';|&-][^\s"\';|&]*|-(?:[^\s"\';|&-][^\s"\';|&]*|-[^\s"\';|&]+)?)?\s' r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
      # GNU rm permutes options, so a recursive flag group may legally FOLLOW the operands: `rm build/ -rf`,
      # `rm build/ -r -f`, and `rm build/ --recursive --force` are all equivalent to the flags-first
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
@@ -513,7 +497,7 @@ DANGEROUS_PATTERNS = [
 
     # Windows cmd/powershell destructive built-ins: gate only when executed through the shell so
     # prose/filenames containing "del"/"rd" do not trip.
-    (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
+    (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+(?:.*\W)?(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
     # PowerShell runs the verb as default positional arg (no -Command needed); anchor the verb to command
     # position (after leading -Flag switches and optional -Command/-c) so `-File c:\del-logs\run.ps1` is not caught.
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?' + _PS_DELETE_VERB + r'\b', "Windows PowerShell destructive delete"),
@@ -527,7 +511,7 @@ DANGEROUS_PATTERNS = [
     # to the rm rules. The span runs to the OUTER quote, so a nested `'C:\\work dir'` cannot end it.
     (_PS_EXE_AT_COMMAND_POSITION + r'(?:\s+-\S+)*\s+(?:"[^"\n]*|\'[^\'\n]*)[|;{(]\s*' + _PS_DELETE_VERB + r'(?![\w-])',
      "Windows PowerShell destructive delete (later in the script)"),
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
+    (r'\b(?:powershell|pwsh)(?:\.exe)?(?:\W.*)?\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
     # Windows host (incl. git-bash). Input is lowercased by the variant loop, so patterns are
     # lowercase. Each requires the destructive flag/verb so benign usage (`taskkill /IM app.exe`,
@@ -536,19 +520,19 @@ DANGEROUS_PATTERNS = [
     # See #69472.
     # PowerShell accepts any unambiguous parameter prefix: `-r`/`-rec`/`-recurs` are -Recurse,
     # `-fo`/`-forc` are -Force (validated on Windows PowerShell 5.1, #144024).
-    (r'\bremove-item\b[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (Remove-Item)"),
+    (r'\bremove-item(?:[^\w\n;|&][^\n;|&]*)?\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (Remove-Item)"),
     # Remove-Item aliases after a pipe — `gci C:\data | ri -r -fo` runs the same recursive forced
     # delete from a positional script whose first command is not itself a delete verb, whether or
     # not a `powershell` prefix precedes it.
-    (r'\|\s*' + _PS_DELETE_VERB + r'(?![\w-])[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (alias after pipe)"),
+    (r'\|\s*' + _PS_DELETE_VERB + r'(?:[^\w\n;|&-][^\n;|&]*)?\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (alias after pipe)"),
     # Bare cmd builtins with /s (recurse) or /q (quiet); plain `del file.txt` is covered only by the prefixed rule.
     (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
     # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
-    (r'\b(?:iwr|invoke-webrequest|invoke-restmethod|irm|curl|wget)\b[^\n]*\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr | iex)"),
+    (r'\b(?:iwr|invoke-webrequest|invoke-restmethod|irm|curl|wget)(?:[^\w\n][^\n]*)?\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr | iex)"),
     (r'\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b', "execute remote content via Invoke-Expression"),
     # Force process kills — Windows analogue of pkill -9.
-    (r'\btaskkill\b[^\n]*\s/f\b', "force kill processes (taskkill /F)"),
-    (r'\bstop-process\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force kill processes (Stop-Process -Force)"),
+    (r'\btaskkill(?:[^\w\n][^\n]*)?\s/f\b', "force kill processes (taskkill /F)"),
+    (r'\bstop-process(?:[^\w\n][^\n]*)?\s' + _PS_FORCE_ONLY_F, "force kill processes (Stop-Process -Force)"),
     # Volume/disk destruction — Windows analogue of mkfs / dd.
     (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
     (r'\bclear-disk\b', "wipe disk (Clear-Disk)"),
@@ -556,19 +540,19 @@ DANGEROUS_PATTERNS = [
     (r'\bformat(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
     (r'\bcipher\s+/w\b', "wipe free space (cipher /w)"),
     # ACL destruction — Windows analogue of chmod 777.
-    (r'\bicacls\b[^\n]*\s/grant\b[^\n]*\b(?:everyone|todos|jeder|tout\s+le\s+monde|\*s-1-1-0)\b', "grant Everyone access (icacls)"),
-    (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
+    (r'\bicacls(?:[^\w\n][^\n]*)?\s/grant(?:[^\w\n](?:[^\n]*[^\w\n])?(?:everyone|todos|jeder|tout\s+le\s+monde)|(?:[^\w\n][^\n]*\w)?\*s-1-1-0)\b', "grant Everyone access (icacls)"),
+    (r'\bicacls(?:[^\w\n][^\n]*)?\s/reset\b', "reset ACLs recursively (icacls /reset)"),
     # Backup/recovery destruction — classic ransomware prep.
-    (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
+    (r'\bvssadmin[^\w\n](?:[^\n]*[^\w\n])?delete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
     # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling. Not compiled:
     # DANGEROUS_PATTERNS_COMPILED swaps in WmicShadowDeleteMatcher (tools/approval_wmic.py), which checks each
     # command-position word (wrappers, full paths, cmd /c, pwsh) instead of an unanchored regex over the whole line.
     (r'wmic shadowcopy delete', _WMIC_SHADOW_DELETE_DESCRIPTION),
-    (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
-    (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
+    (r'\bwbadmin[^\w\n](?:[^\n]*[^\w\n])?delete\b', "delete backups (wbadmin)"),
+    (r'\bbcdedit(?:[^\w\n][^\n]*)?\s/set\b', "modify boot configuration (bcdedit /set)"),
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
-    (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
+    (r'\bremove-itemproperty(?:[^\w\n][^\n]*)?\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
     # Registry writes persist past the session (Run keys, HKCU\Environment, policies), so they prompt
     # like the deletes above; the read verbs (`reg query`/`export`, Get-ItemProperty) stay quiet.
     # `\s+` after setx keeps a shell assignment (`setx=1`) out.
@@ -577,23 +561,23 @@ DANGEROUS_PATTERNS = [
     # The short aliases are common words, so they only count when aimed at a registry provider path,
     # which may sit after any other parameter (`-Force`, `-Name`, `-LiteralPath`, `-Path:`) within the
     # same segment. The scan stops at the next verb token so a run of `si si si ...` stays linear.
-    (r'(?<![\w.])' + _REG_WRITE_VERB + r'\s(?:(?!(?<![\w.])' + _REG_WRITE_VERB + r'\s)[^\n;|&])*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
+    (r'(?<![\w.])' + _REG_WRITE_VERB + r'\s[^\n;|&]*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
     (r'\bsetx(?:\.exe)?\s+[^\s;&|]', "registry write (setx persistent environment variable)"),
     (r'\b(?:set|new)-itemproperty\b', "registry value write (Set-ItemProperty / New-ItemProperty)"),
     # Windows service/system stop — analogue of systemctl stop.
-    (r'\bstop-service\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
+    (r'\bstop-service(?:[^\w\n][^\n]*)?\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
     # Windows-form credential paths; the POSIX ~/.ssh patterns never match drive-letter or backslash spellings.
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
     (r'\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env\b', "access to Hermes secrets (Windows path)"),
     # ── end of Windows tier
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
+    (r'\bchmod\s+--recursive\W.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
-    (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
+    (r'\bchown\s+--recur[a-z]*\W.*root', "recursive chown to root (long flag)"),
     # _CMDPOS-anchored like the hardline twins: quoted prose mentioning mkfs/dd must not require approval to echo.
     # See #93392.
-    (_CMDPOS + r'mkfs\b', "format filesystem"),
+    (_CMDPOS + r'mkfs(?=(?:[^\w\s/)=<>][^\s/)=<>]*)?(?:[\s)=<>]|$))', "format filesystem"),
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
@@ -604,6 +588,8 @@ DANGEROUS_PATTERNS = [
     # later shell command cannot.
     # Bare $VAR / ${VAR} stay transparent so templated table names still clear. Tag chars mirror
     # PostgreSQL's scan.l dolq_cont ([A-Za-z\200-\377_0-9]): any non-ASCII char, so $é$ opens a quote.
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in _SqlDeleteWithoutWhereMatcher (same rule without the
+    # lookahead); the string only feeds the legacy approval-key alias, so editing it changes no verdict.
     (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#<>\'"`$]|\$(?![A-Za-z_0-9\x80-\U0010ffff]*\$)))*\bWHERE\b)',
      "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
@@ -636,9 +622,9 @@ DANGEROUS_PATTERNS = [
     # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
     # the span stops there and `nc -z h 80 # -e note` stays quiet. The flag is case-sensitive (`-C` is CRLF).
     # An `&` stays in the span only inside a redirect (`2>&1`, `<&0`, `&>x`); a background `&` ends it.
-    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?:(?:[^\S\n]|(?:<&?|&?>&?)#*)(?:[^\S\n]|(?:[^\s;&|#<>]|<&?|&?>&?)#*)*)?\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
      "reverse shell via netcat -e/-c"),
-    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
+    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?:[^\S\n]|(?:<&?|&?>&?)#*)(?:(?:[^\S\n]|(?:[^\s;&|#<>]|<&?|&?>&?)#*)*(?:[^\S\n]|(?:[^\w\s;&|#<>]|<&?|&?>&?)#*|\w#+))?(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
@@ -654,20 +640,32 @@ DANGEROUS_PATTERNS = [
      "cloud metadata endpoint access (instance credentials)"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the
     # raw text yet runs arbitrary commands.
-    (rf'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe decoded content to shell (possible command obfuscation)"),
+    (rf'\b(base64|base32|base16)\s+(?:-[dD]|--decode)(?:\W.*)?\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe decoded content to shell (possible command obfuscation)"),
     # xxd uses -r for decode, not -d.
-    (rf'\bxxd\s+-r\b.*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe xxd-decoded content to shell (possible command obfuscation)"),
+    (rf'\bxxd\s+-r(?:\W.*)?\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe xxd-decoded content to shell (possible command obfuscation)"),
     # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
-    (rf'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
-    (rf'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b',
+    (rf'\becho(?:[^\w|][^|]*)?\|\s*\btr(?:[^\w|][^|]*)?\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
+    (rf'\bopenssl\W(?:.*\W)?(?:base64|enc)(?:[^\w|][^|]*)?\s+-[dD](?:[^\w|][^|]*)?\|\s*\b(?:{_SHELL_NAMES_RE})\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     # Credential exfiltration: a curl/wget request BODY (not a header — `-H "Authorization: Bearer $KEY"` is
     # ordinary API use) carrying a secret-named variable or a credential file, or a credential file piped into
     # an uploading curl/wget. Flag letters are case-sensitive (-d/-F/-T upload; -D/-f/-t do not).
-    (rf'{_UPLOAD_FLAG}(?:[\s=]+|(?=[@"\'$]))(?:"[^"]*(?:{_SECRET_VAR}|{_SECRET_FILE})|\'[^\']*{_SECRET_FILE}'
-     rf'|\$\([^)]*{_SECRET_FILE}|\S*?(?:{_SECRET_VAR}|{_SECRET_FILE}))',
+    # Group 1 is the run between the flag and its argument (the consumer rejects a glued argument that does not open
+    # with @, a quote or $). A key file name needs a non-word character before it: that character is matched, not
+    # looked behind, and each run tries its alternatives in the order `RUN(?:var|path|\bkey)` would.
+    (rf'{_UPLOAD_FLAG}([\s=]*)(?:"(?:[^"]*(?:[^"](?:{_SECRET_VAR}|{_SECRET_PATH_FILE})|[^\w"]{_SECRET_KEY_FILE})'
+     rf'|{_SECRET_VAR}|{_SECRET_PATH_FILE}|{_SECRET_KEY_FILE})'
+     rf'|\'(?:[^\']*(?:[^\'](?:{_SECRET_PATH_FILE})|[^\w\']{_SECRET_KEY_FILE})|{_SECRET_PATH_FILE}|{_SECRET_KEY_FILE})'
+     rf'|\$\((?:[^)]*(?:[^)](?:{_SECRET_PATH_FILE})|[^\w)]{_SECRET_KEY_FILE})|{_SECRET_PATH_FILE}|{_SECRET_KEY_FILE})'
+     rf'|{_SECRET_VAR}|{_SECRET_PATH_FILE}|{_SECRET_KEY_FILE}'
+     rf'|\S*?(?:\S(?:{_SECRET_VAR}|{_SECRET_PATH_FILE})|[^\w\s]{_SECRET_KEY_FILE}))',
      _CREDENTIAL_UPLOAD_DESCRIPTION),
-    (rf'{_SECRET_FILE}[^|;&\n]*\|[^;&|\n]*\b(?:curl|wget)\b[^;&|\n]*{_UPLOAD_FLAG}',
+    # Each kind of file is followed by the character that ends it, and the flag by the whitespace before it, so
+    # the rule needs no lookaround in mid-pattern. A bare `~/.ssh` at the end of the text cannot precede a pipe.
+    (rf'(?:{_HOME_PREFIX}\.ssh/[^|;&\n]*'
+     rf'|(?:{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_SECRET_FILE_NAMED})(?:[^\w|;&\n][^|;&\n]*)?'
+     rf'|{_PROJECT_ENV_PATH}(?:[^\w|;&\n-][^|;&\n]*)?)'
+     rf'\|(?:[^;&|\n]*[^\w;&|\n])?(?:curl|wget)(?:[^\w;&|\n][^;&|\n]*)?[^\S\n]{_UPLOAD_FLAG_NAMES}',
      "pipe a credential file into a curl/wget upload (possible exfiltration)"),
     # Invisible / bidirectional Unicode controls make the command the user approves differ from what runs.
     # ZWJ between emoji (family/flag sequences) is ordinary text; variation selectors are checked on the
@@ -675,25 +673,26 @@ DANGEROUS_PATTERNS = [
     (rf'[\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u180e\U000e0000-\U000e007f]'
      rf'|(?<![{_EMOJI_RANGE}\ufe0f])\u200d|\u200d(?![{_EMOJI_RANGE}])',
      _INVISIBLE_UNICODE_DESCRIPTION),
-    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    (rf'\btee(?:\W.*)?["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
-    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
+    # The word after `tee` starts at a non-word character: one that `.*` takes, or the dot of a glued `.env`.
+    (rf'\btee(?:\W.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}|\.env(?:\.[^/\s"\'`]+)?)["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
-    (r'\bxargs\s+.*\brm\b', "xargs with rm"),
+    (r'\bxargs\s+(?:.*\W)?rm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
-    (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
+    (r'\bfind(?:\W.*)?-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
     # Unquoted brace/glob spellings the shell can expand into the flags above at run time
     # (`find . -{delete,print}`, `find . -del*`). Additive: catches these spellings only; approval is
     # still decided from source text, so `$var`/`$(...)`-built words are not covered here. `find` must
     # be the command word and the dynamic word a whitespace-delimited token; both rules are matched
     # against the quote-masked variant (_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS) because a quoted glob
     # (`find . -name 'log-del*'`) is a literal predicate argument the shell never expands.
-    (_CMDPOS + r'find\s[^;|&\n]*(?<!\S)-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
+    (_CMDPOS + r'find\s(?:[^;|&\n]*[^\S\n])?-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
      "find dynamic shell word may expand to destructive flag"),
-    (r'\bfind\b.*-delete\b', "find -delete"),
+    (r'\bfind(?:\W.*)?-delete\b', "find -delete"),
     # Same for program-bearing read-tool options, which _execution_flag_findings() parses structurally
     # only when the option is spelled literally.
-    (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*(?<!\S)--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
+    (r'\b(?:rg|sort|ag|man)\b(?:[^\w;|&\n][^;|&\n]*)?[^\S\n]--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
      "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
@@ -725,23 +724,25 @@ DANGEROUS_PATTERNS = [
     (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'volume\s+(?:rm|remove|prune)\b', "docker/podman volume rm/prune (volume data destruction)"),
     (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'(?:container\s+prune|system\s+(?:prune|reset))\b', "docker/podman container/system prune, podman system reset (deletes stopped containers and unused data)"),
     # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (r'gateway\s+run(?:(?:\W.*)?&\s*(?:$|;)|\W(?:.*\W)?(?:disown|setsid)\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (r'\bnohup\W.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
-    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    (r'\b(pkill|killall)\W(?:.*\W)?(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
     # Self-termination via kill + $(pgrep/pidof): the substitution is opaque to the name-based
     # pattern above, so catch the structural form.
-    (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
-    (r'\bkill\b.*`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
-    # launchctl-driven gateway stop/restart on macOS (label `ai.hermes.gateway`). Two independent lookaheads, NOT a
-    # sequential match: a for-loop building the label from a list defined EARLIER (`for item in 'ai.hermes...'; do
-    # launchctl bootout "$label"`) never has "hermes" after the verb, and that slipped past and restarted 4 gateways
-    # with zero approval. Erring broad is correct for an approval gate: an extra prompt is cheap.
-    # Anchor whole-input lookaheads: re.search otherwise rescans every suffix of
-    # long non-matching commands, holding the GIL and starving Gateway threads.
-    (r'\A(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
-    (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    (r'\bkill(?:\W.*)?\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
+    (r'\bkill(?:\W.*)?`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
+    # launchctl-driven gateway stop/restart on macOS (label `ai.hermes.gateway`). The verb and the name are two
+    # independent conditions on the whole input, NOT a sequential match: a for-loop building the label from a list
+    # defined EARLIER (`for item in 'ai.hermes...'; do launchctl bootout "$label"`) never has "hermes" after the
+    # verb, and that slipped past and restarted 4 gateways with zero approval. Erring broad is correct for an
+    # approval gate: an extra prompt is cheap. RE2 has no lookahead, so both orders are spelled out; the two
+    # words cannot overlap, and the `\W` between them is the word boundary each one needs on that side.
+    (r'\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b\W(?:[\s\S]*\W)?(?:hermes|ai\.hermes)\b'
+     r'|\b(?:hermes|ai\.hermes)\b\W(?:[\s\S]*\W)?launchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b',
+     "stop/restart hermes launchd service (kills running agents)"),
+    (rf'\b(cp|mv|install)(?:\W.*)?\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
+    (rf'\b(cp|mv|install)(?:\W.*)?\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
     # injection) — pairs the tee/redirection coverage. Anchored to the command tail so only the
     # DESTINATION fires; reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
@@ -752,50 +753,54 @@ DANGEROUS_PATTERNS = [
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command injection) slipped through
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # A named file ends at a word boundary, so the rest of its word may not start with a word character.
+    (rf'\b(cp|mv|install)(?:\W.*)?\s["\']?(?:{_SENSITIVE_WRITE_DIR}[^\s"\']*|{_SENSITIVE_WRITE_FILE}(?:[^\w\s"\'][^\s"\']*)?)["\']?{_COMMAND_TAIL}',
+     "copy/move file into sensitive credential/SSH/shell-rc path"),
     # touch/mkdir create, and ln plants a pointer at, the same destinations without a gated write verb
     # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
     # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
     # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
-    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
-    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
-    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
+    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target:
+    # the word before the operand is any other word, or the flag itself right after a bare `--` (then a file name).
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:(?:[^\n;&|]*[^\S\n])?(?:{_NOT_REFERENCE_FLAG}|--[^\S\n](?:-r|--reference))\s)?["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?(?:{_SSH_SENSITIVE_PATH}[^\s"\'<>;&|)`]*["\']?{_LN_TAIL}|{_HOME_SENSITIVE_CREATE_FILE}{_LN_FILE_TAIL})', "link a file into a sensitive credential/SSH/shell-rc path"),
     # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
     # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
-    (_CMDPOS + rf'(?:rm|unlink|shred|truncate)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
+    (_CMDPOS + rf'(?:rm|unlink|shred|truncate){_VERB_ARGS}["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
     # mv: a store at any operand (moved away or overwritten), the bare home only as a SOURCE, so
-    # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean.
-    (_CMDPOS + rf'mv\b[^;|&\n]*\s["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE}(?=\s+[^\s;|&<>]))',
+    # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean. The blank that must follow the
+    # bare home also ends its shell word, so the bare-home spelling carries no word-end lookahead of its own.
+    (_CMDPOS + rf'mv{_VERB_ARGS}["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_ROOT}/?\*?["\']?(?=\s+[^\s;|&<>]))',
      "delete/move/wipe Hermes home or session store"),
-    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}(?=\s*(?:$|[;&|#<>\n]|\d+[<>]))', "overwrite Hermes session/credential store"),
-    (_CMDPOS + rf'dd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
-    (_CMDPOS + rf'tee\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    # One lookahead for "ends its shell word" AND "is the last operand": a comment or an fd redirect needs a blank first.
+    (_CMDPOS + rf'(?:cp|install|rsync){_VERB_ARGS}["\']?{_HERMES_STORE_ROOT_WORD}["\']?(?=\s+(?:#|\d+[<>])|\s*(?:\Z|[;&|<>\n]))', "overwrite Hermes session/credential store"),
+    # `of=` starts a word of its own or follows a non-word character, inside dd's word (`dd,of=x`) or after it.
+    (_CMDPOS + rf'dd(?:[^\w\s/)=<>;|&](?:[^\s/)=<>;|&]*[^\w\s/)=<>;|&])?|{_VERB_WORD_REST}(?:[^\S\n]|[)=<>])(?:[^;|&\n]*[^\w;|&\n])?)of=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'tee{_VERB_ARGS}["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
     # deletes the same rows), and any heredoc into a store prompts (its SQL sits past the newline).
-    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|drop\s+\w+'
-     r'|update\s+(?:or\s+\w+\s+)?\S+\s+(?:as\s+\S+\s+)?set|insert\s+(?:or\s+\w+\s+)?into|replace\s+into'
-     r'|alter\s+table|vacuum(?!\s+(?:\w+\s+)?into))\b|\.restore\b|(?<!<)<<(?!<)))',
-     "modify Hermes session store via sqlite3"),
+    # (_SQLITE3_STORE_WRITE spells out both orders of "names a store" and "writes"; see tools.approval_hermes_store.)
+    (_CMDPOS + 'sqlite3' + _SQLITE3_STORE_WRITE, "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
-    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
+    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})', "in-place edit of sensitive credential/SSH/shell-rc path"),
+    (rf'\bsed\s+--in-place\b(?:\W.*)?(?:{_USER_SENSITIVE_WRITE_TARGET})', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
+    (rf'\b(?:perl|ruby)\b(?:\W.*)?(?:^|\s)-[^\s]*i(?:\W.*)?(?:{_USER_SENSITIVE_WRITE_TARGET})', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    (rf'\bsed\s+--in-place(?:\W.*)?\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # sed -i on Hermes config/.env bypasses the redirection/tee rules; pairs the file_tools
     # write_file/patch deny so the terminal side is not an open door.
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or .env). sed -i bypasses the
     # redirection/tee patterns above because it mutates the file directly. See #14639.
     (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    (rf'\bsed\s+--in-place(?:\W.*)?(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
     # perl/ruby -i: the flag may be its own token after other flags (`-p -i -e`), combined (`-pi`), or carry a backup
     # suffix (`-i.bak`), so match any flag token containing `i` anywhere; `perl -e '...'` (no -i) does not trip.
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are not caught by the -e/-c
     # script-execution pattern above (which targets code evaluation, not file mutation). Pairs the sed -i
     # coverage from #14639.
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    (rf'\b(?:perl|ruby)(?:\W.*)?(?:^|\s)-[^\s]*i(?:\W.*)?(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
     # Interpreter heredocs are handled by _execution_flag_findings(); only shell heredocs stay
     # regex-based. `bash <<'EOF'` runs arbitrary commands without triggering the `bash -c` path.
     (rf'\b(?:{_SHELL_NAMES_RE})\s+<<', "shell execution via heredoc"),
@@ -811,11 +816,11 @@ DANGEROUS_PATTERNS = [
     # "--force"` is still a force push.
     (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_ARG_START}--forc[a-z]*\b', "git force push (rewrites remote history)"),
     # `-o` takes the rest of a short-flag cluster as its value (`-ofoo` is push option "foo").
-    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_ARG_START}-(?!-)[a-np-z]*f[a-z]*\b',
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_ARG_START}-[a-np-z]*f[a-z]*\b',
      "git force push short flag (rewrites remote history)"),
     # A push option's value (`-o +foo`) is not a refspec; the scan ends on a non-blank so the
     # whole blank run sits between the option and its value (`-o  +foo`).
-    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}(?<!\s)(?<!\s-o)(?<!\s--push-option)\s+["\']?\+[^\s;&|\n]+',
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_NOT_OPTION_VALUE}(?<!\s)\s+["\']?\+[^\s;&|\n]+',
      "git force push (rewrites remote history)"),
     # `hermes config set` can rewrite the agent's own approval policy (approvals.mode, approvals.deny,
     # command_allowlist) — gate it like the file-tool path so a default empty deny list is not an open door.
@@ -835,19 +840,19 @@ DANGEROUS_PATTERNS = [
     (rf'{_GIT}branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
-    (rf'{_GIT}branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (rf'{_GIT}branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (rf'{_GIT}branch\b(?:[^\w;|&\n][^;|&\n]*?)?(?:-d|--delete)(?:[^\w;|&\n][^;|&\n]*?)?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (rf'{_GIT}branch\b(?:[^\w;|&\n][^;|&\n]*?)?(?:-f|--force)(?:[^\w;|&\n][^;|&\n]*?)?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
-    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    (r'\bchmod\s+\+x(?:\W.*)?[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
     # non-interactively read the password from stdin (-S) or askpass (-A); -s (shell) and -a (list) are gated as
     # privilege chains (read SUDO_PASSWORD from .env -> sudo -S -s). Plain `sudo cmd` is TTY-bound and excluded. Input
     # is lowercased, so S/s and A/a collapse. Lazy `[^;|&\n]*?` allows flag args without spanning separators. sudo
     # resolves unambiguous long-flag prefixes: `--stdin` is the only long option starting with "st", `--askpass` the
     # only one starting with "a".
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
+    (r'\bsudo(?:[^\w;|&\n][^;|&\n]*?)??\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form (-nS, -sa, -las).
-    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    (r'\bsudo(?:[^\w;|&\n][^;|&\n]*?)??\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
     # Package-manager uninstall commands can remove installed software outside
     # the current project (notably `npm uninstall -g`). Treat their destructive
     # subcommands like other state-removing operations while leaving installs
@@ -867,10 +872,19 @@ _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: WmicShadowDeleteMatcher,
     _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
+    "SQL DELETE without WHERE": _SqlDeleteWithoutWhereMatcher,
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),
 }
+# Rules whose `{_GIT}` option run RE2 cannot compile: GitCommandMatcher walks the run, the rest of the rule stays a regex.
+_GIT_WALKED_DESCRIPTIONS = frozenset({
+    "git reset --hard (destroys uncommitted changes)", "git clean with force (deletes untracked files)",
+    "git branch force delete", "git branch force delete (long flags)", "git branch force delete (long flags, force-first)",
+})
 DANGEROUS_PATTERNS_COMPILED = [
-    (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
+    (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS
+     else GitCommandMatcher(p.removeprefix(_GIT), _RE_FLAGS) if d in _GIT_WALKED_DESCRIPTIONS
+     else GitPushMatcher(p.removeprefix(_GIT_PUSH + _GIT_PUSH_ARGS), _RE_FLAGS) if p.startswith(_GIT_PUSH + _GIT_PUSH_ARGS)
+     else re.compile(p, _RE_FLAGS), d)
     for p, d in DANGEROUS_PATTERNS
 ]
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
@@ -917,12 +931,18 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
 # Regex edits change a pattern's regex-derived legacy key; keep each pre-change spelling resolvable so
-# approvals stored under it still match: (?-i:-D) scoping, the optional drive letter (#38964), and
-# `git reset --hard` accepting abbreviated `--h`/`--ha`/`--har`.
+# approvals stored under it still match: (?-i:-D) scoping, the optional drive letter (#38964),
+# `git reset --hard` accepting abbreviated `--h`/`--ha`/`--har`, and the word-boundary respellings for RE2.
 for _canonical_key, _old_key in [
     ("git branch force delete", r"git\s+branch\s+-D"),
     ("delete in root path", r"rm\s+(-[^\s]*\s+)*/"),
     ("git reset --hard (destroys uncommitted changes)", r"git\s+reset\s+--hard"),
+    ("recursive world/other-writable (long flag)", r"chmod\s+--recursive"),
+    ("overwrite system file via tee", r"tee"),
+    ("overwrite project env/config via tee", r"tee"),
+    ("xargs with rm", r"xargs\s+.*"),
+    ("find -exec/-execdir rm", r"find"),
+    ("find -delete", r"find"),
 ]:
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).add(_old_key)
     _PATTERN_KEY_ALIASES.setdefault(_old_key, set()).add(_canonical_key)
@@ -958,7 +978,7 @@ def _normalize_command_for_detection(command: str) -> str:
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
-    return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    return re.sub(r'\$\{IFS(?:[^\w}][^}]*)?\}|\$IFS\b', ' ', command)
 
 
 def _lower_preserving_flags(command: str) -> str:
@@ -1067,7 +1087,7 @@ _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
 _MAX_SUBSTITUTION_DEPTH = 32
 # A backslash-newline that an even run of backslashes precedes (so the backslash is not itself escaped).
-_LINE_CONTINUATION_RE = re.compile(r"(?<!\\)((?:\\\\)*+)\\\r?\n")
+_LINE_CONTINUATION_RE = re.compile(r"(?<!\\)((?:\\\\)*)\\\r?\n")
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 # Each nested eval re-parses the rest of the command, so every level is a full rescan.
 _MAX_EVAL_NESTING = 8
@@ -1842,6 +1862,13 @@ def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeR
     return False
 
 
+def _credential_upload_matches(pattern_re: "re.Pattern[str]", command_lower: str) -> list:
+    """Upload-flag matches whose argument may name a secret: a glued argument (empty group 1) counts only when
+    it opens with @, a quote or $."""
+    return [m for m in pattern_re.finditer(command_lower)
+            if m.group(1) or command_lower[m.end(1):m.end(1) + 1] in ('@', '"', "'", '$')]
+
+
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
     *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
@@ -1875,7 +1902,7 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                 ):
                     yield description
             elif description == _CREDENTIAL_UPLOAD_DESCRIPTION:
-                matches = list(pattern_re.finditer(command_lower))
+                matches = _credential_upload_matches(pattern_re, command_lower)
                 owner_ranges = _upload_flag_owner_ranges(command_lower) if matches else ([], [])
                 if any(_upload_flag_owned_by_curl_or_wget(owner_ranges, match.start()) for match in matches):
                     yield description

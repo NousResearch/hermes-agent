@@ -126,13 +126,11 @@ def test_options_outside_the_value_list_still_reach_the_subcommand():
 def test_an_unclosed_nested_substitution_is_scanned_linearly(value):
     """Each `$(` nesting level is atomic: an unclosed run must fail in one pass, not re-split per level.
     The detector's parser budget refuses such a command before the rules run, so time the git rules."""
-    import re
     import time
 
-    from tools.approval_detection import DANGEROUS_PATTERNS
-    from tools.approval_git_options import _GIT
+    from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED
 
-    rules = [re.compile(p, re.IGNORECASE) for p, _ in DANGEROUS_PATTERNS if isinstance(p, str) and _GIT in p]
+    rules = [rule for rule, description in DANGEROUS_PATTERNS_COMPILED if description.startswith("git ")]
     assert rules
     start = time.monotonic()
     for rule in rules:

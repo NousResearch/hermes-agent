@@ -903,6 +903,81 @@ class TestReasoningStreaming:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_mirrored_reasoning_content_is_not_streamed_as_text(self, mock_close, mock_create):
+        """Exact same-chunk reasoning/content mirrors stay on the reasoning channel."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="Let", reasoning_content="Let"),
+            _make_stream_chunk(content=" me think", reasoning_content=" me think"),
+            _make_stream_chunk(content="The answer is 42"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert events == [
+            ("reasoning", "Let"),
+            ("reasoning", " me think"),
+            ("text", "The answer is 42"),
+        ]
+        assert response.choices[0].message.reasoning_content == "Let me think"
+        assert response.choices[0].message.content == "The answer is 42"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_distinct_reasoning_and_content_preserve_interleaving(self, mock_close, mock_create):
+        """A real reasoning/text boundary must not be mistaken for a mirror."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="Visible update", reasoning_content="Internal thought"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert events == [
+            ("reasoning", "Internal thought"),
+            ("text", "Visible update"),
+        ]
+        assert response.choices[0].message.reasoning_content == "Internal thought"
+        assert response.choices[0].message.content == "Visible update"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_reasoning_callback_fires(self, mock_close, mock_create):
         """Reasoning deltas fire the reasoning_callback."""
         from run_agent import AIAgent
@@ -940,6 +1015,353 @@ class TestReasoningStreaming:
         assert text_deltas == ["The answer is 42"]
         assert response.choices[0].message.reasoning_content == "Let me think about this"
         assert response.choices[0].message.content == "The answer is 42"
+
+    # ── leaked reasoning slices must not reach the display ──
+    #
+    # Some OpenAI-compatible relays flush a random contiguous slice of the thinking
+    # buffer into the content channel on tool-call turns ('读正文', 'm53_', 3-54 chars,
+    # mid-word cuts). The persistence strip removes them from storage, but the live
+    # stream still forwarded them: after the tool call started, _route_suppressed_text
+    # handed the raw text to the delta callback (the desktop renders it; only the CLI
+    # drops non-reasoning text); before the tool call, a slice ending in a sentence
+    # terminator was released by the preamble hold. Tool-turn text is buffered and
+    # slice-suspect opening text is held until the judgment is deterministic.
+
+    _REASONING_CN = (
+        "用户想读正文。我需要先找到目标文件，然后调用 terminal 工具查看目录结构。"
+        "在读正文。之前还要确认路径是否正确，避免读错文件。目录里可能有多个同名文件，"
+        "需要按修改时间排序，最新的排在最前面。找到文件后，先看开头几行确认编码格式，"
+        "再完整读取内容，避免乱码。最后把要点整理成中文回复，引用原文时保留原始措辞，"
+        "不添加自己的转述。如果内容太长，就分两次读取并合并结果再总结。"
+        "整理完毕后再输出最终结论，确保没有遗漏任何关键信息点。"
+    )
+
+    _REASONING_EN = (
+        "The user wants the directory listing. I will call the terminal tool with ls first, "
+        "then read the output. The working directory was already established in the previous "
+        "turn, so a plain ls is enough here. After the tool returns I will summarize the "
+        "entries and highlight the newest files. The m53_ checkpoint folder should be near "
+        "the top of the listing, followed by the logs directory and the scratch area."
+    )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_leaked_slice_ending_sentence_before_tool_call_is_not_displayed(self, mock_close, mock_create):
+        """A slice that ends with a sentence terminator is released by
+        the preamble hold — the slice-hold must keep it off the display until the tool
+        call drops it."""
+        from run_agent import AIAgent
+
+        reasoning = self._REASONING_CN
+        assert len(reasoning) >= 200 and "读正文。" in reasoning
+        chunks = [
+            _make_stream_chunk(reasoning_content=reasoning[:120]),
+            _make_stream_chunk(reasoning_content=reasoning[120:]),
+            _make_stream_chunk(content="读正文。"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="terminal")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert not [e for e in events if e[0] == "text"], (
+            f"leaked slice reached the display: {events}")
+        assert any(e[0] == "reasoning" for e in events)
+        # Storage keeps the raw content; the strip at build_assistant_message owns that.
+        assert response.choices[0].message.content == "读正文。"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_leaked_slice_after_tool_call_is_not_displayed(self, mock_close, mock_create):
+        """Text streamed after the tool call started used to go
+        straight to the raw delta callback; the stream-end judgment must drop the leak."""
+        from run_agent import AIAgent
+
+        reasoning = self._REASONING_EN
+        assert len(reasoning) >= 200 and "m53_" in reasoning
+        chunks = [
+            _make_stream_chunk(reasoning_content=reasoning),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="terminal")
+            ]),
+            _make_stream_chunk(content="m53_"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert not [e for e in events if e[0] == "text"], (
+            f"leaked slice reached the display: {events}")
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_real_preamble_after_tool_call_is_still_routed(self, mock_close, mock_create):
+        """The suppression must not eat real tool-turn preambles: text that is not a
+        slice of the reasoning is flushed through the suppression route at stream end."""
+        from run_agent import AIAgent
+
+        reasoning = self._REASONING_EN
+        preamble = "Let me list the files for you before I summarize."
+        assert preamble not in reasoning
+        chunks = [
+            _make_stream_chunk(reasoning_content=reasoning),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="terminal")
+            ]),
+            _make_stream_chunk(content=preamble),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert [e[1] for e in events if e[0] == "text"] == [preamble]
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stop_turn_reply_inside_reasoning_still_displays(self, mock_close, mock_create):
+        """The holds only hold, never drop: a stop-turn short reply that happens to
+        be a substring of its own reasoning still reaches the display at stream end."""
+        from run_agent import AIAgent
+
+        reasoning = self._REASONING_CN + "如果没有新内容，就回复无新文三个字，不要展开。"
+        assert len(reasoning) >= 200 and "无新文" in reasoning
+        chunks = [
+            _make_stream_chunk(reasoning_content=reasoning),
+            _make_stream_chunk(content="无新文"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert [e[1] for e in events if e[0] == "text"] == ["无新文"]
+        assert response.choices[0].message.content == "无新文"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_spliced_leak_interleaved_with_reasoning_is_not_displayed(self, mock_close, mock_create):
+        """A relay can flush SPLICED
+        thinking fragments (words dropped between pieces) into content WHILE the
+        reasoning channel is still streaming. No substring rule matches a splice; the
+        interleaving structure must hold it, and the tool call must drop it."""
+        from run_agent import AIAgent
+
+        thinking = (
+            "The user asked for a progress summary. The newest message requests the current task "
+            "list. The permission step was already finished in the previous turn, or so I believe. "
+            "Hmm, wait — I don't see it in my earlier notes; let me re-check the work log. The log "
+            "covers the last thirty turns or so, including the setup reads. It mentions the "
+            "permission grant near the end. Let me query the task table before answering."
+        )
+        assert len(thinking) >= 200
+        chunks = [
+            _make_stream_chunk(reasoning_content=thinking[:120]),
+            _make_stream_chunk(reasoning_content=thinking[120:240]),
+            # spliced flush mid-thought: a short fragment first (the preamble hold
+            # window catches it), then thinking continues AFTER content began —
+            # the structural interleaving signal
+            _make_stream_chunk(content="the previous turn, or so"),
+            _make_stream_chunk(reasoning_content=thinking[240:360]),
+            # a longer splice now arrives with the interleaved signal already set
+            _make_stream_chunk(content="I don't see it in my notes; let me re-check the work log. The log covers the last thirty"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="terminal")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert not [e for e in events if e[0] == "text"], (
+            f"spliced leak reached the display: {events}")
+        assert getattr(agent, "_reasoning_mirror_relay", False) is True, (
+            "interleaved content must flag the relay for later turns")
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_spliced_leak_after_tool_call_on_mirror_relay_is_not_displayed(self, mock_close, mock_create):
+        """Once a relay has mirrored reasoning into content (here:
+        same-chunk copies), its post-tool-call content flushes are thinking-buffer
+        splices — the stream-end judgment must drop them instead of routing."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="Let me check", reasoning_content="Let me check"),
+            _make_stream_chunk(content=" the queue status", reasoning_content=" the queue status"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="terminal")
+            ]),
+            _make_stream_chunk(content="the previous turn, or so I believe. Hmm — I don't see it in my"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert not [e for e in events if e[0] == "text"], (
+            f"post-tool spliced leak reached the display: {events}")
+        assert getattr(agent, "_reasoning_mirror_relay", False) is True
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_normal_relay_preamble_after_reasoning_still_streams(self, mock_close, mock_create):
+        """Negative: a well-behaved relay streams reasoning to
+        completion, THEN the preamble, then the tool call. Nothing interleaves and
+        nothing mirrors, so the preamble must keep streaming to the display."""
+        from run_agent import AIAgent
+
+        thinking = (
+            "The user wants the queue status. I should query the pipeline table first, "
+            "then summarize the pending items and any blockers. The query needs the "
+            "scope parameter set to all. After that I can decide what to report back."
+        )
+        assert len(thinking) >= 200
+        chunks = [
+            _make_stream_chunk(reasoning_content=thinking[:180]),
+            _make_stream_chunk(reasoning_content=thinking[180:]),
+            _make_stream_chunk(content="Let me check the queue status first, then report back."),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="terminal")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        events = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            reasoning_callback=lambda text: events.append(("reasoning", text)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        texts = [e[1] for e in events if e[0] == "text"]
+        assert texts == ["Let me check the queue status first, then report back."], (
+            f"real preamble was wrongly suppressed: {events}")
+        assert getattr(agent, "_reasoning_mirror_relay", False) is False
 
 
 # ── Test: _has_stream_consumers ──────────────────────────────────────────

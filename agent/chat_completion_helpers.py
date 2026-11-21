@@ -1614,6 +1614,84 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     return tc_dict
 
 
+def strip_duplicated_structured_reasoning_prefix(
+    content: Any,
+    reasoning: Any,
+) -> Any:
+    """Remove an exact structured-reasoning prefix from visible content.
+
+    Some OpenAI-compatible gateways return the same chain-of-thought twice:
+    once in ``reasoning`` / ``reasoning_content`` and again as a byte-for-byte
+    prefix of ``content``.  ``display.show_reasoning: false`` cannot hide that
+    second copy because it has already been mislabeled as ordinary assistant
+    text.  Persisting it also replays hidden reasoning as visible history and
+    inflates every later request.
+
+    Deliberately conservative: only a non-empty, exact prefix is removed.
+    Similar text, partial overlaps, and reasoning that appears later in a
+    legitimate answer are left untouched.
+    """
+    if not isinstance(content, str) or not isinstance(reasoning, str):
+        return content
+    if not content or not reasoning or not content.startswith(reasoning):
+        return content
+    return content[len(reasoning):].lstrip()
+
+
+def _is_leaked_reasoning_slice(content: Any, reasoning: Any) -> bool:
+    """The deterministic leak judgment, on FINAL strings.
+
+    Shared by the storage strip and the stream-end display flush: the
+    per-chunk check judges content while the reasoning is still streaming in,
+    so a slice that runs ahead of the reasoning channel — or is shorter than its
+    8-char floor — slips through. Only where both strings are final is the call
+    deterministic.
+    """
+    if not isinstance(content, str) or not isinstance(reasoning, str):
+        return False
+    body = content.strip()
+    if len(body) < 3 or len(reasoning) < 200 or len(body) * 4 > len(reasoning):
+        return False
+    if body not in reasoning:
+        return False
+    # A real preamble is a complete sentence; a leaked slice is a mid-word cut. Trailing
+    # quotes are not sentence ends ('切分词"' is still a cut; 'Now App.vue and style.css.'
+    # is real) — measured on stored history: this spares 4/4 real preambles that are exact
+    # reasoning substrings, at zero cost on the known fragment set.
+    tail = body.rstrip("\"'”’")
+    if tail and tail[-1] in ".!?。！？…":
+        return False
+    return True
+
+
+def strip_leaked_reasoning_slice(content: Any, reasoning: Any) -> Any:
+    """Drop tool-turn content that is a verbatim slice of the reasoning.
+
+    A mirror relay can also flush a *partial* copy: on tool-call
+    turns the content channel receives one random contiguous slice of the thinking buffer
+    ('读正文', 'm53_', '3274, mtime 02:01:'), cut mid-word, and it is persisted as the
+    reply text. The per-chunk check judges content while the reasoning is still
+    streaming in, so a slice that runs ahead of the reasoning channel — or is shorter than
+    its 8-char floor — slips through to storage. Here both strings are final, which is the
+    only point where the judgment is deterministic.
+
+    Tool-call turns only, on purpose: content there is at most a preamble, while a short
+    *stop*-turn reply ('无新文', '[SILENT]') can legitimately be a substring of its own
+    reasoning. Contiguous substring only: a fuzzy coverage matcher suppresses real
+    preambles that restate the plan (measured 209/800 on stored history); the substring
+    rule flagged 0/800 real preambles, 0/588 real short replies, and 12/12 true leaks
+    across other sessions.
+    """
+    if not _is_leaked_reasoning_slice(content, reasoning):
+        return content
+    body = content.strip()
+    logger.warning(
+        "Suppressed %d-char tool-turn content as a leaked reasoning slice (reasoning %d "
+        "chars): the relay streamed part of the thinking buffer into the content channel.",
+        len(body), len(reasoning))
+    return ""
+
+
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict (reasoning, reasoning_details,
     optional tool_calls) shared by the tool-call and final-response paths.
@@ -1622,8 +1700,36 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     survive ``_rows_to_conversation``."""
     assistant_tool_calls = getattr(assistant_message, "tool_calls", None)
     reasoning_text = _assistant_reasoning_text(agent, assistant_message)
+    _content = _assistant_content_for_storage(agent, assistant_message)
+    # Structured reasoning is preserved under ``reasoning`` /
+    # ``reasoning_content``; a few compatibility gateways additionally copy the
+    # exact same text into the start of visible ``content``. Strip only that
+    # exact duplicate so hidden reasoning cannot leak into transcripts, UI
+    # delivery, session search, compression, or later API replay.
+    if reasoning_text:
+        _content = strip_duplicated_structured_reasoning_prefix(_content, reasoning_text)
+        # A relay can flush a random contiguous slice of the thinking
+        # buffer into ``content`` on tool-call turns; it reads as a broken half sentence
+        # ('读正文', '3274, mtime 02:01:') and is persisted as the reply. Both strings are
+        # final here, so the slice judgment is deterministic (the per-chunk check
+        # races the reasoning stream). Tool turns only — a stop-turn reply may be short.
+        if assistant_tool_calls and _content:
+            _content = strip_leaked_reasoning_slice(_content, reasoning_text)
+            # The same relay also flushes SPLICED thinking fragments —
+            # words dropped between pieces, mid-word cuts, word-glues — that no contiguous-
+            # substring rule can match. Streaming records the structural signature (same-chunk
+            # mirroring, or content beginning before the reasoning channel finished) on the
+            # agent; on a known mirror relay every tool-turn content flush is thinking-
+            # buffer material, so strip it too. Real preambles from well-behaved relays
+            # arrive after thinking ends and never set the flag.
+            if _content and getattr(agent, "_reasoning_mirror_relay", False):
+                logger.warning(
+                    "Suppressed %d-char tool-turn content from a reasoning-mirror relay: "
+                    "the relay flushes spliced thinking-buffer fragments into the content channel.",
+                    len(_content.strip()))
+                _content = ""
     msg = stamp_message_timestamp({"role": "assistant",
-        "content": _assistant_content_for_storage(agent, assistant_message), "reasoning": reasoning_text,
+        "content": _content, "reasoning": reasoning_text,
         "finish_reason": finish_reason})
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
@@ -2631,6 +2737,64 @@ class _BedrockStream:
         return _with_stream_emitters(self.agent, self._poll)
 
 
+# A turn's opening text is held this long (or until it ends a sentence)
+# before the first stream emission, so a chatty preamble that a tool call cuts off is never
+# shown as a half sentence. 32 chars ≈ 0.3s of streaming at typical rates.
+_PREAMBLE_HOLD_CHARS = 32
+_PREAMBLE_HOLD_TERMINATORS = "。！？!?；;.\n"
+
+
+def _preamble_hold_active(text: str, already_streamed: bool) -> bool:
+    """Whether a turn's opening text must stay buffered.
+
+    Held while the reply is still short and mid-sentence: a tool call arriving inside that
+    window suppresses the rest of the content, and emitting the prefix would leave a half
+    sentence on screen. A sentence terminator or ``_PREAMBLE_HOLD_CHARS`` releases it, and
+    once anything reached the display the hold is over for the rest of the turn.
+    """
+    if already_streamed:
+        return False
+    body = text.rstrip(" \t\r")  # keep a trailing newline: it is a sentence break, not padding
+    if not body:
+        return True
+    if len(body) >= _PREAMBLE_HOLD_CHARS:
+        return False
+    return body[-1] not in _PREAMBLE_HOLD_TERMINATORS
+
+
+def _content_is_reasoning_slice(content_so_far: str, reasoning_so_far: str) -> bool:
+    """Whether the reply text so far is really a slice of the reasoning.
+
+    Some OpenAI-compatible relays stream the reasoning channel twice with different chunk
+    boundaries, so ``content`` holds random slices of the model's thinking. Exact-equality
+    dedup cannot see that. A reply that is still a contiguous substring of a much longer
+    reasoning buffer is the mirror artifact; a real answer diverges within a few words.
+    """
+    if not isinstance(content_so_far, str) or not isinstance(reasoning_so_far, str):
+        return False
+    body = content_so_far.strip()
+    if len(body) < 8 or len(reasoning_so_far) < 200:
+        return False
+    if len(body) * 4 > len(reasoning_so_far):
+        return False
+    return body in reasoning_so_far
+
+
+def _mirror_reasoning_suppresses_content(reasoning_text, content_text) -> bool:
+    """True when one chunk carried the same token on both channels.
+
+    A few OpenAI-compatible relays copy each token into ``reasoning_content``
+    *and* ``content``. Forwarding both makes the desktop render one reasoning
+    block per word. Compared after carrier resolution and whitespace-insensitively
+    (relays pad the copy); a content chunk that merely shares a prefix with the
+    reasoning text is real prose, not a mirror.
+    """
+    if not isinstance(reasoning_text, str) or not isinstance(content_text, str):
+        return False
+    reasoning, content = reasoning_text.strip(), content_text.strip()
+    return bool(reasoning) and reasoning == content
+
+
 class _StreamingCall(StreamingWaitMonitor):
     """One streaming request on the chat_completions / anthropic_messages wire.
     State shared between the request worker and the poll-loop monitor (heartbeat,
@@ -2968,6 +3132,10 @@ class _StreamingCall(StreamingWaitMonitor):
         refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
+        # Tool-turn content is buffered here instead of being routed to
+        # the raw delta callback per chunk — the desktop renders that callback's text, so
+        # a leaked reasoning slice must be judged before it can reach the display.
+        suppressed_text_parts: list[str] = []
         from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
@@ -2987,6 +3155,19 @@ class _StreamingCall(StreamingWaitMonitor):
         # field is persisted either way and need not mirror the details.
         detail_watch = RunawayStreamWatch()
         runaway = None
+        # Structural leak-relay signals. A mirror relay copies the thinking buffer into
+        # ``content`` on tool turns (the exact and contiguous re-chunked copies are caught
+        # above), but under load it also flushes the buffer as SPLICED fragments — words
+        # dropped between pieces, mid-word cuts ('ress' from 'Compress'), word-glues
+        # ('turnsid17') — that no substring rule can match. Structure, not text, separates
+        # them: a mirror relay emits the same token on both channels of one chunk, and
+        # leaked content always arrives while the reasoning channel is STILL streaming
+        # (a real answer only starts after thinking ends — 'RTRTRT…C' vs a normal
+        # relay's 'RRRR…TTTT').
+        _chunk_idx = 0
+        _reasoning_last_idx = -1
+        _content_first_idx = None
+        _mirror_chars = 0
 
         llamacpp = _streams_llamacpp(self.agent)
 
@@ -2996,11 +3177,57 @@ class _StreamingCall(StreamingWaitMonitor):
                 next_api_kwargs = with_prompt_progress(next_api_kwargs)
             return self._open_chat_stream({**next_api_kwargs, "stream": True, "timeout": timeout})
 
-        def _flush_pending_stream_text():
+        def _flush_pending_stream_text(*, drop: bool = False):
             pending_parts = list(pending_text_parts)
             pending_text_parts.clear()
+            if drop:
+                # This turn is a tool-call turn — its opening text was a
+                # chatty preamble that the suppression path swallows from here on. Emitting
+                # the buffered prefix now would show a half sentence the rest of the stream
+                # never completes, which reads as a broken reply.
+                return
             for text in pending_parts:
                 (self._route_suppressed_text if tool_calls_acc else self._emit_text)(text)
+
+        def _hold_preamble(text: str) -> bool:
+            """Hold a turn's opening text until it is long enough, or ends a
+            sentence, to be a real answer rather than a preamble a tool call will cut off
+            mid-sentence. Only the first emission is held; once text reached the display the
+            hold is over and streaming behaves exactly as before."""
+            return _preamble_hold_active(text, self.deltas_were_sent["yes"])
+
+        def _reasoning_slice_hold(text: str) -> bool:
+            """Hold opening text that may still be a leaked reasoning
+            slice. The per-chunk floor is 8 chars and cannot see a slice that runs ahead
+            of the reasoning channel; the real fragments measured 3-7 chars. Hold while
+            nothing reached the display, the reasoning buffer is substantial, and the text
+            is either too short to judge or still a substring of the reasoning streamed so
+            far. A real answer diverges within a few words and is released; a tool call
+            drops the hold; the stream-end flush keeps stop-turn replies intact."""
+            if self.deltas_were_sent["yes"]:
+                return False
+            reasoning_so_far = "".join(reasoning_parts)
+            if len(reasoning_so_far) < 200:
+                return False
+            body = (text or "").strip()
+            if not body:
+                return False
+            return len(body) < 8 or body in reasoning_so_far
+
+        def _leak_hold(text: str) -> bool:
+            """Hold content that arrived while the reasoning channel
+            was still streaming. A mirror relay flushes thinking-buffer slices into
+            ``content`` mid-thought (interleaved with reasoning chunks); a real answer
+            only starts after thinking ends, so held text is released by the stop-turn
+            flush and dropped when a tool call arrives on the drop path."""
+            if not text or not text.strip():
+                return False
+            if _content_first_idx is not None and _reasoning_last_idx > _content_first_idx:
+                return True  # thinking continued after this content began
+            if (getattr(self.agent, "_reasoning_mirror_relay", False)
+                    and _reasoning_last_idx >= _chunk_idx - 1):
+                return True  # mirror relay, thinking active in the previous chunk
+            return False
 
         from agent import relay_llm
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_stream,
@@ -3033,6 +3260,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 continue
             if is_progress:
                 continue
+            _chunk_idx += 1
             model_name, response_id, upstream_provider = self._chunk_identity(
                 _diag, chunk, model_name, response_id, upstream_provider)
             if not chunk.choices:
@@ -3055,13 +3283,46 @@ class _StreamingCall(StreamingWaitMonitor):
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
-            # A profile-declared text carrier doubles as the readable reasoning.
+            # Copilot /chat/completions names its readable reasoning ``reasoning_text``,
+            # and a profile-declared text carrier doubles as the readable reasoning. Resolve
+            # the carrier BEFORE the mirror test, so a relay that mirrors into
+            # ``reasoning_text`` (not ``reasoning_content``) is still caught.
             reasoning_text = carriers.feed(delta, reasoning_text)
+            # Some OpenAI-compatible relays mirror the exact
+            # same token into both ``reasoning_content`` and ``content`` on the
+            # same chunk. The token belongs to the reasoning channel; forwarding
+            # it on both creates reasoning/text alternation that renders as one
+            # reasoning block per word.
+            _mirror_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            _mirror_suppressed = _mirror_reasoning_suppresses_content(reasoning_text, _mirror_content)
+            if not _mirror_suppressed and _mirror_content:
+                # A relay can stream the reasoning channel twice with
+                # different chunk boundaries, so ``content`` arrives as a random slice of the
+                # reasoning text instead of an exact mirror. Exact equality misses it and a
+                # few words of the model's thinking land in the reply as a broken fragment.
+                _mirror_suppressed = _content_is_reasoning_slice(
+                    "".join(content_parts) + _mirror_content,
+                    "".join(reasoning_parts) + (reasoning_text or ""),
+                )
+            if _mirror_suppressed:
+                # Either suppression firing is a structural signature of
+                # a mirror relay — content duplicating the thinking buffer. Remember it for
+                # the rest of this agent's turns: the same relay also flushes SPLICED
+                # fragments that neither rule can match.
+                _mirror_chars += len(_mirror_content or "")
+                if _mirror_chars >= 16:
+                    self.agent._reasoning_mirror_relay = True
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
+                # Reasoning arriving after content began means the two
+                # channels interleaved — thinking was still streaming when the content
+                # flushed, i.e. the content is thinking-buffer material, not an answer.
+                _reasoning_last_idx = _chunk_idx
+                if _content_first_idx is not None and _chunk_idx > _content_first_idx:
+                    self.agent._reasoning_mirror_relay = True
             # Structured reasoning_details deltas carry the provider's replay data; the
             # non-streaming path already keeps them, so dropping them here lost
             # reasoning continuity on nearly every turn. Pydantic parks unknown fields
@@ -3102,29 +3363,44 @@ class _StreamingCall(StreamingWaitMonitor):
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
-            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            delta_content = None if _mirror_suppressed else flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
+                if _content_first_idx is None:
+                    _content_first_idx = _chunk_idx
                 if content_watch.feed(delta_content):
                     runaway = "content"
                     break
                 if tool_calls_acc:
-                    self._route_suppressed_text(delta_content)
+                    # Tool-turn text is display-suppressed anyway, but
+                    # the raw delta callback still reaches the desktop renderer (only the
+                    # CLI drops non-reasoning text). Buffer it and judge at stream end,
+                    # where the leak call is deterministic; a certain slice drops early.
+                    suppressed_text_parts.append(delta_content)
+                    if _content_is_reasoning_slice("".join(suppressed_text_parts), "".join(reasoning_parts)):
+                        suppressed_text_parts.clear()
                 elif (pending_text_parts or _provider_stream_text_may_be_sse(delta_content)
                         # A shim cannot follow text already released to the display, so the
                         # whole-content re-join runs only until the first emitted delta.
                         or (not self.deltas_were_sent["yes"] and router_timeout_shim_may_follow("".join(content_parts)))):
                     pending_text_parts.append(delta_content)
                     pending = "".join(pending_text_parts)
-                    if not (_provider_stream_text_may_be_sse(pending) or router_timeout_shim_may_follow(pending)):
-                        _flush_pending_stream_text()
+                    if (_provider_stream_text_may_be_sse(pending) or router_timeout_shim_may_follow(pending)
+                            or _hold_preamble(pending)
+                            or _reasoning_slice_hold(pending)
+                            or _leak_hold(pending)):
+                        continue
+                    _flush_pending_stream_text()
+                    continue
+                elif _hold_preamble(delta_content) or _reasoning_slice_hold(delta_content) or _leak_hold(delta_content):
+                    pending_text_parts.append(delta_content)
                     continue
                 else:
                     self._emit_text(delta_content)
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
-                _flush_pending_stream_text()
+                _flush_pending_stream_text(drop=True)
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
                     if name is not None:
@@ -3140,6 +3416,28 @@ class _StreamingCall(StreamingWaitMonitor):
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
+        # Flush buffered tool-turn text with the deterministic judgment —
+        # a leaked reasoning slice dies here (the storage strip still reports it), a
+        # real preamble is routed for tag extraction exactly as before.
+        if suppressed_text_parts:
+            _suppressed = "".join(suppressed_text_parts)
+            suppressed_text_parts.clear()
+            # Structural leak signals — any chunk mirroring reasoning
+            # into content, or content that began before the reasoning channel finished,
+            # or a relay already flagged on an earlier turn of this agent. The
+            # contiguous-substring rule cannot see spliced flushes; these can.
+            _structural_leak = (_mirror_chars >= 16
+                or (_content_first_idx is not None and _reasoning_last_idx > _content_first_idx)
+                or getattr(self.agent, "_reasoning_mirror_relay", False))
+            if _structural_leak and _suppressed.strip():
+                logger.warning(
+                    "%sSuppressed %d-char tool-turn content from a reasoning-mirror relay "
+                    "(mirror chars %d, interleaved=%s): the relay flushes spliced "
+                    "thinking-buffer fragments into the content channel.",
+                    getattr(self.agent, "log_prefix", ""), len(_suppressed.strip()), _mirror_chars,
+                    _content_first_idx is not None and _reasoning_last_idx > _content_first_idx)
+            elif not _is_leaked_reasoning_slice(_suppressed, "".join(reasoning_parts)):
+                self._route_suppressed_text(_suppressed)
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
@@ -3933,5 +4231,6 @@ __all__ = [
     "handle_max_iterations",
     "interruptible_api_call",
     "interruptible_streaming_api_call",
+    "strip_duplicated_structured_reasoning_prefix",
     "try_activate_fallback",
 ]

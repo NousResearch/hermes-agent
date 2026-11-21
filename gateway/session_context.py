@@ -131,6 +131,12 @@ def scoped_turn_actor(event: Any, turn: Any) -> Iterator[None]:
             var.reset(token)
 
 
+def bound_turn_event() -> Any:
+    """The event of the turn running in THIS context (a drained queued follow-up's own while it
+    runs), None outside a turn."""
+    return _SESSION_TURN_EVENT.get()
+
+
 @contextmanager
 def scoped_session_key(session_key: str) -> Iterator[None]:
     """Bind only the route key of the session a call works for (a hook fired for it outside its

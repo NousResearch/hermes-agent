@@ -66,7 +66,8 @@ def submission_turn_scope(admission_id, submission_id):
     """Bind the client's ``submission_id`` (the admission's ``request_id``) to the admission's own event.
 
     The user row this turn persists carries it, so a client whose window closed before the submit ack
-    came back can read the stored transcript and tell a send that landed from one that never did."""
+    came back can read the stored transcript and tell a send that landed from one that never did.
+    A managed child binds its one admitted turn with ``admission_id=None`` (``worker_turn_scope``)."""
     token = _submission_turn.set((admission_id, submission_id) if submission_id else None)
     try:
         yield
@@ -77,9 +78,32 @@ def submission_turn_scope(admission_id, submission_id):
 def admission_submission(event):
     """``{'submission_id': ...}`` for the admission ``event`` executes, ``{}`` for any other event."""
     bound = _submission_turn.get()
-    if bound is None or event is None or getattr(event, 'message_id', None) != bound[0]:
+    if bound is None or bound[0] is None or event is None or getattr(event, 'message_id', None) != bound[0]:
         return {}
     return {'submission_id': bound[1]}
+
+
+def turn_submission_id():
+    """The ``submission_id`` of the admission the turn running in this context executes, else None.
+
+    In process it holds only while the running turn event is that admission's own: a queued follow-up
+    the same task drains, a producer's turn (native message, automation) and a cron run read None.
+    A managed child executes exactly one admitted turn, so there it holds for the whole child turn."""
+    bound = _submission_turn.get()
+    if bound is None:
+        return None
+    if bound[0] is None:
+        return bound[1]
+    from gateway.session_context import bound_turn_event
+    return admission_submission(bound_turn_event()).get('submission_id')
+
+
+def worker_submission_id(row):
+    """The ``submission_id`` a managed child binds for *row*, as ``turn_submission_id`` reads it in
+    process: the request id of a row that executes as its own event (``execute_admission``), None for
+    a native message or an automation row, whose events carry their producer's id."""
+    payload = row['payload']
+    return None if 'native_text_v1' in payload or 'local_automation_v1' in payload else row.get('request_id')
 
 
 def admission_display(event):

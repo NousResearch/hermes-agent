@@ -998,6 +998,16 @@ def unit_convert(args: dict, **kwargs) -> str:
    `/branch` start a new conversation. A delegated subagent's calls carry its own `session_id` and its
    delegator's `conversation_id`. Both are empty when the call has no session (for example, a tool call
    from inside an `execute_code` script).
+6. **Tie a call to the message that caused it with `session_submission_id()`:**
+   `from hermes_cli.plugin_session import session_submission_id` returns the accepted request id of the
+   admitted turn the call runs under: for a client's `prompt.submit`, its `submission_id`, which the
+   turn's stored user row carries too. It is bound to that admission, in the gateway's own turn and in
+   a managed worker alike, so a call from one turn that finishes after the next turn was accepted still
+   reads its own turn's id, never the newer one. It is `None` when there is none: the classic CLI's own
+   process, a cron run, a native chat message, a plugin-injected turn, and a queued follow-up a turn
+   drains as its own input. The other calling-session helpers are `ctx.session_cwd()`,
+   `ctx.session_surface()` and `hermes_cli.plugin_session.session_client()`
+   ([Plugin code inside the gateway](../../user-guide/features/plugins.md#plugin-code-inside-the-gateway)).
 
 ## Step 5: Write the registration
 

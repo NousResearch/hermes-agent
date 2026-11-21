@@ -41,6 +41,17 @@ def session_client() -> dict | None:
     return policy_client(_active_policy())
 
 
+def session_submission_id() -> str | None:
+    """The accepted request id of the admitted turn this tool call or hook runs under (for a client's
+    ``prompt.submit``, its ``submission_id``; the user row the turn stores carries the same id), in
+    process and in a managed worker alike. ``None`` outside one: the classic CLI's own process, a cron
+    run, a native chat message or plugin-injected turn, and a queued follow-up a turn drains as its
+    own input. Bound to the executing admission, never to the latest submission on the session: a call
+    from turn A that ends after turn B was admitted still reads A."""
+    from gateway.session_display import turn_submission_id
+    return turn_submission_id()
+
+
 def session_cwd() -> str:
     """The calling session's recorded working directory (a local session's workspace, else the
     profile's terminal cwd), ``""`` when it has none. Never the gateway process's own cwd.

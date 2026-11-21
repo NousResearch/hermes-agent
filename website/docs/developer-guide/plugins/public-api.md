@@ -177,6 +177,7 @@ with a name allows that one name only.
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
+| `hermes_cli.plugin_session` | `session_submission_id` | plugins/index.md § Step 4: Write the tool handlers (the accepted request id of the calling turn) |
 | `agent.file_safety` | `get_read_block_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `raise_if_read_blocked` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `is_write_denied` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |

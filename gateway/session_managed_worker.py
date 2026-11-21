@@ -71,13 +71,17 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
                 terminal[path[1]] = value
     live = authority.sessions[ref.session_id]
     # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
-    # the admission's one-shot flags, the route's YOLO as of now (never the frozen launch flag) and
-    # the committed surface (HUD / live voice / voice turn) when admission recorded one.
+    # the admission's one-shot flags, the route's YOLO as of now (never the frozen launch flag), the
+    # committed surface (HUD / live voice / voice turn) when admission recorded one and the client's
+    # submission id plugin tools read (``plugin_session.session_submission_id``).
+    from gateway.session_display import worker_submission_id
+    submission_id = worker_submission_id(row)
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy),
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
-        **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
+        **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {}),
+        **({'submission_id': submission_id} if submission_id else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id, live.source)
     # This owner consumes the worker's ACTIVITY_FRAME, often enough for its wedge timeout.
@@ -127,19 +131,22 @@ def _session_yolo(authority, route, policy):
 @contextmanager
 def worker_turn_scope(frame):
     """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
-    (execute_finite_admission, the route's YOLO, the committed surface), so ``chat -q``/``-z``
-    never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
-    voice turn reaches the model as it does in process. Frames without it bind nothing."""
+    (execute_finite_admission, the route's YOLO, the committed surface, the submission id), so
+    ``chat -q``/``-z`` never park a prompt, the session's current YOLO governs this child, a HUD /
+    live-voice / voice turn reaches the model and plugin tools read the turn's submission id as they
+    do in process. Frames without it bind nothing."""
     from gateway.session_finite import finite_turn_scope
-    from gateway.session_display import display_turn_scope, restore_display
+    from gateway.session_display import display_turn_scope, restore_display, submission_turn_scope
     from gateway.session_surface import restore_surface, surface_turn_scope
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
     if turn is None:
         yield
         return
-    flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1')} if isinstance(turn, dict) else None
+    optional = ('surface_v1', 'display_v1', 'submission_id')
+    flags = {k: v for k, v in turn.items() if k not in optional} if isinstance(turn, dict) else None
     if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
-            or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
+            or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])
+            or ('submission_id' in turn and not (isinstance(turn['submission_id'], str) and turn['submission_id']))):
         raise ValueError('invalid_managed_worker_bootstrap')
     try:
         surface = restore_surface(turn['surface_v1']) if 'surface_v1' in turn else None
@@ -150,7 +157,8 @@ def worker_turn_scope(frame):
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
     with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
-            display_turn_scope(frame['scope']['execution_id'], display):
+            display_turn_scope(frame['scope']['execution_id'], display), \
+            submission_turn_scope(None, turn.get('submission_id')):
         yield
 
 

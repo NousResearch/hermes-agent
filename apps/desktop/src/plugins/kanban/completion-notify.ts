@@ -60,6 +60,14 @@ const baselinePending = new Set<string>()
 let rest: Rest | null = null
 let translate: PluginTranslate | null = null
 let osDoor: PluginOs | null = null
+/** Kinds whose popups the user switched off. They still advance the cursor;
+ *  only the toast/OS banner is dropped (see notify-prefs.ts). */
+let silencedKinds: ReadonlySet<string> = new Set<string>()
+
+/** Silence the popup for these terminal kinds. Default: none silenced. */
+export function setSilencedKinds(kinds: Iterable<string>): void {
+  silencedKinds = new Set(kinds)
+}
 
 /** Resolve a dot-path against the plugin's own English bundle — the same
  *  last-rung fallback the plugin i18n registry applies, usable before (or
@@ -208,7 +216,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     seenEventIdByBoard.set(slug, cursor)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 
-    if (spec) {
+    if (spec && !silencedKinds.has(ev.kind ?? '')) {
       try {
         notifyOne(ev.kind!, spec, ev)
         fired = true

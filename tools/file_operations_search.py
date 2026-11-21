@@ -1218,6 +1218,9 @@ class SearchMixin:
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
+        if not sort_arg and not any(self._is_broad_local_search_root(root) for root in roots):
+            # Same paging fix as content search: one path order, so offset pages never overlap.
+            sort_arg = " --sort=path"
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
@@ -1342,6 +1345,13 @@ class SearchMixin:
         if not rg_executable:
             return SearchResult(error="Content search requires ripgrep (rg).")
         cmd_parts = [self._quote_executable(rg_executable), "--line-number", "--no-heading", "--with-filename"]
+        # rg's parallel walk emits files in a different order every run, so the ``| head``
+        # window behind ``offset`` paging held a different set each call: page 2 repeated or
+        # skipped page-1 hits. --sort=path makes every page a slice of one list (same fix as
+        # Claude Code 2.1.327). It costs walk parallelism, which only hurts at $HOME/filesystem
+        # root scale (first page 0.03s -> 5s measured), so those roots keep discovery order.
+        if not self._is_broad_local_search_root(path):
+            cmd_parts.append("--sort=path")
         # Giant-single-line containment (cline#13525): a match inside a multi-MB
         # single-line dump makes rg emit the ENTIRE line (``head -n`` counts lines).
         # --max-columns bounds each printed line at the rg layer; --max-columns-preview

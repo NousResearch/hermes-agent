@@ -90,6 +90,14 @@ def _zero_event_then_completed_client(seen_inputs: list):
     return SimpleNamespace(responses=SimpleNamespace(create=_create))
 
 
+def _keep_fake_client_on_retry(monkeypatch, agent) -> list:
+    """The transport retry rebuilds the shared client; keep the fake so no real client is built."""
+    reasons: list = []
+    monkeypatch.setattr(agent, "_replace_primary_openai_client",
+                        lambda *, reason: reasons.append(reason) or True, raising=False)
+    return reasons
+
+
 def _oversized_codex_kwargs(size: int) -> dict:
     return {"model": "gpt-5-codex", "instructions": "You are Hermes.", "store": False, "tools": None,
             "input": [{"role": "user", "content": "look"},
@@ -109,6 +117,7 @@ def test_zero_event_retry_prunes_oversized_tool_output_and_logs_size_delta(monke
     agent = _build_agent(monkeypatch)
     seen: list = []
     agent.client = _zero_event_then_completed_client(seen)
+    _keep_fake_client_on_retry(monkeypatch, agent)
 
     with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
         response = agent._run_codex_stream(_oversized_codex_kwargs(760_396))
@@ -131,6 +140,7 @@ def test_zero_event_retry_without_prunable_output_logs_unchanged_resend(monkeypa
     agent = _build_agent(monkeypatch)
     seen: list = []
     agent.client = _zero_event_then_completed_client(seen)
+    _keep_fake_client_on_retry(monkeypatch, agent)
     kwargs = _oversized_codex_kwargs(300_000)
     kwargs["input"][2]["output"] = ["not-a-string"]  # nothing prunable
     kwargs["input"][0]["content"] = "u" * 300_000  # still a large payload

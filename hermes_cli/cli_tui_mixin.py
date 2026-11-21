@@ -1077,8 +1077,17 @@ class CLITuiMixin:
             pass
 
     def _tui_handle_escape_modal(self, event):
-        """ESC cancels active secret/sudo/connection/slash-confirm prompts."""
-        if self._connection_state:
+        """ESC cancels active secret/sudo/connection/slash-confirm prompts, and denies a
+        pending dangerous-command approval (ESC = deny, the universal cancel semantics)."""
+        if self._approval_state:
+            state = self._approval_state
+            choices = state.get("choices") or []
+            if "deny" in choices:
+                state["selected"] = choices.index("deny")
+            self._handle_approval_selection()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+        elif self._connection_state:
             self._connection_cancel()
             event.app.current_buffer.reset()
             event.app.invalidate()
@@ -1922,7 +1931,7 @@ class CLITuiMixin:
         kb.add('c-d')(self._tui_handle_ctrl_d)
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state
-                         or self._connection_state))
+                         or self._connection_state or self._approval_state))
         kb.add('escape', filter=_modal_prompt_active, eager=True)(self._tui_handle_escape_modal)
         kb.add('escape', 'escape', filter=~_modal_prompt_active)(self._tui_handle_double_escape)
         kb.add('c-z')(self._tui_handle_ctrl_z)

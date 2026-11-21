@@ -2277,7 +2277,7 @@ cli:
     connection_continue: "Continue"
     hint_sudo: "password hidden · Enter to skip"
     hint_secret: "secret hidden · Enter to skip"
-    hint_approval: "↑/↓ to select, Enter to confirm"
+    hint_approval: "↑/↓ select, Enter confirm, 1-4 run immediately, ESC deny"
     hint_slash_confirm: "type 1/2/3, or ↑/↓ to select, Enter to confirm"
     hint_connection_form: "type the value, Enter for next field · ↑/↓ move · ESC cancel"
     hint_connection_url: "Enter to open in browser · ESC cancel"

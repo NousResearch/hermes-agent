@@ -2180,7 +2180,7 @@ cli:
     connection_continue: "続行"
     hint_sudo: "パスワードは非表示 · Enter でスキップ"
     hint_secret: "シークレットは非表示 · Enter でスキップ"
-    hint_approval: "↑/↓ で選択、Enter で確定"
+    hint_approval: "↑/↓ で選択、Enter で確定、1〜4 は即実行、ESC で拒否"
     hint_slash_confirm: "1/2/3 を入力、または ↑/↓ で選択、Enter で確定"
     hint_connection_form: "値を入力、Enter で次の項目へ · ↑/↓ で移動 · ESC でキャンセル"
     hint_connection_url: "Enter でブラウザーで開く · ESC でキャンセル"

@@ -1454,34 +1454,9 @@ def list_tasks(
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
-    profile = _canonical_assignee(profile)
-    with write_txn(conn):
-        row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone()
-        if not row:
-            return False
-        if row["claim_lock"] is not None and row["status"] == "running":
-            raise RuntimeError(
-                f"cannot reassign {task_id}: currently running (claimed). "
-                "Wait for completion or reclaim the stale lock first."
-            )
-        if row["assignee"] != profile:
-            # The failure streak is per task/profile; a new profile starts fresh.
-            conn.execute(
-                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
-                "last_failure_error = NULL WHERE id = ?", (profile, task_id),
-            )
-        else:
-            conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        # ``from`` lets the respawn guard tell a real handoff (dev→closer) from
-        # a no-op re-assign or an unassign, which must not lift ``active_pr``.
-        _append_event(
-            conn, task_id, "assigned", {"assignee": profile, "from": row["assignee"]},
-        )
-    # Observer fires AFTER commit so subscribers see durable state.
-    notify_task_updated(conn, task_id, ("assignee",))
-    return True
+    from hermes_cli.kanban_db_edit import update_task_fields
+
+    return update_task_fields(conn, task_id, assign=True, assignee=profile)
 
 
 def set_model_override(
@@ -3052,72 +3027,15 @@ def edit_task(
     metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
-    changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
-        if value is not None
-    ]
+    from hermes_cli.kanban_db_edit import edit_locked
+
     with write_txn(conn):
-        status = _task_status(conn, task_id)
-        if status is None or (result is not None and status != "done"):
-            return False
-        assignments = []
-        params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
-            if value is not None:
-                assignments.append(f"{field} = ?")
-                params.append(value)
-        if result is not None:
-            assignments.append("result = ?")
-            params.append(result)
-            changed_fields.append("result")
-        if not assignments:
-            return False
-        conn.execute(
-            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
-            (*params, task_id),
+        changed_fields = edit_locked(
+            conn, task_id, title=title, body=body, priority=priority,
+            result=result, summary=summary, metadata=metadata,
         )
-        if priority is not None:
-            _append_event(conn, task_id, "reprioritized", {"priority": priority})
-        if result is None:
-            non_priority_fields = [field for field in changed_fields if field != "priority"]
-            if non_priority_fields:
-                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
-        else:
-            handoff_summary = summary if summary is not None else result
-            changed_fields.append("summary")
-            if metadata is not None:
-                changed_fields.append("metadata")
-            run = conn.execute(
-            """
-            SELECT id FROM task_runs
-             WHERE task_id = ?
-               AND outcome = 'completed'
-             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
-             LIMIT 1
-            """,
-            (task_id,),
-        ).fetchone()
-            if run is None:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
-                )
-            else:
-                run_id = int(run["id"])
-                conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
-                if metadata is not None:
-                    conn.execute(
-                        "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                        (json.dumps(metadata, ensure_ascii=False), run_id),
-                    )
-            _append_event(
-                conn, task_id, "edited",
-                {
-                    "fields": ["result", "summary"] + (["metadata"] if metadata is not None else []),
-                    "result_len": len(result) if result else 0,
-                    "summary": _first_line(handoff_summary, 400) or None,
-                },
-                run_id=run_id,
-            )
+    if changed_fields is None:
+        return False
     notify_task_updated(conn, task_id, changed_fields, board=board)
     return True
 

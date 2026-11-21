@@ -41,5 +41,13 @@ export const esAuxTasks: AuxTaskCopyMap = {
   curator: {
     label: 'Curador',
     hint: 'Revisión de uso de skills'
-  }
+  },
+  memory_query_rewrite: { label: 'Reescritura de consultas de memoria', hint: 'Consultas de búsqueda en memoria' },
+  tts_audio_tags: { label: 'Etiquetas de audio TTS', hint: 'Inserción de etiquetas para Gemini TTS' },
+  group_router: { label: 'Enrutador de grupos', hint: 'Quién responde en grupos con enrutamiento automático' },
+  goal_judge: { label: 'Juez de objetivos', hint: 'Redacción y evaluación de contratos /goal' },
+  background_review: { label: 'Revisión en segundo plano', hint: 'Actualización de memoria y skills tras cada turno' },
+  monitor: { label: 'Monitor', hint: 'Puntuación de correos importantes' },
+  moa_reference: { label: 'Referencia MoA', hint: 'Modelos de referencia de Mixture of Agents' },
+  moa_aggregator: { label: 'Agregador MoA', hint: 'Paso de agregación de Mixture of Agents' }
 }

@@ -265,7 +265,15 @@ export async function ensureLocalGateway(
 // Unsafe path permissions or types require repair, not another ensure of the same home.
 const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
 
+export class GatewayTicketTimeoutError extends Error {
+  constructor() {
+    super('Gateway ticket request timed out')
+  }
+}
+
 export function isStaleLocalGatewayError(error: unknown): boolean {
+  // The current owner may be busy. The caller can retry on the same descriptor.
+  if (error instanceof GatewayTicketTimeoutError) {return false}
   const message = error instanceof Error ? error.message : String(error ?? '')
 
   return message.startsWith('Gateway ticket') || STALE_CONTROL_ERRORS.has(message)

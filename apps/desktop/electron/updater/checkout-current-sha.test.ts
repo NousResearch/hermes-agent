@@ -48,6 +48,9 @@ it.each([
     try {
       // A probe-less checkout (the manual path: no hermes_cli/source_check.py)
       // previously reported no currentSha at all — the commit showed nowhere.
+      // It is still a real checkout, which is what earns the optimistic
+      // probe-less fallback (a runtime copy with no .git does not).
+      fs.mkdirSync(path.join(root, '.git'))
       writeStamp(root, STAMPED)
       const strategy: ReturnType<typeof createCheckoutStrategy> = createCheckoutStrategy(deps(root, null, isWindows))
 

@@ -2210,6 +2210,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
             # message: seal it instead of posting a duplicate.
+            content = self._prefix_sender_mention(chat_id, content, metadata)
             stream_result = await self._try_finalize_stream(chat_id, content, metadata)
             if stream_result is not None:
                 return stream_result
@@ -2459,7 +2460,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             return SendResult(success=False, error="Not connected")
         if self._native_stream_unsupported:
             return SendResult(success=False, error="native streaming unsupported")
-        text = self._strip_stream_cursor(content)
+        text = self._prefix_sender_mention(
+            chat_id, self._strip_stream_cursor(content), {**(metadata or {}), "expect_edits": False})
         stream_key = self._stream_key(chat_id, metadata)
         if stream_key is None:
             return SendResult(success=False, error="no thread_ts for native stream")
@@ -6517,6 +6519,33 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
     _slack_thread_require_mention = _extra_or_env_flag_getter(
         "thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION")
     _slack_disable_dms = _extra_or_env_flag_getter("disable_dms", "SLACK_DISABLE_DMS", strip=True)
+    # mention_sender_in_channels: prefix direct replies on shared surfaces with ``<@sender>``.
+    _slack_mention_sender_in_channels = _extra_or_env_flag_getter(
+        "mention_sender_in_channels", "SLACK_MENTION_SENDER_IN_CHANNELS")
+
+    def _prefix_sender_mention(
+        self, chat_id: str, content: str, metadata: Optional[dict[str, Any]]
+    ) -> str:
+        """Tag the authentic inbound sender on a direct reply in a channel or group DM.
+
+        Only fires when the gateway stamped ``mention_user_id`` + ``mention_message_id``
+        from the inbound event being answered, so cron, synthetic, and resumed sends
+        (which carry no live sender) are never tagged. 1:1 DMs already target one
+        person. Interim sends and editable previews are skipped so only the answer pings.
+        """
+        if not content or not self._slack_mention_sender_in_channels():
+            return content
+        if str(chat_id).startswith("D"):
+            return content
+        md = metadata or {}
+        if md.get("_interim_send") or md.get("expect_edits"):
+            return content
+        user_id = str(md.get("mention_user_id") or "").strip()
+        if not md.get("mention_message_id") or not re.fullmatch(r"[UW][A-Z0-9]+", user_id):
+            return content
+        if f"<@{user_id}" in content:
+            return content
+        return f"<@{user_id}> {content}"
 
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """True when the first token is a user mention (``<@U123>``/``<@U123|name>``)
@@ -7027,6 +7056,7 @@ def interactive_setup() -> None:
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
     ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
+    ("mention_sender_in_channels", "SLACK_MENTION_SENDER_IN_CHANNELS", "lower"),
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
     ("thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE", "lower"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),

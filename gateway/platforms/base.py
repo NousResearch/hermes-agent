@@ -443,7 +443,7 @@ from gateway.platforms.base_delivery_ledger import (
 from gateway.platforms.base_exec_approval import (  # approval_kind(_scope) / is_schedule_kind / ea_key / ea_t: published to adapters
     approval_expired_text, approval_kind, is_schedule_kind, approval_timeout_seconds, approval_kind_scope, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
-    card_shows_whole_command, render_exec_approval)
+    card_shows_whole_command, render_exec_approval, ExecApprovalPrompt)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -1542,31 +1542,6 @@ def coerce_plaintext_gateway_command(event: MessageEvent) -> None:
             return
         if any(pattern.match(text) for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS):
             event.text = "/restart"
-
-
-@dataclass
-class ExecApprovalPrompt:
-    """One exec-approval prompt, ready for a platform to render natively (see
-    ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
-    with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
-    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
-    ``danger`` / ``""``."""
-    chat_id: str
-    session_key: str
-    text: str
-    actions: list[tuple[str, str, str]]
-    command: str
-    description: str
-    smart_denied: bool
-    metadata: Optional[dict[str, Any]] = None
-    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
-    # The card kind it was rendered as: a click handler runs outside the send's binding and rebuilds the
-    # resolved card under ``approval_kind_scope(kind)``, kept beside the adapter's other per-card data.
-    kind: str = "command"
-
-    @property
-    def choices(self) -> list[str]:
-        return [choice for _, choice, _ in self.actions]
 
 
 @dataclass

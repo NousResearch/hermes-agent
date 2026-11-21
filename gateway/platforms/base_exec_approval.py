@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from contextlib import contextmanager
+from dataclasses import dataclass
 from contextvars import ContextVar
 from typing import Any, Awaitable, Iterator, Optional, TypeVar
 
@@ -109,6 +110,31 @@ async def with_approval_kind(kind: str, awaitable: Awaitable[_T]) -> _T:
     with approval_kind_scope(kind):
         return await awaitable
 
+@dataclass
+class ExecApprovalPrompt:
+    """One exec-approval prompt, ready for a platform to render natively (see
+    ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
+    with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
+    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
+    ``danger`` / ``""``."""
+    chat_id: str
+    session_key: str
+    text: str
+    actions: list[tuple[str, str, str]]
+    command: str
+    description: str
+    smart_denied: bool
+    metadata: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
+    # The card kind it was rendered as: a click handler runs outside the send's binding and rebuilds the
+    # resolved card under ``approval_kind_scope(kind)``, kept beside the adapter's other per-card data.
+    kind: str = "command"
+
+    @property
+    def choices(self) -> list[str]:
+        return [choice for _, choice, _ in self.actions]
+
+
 def approval_expired_text(key: str, **kwargs: Any) -> str:
     """``t(key)`` (a platform's "expired: the command was not run"), or the kind-neutral expiry line on a
     schedule card, which ran no command."""
@@ -185,6 +211,15 @@ def format_approval_timed_out_notice(timeout_s: int) -> str:
 def code_fence(command: str) -> str:
     """A backtick fence longer than any backtick run in ``command``, so the command cannot close it."""
     return "`" * max(3, max((len(run) for run in re.findall(r"`+", command)), default=0) + 1)
+
+
+def ea_fenced_t(key: str, body: str, **fields: Any) -> str:
+    """``ea_t(key, **fields)`` with the catalog's triple-backtick fences widened to ``code_fence(body)``, so a
+    model-written body holding its own backtick run cannot close them. Fields fill after the swap."""
+    text = ea_t(key, **{name: f"\x00{name}\x00" for name in fields}).replace("```", code_fence(body))
+    for name, value in fields.items():
+        text = text.replace(f"\x00{name}\x00", str(value))
+    return text
 
 
 def fit_fenced(command: str, fit) -> tuple[str, str]:

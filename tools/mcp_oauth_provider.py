@@ -36,17 +36,23 @@ DEFAULT_AUTH_REQUEST_USER_AGENT = _default_auth_request_user_agent()
 
 
 def stamp_default_user_agent(request):
-    """Give an SDK-built OAuth request (discovery, registration, token) a User-Agent if it has none.
+    """Give an SDK-built OAuth request (discovery, registration, token) a User-Agent and an
+    ``Accept: application/json`` if it has none.
 
     The SDK builds those as bare ``httpx.Request`` objects and sends them through ``client.send()``,
     which never merges the client's default headers, so they leave with NO ``User-Agent`` at all.
     WAF-fronted authorization servers (www.tradingview.com, coda.io) answer 403 to header-less
     requests while curl and a plain ``client.get()`` get 200 — the metadata document is then "not
     found", the SDK falls back to guessing ``/register`` and ``/authorize`` on the MCP host, and the
-    user sees ``Registration failed: 404`` (#113771). Only an absent header is filled, so a
-    configured ``oauth.user_agent`` (token requests) still wins."""
+    user sees ``Registration failed: 404`` (#113771). A User-Agent alone is not always enough:
+    Cloudflare in front of api.voicenotes.com still 403s a request carrying only ``Host``,
+    ``MCP-Protocol-Version`` and ``User-Agent``, and lets it through once it has an ``Accept``
+    (#157126). Every response read here is JSON, so ``application/json`` is the honest value. Only
+    an absent header is filled, so a configured ``oauth.user_agent`` (token requests) still wins."""
     if "user-agent" not in request.headers:
         request.headers["User-Agent"] = DEFAULT_AUTH_REQUEST_USER_AGENT
+    if "accept" not in request.headers:
+        request.headers["Accept"] = "application/json"
     return request
 
 

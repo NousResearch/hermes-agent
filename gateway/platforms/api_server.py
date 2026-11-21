@@ -903,7 +903,7 @@ def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: st
     seed = f"{system_prompt or ''}\n{first_user_message}"
     if profile and profile != "default" and not _names_launch_profile(profile):
         seed = f"{profile}\0{seed}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(seed.encode("utf-8", "surrogatepass")).hexdigest()[:16]
     return f"api-{digest}"
 
 

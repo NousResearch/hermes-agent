@@ -203,6 +203,30 @@ class TestOpenCodeGoGLM52Reasoning:
         assert top_level == {"reasoning_effort": "max"}
 
 
+class TestOpenCodeGoGLM53Reasoning:
+    """GLM-5.3 takes the same native high/max reasoning_effort knob as 5.2 (#158478).
+
+    Before this, `glm-5.3` matched no branch and the request left Hermes with no reasoning field
+    at all, so the relay applied its own default (max) tier and every effort preference was
+    silently ignored.
+    """
+
+    @pytest.mark.parametrize("model", ["glm-5.3", "glm-5-3", "glm-5p3"])
+    def test_alias_spellings_recognized(self, opencode_go_profile, model):
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_disabled_emits_nothing(self, opencode_go_profile):
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.3",
+        )
+        assert top_level == {}
+
+
 class TestOpenCodeGoModelGating:
     """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM controls."""
 

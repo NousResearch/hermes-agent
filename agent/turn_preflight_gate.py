@@ -43,6 +43,17 @@ def run_preflight_gate(
         _last_preflight_pressure=None,
     )
 
+    # Run before pressure/compression checks so a recovered primary gets its own
+    # preflight on the next loop pass. Refund this already-counted iteration.
+    from agent.primary_reprobe import maybe_reprobe_primary
+    if maybe_reprobe_primary(agent, v.api_call_count):
+        v.api_call_count -= 1
+        agent._api_call_count = v.api_call_count
+        with suppress(Exception):
+            agent.iteration_budget.refund()
+        v.action = "continue"
+        return v
+
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
     if _runtime_context_error:
         v.final_response = _runtime_context_error

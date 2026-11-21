@@ -68,3 +68,14 @@ class TestConfigSchemaOffLoop:
             "the event loop could not dispatch an unrelated callback while the "
             "schema was being built — /api/config/schema is blocking the loop"
         )
+
+
+def test_fallback_reprobe_settings_are_documented_in_schema():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.web_server_config import _build_schema_from_config
+
+    schema = _build_schema_from_config(DEFAULT_CONFIG)
+    assert schema["fallback.reprobe_per_call"]["type"] == "number"
+    assert "0 = disabled" in schema["fallback.reprobe_per_call"]["description"]
+    assert schema["fallback.reprobe_cooldown_sec"]["type"] == "number"
+    assert schema["fallback.reprobe_cooldown_sec"]["category"] == "agent"

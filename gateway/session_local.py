@@ -103,9 +103,7 @@ class LocalSessionAdapter(BasePlatformAdapter):
         error = self._unanswerable_clarify(chat_id)
         if error is not None:
             # Acknowledging this question would park the turn on an answer nobody can submit.
-            # A structured decline releases the wait at once and skips the plain-text re-ask
-            # (an ordinary failure would fall back to a send() that ACKs, and the turn would
-            # wait the whole clarify timeout).
+            # A structured decline releases the wait at once with the "destination refused" notice.
             from gateway.relay.egress import EGRESS_DECLINE_CODE
             return SendResult(success=False, error=error, error_kind='forbidden',
                               raw_response={'success': False, 'code': EGRESS_DECLINE_CODE, 'error': error})

@@ -35,10 +35,12 @@ WITHDRAWN = "clarify_withdrawn"
 def text_fallback_coro(adapter, **send_kwargs):
     """The base numbered-text ``send_clarify`` as a fresh coroutine, or ``None`` when the adapter has
     no native override — its ``send_clarify`` already IS the text path, so retrying it would only
-    repeat the failure."""
+    repeat the failure — or for a local route, whose ``send()`` publishes nothing: an ACKed text
+    prompt there parks the turn for the whole clarify timeout behind a question no one sees."""
     from gateway.platforms.base import BasePlatformAdapter
+    from gateway.session_local import LocalSessionAdapter
 
-    if not isinstance(adapter, BasePlatformAdapter) \
+    if not isinstance(adapter, BasePlatformAdapter) or isinstance(adapter, LocalSessionAdapter) \
             or type(adapter).send_clarify is BasePlatformAdapter.send_clarify:
         return None
     # A human-decision prompt: Telegram's "important" mode must push it, not deliver it silently (#132516).

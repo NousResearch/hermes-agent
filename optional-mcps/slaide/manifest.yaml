@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: slaide
+description: 'Slaide: build, edit and export PowerPoint slide decks, documents and Excel workbooks.'
+source: https://www.slaide.de/ai-assistants
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata at
+# /.well-known/oauth-protected-resource/api/mcp -> authorization server
+# metadata with registration_endpoint); Hermes's MCP client handles
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://app.slaide.de/api/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - slaide
+    - presentation
+    - powerpoint
+    - slides
+  hosts:
+    - slaide.de
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Slaide (or run `hermes mcp login slaide`). Sign in with a Slaide
+  account (a free account is enough), approve access, then restart
+  the session so tools load. The connector can read, create, update
+  and export your own documents; it cannot delete documents or change
+  a plan.

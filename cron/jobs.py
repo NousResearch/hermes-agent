@@ -829,13 +829,13 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
             # never become due and recurring jobs fire at the wrong time. Using the configured zone makes
             # "20:07" mean 20:07 on the same clock the scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_hermes_now().tzinfo)
+                dt = jobs_time.wall_clock_readings(dt, get_timezone())[0]
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
                 "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}"
             }
-        except ValueError as e:
+        except (ValueError, OverflowError) as e:  # Overflow: a wall clock at datetime.min/max
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
 
     # "in 30m"/"in 2h" is the explicit one-shot-by-duration form; a bare duration ("30m") is a
@@ -874,7 +874,7 @@ def _ensure_aware(dt: datetime, target_tz: Optional[Any] = None) -> datetime:
     look still-in-the-future and the repair path re-anchors past it (job lost, never fired)."""
     target_tz = target_tz or _hermes_now().tzinfo
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=datetime.now().astimezone().tzinfo).astimezone(target_tz)
+        return jobs_time.wall_clock_readings(dt, None)[0].astimezone(target_tz)
     return dt.astimezone(target_tz)
 
 
@@ -1239,8 +1239,9 @@ def compute_next_run(
         # wall clock for croniter, then re-attach the zone to the result, so
         # the wall-clock hour stays correct every calendar day, including DST
         # boundaries (morning-routine 09:00 America/Toronto).
-        # Fall back to the base's own zone only when nothing is configured.
-        zone = job_zone or get_timezone() or base_time.tzinfo
+        # With nothing configured the zone is the host's, never the fixed offset
+        # ``base_time`` carries: that offset is wrong on the far side of a DST change.
+        zone = job_zone or get_timezone()
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
         it = croniter(expr, base_wall)
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
@@ -1253,12 +1254,11 @@ def compute_next_run(
         base_ts = base_time.timestamp()
         next_wall = it.get_next(datetime)
         for _ in range(2):
-            for fold in (0, 1):
-                candidate = next_wall.replace(tzinfo=zone, fold=fold)
+            for candidate in jobs_time.wall_clock_readings(next_wall, zone):
                 if candidate.timestamp() > base_ts:
                     return candidate.isoformat()
             next_wall = it.get_next(datetime)
-        return next_wall.replace(tzinfo=zone).isoformat()
+        return jobs_time.wall_clock_readings(next_wall, zone)[0].isoformat()
     return None
 
 

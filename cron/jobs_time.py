@@ -20,7 +20,7 @@ the "job timezone east of the profile timezone silently never fires" failure. Se
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -176,3 +176,18 @@ def oneshot_instant(value: Any, zone: Optional[ZoneInfo] = None) -> Optional[dat
     if dt.tzinfo is None and zone is not None:
         return dt.replace(tzinfo=zone)
     return _ensure_aware(dt, zone)
+
+
+def wall_clock_readings(wall: datetime, zone: Optional[tzinfo]) -> list[datetime]:
+    """Aware readings of naive *wall*, fold=0 first, in *zone* or (``None``) the host's local zone.
+
+    With no zone configured the clock is ``datetime.now().astimezone()``, whose fixed UTC offset
+    is only right on today's side of a DST change. So a host reading takes the offset in force a
+    day either side of *wall* and is kept when the host agrees with it at that instant. A
+    spring-forward gap agrees with neither and keeps both, earlier offset first, as zoneinfo
+    orders them, so a configured zone and the same zone on the host resolve every wall clock alike."""
+    if zone is not None:
+        return [wall.replace(tzinfo=zone, fold=fold) for fold in (0, 1)]
+    around = wall.replace(tzinfo=UTC)
+    readings = [wall.replace(tzinfo=(around + timedelta(days=d)).astimezone().tzinfo) for d in (-1, 1)]
+    return [r for r in readings if r.astimezone().utcoffset() == r.utcoffset()] or readings

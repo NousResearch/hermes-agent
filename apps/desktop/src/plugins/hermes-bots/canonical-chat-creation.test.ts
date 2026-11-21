@@ -155,6 +155,9 @@ describe('the lazy row is materialized before anything else touches it', () => {
     expect(created).toMatchObject({
       hidden: true,
       title: 'Bot Chat',
+      // Without it a remote gateway (no HERMES_DESKTOP env) stamps the row "tui"
+      // and the agent gets the terminal prompt: no MEDIA:, no inline images.
+      source: 'desktop',
       // The PR #97008 contract: the canonical Bot Chat's runtime always
       // follows the profile's CURRENT config on resume — never the stored
       // model/provider pin. Dropping this param silently regresses bots to

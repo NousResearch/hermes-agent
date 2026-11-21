@@ -1,5 +1,6 @@
 """Tests for tools/skill_linter.py — the advisory SKILL.md convention linter."""
 
+import pytest
 
 from tools.skill_linter import (
     ERROR,
@@ -94,6 +95,33 @@ def test_missing_when_to_use_section_warns():
     content = CLEAN.replace("## When to Use\n- When the user wants X.\n", "")
     findings = lint_content(content)
     assert "missing-section" in _rules(findings)
+
+
+@pytest.mark.parametrize(
+    "section",
+    (
+        "## When To Use This Skill",
+        "## When to Trigger",
+        "## When to use AudioCraft",
+        "## When This Skill Activates",
+        "## 触发条件",
+        "## 触发场景",
+        "## 适用场景",
+        "## 用途",
+        "## 1. When to Use（触发条件）",
+    ),
+)
+def test_localized_when_to_use_section_is_recognized(section):
+    content = CLEAN.replace("## When to Use", section)
+    assert "missing-section" not in _rules(lint_content(content))
+
+
+def test_explicit_description_trigger_is_recognized_without_section():
+    content = CLEAN.replace("## When to Use\n- When the user wants X.\n", "").replace(
+        "description: Search arXiv papers by keyword, author, or ID.",
+        "description: Use when the user asks to search arXiv papers.",
+    )
+    assert "missing-section" not in _rules(lint_content(content))
 
 
 def test_bad_name_format_is_error():
@@ -217,3 +245,48 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+def test_unknown_frontmatter_key_warns():
+    # A key nothing documents and nothing reads is drift; the finding names it so the author can
+    # decide to remove it or document the reader.
+    content = CLEAN.replace("license: MIT", "license: MIT\nweird_key: whatever")
+    found = [f for f in lint_content(content) if f.rule == "unknown-frontmatter-key"]
+    assert found and found[0].severity == WARNING
+    assert "weird_key" in found[0].message
+
+
+def test_undocumented_but_read_keys_are_not_flagged():
+    # dependencies (docs generator), prerequisites (setup flow), environments (offer-time gate),
+    # deps / compatibility (skills_tool) all have readers, so they are house metadata, not drift.
+    extra = (
+        "prerequisites:\n  env_vars: [MY_KEY]\n"
+        "environments: [kanban]\n"
+        "deps: [ffmpeg]\n"
+        "compatibility: hermes>=0.1\n"
+        "dependencies: [pytz]\n"
+    )
+    content = CLEAN.replace("license: MIT", "license: MIT\n" + extra)
+    assert "unknown-frontmatter-key" not in _rules(lint_content(content))
+
+
+def test_unknown_metadata_hermes_key_warns():
+    content = CLEAN.replace("    related_skills: []", "    related_skills: []\n    mystery: 1")
+    found = [f for f in lint_content(content) if f.rule == "unknown-frontmatter-key"]
+    assert found and "metadata.hermes.mystery" in found[0].message
+
+
+def test_triggers_key_flagged_until_a_reader_lands():
+    # Issue #100056 proposes `triggers:`; until something reads it, it is drift like any other key.
+    content = CLEAN.replace("license: MIT", "license: MIT\ntriggers: [x]")
+    assert "unknown-frontmatter-key" in _rules(lint_content(content))
+
+
+def test_metadata_upstream_pointer_not_flagged():
+    # tools/skills_hub_official.py fetches catalog stubs through metadata.hermes.upstream, so it is
+    # house metadata even though skills/AGENTS.md does not list it.
+    content = CLEAN.replace(
+        "    related_skills: []",
+        "    related_skills: []\n    upstream: NousResearch/hermes-agent/skills/x",
+    )
+    assert "unknown-frontmatter-key" not in _rules(lint_content(content))

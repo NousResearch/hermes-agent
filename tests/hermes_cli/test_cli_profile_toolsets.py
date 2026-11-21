@@ -101,3 +101,30 @@ def test_coding_posture_is_left_to_the_gateway(store, monkeypatch):
     host, _printed = _launch(monkeypatch, db, coding=["terminal"])
     assert host.enabled_toolsets == ["terminal"]  # the local display still shows the posture
     assert "toolsets" not in _created(client)
+
+
+def test_an_empty_pick_rides_create_as_no_toolsets(store, monkeypatch):
+    """``-t ""`` is an explicit pick of NO toolsets, not the profile default (the NewsCore harness
+    sandbox guard: a specialist that must not act in the world). Falsiness used to fold it into the
+    default branch, so the guard ran the full bundle including code_execution."""
+    from gateway.session_policy import build_policy
+    from gateway.session_local_inventory import _policy_tools
+    db, client = store
+    host, _printed = _launch(monkeypatch, db, toolsets="")
+    assert host.enabled_toolsets == []
+    assert host._typed_toolsets == []  # a typed empty pick is still checked on resume
+    params = _created(client)
+    assert params["toolsets"] == []
+    policy = build_policy(params, CONFIG)
+    assert "code_execution" not in policy.toolsets and "terminal" not in policy.toolsets
+    _enabled, tools = _policy_tools(policy, CONFIG)
+    names = {tool["function"]["name"] for tool in tools}
+    assert not names & {"execute_code", "terminal", "write_file", "read_file"}
+
+
+def test_an_empty_pick_wins_over_the_coding_posture(store, monkeypatch):
+    """The posture is the flag-absent default; a typed empty pick must not resurrect it."""
+    db, client = store
+    host, _printed = _launch(monkeypatch, db, toolsets="", coding=["terminal"])
+    assert host.enabled_toolsets == []
+    assert _created(client)["toolsets"] == []

@@ -314,7 +314,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
                 try:
                     if self._ws and not self._ws.closed:
-                        await self._send_json({"cmd": APP_CMD_PING, "headers": {"req_id": self._new_req_id("ping")}, "body": {}})
+                        await self._send_json(
+                            {
+                                "cmd": APP_CMD_PING,
+                                "headers": {"req_id": self._new_req_id("ping")},
+                            }
+                        )
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
         except asyncio.CancelledError:

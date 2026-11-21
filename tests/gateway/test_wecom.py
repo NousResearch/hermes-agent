@@ -4,12 +4,14 @@ import asyncio
 import base64
 import os
 import socket
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 
 
 
@@ -176,6 +178,70 @@ class TestWeComConnect:
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
 
+class TestWeComHeartbeat:
+    @pytest.mark.asyncio
+    async def test_ping_omits_body_field(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import APP_CMD_PING, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+
+        async def capture_once(_payload):
+            adapter._running = False
+
+        adapter._send_json = AsyncMock(side_effect=capture_once)
+        monkeypatch.setattr(wecom_module.asyncio, "sleep", AsyncMock())
+
+        await adapter._heartbeat_loop()
+
+        payload = adapter._send_json.await_args.args[0]
+        assert payload["cmd"] == APP_CMD_PING
+        assert payload["headers"]["req_id"].startswith("ping-")
+        assert "body" not in payload
+
+
+class TestWeComQrScan:
+    @patch("plugins.platforms.wecom.adapter.time")
+    @patch("plugins.platforms.wecom.adapter.json.loads")
+    @patch("plugins.platforms.wecom.adapter.logger")
+    @patch("urllib.request.urlopen")
+    @patch("urllib.request.Request")
+    def test_qr_scan_timeout_uses_monotonic_clock(
+        self,
+        mock_request,
+        mock_urlopen,
+        _mock_logger,
+        mock_json_loads,
+        mock_time,
+    ):
+        from plugins.platforms.wecom.adapter import qr_scan_for_bot_info
+
+        generate_resp = MagicMock()
+        generate_resp.read.return_value = b'{"data":{"scode":"abc","auth_url":"https://example.com/qr"}}'
+        generate_resp.__enter__.return_value = generate_resp
+        generate_resp.__exit__.return_value = False
+
+        poll_resp = MagicMock()
+        poll_resp.read.return_value = b'{"data":{"status":"pending"}}'
+        poll_resp.__enter__.return_value = poll_resp
+        poll_resp.__exit__.return_value = False
+
+        mock_urlopen.side_effect = [generate_resp, poll_resp]
+        mock_json_loads.side_effect = [
+            {"data": {"scode": "abc", "auth_url": "https://example.com/qr"}},
+            {"data": {"status": "pending"}},
+        ]
+        mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
+        mock_time.time.side_effect = [1000, 900, 901, 902]
+        mock_time.sleep = MagicMock()
+
+        with patch("builtins.print"), patch.dict("sys.modules", {"qrcode": None}):
+            result = qr_scan_for_bot_info(timeout_seconds=1)
+
+        assert result is None
+        assert mock_urlopen.call_count == 2
 
 
 class TestWeComReplyMode:

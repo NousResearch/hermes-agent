@@ -1382,3 +1382,26 @@ Granting `mcp_allowlist` gives the plugin the same access to that MCP server as 
 :::
 
 See the **[full guide](../../developer-guide/plugins/index.md)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.
+
+### Controlling an admitted parent turn
+
+`submission_status(...)` also returns the current `authority_epoch`, the admission's
+`execution_generation`, factual `progress` (`tool` and `progress_at` when available),
+and `controls`. A queued admission offers `cancel`; an executing admission may offer
+`steer` and `interrupt`. A completed parent does not describe or control background
+children it launched.
+
+Pass the versions from the last observation to
+`ctx.control_submission(action, session_key=..., expected_session_id=...,
+request_id=..., authority_epoch=..., execution_generation=..., text=...)`.
+Only `steer` accepts `text`. Stale versions are refused, including when a queued
+admission starts before cancellation. Never refresh and automatically retry against
+another execution.
+
+A successful response includes `control` with `action`, `status` (`accepted` or
+`rejected`) and `delivery`. `agent` means the agent method was called; `pending`
+means the exact execution's adoption latch accepted the request; `none` means no
+agent delivery occurred (including successful queue cancellation). Neither means
+the model has read or followed the correction. A transport `unknown` response may
+follow an applied control: controls are not retry-idempotent, so do not automatically
+repeat them. Parent interruption does not stop background delegations.

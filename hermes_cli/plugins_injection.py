@@ -70,7 +70,7 @@ def inject_plugin_message(
         return False
 
 
-def plugin_submission(ctx, *, content, session_key, expected_session_id, request_id, read_only=False) -> dict:
+def plugin_submission(ctx, *, content, session_key, expected_session_id, request_id, read_only=False, control=None) -> dict:
     """Route receipt-bearing calls only to the gateway published for this manager."""
     refused = dict(ok=False, status="refused", request_id=request_id, session_id=expected_session_id,
                    admission_id=None, outcome=None, result=None)
@@ -83,4 +83,5 @@ def plugin_submission(ctx, *, content, session_key, expected_session_id, request
     if callback is None:
         return {**refused, "error": "gateway_unavailable"}
     return callback(content=content, session_key=session_key, expected_session_id=expected_session_id,
-                    request_id=request_id, plugin_id=ctx.plugin_id, plugin_home=ctx._manager.home_path)
+                    request_id=request_id, plugin_id=ctx.plugin_id, plugin_home=ctx._manager.home_path,
+                    **({"control": control} if control is not None else {}))

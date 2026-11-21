@@ -31,6 +31,7 @@ class Request:
     plugin_id: str
     plugin_home: Path
     content: str | None = None
+    control: dict | None = None
 
     @property
     def identity(self):
@@ -42,9 +43,9 @@ class Request:
 
 
 def call(runner, *, content=None, session_key, expected_session_id, request_id, plugin_id,
-         plugin_home, timeout=30):
+         plugin_home, control=None, timeout=30):
     """Wait for admission, never execution. Must run outside the gateway event loop."""
-    request = Request(session_key, expected_session_id, request_id, plugin_id, plugin_home, content)
+    request = Request(session_key, expected_session_id, request_id, plugin_id, plugin_home, content, control)
     if (any(not isinstance(value, str) or not value.strip() for value in
             (session_key, expected_session_id, request_id, plugin_id))
             or len(request_id) > 256 or plugin_home is None
@@ -70,7 +71,7 @@ def call(runner, *, content=None, session_key, expected_session_id, request_id, 
     try:
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
-        # The ledger write may already have committed. Keep it running; retry the same identity.
+        # Keep running. Submission retries are idempotent; controls must not retry.
         return request.refused('timeout', status='unknown')
     except concurrent.futures.CancelledError:
         return request.refused('gateway_unavailable', status='unknown')
@@ -147,6 +148,12 @@ async def _dispatch_bound(runner, authority, request, entry, source, adapter, ch
         check()
         if request.content is not None and row.payload.get('text') != request.content:
             raise AuthorityRefusal('admission_conflict')
+        if request.control is not None:
+            from gateway.plugin_submission.controls import apply
+            result = await apply(authority, request, row)
+            response = await _project(authority, request, await asyncio.to_thread(
+                store.admissions.get, admission_id=row.admission_id))
+            return {**response, "control": result}
         return await _project(authority, request, row)
     if request.content is None:
         raise AuthorityRefusal('not_found')
@@ -188,6 +195,7 @@ async def _project(authority, request, record):
         if stored is not None and stored.result is not None:
             text = (stored.result.get('result') or {}).get('final_response') or ''
             result = dict(final_response=text[:16000], truncated=len(text) > 16000)
+    from gateway.plugin_submission.controls import observation
     return dict(ok=True, status=receipt.status, request_id=request.request_id,
                 admission_id=receipt.admission_id, session_id=receipt.ref.session_id,
-                outcome=receipt.outcome, result=result)
+                outcome=receipt.outcome, result=result, **observation(authority, receipt))

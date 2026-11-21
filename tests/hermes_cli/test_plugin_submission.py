@@ -19,6 +19,9 @@ import os
 def register(ctx):
     def probe(raw_args):
         args = json.loads(raw_args)
+        action = args.pop("action", None)
+        if action is not None:
+            return json.dumps({"pid": os.getpid(), "receipt": ctx.control_submission(action, **args)})
         content = args.pop("content", None)
         receipt = (ctx.submission_status(**args) if content is None
                    else ctx.submit_message(content, **args))
@@ -64,9 +67,11 @@ def _load(home, gateway):
         reset_hermes_home_override(token)
 
 
-def _invoke(manager, *, content="work"):
+def _invoke(manager, *, content="work", action=None):
     args = {"session_key": "route", "expected_session_id": "conversation", "request_id": "retry"}
-    if content is not None:
+    if action is not None:
+        args.update(action=action, authority_epoch=1)
+    elif content is not None:
         args["content"] = content
     return json.loads(manager._plugin_commands["receipt-probe"]["handler"](json.dumps(args)))
 
@@ -89,7 +94,8 @@ def homes(tmp_path, monkeypatch):
     return a, b
 
 
-def test_discovery_a_b_a_never_borrows_permission_or_ambient_home(homes):
+@pytest.mark.parametrize("action", [None, "cancel"])
+def test_discovery_a_b_a_never_borrows_permission_or_ambient_home(homes, action):
     a, b = homes
     _install(a, allowed=True)
     _install(b, allowed=False)
@@ -100,7 +106,7 @@ def test_discovery_a_b_a_never_borrows_permission_or_ambient_home(homes):
         for home, manager, allowed in [(a, first, True), (b, second, False), (a, first, True)]:
             token = set_hermes_home_override(home)
             try:
-                result = _invoke(manager)["receipt"]
+                result = _invoke(manager, action=action)["receipt"]
                 assert result["ok"] is allowed
                 if not allowed:
                     assert result["status"] == "refused" and result["error"] == "permission_denied"
@@ -108,7 +114,7 @@ def test_discovery_a_b_a_never_borrows_permission_or_ambient_home(homes):
                 reset_hermes_home_override(token)
         token = set_hermes_home_override(b)
         try:
-            assert _invoke(first)["receipt"]["ok"]
+            assert _invoke(first, action=action)["receipt"]["ok"]
         finally:
             reset_hermes_home_override(token)
         assert len(gateway.calls) == 3
@@ -131,7 +137,10 @@ def test_hosted_plugin_submission_and_status_are_plain_json(homes):
         assert submitted["pid"] != os.getpid() and status["pid"] == submitted["pid"]
         assert submitted["receipt"] == status["receipt"]
         assert submitted["receipt"]["admission_id"] == "receipt"
-        assert len(gateway.calls) == 2
+        control = _invoke(manager, action="cancel")
+        assert control["pid"] == submitted["pid"]
+        assert gateway.calls[-1]["control"]["action"] == "cancel"
+        assert len(gateway.calls) == 3
         assert all(call["plugin_home"] == a for call in gateway.calls)
     finally:
         _close(manager)

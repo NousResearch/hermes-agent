@@ -21,7 +21,7 @@ import time
 import traceback
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home
@@ -353,6 +353,26 @@ def arm_shutdown_watchdog(
     except Exception:
         logger.debug("Failed to arm shutdown watchdog", exc_info=True)
     return done
+
+
+@contextlib.contextmanager
+def disarm_after_teardown(done_event: threading.Event) -> Iterator[None]:
+    """Disarm the shutdown watchdog only once the teardown it guards has run to completion.
+
+    A teardown that raises, or is cancelled, leaves the stop as unfinished as one that hangs: the
+    runner's shutdown event is never set, so the process would stay up holding its lock until
+    SIGKILL (#158360). The watchdog stays armed and forces the exit on its leash. Either ending is
+    logged here, because the watchdog's later stack dump cannot show an exception that has unwound."""
+    try:
+        yield
+    except Exception:
+        logger.exception("Gateway stop failed; the shutdown watchdog stays armed to force the exit")
+        raise
+    except BaseException as exc:
+        logger.warning("Gateway stop interrupted (%s); the shutdown watchdog stays armed to force the exit",
+                       type(exc).__name__)
+        raise
+    done_event.set()
 
 
 async def _tick_socket_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

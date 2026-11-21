@@ -1374,8 +1374,11 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
-                         **kwargs) -> SendResult:
-        return await self._sidecar_send_attachment(chat_id, audio_path, caption=caption, kind="voice")
+                         is_voice: Optional[bool] = None, **kwargs) -> SendResult:
+        # is_voice=False is a plain audio MEDIA file (music, a sound effect): a normal attachment,
+        # as _standalone_send sends it. A voice intent or auto-TTS (no flag) stays a voice note.
+        kind = "attachment" if is_voice is False else "voice"
+        return await self._sidecar_send_attachment(chat_id, audio_path, caption=caption, kind=kind)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,

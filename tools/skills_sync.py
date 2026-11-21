@@ -24,7 +24,10 @@ for _stream in (sys.stdout, sys.stderr):
         with suppress(ValueError, TypeError):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
-from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
+from agent.skill_utils import (
+    ESSENTIAL_SKILLS, EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS, is_excluded_skill_path,
+    parse_frontmatter,
+)
 from tools.skill_usage import read_skill_name
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
@@ -97,6 +100,34 @@ def _iter_skill_mds(root: Path, sort: bool = False) -> Iterator[Path]:
 def _iter_active_skill_mds(sort: bool = False) -> Iterator[Path]:
     """Yield every non-excluded SKILL.md in the user's skills tree."""
     return _iter_skill_mds(_skills_dir(), sort)
+
+
+def _iter_skill_mds_following_links() -> Iterator[Path]:
+    """Cycle-safe SKILL.md walk that, unlike ``_iter_active_skill_mds``, also follows symlinked
+    category dirs — the loader's view. Prunes EXCLUDED_SKILL_DIRS and skill-root support dirs
+    with the exact loader pattern (``agent.skill_utils.iter_skill_index_files`` /
+    ``agent.prompt_builder._build_skills_manifest``). A directory already visited (by real
+    inode) is never descended into twice, so symlink cycles terminate and an aliased category
+    yields no duplicates. Read-only; feeds diagnostics only, never a move/delete decision
+    (#143470)."""
+    visited: set[tuple[int, int]] = set()
+    for cur, dirs, files in os.walk(_skills_dir(), followlinks=True):
+        try:
+            info = os.stat(cur)
+        except OSError:
+            dirs[:] = []
+            continue
+        if (info.st_dev, info.st_ino) in visited:
+            dirs[:] = []
+            continue
+        visited.add((info.st_dev, info.st_ino))
+        has_skill_md = "SKILL.md" in files
+        dirs[:] = [
+            d for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
+        ]
+        if has_skill_md:
+            yield Path(cur) / "SKILL.md"
 
 
 def _build_external_skill_index() -> set[str]:
@@ -219,9 +250,154 @@ def _move_dir(src: Path, dest: Path) -> None:
     shutil.move(str(src), str(dest))
 
 
+def _loader_visible_name(skill_md: Path) -> Optional[str]:
+    """The loader's YAML frontmatter ``name`` for a SKILL.md — the identity the agent actually
+    invokes. Differs from ``read_skill_name``'s line-based read on commented (``name: demo # x``),
+    escape-encoded and block-scalar names (#143470): those load as ``demo`` but read as garbage
+    line-wise. Parses the complete file like the loader — no truncation, or a frontmatter fence
+    past the cut would again hide a name the loader recognizes. Diagnostic/recovery lookup only;
+    discovery/manifest identities keep ``read_skill_name``."""
+    try:
+        frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
+    except OSError:
+        return None
+    name = frontmatter.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _reached_through_category_symlink(directory: Path) -> bool:
+    """True when the path from the skills root down to ``directory`` traverses at least one
+    symlinked directory — the #143470 scenario the warning describes. A plain real directory
+    is visible to every consumer and must never be labeled symlink-only-reachable."""
+    root = _skills_dir()
+    current = directory
+    while current != root and current != current.parent:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return False
+
+
+def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path, *, v1_entry: bool = False) -> None:
+    """#143470: the loader follows symlinked category dirs, so a skill whose only copy sits under
+    one is ACTIVE for the agent yet invisible to the rglob-based active index — an upstream
+    rename then reads as a user deletion. READ-ONLY fallback diagnostic: first match only (one
+    warning per run), cycle-safe, and sync never moves, deletes, or resets content reached
+    through a symlink. No ``reset`` advice either: reset's own scan cannot see the copy, and
+    moving it is not sync's call — the safe remedy (replace the category symlink with a real
+    directory containing the copy) is stated instead. The wording is deliberately generic about
+    the copy's contents: deciding "pristine vs modified" would hash external content reached
+    through the symlink, a cost the diagnostic does not need — user edits are untouched either
+    way. A candidate matches on the manifest's line-based name read (which itself falls back
+    to the directory basename when the frontmatter has no name) or on the loader's YAML name —
+    the diagnostic answers "can the agent still address this copy?", so it must not miss a
+    copy the loader invokes under a name the line reader garbles, and must not claim a
+    directory that only shares a basename.
+
+    The warning is APPENDED to ``st.relocation_warnings`` (rendered by quiet production
+    callers from the sync result) and only additionally printed via ``st.say`` when not
+    quiet."""
+    for md in _iter_skill_mds_following_links():
+        if md.parent == dest or not md.parent.is_dir():
+            continue
+        # Identity = how the agent can address this copy: the manifest's line-based name read
+        # (which itself falls back to the directory basename when the frontmatter has no name)
+        # or the loader's YAML name. A directory whose basename merely equals the tracked
+        # skill name is NOT that skill by loader identity and is deliberately not matched.
+        if (
+            read_skill_name(md, md.parent.name) != skill_name
+            and _loader_visible_name(md) != skill_name
+        ):
+            continue
+        try:
+            rel = _rel_skills_posix(md.parent)
+        except ValueError:
+            continue
+        if _hub_owned(st, md.parent, rel):
+            # The hub owns this copy (install path or inode alias) but not every copy of the
+            # identity — skip it and keep searching: a later non-hub copy still deserves its
+            # warning, order-independently.
+            continue
+        if not _reached_through_category_symlink(md.parent):
+            # A plain visible directory is not the stranding scenario — the label
+            # "only reachable through a category symlink" must never be applied to one.
+            continue
+        if v1_entry:
+            remedy = (
+                f"Move the copy to {_rel_skills_posix(dest)} to resume updates: a v1 manifest "
+                f"entry records no origin hash, so sync cannot authorize an automatic "
+                f"relocation and baselines from your copy once it is at the new location.")
+        else:
+            remedy = (
+                "Replace the category symlink with a real directory containing the copy to "
+                "make it visible again: a pristine copy then relocates on the next sync, and "
+                "a modified one is kept at the old path with your edits preserved. Removing "
+                "the symlink alone would strand it — the retained manifest entry makes sync "
+                "read the missing destination as a user deletion.")
+        message = (
+            f"{skill_name}: upstream moved this skill to {_rel_skills_posix(dest)}, but the copy "
+            f"at {rel} is only reachable through a category symlink, so it was not automatically "
+            f"relocated. It is left untouched and will not receive updates. {remedy}")
+        st.relocation_warnings.append(message)
+        st.say(f"  ⚠ {message}")
+        return
+
+
 def _copy_dir(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dest, ignore=_ignore_runtime_cache)
+
+
+def _ensure_recovery_index(st: "_SyncState") -> dict[str, list[Path]]:
+    """Lazily build the shared recovery lookup: visible copies by every name form the loader
+    or the manifest can address them by, plus hub ownership as install-path strings AND as
+    real-directory inodes — an alias of a hub-installed dir is hub-managed whichever symlink
+    reached it first, so ownership must not depend on traversal order."""
+    if st.active_index is None:
+        st.active_index = {}
+        for md in _iter_active_skill_mds():
+            line_name = read_skill_name(md, md.parent.name)
+            st.active_index.setdefault(line_name, []).append(md.parent)
+            loader_name = _loader_visible_name(md)  # loader parity, see _warn_invisible_renamed_copy
+            if loader_name and loader_name != line_name:
+                st.active_index.setdefault(loader_name, []).append(md.parent)
+        st.hub_paths = _read_hub_install_paths()
+        for rel in st.hub_paths:
+            try:
+                info = (_skills_dir() / rel).stat()
+            except OSError:
+                continue  # dangling lock path: no directory, nothing to alias
+            st.hub_inodes.add((info.st_dev, info.st_ino))
+    return st.active_index
+
+
+def _hub_owned(st: "_SyncState", directory: Path, rel: str) -> bool:
+    """True when a copy is hub-managed: by install-path string or by real-directory inode (a
+    hub install reached through an alias path is still the hub's). Applied consistently by
+    the diagnostic, the relocation loop, and the visible-copy guard."""
+    if rel in st.hub_paths:
+        return True
+    try:
+        info = directory.stat()
+    except OSError:
+        return False
+    return (info.st_dev, info.st_ino) in st.hub_inodes
+
+
+def _visible_non_hub_copy(skill_name: str, dest: Path, active_index: dict[str, list[Path]], st: "_SyncState") -> bool:
+    """True when a visible copy exists that recovery could actually act on. A hub-owned
+    install path is visible but untouchable — it must not suppress the read-only diagnostic
+    for a separate stranded copy behind a category symlink."""
+    for candidate in active_index.get(skill_name, []):
+        if candidate == dest or not candidate.is_dir():
+            continue
+        try:
+            rel = _rel_skills_posix(candidate)
+        except ValueError:
+            continue
+        if not _hub_owned(st, candidate, rel):
+            return True
+    return False
 
 
 def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
@@ -229,21 +405,22 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
     RECATEGORIZATION (else it is misread as user-deleted and stranded forever). Only a copy
     byte-identical to the origin hash — proof *we* placed it — moves. Returns rel source path."""
     origin_hash = st.manifest.get(skill_name, "")
+    active_index = _ensure_recovery_index(st)
     if not origin_hash:
+        # v1 plain-name entry (empty hash): no hash can authorize a move. The read-only
+        # #143470 diagnostic applies only when no actionable visible copy exists — exactly
+        # like the v2 path below; a visible copy at the old path is the ordinary kept case.
+        if not _visible_non_hub_copy(skill_name, dest, active_index, st):
+            _warn_invisible_renamed_copy(st, skill_name, dest, v1_entry=True)
         return None
-    if st.active_index is None:  # by frontmatter name
-        st.active_index = {}
-        for md in _iter_active_skill_mds():
-            st.active_index.setdefault(read_skill_name(md, md.parent.name), []).append(md.parent)
-        st.hub_paths = _read_hub_install_paths()
-    for candidate in st.active_index.get(skill_name, []):
+    for candidate in active_index.get(skill_name, []):
         if candidate == dest or not candidate.is_dir():
             continue
         try:
             rel = _rel_skills_posix(candidate)
         except ValueError:
             continue
-        if rel in st.hub_paths:  # the hub owns its install paths
+        if _hub_owned(st, candidate, rel):  # the hub owns its install paths, aliases included
             continue
         if not _matches_origin_hash(candidate, origin_hash):  # moving a customized copy would edit user work
             st.say(
@@ -259,6 +436,11 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
         logger.info("Relocated renamed bundled skill: %s -> %s", candidate, dest)
         st.say(f"  → {skill_name} (moved {rel} → {_rel_skills_posix(dest)})")
         return rel
+    if not _visible_non_hub_copy(skill_name, dest, active_index, st):
+        # No actionable visible copy — but the loader sees through symlinked category dirs, so
+        # an invisible copy may still exist (a hub-owned install alone does not count).
+        # Read-only diagnostic; never migrates (#143470).
+        _warn_invisible_renamed_copy(st, skill_name, dest)
     return None
 
 
@@ -273,9 +455,11 @@ class _SyncState:
     user_modified: list[str] = field(default_factory=list)
     suppressed: list[str] = field(default_factory=list)
     relocated: list[str] = field(default_factory=list)
+    relocation_warnings: list[str] = field(default_factory=list)  # #143470: deferred rename diagnostics
     shadowed_by_external: list[str] = field(default_factory=list)
     active_index: Optional[dict[str, list[Path]]] = None  # rename-recovery indexes are expensive on
     hub_paths: set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
+    hub_inodes: set[tuple[int, int]] = field(default_factory=set)  # hub-managed dirs by real inode (#143470)
 
     def say(self, msg: str) -> None:
         if not self.quiet:
@@ -405,7 +589,8 @@ def sync_skills(quiet: bool = False) -> dict:
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
-                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": []}
+                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": [],
+                "relocation_warnings": []}
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     if essential_only:
@@ -453,6 +638,7 @@ def sync_skills(quiet: bool = False) -> dict:
     return {
         "copied": st.copied, "updated": st.updated, "skipped": st.skipped, "user_modified": st.user_modified,
         "cleaned": cleaned, "suppressed": st.suppressed, "relocated": st.relocated,
+        "relocation_warnings": st.relocation_warnings,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": _backfill_optional_provenance(quiet=quiet),
         "shadowed_by_external": st.shadowed_by_external,

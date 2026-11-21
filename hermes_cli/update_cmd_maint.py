@@ -512,7 +512,12 @@ def _print_bundled_skills_sync_report() -> None:
         print(f"  − {len(result['cleaned'])} removed from manifest")
     if result.get("relocated"):
         print(f"  → {len(result['relocated'])} moved to new upstream paths: {', '.join(result['relocated'])}")
-    if not result["copied"] and not result.get("updated"):
+    # #143470: a rename blocked behind a category symlink is a deferred action, not silence —
+    # quiet sync cannot print it, so it travels in the result and is rendered here. While any
+    # relocation is blocked the report must NOT claim the skills are up to date.
+    for warning in result.get("relocation_warnings") or ():
+        print(f"  ⚠ {warning}")
+    if not result["copied"] and not result.get("updated") and not result.get("relocation_warnings"):
         print("  ✓ Skills are up to date")
 
 
@@ -823,6 +828,10 @@ def _profile_skill_sync_status(r) -> str:
         count = len(r.get(key, []))
         if count:
             parts.append(fmt.format(count))
+    # #143470: a rename blocked behind a category symlink is deferred work, not a clean sync —
+    # a sibling profile whose copy is stranded must never read as "up to date".
+    if r.get("relocation_warnings"):
+        parts.append(f"⚠ {len(r['relocation_warnings'])} relocation(s) deferred")
     return ", ".join(parts) if parts else "up to date"
 
 
@@ -838,7 +847,12 @@ def _sync_profiles_after_update() -> None:
             print("→ Syncing bundled skills to all profiles...")
             for p in all_profiles:
                 try:
-                    print(f"  {p.name}: {_profile_skill_sync_status(seed_profile_skills(p.path, quiet=True))}")
+                    result = seed_profile_skills(p.path, quiet=True)
+                    print(f"  {p.name}: {_profile_skill_sync_status(result)}")
+                    # #143470: the deferred-relocation warnings travel in the result; the
+                    # profile report prints them so a stranded copy is actionable per profile.
+                    for warning in (result or {}).get("relocation_warnings") or ():
+                        print(f"    ⚠ {warning}")
                 except Exception as pe:
                     print(f"  {p.name}: error ({pe})")
 

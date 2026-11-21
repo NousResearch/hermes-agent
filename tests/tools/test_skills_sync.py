@@ -3,6 +3,7 @@
 import shutil
 import json
 import os
+import signal
 import stat
 import pytest
 from pathlib import Path
@@ -10,6 +11,8 @@ from unittest.mock import patch
 
 from tools.skills_sync import (
     _get_bundled_dir,
+    _iter_active_skill_mds,
+    _iter_skill_mds_following_links,
     _read_manifest,
     read_skill_name,
     _write_manifest,
@@ -389,6 +392,820 @@ class TestRenamedBundledSkillRecovery:
         assert not (skills_dir / "newcat" / "moved-skill").exists()
         assert "moved-skill" not in result["copied"]
         assert "moved-skill" not in result.get("relocated", [])
+
+
+class TestSymlinkedCategoryDiagnostic:
+    """#143470 — narrowed fix. The shared scan (``_iter_active_skill_mds``, rglob) is
+    UNCHANGED: it does not enter symlinked category dirs. But the loader does
+    (``os.walk(followlinks=True)``), so a bundled skill whose only copy sits under a
+    symlinked category is ACTIVE for the agent yet invisible to sync — an upstream
+    rename then reads as a user deletion and the skill silently never updates again.
+    The fix is a READ-ONLY fallback diagnostic inside rename recovery: when the normal
+    scan finds no candidate, a bounded cycle-safe walk that follows symlinks looks for
+    the copy and warns. Sync never moves, deletes, or resets content reached through a
+    symlink, and never advises ``reset`` for a copy its own scan cannot see (reset would
+    relocate external content) — the safety context is established before any advice.
+    """
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(
+            patch(
+                "tools.skills_sync._get_optional_dir",
+                return_value=bundled.parent / "optional-skills",
+            )
+        )
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def _skill(self, root, rel, body="# Body\n", name="demo"):
+        d = root / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n{body}")
+        return d
+
+    def _warn_line(self, out, skill):
+        for line in out.splitlines():
+            if line.strip().startswith(f"⚠ {skill}:"):
+                return line
+        return ""
+
+    def test_shared_active_scan_still_ignores_symlinked_categories(self, tmp_path):
+        """The shared iterator keeps its original rglob behavior — no visibility
+        widening for any consumer (rename recovery, cleanup, optional restore)."""
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        self._skill(skills_dir, "cat/real-skill", name="real-skill")
+        external = tmp_path / "external-research"
+        self._skill(external, "linked-skill", name="linked-skill")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            found = sorted(read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds())
+
+        assert found == ["real-skill"]
+
+    def test_pristine_external_copy_gets_visible_warning_and_stays_untouched(self, tmp_path, capsys):
+        """A pristine copy only reachable through a symlinked category pointing outside
+        the skills tree must produce a VISIBLE warning (not a silent 'user-deleted'
+        skip), must not be moved, and must not be advised ``reset`` (sync's scan cannot
+        see it; reset would relocate external content)."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+
+        # Upstream moved the skill to a new category and changed the content.
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+            recorded = _read_manifest()
+
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, "invisible pristine copy behind a category symlink was silently skipped"
+        assert "category symlink" in warn
+        assert "reset" not in warn, "reset advice would relocate content sync cannot see"
+        assert dir_hash(old) == origin_hash, "external content was mutated through the symlink"
+        assert not (skills_dir / "web" / "demo").exists()
+        assert "demo" not in result["relocated"] and "demo" not in result["copied"]
+        # Provenance is kept: the stranded copy still reads as a bundled skill.
+        assert recorded.get("demo") == origin_hash
+
+    @pytest.mark.parametrize(
+        "name_field",
+        [
+            "name: demo\n",                       # control: both name readers agree
+            "name: demo # trailing comment\n",    # loads as demo; line reader keeps the comment
+            'name: "\\u0064emo"\n',               # loads as demo; line reader keeps the escape
+            "name: >-\n  demo\n",                 # loads as demo; line reader sees the indicator
+            f"description: {'x' * 5000}\nname: demo\n",  # frontmatter fence beyond 4000 chars
+        ],
+        ids=["plain", "comment", "unicode-escape", "folded-scalar", "long-frontmatter"],
+    )
+    def test_loader_visible_yaml_names_warn_when_basename_differs(self, tmp_path, capsys, name_field):
+        """The diagnostic answers "can the agent still load this skill?" — so a copy whose
+        frontmatter LOADS as the tracked name must warn even when the line-based name read
+        garbles it AND the directory basename differs (both legacy identity signals miss)."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        custom = external / "custom-folder"  # basename differs from the skill name on purpose
+        custom.mkdir(parents=True)
+        (custom / "SKILL.md").write_text(f"---\n{name_field}---\n# Body\n")
+        origin_hash = dir_hash(custom)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, f"loader-visible copy behind a symlink went unwarned for {name_field!r}"
+
+    @pytest.mark.parametrize(
+        "name_field",
+        [
+            "name: demo\n",
+            "name: demo # trailing comment\n",
+            'name: "\\u0064emo"\n',
+            "name: >-\n  demo\n",
+        ],
+        ids=["plain", "comment", "unicode-escape", "folded-scalar"],
+    )
+    def test_following_the_warned_remediation_restores_relocation(self, tmp_path, capsys, name_field):
+        """The warning's remedy must be real for every name form the diagnostic now matches:
+        replacing the category symlink with a real directory that contains the copy lets the
+        NEXT sync relocate it to the new upstream path — recovery finds the copy under the
+        loader's YAML name too, not only the line-based read."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        custom = external / "custom-folder"  # basename differs from the skill name on purpose
+        custom.mkdir(parents=True)
+        (custom / "SKILL.md").write_text(f"---\n{name_field}---\n# Body\n")
+        origin_hash = dir_hash(custom)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+        assert not result["relocated"], "a copy only reachable via a symlink must not move"
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, "blocked relocation went unwarned"
+        assert "real directory" in warn, "the remedy must name replacing the symlink with a real directory"
+
+        # Follow the warned remedy: replace the symlink with a real directory holding the copy.
+        (skills_dir / "research").unlink()
+        shutil.move(str(custom), str(skills_dir / "research" / "custom-folder"))
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        assert result2["relocated"] == ["demo"], f"remedied copy was not relocated for {name_field!r}"
+
+    def test_remediated_modified_copy_lands_in_the_kept_and_listed_path(self, tmp_path, capsys):
+        """The remedy's other promised outcome: a user-modified copy, once visible, is kept at
+        the old path with the standard modified-copy notice (reset to move) — not silently
+        relocated, not silently dropped."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        (old / "SKILL.md").write_text("---\nname: demo\n---\n# User edits\n")  # modified vs origin
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+        capsys.readouterr()
+
+        # Follow the remedy with a MODIFIED copy.
+        (skills_dir / "research").unlink()
+        shutil.move(str(external / "demo"), str(skills_dir / "research" / "demo"))
+        before = dir_hash(skills_dir / "research" / "demo")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        out = capsys.readouterr().out
+        assert not result2["relocated"], "a modified copy must not be moved"
+        assert "modified copy" in out and "research/demo" in out, "the kept-and-listed notice did not render"
+        assert dir_hash(skills_dir / "research" / "demo") == before, "user edits were touched"
+
+    def test_v1_manifest_entry_still_gets_the_diagnostic(self, tmp_path, capsys):
+        """v1 plain-name manifest entries carry no origin hash — no move can be authorized,
+        but the read-only stranding diagnostic must still fire: the symptom is identity-based,
+        not hash-based."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text("demo\n")  # v1: plain name, empty hash
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+            recorded = _read_manifest()
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, "v1-tracked copy behind a symlink went unwarned"
+        assert "v1 manifest entry" in warn, "v1 remedy must say why no automatic relocation"
+        assert not result["relocated"], "no origin hash, no move"
+        assert dir_hash(old) == origin_hash, "external content was mutated"
+        assert recorded.get("demo") == "", "v1 provenance untouched by the diagnostic"
+
+    def test_v1_entry_with_a_visible_copy_is_not_labeled_symlinked(self, tmp_path, capsys):
+        """A v1 entry whose copy sits at the old path as a PLAIN directory is the ordinary
+        kept case — no symlink, no stranding, no warning."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        old = self._skill(skills_dir, "research/demo")  # real directory, no symlinks anywhere
+        origin_hash = dir_hash(old)
+        manifest_file.write_text("demo\n")  # v1
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+        assert not result["relocation_warnings"], "a visible v1 copy was mislabeled as stranded"
+        assert dir_hash(old) == origin_hash
+
+    def test_visible_real_directory_matched_by_basename_alone_never_warns(self, tmp_path, capsys):
+        """The diagnostic matches on basename too, but a plain visible directory reached with
+        no symlink must never be labeled 'only reachable through a category symlink' — the
+        warning text would simply be false."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Frontmatter name differs, directory basename matches the tracked skill name.
+        stranger = self._skill(skills_dir, "misc/demo", name="other-skill")
+        origin_hash = dir_hash(stranger)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+        assert not result["relocation_warnings"], "a plain visible directory was labeled symlinked"
+        assert not result["relocated"] and not result["copied"]
+        assert dir_hash(stranger) == origin_hash, "an unrelated visible skill was touched"
+
+    def test_v1_remedy_move_to_new_location_baselines(self, tmp_path, capsys):
+        """The v1 remedy must be real: moving the copy to the new upstream location lets the
+        next sync baseline the manifest from it (the documented v1 migration) and updates
+        resume from there."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        self._skill(external, "demo")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text("demo\n")  # v1
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+        capsys.readouterr()
+
+        # Follow the warned v1 remedy: move the copy to the new location.
+        (skills_dir / "research").unlink()
+        shutil.move(str(external / "demo"), str(skills_dir / "web" / "demo"))
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+            recorded = _read_manifest()
+        assert not result2["relocation_warnings"], "remedied v1 copy still warned"
+        assert recorded.get("demo") == dir_hash(skills_dir / "web" / "demo"), (
+            "v1 migration did not baseline from the relocated copy")
+
+    def test_visible_hub_install_does_not_suppress_the_symlink_diagnostic(self, tmp_path, capsys):
+        """A hub install is a VISIBLE copy recovery can never act on: it must not satisfy the
+        "a visible copy exists" guard, or a separate stranded copy behind a category symlink
+        stays silent — for v1 and v2 manifests alike."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Hub install: a REAL visible directory at the locked path.
+        hub_dir = self._skill(skills_dir, "hubarea/hub-skill", name="hub-skill")
+        origin_hash = dir_hash(hub_dir)
+        external = tmp_path / "external-research"
+        self._skill(external, "hub-skill", name="hub-skill")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "hubarea/hub-skill"}}}))
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        for manifest_line in (f"hub-skill:{origin_hash}\n", "hub-skill\n"):  # v2, v1
+            manifest_file.write_text(manifest_line)
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=False)
+            warn = self._warn_line(capsys.readouterr().out, "hub-skill")
+            assert warn, f"visible hub install suppressed the diagnostic for {manifest_line!r}"
+            assert "research/hub-skill" in warn, f"wrong copy named: {warn}"
+            assert not result["relocated"], "hub content or symlinked copy was moved"
+            assert dir_hash(hub_dir) == origin_hash, "hub install was mutated"
+
+    def test_recovery_never_relocates_a_hub_install_reached_by_a_real_path(self, tmp_path, capsys):
+        """A hub install whose lock names a symlinked path still owns the real directory: the
+        relocation loop and the visible-copy guard must both apply inode ownership, or the
+        copy would be moved through its visible real path."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        real_dir = self._skill(skills_dir, "realarea/hub-skill", name="hub-skill")
+        origin_hash = dir_hash(real_dir)
+        manifest_file.write_text(f"hub-skill:{origin_hash}\n")
+        # The lock addresses the same directory through a symlinked category.
+        (skills_dir / "alias").symlink_to(skills_dir / "realarea", target_is_directory=True)
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "alias/hub-skill"}}}))
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+
+        assert "hub-skill" not in result["relocated"], "hub-managed copy was relocated by real-path alias"
+        assert not result["relocation_warnings"], "a visible hub install is not stranded"
+        assert dir_hash(real_dir) == origin_hash, "hub content was mutated"
+        assert real_dir.is_dir(), "the visible copy was moved away"
+
+    def test_hub_owned_match_does_not_hide_a_later_non_hub_copy(self, tmp_path, capsys):
+        """Hub ownership attaches to the install PATH, not to every copy of the identity:
+        a hub-owned match must be skipped, not end the search — a non-hub copy later in the
+        traversal still gets its warning, in either encounter order."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external_hub = tmp_path / "external-hub"
+        hub_copy = self._skill(external_hub, "hub-skill", name="hub-skill")
+        origin_hash = dir_hash(hub_copy)
+        external_free = tmp_path / "external-free"
+        self._skill(external_free, "hub-skill", name="hub-skill")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"hub-skill:{origin_hash}\n")
+        (skills_dir / "locked").symlink_to(external_hub, target_is_directory=True)
+        (skills_dir / "free").symlink_to(external_free, target_is_directory=True)
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "locked/hub-skill"}}}))
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            all_mds = list(_iter_skill_mds_following_links())
+        hub_first = [m for m in all_mds if "locked" in m.parts] + [m for m in all_mds if "free" in m.parts]
+        free_first = [m for m in all_mds if "free" in m.parts] + [m for m in all_mds if "locked" in m.parts]
+        assert len(hub_first) == 2 and len(free_first) == 2, "fixture must yield exactly two copies"
+
+        for order in (hub_first, free_first):
+            with self._patches(bundled, skills_dir, manifest_file), \
+                    patch("tools.skills_sync._iter_skill_mds_following_links", return_value=iter(list(order))):
+                sync_skills(quiet=False)
+            warn = self._warn_line(capsys.readouterr().out, "hub-skill")
+            assert warn, "hub-owned match suppressed the whole search"
+            assert "free/hub-skill" in warn, f"wrong copy named in the warning: {warn}"
+
+    def test_alias_of_a_hub_installed_directory_stays_silent_in_either_order(self, tmp_path, capsys):
+        """Two symlinks to the SAME hub-installed directory: whichever alias the walk labels
+        the inode with, the content is hub-managed — the inode ownership check keeps the
+        outcome (silence) independent of traversal order."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external_hub = tmp_path / "external-hub"
+        hub_copy = self._skill(external_hub, "hub-skill", name="hub-skill")
+        origin_hash = dir_hash(hub_copy)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"hub-skill:{origin_hash}\n")
+        (skills_dir / "locked").symlink_to(external_hub, target_is_directory=True)
+        (skills_dir / "free").symlink_to(external_hub, target_is_directory=True)  # alias, SAME dir
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "locked/hub-skill"}}}))
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        # Force both labels for the shared inode: the walk's own dedupe attaches whichever
+        # alias comes first, so drive the diagnostic with each single-element order.
+        locked_md = skills_dir / "locked" / "hub-skill" / "SKILL.md"
+        free_md = skills_dir / "free" / "hub-skill" / "SKILL.md"
+        for order in ([locked_md], [free_md]):
+            with self._patches(bundled, skills_dir, manifest_file), \
+                    patch("tools.skills_sync._iter_skill_mds_following_links", return_value=iter(list(order))):
+                result = sync_skills(quiet=False)
+            out = capsys.readouterr().out
+            assert not result["relocation_warnings"], f"hub-managed content was warned on: {out}"
+            assert dir_hash(external_hub / "hub-skill") == origin_hash, "hub content was mutated"
+
+    def test_following_walk_prunes_excluded_and_support_dirs_like_the_loader(self, tmp_path):
+        """The following walk keeps the loader's exact pruning: excluded dirs (.archive, .hub)
+        never descend; support dirs (scripts/) beneath a SKILL.md root are not categories;
+        a top-level category genuinely named scripts/ still is one."""
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        self._skill(skills_dir, ".archive/archived-skill", name="archived-skill")
+        self._skill(skills_dir, "real/skill", name="skill")  # a real skill root
+        support = skills_dir / "real" / "skill" / "scripts"  # support dir under a skill root
+        support.mkdir(parents=True, exist_ok=True)
+        (support / "helper.md").write_text("not a skill\n")
+        self._skill(skills_dir, "real/skill/scripts/nested", name="nested")  # SKILL.md under support
+        self._skill(skills_dir, "scripts/toplevel-skill", name="toplevel-skill")  # valid category
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            names = sorted(md.parent.name for md in _iter_skill_mds_following_links())
+        assert names == ["skill", "toplevel-skill"], (
+            "excluded dirs must not descend, support dirs must not count (even with a SKILL.md),"
+            " real categories must")
+
+
+    @pytest.mark.parametrize(
+        "name_field",
+        [
+            "name: demo\n",
+            "name: demo # trailing comment\n",
+            'name: "\\u0064emo"\n',
+            "name: >-\n  demo\n",
+        ],
+        ids=["plain", "comment", "unicode-escape", "folded-scalar"],
+    )
+    def test_lifecycle_install_then_recategorize_with_recorded_identity(self, tmp_path, capsys, name_field):
+        """End-to-end with the identity bundled discovery actually records: install a skill
+        whose frontmatter name is in a variant form (the manifest key is the line-based read,
+        e.g. ``demo # trailing comment``), then recategorize it upstream while the installed
+        copy ends up behind a category symlink. The diagnostic must fire for the recorded
+        identity, and materializing the copy must relocate it under that same identity."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # 1) Install from a variant-form source.
+        src = bundled / "research" / "demo"
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text(f"---\n{name_field}---\n# Body\n")
+        with self._patches(bundled, skills_dir, manifest_file):
+            result1 = sync_skills(quiet=True)
+            recorded_manifest = _read_manifest()
+        assert result1["copied"], f"variant source was not installed: {result1}"
+        recorded_name = read_skill_name(skills_dir / "research" / "demo" / "SKILL.md", "demo")
+        assert recorded_name in recorded_manifest, "manifest did not record the discovery identity"
+
+        # 2) Upstream recategorizes research/demo -> web/demo; the installed copy lands
+        #    behind a category symlink (only reachable through it).
+        (bundled / "web").mkdir()
+        shutil.move(str(src), str(bundled / "web" / "demo"))
+        external = tmp_path / "external-research"
+        external.mkdir()
+        shutil.move(str(skills_dir / "research" / "demo"), str(external / "demo"))
+        (skills_dir / "research").rmdir()
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+
+        # 3) The recorded identity is stranded behind the symlink — warn, never move.
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        warn = self._warn_line(capsys.readouterr().out, recorded_name)
+        assert warn, f"recorded identity {recorded_name!r} went unwarned"
+        assert not result2["relocated"] and not result2["copied"]
+        assert (external / "demo" / "SKILL.md").exists(), "stranded copy was touched"
+
+        # 4) Materialize per the warned remedy: the recorded identity relocates.
+        (skills_dir / "research").unlink()
+        shutil.move(str(external / "demo"), str(skills_dir / "research" / "demo"))
+        with self._patches(bundled, skills_dir, manifest_file):
+            result3 = sync_skills(quiet=False)
+        assert recorded_name in result3["relocated"], (
+            f"materialized copy did not relocate under the recorded identity {recorded_name!r}")
+
+    def test_symlink_removal_alone_strands_the_copy(self, tmp_path, capsys):
+        """Why the warning must not suggest removing the symlink: with the copy still outside
+        the tree, the next sync reads the missing destination as a user deletion — nothing is
+        restored, and the copy stays stranded outside the tree."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        self._skill(external, "demo")
+        origin_hash = dir_hash(external / "demo")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+        capsys.readouterr()
+
+        # Misread remedy: delete the symlink without materializing the copy.
+        (skills_dir / "research").unlink()
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        assert not result2["copied"] and not result2["relocated"], "a user deletion must not re-add"
+        assert not (skills_dir / "web" / "demo").exists(), "the skill was silently restored anyway"
+        assert (external / "demo" / "SKILL.md").exists(), "the stranded copy is still out there"
+
+    @pytest.mark.platforms("posix")
+    def test_following_walk_terminates_and_dedupes_on_cycles_aliases_and_dangling_links(self, tmp_path):
+        """The diagnostic's iterator must survive hostile layouts to EXHAUSTION (not stop at
+        the first match): a symlink cycle, an aliased category, and a dangling category link.
+        Each real skill directory yields exactly once — the visited-inode guard is what keeps
+        the walk finite, so it is pinned by a hard alarm, not by reaching a match early."""
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        self._skill(skills_dir, "plain/skill-a", name="skill-a")
+        external = tmp_path / "external"
+        self._skill(external, "skill-b", name="skill-b")
+        (skills_dir / "cyc").symlink_to(external, target_is_directory=True)
+        (external / "loop").symlink_to(skills_dir / "cyc", target_is_directory=True)  # cycle
+        (skills_dir / "alias").symlink_to(external, target_is_directory=True)  # alias, same inode
+        (skills_dir / "broken").symlink_to(tmp_path / "missing", target_is_directory=True)  # dangling
+
+        def _did_not_terminate(signum, frame):
+            raise AssertionError("cycle-safe walk did not terminate (visited-inode guard broken)")
+
+        old_handler = signal.signal(signal.SIGALRM, _did_not_terminate)
+        signal.alarm(20)
+        try:
+            with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+                yielded = sorted(md.parent.name for md in _iter_skill_mds_following_links())
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+        assert yielded == ["skill-a", "skill-b"], "aliased dirs must yield once; dangling adds nothing"
+
+    def test_modified_external_copy_warns_without_reset_advice(self, tmp_path, capsys):
+        """F4: a user-edited copy behind an escaping category symlink must be reported
+        as kept WITHOUT the ``reset --restore`` advice — the copy is external content,
+        and the safety context is established before any advice is given."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        edited = self._skill(external, "demo")
+        origin_hash = dir_hash(edited)
+        (edited / "SKILL.md").write_text("---\nname: demo\n---\n# MY EDITS\n")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, "user-modified copy behind a symlink was silently skipped"
+        # Generic wording: the diagnostic does not hash the external copy to classify it
+        # (pristine vs modified is irrelevant — it is untouched either way).
+        assert "not automatically relocated" in warn
+        assert "reset" not in warn, "F4: reset advised before establishing the copy is external"
+        assert edited.exists() and "MY EDITS" in (edited / "SKILL.md").read_text()
+
+    def test_warning_is_idempotent_across_runs(self, tmp_path, capsys):
+        """Repeated syncs change nothing on disk or in the manifest and keep warning —
+        no half-migrated state, no error, no duplicated side effects."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+            first_manifest = dict(_read_manifest())
+            first_warn = self._warn_line(capsys.readouterr().out, "demo")
+            sync_skills(quiet=False)
+            second_manifest = dict(_read_manifest())
+            second_warn = self._warn_line(capsys.readouterr().out, "demo")
+
+        assert first_warn and second_warn == first_warn
+        assert dir_hash(old) == origin_hash
+        assert first_manifest == {"demo": origin_hash} == second_manifest
+
+    def test_diagnostic_terminates_on_cycles_and_aliases(self, tmp_path, capsys):
+        """A symlink cycle (category containing a link back to itself) and an alias (a
+        second link to the same dir) must not hang the diagnostic, and an aliased copy
+        yields exactly one warning, not one per path reaching it."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        # Cycle: a subdir of the target linking back to the symlinked category.
+        (external / "loop").symlink_to(skills_dir / "research", target_is_directory=True)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        # Alias: a second category name for the same real directory.
+        (skills_dir / "alias").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        out = capsys.readouterr().out
+        assert out.count("⚠ demo:") == 1, "aliased copy warned more than once"
+        assert dir_hash(old) == origin_hash
+
+    def test_hub_owned_invisible_copy_stays_silent(self, tmp_path, capsys):
+        """A copy at a hub-lock install path is owned by the hub, even when it is only
+        reachable through a symlinked category — no warning, no move (dangling lock)."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "hub-skill", name="hub-skill")
+        origin_hash = dir_hash(old)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"hub-skill:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            json.dumps({"version": 1, "installed": {"hub-skill": {"install_path": "research/hub-skill"}}})
+        )
+
+        self._skill(bundled, "newcat/hub-skill", body="# Updated upstream\n", name="hub-skill")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+
+        out = capsys.readouterr().out
+        assert self._warn_line(out, "hub-skill") == "", "warned about a hub-owned install path"
+        assert old.exists()
+        assert "hub-skill" not in result["relocated"]
+
+    def test_real_dir_copy_relocates_normally_despite_symlinked_twin(self, tmp_path):
+        """When a visible real-dir copy exists, the normal rglob recovery relocates it
+        exactly as before — the fallback diagnostic never runs for that skill, and a
+        same-name twin behind a symlink does not interfere."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        old = self._skill(skills_dir, "oldcat/demo")
+        origin_hash = dir_hash(old)
+        external = tmp_path / "external-research"
+        twin = self._skill(external, "demo")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert "demo" in result["relocated"]
+        assert "Updated upstream" in (skills_dir / "web" / "demo" / "SKILL.md").read_text()
+        assert not old.exists()
+        assert twin.exists(), "external twin was dragged into the migration"
+
+    def test_official_optional_restore_leaves_symlinked_external_copy_alone(self, tmp_path):
+        """``restore_official_optional_skill(restore=True)`` is an UNCHANGED consumer of
+        the shared scan: a copy only reachable through a symlinked category is invisible
+        to it, so restore never backs it up or moves it — original behavior preserved."""
+        from tools import skills_sync_optional
+
+        bundled = tmp_path / "bundled"
+        src = self._skill(bundled, "optional-srcs/demo")
+        skills_dir = tmp_path / "user_skills"
+        external = tmp_path / "external-research"
+        outside = self._skill(external, "demo")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+
+        index = {"demo": ("demo", "web/demo", src)}
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+                patch("tools.skills_sync._get_optional_dir", return_value=bundled), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+                patch("tools.skills_sync.MANIFEST_FILE", skills_dir / ".bundled_manifest"), \
+                patch.object(skills_sync_optional, "_optional_skill_index", return_value=index), \
+                patch.object(skills_sync_optional, "_backfill_optional_provenance", return_value=[]):
+            result = skills_sync_optional.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert outside.exists(), "external copy was moved into a restore backup"
+        assert result["backed_up"] == []
+        assert "Updated" not in (outside / "SKILL.md").read_text()
+
+
+class TestQuietModeDiagnosticPropagation:
+    """#143470 end-to-end: every production caller runs sync with quiet=True, where a
+    ``st.say`` diagnostic is suppressed. The relocation warning must therefore travel in
+    the RESULT dict: ``hermes update`` reports through ``_print_bundled_skills_sync_report``
+    (real sync, quiet=True) and must print the warning AND must not claim "up to date"
+    while a rename is blocked; ``hermes_cli.post_update.step_sync_skills`` (quiet=True)
+    must expose it through its result so the step renderer can show it. External bytes
+    and the manifest stay untouched throughout — the diagnostic is read-only."""
+
+    def _skill(self, root, rel, body="# Body\n", name="demo"):
+        d = root / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n{body}")
+        return d
+
+    def _renamed_behind_symlink_fixture(self, tmp_path):
+        """One renamed bundled skill whose only copy lives behind a category symlink
+        pointing OUTSIDE the skills tree — the exact #143470 user scenario."""
+        from types import SimpleNamespace
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        # Upstream renamed/moved the skill and changed its content.
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+        return SimpleNamespace(
+            bundled=bundled, skills_dir=skills_dir, manifest_file=manifest_file,
+            external_copy=old, origin_hash=origin_hash)
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(
+            patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_update_reporter_prints_warning_and_not_up_to_date(self, tmp_path, capsys):
+        """Real ``_print_bundled_skills_sync_report`` + real sync(quiet=True): the
+        production ``hermes update`` path. The blocked rename must be visible and the
+        reporter must NOT say "Skills are up to date"."""
+        from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
+        fx = self._renamed_behind_symlink_fixture(tmp_path)
+
+        with self._patches(fx.bundled, fx.skills_dir, fx.manifest_file):
+            _print_bundled_skills_sync_report()
+
+        out = capsys.readouterr().out
+        assert "⚠ demo:" in out, "quiet production reporter swallowed the relocation diagnostic"
+        assert "not automatically relocated" in out
+        assert "up to date" not in out, "reporter claimed up-to-date while a rename is blocked"
+        assert dir_hash(fx.external_copy) == fx.origin_hash, "external content was mutated"
+        with patch("tools.skills_sync.MANIFEST_FILE", fx.manifest_file):
+            assert _read_manifest() == {"demo": fx.origin_hash}, "provenance was dropped"
+        assert not (fx.skills_dir / "web" / "demo").exists(), "copy was written through the symlink path"
+
+    def test_quiet_sync_result_carries_relocation_warnings(self, tmp_path, capsys):
+        """The signal lives in the result dict: quiet=True stays silent on stdout but
+        returns the warning verbatim for callers to render."""
+        fx = self._renamed_behind_symlink_fixture(tmp_path)
+
+        with self._patches(fx.bundled, fx.skills_dir, fx.manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert capsys.readouterr().out == "", "quiet run must not print"
+        warnings = result.get("relocation_warnings")
+        assert warnings and len(warnings) == 1
+        assert warnings[0].startswith("demo:")
+        assert "not automatically relocated" in warnings[0]
+        assert "reset" not in warnings[0], "reset advice would relocate content sync cannot see"
+
+    def test_result_relocation_warnings_empty_when_nothing_deferred(self, tmp_path):
+        """Consistency: the key exists and is [] on a plain copy run and on the
+        no-bundled-dir early return — callers can rely on its shape."""
+        bundled = tmp_path / "bundled"
+        self._skill(bundled, "cat/fresh", name="fresh")
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            assert sync_skills(quiet=True)["relocation_warnings"] == []
+        with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "missing"):
+            assert sync_skills(quiet=True)["relocation_warnings"] == []
 
 
 class TestSyncSkills:

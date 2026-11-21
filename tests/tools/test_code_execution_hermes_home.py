@@ -57,3 +57,39 @@ class TestMultiplexedHermesHome:
         monkeypatch.setenv("HERMES_HOME", "/machine/default/.hermes")
 
         assert _child_env()["HERMES_HOME"] == "/machine/default/.hermes"
+
+
+class TestMultiplexedScratchTmp:
+    """TMPDIR must follow the routed profile like HERMES_HOME does (#138501).
+
+    The scrub keeps TMPDIR/TMP/TEMP but used to drop the HERMES_SCRATCH_DIR ownership
+    marker, so the per-turn ``apply_scratch_tmp_env`` rebase could not tell the backend's
+    own exported temp from a user override and left the startup profile's scratch in the
+    child env.
+    """
+
+    def test_hermes_owned_tmpdir_rebases_to_routed_profile_scratch(self, monkeypatch, home_override, tmp_path):
+        """Backend booted under beta (scratch exported + marked), turn routed to alpha: the
+        child's TMP triple and the marker all point at alpha's scratch."""
+        home_b = tmp_path / "profiles" / "beta"
+        scratch_b = str(home_b / "cache" / "scratch")
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        monkeypatch.setenv("HERMES_SCRATCH_DIR", scratch_b)
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            monkeypatch.setenv(key, scratch_b)
+        alpha = home_override(tmp_path / "profiles" / "alpha")
+        scratch_a = str(tmp_path / "profiles" / "alpha" / "cache" / "scratch")
+
+        child_env = _child_env()
+        assert child_env["HERMES_HOME"] == alpha
+        assert child_env["TMPDIR"] == child_env["TMP"] == child_env["TEMP"] == scratch_a
+        assert child_env["HERMES_SCRATCH_DIR"] == scratch_a
+
+    def test_user_tmpdir_survives_the_routed_rewrite(self, monkeypatch, home_override, tmp_path):
+        """A user-set TMPDIR (unequal to the marker) is a deliberate override: the child
+        keeps it even while a profile is routed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "beta"))
+        monkeypatch.setenv("TMPDIR", "/var/folders/user-set-tmp")
+        home_override(tmp_path / "profiles" / "alpha")
+
+        assert _child_env()["TMPDIR"] == "/var/folders/user-set-tmp"

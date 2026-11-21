@@ -5305,8 +5305,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             return False
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
-        """Create a handoff thread under a text channel; returns the thread id or ``None``.
-        Falls back to seed-message + ``message.create_thread``; DMs/voice/threads can't host threads."""
+        """Create a handoff thread under a text channel (a post under a forum channel); returns the
+        thread id or ``None``. Falls back to seed-message + ``message.create_thread``;
+        DMs/voice/threads can't host threads."""
         if not self._client or not DISCORD_AVAILABLE:
             return None
         try:
@@ -5331,6 +5332,23 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             return None
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
+        # A forum channel only takes posts: ``create_thread`` needs a starter message and there is
+        # no ``send`` for the seed fallback, so the generic paths below both fail (the second one
+        # silently). Open a sibling post instead — e.g. ``/branch`` run inside a forum post.
+        if self._is_forum_parent(parent):
+            try:
+                post = await parent.create_thread(
+                    name=thread_name, content=t("platform.discord.thread.handoff_seed", name=thread_name),
+                    auto_archive_duration=1440, reason=reason,
+                )
+            except Exception as exc:  # boundary: any failure means the caller branches in place
+                logger.warning(
+                    "[%s] Handoff thread: forum post create failed for parent %s: %s",
+                    self.name, parent_chat_id, exc, exc_info=True,
+                )
+                return None
+            _post_channel, post_id, _starter, _starter_id = self._forum_thread_parts(post)
+            return post_id or None
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:

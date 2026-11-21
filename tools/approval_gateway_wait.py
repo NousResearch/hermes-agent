@@ -10,11 +10,13 @@ threads (parallel subagents, execute_code RPC handlers) can block concurrently
 call time.
 """
 
+import contextvars
 import hashlib
 import logging
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 
 from tools.interrupt import get_interrupt_reason, is_interrupted
 from tools import approval_context as _ctx
@@ -23,10 +25,32 @@ from tools.approval_human_wait import activity_heartbeat, human_wait_window
 logger = logging.getLogger("tools.approval")
 
 
+@dataclass(frozen=True)
+class ApprovalSettlement:
+    """How one wait ended, for the settle hook running right now: the settle ``reason`` token, the
+    committed choice (None when nobody answered), the ``/deny <reason>`` text, and whether a native
+    button card committed it (that card already drew the answer)."""
+    reason: str
+    choice: str | None
+    deny_reason: str | None
+    via_card: bool
+    tool_call_id: str  # the tool call that asked ("" outside one)
+    session_id: str  # the asking agent's session id ("" when unbound)
+
+
+_current_settlement: contextvars.ContextVar[ApprovalSettlement | None] = contextvars.ContextVar(
+    "approval_current_settlement", default=None)
+
+
+def current_settlement() -> ApprovalSettlement | None:
+    """The settlement whose hooks are running on this thread; None outside a settle hook."""
+    return _current_settlement.get()
+
+
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = ("authority", "cancelled", "card_deny_only", "data", "event", "expired", "identity", "observers",
-                 "owner", "reason", "result", "settle")
+                 "owner", "reason", "result", "settle", "via_card")
 
     def __init__(self, data: dict):
         self.owner = None
@@ -39,6 +63,7 @@ class _ApprovalEntry:
         # Born Deny-only: a card tap may only deny until a renderer proves its card shows the whole
         # command (#62359), so no tap can approve an entry in the window before its card is drawn.
         self.card_deny_only = True
+        self.via_card = False  # the answer came from this request's own button card
         # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         self.authority = _ctx.prompt_authority()
@@ -255,11 +280,17 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 reason = "resolved" if choice is not None else "session_closed"
             else:
                 reason = state
-            for callback in ([settle] if settle is not None else []) + observers:
-                try:
-                    callback(reason)
-                except Exception:
-                    logger.debug("approval settle hook failed", exc_info=True)
+            token = _current_settlement.set(ApprovalSettlement(
+                reason, choice, entry.reason, entry.via_card, _ctx._approval_tool_call_id.get(),
+                _ctx._approval_session_id.get()))
+            try:
+                for callback in ([settle] if settle is not None else []) + observers:
+                    try:
+                        callback(reason)
+                    except Exception:
+                        logger.debug("approval settle hook failed", exc_info=True)
+            finally:
+                _current_settlement.reset(token)
         return choice
 
     from tools.human_input_hooks import human_input_request

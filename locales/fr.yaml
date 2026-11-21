@@ -726,6 +726,15 @@ gateway:
     smart_deny_line: "Smart DENY : la dérogation du propriétaire ne s'applique qu'à cette seule opération."
     smart_deny_heading: "⚠️ **Smart DENY — dérogation du propriétaire pour une seule opération :**"
     timed_out_notice: "⌛ Approbation expirée après {window} — la commande n'a PAS été exécutée. Demandez-moi de réessayer si vous la voulez toujours, ou augmentez approvals.timeout dans config.yaml."
+    card_applying: "⏳ Approuvé — la commande est en cours…"
+    card_approved: "✅ Approuvé"
+    card_denied: "❌ Refusé — la commande n'a pas été exécutée"
+    card_denied_reason: "❌ Refusé — la commande n'a pas été exécutée. Raison : {reason}"
+    card_failed: "⚠️ Approuvé, mais la commande a échoué"
+    card_failed_reason: "⚠️ Approuvé, mais la commande a échoué : {reason}"
+    card_unknown: "❔ Résultat inconnu — la commande a pu s'exécuter ou non. Vérifiez avant de réessayer"
+    card_withdrawn: "⏹ Retiré — le tour s'est terminé avant toute réponse ; la commande n'a pas été exécutée"
+    card_by: "{notice} (réponse de {user})"
     timed_out_card_body: |-
       {notice}
       ```

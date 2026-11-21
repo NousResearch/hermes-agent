@@ -110,6 +110,9 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Approved exec-approval cards waiting on their tool call's result: tool_call_id -> card
+    # (gateway/run_turn_runner_approval_settle.py).
+    open_approval_cards: dict = field(default_factory=dict)
 
     @property
     def _status_adapter(self) -> Any:

@@ -15,8 +15,13 @@ No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import th
 
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import Any, Optional
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Awaitable, Optional
 
 from agent.i18n import t
 
@@ -85,6 +90,87 @@ def format_approval_deadline_line(timeout_s: int) -> str:
 
 def format_approval_timed_out_notice(timeout_s: int) -> str:
     return approval_timed_out_notice(format_approval_window(timeout_s))
+
+
+class ApprovalCardState(str, Enum):
+    """Where an exec-approval card stands once it is no longer a question. ``unknown`` is not a hedge:
+    an approved command that never reported back may well have run, and saying "failed" over a real
+    change is worse than saying we cannot tell."""
+    APPLYING = "applying"  # approved; the command is running
+    APPROVED = "approved"
+    DENIED = "denied"
+    FAILED = "failed"  # approved; the command ran and failed
+    UNKNOWN = "unknown"
+    EXPIRED = "expired"  # nobody answered within approvals.timeout
+    WITHDRAWN = "withdrawn"  # the turn was stopped or ended under the prompt: nobody refused it
+
+
+@dataclass(frozen=True)
+class ApprovalCardOutcome:
+    """A decided card, in no platform's vocabulary: the state, the deny reason or failure detail
+    (``reason``), and who answered when the surface knows (``by``)."""
+    state: ApprovalCardState
+    reason: str = ""
+    by: str = ""
+
+
+# state -> (catalog key, catalog key when ``reason`` is set). EXPIRED reuses the timeout notice.
+_CARD_NOTICE_KEYS: dict[ApprovalCardState, tuple[str, str]] = {
+    ApprovalCardState.APPLYING: ("gateway.exec_approval.card_applying",) * 2,
+    ApprovalCardState.APPROVED: ("gateway.exec_approval.card_approved",) * 2,
+    ApprovalCardState.DENIED: ("gateway.exec_approval.card_denied", "gateway.exec_approval.card_denied_reason"),
+    ApprovalCardState.FAILED: ("gateway.exec_approval.card_failed", "gateway.exec_approval.card_failed_reason"),
+    ApprovalCardState.UNKNOWN: ("gateway.exec_approval.card_unknown",) * 2,
+    ApprovalCardState.EXPIRED: ("gateway.exec_approval.timed_out_notice",) * 2,
+    ApprovalCardState.WITHDRAWN: ("gateway.exec_approval.card_withdrawn",) * 2,
+}
+
+
+def approval_card_notice(outcome: ApprovalCardOutcome, timeout_s: int = 0) -> str:
+    """The one line every surface shows on a decided card (plain markdown; adapters add markup)."""
+    plain, with_reason = _CARD_NOTICE_KEYS[outcome.state]
+    notice = t(with_reason if outcome.reason else plain, reason=outcome.reason,
+               window=format_approval_window(timeout_s) if outcome.state is ApprovalCardState.EXPIRED else "")
+    return t("gateway.exec_approval.card_by", notice=notice, user=outcome.by) if outcome.by else notice
+
+
+@dataclass
+class ApprovalCardRecord:
+    """Shared by an adapter's button handler and the gateway's later edits of the same card: ``lock``
+    orders their edits, ``by`` is who answered on the card (kept on the gateway's final edit)."""
+    lock: asyncio.Lock
+    by: str = ""
+
+
+_CARD_RECORDS: OrderedDict[str, ApprovalCardRecord] = OrderedDict()
+_CARD_RECORDS_LOCK = threading.Lock()
+_CARD_RECORDS_MAX = 512
+
+
+def approval_card_record(request_id: str) -> ApprovalCardRecord:
+    """The record for ``request_id``'s card (created on first use; the oldest are dropped past 512)."""
+    with _CARD_RECORDS_LOCK:
+        record = _CARD_RECORDS.get(request_id)
+        if record is None:
+            record = _CARD_RECORDS[request_id] = ApprovalCardRecord(lock=asyncio.Lock())
+            while len(_CARD_RECORDS) > _CARD_RECORDS_MAX:
+                _CARD_RECORDS.popitem(last=False)
+        return record
+
+
+async def render_decided_card(request_id: Optional[str], by: str, *steps: Awaitable[Any]) -> None:
+    """Run a button handler's own decision edits (``steps``, in order) holding the card's lock. Call it
+    right after resolving, before any other await: the gateway's later edit of the same card (the
+    approved command finished or failed) then lands after these instead of under them."""
+    if not request_id:
+        for step in steps:
+            await step
+        return
+    record = approval_card_record(request_id)
+    async with record.lock:
+        record.by = by
+        for step in steps:
+            await step
 
 
 def code_fence(command: str) -> str:

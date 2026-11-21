@@ -144,7 +144,7 @@ from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice, ApprovalCardOutcome, ApprovalCardState, approval_card_notice, render_decided_card,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_proxy_url_for_log, describe_proxy_error, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len, env_proxy_for_redaction,
 )
@@ -4373,17 +4373,16 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, getattr(query.from_user, "id", None))
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-            count = 0
+            count = None  # nothing says whether the answer landed: the card says so, never "expired"
         if count:
             label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
                 choice, "resolved_generic")
             label = t(f"platform.telegram.approval.{label_key}")
             edit_text = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
         else:
-            label = t("platform.telegram.approval.expired")
-            edit_text = t("platform.telegram.approval.expired_detail", label=label)
-        await answer_callback(query, label[:_TOAST_LIMIT])
-        await edit_keeping_prompt(self, query, edit_text)
+            label = edit_text = approval_card_notice(ApprovalCardOutcome(ApprovalCardState.UNKNOWN)) if count is None else t("platform.telegram.approval.expired")
+            edit_text = edit_text if count is None else t("platform.telegram.approval.expired_detail", label=label)
+        await render_decided_card(request_id, user_display if count else "", answer_callback(query, label[:_TOAST_LIMIT]), edit_keeping_prompt(self, query, edit_text))
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))

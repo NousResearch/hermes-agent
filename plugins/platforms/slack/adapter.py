@@ -53,7 +53,7 @@ from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_cho
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, ApprovalCardOutcome, ApprovalCardState, approval_card_notice, render_decided_card,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
@@ -5754,13 +5754,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 session_key, choice, user_id)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
-            count = 0
-        decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
-        if not count:
-            decision_text = t("platform.shared.approval_expired")
-        await self._finalize_interactive_message(
+            count = None  # nothing says whether the answer landed: the card says so, never "expired"
+        decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name) if count else t("platform.shared.approval_expired") if count == 0 else approval_card_notice(ApprovalCardOutcome(ApprovalCardState.UNKNOWN))
+        await render_decided_card(request_id, user_name if count else "", self._finalize_interactive_message(  # under the card's lock
             channel_id, msg_ts, self._section_text(message).replace(self._ea_deadline_line(), ""), decision_text,
-            "Command approval request", "approval", team_id or None)
+            "Command approval request", "approval", team_id or None))
 
     async def _update_clarify_message(
         self, channel_id: str, msg_ts: str, question_text: str, decision_text: str) -> None:

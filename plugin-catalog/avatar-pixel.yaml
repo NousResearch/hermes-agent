@@ -1,0 +1,23 @@
+name: avatar-pixel
+repo: https://github.com/BrOrlandi/hermes-avatar-pixel-plugin
+sha: 300544019c97c3f047f9199383e0ce925cac1e49
+description: Pixel art avatars for your agents. Edit profile / New bot -> Generate returns a transparent
+  pixel art sprite (icon or robot mode), and the agent_avatar tool lets an agent draw and apply a
+  profile's avatar. Other image requests pass through to your image backend.
+maintainer: BrOrlandi
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/BrOrlandi/hermes-avatar-pixel-plugin#readme
+version: "1.0.1"
+title: Avatar Pixel
+image: https://raw.githubusercontent.com/BrOrlandi/hermes-avatar-pixel-plugin/300544019c97c3f047f9199383e0ce925cac1e49/docs/banner.png
+screenshots:
+- https://raw.githubusercontent.com/BrOrlandi/hermes-avatar-pixel-plugin/300544019c97c3f047f9199383e0ce925cac1e49/docs/grid.png
+- https://raw.githubusercontent.com/BrOrlandi/hermes-avatar-pixel-plugin/300544019c97c3f047f9199383e0ce925cac1e49/docs/new-bot-generate.png
+capabilities:
+  provides_tools:
+  - agent_avatar
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

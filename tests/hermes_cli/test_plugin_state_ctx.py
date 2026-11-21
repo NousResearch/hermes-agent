@@ -138,24 +138,30 @@ def denied(tmp_path, monkeypatch):
     return _load_fixture_plugin(tmp_path, monkeypatch, granted=False)
 
 
-def _ensure_session(home: Path, session_id: str) -> str:
-    from hermes_state_registry import acquire, release
+def _store(home: Path):
+    """A storage-interface handle on the fixture home's ``state.db``."""
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = acquire(home / "state.db")
+    return open_persistence(profile_scope(home=home))
+
+
+def _ensure_session(home: Path, session_id: str) -> str:
+    from persistence.conversation.sessions import NewSession
+
+    store = _store(home)
     try:
-        return db.ensure_session(session_id, source="test")
+        store.sessions.create(NewSession(session_id=session_id, source="test"))
+        return session_id
     finally:
-        release(db)
+        store.close()
 
 
 def _session_messages(home: Path, session_id: str) -> list:
-    from hermes_state_registry import acquire, release
-
-    db = acquire(home / "state.db")
+    store = _store(home)
     try:
-        return db.get_messages(session_id)
+        return [row.as_wire_row() for row in store.messages.read_transcript(session_id)]
     finally:
-        release(db)
+        store.close()
 
 
 def _make_task(home: Path, **kwargs) -> str:
@@ -247,8 +253,13 @@ def test_note_metadata_cannot_overwrite_admission(granted):
     assert len(_session_messages(home, "s-origin")) == 1
 
 
-def test_completion_note_none_admission_is_a_real_null(granted):
-    """``admission_id=None`` must not become the string ``"None"`` (and share a key with a real ``"None"``)."""
+def test_completion_note_none_admission_gets_its_own_key(granted):
+    """``admission_id=None`` must not become the string ``"None"`` nor share a key with one.
+
+    The store always writes the admission key in ``completion_admission`` (a real null is no longer
+    storable there), so a None admission gets a fresh anonymous key per call: still three rows, still
+    no collision with the literal ``"None"``.
+    """
     home, ctx = granted
     _ensure_session(home, "s-origin")
 
@@ -258,7 +269,10 @@ def test_completion_note_none_admission_is_a_real_null(granted):
     assert len({string_none, first, second}) == 3  # no shared key: three rows
 
     rows = _session_messages(home, "s-origin")
-    assert [r["display_metadata"]["completion_admission"] for r in rows] == ["None", None, None]
+    keys = [r["display_metadata"]["completion_admission"] for r in rows]
+    assert keys[0] == "None"
+    assert keys[1] not in (None, "None") and keys[2] not in (None, "None")
+    assert keys[1] != keys[2]
 
 
 @pytest.mark.parametrize("bad", ["", "   ", 7, b"a-1"])

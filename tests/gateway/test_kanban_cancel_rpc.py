@@ -19,8 +19,8 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway.contracts.registry import CANONICAL_METHODS
 
 
@@ -32,15 +32,16 @@ async def owner(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
-    with SessionDB(db_path=home / "state.db") as db:
-        db.create_session("s", source="test")
-        epoch = begin_runtime_epoch(db, instance_id="current")
+    db = open_persistence(profile_scope(home=home))
+    try:
+        seed_session(db, "s", "test")
+        epoch = db.runtime.begin_epoch(instance_id="current")
         authority = SessionAuthority(
             SimpleNamespace(_draining=False),
             profile_id="owned",
             instance_id="current",
-            db=db,
             epoch=epoch,
+            persistence=db,
         )
         authority.sessions["s"] = LiveSession(None, "route")
         connection = AuthorityConnection(authority, object(), {"user_id": "owner"})
@@ -48,6 +49,8 @@ async def owner(tmp_path, monkeypatch):
             yield connection, home
         finally:
             await connection.close()
+    finally:
+        db.close()
 
 
 def _seed():

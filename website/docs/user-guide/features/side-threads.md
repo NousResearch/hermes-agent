@@ -12,18 +12,17 @@ and answering from the transcript alone is not enough. `/btw --explore` forks a 
 can search files, read code and run read-only commands while the main agent keeps working. When it
 reports, you decide whether its findings belong in the main conversation.
 
-```text
-/btw --explore find the retry/backoff logic and check whether it caps the delay
-🔭 Side exploration btw_3f9a01: "find the retry/backoff logic and check whether it caps the del…"
-  ┊ 🔭 btw_3f9a01  exploring with read_file, search_files, terminal, web_search, web_extract
-  ┊ 🔭 btw_3f9a01  search_files · backoff
-  ┊ 🔭 btw_3f9a01  read_file · agent/retry_utils.py
-  ┊ 🔭 btw_3f9a01  terminal · rg -n "max_delay" agent/
-  ...the main turn keeps streaming here...
+![A side thread exploring with tools while the main turn keeps working](/img/docs/side-threads/cli-exploring.png)
 
-/btw --promote btw_3f9a01 now apply the cap to the gateway retries too
-⤴ Bringing side exploration btw_3f9a01 into the conversation.
-```
+The side thread's steps (`┊ 🔭 btw_abf247 …`) interleave with the main turn's own tool calls. When it
+finishes, its report lands in its own panel, with a footer naming what it ran; `/btw --threads`
+lists the conversation's threads:
+
+![The side thread's report, then /btw --threads](/img/docs/side-threads/cli-threads.png)
+
+`/btw --promote` then sends that report as your next message, and the main agent picks it up:
+
+![Promoting the report into the main conversation](/img/docs/side-threads/cli-promoted.png)
 
 ## Commands
 
@@ -98,6 +97,12 @@ sequenceDiagram
   deactivate M
   M->>M: next turn starts with the side findings
 ```
+
+Because the fork replays the conversation verbatim, its first request repeats what the main
+conversation already sent — the part a provider's prompt cache can serve. A `/bg` task on the same
+question starts a fresh session with its own system prompt, so none of it matches:
+
+![Request bytes shared with the main conversation: side thread vs /bg](/img/docs/side-threads/cache-reuse.png)
 
 ## Where it works
 

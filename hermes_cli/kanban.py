@@ -1063,7 +1063,15 @@ def _cmd_request_changes(args: argparse.Namespace) -> int:
         ok, detail = kb.request_changes(conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid))
         if not ok:
             return _err(f"cannot request changes for {tid}: {detail or 'invalid review state'}")
-        print(f"Requested changes for {tid}" + (f"; routed to {detail}" if detail else ""))
+        # A handback can land the card somewhere other than the implementer's queue:
+        # at the review round cap it is refused and blocked for a human instead, and a
+        # repeat cap after an unblock escalates the same way to triage.
+        landed = kb.get_task(conn, tid)
+        if landed is not None and landed.status in ("blocked", "triage"):
+            print(f"Review round cap reached for {tid}: not handed back; the card is now "
+                  f"{landed.status} for a human (see the review_round_cap event)")
+        else:
+            print(f"Requested changes for {tid}" + (f"; routed to {detail}" if detail else ""))
     return 0
 
 

@@ -113,6 +113,15 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+
+# Review rounds (``request_changes`` handbacks) allowed on ONE card before it blocks
+# ``needs_input`` for a human. Overridable per install via ``kanban.review_max_rounds``;
+# 0 disables the cap (the pre-2026-11 unbounded behaviour, said out loud).
+# Counts ROUNDS, not spawn failures: a review going round and round is a disagreement
+# about the work, and spending the implementer's work-failure budget on it is precisely
+# the confusion the sibling review-budget defect is about.
+DEFAULT_REVIEW_MAX_ROUNDS = 3
+
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -3405,15 +3414,128 @@ def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _count_task_events(conn: sqlite3.Connection, task_id: str, kind: str) -> int:
+    """Number of ``kind`` events recorded for a task — the counter source for caps
+    whose transitions are already event-sourced (no column, no drift, no migration)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()
+    return int(_row_get(row, "n") or 0) if row is not None else 0
+
+
+def _review_round_limit(explicit: Optional[int] = None) -> int:
+    """Effective ``kanban.review_max_rounds``: explicit argument > config > default.
+
+    Read lazily and defensively — an unreadable config must never be mistaken for
+    "no cap", so anything that fails to parse falls back to
+    :data:`DEFAULT_REVIEW_MAX_ROUNDS`. ``0`` (or negative) deliberately disables
+    the cap, which is how an install keeps the old unbounded loop on purpose.
+    """
+    if explicit is not None:
+        try:
+            return max(0, int(explicit))
+        except (TypeError, ValueError):
+            return DEFAULT_REVIEW_MAX_ROUNDS
+    raw: Any = None
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("review_max_rounds")
+    except Exception:  # config absent/broken is not a reason to disable a breaker
+        raw = None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_REVIEW_MAX_ROUNDS
+
+
+def _review_rounds_exhausted(
+    conn: sqlite3.Connection, task_id: str, limit: int, expected_run_id: Optional[int],
+) -> Optional[dict]:
+    """``{"rounds", "limit"}`` when THIS call would exceed the cap, else ``None``.
+
+    Only an active run claimed from ``review`` can be capped, and the CAS guard is
+    honoured first so a stale reviewer sees the ordinary "run_id mismatch" refusal
+    instead of a cap it did not cause.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or row["status"] != "running" or row["current_run_id"] is None:
+        return None
+    if expected_run_id is not None and int(row["current_run_id"]) != int(expected_run_id):
+        return None
+    claimed = _latest_event(conn, task_id, "claimed", int(row["current_run_id"]))
+    if _json_dict(_row_get(claimed, "payload")).get("source_status") != "review":
+        return None
+    rounds = _count_task_events(conn, task_id, "changes_requested")
+    if rounds < limit:
+        return None
+    return {"rounds": rounds, "limit": limit, "run_id": int(row["current_run_id"])}
+
+
+def _block_for_review_round_cap(
+    conn: sqlite3.Connection, task_id: str, *, reason: str, rounds: int, limit: int,
+    run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """Refuse the handback and park the card ``needs_input``, naming the ping-pong.
+
+    ``needs_input`` (not ``triage``) on purpose: the card does not need a
+    decomposer, it needs the human who owns the disagreement. ``block_task``
+    closes the reviewer's run, so the reviewer's turn still ends cleanly and the
+    tool reports the status it truly landed in.
+
+    ``run_id`` carries the reviewer's run as a CAS guard: a reviewer whose run was
+    already superseded mid-call must lose the race (returns ``False``) rather than
+    block a card it no longer owns.
+
+    A *repeated* cap — the human unblocked the card and the pair resumed the same
+    disagreement — takes the ordinary :func:`_route_block` ladder to ``triage``
+    (``block_kind``/``block_recurrences`` survive an unblock by design). That is
+    deliberate: the second time is no longer a question of who is right, it is a
+    card that should be re-specified or split.
+    """
+    summary = (
+        f"review round cap reached ({rounds} of {limit}): the review lane returned this "
+        f"card {rounds} times without an approval, so implementer and reviewer are "
+        f"ping-ponging on the same disagreement. A human has to decide which one is right."
+        f" Last change requested: {reason}"
+    )
+    if not block_task(conn, task_id, kind="needs_input", reason=summary,
+                      expected_run_id=run_id):
+        return False, "task changed during review handoff"
+    _append_event(
+        conn, task_id, "review_round_cap",
+        {"rounds": rounds, "limit": limit, "last_reason": reason},
+    )
+    return True, None
+
+
 def request_changes(
-    conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
+    conn: sqlite3.Connection, task_id: str, *, reason: str,
+    expected_run_id: Optional[int] = None, max_rounds: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    gating reapplied. Returns ``(ok, implementer | reason)``.
+
+    Bounded by ``kanban.review_max_rounds`` (default 3, ``0`` = off) because
+    ``request_changes`` deliberately bypasses block-loop accounting: without a
+    declared cap a review ping-pong has no circuit breaker at all. At the cap the
+    handback is refused and the card is blocked ``needs_input`` with the loop
+    named, so a reviewer never loops a card forever and a human never has to
+    reconstruct the loop from the event log.
+    """
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
+
+    limit = _review_round_limit(max_rounds)
+    if limit:
+        exhausted = _review_rounds_exhausted(conn, task_id, limit, expected_run_id)
+        if exhausted is not None:
+            return _block_for_review_round_cap(conn, task_id, reason=reason, **exhausted)
 
     with write_txn(conn):
         task_row = conn.execute(

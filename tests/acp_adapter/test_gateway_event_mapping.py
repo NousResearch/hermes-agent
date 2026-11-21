@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from acp.schema import AgentPlanUpdate, AllowedOutcome, DeniedOutcome
+from acp.schema import AgentPlanUpdate, AllowedOutcome, ClientCapabilities, DeniedOutcome
 
 from acp_adapter.gateway_server import GatewayACPAgent
 
@@ -30,6 +30,77 @@ def updates(agent):
 
 async def project(agent, kind, payload, aid='a'):
     await agent._project({'session_id': 's', 'type': kind, 'admission_id': aid, 'payload': payload})
+
+
+@pytest.mark.asyncio
+async def test_capable_client_receives_review_notice_while_idle():
+    editor = agent()
+    await editor.initialize(client_capabilities=ClientCapabilities(
+        field_meta={'com.nousresearch/backgroundReview': True}))
+    await project(editor, 'review.summary', {'text': 'Skill example patched'}, aid=None)
+    editor._conn.ext_notification.assert_awaited_once_with(
+        'com.nousresearch/backgroundReview', {'sessionId': 's', 'text': 'Skill example patched'})
+    assert updates(editor) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_review_extension_is_queued_for_the_next_prompt():
+    editor = agent()
+    await editor.initialize(client_capabilities=ClientCapabilities(
+        field_meta={'com.nousresearch/backgroundReview': True}))
+    editor._conn.ext_notification.side_effect = RuntimeError('disconnected')
+    await project(editor, 'review.summary', {'text': 'Skill example patched'}, aid=None)
+    editor._conn.ext_notification.assert_awaited_once()
+    await editor._flush_review_summaries('s', 's')
+    (notice,) = updates(editor)
+    assert notice.content.text == 'Skill example patched'
+
+
+@pytest.mark.asyncio
+async def test_idle_review_summary_is_delivered_once_on_the_next_prompt():
+    editor = agent()
+    await project(editor, 'review.summary', {'text': 'Skill hermes-config patched'}, aid=None)
+    assert updates(editor) == []
+    editor._prepare_submit = AsyncMock(return_value=('key', 'input', ('hello', [])))
+    editor._run_slash = AsyncMock(return_value=(False, 'hello'))
+    editor._client = AsyncMock(return_value=editor._gateway)
+    editor._admission_from_receipt = AsyncMock(return_value='a')
+
+    async def settle(*args):
+        editor._terminals['a'] = {'outcome': 'completed'}
+    editor._after_ack = settle
+    await editor.prompt([], 's')
+    (notice,) = updates(editor)
+    assert notice.session_update == 'agent_message_chunk'
+    assert 'Skill hermes-config patched' in notice.content.text
+    await editor.prompt([], 's')
+    assert len(updates(editor)) == 1
+
+
+@pytest.mark.asyncio
+async def test_review_summary_during_a_new_turn_does_not_join_its_reply():
+    editor = agent()
+    editor._inflight[('s', 'a')] = None
+    await project(editor, 'message.delta', {'text': 'first '})
+    await project(editor, 'review.summary', {'text': 'Skill example patched'}, aid=None)
+    await project(editor, 'message.delta', {'text': 'second'})
+    first, notice, last = updates(editor)
+    assert notice.content.text == 'Skill example patched'
+    assert first.message_id == last.message_id != notice.message_id
+    assert editor._streamed['a'] == 'first second'
+
+
+@pytest.mark.asyncio
+async def test_review_summary_is_retained_when_notification_delivery_fails():
+    editor = agent()
+    editor._inflight[('s', 'a')] = None
+    editor._conn.session_update.side_effect = RuntimeError('disconnected')
+    await project(editor, 'review.summary', {'text': 'Skill example patched'}, aid=None)
+    editor._conn.session_update.side_effect = None
+    editor._conn.session_update.reset_mock()
+    await editor._flush_review_summaries('s', 's')
+    (notice,) = updates(editor)
+    assert notice.content.text == 'Skill example patched'
 
 
 @pytest.mark.asyncio

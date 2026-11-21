@@ -287,6 +287,7 @@ gateway:
     level_disabled: "none (deshabilitado)"
     scope_session: "anulación de sesión"
     scope_global: "configuración global"
+    scope_channel: "configuración del canal"
     status: "🧠 **Ajustes de razonamiento**\n\n**Esfuerzo:** `{level}`\n**Alcance:** {scope}\n**Visualización:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on: "activada ✓"
     display_off: "desactivada"

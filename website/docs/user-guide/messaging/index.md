@@ -341,16 +341,20 @@ platforms:
       "123456789012345678":        # channel/thread id
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
+        reasoning_effort: high
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
+        reasoning_effort: low
 ```
 
 Details:
 
-- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also set intentional silence with `allow_silence`, which overrides the platform's own `allow_silence` (below).
+- `model`, `provider`, `reasoning_effort` and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also set intentional silence with `allow_silence`, which overrides the platform's own `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
+- `reasoning_effort` takes the same values as `agent.reasoning_effort` (`none`/`false` disables thinking). Its priority is: session `/reasoning` → `channel_overrides` → per-model `agent.reasoning_overrides` → global `agent.reasoning_effort`. It applies to whichever model the chat runs, including one picked with `/model`. `/reasoning` shows the scope as *channel config*, and `/reasoning <level> --global` in such a chat also keeps that level for the chat, since the channel setting would otherwise outrank config.yaml. An unknown value logs a warning and falls through to the per-model/global level. During a provider fallback the fallback model uses its own per-model/global level, as with a session `/reasoning`.
+- Like the model, the effort comes from the first matching entry (chat → thread → parent): a thread entry that sets only `model` does not inherit its parent channel's `reasoning_effort`.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
 ## Per-Platform and Per-Room Intentional Silence

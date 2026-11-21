@@ -932,8 +932,14 @@ class GatewayModelCommandsMixin:
 
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
+        channel_scoped: bool = False,
     ) -> str:
-        """Apply a /reasoning argument (typed or picked) and return the reply."""
+        """Apply a /reasoning argument (typed or picked) and return the reply.
+
+        ``channel_scoped``: this chat has a ``channel_overrides`` ``reasoning_effort``, which outranks
+        config.yaml, so a ``--global`` pick keeps the session override (as ``/model --global`` keeps
+        a channel-model chat's) or the chat would stay on the channel level it asked to leave.
+        """
         from hermes_constants import parse_reasoning_effort
 
         value = (value or "").strip().lower()
@@ -962,7 +968,9 @@ class GatewayModelCommandsMixin:
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
                 # A local session runs its frozen level, not config.yaml's: it takes the level too.
-                self._set_reasoning_override(session_key, parsed if live is not None else None)
+                # So does a chat whose channel_overrides effort would otherwise outrank config.yaml.
+                keep = live is not None or channel_scoped
+                self._set_reasoning_override(session_key, parsed if keep else None)
                 return t("gateway.reasoning.set_global", effort=value)
             self._set_reasoning_override(session_key, parsed)
             return t("gateway.reasoning.set_global_save_failed", effort=value)
@@ -1014,9 +1022,11 @@ class GatewayModelCommandsMixin:
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source, session_key=session_key, model=_session_model,
         )
+        channel_scoped = self._channel_reasoning_config(event.source) is not None
         platform_key = _platform_config_key(event.source.platform)
         if args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+            return self._apply_reasoning_selection(
+                session_key, platform_key, args, persist_global=persist_global, channel_scoped=channel_scoped)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
@@ -1042,12 +1052,14 @@ class GatewayModelCommandsMixin:
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
         _rs_state = self._peek_session_state(session_key)
         has_session_override = _rs_state is not None and _rs_state.conversation.reasoning_override is not None
-        scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
+        scope = t("gateway.reasoning.scope_session" if has_session_override else
+                  "gateway.reasoning.scope_channel" if channel_scoped else "gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
             def _apply() -> str:
                 return self._apply_reasoning_selection(
                     session_key, platform_key, value, persist_global=persist_global,
+                    channel_scoped=channel_scoped,
                 )
 
             if profile_home is None:

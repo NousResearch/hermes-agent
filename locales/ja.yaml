@@ -287,6 +287,7 @@ gateway:
     level_disabled: "none (無効)"
     scope_session: "セッションのオーバーライド"
     scope_global: "グローバル設定"
+    scope_channel: "チャンネル設定"
     status: "🧠 **推論設定**\n\n**強度:** `{level}`\n**スコープ:** {scope}\n**表示:** {display}\n\n_使い方:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on: "オン ✓"
     display_off: "オフ"

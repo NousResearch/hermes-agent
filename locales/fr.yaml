@@ -315,6 +315,7 @@ gateway:
     level_disabled: "none (désactivé)"
     scope_session: "remplacement de session"
     scope_global: "configuration globale"
+    scope_channel: "configuration du salon"
     status: "🧠 **Paramètres de raisonnement**\n\n**Effort :** `{level}`\n**Portée :** {scope}\n**Affichage :** {display}\n\n_Usage :_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on: "activé ✓"
     display_off: "désactivé"

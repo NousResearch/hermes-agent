@@ -19,6 +19,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import typing_metadata_for_turn
+from gateway.run_turn_subagent_panel import observe as observe_subagent_panel
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -207,6 +208,8 @@ class GatewayTurnProgressMixin:
             except Exception:
                 # Best-effort: a viewer frame never blocks the failure notice below, but a lost one is logged.
                 logger.debug("Local viewer progress publish failed for %s", event_type, exc_info=True)
+        if isinstance(event_type, str) and event_type.startswith("subagent."):
+            observe_subagent_panel(self, event_type, tool_name, preview, kwargs)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":

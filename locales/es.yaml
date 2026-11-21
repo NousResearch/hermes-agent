@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "está pensando..."
       still_working: "sigue trabajando… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *Subagentes* ({count})"
+      tools: "{count} herramientas"
+      status_completed: "listo"
+      status_interrupted: "detenido"
+      stop: "Detener"
+      result: "Resultado"
+      gone: "Este panel de subagentes ya no está activo."
+      stop_sent: "Detención solicitada. El subagente se detiene en su siguiente paso."
+      not_running: "Ese subagente no se está ejecutando."
+      result_empty: "(El subagente no devolvió texto.)"
+      result_title: "Resultado del subagente"
+      close: "Cerrar"
     task_card:
       title: "Hermes está trabajando"
     slash:

@@ -1386,6 +1386,19 @@ platform:
     status:
       thinking: "gondolkodik..."
       still_working: "még dolgozik… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *Alügynökök* ({count})"
+      tools: "{count} eszköz"
+      status_completed: "kész"
+      status_interrupted: "leállítva"
+      stop: "Leállítás"
+      result: "Eredmény"
+      gone: "Ez az alügynök-panel már nem aktív."
+      stop_sent: "Leállítás kérve. Az alügynök a következő lépésénél megáll."
+      not_running: "Ez az alügynök nem fut."
+      result_empty: "(Az alügynök nem adott vissza szöveget.)"
+      result_title: "Alügynök eredménye"
+      close: "Bezárás"
     task_card:
       title: "Hermes dolgozik"
     slash:

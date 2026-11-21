@@ -178,6 +178,16 @@ def clarify_refusal(clarify_id: str, actor_id: Any, *, admin_ids: Any = (),
     return _authority_refusal(getattr(pending, "authority", None), actor_id, admin_ids, extra, (), admitted)
 
 
+def prompt_refusal(authority: Any, actor_id: Any, *, extra: Any = None,
+                   command: Optional[str] = None) -> Optional[str]:
+    """:func:`approval_refusal` for a control card that carries its own recorded ``authority``
+    (``tools.approval_context.prompt_authority``, e.g. the Slack subagent panel): ``None`` when
+    *actor_id* may press it, else the requester's name for :func:`refusal_text`. *command* is the
+    slash command the press amounts to (``stop`` for interrupting work), so a chat that gates it to
+    admins gates the button too; a read-only press passes none."""
+    return _authority_refusal(authority, actor_id, (), extra, (command,) if command else ())
+
+
 def refusal_text(requester: str) -> str:
     from agent.i18n import t
 

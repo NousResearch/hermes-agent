@@ -1190,6 +1190,8 @@ class _ChildRun:
             "status": entry["status"],
             "duration_seconds": duration,
             "summary": summary[:500] if summary else entry.get("error", ""),
+            # The full (already redacted) result for surfaces that show it on demand (Slack's Result modal).
+            "result_text": summary[:12_000] if summary else entry.get("error", ""),
             "input_tokens": _num(getattr(child, "session_prompt_tokens", 0)),
             "output_tokens": _num(getattr(child, "session_completion_tokens", 0)),
             "reasoning_tokens": _num(getattr(child, "session_reasoning_tokens", 0)),

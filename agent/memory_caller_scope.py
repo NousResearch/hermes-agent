@@ -22,14 +22,16 @@ import threading
 import weakref
 from typing import Any, Callable, Optional
 
+from hermes_cli.plugin_host import is_hosted_object
+
 logger = logging.getLogger(__name__)
 
 CALLER_PROFILE_REFUSAL = "memory_caller_profile_unresolved"
 SHARED_INSTANCE_REFUSAL = "memory_provider_instance_shared"
 
-# id(provider) -> (weak reference to that very instance, profile home key). Keyed by identity, never
+# id(provider) -> (weak instance reference, profile home key, weak manager references). Keyed by identity, never
 # by the provider's own __hash__/__eq__: an unhashable or value-equal provider is still tracked.
-_claims: dict[int, tuple[weakref.ref, str]] = {}
+_claims: dict[int, tuple[weakref.ref, str, list[weakref.ref]]] = {}
 _claims_lock = threading.RLock()  # reentrant: a weakref callback can fire from GC inside the lock
 # A no-weakref provider is kept alive by its managers. Weak manager refs keep its home
 # claim until the last live manager is gone, without pinning the provider itself.
@@ -126,19 +128,37 @@ def _forget_no_weakref(pid: int, dead: weakref.ref) -> None:
 def claim_instance(provider: Any, home: Any, *, manager: Any = None) -> bool:
     """Record that ``provider`` (the instance) is bound to ``home``. False when another profile
     already bound this same live instance — whatever the multiplex flag says (#146293).
-    No-weakref instances can be tracked through a live manager that holds them.
+    No-weakref instances can be tracked through a live manager that holds them;
+    read-only managers require exclusive ownership even within one profile.
 
     Rebinding was only ever guarded on the multiplex flag, so a multi-profile host with
     multiplexing off (WebUI, desktop, an embedding app) silently re-pointed an instance another
     live agent was still using: cross-profile memory reads/writes with nothing logged. A
-    single-profile process names the same home on every claim, so it is unaffected."""
+    single-profile process is otherwise unaffected."""
     from agent.secret_scope import is_multiplex_active
+    if manager is not None and manager.read_only and is_hosted_object(provider):
+        # Proxy identity cannot prove exclusive ownership of the underlying hosted instance.
+        logger.warning("Read-only memory provider refused (memory_provider_hosted_read_only_unsupported): "
+                       "hosted providers cannot guarantee an isolated child instance; child memory is disabled")
+        return False
     key = _home_key(home) or str(home)
     multiplexed = is_multiplex_active()
     pid = id(provider)
     with _claims_lock:
         entry = _claims.get(pid)
         owner = entry[1] if entry is not None and entry[0]() is provider else None
+        previous = _no_weakref_claims.get(pid)
+        manager_refs = entry[2] if owner is not None else previous[1] if previous else []
+        owners = [ref() for ref in manager_refs if ref() is not None]
+        if manager is not None and (
+            (manager.read_only and (any(other is not manager for other in owners)
+                                   or (owner is not None and not owners)))
+            or any(other is not manager and other.read_only for other in owners)
+        ):
+            logger.warning("Memory provider '%s' refused (%s): a read-only child requires its own "
+                           "provider instance; this instance is already claimed by another manager",
+                           getattr(provider, "name", "?"), SHARED_INSTANCE_REFUSAL)
+            return False
         if owner is not None and owner != key:
             logger.warning("Memory provider '%s' refused for profile home %r (%s): this same provider instance "
                            "is already bound to %r; a provider must give every agent its own instance",
@@ -167,7 +187,10 @@ def claim_instance(provider: Any, home: Any, *, manager: Any = None) -> bool:
                 _no_weakref_claims[pid] = (key, [*live, ref])
             # Preserve the historical direct-call fallback without an owning manager.
             return True
-        _claims[pid] = (ref, key)
+        refs = [ref for ref in manager_refs if ref() is not None]
+        if manager is not None and not any(other is manager for other in owners):
+            refs.append(weakref.ref(manager))
+        _claims[pid] = (ref, key, refs)
     return True
 
 

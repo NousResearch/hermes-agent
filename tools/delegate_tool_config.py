@@ -222,6 +222,39 @@ def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     return is_truthy_value(_load_config().get("inherit_mcp_toolsets"), default=True)
 
+def _resolve_child_memory_read_tools(parent_agent) -> Optional[list[str]]:
+    """Read-only memory tools for a child under ``delegation.memory_read``; None = off (the default).
+
+    ``delegation.memory_read_tools`` names them; missing or [] = whatever the provider marks read-only
+    (``MemoryProvider.read_only_tool_names``). A child never gains a tool its parent lacks, so the
+    result is limited to memory tools the parent exposes. The child's own manager re-checks the list
+    against its provider (declared read-only set, registered tools) before offering anything."""
+    cfg = _load_config()
+    if not is_truthy_value(cfg.get("memory_read"), default=False):
+        return None
+    raw = cfg.get("memory_read_tools", [])
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if (not isinstance(raw, (list, tuple))
+            or (isinstance(raw, tuple) and not raw)
+            or any(not isinstance(name, str) or not name.strip() for name in raw)):
+        logger.warning("delegation.memory_read_tools must contain nonempty tool names; read-only memory off")
+        return None
+    configured = [name.strip() for name in raw]
+    parent_manager = getattr(parent_agent, "_memory_manager", None)
+    if parent_manager is None:
+        return None  # the parent has no memory provider to read from
+    declare = getattr(parent_manager, "declared_read_only_tools", None)
+    declared = declare() if callable(declare) else set()
+    candidates = [name for name in configured if name in declared] if configured else sorted(declared)
+    parent_tools = set(getattr(parent_agent, "valid_tool_names", None) or ())
+    tools = [name for name in candidates if name in parent_tools]
+    if not tools:
+        logger.info("delegation.memory_read is on but no read-only memory tool is available to the parent "
+                    "(configured %s); children get none", configured or "provider default")
+        return None
+    return tools
+
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 

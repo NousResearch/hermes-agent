@@ -132,6 +132,7 @@ fields; callers may initialize a provider without an agent or a session database
 | `resumed` | `True` when an earlier turn of this session id ran (the agent continues a stored transcript: `--resume`, a gateway chat after a restart, a reopened Desktop/TUI session). `False` for a new session id: a subagent, a cron run, a fresh chat. A `/branch` child seeded with copied history is `True`. A mid-process `/resume` arrives through `on_session_switch()` instead. |
 | `message_count` | Messages already stored for this session id. On TUI/Desktop it can include the prompt being submitted, so a fresh chat may report `1` with `resumed` `False`. |
 | `agent_workspace`, `agent_context` | Runtime agent scope. `agent_workspace` is `hermes`; `agent_context` is `cron` for scheduler runs, `subagent` for `delegate_task` children, else `primary` — skip automatic writes for the non-primary values. |
+| `read_only` | `True` for read-only children. The manager is restricted before `initialize()`; providers must skip startup writes, pending write-queue replay, identity seeding and background write workers. Missing means normal startup. |
 
 Read optional keys with `kwargs.get(...)`; older Hermes versions omit the newer ones (`resumed`,
 `message_count`).
@@ -196,6 +197,7 @@ workspace; absent or empty cwd remains unpinned.
 | Method | When Called | Use Case |
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
+| `read_only_tool_names()` | Read-only agents (`delegation.memory_read`) | Names of your tools that only read; see [Read-only agents](#read-only-agents) |
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
@@ -353,6 +355,45 @@ digest) and upsert, so retries and overlaps deduplicate instead of
 accumulating duplicate archives.
 
 Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
+
+### Read-only agents
+
+With `delegation.memory_read` on, a subagent loads your provider with
+`agent_context="subagent"` and `read_only=True`. The host restricts its manager
+**before** `initialize()`; providers must skip startup writes, including pending
+write-queue replay and identity seeding. Read-only children inherit only the parent's
+memory-scoping `user_id` and `user_id_alt`, not gateway session keys, chat/thread
+routing or display identity. They require their own provider instance and session:
+if the loader returns an instance already claimed by another manager (even in the
+same profile), the child gets no memory and logs one refusal, without initializing
+or shutting down that instance.
+Hosted/proxied providers under `plugins.isolation: host` are a known limitation:
+read-only children get no memory, with one logged refusal and no provider
+initialization or shutdown, because proxy identity cannot prove exclusive ownership.
+Only declared, allowed tools are offered or dispatched. Automatic turn hooks,
+session extraction and `on_session_switch()` stay off, including session-boundary
+rebinding. A best-effort `on_pre_compress()` is skipped unless
+`compression.checkpoint_required` is armed. Your `system_prompt_block()` is
+replaced by a host note naming the allowed tools.
+
+Mark the tools that are safe there:
+
+```python
+def read_only_tool_names(self) -> list[str]:
+    return ["myprovider_search"]
+```
+
+List a tool only if no call to it can store, edit, delete or consolidate
+anything, client- or server-side. For example, a "reflect" call that saves its
+conclusions back is not read-only. An empty, failed or malformed declaration offers
+no memory tools. `delegation.memory_read_tools` can only narrow a valid declaration,
+never replace it. Explicit toolset narrowing and disabled `memory` / `all` / `*` still apply;
+the explicit spawn grant bypasses only delegation's built-in `memory` block, independently
+of disabled-list rebuilding for the child's platform.
+Repeated manager restrictions intersect the existing allowlist and never restore tools.
+The bypass requires the effective disabled set to equal the spawn-time set.
+A refresh with caller-supplied `disabled_override` containing `memory` revokes
+the grant, including when that list matches delegation's injected denial.
 
 ## Setup UX — what a standalone provider keeps
 

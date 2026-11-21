@@ -394,6 +394,37 @@ Certain tools are blocked for subagents even when the parent has them:
 
 Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
+### Read-only memory lookups (`delegation.memory_read`, opt-in)
+
+By default a subagent has no long-term memory at all: no `memory` tool, no MEMORY.md/USER.md and no external memory provider. That keeps the shared memory safe from children, but a child also can't look up an earlier decision or a standing rule the brief forgot to mention. `delegation.memory_read` lets children **search** the external memory provider while every write path stays closed:
+
+```yaml
+delegation:
+  memory_read: true
+  memory_read_tools: []          # [] = the tools the provider marks read-only
+  # memory_read_tools: [provider_search]   # optionally narrow to a provider-declared name
+```
+
+With it on, each child loads the configured provider with `agent_context="subagent"` and `read_only=True`, restricted before initialization. Providers must skip startup writes, including queue replay and identity seeding. Read-only children retain only the parent's memory-scoping `user_id` and `user_id_alt`, not its gateway session key, chat/thread routing, display identity, manager or session, and get only the allowed tools:
+
+- **Search tools only.** Write tools (save, edit, delete, consolidate) are not offered. A call to one is refused, even if the model invents the name.
+- **No automatic writes or recall.** There is no turn sync, auto-retain, `prefetch()`, session-end extraction, session-switch hook or delegation note. A best-effort `on_pre_compress()` is skipped, unless `compression.checkpoint_required` is armed, because that setting is its own opt-in to the checkpoint save.
+- **The built-in store stays out.** The `memory` tool remains blocked and MEMORY.md/USER.md are not loaded.
+- **No new capabilities.** A child only gets memory tools the parent itself exposes. Read-only parents may pass those lookups to grandchildren, intersected again at each level. The parent's `memory_read` / `memory_read_tools` settings govern the grant even when the child runs in another profile.
+- **Toolset limits still apply.** Explicit narrowing (for example `toolsets: ["web"]`) and disabled `memory` / `all` / `*` withhold memory tools. An explicit spawn grant bypasses only delegation's built-in `memory` block, including when the child's platform adds other toolset denials.
+  The bypass is valid only while the child's disabled set equals its spawn-time set. A tool refresh with caller-supplied `disabled_override` containing `memory` revokes the grant and withholds provider tools, even if that denial matches the spawn-time block.
+- **A read-only prompt note.** The child's prompt gets a short read-only note instead of the provider's own block, which would advertise write tools.
+
+**Which tools count as read-only:**
+- A provider marks its own with `read_only_tool_names()`. `memory_read_tools` can narrow that list but never add to it, so a typo or a write tool in config can't widen access.
+- An empty, failed or malformed provider declaration grants no memory tools, regardless of configuration.
+- Stock in-tree providers currently declare no read-only tools, so enabling this feature grants nothing until a provider implements `read_only_tool_names()` with its lookup names. `provider_search` above is a generic example, not a bundled tool.
+- Only a missing `memory_read_tools` key or explicit `[]` uses the declared set. A nonempty comma-separated string, list or tuple narrows it; every entry must be a nonblank string. Blank strings, blank entries, mixed malformed entries and other types (including explicit YAML `null`, `0` and `{}`) disable child memory with a warning.
+
+Cost: one provider `initialize()` per spawn. A loader returning an instance already claimed by another manager gives the read-only child no memory, with one logged refusal; the child never reinitializes or shuts down that shared instance.
+
+**Known limitation:** hosted/proxied memory providers under `plugins.isolation: host` are unavailable to read-only children. Proxy identity cannot establish exclusive ownership of the underlying instance, so Hermes fails closed and logs one refusal without initializing or shutting down the child's provider.
+
 ## Max Iterations
 
 Each subagent has an iteration limit (default: 250) that controls how many tool-calling turns it can take. The limit is set globally in `config.yaml` and applies to every child; it is not a per-call parameter of `delegate_task`:

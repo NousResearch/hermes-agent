@@ -6,7 +6,7 @@ function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): bo
     return Boolean(stored.toolCallId) && stored.toolCallId === local.toolCallId
   }
 
-  if ((stored.type === 'text' || stored.type === 'reasoning') && local.type === stored.type) {
+  if (stored.type === 'text' && local.type === 'text') {
     return normalizedText(stored.text) === normalizedText(local.text)
   }
 
@@ -14,42 +14,52 @@ function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): bo
 }
 
 /** Subtract an ordered, tool-anchored prefix within an already matched user
- * interval. Hydration can fold several live bubbles into one durable row;
- * bubble ordinals and equal text alone cannot establish that coverage. */
-export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: ChatMessage[]): ChatMessage[] {
-  const parts = stored.flatMap(message => (message.role === 'assistant' ? message.parts : []))
+ * interval. Reasoning visibility and segmentation differ between live events
+ * and durable display projections; only public text and tool IDs prove coverage.
+ * Report exact covered tool pairs so callers can retain newer completion state. */
+export function withoutCoveredAssistantPrefix(
+  stored: ChatMessage[],
+  local: ChatMessage[],
+  coveredTools?: Map<ChatMessagePart, ChatMessagePart>
+): ChatMessage[] {
+  const parts = stored.flatMap(message =>
+    message.role === 'assistant' ? message.parts.filter(part => part.type !== 'reasoning') : []
+  )
+
   let cursor = 0
-  let anchored = false
-  let stopped = false
-  const remaining: ChatMessage[] = []
+  let covered: { message: number; part: number } | undefined
 
-  for (const message of local) {
-    if (stopped || message.role !== 'assistant' || message.error) {
-      stopped = true
-      remaining.push(message)
-
-      continue
+  scan: for (const [messageIndex, message] of local.entries()) {
+    if (message.role !== 'assistant' || message.error) {
+      break
     }
 
-    let consumed = 0
-
-    for (const part of message.parts) {
-      if (!parts[cursor] || !sameOccurrencePart(parts[cursor], part)) {
-        break
+    for (const [partIndex, part] of message.parts.entries()) {
+      if (part.type === 'reasoning') {
+        continue
       }
 
-      anchored ||= part.type === 'tool-call'
-      cursor += 1
-      consumed += 1
-    }
+      if (!parts[cursor] || !sameOccurrencePart(parts[cursor], part)) {
+        break scan
+      }
 
-    if (consumed < message.parts.length) {
-      stopped = true
-      remaining.push(consumed ? { ...message, parts: message.parts.slice(consumed) } : message)
+      cursor += 1
+
+      if (part.type === 'tool-call') {
+        covered = { message: messageIndex, part: partIndex }
+        coveredTools?.set(parts[cursor - 1], part)
+      }
     }
   }
 
-  // A coincidentally equal paragraph, without the same tool occurrence after
-  // it, is insufficient evidence to remove anything.
-  return anchored ? remaining : local
+  // Commit only through the last shared tool. Equal prose or reasoning after
+  // it can be a new occurrence and must survive until another tool anchors it.
+  if (!covered) {
+    return local
+  }
+
+  const message = local[covered.message]
+  const suffix = message.parts.slice(covered.part + 1)
+
+  return [...(suffix.length ? [{ ...message, parts: suffix }] : []), ...local.slice(covered.message + 1)]
 }

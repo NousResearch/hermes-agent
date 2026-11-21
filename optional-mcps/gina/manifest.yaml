@@ -1,0 +1,59 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: gina
+connector_slug: gina
+description: 'Gina: read-only crypto and onchain research across tokens, Hyperliquid perps, and Polymarket.'
+source: https://docs.askgina.ai/mcp-access/gina-read
+
+transport:
+  type: http
+  url: https://askgina.ai/ai/gina/mcp
+
+# Vendor-hosted remote MCP over Streamable HTTP. Requests the `tools:read`
+# scope; execute-scoped Gina credentials are not accepted here. Hermes's MCP
+# client + mcp_oauth_manager handle discovery, PKCE, token exchange, and
+# refresh.
+auth:
+  type: oauth
+
+# Curated public market-research default. Account-level reads (portfolio,
+# linked addresses, positions, order history, scheduled prompts, swap history)
+# and SQL helpers stay available via `hermes mcp configure gina`. Names are
+# Gina's canonical catalog names. The server has no trading or execution tools.
+tools:
+  default_enabled:
+    - spot.getTokenMetadata
+    - spot.getTokenChart
+    - spot.getSimplePrice
+    - perps.getHyperliquidMarkets
+    - perps.getHyperliquidPrice
+    - perps.getHyperliquidAssetData
+    - perps.fetchHyperliquidCandles
+    - perps.fetchHyperliquidOrderBook
+    - predictions.searchPredictionMarkets
+    - predictions.getPredictionMarketDetails
+    - predictions.getExpiringMarkets
+    - predictions.fetchPolymarketHistory
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - gina
+    - askgina
+    - ask gina
+    - onchain research
+    - polymarket
+    - hyperliquid
+    - token research
+  hosts:
+    - askgina.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Gina (or run `hermes mcp login gina`). Sign in and approve
+  read-only access, then restart the session so tools load.
+
+  Adjust the enabled tools any time with:
+    hermes mcp configure gina

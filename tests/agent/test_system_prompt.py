@@ -84,6 +84,17 @@ def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id
     assert (agent._kanban_worker_guidance == KANBAN_GUIDANCE) is expected
 
 
+
+def test_kanban_guidance_names_the_dispatched_board_not_a_fixed_path():
+    """The dispatcher pins each worker's board in ``HERMES_KANBAN_DB`` (named boards,
+    custom/profile HERMES_HOME, Docker layouts); a hard-coded ``~/.hermes/kanban.db``
+    sends a model that reaches for sqlite3 to the wrong database."""
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "$HERMES_KANBAN_DB" in KANBAN_GUIDANCE
+    assert "~/.hermes/kanban.db" not in KANBAN_GUIDANCE
+
+
 @pytest.mark.parametrize("task_id, owner, expected", [
     (None, True, False),        # interactive session with the kanban toolset enabled
     ("t_worker", True, True),   # the dispatcher-owned worker

@@ -1,4 +1,5 @@
-export type Locale =
+/** A locale whose catalog ships inside the dashboard bundle. */
+export type BundledLocale =
   | "en"
   | "zh"
   | "zh-hant"
@@ -16,6 +17,9 @@ export type Locale =
   | "ru"
   | "hu"
   | "ar";
+
+/** A bundled locale, or one a language pack serves over `/api/i18n` (`vi`, `pl`, …). */
+export type Locale = BundledLocale | (string & {});
 
 export interface Translations {
   // ── Common ──

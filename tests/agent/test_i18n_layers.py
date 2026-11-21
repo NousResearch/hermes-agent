@@ -202,6 +202,7 @@ def test_register_locale_accepts_dicts_and_rejects_bad_ids(home):
     with pytest.raises(ValueError):
         ctx.register_locale("not a lang", {"a": "b"})
     with pytest.raises(ValueError):
-        ctx.register_locale("pl", {"a": "b"}, surface="web")
+        ctx.register_locale("pl", {"a": "b"}, surface="webz")
+    assert ctx.register_locale("pl", {"common.save": "Zapisz"}, surface="web").key == "pl.web"
     with pytest.raises(FileNotFoundError):
         ctx.register_locale("pl", home / "missing.yaml")

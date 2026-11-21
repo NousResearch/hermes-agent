@@ -1,0 +1,23 @@
+name: herms-gate
+title: herms-gate
+repo: https://github.com/plutoskiz/herms-gate
+sha: 26b6f797cd3fb3a4f1669953060d6ea3317ac04e
+subdir: ""
+version: "0.1.0"
+description: "A fixed-rule gate on the text that enters a Hermes turn. Tool results are checked before the model reads them: passages that tell the model to drop its instructions, to hide things from the user or to leak data through an image link are cut out and replaced by a marker, and invisible characters are stripped (results from web tools get the full prompt-injection rule set; JSON results stay valid JSON). Gateway messages have invisible tag and bidirectional control characters removed. A user message that carries text hidden in invisible characters is stopped and the hidden text is shown. Every decision comes from a rule table in plain Python; no model is asked. Adds the gate_scan tool and the /gate command (status, warn, enforce, off, allow). Disclosure — no network calls, no subprocesses, no model calls, no credentials, no Python dependencies; writes one file, plugin-data/herms-gate/events.jsonl in the Hermes home (time, source, tool name, action, verdict, rule ids and counts, never the checked text; trimmed at 512 KB), and one config key (mode); reads HERMES_HOME only as a fallback to find that folder."
+maintainer: plutoskiz
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/plutoskiz/herms-gate#readme
+readme: true
+platforms: []
+known_issues:
+  - "Rule-based: it removes known-bad patterns and cannot prove text is safe. A model that sets out to inspect a file can re-read it in a form the rules do not match, for example in encoded chunks through a code tool."
+  - "On Hermes 0.21.5 a pre_llm_call hook cannot end a turn, so a message with hidden text gets a note telling the model what was hidden and not to act on it, instead of being stopped."
+  - "Removal can change a document that quotes injection phrases, such as a security article; /gate warn logs what is found and changes nothing."
+capabilities:
+  provides_tools: [gate_scan]
+  provides_hooks: [transform_tool_result, pre_gateway_dispatch, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

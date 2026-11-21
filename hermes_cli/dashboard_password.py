@@ -164,33 +164,51 @@ def _checkout_refusal(project_env: Path, home: Optional[Path] = None) -> Optiona
 
 
 def _case_variant_refusal(env_files, *, is_windows: Optional[bool] = None) -> Optional[str]:
-    """On Windows, why a line in one of *env_files* would still override the new sign-in, or None: its key
-    is a :data:`SHADOWING_ENV` name in another case (``hermes_dashboard_basic_auth_password``), which Windows
-    reads as that name, and which the rest of this command (exact names) neither removes nor judges. Names
-    the file, line and key as spelled, never the value. Lines are read one at a time with the ``.env``
-    tokenizer ``load_env`` uses, so a look-alike line inside a quoted multi-line value counts too: the
-    refusal is safe. Off Windows (*is_windows* defaults to this host) such a key is another variable."""
+    """On Windows, why a line in one of *env_files* or in the administrator-managed ``.env`` (loaded last,
+    with override) would still override the new sign-in, or None: its key is a :data:`SHADOWING_ENV` name in
+    another case (``hermes_dashboard_basic_auth_password``), which Windows reads as that name, and which the
+    rest of this command (exact names) neither removes nor judges. Names the file, line and key as spelled,
+    never the value. Lines are read one at a time with the ``.env`` tokenizer ``load_env`` uses, so a
+    look-alike line inside a quoted multi-line value counts too: the refusal is safe. Off Windows
+    (*is_windows* defaults to this host) such a key is another variable."""
     from agent.secret_scope import _decode_env_bytes, _parse_env_text
+    from hermes_cli import managed_scope
     from hermes_cli.config import _IS_WINDOWS
     if not (_IS_WINDOWS if is_windows is None else is_windows):
         return None
-    found, read_as = [], []
-    for path in env_files:
-        try:
-            lines = _decode_env_bytes(Path(path).read_bytes()).splitlines()
-        except OSError:
-            continue
-        hits = [(number, key) for number, line in enumerate(lines, 1) for key in _parse_env_text(line)
-                if key.upper() in SHADOWING_ENV and key not in SHADOWING_ENV]
-        if hits:
-            found.append(f"{path} " + ", ".join(f"line {number} ({key})" for number, key in hits))
-            read_as += [key.upper() for _, key in hits]
-    if not found:
-        return None
-    which = "that line" if len(read_as) == 1 else "those lines"
-    return (f"{'; '.join(found)}: Windows reads environment names in any case, so this overrides config.yaml "
-            f"as {', '.join(name for name in SHADOWING_ENV if name in read_as)}, and this command handles only "
-            f"the upper-case spelling: delete or rename {which}, then run this command again")
+
+    def scan(paths) -> tuple[list[str], list[str]]:
+        found, read_as = [], []
+        for path in paths:
+            try:
+                lines = _decode_env_bytes(Path(path).read_bytes()).splitlines()
+            except OSError:
+                continue
+            hits = [(number, key) for number, line in enumerate(lines, 1) for key in _parse_env_text(line)
+                    if key.upper() in SHADOWING_ENV and key not in SHADOWING_ENV]
+            if hits:
+                found.append(f"{path} " + ", ".join(f"line {number} ({key})" for number, key in hits))
+                read_as += [key.upper() for _, key in hits]
+        return found, read_as
+
+    def overrides(read_as) -> str:
+        return (f"Windows reads environment names in any case, so this overrides config.yaml as "
+                f"{', '.join(name for name in SHADOWING_ENV if name in read_as)}")
+
+    managed_dir = managed_scope.get_managed_dir()
+    reasons = []
+    found, read_as = scan(env_files)
+    if found:
+        which = "that line" if len(read_as) == 1 else "those lines"
+        reasons.append(f"{'; '.join(found)}: {overrides(read_as)}, and this command handles only the upper-case "
+                       f"spelling: delete or rename {which}, then run this command again")
+    found, read_as = scan([managed_dir / ".env"] if managed_dir else [])
+    if found:
+        which = "that line" if len(read_as) == 1 else "those lines"
+        reasons.append(f"{'; '.join(found)} (the administrator-managed .env, loaded last): {overrides(read_as)}, "
+                       f"and editing your own .env cannot change it: an administrator has to delete or rename "
+                       f"{which}")
+    return "; ".join(reasons) or None
 
 
 def _managed_config_refusal(username: str) -> Optional[str]:

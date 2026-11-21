@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: novada
+description: Web search, page extraction, structured scraping, and proxy tools from Novada.
+source: https://novada.com/products/novada-mcp/
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). OAuth 2.1 with Dynamic Client Registration and
+# PKCE S256; Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.novada.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - novada
+  hosts:
+    - novada.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Novada (or run `hermes mcp login novada`). Approve access,
+  then restart the session so tools load.
+  

@@ -17,8 +17,7 @@ from typing import Dict
 from agent.checkpoints import manager as cm
 from agent.checkpoints import maintenance
 
-# Pinned name: these lines stay under `hermes logs --component tools`.
-logger = logging.getLogger("tools.checkpoint_manager_profile_rename")
+logger = logging.getLogger(__name__)
 
 
 def _rebase_ledger_paths(ledger: dict, old_workdir: Path, new_workdir: Path) -> dict:

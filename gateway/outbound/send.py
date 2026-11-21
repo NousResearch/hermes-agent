@@ -9,8 +9,7 @@ import re
 
 from agent.secret_scope import get_secret
 
-# Pinned name: these lines stay under `hermes logs --component tools`.
-logger = logging.getLogger("tools.send_message_tool")
+logger = logging.getLogger(__name__)
 
 from gateway.outbound.targets import (
     _HOME_CHANNEL_ENV_OVERRIDES, resolve_send_target, unknown_platform_error,

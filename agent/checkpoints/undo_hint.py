@@ -24,8 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Pinned name: these lines stay under `hermes logs --component tools`.
-logger = logging.getLogger("tools.checkpoint_undo_hint")
+logger = logging.getLogger(__name__)
 
 _MAX_NAMED_FILES = 8
 

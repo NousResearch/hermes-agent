@@ -15,8 +15,7 @@ from agent.checkpoints.manager import (
     _store_path,
 )
 
-# Pinned name: these lines stay under `hermes logs --component tools`.
-logger = logging.getLogger("tools.checkpoint_maintenance")
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Auto-maintenance

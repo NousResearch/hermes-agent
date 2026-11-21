@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "phase": "planning",
+  "selected_skills": [],
+  "relationship": "INSUFFICIENT EVIDENCE",
+  "canonical_skill": null,
+  "recommended_structure": "",
+  "safety_boundary_result": "",
+  "proposed_changes": [],
+  "reference_rewrites": [],
+  "rollback": {
+    "snapshot_required": true,
+    "snapshot_verified": false,
+    "location": null
+  },
+  "verification": [],
+  "approval": {
+    "required": true,
+    "approved": false,
+    "approved_scope": []
+  },
+  "not_verified": []
+}

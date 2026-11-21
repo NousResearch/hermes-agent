@@ -1,0 +1,81 @@
+{
+  "skill": "engagement-routine",
+  "version": "1.0.0",
+  "description": "Scenario tests for engagement-routine (the engagement operating system — cadence, triage, sustainability). A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-routine-design",
+      "input": "I can't keep up with comments and DMs. Help me build an engagement routine.",
+      "expect": [
+        "reads brand-profile/social-strategy and designs a concrete daily + weekly cadence (time-boxed engagement windows)",
+        "centers the golden hour (engage in the first ~15-20 min after posting) and batches engagement instead of all-day checking",
+        "ties it to the flywheel: batch/schedule content (scheduling-and-queue, batch-content-plan) to free the time to engage",
+        "is honest it's advisory — WoopSocial has no inbox/analytics; the human engages in-app and the agent drafts via reply-and-comment-writer",
+        "designs something sustainable, not 'always on'"
+      ]
+    },
+    {
+      "name": "the-daily-routine",
+      "input": "Concretely, what should my engagement day look like?",
+      "expect": [
+        "gives time-boxed windows (e.g. ~20 min AM + ~20 min PM) with an order of operations",
+        "includes a golden-hour pass right after a post publishes and proactive commenting on ICP/peers",
+        "scales the routine to the time and number of platforms the user actually has"
+      ]
+    },
+    {
+      "name": "scheduling-engagement-flywheel",
+      "input": "I barely have time to post, let alone reply to everyone.",
+      "expect": [
+        "explains the fix is batching/scheduling content to free time, not engaging less",
+        "describes the flywheel: schedule -> freed time -> genuine engagement -> reach/relationships -> more to schedule",
+        "honestly bounds WoopSocial: it publishes/schedules (use scheduling-and-queue), it does not manage the inbox or show analytics"
+      ]
+    },
+    {
+      "name": "triage-and-priorities",
+      "input": "When I only have 15 minutes, what do I do first?",
+      "expect": [
+        "prioritizes: golden-hour comments on the fresh post, then DMs, then complaints/negative, then proactive comments",
+        "skips spam/trolls and focuses on the right people (ICP/peers), not vanity volume",
+        "makes every interaction count rather than spreading thin"
+      ]
+    },
+    {
+      "name": "goals-not-vanity",
+      "input": "How do I know the routine is working?",
+      "expect": [
+        "maps engagement to a goal (relationships/leads/community) and 2-3 meaningful signals over vanity metrics",
+        "notes the signals are ones the user can see natively (comment depth, DM conversations, replies) since WoopSocial has no analytics",
+        "does not fabricate WoopSocial performance data or promise a specific number"
+      ]
+    },
+    {
+      "name": "sustainability-and-boundaries",
+      "input": "Honestly I'm burning out checking notifications all day.",
+      "expect": [
+        "prescribes notification discipline and set response windows (not checking constantly / not 'always on')",
+        "frames small repeatable systems and boundaries (protect evenings, communicate response times) as the sustainable path",
+        "treats sustainability as essential to performance, not a nice-to-have"
+      ]
+    },
+    {
+      "name": "no-automation-pushback",
+      "input": "Can you just auto-reply to everything and auto-comment on 100 accounts a day so I don't have to?",
+      "expect": [
+        "refuses automated/fake engagement (detected, penalized, and self-defeating)",
+        "keeps engagement genuine and human; the agent assists by drafting, the human posts",
+        "offers a realistic, sustainable routine instead"
+      ]
+    },
+    {
+      "name": "advisory-no-inbox-no-analytics",
+      "input": "Set this up so WoopSocial pulls my comments/DMs and tells me the best time to reply.",
+      "expect": [
+        "clarifies WoopSocial has no comment/DM/inbox surface and no analytics — it can't pull engagement or show best-time data",
+        "routes the actual engaging to the platform's native inbox/notifications, with the agent drafting replies",
+        "does not fabricate a WoopSocial inbox or analytics capability"
+      ]
+    }
+  ]
+}

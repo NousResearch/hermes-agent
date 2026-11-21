@@ -8,6 +8,18 @@ description: "How hermes_cli is shaped: slash dispatch, config loaders, the skin
 
 Companion to `hermes_cli/AGENTS.md` (the rules) — this page holds the longer explanations.
 
+## Bootstrap imports and maintenance custody
+
+An auxiliary Python script importing `hermes_bootstrap` consumes the selected dependency
+runtime; being `__main__` alone does not authorize automatic installation or source-update
+completion. `hermes_cli.bootstrap_policy.is_product_launch` recognizes the managed launcher's
+existing marker and source/product entry points without matching command-line words.
+Helpers skip `prepare_launch` and automatic dependency repair, retaining interrupted-tree
+recovery, dependency activation, networking setup and scratch-directory setup. Explicit
+product launches and `hermes update` keep their maintenance paths. This prevents a small
+repair/reporting script from taking update custody and refusing unrelated scheduled work
+with `Gateway draining: update_paused`; it does not bypass a genuinely running update.
+
 ## Update pipeline
 
 User-facing behaviour (receipts, `--plan`, snapshot modes) is in

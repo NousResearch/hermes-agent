@@ -1,0 +1,27 @@
+name: agent-desktop-gnome
+title: "agent-desktop for GNOME"
+repo: https://github.com/BruceBest/hermes-agent-desktop
+sha: a4c50fe2ac92ac363bb9c6113d1d1bc0a4ef1f3f
+version: "0.1.0"
+description: >-
+  GNOME-first, AX-only semantic backend for Hermes's native computer_use tool, powered by Vercel Labs agent-desktop.
+  Disclosure: explicit setup downloads the official checksum-pinned agent-desktop 1.2.0 Linux x86_64 executable and
+  matching helper; reads app/window inventory, accessibility trees, field values and allowlisted graphical-session
+  environment; starts bounded systemctl and per-command native CLI processes; stores profile-scoped runtime and
+  private temporary desktop state. No adapter telemetry, credentials, bundled binaries, self-updater or global-input
+  fallback. Uses two disclosed read-only Hermes desktop-placement/liveness imports, producing an admission warning.
+maintainer: BruceBest
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+platforms: [linux]
+known_issues:
+  - "Only the signed-in GNOME human seat on Linux x86_64 is supported; requires a systemd user manager and working AT-SPI. Tested on Fedora 45 / GNOME 51.1 / Wayland."
+  - "Semantic ref actions only: no screenshots, coordinates, drag, wheel scrolling, raw keys or foreground activation. SOM requests return truthful AX-only captures. Some GTK4 secret fields can be misidentified upstream."
+  - "Explicitly prepare the pinned runtime and select computer_use.backend: agent-desktop-gnome, then start a new chat. Existing computer_use toolset disables are not changed."
+  - "Refuses Bot Desktop/sandbox placement and any persisted desktop ownership marker, including stale or unattached state. Native providers cannot load under plugins.isolation: host."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

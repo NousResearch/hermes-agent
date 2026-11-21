@@ -24,12 +24,12 @@ from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_c
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
-from gateway.session_transcript import TranscriptReadError
+from gateway.slash_commands_btw import GatewayBtwCommandsMixin
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_login import GatewayLoginCommandsMixin
-from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
+from gateway.slash_commands_status import GatewayStatusCommandsMixin
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 from hermes_cli._startup_fast import project_root_str
@@ -178,7 +178,8 @@ class GatewaySlashCommandsMixin(
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,
-    GatewayGoalCommandsMixin):
+    GatewayGoalCommandsMixin,
+    GatewayBtwCommandsMixin):
     """In-session slash-command handlers for GatewayRunner (plus the helpers the sibling mixins share)."""
 
     async_session_store: AsyncSessionStore
@@ -858,60 +859,6 @@ class GatewaySlashCommandsMixin(
             # Forward image/audio attachments so the background agent can see them.
             media_urls=list(event.media_urls or []), media_types=list(event.media_types or [])))
         return t("gateway.background.started", preview=_preview(prompt), task_id=task_id)
-
-    async def _handle_btw_command(self, event: MessageEvent) -> str:
-        """Handle /btw <question> — one-shot auxiliary LLM call on a transcript snapshot; live history
-        is never touched (alternation + prompt cache intact, current turn keeps running). Unlike /bg,
-        which spawns a fresh contextless session."""
-        question = event.get_command_args().strip()
-        if not question:
-            return t("gateway.btw.usage")
-        source = event.source
-        session_entry = await self.async_session_store.get_or_create_session(source)
-        try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
-        except TranscriptReadError:
-            return history_unreadable()
-        if not history:
-            return t("gateway.btw.no_history")
-        try:
-            model, rt = self._resolve_session_agent_runtime(source=source)
-        except Exception:
-            model, rt = None, {}
-        if not rt.get("api_key"):
-            return t("gateway.btw.no_provider")
-        main_runtime = {
-            "model": model,
-            **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
-            "session_id": session_entry.session_id,
-        }
-        history_snapshot = list(history)
-        # Prefer the cache-parity fork when a live cached AIAgent exists: it replays the snapshot
-        # against the warm provider prefix cache, giving FULL context at cache-read prices. With no
-        # cached agent the cache is cold anyway — answer_side_question's digest fallback handles it.
-        try:
-            parent_agent = self._cached_agent_for(self._session_key_for_source(source))
-        except Exception:
-            parent_agent = None
-        _thread_metadata = self._reply_metadata(event)
-        adapter = self._delivery_adapter_for(source)
-        preview = _preview(question)
-
-        async def _run_side_question() -> None:
-            from agent.side_question import answer_side_question
-            try:
-                answer = await asyncio.to_thread(
-                    answer_side_question, question, history_snapshot,
-                    parent_agent=parent_agent, main_runtime=main_runtime)
-                reply = t("gateway.btw.answer", preview=preview, answer=answer or "")
-            except Exception as e:
-                logger.warning("/btw side question failed: %s", e)
-                reply = t("gateway.btw.failed", preview=preview, error=str(e))
-            if adapter is not None:
-                await adapter.send(source.chat_id, reply, metadata=_thread_metadata)
-
-        self._track_background_task(_run_side_question())
-        return t("gateway.btw.started", preview=preview)
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate. Entries are small

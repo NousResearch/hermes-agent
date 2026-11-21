@@ -352,7 +352,8 @@ class GatewayConnection:
         payload = params.get("payload")
         if params.get("type") not in SIDE_EVENTS or not isinstance(payload, dict) or not payload.get("task_id"):
             return False
-        self.side_waiter(payload["task_id"]).put(payload)
+        # Tagged with its event type: a waiter tells /btw --explore progress from the answer.
+        self.side_waiter(payload["task_id"]).put({**payload, "event": params["type"]})
         return True
 
     def side_waiter(self, task_id) -> queue.Queue:

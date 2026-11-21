@@ -411,6 +411,71 @@ describe('a report counts as told only once the connection accepted it', () => {
   })
 })
 
+describe('main\'s answer about OS notifications', () => {
+  afterEach(() => {
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    window.location.hash = ''
+    $gateway.set(null)
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionStates.set({})
+    setNativeNotifyKind('turnDone', true)
+  })
+
+  /** A background Desktop window on a chat, with "Response ready" on; main answers when told to. */
+  function backgroundWindow() {
+    let answer: (supported: boolean) => void = () => undefined
+    const reply = new Promise<boolean>(resolve => (answer = resolve))
+    const notifySupported = vi.fn(() => reply)
+    window.hermesDesktop = { notify: vi.fn(async () => true), notifySupported } as never
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    setNativeNotifyKind('turnDone', true)
+    const channel = fakeChannel()
+    $gateway.set(channel as never)
+    window.location.hash = '#/stored-1'
+    $selectedStoredSessionId.set('stored-1')
+    $activeSessionId.set('s1')
+    $sessionStates.set({ s1: createClientSessionState('stored-1') })
+
+    return { answer, channel, notifySupported, reply }
+  }
+
+  it('claims nothing it cannot show until main answers, then reports the answer at once', async () => {
+    const { answer, channel, reply } = backgroundWindow()
+    const stop = startPresenceReporter()
+
+    document.dispatchEvent(new Event('pointerdown'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.calls.map(call => call.can_alert)).toEqual([false])
+
+    // No tick and no input: the answer alone re-reads presence.
+    answer(true)
+    await reply
+    await vi.advanceTimersByTimeAsync(0)
+    stop()
+
+    expect(channel.calls.map(call => call.can_alert)).toEqual([false, true])
+  })
+
+  it('asks main once per window, however often presence is read', async () => {
+    const { answer, notifySupported, reply } = backgroundWindow()
+    const stop = startPresenceReporter()
+
+    for (const type of ['pointerdown', 'keydown', 'visibilitychange']) {
+      document.dispatchEvent(new Event(type))
+      await vi.advanceTimersByTimeAsync(0)
+    }
+
+    answer(true)
+    await reply
+    window.dispatchEvent(new Event('blur'))
+    await vi.advanceTimersByTimeAsync(20_000)
+    stop()
+
+    expect(notifySupported).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('can_alert from this window', () => {
   const cases = [
     // [host, focused, turn-done notification on, browser permission, can_alert]

@@ -234,6 +234,8 @@ async def run_gateway_chat(args, emitter=None):
                                usage_file=getattr(args, "usage_file", None))
         view.launch_api_key = getattr(args, "api_key", None)  # /new keeps this launch's key
         view.unattended = isinstance(oneshot_prompt, str)
+        view.session_source = source if not latest and not getattr(args, "resume", None) and not (title and not create_if_missing) else (snapshot.get("info") or {}).get("source")
+        view._launch_args = args
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:
             from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
@@ -344,7 +346,17 @@ def launch_from_args(args) -> int:
         from hermes_cli.stream_json import StreamJsonEmitter
         emitter = StreamJsonEmitter(model=getattr(args, "model", None) or "")
 
+    usage_file = getattr(args, "usage_file", None)
+
+    def _ensure_failure_usage_file(payload, failure_reason):
+        if not usage_file or getattr(args, "_usage_file_written", False):
+            return
+        from hermes_cli.oneshot import _write_usage_file
+        _write_usage_file(usage_file, payload, failure=failure_reason)
+        args._usage_file_written = True
+
     def failed(message, code):
+        _ensure_failure_usage_file({"completed": False, "failed": True}, message)
         print("Error: " + message, file=sys.stderr)
         if emitter is not None:
             return emitter.emit_result({"failed": True, "error": message}, exit_code=code)
@@ -352,6 +364,11 @@ def launch_from_args(args) -> int:
 
     try:
         validate_options(args)
+        from hermes_cli.main_query_file import resolve_oneshot_prompt
+        try:
+            resolve_oneshot_prompt(args)
+        except ValueError as exc:
+            return failed(str(exc), 2)
         if getattr(args, "list_tools", False) or getattr(args, "list_toolsets", False):
             # A catalog listing needs no session and no gateway (main printed it and exited).
             from hermes_cli.gateway_chat_listing import print_tool_listing
@@ -393,7 +410,14 @@ def launch_from_args(args) -> int:
         message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
         return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
     except KeyboardInterrupt:
-        print("Detached; accepted work continues at the gateway.", file=sys.stderr)
+        _ensure_failure_usage_file(
+            {"completed": False, "interrupted": True, "failed": True, "turn_exit_reason": "sigint"},
+            "sigint",
+        )
+        if getattr(args, "_oneshot_cancelled", False):
+            print("Cancelled one-shot run.", file=sys.stderr)
+        else:
+            print("Detached; accepted work continues at the gateway.", file=sys.stderr)
         if emitter is not None:
             return emitter.emit_result({"interrupted": True}, exit_code=130)
         return 130

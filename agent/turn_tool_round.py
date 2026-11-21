@@ -205,10 +205,9 @@ def run_tool_round(
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
     # text arrives, so tool iterations don't stack blank lines.
     agent._stream_needs_break = True
-    # Refund the iteration when the ONLY tool was execute_code (programmatic tool
-    # calling) — cheap RPC-style calls shouldn't eat the budget.
-    if {tc.function.name for tc in assistant_message.tool_calls} == {"execute_code"}:
-        agent.iteration_budget.refund()
+    # Every outer LLM round-trip consumes one iteration against max_turns, even when
+    # the only tool call is execute_code (inner RPC calls inside execute_code remain
+    # bounded separately by code_execution.max_tool_calls without extra turn charges).
 
     _ptc = compress_after_tool_results(
         agent, messages=messages, system_message=system_message, user_message=user_message,

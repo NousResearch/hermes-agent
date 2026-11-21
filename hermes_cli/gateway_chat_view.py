@@ -91,8 +91,13 @@ def lost_admission(snapshot, admission_id):
 class GatewayChatView:
     def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
         self.usage_file = usage_file
+        self.usage_written = False
         self.client = client
         self.session_id = snapshot["stored_session_id"]
+        self.subscription_id = snapshot.get("subscription_id")
+        self.session_source = (snapshot.get("info") or {}).get("source")
+        self._launch_args = None
+        self._signal_stop = None
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.pending = snapshot.get("pending", [])
@@ -531,8 +536,102 @@ class GatewayChatView:
         result = {**result, "session_id": result.get("session_id") or self.session_id}
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)
+        self.usage_written = True
+        if self._launch_args is not None:
+            self._launch_args._usage_file_written = True
+
+    def _is_oneshot_viewer(self) -> bool:
+        return bool(self.unattended or self.session_source == "oneshot")
+
+    async def _cancel_inflight_oneshot(self, reason: str) -> dict:
+        """Best-effort cancellation + detach + usage-file flush when an active one-shot viewer
+        exits early due to SIGINT / SIGTERM / SIGHUP before the admission settles."""
+        partial_result: dict = {}
+        if self.finite_admission and self.finite_admission not in self.completions:
+            with suppress(Exception):
+                reply = await self.client.rpc(
+                    "prompt.cancel",
+                    session_id=self.session_id,
+                    admission_id=self.finite_admission,
+                    _timeout=2.0,
+                )
+                if isinstance(reply, dict) and isinstance(reply.get("result"), dict):
+                    partial_result.update(reply["result"])
+        if self.subscription_id:
+            with suppress(Exception):
+                await self.client.rpc(
+                    "session.detach",
+                    session_id=self.session_id,
+                    subscription_id=self.subscription_id,
+                    end_reason=reason,
+                    _timeout=2.0,
+                )
+        if self.usage_file and not self.usage_written:
+            payload = {
+                **partial_result,
+                "session_id": partial_result.get("session_id") or self.session_id,
+                "completed": False,
+                "interrupted": True,
+                "failed": True,
+                "turn_exit_reason": reason,
+            }
+            self._write_usage_file(payload, reason)
+        if self._launch_args is not None:
+            self._launch_args._oneshot_cancelled = True
+        return partial_result
+
+    async def _run_oneshot_turn(self, query):
+        receipt = await self.submit(query) if query else None
+        admission = _oneshot_admission(receipt)
+        if admission is None:
+            return 0  # the voice chat ended; no turn was admitted, so none is awaited
+        self.finite_admission = admission
+        for kind, event_admission, payload in self._finite_events:
+            if event_admission == admission and admission not in self.completions:
+                self._dispatch_event(kind, event_admission, payload)
+        self._finite_events.clear()
+        self.changed.set()
+        while admission not in self.completions:
+            self.changed.clear()
+            if self.failure:
+                raise self.failure
+            blocked = self._finite_block(admission)
+            if blocked:
+                return self._detach(blocked)
+            if admission not in self.completions:
+                await self.changed.wait()
+        terminal = self.completions[admission]
+        outcome = terminal.get("outcome")
+        text = terminal.get("text") or terminal.get("content") or ""
+        # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
+        # 'completed' with ``completed: False`` in its committed result. Judge both with the
+        # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
+        from hermes_cli.oneshot import _oneshot_exit_code
+        from hermes_cli.turn_exit import turn_exit_code
+        recovered = terminal.get("_receipt")
+        result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
+        result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
+                      interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
+        exit_code = (_oneshot_exit_code(text, result) if self.unattended
+                     else turn_exit_code(result, kanban_worker=False))
+        if self.usage_file:
+            self._write_usage_file(result, outcome)
+        if self.emitter is not None:
+            return self.emitter.emit_result({**result, "final_response": text,
+                                             "replay_gap": bool(terminal.get("replay_gap"))},
+                                            session_id=self.session_id, exit_code=exit_code)
+        self._report_silent_interrupt(text, result)
+        print(text, flush=True)
+        self._report_no_reply(exit_code)
+        # Same stderr exit contract as the legacy -Q path: automation wrappers read the
+        # durable id from this line, and it names the physical row (a compaction may have
+        # advanced it past the row printed at start).
+        self._print_exit_ids()
+        return exit_code
 
     async def run(self, query=None, *, oneshot=False):
+        import signal
+
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
         self.show_pending()
@@ -545,55 +644,61 @@ class GatewayChatView:
                                 f"{self.session_id} --yes`, or resume this session in an interactive chat "
                                 "and /discard the paused turn there; then send it again.")
         renderer = asyncio.create_task(self.render())
+        installed_signals = []
         try:
-            receipt = await self.submit(query) if query else None
             if oneshot:
-                admission = _oneshot_admission(receipt)
-                if admission is None:
-                    return 0  # the voice chat ended; no turn was admitted, so none is awaited
-                self.finite_admission = admission
-                for kind, event_admission, payload in self._finite_events:
-                    if event_admission == admission and admission not in self.completions:
-                        self._dispatch_event(kind, event_admission, payload)
-                self._finite_events.clear()
-                self.changed.set()
-                while admission not in self.completions:
-                    self.changed.clear()
-                    if self.failure:
-                        raise self.failure
-                    blocked = self._finite_block(admission)
-                    if blocked:
-                        return self._detach(blocked)
-                    if admission not in self.completions:
-                        await self.changed.wait()
-                terminal = self.completions[admission]
-                outcome = terminal.get("outcome")
-                text = terminal.get("text") or terminal.get("content") or ""
-                # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
-                # 'completed' with ``completed: False`` in its committed result. Judge both with the
-                # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
-                from hermes_cli.oneshot import _oneshot_exit_code
-                from hermes_cli.turn_exit import turn_exit_code
-                recovered = terminal.get("_receipt")
-                result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
-                result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
-                              interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
-                exit_code = (_oneshot_exit_code(text, result) if self.unattended
-                             else turn_exit_code(result, kanban_worker=False))
-                if self.usage_file:
-                    self._write_usage_file(result, outcome)
-                if self.emitter is not None:
-                    return self.emitter.emit_result({**result, "final_response": text,
-                                                     "replay_gap": bool(terminal.get("replay_gap"))},
-                                                    session_id=self.session_id, exit_code=exit_code)
-                self._report_silent_interrupt(text, result)
-                print(text, flush=True)
-                self._report_no_reply(exit_code)
-                # Same stderr exit contract as the legacy -Q path: automation wrappers read the
-                # durable id from this line, and it names the physical row (a compaction may have
-                # advanced it past the row printed at start).
-                self._print_exit_ids()
-                return exit_code
+                self._signal_stop = None
+                work = asyncio.create_task(self._run_oneshot_turn(query))
+                loop = asyncio.get_running_loop()
+
+                def _on_termination_signal(signum, reason_name):
+                    if self._signal_stop is None:
+                        self._signal_stop = (reason_name, 128 + int(signum))
+                        work.cancel()
+
+                for sig_name, reason_name in (("SIGTERM", "sigterm"), ("SIGHUP", "sighup")):
+                    sig_obj = getattr(signal, sig_name, None)
+                    if sig_obj is None:
+                        continue
+                    try:
+                        loop.add_signal_handler(sig_obj, _on_termination_signal, sig_obj, reason_name)
+                        installed_signals.append(sig_obj)
+                    except (NotImplementedError, RuntimeError, ValueError):
+                        pass
+
+                try:
+                    return await work
+                except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+                    if self._signal_stop is not None:
+                        reason_name, exit_code = self._signal_stop
+                        if self._is_oneshot_viewer():
+                            await self._cancel_inflight_oneshot(reason_name)
+                        elif self.usage_file and not self.usage_written:
+                            self._write_usage_file(
+                                {"completed": False, "interrupted": True, "failed": True,
+                                 "turn_exit_reason": reason_name},
+                                reason_name,
+                            )
+                        print(f"Terminated ({reason_name}); cancelled one-shot run.", file=sys.stderr)
+                        if self.emitter is not None:
+                            return self.emitter.emit_result(
+                                {"interrupted": True, "completed": False, "turn_exit_reason": reason_name},
+                                session_id=self.session_id,
+                                exit_code=exit_code,
+                            )
+                        return exit_code
+                    if not work.done():
+                        work.cancel()
+                        with suppress(asyncio.CancelledError, KeyboardInterrupt):
+                            await work
+                    if self._is_oneshot_viewer() and (
+                        (self.finite_admission and self.finite_admission not in self.completions)
+                        or self.subscription_id
+                    ):
+                        await self._cancel_inflight_oneshot("sigint")
+                    raise exc
+            if query:
+                await self.submit(query)
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
             from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
@@ -627,6 +732,11 @@ class GatewayChatView:
                         print(f"Error: {exc}", file=sys.stderr)
                 raise self.failure
         finally:
+            if installed_signals:
+                loop = asyncio.get_running_loop()
+                for sig_obj in installed_signals:
+                    with suppress(Exception):
+                        loop.remove_signal_handler(sig_obj)
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer

@@ -72,6 +72,8 @@ _SETTINGS = [
      lambda m: m.FeishuAdapter._load_settings({}).connection_mode),
     ("plugins.platforms.bluebubbles.adapter", "BLUEBUBBLES_WEBHOOK_PORT", "18010", "18110",
      lambda m: m._extra_or_secret({}, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", "0")),
+    ("plugins.platforms.telegram.adapter", "TELEGRAM_WEBHOOK_PORT", "8443", "8444",
+     lambda m: m._resolve_webhook_port(None)),
     ("plugins.platforms.signal.adapter", "SIGNAL_REACTIONS", "true", "false",
      lambda m: _signal_reactions(m)),
     ("plugins.platforms.line.adapter", "LINE_PORT", "18015", "18115",

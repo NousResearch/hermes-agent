@@ -129,6 +129,36 @@ class PtyBridge:
         from tools.environments.fd_wait import open_fd_waiter
 
         self._waiter = open_fd_waiter(self._fd)
+        self._own_group()
+
+    def _own_group(self) -> None:
+        """Hand the child's group to the owner-death supervisor, so it dies with this process
+        however this process dies. ``close()`` is the only teardown otherwise, and it does not run
+        on SIGKILL, an OOM kill or a crash: the dashboard's TUI child and its helpers were left
+        running on the PTY. Closing the master sends SIGHUP, but that reaches only members that
+        keep the default action — the same reason ``ProcessOwnershipMixin._own_pty_job`` registers
+        its PTY jobs rather than trusting the hangup.
+
+        Only a child that LEADS its own group is registered. ``pgid == pid`` is that proof: when
+        ``ptyprocess`` could not put it in a new session it shares ours, and registering that
+        number would make the supervisor kill this process's own group.
+        """
+        if self._pgid is None or self._pgid != self._proc.pid:
+            return
+        from hermes_cli.process_identity import own_process_groups
+
+        own_process_groups([self._pgid])
+
+    @staticmethod
+    def _release_group(pgid: Optional[int]) -> None:
+        """Stop covering the group ``close()`` just swept. Released only once the group is empty: a
+        member the sweep could not end keeps the coverage, so owner death still reaps it. ``pgid`` is
+        ``None`` for a child that shares our group, which ``_own_group`` never registered."""
+        if pgid is None:
+            return
+        from hermes_cli.process_identity import release_process_group_once_empty
+
+        release_process_group_once_empty(pgid, timeout=0)
 
     @classmethod
     def is_available(cls) -> bool:
@@ -420,6 +450,7 @@ class PtyBridge:
         except Exception:
             pass
         self._close_waiter()
+        self._release_group(pgid)
 
     def _close_waiter(self) -> None:
         if self._waiter is not None:

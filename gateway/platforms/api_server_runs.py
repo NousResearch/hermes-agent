@@ -1119,14 +1119,23 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 with suppress(Exception):
                     loop.call_soon_threadsafe(run.put_event, _run_event(run_id, event_type, **prompt))
 
+            # The canonical tool sinks carry no duration, so ``tool.completed.duration`` is the time from
+            # the call's start to the publication of its result. Exact for calls run one at a time; in a
+            # parallel batch it includes waiting for the batch, since results are published at its end.
+            tool_started_at: dict[str, float] = {}
+
             def _tool_start(call_id, name, args):
                 from agent.display import build_tool_preview
+                tool_started_at[call_id] = time.monotonic()
                 tool_cb("tool.started", name, build_tool_preview(name, args or {}) or "", args, tool_call_id=call_id)
 
             def _tool_complete(call_id, name, args, result):
                 from agent.display import _detect_tool_failure
                 is_error, _ = _detect_tool_failure(name, result)
-                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
+                now = time.monotonic()
+                duration = now - tool_started_at.pop(call_id, now)  # no recorded start: 0
+                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error),
+                        result=result, duration=duration)
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(

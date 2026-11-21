@@ -130,16 +130,17 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
     enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
-    stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
-    this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
-    update must replace it), redirects both outputs to one file and writes the exit code."""
+    stream output live. Windows uses this installation's isolated bootstrap, not an executable
+    shim the update must replace; its helper redirects output and atomically publishes the exit code."""
     import shutil
     import subprocess
     if sys.platform == "win32":
+        from hermes_cli._runtime_command import bootstrap_runtime_command
         from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+        hermes_cmd = bootstrap_runtime_command(Path(project_root_str()), python=sys.executable)
         subprocess.Popen(
             [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
-             sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
+             *hermes_cmd, "update", "--gateway"],
             # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return

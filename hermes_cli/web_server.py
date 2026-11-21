@@ -792,6 +792,7 @@ from hermes_cli.web_routers import (
     audio as _audio_routes,
     display as _display_routes,
     sessions as _sessions_routes,
+    reply_completions as _reply_completion_routes,
     profiles as _profiles_routes,
     memory_providers as _memory_providers_routes,
     config_env as _config_env_routes,
@@ -837,6 +838,8 @@ app.include_router(_audio_routes.router)
 app.include_router(_display_routes.router)
 app.include_router(_actions_routes.status_router)
 app.include_router(_sessions_routes.list_router)
+_reply_completion_routes.register_auth()
+app.include_router(_reply_completion_routes.router)
 app.include_router(_profiles_routes.sessions_router)
 app.include_router(_sessions_routes.search_router)
 app.include_router(_memory_providers_routes.router)

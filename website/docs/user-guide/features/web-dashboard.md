@@ -1193,6 +1193,28 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+### Reply completion feed
+
+A notification service can poll `GET /api/sessions/reply-completions?profile=default&after=0&limit=50`
+with `Authorization: Bearer <token>`. The feed returns completion times and session IDs for
+committed replies and detached report notes. `session_id` is the current resume target,
+and `conversation_id` stays stable through transcript compression. The feed retains up to
+24 hours of events and omits
+hidden, archived, read, and intentionally silent replies. It starts collecting when the
+gateway runs this version. The response includes `next_cursor` and `has_more`. Persist the
+cursor per gateway and profile after processing a page. Advance it even if `events` is empty,
+since the page may contain only suppressed replies. A full page can be followed by an empty page.
+
+Set `HERMES_REPLY_FEED_GRANTS_FILE` on the Hermes listener to an absolute path to a
+private JSON file. Generate 32 random bytes for each credential (for example with Python
+`secrets.token_urlsafe(32)`), give the resulting token to the notification service, and
+use its SHA-256 hex digest as the key in the grants file. Each key maps to an object with
+`profile` (a canonical profile ID) and `expires_at` (a Unix timestamp in seconds).
+Keep each credential with the service authorized to see completion metadata for that
+entire profile. The credential can only read the feed for that profile. The listener
+reads the file on each request, so removing an entry revokes it and an atomic file
+replacement rotates credentials without restarting Hermes.
+
 ### Peer passes (`/api/peer`)
 
 A provider can also accept **peer passes** (`supports_peer_pass = True` + `verify_peer_pass(token=...)`): short-lived tokens minted for one agent that let another Hermes agent call this agent's API server through the dashboard, without the agent's `API_SERVER_KEY`.

@@ -19,6 +19,7 @@ from persistence.authority.admissions import (
     ClaimedAdmission,
     QueuedFold,
     QueuedReplacement,
+    ReplyCompletion,
     TranscriptRewrite,
     TurnBoundary,
     UnheldMedia,
@@ -26,6 +27,7 @@ from persistence.authority.admissions import (
 from persistence.core.errors import PermanentStoreError
 
 from .._backend import SQLiteStore, register_repository
+from ..conversation._store.reply_completions import reply_completions
 from . import _admission_media as media
 from . import _admission_owner as owner
 from . import _admission_store as store
@@ -176,6 +178,9 @@ class SQLiteAdmissionRepository:
         with refused():
             rows = store.list_session_admissions(self._store.holder(), session_id=session_id, pending_only=pending_only)
         return [_record(row) for row in rows]
+
+    def reply_completions(self, *, after: int, limit: int) -> list[ReplyCompletion]:
+        return reply_completions(self._store.holder(), after=after, limit=limit)
 
     def get(self, *, admission_id: str) -> AdmissionRecord | None:
         with refused():

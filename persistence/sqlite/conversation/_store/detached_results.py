@@ -6,6 +6,7 @@ import time
 from typing import Any
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.messages import _bump_session_counters, _check_transcript_write_guards, _message_row_params
+from persistence.sqlite.conversation._store.reply_completions import record_reply_completion
 from persistence.sqlite.conversation._store.rules import stamp_message_uid
 
 
@@ -34,11 +35,13 @@ def append_completion_note(holder: StoreHolder, session_id: str, admission_id: s
     """Record an unviewed completion's note once, keyed by its admission (stored as ``completion_admission``)."""
     return _append_detached_result(holder,
         session_id, content, display_kind, {**metadata, "completion_admission": admission_id},
-        "json_extract(m.display_metadata, '$.completion_admission') = ?", (admission_id,))
+        "json_extract(m.display_metadata, '$.completion_admission') = ?", (admission_id,),
+        completion_id=admission_id if display_kind != "hidden" and content.strip()
+        and metadata.get("notification_category") != "diagnostic" else None)
 
 
 def _append_detached_result(holder: StoreHolder, session_id: str, content: str, display_kind: str, metadata: dict[str, Any],
-                            match_sql: str, params: tuple) -> int:
+                            match_sql: str, params: tuple, *, completion_id: str | None = None) -> int:
     """Record a result that arrived between turns as a user row once, including replay after rotation: a row
     ``match_sql`` (a condition on ``m``) finds in the compression lineage is returned instead. Check and insert
     share the writer transaction, so independent gateway processes cannot duplicate it; a live turn refuses it."""
@@ -54,6 +57,8 @@ def _append_detached_result(holder: StoreHolder, session_id: str, content: str, 
         _check_transcript_write_guards(holder, conn, session_id, None, reject_active_turn_lease=True)
         msg_id = conn.execute(_INSERT_MESSAGE_SQL, row).lastrowid
         _bump_session_counters(conn, session_id, 1, 0, unit=True)
+        if completion_id is not None:
+            record_reply_completion(conn, session_id=session_id, admission_id=completion_id, kind="note")
         return msg_id
 
     return holder._execute_write(_do, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)

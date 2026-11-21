@@ -9,6 +9,7 @@ otherwise 401, or 503 when a provider's backing store was unreachable. Fails clo
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from typing import Awaitable, Callable, Optional, Tuple
@@ -24,14 +25,15 @@ from hermes_cli.dashboard_auth.request_utils import (
 
 _log = logging.getLogger(__name__)
 
-_token_routes: set[str] = set()  # exact paths that accept bearer-token auth
+_TokenVerifier = Callable[[str], Optional[TokenPrincipal]]
+_token_routes: dict[str, Optional[_TokenVerifier]] = {}
 _lock = threading.Lock()
 
 
-def register_token_route(path: str) -> None:
-    """Mark ``path`` (exact match) as token-authable. Idempotent; does NOT make the route public."""
+def register_token_route(path: str, *, verifier: Optional[_TokenVerifier] = None) -> None:
+    """Require bearer auth on an exact path, optionally using a verifier exclusive to that path."""
     with _lock:
-        _token_routes.add(path)
+        _token_routes[path] = verifier
 
 
 def is_token_route(path: str) -> bool:
@@ -77,9 +79,17 @@ async def token_auth_middleware(
     """Pass-through for unregistered paths; for a token route, valid token -> attach principal +
     flag, unreachable -> 503, else 401."""
     path = request.url.path
-    if not is_token_route(path):
+    with _lock:
+        registered = path in _token_routes
+        verifier = _token_routes.get(path)
+    if not registered:
         return await call_next(request)
-    principal, unreachable = authenticate_token(request)
+    if verifier is None:
+        principal, unreachable = authenticate_token(request)
+    else:
+        token = extract_bearer_token(request)
+        principal = await asyncio.to_thread(verifier, token) if token else None
+        unreachable = None
     if principal is not None:
         request.state.token_principal = principal
         request.state.token_authenticated = True

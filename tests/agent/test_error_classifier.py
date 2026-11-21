@@ -652,6 +652,23 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.retryable is False
 
+    def test_404_model_is_not_found_wording(self):
+        """OpenAI-compatible gateways can word it as ``model is not found``.
+
+        Observed in the wild: a custom provider answered an expired
+        auxiliary-model slug with HTTP 404 and body
+        ``{'error': {'message': 'model is not found', 'type':
+        'not_found_error'}}``. The copula breaks the ``model not found``
+        substring, so this wording fell through to ``unknown`` and burned
+        the full retry budget on a deterministic failure instead of
+        advancing the fallback chain.
+        """
+        e = MockAPIError("model is not found", status_code=404)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+        assert result.retryable is False
+
     def test_404_generic(self):
         # Generic 404 with no "model not found" signal — common for local
         # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat

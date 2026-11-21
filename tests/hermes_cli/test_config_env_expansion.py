@@ -141,3 +141,47 @@ class TestExpansionUnderProfileScope:
             ss.set_multiplex_active(was_active)
         # Unscoped (default profile / single-profile CLI): legacy environ read.
         assert _expand_env_vars("${MATRIX_ACCESS_TOKEN}") == "default-token"
+
+    def test_override_home_without_scope_takes_that_homes_scope_values(self, tmp_path, monkeypatch):
+        """A record routed to a served profile's log is formatted under that profile's HERMES_HOME
+        override with no secret scope bound. A ref its scope holds answers as the scope would: a key
+        only the profile holds resolves, the administrator-managed .env beats the profile's value,
+        and a global name such as PATH still comes from the process env. A name the profile does not
+        hold falls back to the process env, as it did without the override."""
+        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+        from hermes_cli import managed_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "profile"
+        home.mkdir()
+        (home / ".env").write_text(
+            "PROFILE_ONLY_KEY=from-profile\nMANAGED_KEY=from-profile\nPATH=/from/profile\n"
+        )
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        (managed / ".env").write_text("MANAGED_KEY=from-managed\n")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        managed_scope.invalidate_managed_cache()
+        monkeypatch.delenv("PROFILE_ONLY_KEY", raising=False)
+        monkeypatch.setenv("PATH", "/from/environ")
+        monkeypatch.setenv("LAUNCH_ONLY_KEY", "from-environ")
+        refs = ["${env:PROFILE_ONLY_KEY}", "${env:MANAGED_KEY}", "${env:PATH}", "${env:NOWHERE_KEY}"]
+
+        token = set_hermes_home_override(str(home))
+        try:
+            unscoped = [_expand_env_vars(ref) for ref in refs]
+            launch_only = _expand_env_vars("${env:LAUNCH_ONLY_KEY}")
+            scope = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+            try:
+                scoped = [_expand_env_vars(ref) for ref in refs]
+            finally:
+                reset_secret_scope(scope)
+        finally:
+            reset_hermes_home_override(token)
+            managed_scope.invalidate_managed_cache()
+
+        assert unscoped == scoped
+        assert unscoped == ["from-profile", "from-managed", "/from/environ", "${env:NOWHERE_KEY}"]
+        assert launch_only == "from-environ"
+        # Without the override the launch environment answers again.
+        assert _expand_env_vars("${env:PROFILE_ONLY_KEY}") == "${env:PROFILE_ONLY_KEY}"

@@ -114,7 +114,7 @@ _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
-                               'prompt.steer_queued', 'prompt.replace_queued',
+                               'prompt.steer_queued', 'prompt.replace_queued', 'prompt.move_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'session.account_usage',
                                'approval.respond', 'clarify.respond'})

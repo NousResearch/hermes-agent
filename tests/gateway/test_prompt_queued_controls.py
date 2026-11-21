@@ -234,7 +234,7 @@ async def test_a_queued_admission_survives_an_owner_restart_and_is_steered_by_th
 
 @pytest.mark.asyncio
 async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeypatch):
-    """Desktop shows Steer / Edit only for rows that list them: an older owner lists none."""
+    """Desktop shows Steer / Edit / Move only for rows that list them: an older owner lists none."""
     db, authority = _authority(tmp_path, monkeypatch)
     interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -244,5 +244,5 @@ async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeyp
         authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
                                                      for r in authority._pending_rows(REF))}
-    assert pending['follower'].get('controls') == ['steer', 'replace']
+    assert sorted(pending['follower'].get('controls') or []) == ['move', 'replace', 'steer']
     assert not pending['head'].get('controls'), 'a started row has no queued-row controls'

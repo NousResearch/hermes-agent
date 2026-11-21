@@ -526,6 +526,24 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
   })
 }
 
+/** Put a session's queue in `ids` order (a reorder from the queue panel). Entries `ids` does not
+ *  name keep their relative order after the named ones, so a row queued from another window while
+ *  the user dragged is never dropped. Runs against the live persisted queue like every mutation. */
+export const reorderQueuedPrompts = (key: string | null | undefined, ids: readonly string[]): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  return mutateSession(sid, queue => {
+    const rank = new Map(ids.map((id, index) => [id, index]))
+    const next = [...queue].sort((a, b) => (rank.get(a.id) ?? ids.length) - (rank.get(b.id) ?? ids.length))
+
+    return next.every((entry, index) => entry === queue[index]) ? null : next
+  })
+}
+
 export const updateQueuedPrompt = (
   key: string | null | undefined,
   id: string,

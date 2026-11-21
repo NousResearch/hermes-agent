@@ -97,9 +97,10 @@ class CanonicalSessionHandle(Result):
 class CanonicalPendingAdmission(AdmissionStatus):
     input_id: str
     text: str
-    # The queued-row verbs the owner serves for this row: ``steer`` (``prompt.steer_queued``) and
-    # ``replace`` (``prompt.replace_queued``). Absent from an owner that predates them.
-    controls: list[Literal['steer', 'replace']] | None = None
+    # The queued-row verbs the owner serves for this row: ``steer`` (``prompt.steer_queued``),
+    # ``replace`` (``prompt.replace_queued``) and ``move`` (``prompt.move_queued``). Absent from an
+    # owner that predates them; an owner that predates ``move`` lists only the other two.
+    controls: list[Literal['steer', 'replace', 'move']] | None = None
     # A queued admission in transfer to the running turn (``prompt.steer_queued``): listed ``started``
     # until that turn settles it, but it returns to ``queued`` if its text never reached the turn, so a
     # client keeps it at its queued rank. Absent from an owner that predates it.
@@ -291,6 +292,14 @@ class CanonicalSteerQueuedParams(CanonicalSessionParams):
     admission_id: str
 
 
+class CanonicalMoveQueuedParams(CanonicalSessionParams):
+    """Where the queued admission goes: directly ahead of ``before_admission_id`` (another queued
+    admission of the same session), or to the back of the FIFO when it is absent or null."""
+
+    admission_id: str
+    before_admission_id: str | None = None
+
+
 class CanonicalReplaceQueuedParams(CanonicalSessionParams):
     """The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail."""
 
@@ -383,6 +392,14 @@ canonical_method('prompt.steer_queued', params=CanonicalSteerQueuedParams, resul
                      "goes back to its queue place. "
                      "Refusals: admission_started, session_idle, steer_unavailable (no agent to take "
                      "it: the admission stays queued), unsupported_control, not_found.")
+canonical_method('prompt.move_queued', params=CanonicalMoveQueuedParams, result=AdmissionStatus,
+                 doc="Move a still-queued admission in its session's FIFO: directly ahead of "
+                     "before_admission_id, or to the back when that is null. Only queued rows "
+                     "change place; the running turn and an unknown row keep theirs, and a later "
+                     "admission still joins the back. Viewers see the new order in the next pending "
+                     "snapshot, and the admission's sequence reflects its new place. "
+                     "Refusals: admission_started, not_found (either admission, or an anchor that is "
+                     "no longer queued here), unsupported_control, invalid_params.")
 canonical_method('prompt.replace_queued', params=CanonicalReplaceQueuedParams, result=AdmissionStatus,
                  doc="Cancel a still-queued admission and admit the edited prompt as a new admission "
                      "at the back of the FIFO, in one write bound to the replaced admission. "

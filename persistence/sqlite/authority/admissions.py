@@ -102,6 +102,11 @@ class SQLiteAdmissionRepository:
                                                      generation=generation)
         return _record(row), created
 
+    def move(self, *, epoch: int, admission_id: str, before_admission_id: str | None) -> list[str]:
+        with refused():
+            return store.move_session_input(self._store.holder(), epoch=epoch, admission_id=admission_id,
+                                            before_admission_id=before_admission_id)
+
     def revert_steer(self, *, epoch: int, admission_id: str, generation: int) -> bool:
         with refused():
             return store.revert_steer_input(self._store.holder(), epoch=epoch, admission_id=admission_id,

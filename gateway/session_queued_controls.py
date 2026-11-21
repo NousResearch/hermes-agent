@@ -1,7 +1,9 @@
-"""Steer and Edit of a still-queued admission: ``prompt.steer_queued`` / ``prompt.replace_queued``.
+"""Steer, Edit and Move of a still-queued admission: ``prompt.steer_queued`` / ``prompt.replace_queued``
+/ ``prompt.move_queued``.
 
-Both consume the queued row inside one owner write transaction, so it can never also run as its own
-queued turn, and a retry replays the recorded outcome. There is no reorder verb: one FIFO per session.
+Steer and Edit consume the queued row inside one owner write transaction, so it can never also run as
+its own queued turn, and a retry replays the recorded outcome. Move keeps one FIFO per session: the
+session's queued rows trade their ``seq`` values in the new order; no started row ever moves.
 
 A steer is a TRANSFER to the running claim, not an outcome: the row goes queued -> terminal
 ``steering`` bound to the claim's generation, and settles with that claim (``steered`` once the claim
@@ -32,7 +34,8 @@ _INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
 
 def handlers(connection):
     return {'prompt.steer_queued': partial(steer_queued, connection),
-            'prompt.replace_queued': partial(replace_queued, connection)}
+            'prompt.replace_queued': partial(replace_queued, connection),
+            'prompt.move_queued': partial(move_queued, connection)}
 
 
 def _interactive(authority, session_id):
@@ -50,14 +53,16 @@ def _interactive(authority, session_id):
 
 def queued_controls(authority, row):
     """The queued-row verbs this owner serves for ``row``: a client shows only these (an older owner
-    lists none, so its clients show none)."""
+    lists none, so its clients show none). ``move`` carries the whole row, so a row with attachments
+    or a hidden note may move; ``steer`` and ``replace`` carry its text only."""
+    if row.get('status') != 'queued' or not _interactive(authority, row['target_session_id']):
+        return []
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
-            or (payload.get('display_v1') or {}).get('kind') == 'hidden'
-            or not _interactive(authority, row['target_session_id'])):
-        return []
-    return ['steer', 'replace']
+    if (set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+            or (payload.get('display_v1') or {}).get('kind') == 'hidden'):
+        return ['move']
+    return ['steer', 'replace', 'move']
 
 
 def pending_rows(authority, ref):
@@ -240,3 +245,23 @@ async def replace_queued(connection, ref, params):
     from gateway.session_ingress_media import release_admission_media
     await asyncio.to_thread(release_admission_media, store, old_id)
     return asdict(admitted)
+
+
+async def move_queued(connection, ref, params):
+    """Move a still-queued admission ahead of ``before_admission_id`` (None: to the back of the FIFO).
+    A move is idempotent (a retry lands the row in the same place), so it keeps no replay record. A
+    row that started meanwhile refuses ``admission_started`` and nothing moves."""
+    authority, admission_id = connection.authority, params['admission_id']
+    authority.authorize(connection.actor, ref, 'session:control')
+    receipt, row = await _queued(connection, ref, admission_id)
+    if receipt.status != 'queued':
+        raise AuthorityRefusal('admission_started')
+    if 'move' not in queued_controls(authority, row):
+        raise AuthorityRefusal('unsupported_control')
+    from gateway.session_runtime_workers import tracked_write
+    admissions = authority_persistence(authority).admissions
+    await tracked_write(authority, partial(admissions.move, epoch=authority.epoch, admission_id=admission_id,
+                                           before_admission_id=params.get('before_admission_id')))
+    authority._publish_pending(ref)  # every viewer repaints the queue in its new order
+    moved, _ = await _queued(connection, ref, admission_id)
+    return asdict(moved)

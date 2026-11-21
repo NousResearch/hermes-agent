@@ -712,27 +712,27 @@ jobs:
         # appears after the selected packages (including Store on stable) upload.
         # A Store-only candidate has no signed package to describe, so no metadata.
         run: |
-          if [ -d .build/commit-controller ]; then
-            export PYTHONPATH="$PWD/.build/commit-controller${PYTHONPATH:+:$PYTHONPATH}"
-          fi
+          # python -m imports from the working directory first: a claim runs the controller copy.
+          root="$GITHUB_WORKSPACE/apps/desktop/release"
+          if [ -d .build/commit-controller ]; then cd .build/commit-controller; fi
           args=(--include '*.msix')
           record_args=()
           if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
           if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; }; then
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
-              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               "${record_args[@]}" \
-              --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
+              --out "$root/metadata-windows-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
           if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
             # Commit-only mode: schema-2 receipts under releases/commit/<sha>/.
             python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
-              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+              --name "$TARGET" --root "$root" "${args[@]}"
           else
             python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+              --name "$TARGET" --root "$root" "${args[@]}"
           fi
 
   build-win32-arm64-release:
@@ -1192,9 +1192,9 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         # The feed input stays in the tag archive until the leg and its smoke pass.
         run: |
-          if [ -d .build/commit-controller ]; then
-            export PYTHONPATH="$PWD/.build/commit-controller${PYTHONPATH:+:$PYTHONPATH}"
-          fi
+          # python -m imports from the working directory first: a claim runs the controller copy.
+          root="$GITHUB_WORKSPACE/apps/desktop/release"
+          if [ -d .build/commit-controller ]; then cd .build/commit-controller; fi
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap')
           # Commit claims have no updater; their packager emits no feed yml.
           if [[ "$HERMES_PAYLOAD_TAG" != commit.* ]]; then args+=(--include '*-mac.yml'); fi
@@ -1202,20 +1202,20 @@ jobs:
           if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
           if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
-              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               "${record_args[@]}" \
-              --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
+              --out "$root/metadata-macos-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
           if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
             # Commit-only mode: binaries only — no feed yml exists without a tag.
             python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
-              --name "$TARGET" --root apps/desktop/release \
+              --name "$TARGET" --root "$root" \
               --include '*.dmg' --include '*.zip' --include '*.blockmap'
           else
             python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+              --name "$TARGET" --root "$root" "${args[@]}"
           fi
 
   build-darwin-arm64-commit:
@@ -2351,21 +2351,21 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          if [ -d .build/commit-controller ]; then
-            export PYTHONPATH="$PWD/.build/commit-controller${PYTHONPATH:+:$PYTHONPATH}"
-          fi
+          # python -m imports from the working directory first: a claim runs the controller copy.
+          root="$GITHUB_WORKSPACE/termux-build"
+          if [ -d .build/commit-controller ]; then cd .build/commit-controller; fi
           if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
             python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
-              --name termux --root termux-build --include 'deb/*.deb'
+              --name termux --root "$root" --include 'deb/*.deb'
           else
             record_args=()
             if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
             python -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
-              --root termux-build --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               "${record_args[@]}" \
-              --out termux-build/metadata-termux-aarch64.json
+              --out "$root/metadata-termux-aarch64.json"
             python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-              --name termux --root termux-build --include 'deb/*.deb' --include 'metadata-*.json'
+              --name termux --root "$root" --include 'deb/*.deb' --include 'metadata-*.json'
           fi
 
   termux-deb:

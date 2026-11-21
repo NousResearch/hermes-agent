@@ -1784,3 +1784,78 @@ def test_restore_detach_of_a_service_backend_still_starts_the_background_run(hom
     assert engine.cmd_restore(host, _args(apply=False, restore=True, detach=True)) == engine.EXIT_OK
     assert len(host.spawned) == 1 and "--restore" in host.spawned[0]
 
+
+
+# --------------------------------------------------------------------------- review 6: symlinked store
+
+
+def _through_link(home, tmp_path, name):
+    """Move ``home/name`` (when it exists) to a folder outside the home and leave a symlink in its place;
+    returns the link's target directory, whose files are snapshotted by the caller."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real = outside / name
+    if (home / name).exists():
+        (home / name).rename(real)
+    elif name == "backend_migration":
+        real.mkdir()
+    (home / name).symlink_to(real, target_is_directory=name == "backend_migration")
+    return outside
+
+
+def _run_cli(monkeypatch, host, **kw):
+    from hermes_cli import gateway_migrate_backends_lock as run_lock
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_host.SystemHost", lambda _home: host)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            engine.cmd_backends(_args(**kw))
+    finally:
+        run_lock.release()
+    return exit_info.value.code
+
+
+@pytest.mark.parametrize("name", ["backend_migration", "backend_migration.json"])
+def test_a_symlinked_backup_folder_or_record_is_refused_before_anything_is_written_through_it(
+        home, tmp_path, capsys, monkeypatch, name):
+    outside = _through_link(home, tmp_path, name)
+    host = FakeHost(home)
+    before, config = _files(outside), _config_files(home)
+
+    assert _run_cli(monkeypatch, host) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert "Nothing changed" in out and "is a symbolic link" in out, out
+    assert host.calls == [] and _files(outside) == before and _config_files(home) == config
+    assert (home / name).is_symlink()
+
+
+@pytest.mark.parametrize("name", ["backend_migration", "backend_migration.json"])
+@pytest.mark.parametrize("case", ["restore_done", "recover_by_apply", "recover_by_restore"])
+def test_restore_and_recovery_refuse_a_symlinked_backup_folder_or_record(home, tmp_path, capsys, monkeypatch,
+                                                                         name, case):
+    host = FakeHost(home)
+    if case == "restore_done":
+        assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    else:
+        _interrupt(host)
+    outside = _through_link(home, tmp_path, name)
+    before, config = _files(outside), _config_files(home)
+    host.calls.clear()
+    capsys.readouterr()
+
+    restore = case != "recover_by_apply"
+    assert _run_cli(monkeypatch, host, apply=not restore, restore=restore) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert "Nothing changed" in out and "is a symbolic link" in out, out
+    assert host.calls == [] and _files(outside) == before and _config_files(home) == config
+    assert (home / name).is_symlink()
+
+
+def test_the_dry_run_names_a_symlinked_backup_folder_as_a_blocker(home, tmp_path, capsys):
+    _through_link(home, tmp_path, "backend_migration")
+
+    code, out = _plan(FakeHost(home), capsys)
+
+    blockers = " ".join(out["plan"]["blockers"])
+    assert code == engine.EXIT_BLOCKED and "backend_migration" in blockers and "symbolic link" in blockers, out

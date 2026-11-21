@@ -474,7 +474,7 @@ describe('live tool run', () => {
   it('stays live in the gap between two sequential calls', async () => {
     const { container } = render(<GroupHarness message={betweenSequentialCallsMessage()} />)
 
-    expect(await screen.findByText('Running 2 commands')).toBeTruthy()
+    expect(await screen.findByText('Ran 2 commands')).toBeTruthy()
     expect(container.querySelector('[data-tool-ticker]')).not.toBeNull()
     expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
   })
@@ -485,7 +485,7 @@ describe('live tool run', () => {
   it('drops the one-line window when a row inside it is opened', async () => {
     const { container } = render(<GroupHarness message={betweenSequentialCallsMessage()} />)
 
-    await screen.findByText('Running 2 commands')
+    await screen.findByText('Ran 2 commands')
 
     const row = container.querySelector('[data-tool-ticker] [data-tool-row] button[aria-expanded="false"]')
 

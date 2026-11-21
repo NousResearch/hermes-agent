@@ -13,6 +13,11 @@ const focusedSessionWorkspaceScope = vi.fn<() => { workspaceMode: 'bots' | 'sess
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
+const reuseFocusedDraftTile = vi.fn((storedSessionId: string) => false)
+
+vi.mock('./chat/reuse-draft-tab', () => ({
+  reuseFocusedDraftTile: (storedSessionId: string) => reuseFocusedDraftTile(storedSessionId)
+}))
 
 vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
@@ -78,6 +83,8 @@ describe('openSession', () => {
     canOpenSessionWindow.mockReturnValue(true)
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
+    reuseFocusedDraftTile.mockReset()
+    reuseFocusedDraftTile.mockReturnValue(false)
     setSessionTileWorkspaceScope.mockReset()
     focusedSessionWorkspaceScope.mockReset()
     focusedSessionWorkspaceScope.mockReturnValue({ workspaceMode: 'sessions' })
@@ -111,6 +118,31 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate)
     expect(navigate).toHaveBeenCalledWith('/c/s1')
+  })
+
+  // A sidebar click is the sessions list's licence to spend MAIN — but main is
+  // shown in the first tab, and a click made while an untouched "New session"
+  // tab is in front belongs to that tab. Replacing main there overwrites a chat
+  // the person can still see (and left the empty tab they were typing into).
+  it('in-place fills the New session tab in front instead of replacing main', () => {
+    $selectedStoredSessionId.set('chat-a')
+    focusOpenSession.mockReturnValue(null)
+    reuseFocusedDraftTile.mockReturnValue(true)
+
+    openSession('chat-b', navigate)
+
+    expect(reuseFocusedDraftTile).toHaveBeenCalledWith('chat-b')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('in-place still loads into main when the tab in front is not a blank draft', () => {
+    $selectedStoredSessionId.set('chat-a')
+    focusOpenSession.mockReturnValue(null)
+    reuseFocusedDraftTile.mockReturnValue(false)
+
+    openSession('chat-b', navigate)
+
+    expect(navigate).toHaveBeenCalledWith('/c/chat-b')
   })
 
   it('in-place fronts main when a Bot-scoped open targets the chat main already holds', () => {

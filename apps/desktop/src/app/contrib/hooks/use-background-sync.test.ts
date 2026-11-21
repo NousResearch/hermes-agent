@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { markSessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
-import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifyProjectsChanged, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
@@ -945,6 +945,60 @@ describe('reconcileActiveTranscript', () => {
     const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
 
     expect(messages.map(message => message.id)).toContain(optimisticId)
+  })
+
+  // A presentation-only correction is authoritative for the rendered
+  // transcript; the unchanged-signature fast path must not gate it out
+  // (#140396). Rows carry durable ids the way the real REST page does, so the
+  // refreshed tail replaces (or drops) a stored row by anchor, not by merge.
+  const durableTranscript = (): ReturnType<typeof transcript> => ({
+    messages: [
+      { content: 'question', role: 'user', row_id: 1, timestamp: 1 },
+      { content: 'Original answer.', role: 'assistant', row_id: 2, timestamp: 2 }
+    ],
+    session_id: ACTIVE_STORED_ID
+  })
+
+  it('repaints a display_content-only correction with unchanged raw content', async () => {
+    const fixture = makeRefresh()
+    const original = durableTranscript()
+
+    const corrected: typeof original = {
+      ...original,
+      messages: [original.messages[0], { ...original.messages[1], display_content: 'Corrected public answer.' }]
+    }
+
+    vi.mocked(getLatestSessionMessages)
+      .mockResolvedValueOnce(original as never)
+      .mockResolvedValueOnce(corrected as never)
+
+    await fixture.refresh()
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+
+    expect(messages.map(chatMessageText)).toContain('Corrected public answer.')
+  })
+
+  it('drops a row the backend later marked display_kind hidden', async () => {
+    const fixture = makeRefresh()
+    const original = durableTranscript()
+
+    const hidden: typeof original = {
+      ...original,
+      messages: [original.messages[0], { ...original.messages[1], display_kind: 'hidden' }]
+    }
+
+    vi.mocked(getLatestSessionMessages)
+      .mockResolvedValueOnce(original as never)
+      .mockResolvedValueOnce(hidden as never)
+
+    await fixture.refresh()
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+
+    expect(messages.map(chatMessageText)).not.toContain('Original answer.')
   })
 
   it('skips a freshly minted, still-empty draft instead of 404ing on its unpersisted row (#123622)', async () => {

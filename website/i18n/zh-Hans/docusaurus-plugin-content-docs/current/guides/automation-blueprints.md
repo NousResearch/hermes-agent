@@ -77,7 +77,7 @@ Review for:
 - Missing tests for new behavior
 
 Post a concise review. If the PR is a trivial docs/typo change, say so briefly." \
-  --skill github-code-review \
+  --skill github \
   --deliver github_comment
 ```
 
@@ -100,7 +100,7 @@ platforms:
             Author: {pull_request.user.login}
             Diff URL: {pull_request.diff_url}
             Review for security, performance, and code quality.
-          skills: ["github-code-review"]
+          skills: ["github"]
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"
@@ -439,7 +439,7 @@ If action is 'closed' and pull_request.merged is true:
 5. Reference the original PR in the new PR description
 
 If action is not 'closed' or not merged, respond with [SILENT]." \
-  --skill github-pr-workflow \
+  --skill github \
   --deliver log
 ```
 

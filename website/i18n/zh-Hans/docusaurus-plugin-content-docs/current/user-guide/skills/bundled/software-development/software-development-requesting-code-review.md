@@ -21,7 +21,7 @@ description: "提交前审查：安全扫描、质量门控、自动修复"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
-| 相关 skill | [`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans), [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/user-guide/skills/bundled/github/github-github-code-review) |
+| 相关 skill | [`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans), [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github`](/user-guide/skills/bundled/software-development/software-development-github) |
 
 ## 参考：完整 SKILL.md
 
@@ -44,7 +44,7 @@ description: "提交前审查：安全扫描、质量门控、自动修复"
 
 **跳过情形：** 仅文档变更、纯配置调整，或用户说"skip verification"时。
 
-**本 skill 与 github-code-review 的区别：** 本 skill 在提交前验证**你自己的**变更。`github-code-review` 用于在 GitHub 上审查**他人**的 PR 并添加行内评论。
+**本 skill 与 github 的区别：** 本 skill 在提交前验证**你自己的**变更。`github` 用于在 GitHub 上审查**他人**的 PR 并添加行内评论。
 
 ## 第 1 步 — 获取 diff
 

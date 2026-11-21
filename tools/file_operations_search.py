@@ -23,6 +23,10 @@ _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures",
 )
 
+# Bound on the two best-effort probes that name a neighbour of a missing search root. Kept far
+# below ``terminal.timeout``: a hint is never worth stalling the turn for (#158400).
+_PATH_HINT_TIMEOUT = 5
+
 
 def _macos_protected_search_exclusions(
     path: str, *, cwd: Optional[str] = None, home: Optional[str] = None, platform: Optional[str] = None,
@@ -798,9 +802,16 @@ class SearchMixin:
         parent = os.path.dirname(path) or "."
         basename_query = os.path.basename(path)
         hint_parts = [f"Path not found: {path}"]
-        parent_check = self._exec(f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no")
+        # The hint is best-effort. Without a timeout these inherits ``terminal.timeout`` (180s by
+        # default), and a protected or unreachable parent (macOS TCC on ``~/Desktop``, an offline
+        # mount) then holds the whole turn for three minutes just to name a neighbour (#158400).
+        parent_check = self._exec(
+            f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no",
+            timeout=_PATH_HINT_TIMEOUT)
         if "yes" in parent_check.stdout and basename_query:
-            ls_result = self._exec(f"ls -1 -- {self._escape_shell_arg(parent)} 2>/dev/null | head -20")
+            ls_result = self._exec(
+                f"ls -1 -- {self._escape_shell_arg(parent)} 2>/dev/null | head -20",
+                timeout=_PATH_HINT_TIMEOUT)
             if ls_result.exit_code == 0 and ls_result.stdout.strip():
                 lq = basename_query.lower()
                 candidates = [

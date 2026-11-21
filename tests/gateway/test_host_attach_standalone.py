@@ -32,6 +32,13 @@ def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home,
     assert any(r.levelname == "WARNING" and "boot notice failed" in r.message for r in caplog.records)
 
 
+@pytest.fixture(autouse=True)
+def _short_channel_wait(monkeypatch):
+    # Peers that never answer here are silent by design; production waits ATTACH_CHANNEL_WAIT_S
+    # for a booting peer's control socket, which these verdicts do not depend on.
+    monkeypatch.setattr(host_attach, "ATTACH_CHANNEL_WAIT_S", 0.0)
+
+
 @pytest.fixture
 def standalone_home(tmp_path, monkeypatch):
     root = tmp_path / "hermes"

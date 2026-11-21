@@ -201,7 +201,8 @@ python "$S" render --style evidence --replace-in report.md
 `evidence` render style prints each source's quotes beneath its URL, so the
 deliverable shows claim → source → exact supporting text with nothing taken on
 faith. Use `--replace-in <draft>` to rewrite an existing Sources block in place
-(idempotent — safe to re-run after attaching more quotes); `--cited-in` prints
+(idempotent — safe to re-run after attaching more quotes; lines after the
+block, such as a closing answer line, are kept); `--cited-in` prints
 to stdout instead. Both emit the heading `## Sources` (`--style plain` emits
 `Sources:`).
 

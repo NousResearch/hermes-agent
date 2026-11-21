@@ -21,6 +21,7 @@ import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dial
 import { FindBar } from '@/components/find-bar'
 import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
+import { InAppOfferDialog } from '@/components/in-app-offer/dialog'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
@@ -1304,7 +1305,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* One host for every free-tier sign-in entry point (Settings › Billing,
           the statusbar chip, the first-launch intro). It owns the flow; the
           entry points only record the intent. */}
-      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
+      {!isAuxiliaryWindow() && (<><FreeTierSignInDialog onSelectModel={selectModel} /><InAppOfferDialog /></>)}
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

@@ -1681,6 +1681,60 @@
       }
     },
     {
+      "name": "in_app_offer.dismiss",
+      "summary": "Close the in-app offer for this profile on every surface, so free_tier.status (and the dashboard's /api/in-app-offer) stop serving it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InAppOfferDismissParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InAppOfferDismissResult"
+        }
+      }
+    },
+    {
+      "name": "in_app_offer.refresh",
+      "summary": "Fetch the Nous account once with the stored token (never refreshing it) and return the Portal's in-app offer. The desktop calls this on a slow cadence so the offer reaches users whose sessions never fetch the account.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InAppOfferRefreshResult"
+        }
+      }
+    },
+    {
+      "name": "in_app_offer.report",
+      "summary": "Tell the Nous Portal the in-app offer was shown or clicked, for the campaign's counts. Uses the stored token as it is (never refreshing it) and only for the offer this profile was served.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InAppOfferReportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InAppOfferReportResult"
+        }
+      }
+    },
+    {
       "name": "input.detect_drop",
       "summary": "Recognise a terminal file drop pasted into the composer and turn it into an attachment.",
       "params": [
@@ -19396,6 +19450,17 @@
             ],
             "default": null,
             "title": "Connector Nudge Due In"
+          },
+          "in_app_offer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InAppOfferPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -22072,6 +22137,160 @@
           "mode"
         ],
         "title": "ImageRenderResult",
+        "type": "object"
+      },
+      "InAppOfferDismissParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "offer_id": {
+            "title": "Offer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "offer_id"
+        ],
+        "title": "InAppOfferDismissParams",
+        "type": "object"
+      },
+      "InAppOfferDismissResult": {
+        "additionalProperties": false,
+        "properties": {
+          "dismissed": {
+            "title": "Dismissed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dismissed"
+        ],
+        "title": "InAppOfferDismissResult",
+        "type": "object"
+      },
+      "InAppOfferPayload": {
+        "additionalProperties": true,
+        "description": "The Nous Portal's campaign offer (``hermes_cli/in_app_offer.py`` memo of the account\npayload's ``in_app_offer``): copy the client shows in a dismissible dialog, plus the CTA hop.\nAbsent when no campaign matches the account.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "cta_label": {
+            "title": "Cta Label",
+            "type": "string"
+          },
+          "cta_url": {
+            "title": "Cta Url",
+            "type": "string"
+          },
+          "claimable_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claimable Until"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "body",
+          "cta_label",
+          "cta_url"
+        ],
+        "title": "InAppOfferPayload",
+        "type": "object"
+      },
+      "InAppOfferRefreshResult": {
+        "additionalProperties": false,
+        "properties": {
+          "in_app_offer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InAppOfferPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "InAppOfferRefreshResult",
+        "type": "object"
+      },
+      "InAppOfferReportParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "offer_id": {
+            "title": "Offer Id",
+            "type": "string"
+          },
+          "event": {
+            "enum": [
+              "shown",
+              "clicked"
+            ],
+            "title": "Event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "offer_id",
+          "event"
+        ],
+        "title": "InAppOfferReportParams",
+        "type": "object"
+      },
+      "InAppOfferReportResult": {
+        "additionalProperties": false,
+        "properties": {
+          "reported": {
+            "title": "Reported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reported"
+        ],
+        "title": "InAppOfferReportResult",
         "type": "object"
       },
       "InflightTurn": {

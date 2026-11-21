@@ -53,6 +53,11 @@ def _(rid, params: dict) -> dict:
         challenge = anon_challenge.pending_challenge()
         if challenge:
             payload["challenge"] = challenge
+        # The Portal's in-app campaign, memoised by the account fetch (``in_app_offer``): the
+        # same pure-read rule as the rest of this handler, no network here.
+        from hermes_cli import in_app_offer
+        if (offer := in_app_offer.pending_offer()):
+            payload["in_app_offer"] = offer
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5090, str(e))
@@ -121,6 +126,53 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     from hermes_cli.anon_challenge import record_host_outcome
     return _ok(rid, {"accepted": record_host_outcome(params["url"], params.get("attempt", 0), params["outcome"])})
+
+
+@method("in_app_offer.refresh")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One account fetch with the stored token (never a refresh), then the memoised offer.
+
+    The status read stays a pure local read; this is the network leg, so it runs on the RPC
+    pool (``_LONG_HANDLERS``). The desktop calls it on a slow cadence: a valid JWT answers most
+    account reads locally and the credits seed runs only for Nous sessions, so without it the
+    offer could never reach a user whose sessions never fetch the account."""
+    try:
+        from hermes_cli import in_app_offer
+        offer = in_app_offer.refresh_from_portal()
+        return _ok(rid, {"in_app_offer": offer} if offer else {})
+    except Exception as e:  # the RPC boundary: report it, never crash the dispatcher
+        logger.warning("in_app_offer.refresh failed", exc_info=True)
+        return _err(rid, 5097, str(e))
+
+
+@method("in_app_offer.report")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Report that the in-app offer was shown or clicked, for the Portal's campaign counts.
+
+    Network I/O, so it runs on the RPC pool (``_LONG_HANDLERS``). Best-effort: a failure answers
+    ``reported: false``, never an error, since a count must never surface to the user."""
+    try:
+        from hermes_cli import in_app_offer
+        reported = in_app_offer.report_event(str(params.get("offer_id") or ""), str(params.get("event") or ""))
+        return _ok(rid, {"reported": reported})
+    except Exception:  # the RPC boundary: a count is never worth a crash
+        logger.warning("in_app_offer.report failed", exc_info=True)
+        return _ok(rid, {"reported": False})
+
+
+@method("in_app_offer.dismiss")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Close the in-app offer for this profile on every surface (Desktop, the Webapp and the
+    dashboard share it), so one person sees one campaign once. A local file write."""
+    try:
+        from hermes_cli import in_app_offer
+        return _ok(rid, {"dismissed": in_app_offer.dismiss(str(params.get("offer_id") or ""))})
+    except Exception:  # the RPC boundary: the client keeps its own record anyway
+        logger.warning("in_app_offer.dismiss failed", exc_info=True)
+        return _ok(rid, {"dismissed": False})
 
 
 def register(server) -> None:

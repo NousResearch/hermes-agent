@@ -3488,6 +3488,12 @@ export interface Translations extends NoticeTranslations {
       retrying: string
     }
   }
+  inAppOffer: {
+    dismiss: string
+    describedBy: string
+    /** "Claim by Dec 15, 2026, 12:00 PM UTC": the offer's promo deadline, already formatted. */
+    claimBy: (deadline: string) => string
+  },
 
   modelPicker: {
     title: string

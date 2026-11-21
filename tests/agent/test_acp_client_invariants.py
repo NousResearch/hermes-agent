@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -304,6 +307,170 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
     with pytest.raises(RuntimeError, match="exited early: fatal: agent segfaulted"):
         with client._session(30):
             pass
+
+
+# Servers that finish session/prompt by exiting. ``mode`` selects the shape:
+# clean-chunk streams the answer and exits 0 with no JSON-RPC response;
+# clean-empty exits 0 without any output; crash-chunk emits one chunk then dies.
+_PROMPT_EXIT_SERVER = """import json, sys
+
+mode = sys.argv[1]
+
+def reply(request, result):
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+
+def update(kind, text=None):
+    payload = {"sessionUpdate": kind}
+    if text is not None:
+        payload["content"] = {"text": text}
+    print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"update": payload}}), flush=True)
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        reply(request, {"protocolVersion": 1})
+    elif method == "session/new":
+        reply(request, {"sessionId": "s1"})
+    elif method == "session/prompt":
+        if mode == "clean-chunk":
+            update("agent_thought_chunk", "thinking")
+            update("usage_update", "tokens=3")
+            update("agent_message_chunk", "streamed-without-rpc")
+            update("end_turn")
+            sys.exit(0)
+        if mode == "clean-empty":
+            sys.exit(0)
+        update("agent_message_chunk", "partial")
+        print("fatal: agent segfaulted", file=sys.stderr, flush=True)
+        sys.exit(3)
+    else:
+        reply(request, {})
+"""
+
+
+def _is_session_update(item: object) -> bool:
+    return isinstance(item, dict) and item.get("method") == "session/update"
+
+
+class _ExitBeforeConsumeQueue(queue.Queue):
+    """Hold session/update notifications until the process exit is observed.
+
+    The request loop checks ``proc.poll()`` before ``inbox.get()``. Releasing
+    the held notifications from the patched ``poll()`` leaves them queued across
+    that check — the process-exit-before-queue-consumption ordering — so a fix
+    that only inspects ``text_parts`` after the loop breaks will not see them.
+    """
+
+    active: "_ExitBeforeConsumeQueue | None" = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lock = threading.Lock()
+        self._held: list = []
+        self.released = False
+        self.loop_consumed_updates = 0
+        type(self).active = self
+
+    def put(self, item, block=True, timeout=None):
+        with self._lock:
+            if not self.released and _is_session_update(item):
+                self._held.append(item)
+                return
+        super().put(item, block=block, timeout=timeout)
+
+    def release(self) -> None:
+        with self._lock:
+            items = list(self._held)
+            self._held.clear()
+            self.released = True
+        for item in items:
+            super().put(item)
+
+    def has_held(self) -> bool:
+        with self._lock:
+            return bool(self._held)
+
+    def get(self, block=True, timeout=None):
+        item = super().get(block=block, timeout=timeout)
+        # The request loop blocks in get(); the post-exit drain uses get_nowait().
+        if block and _is_session_update(item):
+            self.loop_consumed_updates += 1
+        return item
+
+
+def _prompt_exit_client(tmp_path: Path, mode: str) -> _AcmeClient:
+    script = tmp_path / "prompt_exit_acp.py"
+    script.write_text(_PROMPT_EXIT_SERVER, encoding="utf-8")
+    return _AcmeClient(command=sys.executable, args=[str(script), mode], acp_cwd=str(tmp_path))
+
+
+def test_clean_exit_without_prompt_response_drains_queued_updates(tmp_path, caplog):
+    """A server that exits 0 after agent_message_chunk, with no session/prompt response.
+
+    The chunk is already queued when poll() reports the exit and before the loop
+    calls inbox.get() (process-exit-before-queue-consumption). The client must
+    drain those notifications and return the streamed text.
+    """
+    client = _prompt_exit_client(tmp_path, "clean-chunk")
+    real_spawn = client._spawn
+
+    def spawn_and_stage_exit_before_consume():
+        proc = real_spawn()
+        orig_poll = proc.poll
+
+        def poll():
+            code = orig_poll()
+            held = _ExitBeforeConsumeQueue.active
+            if held is None or code is None:
+                return code
+            if held.has_held():
+                # Exit is visible, and the updates are released into the inbox
+                # before the loop body can consume them.
+                held.release()
+                return code
+            if not held.released:
+                return None
+            return code
+
+        proc.poll = poll
+        return proc
+
+    client._spawn = spawn_and_stage_exit_before_consume
+    staged = None
+    try:
+        with (
+            patch("agent.acp_client.queue.Queue", _ExitBeforeConsumeQueue),
+            caplog.at_level(logging.INFO, logger="agent.acp_client"),
+        ):
+            completion = client.chat.completions.create(
+                model="acme-acp", messages=[{"role": "user", "content": "hi"}], timeout=30)
+        staged = _ExitBeforeConsumeQueue.active
+    finally:
+        _ExitBeforeConsumeQueue.active = None
+
+    assert staged is not None and staged.released, "session updates were not held until process exit"
+    assert staged.loop_consumed_updates == 0, "the loop consumed a session/update before the exit drain"
+    message = completion.choices[0].message
+    assert message.content == "streamed-without-rpc"
+    assert message.reasoning == "thinking"
+    assert "usage_update" in caplog.text
+    assert "completed via notification stream" in caplog.text
+    assert "no JSON-RPC response" in caplog.text
+
+
+def test_clean_exit_without_prompt_output_is_still_an_early_exit(tmp_path):
+    """Exit 0 with nothing streamed is not a successful prompt."""
+    client = _prompt_exit_client(tmp_path, "clean-empty")
+    with pytest.raises(RuntimeError, match="exited early: exit code 0"):
+        client.chat.completions.create(model="acme-acp", messages=[{"role": "user", "content": "hi"}], timeout=30)
+
+
+def test_prompt_chunk_then_nonzero_exit_is_still_a_crash(tmp_path):
+    """A partial chunk does not turn a non-zero exit into a completed prompt."""
+    client = _prompt_exit_client(tmp_path, "crash-chunk")
+    with pytest.raises(RuntimeError, match="exited early: fatal: agent segfaulted"):
+        client.chat.completions.create(model="acme-acp", messages=[{"role": "user", "content": "hi"}], timeout=30)
 
 
 _STDIN_CLOSING_ACP_CLI = """import os, sys, time

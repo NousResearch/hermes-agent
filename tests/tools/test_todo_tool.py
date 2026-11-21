@@ -292,3 +292,20 @@ class TestRejectEmptyContent:
             {"id": "1", "content": "A real task", "status": "pending"},
         ])
         assert items[0]["content"] == "A real task"
+
+
+class TestStatusAliases:
+    """Statuses other agents' todo tools use must not silently reset finished work."""
+
+    def test_replace_and_merge_accept_common_status_names(self):
+        store = TodoStore()
+        items = store.write([
+            {"id": "1", "content": "a", "status": "done"},
+            {"id": "2", "content": "b", "status": "In-Progress"},
+            {"id": "3", "content": "c", "status": "todo"},
+            {"id": "4", "content": "d", "status": "bogus"},
+        ])
+        assert [i["status"] for i in items] == ["completed", "in_progress", "pending", "pending"]
+        items = store.write([{"id": "2", "status": "complete"}, {"id": "3", "status": "nonsense"}], merge=True)
+        assert {i["id"]: i["status"] for i in items}["2"] == "completed"
+        assert {i["id"]: i["status"] for i in items}["3"] == "pending"

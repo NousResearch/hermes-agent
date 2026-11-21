@@ -37,10 +37,19 @@ async def prepare_reasoning(authority, live, payload, prepared):
 async def prepare_workspace(authority, live, payload, prepared):
     """Move to project: execution cwd and TERMINAL_CWD move together (restore_policy's invariant)."""
     import os
-    from gateway.session_policy import restore_policy
+    from gateway.session_policy import remote_cwd_shape, restore_policy, terminal_uses_host_cwd
     from hermes_constants import translate_cwd_for_wsl_backend
     from tui_gateway import git_probe
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
+    terminal = json.loads(old.terminal_json)
+    if not terminal_uses_host_cwd(terminal):
+        # The folder lives on the backend's host: this host can neither stat it nor run git in it.
+        cwd = payload['cwd']
+        if not isinstance(cwd, str) or not remote_cwd_shape(cwd, terminal):
+            raise RuntimeStoreError('invalid_params')
+        terminal['TERMINAL_CWD'] = cwd
+        policy = replace(old, cwd=cwd, terminal_json=json.dumps(terminal))
+        return _rebind(authority, prepared, old, policy, git={'branch': '', 'root': ''})
 
     def probe():
         # Off-loop: a stat and up to three `git` spawns.
@@ -49,7 +58,6 @@ async def prepare_workspace(authority, live, payload, prepared):
             raise AuthorityRefusal('invalid_params')
         return cwd, git_probe.branch(cwd), git_probe.common_repo_root(cwd)
     cwd, branch, root = await asyncio.to_thread(probe)
-    terminal = json.loads(old.terminal_json)
     terminal['TERMINAL_CWD'] = cwd
     policy = replace(old, cwd=cwd, terminal_json=json.dumps(terminal))
     return _rebind(authority, prepared, old, policy, git={'branch': branch, 'root': root})

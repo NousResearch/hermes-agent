@@ -455,7 +455,12 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
         _refuse('model', 'must be a non-empty string')
     cwd = params.get('cwd', str(resolve_agent_cwd()))
-    if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+    terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
+    # An ssh/modal/etc. backend resolves its own cwd on another host, which this host cannot probe, and
+    # that host is POSIX whatever this one is (a Windows gateway with a WSL remote).
+    host_cwd = terminal_uses_host_cwd(terminal)
+    if (not isinstance(cwd, str) or not (Path(cwd).is_absolute() if host_cwd else remote_cwd_shape(cwd, terminal))
+            or (host_cwd and not Path(cwd).is_dir())):
         _refuse('cwd', 'must be an absolute path to an existing directory')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
@@ -483,7 +488,6 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     coding_posture = named and _in_coding_workspace(config, source, cwd)
     enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture, bypass=ignore_user_config)
-    terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
     if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
@@ -518,6 +522,13 @@ def terminal_uses_host_cwd(terminal):
     backend = str(terminal.get('TERMINAL_ENV') or 'local').strip().lower()
     mounts = str(terminal.get('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     return backend == 'local' or (backend == 'docker' and mounts)
+
+
+def remote_cwd_shape(cwd, terminal):
+    """SSH shell paths may start with ~; other remote backends need POSIX absolute paths."""
+    from hermes_cli.config import _is_ssh_remote_tilde_cwd
+    backend = str(terminal.get('TERMINAL_ENV') or '')
+    return PurePosixPath(cwd).is_absolute() or _is_ssh_remote_tilde_cwd(backend, cwd)
 
 
 def _profile_workspace_cwd(home):
@@ -1120,8 +1131,8 @@ def restore_policy(data):
     try:
         policy = _stored_policy(data)
         _check_stored_surface(policy)
-        if not isinstance(policy.cwd, str) or not _stored_cwd_is_absolute(policy.cwd):
-            raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
+        if not isinstance(policy.cwd, str) or not policy.cwd.strip():
+            raise _policy_refused('cwd', 'the stored working directory is missing')
         # model=None/'' is what our own writers persist when the model cannot be resolved (session_local
         # ``or None``, session_kanban's raw resolution); the launch path resolves an empty policy model
         # from the profile's config (session_hosted_rpc falls back to _resolve_gateway_model; #35381
@@ -1163,6 +1174,10 @@ def restore_policy(data):
             if not isinstance(value, dict):
                 raise _policy_refused(name, 'the stored policy object is not a JSON object')
         terminal = json.loads(policy.terminal_json)
+        # Stored SSH workspaces may be ~-relative; host-backed workspaces remain absolute.
+        if not (_stored_cwd_is_absolute(policy.cwd) if terminal_uses_host_cwd(terminal)
+                else remote_cwd_shape(policy.cwd, terminal)):
+            raise _policy_refused('cwd', 'the stored working directory is not absolute')
         if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
             raise _policy_refused('terminal_json', 'TERMINAL_CWD does not match the stored cwd')
         # Consumers key on the creation label (``editor_scope`` installs the ACP edit approver only for
@@ -1243,7 +1258,10 @@ def workspace_ready(policy) -> bool:
     """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
     turn runs in a missing directory. A cwd spelled for another OS restores (the receipt records where the
     session was made) but is never ready here: on Windows ``/Users/x`` would resolve against the current
-    drive and bind a folder the session never named."""
+    drive and bind a folder the session never named. A remote backend's cwd is not on this host, so it is
+    not probed."""
+    if not terminal_uses_host_cwd(json.loads(policy.terminal_json)):
+        return True
     cwd = Path(policy.cwd)
     return cwd.is_absolute() and cwd.is_dir()
 

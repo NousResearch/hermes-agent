@@ -62,12 +62,27 @@ def reset_edit_approval_requester(token: Token) -> None:
 
 
 def _read_text_if_exists(path: str) -> str | None:
+    from tools.file_tools_paths import _terminal_env_type_for_task
+    if _terminal_env_type_for_task() != "local":
+        return _read_backend_text(path)
     p = Path(path).expanduser()
     if p.is_file():
         return p.read_text(encoding="utf-8-sig", errors="replace")
     if p.exists():
         raise OSError(f"Cannot edit non-file path: {path}")
     return None
+
+
+def _read_backend_text(path: str) -> str | None:
+    """The file as the terminal backend sees it: with ssh and the sandboxes the path names a file on
+    the backend's host, which this process cannot open. Same decoding as the host read below."""
+    from tools.file_tools import _get_file_ops
+    result = _get_file_ops().read_file_raw(path)
+    if result.not_found:
+        return None
+    if result.error:
+        raise OSError(result.error)
+    return result.content.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
 def _required_path(arguments: dict[str, Any]) -> str:

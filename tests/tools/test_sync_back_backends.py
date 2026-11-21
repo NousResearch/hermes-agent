@@ -123,6 +123,16 @@ class TestSSHBulkDownload:
 
         assert "--exclude='*.sock'" in " ".join(mock_run.call_args[0][0])
 
+    def test_ssh_bulk_download_excludes_bot_desktop(self, ssh_mock_env, tmp_path):
+        """A sandboxed Bot Screen's browser profile (a running Chromium's SingletonSocket links
+        out of the archive) never enters the tar, so the extract's data filter cannot refuse it."""
+        dest = tmp_path / "backup.tar"
+
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+            ssh_mock_env._ssh_bulk_download(dest)
+
+        assert "--exclude=home/testuser/.hermes/bot-desktop" in " ".join(mock_run.call_args[0][0])
+
     def test_ssh_bulk_download_still_fails_on_every_other_status(self, ssh_mock_env, tmp_path):
         """rc=1; rc=2 with a real error beside the socket line, with no diagnostic at all, or
         with 'socket ignored' merely inside a filename — all still raise."""

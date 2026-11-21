@@ -32,6 +32,14 @@ def _pr(*lines: str) -> None:
         print(line)
 
 
+def queue_slash_turn(cli, msg) -> None:
+    """Queue ``msg`` as the next agent turn. The images submitted with the slash command that
+    queues it ride along (the first queued turn consumes them), so ``/goal``, ``/plan`` or a
+    skill command typed over an attached screenshot never drops it (#126379)."""
+    images, cli._slash_submit_images = getattr(cli, "_slash_submit_images", None), None
+    cli._pending_input.put((msg, list(images)) if images else msg)
+
+
 def _save(key: str, value) -> bool:
     """cli.save_config_value, resolved lazily (cli.py imports this module)."""
     from cli import save_config_value

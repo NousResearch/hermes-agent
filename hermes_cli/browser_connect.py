@@ -221,9 +221,12 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
             os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
             os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))]
         return _first_present(os.path.join(base, *parts) for base in bases for parts in b.win_install)
-    # Linux: PATH lookup first, then the known absolute install paths.
-    found = next(filter(None, map(shutil.which, b.linux_exec or b.linux_bins)), None)
-    return found or _first_present(b.linux_paths)
+    # Linux: a real browser install's absolute path wins over PATH aliases. PATH may contain
+    # a headless Chrome-for-Testing binary, which must not replace the user's matched real browser.
+    installed = _first_present(b.linux_paths)
+    if installed:
+        return installed
+    return next(filter(None, map(shutil.which, b.linux_exec or b.linux_bins)), None)
 
 
 def _classify_default(value: str, channels, table, match) -> str | None:

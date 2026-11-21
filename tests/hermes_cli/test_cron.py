@@ -24,6 +24,52 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestCronCommandLifecycle:
 
+    @pytest.mark.parametrize("prompt", ["", " \t\n"])
+    @pytest.mark.parametrize(
+        "payload", [{"script": "collect.py"}, {"skills": ["reporting"]}],
+        ids=["script", "skills"],
+    )
+    def test_edit_rejects_blank_prompt_without_mutating_job(
+        self, tmp_cron_dir, capsys, prompt, payload,
+    ):
+        job = create_job(prompt="Daily report", schedule="every 1h", **payload)
+        original = get_job(job["id"])
+        parser = argparse.ArgumentParser(prog="hermes")
+        build_cron_parser(parser.add_subparsers(dest="command"), cmd_cron=cron_command)
+
+        args = parser.parse_args([
+            "cron", "edit", job["id"], "--prompt", prompt, "--name", "Changed name",
+        ])
+        result = cron_command(args)
+
+        assert get_job(job["id"]) == original
+        assert result == 1
+        assert "--prompt" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "edit_args, expected_prompt, expected_script",
+        [
+            (["--name", "Renamed"], "Daily report", "collect.py"),
+            (["--prompt", "Updated report"], "Updated report", "collect.py"),
+            (["--script", ""], "Daily report", None),
+        ],
+        ids=["omitted-prompt", "nonempty-prompt", "clear-script"],
+    )
+    def test_edit_prompt_controls(
+        self, tmp_cron_dir, capsys, edit_args, expected_prompt, expected_script,
+    ):
+        job = create_job(prompt="Daily report", schedule="every 1h", script="collect.py")
+        parser = argparse.ArgumentParser(prog="hermes")
+        build_cron_parser(parser.add_subparsers(dest="command"), cmd_cron=cron_command)
+
+        args = parser.parse_args(["cron", "edit", job["id"], *edit_args])
+        assert cron_command(args) == 0
+
+        updated = get_job(job["id"])
+        assert updated["prompt"] == expected_prompt
+        assert updated["script"] == expected_script
+        assert "Updated job" in capsys.readouterr().out
+
     def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily report", schedule="every 1h")
         parser = argparse.ArgumentParser(prog="hermes")

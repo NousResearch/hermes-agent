@@ -237,13 +237,20 @@ def test_a_failing_driver_wake_does_not_end_the_watcher_thread(monkeypatch):
         raise RuntimeError("Set changed size during iteration")
 
     started = []
+    from agent import memory_provider
+
+    class ImmediateCondition(threading.Condition):
+        def wait(self, timeout=None):
+            return True
+
     monkeypatch.setattr(server, "_skin_watcher_started", False)
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)
+    monkeypatch.setattr(server, "_live_transports_lock", ImmediateCondition())
     monkeypatch.setattr(server, "_note_skin_broadcast", lambda: None)
     monkeypatch.setattr(server, "_broadcast_skin_if_changed", lambda: None)
     monkeypatch.setattr(server, "_broadcast_watched_changes", lambda: None)
     monkeypatch.setattr(server, "_wake_room_drivers", boom)
-    monkeypatch.setattr(server.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(server.threading, "Thread", lambda target, **_k: SimpleNamespace(
+    monkeypatch.setattr(memory_provider, "spawn_context_thread", lambda target, **_k: SimpleNamespace(
         start=lambda: started.append(target)))
     server._ensure_skin_watcher()
     with pytest.raises(SystemExit):

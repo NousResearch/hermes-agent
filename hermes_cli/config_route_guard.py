@@ -2,7 +2,7 @@
 
 ``hermes config set <block>.provider X`` must not carry the previous provider's route: the
 runtime honours ``base_url``/``api_mode`` for whatever provider the block now names — and in an
-``auxiliary.<task>`` block ``base_url`` even overrides ``provider`` (``config_defaults._aux``)
+``auxiliary.<task>`` block ``base_url`` even overrides ``provider`` (``config_defaults_auxiliary._aux``)
 — so the new provider's credential would be posted to the old provider's endpoint (#113719,
 #40862 for ``model``; #141832 for the aux blocks this module generalised the guard to)."""
 

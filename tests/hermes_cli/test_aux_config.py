@@ -13,7 +13,11 @@ here (they're stdin-driven curses prompts).
 from __future__ import annotations
 
 from hermes_cli.config import load_config
-from hermes_cli.main_provider_setup import _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
+from hermes_cli.main_provider_setup import (
+    _AUX_TASKS, _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _embedding_picker_rows,
+    _format_aux_current, _format_embedding_picker_entries, _reset_aux_to_auto,
+    _save_aux_choice,
+)
 
 # ── Default config ──────────────────────────────────────────────────────────
 
@@ -37,6 +41,93 @@ def test_save_aux_choice_persists_to_config_yaml(tmp_path, monkeypatch):
     assert v["model"] == "google/gemini-2.5-flash"
     assert v["base_url"] == ""
     assert v["api_key"] == ""
+
+
+def test_embedding_route_has_capability_specific_default_and_picker(tmp_path, monkeypatch):
+    """Embedding auto stays independent of chat and the picker only offers supported auth routes."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    _isolate_home(tmp_path, monkeypatch)
+    assert "embedding" in {task for task, _name, _description in _AUX_TASKS}
+    default = DEFAULT_CONFIG["auxiliary"]["embedding"]
+    assert (default["provider"], default["model"], default["dimensions"],
+            default["input_type_handling"]) == ("auto", "", None, None)
+
+    rows = [
+        {"slug": "openai-api", "name": "OpenAI API", "models": ["gpt-4.1"]},
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["openai/text-embedding-3-small"]},
+        {"slug": "openai-codex", "name": "Codex OAuth", "models": ["gpt-5"]},
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet"]},
+        {"slug": "custom:vectorbox", "name": "Vectorbox", "models": ["embed-v2"]},
+        {"slug": "custom:claudegateway", "name": "Claude gateway", "models": ["embed-v2"]},
+    ]
+    config = {"providers": {
+        "vectorbox": {"name": "Vectorbox", "api": "https://vectors.example/v1"},
+        "claudegateway": {
+            "name": "Claude gateway", "api": "https://gateway.example/anthropic",
+        },
+    }}
+    selectable = _embedding_picker_rows(rows, config)
+    assert [row["slug"] for row in selectable] == ["openai-api", "openrouter", "custom:vectorbox"]
+    options = _format_embedding_picker_entries(selectable, current_provider="openrouter")
+    assert all(models == [] for _, _, models in options)
+    assert "enter an embedding model" in options[1][1]
+
+
+def test_embedding_route_save_and_reset_preserve_capability_defaults(tmp_path, monkeypatch):
+    _isolate_home(tmp_path, monkeypatch)
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    import hermes_cli.main_provider_setup as setup
+
+    answers = iter(("openai/text-embedding-3-small", "yes"))
+    monkeypatch.setattr(setup, "_ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda _provider: {})
+    setup._aux_flow_provider_model("embedding", "openrouter", [])
+    cfg = load_config()
+    assert cfg["auxiliary"]["embedding"]["provider"] == "openrouter"
+    assert cfg["auxiliary"]["embedding"]["model"] == "openai/text-embedding-3-small"
+    assert cfg["auxiliary"]["embedding"]["api_key"] == ""
+    assert cfg["auxiliary"]["embedding"]["input_type_handling"] == "shared"
+    assert cfg["model"] == DEFAULT_CONFIG["model"]
+    assert "query/document shared" in setup._format_aux_current(cfg["auxiliary"]["embedding"])
+
+    setup._save_aux_choice(
+        "embedding", provider="openrouter", model="openai/text-embedding-3-small",
+        base_url="https://openrouter.ai/api/v1", api_key="embedding-test-key",
+        input_type_handling="shared",
+    )
+    home = tmp_path / ".hermes"
+    config_yaml = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "${AUXILIARY_EMBEDDING_API_KEY}" in config_yaml
+    assert "embedding-test-key" not in config_yaml
+    assert "embedding-test-key" in (home / ".env").read_text(encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg["auxiliary"]["embedding"]["api_key"] == "embedding-test-key"
+    cfg["auxiliary"]["embedding"].update(
+        dimensions=512, key_env="LEGACY_EMBEDDING_KEY", api_mode="chat_completions",
+    )
+    from hermes_cli.config import save_config
+    save_config(cfg)
+    assert _reset_aux_to_auto() >= 1
+    reset = load_config()["auxiliary"]["embedding"]
+    assert (reset["provider"], reset["model"], reset["dimensions"],
+            reset["input_type_handling"]) == ("auto", "", None, None)
+    assert reset["api_key"] == ""
+    assert {"key_env", "api_mode"}.isdisjoint(reset)
+
+
+def test_embedding_picker_does_not_save_without_shared_space_confirmation(tmp_path, monkeypatch):
+    _isolate_home(tmp_path, monkeypatch)
+    import hermes_cli.main_provider_setup as setup
+
+    answers = iter(("vendor/embedding-model", "no"))
+    monkeypatch.setattr(setup, "_ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda _provider: {})
+    setup._aux_flow_provider_model("embedding", "openrouter", [])
+
+    route = load_config()["auxiliary"]["embedding"]
+    assert (route["provider"], route["model"], route["input_type_handling"]) == ("auto", "", None)
 
 # ── _reset_aux_to_auto ──────────────────────────────────────────────────────
 

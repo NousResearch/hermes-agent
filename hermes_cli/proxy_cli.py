@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agent.proxy_sources import iron_proxy as ip
+from agent.proxy_sources.iron_proxy_requests import read_requests
 from agent.redact import mask_secret
 from hermes_cli._secrets_common import console_safe
 from hermes_cli.config import load_config, load_env, save_config
@@ -60,6 +61,11 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
             ("--show-tokens", dict(action="store_true", help=(
                 "Print the proxy tokens (default: redacted prefix only). "
                 "Beware: tokens may persist in your shell history."))),
+        ]),
+        ("log", "Show outbound requests sandboxes made through the proxy "
+                "(method/host/path/status/time; never headers)", cmd_log, [
+            ("--session", dict(default=None, help="Only requests from this session's sandbox")),
+            ("--limit", dict(type=int, default=50, help="Rows to show, newest first (default 50)")),
         ]),
         ("disable", "Turn off the proxy integration", cmd_disable, []),
         ("config", "Print the generated proxy.yaml path", cmd_config, []),
@@ -234,8 +240,8 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
     proxy_cfg["tunnel_port"] = tunnel_port
     extra_hosts = list(proxy_cfg.get("extra_allowed_hosts") or [])
     allowed = list(ip._DEFAULT_ALLOWED_HOSTS) + [h for h in extra_hosts if h not in ip._DEFAULT_ALLOWED_HOSTS]
-    # Pre-create the audit log 0o600. The pinned v0.39 daemon never writes it (reserved for
-    # v0.40+ per-request records), so a pre-create failure is a WARNING, not a setup abort.
+    # Pre-create the audit log 0o600. The pinned v0.50 daemon never writes it (per-request records
+    # go to iron-proxy.log), so a pre-create failure is a WARNING, not a setup abort.
     audit_log_path = ip._proxy_state_dir() / "audit.log"
     audit_log_ok = True
     try:
@@ -264,7 +270,7 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
     if audit_log_ok:
         console.print(
             f"  [green]✓[/green] audit log: {audit_log_path} "
-            f"[dim](reserved — not written by iron-proxy v0.39; "
+            f"[dim](reserved — not written by iron-proxy v0.50; "
             f"per-request records land in iron-proxy.log)[/dim]"
         )
     proxy_cfg["enabled"] = True
@@ -501,6 +507,25 @@ def cmd_status(args: argparse.Namespace) -> int:
         console.print("[yellow]Uncovered providers[/yellow] (real credentials still visible inside the sandbox):")
         for name in uncovered:
             console.print(f"  - {name}")
+    return 0
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    console = Console()
+    result = read_requests(session_id=args.session, limit=max(1, args.limit))
+    if not result["enabled"]:
+        console.print("[dim]Egress is disabled — no outbound request log. Enable it with `hermes egress setup`.[/dim]")
+        return 0
+    if not result["requests"]:
+        console.print("[dim]No outbound requests recorded" + (f" for session {args.session}." if args.session else "."))
+        return 0
+    table = Table(box=None, padding=(0, 2))
+    for col in ("Time", "Method", "Host", "Path", "Status", "ms"):
+        table.add_column(col)
+    for row in result["requests"]:
+        table.add_row(datetime.fromtimestamp(row["ts"]).strftime("%H:%M:%S"), row["method"], console_safe(row["host"]),
+                      console_safe(row["path"]), str(row["status"]), f"{row['ms']:.0f}")
+    console.print(table)
     return 0
 
 

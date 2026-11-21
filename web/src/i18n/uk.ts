@@ -149,6 +149,8 @@ export const uk: Translations = {
     noMatch: "Жодна сесія не відповідає вашому пошуку",
     startConversation: "Почніть розмову, щоб побачити її тут",
     noMessages: "Немає повідомлень",
+    egressTitle: "Вихідні запити",
+    egressEmpty: "З пісочниці цього сеансу ще не було вихідних запитів",
     untitledSession: "Сесія без назви",
     deleteSession: "Видалити сесію",
     confirmDeleteTitle: "Видалити сесію?",

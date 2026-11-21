@@ -118,7 +118,8 @@ def test_consumer_lifecycle(consumer_store, monkeypatch, tmp_path, name):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("name,verifier", [("iron-proxy", "gpg")])
-def test_signature_rejection_preserves_previous_selection(consumer_store, tmp_path, monkeypatch, name, verifier):
+@pytest.mark.parametrize("version", ["2", "0.50.0"])
+def test_signature_rejection_preserves_previous_selection(consumer_store, tmp_path, monkeypatch, name, verifier, version):
     """A real child verifier rejects after PM hashes pass; publication must not happen."""
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -138,7 +139,7 @@ def test_signature_rejection_preserves_previous_selection(consumer_store, tmp_pa
     _, install = consumer(name)
     pin(consumer_store, name, signature=b"accept")
     old = Path(install())
-    pin(consumer_store, name, "2", signature=b"reject")
+    pin(consumer_store, name, version, signature=b"reject")
     with pytest.raises(RuntimeError, match="GPG signature verification"):
         install(force=True)
     assert pm.installed_package(name, allow_outdated=True).binary == old
@@ -238,3 +239,29 @@ def test_locked_provenance_is_required_even_without_a_verifier(consumer_store, m
     assert pm.installed_package(name, allow_outdated=True).binary == old
     RangeHandler.payloads[missing] = raw
     assert subprocess.check_output([install()], text=True).strip() == f"{name} fixture 2"
+
+@pytest.mark.platforms("posix")
+def test_unsigned_release_uses_locked_hashes_and_warns(consumer_store, monkeypatch, capfd, tmp_path):
+    from pm.security_packages import IronProxy
+
+    # A verifier is available; only the explicitly supported unsigned release
+    # may bypass it, after PM validates the archive and checksum hashes.
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    verifier = commands / "gpg"
+    verifier.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(1)\n")
+    verifier.chmod(0o755)
+    monkeypatch.setenv("PATH", str(commands))
+    pin(consumer_store, "iron-proxy", "0.50.0")
+    from agent.proxy_sources.iron_proxy import install_iron_proxy
+
+    binary = install_iron_proxy()
+    assert subprocess.check_output([binary], text=True).strip() == "iron-proxy fixture 0.50.0"
+    assert "does not publish a checksum signature" in capfd.readouterr().err
+    urls = IronProxy().fetch_urls("0.50.0", pm.current_target())
+    assert not any(u.endswith("checksums.txt.asc") for u in urls)
+    assert any(u.endswith("checksums.txt.asc") for u in IronProxy().fetch_urls("0.39.0", pm.current_target()))
+    pin(consumer_store, "iron-proxy", "0.50.0", bad_hash=True)
+    with pytest.raises(pm.InstallError, match="[Hh]ash|[Cc]hecksum|sha256"):
+        install_iron_proxy(force=True)
+    assert pm.installed_package("iron-proxy", allow_outdated=True).binary == binary

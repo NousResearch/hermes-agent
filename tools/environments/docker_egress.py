@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import subprocess
 
 logger = logging.getLogger("tools.environments.docker")
 
@@ -296,3 +297,25 @@ def merge_egress_env(user_env: dict[str, str], egress_env: dict[str, str], enfor
         if not merged["NODE_OPTIONS"]:
             merged.pop("NODE_OPTIONS", None)
     return merged
+
+
+def register_egress_sandbox(docker_exe: str, container_id: str, task_id: str, egress_label: str) -> None:
+    """Record the egress-routed container's bridge IP -> task id, so the outbound request log can
+    attribute iron-proxy's per-request records (keyed by source address) to a session. No-op when
+    the container was built without egress. Best-effort: a failed inspect only loses attribution."""
+    if egress_label == "off" or not container_id:
+        return
+    from agent.proxy_sources.iron_proxy_requests import record_sandbox
+    from tools.environments.remote_common import run_capture
+
+    try:
+        out = run_capture([docker_exe, "inspect", "--format",
+                           "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", container_id], timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("egress request log: could not inspect %s: %s", container_id[:12], exc)
+        return
+    for ip in out.stdout.split() if out.returncode == 0 else []:
+        try:
+            record_sandbox(ip, task_id, container_id)
+        except OSError as exc:
+            logger.debug("egress request log: could not record sandbox %s: %s", container_id[:12], exc)

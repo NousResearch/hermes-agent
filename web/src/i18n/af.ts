@@ -149,6 +149,8 @@ export const af: Translations = {
     noMatch: "Geen sessies stem ooreen met jou soektog nie",
     startConversation: "Begin 'n gesprek om dit hier te sien",
     noMessages: "Geen boodskappe",
+    egressTitle: "Uitgaande versoeke",
+    egressEmpty: "Nog geen uitgaande versoeke uit hierdie sessie se sandbox nie",
     untitledSession: "Sessie sonder titel",
     deleteSession: "Skrap sessie",
     confirmDeleteTitle: "Skrap sessie?",

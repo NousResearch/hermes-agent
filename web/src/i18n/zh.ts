@@ -148,6 +148,8 @@ export const zh: Translations = {
     noMatch: "没有匹配的会话",
     startConversation: "开始对话后将显示在此处",
     noMessages: "暂无消息",
+    egressTitle: "出站请求",
+    egressEmpty: "此会话的沙箱尚无出站请求",
     untitledSession: "无标题会话",
     deleteSession: "删除会话",
     confirmDeleteTitle: "删除会话？",

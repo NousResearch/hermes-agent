@@ -57,6 +57,7 @@ import {
 } from "./SessionsPage_sources";
 import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
+import { SessionEgressLog } from "@/components/SessionEgressLog";
 import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -84,7 +85,6 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
-
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -209,7 +209,6 @@ function splitCompactionContent(content: string): CompactionSplit | null {
       .replace(/^\s+/, ""),
   };
 }
-
 
 function MessageBubble({
   msg,
@@ -679,6 +678,7 @@ function SessionRow({
           {messages && messages.length > 0 && (
             <MessageList messages={messages} highlight={searchQuery} />
           )}
+          <SessionEgressLog sessionId={session.id} profile={session.profile} />
         </div>
       )}
     </div>

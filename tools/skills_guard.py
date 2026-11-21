@@ -23,7 +23,7 @@ from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, rais
 from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v16"
+SCANNER_VERSION = "skills-guard-v17"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -556,7 +556,44 @@ THREAT_PATTERNS = [
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),
 ]
 
-_COMPILED_THREAT_PATTERNS = [(re.compile(pattern, re.IGNORECASE), *rest) for pattern, *rest in THREAT_PATTERNS]
+# Share translated prose rules, retaining this gate's English exemptions and
+# severity labels. Do not append canonical English rules: this gate deliberately
+# permits quoted/conditional disclosure guidance that the context scanner flags.
+_INSTALL_GATE_CANONICAL_IDS = {
+    "prompt_injection_ignore": "prompt_injection",
+    "role_hijack": "role_hijack",
+    "deception_hide": "deception_hide",
+    "sys_prompt_override": "sys_prompt_override",
+    "role_pretend": "role_pretend",
+    "disregard_rules": "disregard_rules",
+    "leak_system_prompt": "leak_system_prompt",
+    "remove_filters": "remove_filters",
+}
+
+
+def _non_english_prose_patterns():
+    from tools.threat_patterns import patterns_for_ids as _canonical_patterns_for_ids
+
+    meta_by_id = {
+        pid: (severity, category, description)
+        for _pattern, pid, severity, category, description in THREAT_PATTERNS
+        if pid in _INSTALL_GATE_CANONICAL_IDS
+    }
+    extra = []
+    for local_id, canonical_id in _INSTALL_GATE_CANONICAL_IDS.items():
+        severity, category, description = meta_by_id[local_id]
+        for pattern, _canonical_id in _canonical_patterns_for_ids([canonical_id], translated_only=True):
+            extra.append((pattern, local_id, severity, category, description))
+    return extra
+
+
+THREAT_PATTERNS = THREAT_PATTERNS + _non_english_prose_patterns()
+
+_COMPILED_THREAT_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
+    for pattern, pid, severity, category, description in THREAT_PATTERNS
+]
+
 
 # ── Inert path references (#92478) ──
 # The bare path-token patterns (`authorized_keys`, `~/.aws`, ...) fire on the token alone, so a skill that spells

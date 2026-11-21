@@ -942,7 +942,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     Code credentials) must not make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
-    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+    from hermes_cli.auth import PROVIDER_REGISTRY, env_key_held_for_tools, get_auth_status, is_provider_explicitly_configured
 
     cfg = load_config()
     model_cfg = cfg.get("model")
@@ -966,9 +966,10 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         "ANTHROPIC_TOKEN",
         "OPENAI_BASE_URL",
     }
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
-            provider_env_vars.update(pconfig.api_key_env_vars)
+    # A provider whose only evidence is a key held for tools counts once the user has chosen it.
+    keyed = [pid for pid, pc in PROVIDER_REGISTRY.items() if pc.auth_type == "api_key" and (
+        not any(env_key_held_for_tools(pc.id, v) for v in pc.api_key_env_vars) or is_provider_explicitly_configured(pc.id))]
+    provider_env_vars.update(v for pid in keyed for v in PROVIDER_REGISTRY[pid].api_key_env_vars)
     if strict_profile_scope:
         from agent.secret_scope import current_secret_scope
 
@@ -1001,8 +1002,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
             if any(
                 (status := get_auth_status(pid)).get("logged_in")
                 and status.get("key_source") != "keyless"
-                for pid, pconfig in PROVIDER_REGISTRY.items()
-                if pconfig.auth_type == "api_key"
+                for pid in keyed
             ):
                 return True
         except Exception:

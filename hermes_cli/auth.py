@@ -256,7 +256,7 @@ from hermes_cli.config import (
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (
-    canonical_registry_rows as _canonical_registry_rows, get_plugin_oauth_auth_status,
+    canonical_registry_rows as _canonical_registry_rows, env_key_held_for_tools, get_plugin_oauth_auth_status,
     registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 PROVIDER_REGISTRY.sync_before_first_read()  # not at import: listing providers reads config
@@ -1254,9 +1254,9 @@ def _config_selects_provider(normalized: str) -> bool:
 
 
 def _explicit_pool_entry_present(normalized: str) -> bool:
-    """Pool rows from EXPLICIT Hermes flows (manual add / device-code / PKCE) or live env keys;
-    ambient borrowed sources (gh_cli / claude_code / qwen-cli) are deliberately excluded."""
-    return any(_pool_entry_is_explicit(entry) for entry in read_credential_pool(normalized))
+    """Pool rows from EXPLICIT Hermes flows (manual add / device-code / PKCE) or live env keys; ambient
+    sources (gh_cli / claude_code / qwen-cli, a key an ambient profile holds for tools) are excluded."""
+    return any(_pool_entry_is_explicit(entry, normalized) for entry in read_credential_pool(normalized))
 
 
 # Set by Claude Code itself, not by the user explicitly configuring anthropic in Hermes.
@@ -1294,24 +1294,24 @@ def _explicit_env_credentials_present(normalized: str) -> bool:
         if not pconfig:
             return False
     if pconfig.auth_type == "api_key":
-        return any(_env_secret(v) for v in pconfig.api_key_env_vars if v not in _IMPLICIT_ENV_VARS)
+        return any(_env_secret(v) for v in pconfig.api_key_env_vars
+                   if v not in _IMPLICIT_ENV_VARS and not env_key_held_for_tools(normalized, v))
     if pconfig.auth_type == "aws_sdk":
         return _env_secret("AWS_BEARER_TOKEN_BEDROCK") or (
             _env_secret("AWS_ACCESS_KEY_ID") and _env_secret("AWS_SECRET_ACCESS_KEY"))
     return False
 
 
-def _pool_entry_is_explicit(entry: Any) -> bool:
+def _pool_entry_is_explicit(entry: Any, provider: str = "") -> bool:
     """True for pool rows the user created via an explicit Hermes flow (or a still-live env key)."""
     if not isinstance(entry, dict):
         return False
     source = str(entry.get("source") or "").strip().lower()
     if source.startswith("env:"):
-        # A stale env-seeded entry survives in auth.json after the user deletes the env var: only
-        # count it when the referenced var still resolves to a usable secret NOW.
-        # See #55790.
+        # A stale env-seeded entry survives in auth.json after the user deletes the env var: count it
+        # only while the var still resolves to a usable secret (#55790) and is not held for tools.
         env_var = entry.get("source", "").split(":", 1)[1].strip()
-        return bool(env_var and _env_secret(env_var))
+        return bool(env_var and _env_secret(env_var)) and not env_key_held_for_tools(provider, env_var)
     return bool(source) and (source in _EXPLICIT_POOL_SOURCES or source.startswith("manual:"))
 
 

@@ -9593,6 +9593,182 @@
    ]
   }
  },
+ "perplexity": {
+  "api_mode": "codex_responses",
+  "base_url": "https://api.perplexity.ai/v1",
+  "high": {
+   "include": [
+    "reasoning.encrypted_content"
+   ],
+   "input": [
+    {
+     "content": "list files",
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "{\"command\": \"ls\"}",
+     "call_id": "call_1",
+     "name": "terminal",
+     "type": "function_call"
+    },
+    {
+     "call_id": "call_1",
+     "output": "a.txt\nb.txt",
+     "type": "function_call_output"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user",
+     "type": "message"
+    }
+   ],
+   "instructions": "You are a test agent.",
+   "model": "anthropic/claude-opus-5-5",
+   "parallel_tool_calls": true,
+   "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
+   "reasoning": {
+    "effort": "high",
+    "summary": "auto"
+   },
+   "store": false,
+   "timeout": 1800.0,
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "description": "Run a shell command.",
+     "name": "terminal",
+     "parameters": {
+      "properties": {
+       "command": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ]
+  },
+  "model": "anthropic/claude-opus-5-5",
+  "off": {
+   "include": [],
+   "input": [
+    {
+     "content": "list files",
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "{\"command\": \"ls\"}",
+     "call_id": "call_1",
+     "name": "terminal",
+     "type": "function_call"
+    },
+    {
+     "call_id": "call_1",
+     "output": "a.txt\nb.txt",
+     "type": "function_call_output"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user",
+     "type": "message"
+    }
+   ],
+   "instructions": "You are a test agent.",
+   "model": "anthropic/claude-opus-5-5",
+   "parallel_tool_calls": true,
+   "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
+   "reasoning": {
+    "effort": "none"
+   },
+   "store": false,
+   "timeout": 1800.0,
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "description": "Run a shell command.",
+     "name": "terminal",
+     "parameters": {
+      "properties": {
+       "command": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ]
+  },
+  "unset": {
+   "include": [
+    "reasoning.encrypted_content"
+   ],
+   "input": [
+    {
+     "content": "list files",
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "{\"command\": \"ls\"}",
+     "call_id": "call_1",
+     "name": "terminal",
+     "type": "function_call"
+    },
+    {
+     "call_id": "call_1",
+     "output": "a.txt\nb.txt",
+     "type": "function_call_output"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user",
+     "type": "message"
+    }
+   ],
+   "instructions": "You are a test agent.",
+   "model": "anthropic/claude-opus-5-5",
+   "parallel_tool_calls": true,
+   "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
+   "reasoning": {
+    "effort": "medium",
+    "summary": "auto"
+   },
+   "store": false,
+   "timeout": 1800.0,
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "description": "Run a shell command.",
+     "name": "terminal",
+     "parameters": {
+      "properties": {
+       "command": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ]
+  }
+ },
  "qwen-oauth": {
   "api_mode": "chat_completions",
   "base_url": "https://portal.qwen.ai/v1",

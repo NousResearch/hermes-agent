@@ -205,6 +205,7 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
         entries = [(entry, os.path.isdir(os.path.join(search_dir, entry))) for entry in sorted(os.listdir(search_dir))]
     else:
         entries = _backend_dir_entries(search_dir, session_key)
+    home_word = word.startswith("~")
     for entry, is_dir in entries:
         if match and not entry.lower().startswith(match.lower()):
             continue
@@ -213,12 +214,20 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
         full = pth.join(search_dir, entry)
-        rel = pth.relpath(full, root).replace(os.sep, "/")
         suffix = "/" if is_dir else ""
+        # `~/` text is spelled against home, not the cwd, so that is the base it needs.
+        start = (os.path.expanduser("~") if local else "~") if home_word else root
+        try:
+            rel = pth.relpath(full, start).replace(os.sep, "/")
+        except ValueError:
+            # Windows abspaths an entry named `nul` to the `\\.\nul` device, which relpath cannot relate to
+            # any directory: the entry has no text to offer, so skip it rather than fail the whole listing
+            # (#148767). Same guard as hermes_cli/commands_completion.py.
+            continue
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
-        elif word.startswith("~"):
-            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+        elif home_word:
+            text = "~/"+ rel + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))

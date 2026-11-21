@@ -275,17 +275,25 @@ class InMemoryMaintenance:
         )
 
     @staticmethod
-    def _number_match(record: SessionRecord, c: PruneCriteria) -> bool:
+    def _number_match(record: SessionRecord, c: PruneCriteria, message_rows: int) -> bool:
+        # A prune deletes every stored row, active or not, so the message bounds count them all
+        # (``message_count`` is the active-row counter, the same bound as the sqlite ``MAX`` form).
         return (
-            _bounded(record.message_count, c.min_messages, c.max_messages)
+            _bounded(max(record.message_count, message_rows), c.min_messages, c.max_messages)
             and _bounded(record.input_tokens + record.output_tokens, c.min_tokens, c.max_tokens)
             and _bounded(_cost(record), c.min_cost, c.max_cost)
             and _bounded(record.tool_call_count, c.min_tool_calls, c.max_tool_calls)
         )
 
+    @staticmethod
+    def _message_rows(transcripts: Mapping[str, Any], session_id: SessionId) -> int:
+        transcript = transcripts.get(str(session_id))
+        return len(transcript.rows) if transcript is not None else 0
+
     def _selected(self, c: PruneCriteria, source: Optional[str], *, open_rows: bool = False) -> list[tuple[float, SessionRecord]]:
         """``_prune_filter_where`` over every row, ordered by recency then ``started_at``; ``open_rows`` inverts the ended guard."""
         tail = set() if c.include_pinned else self._pinned_tail()
+        transcripts = _messages_namespace(self._backend, self._scope)["transcripts"]
         out = []
         for row in self._rows().values():
             if not c.include_open and (row["ended_at"] is None) != open_rows:
@@ -298,7 +306,7 @@ class InMemoryMaintenance:
                 or (not c.include_pinned and (record.pinned or record.session_id in tail))
                 or not self._times_match(record, last_active, c)
                 or not self._text_match(record, c, source)
-                or not self._number_match(record, c)
+                or not self._number_match(record, c, self._message_rows(transcripts, record.session_id))
             ):
                 continue
             out.append((last_active, record))

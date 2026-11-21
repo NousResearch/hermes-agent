@@ -25,7 +25,9 @@ def test_import_replacement_is_visible_to_export_and_pruning(backend, scope_a, m
     # The export guard counts every stored row: an archiving replace keeps the dropped rows.
     assert store_a.maintenance.assert_export_safe("s", 10) == stored_count
     store_a.sessions.end("s", "done")
-    candidates = store_a.maintenance.list_prune_candidates(criteria=PruneCriteria(min_messages=1, max_messages=1))
+    # Prune deletes every stored row, so the message bounds count them all (an archiving
+    # replace keeps its dropped rows); the candidate still reports the active counter.
+    candidates = store_a.maintenance.list_prune_candidates(criteria=PruneCriteria(min_messages=stored_count, max_messages=stored_count))
     assert [candidate.message_count for candidate in candidates] == [1]
 
 

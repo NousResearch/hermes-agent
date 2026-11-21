@@ -5,6 +5,8 @@ import time
 import pytest
 
 from persistence.housekeeping.maintenance import PruneCriteria
+from persistence.sqlite.conversation._store.messages import append_message
+from persistence.sqlite.conversation._store.rewind import rewind_user_turn
 from persistence.sqlite.conversation._store.sessions import create_session, end_session, get_session
 
 
@@ -145,6 +147,32 @@ class TestPruneSessionFilters:
         assert get_session(db, "smoke1") is None
         assert get_session(db, "smoke2") is not None
         assert get_session(db, "real") is not None
+
+    def test_message_bounds_count_rows_a_prune_deletes(self, db, store, media_root):
+        """``min_messages``/``max_messages`` bound every ``messages`` row a prune deletes,
+        active or not: rewind keeps its deactivated rows in the table, so a bound on the
+        active-only ``message_count`` counter selects sessions the prune would still empty
+        (max) and spares ones it would not (min)."""
+        create_session(db, session_id="rewound", source="cli")
+        for i in range(3):
+            append_message(db, "rewound", "user", f"u{i}")
+            append_message(db, "rewound", "assistant", f"a{i}")
+        rewind_user_turn(db, "rewound", 2)
+        end_session(db, "rewound", end_reason="done")
+        self._mk(db, "thin", message_count=2)
+
+        # The rewound session holds 6 stored rows behind an active counter of 2; the thin
+        # session's stored counter is all it has. min_messages=3 admits only the rewound one.
+        assert {r.session_id for r in store.maintenance.list_prune_candidates(
+            criteria=PruneCriteria(min_messages=3))} == {"rewound"}
+        # max_messages=5 would keep the rewound session on its counter alone; its 6 stored
+        # rows put it over the bound, so only the thin session goes.
+        pruned = store.maintenance.prune_sessions(
+            older_than_days=None, criteria=PruneCriteria(max_messages=5), media_root=media_root
+        ).count
+        assert pruned == 1
+        assert get_session(db, "rewound") is not None
+        assert get_session(db, "thin") is None
 
     @staticmethod
     def _mk_rich(db, sid, **cols):

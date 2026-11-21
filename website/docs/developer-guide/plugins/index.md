@@ -1751,6 +1751,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
 | `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, approval, ...); not a `pre_api_request` | `aux_task: str` plus the `pre_api_request` fields (`session_id`/`task_id`/`turn_id` are the parent turn's or empty, `api_request_id: str`, `retry_count: int`, `streaming: bool`, `request: dict`) | ignored |
 | `post_auxiliary_call` | After that attempt returns or raises | `pre_auxiliary_call` fields plus `api_duration: float, finish_reason, response_model, usage: dict \| None, response: dict \| None, error: str \| None, error_type: str \| None` | ignored |
+| `moa_fanout_verdict` | After each MoA reference fan-out attempt before caching or aggregator execution | `preset_name: str \| None, preset_config: dict, aggregator: dict, active_slots: list[dict], reference_outputs: list[dict], attempt: int` | optional directive: `{"action": "accept", "cache": bool}`, `{"action": "retry", "slots": list[dict], "delay_s": float, "merge_healthy": bool}`, or `{"action": "abort", "message": str}` |
+| `auxiliary_fallback_policy` | Before `_try_main_agent_model_fallback` hands a failed auxiliary task to the main agent / MoA aggregator model | `task: str \| None, failed_provider: str, failed_model: str \| None, fallback_provider: str, fallback_model: str, reason: str` | `False` or `{"allow": False}` refuses fallback |
 | [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
@@ -1821,6 +1823,8 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
+| `moa_fanout_verdict` | `hermes_cli/plugins.py` `get_moa_fanout_verdict`, called from `agent/moa_loop.py` `_run_fanout_with_verdict` |
+| `auxiliary_fallback_policy` | `hermes_cli/plugins.py` `allow_auxiliary_main_agent_fallback`, called from `agent/auxiliary_client.py` `_try_main_agent_model_fallback` |
 
 ### `pre_llm_call` context injection
 

@@ -210,11 +210,21 @@ VALID_HOOKS: set[str] = {
     # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
     # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
     "post_curator_run",
+    # moa_fanout_verdict: after each MoA reference fan-out attempt before caching or aggregator execution.
+    # Return None or {"action": "accept"|"retry"|"abort", ...} (get_moa_fanout_verdict).
+    "moa_fanout_verdict",
+    # auxiliary_fallback_policy: before _try_main_agent_model_fallback hands a failed auxiliary call to the
+    # main agent / MoA aggregator model. Return False or {"allow": False} to refuse.
+    "auxiliary_fallback_policy",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {
+    "transform_api_error_classification",
+    "moa_fanout_verdict",
+    "auxiliary_fallback_policy",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 
@@ -1327,6 +1337,129 @@ def get_plugin_error_classification(
         logger.warning("transform_api_error_classification: skipped %d valid classification(s) after the "
                        "first result in registration order won (run-all-then-pick-first)", len(valid) - 1)
     return winner
+
+
+def get_moa_fanout_verdict(
+    *,
+    preset_name: Optional[str] = None,
+    preset_config: Optional[dict[str, Any]] = None,
+    aggregator: Optional[dict[str, Any]] = None,
+    active_slots: Optional[list[dict[str, Any]]] = None,
+    reference_outputs: Optional[list[dict[str, Any]]] = None,
+    attempt: int = 1,
+) -> Optional[dict[str, Any]]:
+    """Consult ``moa_fanout_verdict`` hooks after a MoA reference fan-out attempt.
+
+    Run-all-then-pick-first: returns ``None`` (stock fail-open pass-through) or a validated directive
+    dict with ``action`` in ``{"accept", "retry", "abort"}``.
+    """
+    import math
+    from hermes_cli.lifecycle import has_hook as _has_hook, invoke_hook as _invoke_lifecycle_hook
+
+    if not _has_hook("moa_fanout_verdict"):
+        return None
+
+    hook_results = _invoke_lifecycle_hook(
+        "moa_fanout_verdict",
+        preset_name=preset_name,
+        preset_config=dict(preset_config or {}),
+        aggregator=dict(aggregator or {}),
+        active_slots=[dict(s) for s in (active_slots or []) if isinstance(s, dict)],
+        reference_outputs=[dict(r) for r in (reference_outputs or []) if isinstance(r, dict)],
+        attempt=int(attempt),
+    )
+
+    def _parse_directive(result: Any) -> Optional[dict[str, Any]]:
+        if not isinstance(result, dict):
+            return None
+        action = str(result.get("action") or "").strip().lower()
+        if action == "accept":
+            return {"action": "accept", "cache": bool(result.get("cache", True))}
+        if action == "retry":
+            raw_slots = result.get("slots")
+            if not isinstance(raw_slots, list) or not raw_slots:
+                return None
+            clean_slots: list[dict[str, Any]] = []
+            for slot in raw_slots:
+                if not isinstance(slot, dict):
+                    continue
+                prov = str(slot.get("provider") or "").strip()
+                mod = str(slot.get("model") or "").strip()
+                if prov and mod and prov.lower() != "moa":
+                    clean_slots.append({**slot, "provider": prov, "model": mod, "enabled": True})
+            if not clean_slots:
+                return None
+            try:
+                delay_s = float(result.get("delay_s") or 0.0)
+            except (TypeError, ValueError):
+                delay_s = 0.0
+            if not math.isfinite(delay_s) or delay_s < 0:
+                delay_s = 0.0
+            return {
+                "action": "retry",
+                "slots": clean_slots,
+                "delay_s": min(300.0, delay_s),
+                "merge_healthy": bool(result.get("merge_healthy", False)),
+            }
+        if action == "abort":
+            msg = result.get("message")
+            text = msg.strip()[:500] if isinstance(msg, str) and msg.strip() else "MoA reference fan-out aborted by policy"
+            meta = dict(result["metadata"]) if isinstance(result.get("metadata"), dict) else {}
+            return {"action": "abort", "message": text, "metadata": meta}
+        return None
+
+    valid = [parsed for res in hook_results if (parsed := _parse_directive(res)) is not None]
+    if not valid:
+        return None
+    if len(valid) > 1:
+        logger.warning(
+            "moa_fanout_verdict: skipped %d valid directive(s) after the first result in "
+            "registration order won (run-all-then-pick-first)",
+            len(valid) - 1,
+        )
+    return valid[0]
+
+
+def allow_auxiliary_main_agent_fallback(
+    *,
+    task: Optional[str] = None,
+    failed_provider: str = "",
+    failed_model: Optional[str] = None,
+    fallback_provider: str = "",
+    fallback_model: str = "",
+    reason: str = "error",
+) -> bool:
+    """Consult ``auxiliary_fallback_policy`` hooks before falling back to the main agent model."""
+    from hermes_cli.lifecycle import has_hook as _has_hook, invoke_hook as _invoke_lifecycle_hook
+
+    if not _has_hook("auxiliary_fallback_policy"):
+        return True
+
+    hook_results = _invoke_lifecycle_hook(
+        "auxiliary_fallback_policy",
+        task=task,
+        failed_provider=failed_provider,
+        failed_model=failed_model,
+        fallback_provider=fallback_provider,
+        fallback_model=fallback_model,
+        reason=reason,
+    )
+
+    valid: list[bool] = []
+    for res in hook_results:
+        if isinstance(res, bool):
+            valid.append(res)
+        elif isinstance(res, dict) and isinstance(res.get("allow"), bool):
+            valid.append(res["allow"])
+    if not valid:
+        return True
+    if len(valid) > 1:
+        logger.warning(
+            "auxiliary_fallback_policy: skipped %d valid decision(s) after the first result in "
+            "registration order won (run-all-then-pick-first)",
+            len(valid) - 1,
+        )
+    return valid[0]
 
 
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:

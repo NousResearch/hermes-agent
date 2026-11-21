@@ -1,0 +1,62 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: kyte
+description: Read and change your company's workspace in kyte — customers, contacts, deals, projects, hours, invoices, goals, people and documents.
+source: https://kyte.pirol.ai/docs/en/mcp/
+
+# kyte is one signed binary the person installs once; `kyte mcp` serves the
+# workspace they are signed in to. Nothing is fetched at install time, and the
+# server talks to the person's own kyte team server, not to a service of ours.
+transport:
+  type: stdio
+  command: kyte
+  args:
+    - mcp
+    # Hermes gets its own folder: kyte keeps an encrypted local copy of the
+    # workspace in it, and one folder serves one process. Sharing a folder with
+    # a kyte session in a terminal would put two writers on one database.
+    #
+    # The `~` is kyte's to expand, not a shell's and not Hermes's. ${HOME}
+    # would work here on macOS and Linux and fail on Windows, where that
+    # variable is usually unset — and a manifest cannot branch per platform.
+    - --db
+    - ~/.kyte/hermes
+
+# No credentials here. `kyte login` signs in through the browser once and
+# stores the session in the folder above; the server reads it from there.
+auth:
+  type: none
+
+# No `tools.default_enabled`: a workspace's tool list is generated from the
+# apps it has, so it differs per person and a fixed list here would be wrong
+# for most of them. The install-time checklist starts with everything the
+# probe found, which is the person's actual surface.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - kyte
+    - company os
+  hosts:
+    - kyte.pirol.ai
+
+post_install: |
+  1. Install kyte if it is not on this machine yet:
+       macOS / Linux   curl -fsSL https://updates.pirol.ai/cli/install.sh | sh
+       Windows         irm https://updates.pirol.ai/cli/install.ps1 | iex
+
+  2. Sign in once, for the same folder this entry uses — the full path,
+     because the installer's folder is not always on your PATH yet:
+       ~/.local/bin/kyte login --db ~/.kyte/hermes
+
+  3. Start a new Hermes session.
+
+  Needs kyte 0.1.1227 or newer, which expands the `~` in --db itself. On an
+  older one, add the server by hand with the path already expanded:
+    hermes mcp add kyte --command kyte --args mcp --db "$HOME/.kyte/hermes"
+
+  Until you have signed in, the server offers a single tool that says so.
+  Everything kyte does here happens as you, under your own permissions, and
+  every change is recorded in kyte as made by an agent on your behalf.

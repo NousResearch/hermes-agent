@@ -49,6 +49,8 @@ export const SIDEBAR_FILTERED_PAGE_SIZE = 300
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
+const SIDEBAR_PINS_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarPinsOpen'
+const SIDEBAR_RECENTS_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarRecentsOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
@@ -234,8 +236,8 @@ export const $dismissedWorktreeIds = persistentAtom(
 // Only successful git removals may reappear on discovery. Explicit hides,
 // including legacy dismissals without provenance, remain hidden.
 export const $removedWorktreeIds = persistentAtom('hermes.desktop.removedWorktrees', [] as string[], Codecs.stringArray)
-export const $sidebarPinsOpen = atom(true)
-export const $sidebarRecentsOpen = atom(true)
+export const $sidebarPinsOpen = persistentAtom(SIDEBAR_PINS_OPEN_STORAGE_KEY, true, Codecs.bool)
+export const $sidebarRecentsOpen = persistentAtom(SIDEBAR_RECENTS_OPEN_STORAGE_KEY, true, Codecs.bool)
 // Cron-job sessions live in their own section below recents, collapsed by
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.

@@ -36,6 +36,15 @@ class HostedRoomPolicyCheckpoint:
         return self.store.hosted_room_policy.snapshot(
             placement=self.placement, room_id=room_id, latest_seq=latest_seq, max_active_events=self.max_active_events)
 
+    def published_outcomes(self, *, room_id: str) -> set[tuple[str, str, int]]:
+        """Read a room's publication receipts once for a terminal-task scan."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                """SELECT task_id, kind, execution_generation
+                   FROM hosted_room_policy_publications WHERE room_id=?""", (room_id,)
+            ).fetchall()
+        return {(str(row["task_id"]), str(row["kind"]), int(row["execution_generation"])) for row in rows}
+
     def publication_exists(self, *, room_id: str, task_id: str, status: str, execution_generation: int) -> bool:
         """Return whether one exact driver outcome is already in the room log."""
         return self.store.hosted_room_policy.publication_exists(

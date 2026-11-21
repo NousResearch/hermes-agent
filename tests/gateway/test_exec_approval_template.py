@@ -181,3 +181,25 @@ def test_a_schedule_cards_model_written_markup_stays_inside_the_fence(monkeypatc
     assert f"{fence}\n{plan}\n{fence}" in prompt.text, prompt.text
     assert prompt.text.index(fence) < prompt.text.index("||hidden||")
 
+
+def test_a_text_prompt_keeps_a_fenced_example_inside_one_fence(monkeypatch):
+    """The /approve text (no buttons, or a failed card send) fences a job holding its own ``` like the card
+    does: the whole plan stays literal inside one longer fence."""
+    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    plan = 'Schedule "x" (daily): run\n```\nrm -rf ~\n```\nthen **report**'
+    sent = []
+
+    class _Failing(_Buttons):
+        splits_long_messages = True  # the default /approve layout (_format_exec_approval_fallback)
+
+        async def _send_exec_approval_prompt(self, prompt):
+            return SendResult(success=False, error="down")
+
+        async def send(self, chat_id, content, **k):
+            sent.append(content)
+            return SendResult(success=True)
+    for approval in ({**_SCHEDULE, "description": plan}, {"command": plan, "description": "flagged", "request_id": "r"}):
+        sent.clear()
+        _notify(approval, _Failing())
+        assert f"````\n{plan}\n````" in sent[0], sent[0]
+

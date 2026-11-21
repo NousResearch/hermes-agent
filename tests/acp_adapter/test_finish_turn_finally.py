@@ -77,3 +77,30 @@ def test_finish_turn_mid_tail_failure_releases_and_drains():
     assert state.current_prompt_text == ""
     assert state.queued_prompts == []
     assert drained == [(["queued-one"], "s1")]
+
+
+def test_cancelled_turn_answers_before_queued_prompts_run():
+    """After session/cancel the client waits on this prompt's ``cancelled`` answer: a queued prompt
+    runs after that response, never inside it (Stop held behind a whole extra turn)."""
+    server, drained = _make_server()
+
+    class _Conn:
+        async def session_update(self, *args, **kwargs):
+            return None
+
+    server._conn = conn = _Conn()
+    state = _running_state()
+    state.cancel_event = threading.Event()
+    state.cancel_event.set()
+
+    async def _run():
+        response = await server._finish_turn(state, "s1", conn, {"final_response": None, "messages": []}, "h1", False)
+        ran_inside = list(drained)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return response.stop_reason, ran_inside, list(drained)
+
+    stop_reason, ran_inside, ran_after = asyncio.run(_run())
+    assert stop_reason == "cancelled"
+    assert ran_inside == []
+    assert ran_after == [(["queued-one"], "s1")]

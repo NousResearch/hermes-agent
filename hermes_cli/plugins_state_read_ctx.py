@@ -131,16 +131,14 @@ class PluginStateReadCtxMixin:
             )
         return False
 
-    def _acquire_session_db(self):  # type: ignore[no-untyped-def] -- SessionDB imported lazily
-        """Shared registry-owned SessionDB for this manager's profile home."""
-        from hermes_state_registry import acquire
+    def _acquire_session_db(self):  # type: ignore[no-untyped-def] -- Persistence imported lazily
+        """Storage-interface handle on this manager's profile home (a backend shared per profile)."""
+        from persistence_assembly import open_persistence, profile_scope
 
-        return acquire(self._manager.home_path / "state.db")
+        return open_persistence(profile_scope(home=self._manager.home_path))
 
     def _release_session_db(self, db) -> None:  # type: ignore[no-untyped-def]
-        from hermes_state_registry import release
-
-        release(db)
+        db.close()
 
     def _state_schema_version(self) -> Optional[int]:
         """``schema_version`` of this profile's state.db, read-only; None when absent."""
@@ -175,11 +173,12 @@ class PluginStateReadCtxMixin:
             raise ValueError("read_session requires a non-empty session_id")
         db = self._acquire_session_db()
         try:
-            row = db.get_session(db.resolve_resume_session_id(session_id))
+            record = db.sessions.get(db.lineage.resolve_resume_target(session_id))
         finally:
             self._release_session_db(db)
-        if row is None:
+        if record is None:
             return None
+        row = record.as_session_row()
         dto = {field: row.get(field) for field in _SESSION_DTO_FIELDS}
         dto["archived"] = bool(dto["archived"])
         return {"api_version": SESSION_API_VERSION, **dto}
@@ -196,7 +195,7 @@ class PluginStateReadCtxMixin:
             raise ValueError("resolve_session requires a non-empty session_id")
         db = self._acquire_session_db()
         try:
-            return db.resolve_resume_session_id(session_id)
+            return db.lineage.resolve_resume_target(session_id)
         finally:
             self._release_session_db(db)
 
@@ -233,13 +232,16 @@ class PluginStateReadCtxMixin:
         limit = max(1, min(int(limit), _READ_MESSAGE_LIMIT_MAX))
         db = self._acquire_session_db()
         try:
-            target = db.resolve_resume_session_id(session_id)
-            messages = db.get_messages(
-                target,
-                include_compacted=include_compacted,
+            from persistence.conversation.messages import TranscriptRead, TranscriptView
+            from persistence.core.identity import MessageId
+
+            target = db.lineage.resolve_resume_target(session_id)
+            request = TranscriptRead(
+                view=TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE,
                 limit=limit,
-                after_id=after_id,
+                after_id=MessageId(after_id) if after_id is not None else None,
             )
+            messages = [row.as_wire_row() for row in db.messages.read_transcript(target, request)]
         finally:
             self._release_session_db(db)
         next_after = None

@@ -190,6 +190,107 @@ def test_handle_approve_lists_a_patch_as_the_entry_before_the_edit(hermes_home):
     assert store.memory_entries == ["RULE A: gate merges. RULE B: CI is per-head. RULE C: never squash."]
 
 
+# ---------------------------------------------------------------------------
+# The pending list quantifies staged memory changes (#136738)
+# ---------------------------------------------------------------------------
+
+_FACTS = ("laptop drop-off = deliberate KDE AC suspend 1h, no WoL; wifi = WPA3 only on 5GHz, "
+          "2.4GHz off at the AP; backup = nightly restic to nas-2 at 03:30, retention 14d")
+
+
+def _review_stages_one_change(op, shape="batch", entry=_FACTS):
+    """Seed one entry and stage a current op, or a pinned replace from an older release."""
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
+                                        set_current_write_origin, set_review_attended)
+    store = MemoryStore(); store.load_from_disk()
+    assert store.add("memory", entry)["success"]
+
+    if op["action"] == "replace":
+        # Replace is no longer offered, but an upgrade can inherit already-staged records.
+        pinned = {**op, "matched_entry": entry}
+        payload = ({"action": "batch", "target": "memory", "operations": [
+            pinned, {"action": "add", "content": "ssh = port 2222, key ed25519"}]}
+            if shape == "batch" else {**pinned, "target": "memory"})
+        wa.stage_write("memory", payload, summary="legacy replace", origin="background_review")
+        return store
+
+    kwargs = op if shape == "single" else {
+        "operations": [op, {"action": "add", "content": "ssh = port 2222, key ed25519"}]}
+    origin, attended = set_current_write_origin("background_review"), set_review_attended(False)
+    try:
+        staged = json.loads(memory_tool(target="memory", store=store, **kwargs))
+    finally:
+        reset_review_attended(attended)
+        reset_current_write_origin(origin)
+    assert staged.get("staged") is True, staged
+    return store
+
+
+@pytest.mark.parametrize("content,verdict", [
+    ("drop-off = deliberate KDE AC suspend 1h, no WoL", "shrinks it below half"),
+    (_FACTS, "leaves it the same size"),
+    (_FACTS + "; vpn = wireguard on 51820", "grows the entry"),
+])
+def test_pending_view_quantifies_a_legacy_replace(hermes_home, content, verdict):
+    """Upgrades must still describe pinned replace proposals staged by an older release."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _review_stages_one_change({"action": "replace", "old_text": "drop-off = deliberate",
+                               "content": content})
+
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"]) or ""
+
+    assert f"{len(_FACTS)} -> {len(content)} chars" in out, out
+    assert f"{len(content) - len(_FACTS):+d}" in out, out
+    assert verdict in out, out
+    assert _FACTS in out, out
+
+
+def test_pending_view_quantifies_a_patch_without_calling_it_a_delete(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    old_text = "drop-off = deliberate KDE AC suspend 1h, no WoL"
+    content = "drop-off = deliberate suspend 1h"
+    _review_stages_one_change({"action": "patch", "old_text": old_text, "content": content})
+    after = len(_FACTS) - len(old_text) + len(content)
+
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"]) or ""
+
+    assert f"patches entry: {len(_FACTS)} -> {after} chars" in out, out
+    assert "deletes the entry" not in out, out
+    assert "patchs entry" not in out, out
+
+
+def test_pending_view_keeps_a_near_zero_shrink_percentage_negative(hermes_home):
+    """A rounded percentage must not contradict the signed char delta and shrink verdict."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    entry = "x" * 1000
+    content = "x" * 999
+    _review_stages_one_change(
+        {"action": "replace", "old_text": entry, "content": content}, entry=entry)
+
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"]) or ""
+
+    assert "1000 -> 999 chars, -1 (-0%), shrinks it" in out, out
+    assert "(+0%)" not in out, out
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_pending_view_quantifies_a_remove_as_a_whole_entry_loss(hermes_home, shape):
+    """A remove has no content to compare against: the entry it deletes is the whole loss."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _review_stages_one_change({"action": "remove", "old_text": "backup = nightly restic"}, shape)
+
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"]) or ""
+
+    assert f"{len(_FACTS)} -> 0 chars, {-len(_FACTS):+d}" in out, out
+    assert "deletes the entry" in out, out
+
+
 _KEPT = "Repo lives in ~/src/app; tests via make test"
 _REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
 

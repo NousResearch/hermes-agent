@@ -116,12 +116,43 @@ def _changed_entries(result: dict, kind: str) -> list[str]:
     return ([single] if single else []) + [batch[k] for k in sorted(batch, key=int)]
 
 
+def _entry_delta(op) -> str:
+    """Describe how a staged memory edit changes the pinned entry's size.
+
+    ``replace`` is retained here for proposals staged before the action was removed. Current
+    ``patch`` proposals preserve the rest of the entry, so their after-size is calculated by
+    replacing only the reviewed span. A remove always leaves zero characters.
+    """
+    matched_entry = op["matched_entry"]
+    action = op["action"]
+    content = op.get("content") or op.get("new_text") or ""
+    if action == "replace":
+        after_entry = content
+    elif action == "patch":
+        after_entry = matched_entry.replace(op.get("old_text") or "", content, 1)
+    else:
+        after_entry = ""
+
+    before, after = len(matched_entry), len(after_entry)
+    delta = after - before
+    pct = round(100 * delta / before) if before else 0
+    # Integers have no signed zero, so round() of a sub-0.5% shrink would print (+0%).
+    pct_display = f"{'-' if delta < 0 else '+'}{abs(pct)}"
+    verdict = ("deletes the entry" if not after else
+               "grows the entry" if delta > 0 else
+               "leaves it the same size" if delta == 0 else
+               "shrinks it below half" if after * 2 < before else
+               "shrinks it")
+    return f"{before} -> {after} chars, {delta:+d} ({pct_display}%), {verdict}"
+
+
 def _matched_entries(payload) -> list[str]:
-    """The full entry each staged memory replace/remove is pinned to: the summary shows only
-    the old_text search string, and approval applies to this entry, not to that search."""
+    """Show the full pinned entry and effect of every staged memory edit or removal."""
     from tools.memory_tool import destructive_ops
-    return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
-            else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
+    verbs = {"patch": "patches", "remove": "removes", "replace": "replaces"}
+    return [f"{verbs[op['action']]} entry: {_entry_delta(op)}: {op['matched_entry']}"
+            if op.get("matched_entry")
+            else f"{op['action']}: unpinned legacy target — reject and recreate before approving"
             for op in destructive_ops(payload)]
 
 

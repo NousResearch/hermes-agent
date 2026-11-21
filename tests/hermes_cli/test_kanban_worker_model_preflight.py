@@ -137,13 +137,16 @@ def test_a_card_without_a_model_takes_the_profiles(profile_model, expected, monk
     {"model": {"provider": "custom", "base_url": "http://localhost.:8000/v1"}},
     {"model": {"provider": "custom", "base_url": "http://192.168.1.50:8000/v1"}},
     {"model": {"provider": "custom", "base_url": "https://box.tail1234.ts.net/v1"}},
+    {"model": {"provider": "custom", "base_url": "http://llm.home.arpa:8000/v1"}},
+    {"model": {"provider": "custom", "base_url": "http://gpu.internal:8000/v1"}},
+    {"model": {"provider": "custom", "base_url": "http://ollama.lan:11434/v1"}},
     {"model": {"provider": "custom", "base_url": "https://llm.example.test/v1"},
      "fallback_providers": [{"provider": "openrouter", "model": "fallback-model"}]},
     {"model": {"provider": "custom:lan", "base_url": "https://stale.example.test/v1"},
      "custom_providers": [{"name": "lan", "base_url": "http://192.168.1.50:8000/v1"}]},
     {"model": {"provider": "auto"}},
     {},
-], ids=["custom-loopback", "builtin-loopback", "builtin-local-default", "managed-llamacpp", "managed-llamacpp-stale-url", "loopback-trailing-dot", "lan-server", "tailnet-hostname", "fallback-chain", "named-lan-entry", "auto", "unset"])
+], ids=["custom-loopback", "builtin-loopback", "builtin-local-default", "managed-llamacpp", "managed-llamacpp-stale-url", "loopback-trailing-dot", "lan-server", "tailnet-hostname", "home-arpa-hostname", "internal-hostname", "lan-hostname", "fallback-chain", "named-lan-entry", "auto", "unset"])
 def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp_path, monkeypatch):
     import socket
 
@@ -184,8 +187,10 @@ def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp
     ({"provider": "deepseek", "base_url": "http://127.0.0.1:8000/v1"}, "DEEPSEEK_BASE_URL", "", ("", False)),
     ({"provider": "deepseek", "base_url": "https://box.tail1234.ts.net/v1"}, "DEEPSEEK_BASE_URL", "", ("", False)),
     ({"provider": "deepseek", "base_url": "https://api.notts.net/v1"}, "DEEPSEEK_BASE_URL", "", ("cloud-model", False)),
+    ({"provider": "deepseek", "base_url": "https://llm.milan/v1"}, "DEEPSEEK_BASE_URL", "", ("cloud-model", False)),
 ], ids=["openai-alias-local", "openai-api-lan", "deepseek-local", "openai-api-public", "env-over-model-base-url",
-        "openai-env-over-model-base-url", "model-base-url-without-env", "tailnet-model-base-url", "tailnet-lookalike-host"])
+        "openai-env-over-model-base-url", "model-base-url-without-env", "tailnet-model-base-url", "tailnet-lookalike-host",
+        "lan-lookalike-tld"])
 def test_a_builtin_providers_own_base_url_variable_decides_locality(model, env_var, url, expected, monkeypatch):
     from hermes_cli import models
     from hermes_cli.kanban_worker_preflight import task_model

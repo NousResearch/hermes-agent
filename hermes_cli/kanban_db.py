@@ -105,8 +105,9 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
+from hermes_cli import kanban_db_completion as _completion
+COMPLETION_STATES = _completion.COMPLETION_STATES
 VALID_INITIAL_STATUSES = {"running", "blocked"}
-
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
@@ -638,6 +639,10 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    completion_state: Optional[str] = None
+    completion_evidence: Optional[dict] = None
+    requires_live_verification: bool = False
+    verification_owner_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -656,6 +661,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            completion_evidence=_json_or(g("completion_evidence")),
+            requires_live_verification=bool(g("requires_live_verification")),
         )
 
 
@@ -670,6 +677,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "completion_state", "verification_owner_id",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -874,7 +882,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit, evidence-bearing delivery label. NULL preserves legacy tasks
+    -- and means no label was asserted. It is never derived from a green suite,
+    -- merge, or lifecycle status.
+    completion_state     TEXT,
+    completion_evidence  TEXT,
+    -- Aggregate/request tasks opt in to refusing final completion until an
+    -- explicit verified state is recorded with live proof.
+    requires_live_verification INTEGER NOT NULL DEFAULT 0,
+    -- Organizational request owner, intentionally NOT a task_links parent:
+    -- task_links are prerequisite gates and using them here deadlocks releases.
+    verification_owner_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -981,6 +1000,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
+SCHEMA_SQL += _completion.WATCHDOG_ALERTS_DDL
 
 
 # --- ID generation ---
@@ -1168,6 +1188,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    requires_live_verification: bool = False,
+    verification_owner_id: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1186,8 +1208,11 @@ def create_task(
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_db_completion import normalize_verification_owner
 
     completion_contract = validate_contract(completion_contract)
+    parents = tuple(p for p in parents if p)
+    verification_owner_id = normalize_verification_owner(conn, verification_owner_id, parents)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1219,7 +1244,6 @@ def create_task(
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
-    parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
@@ -1267,8 +1291,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        requires_live_verification, verification_owner_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1278,6 +1303,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if requires_live_verification else 0, verification_owner_id,
                     ),
                 )
                 for pid in parents:
@@ -1300,6 +1326,8 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "requires_live_verification": bool(requires_live_verification) or None,
+                        "verification_owner_id": verification_owner_id,
                     },
                 )
                 if task_status == "blocked":
@@ -1359,44 +1387,6 @@ def _missing_task_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> list[str]
     rows = conn.execute(f"SELECT id FROM tasks WHERE id IN ({placeholders})", ids).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in ids if p not in present]
-
-
-def _inherit_notify_subs(
-    conn: sqlite3.Connection, child_id: str, parents: Iterable[str], *,
-    created_at: Optional[int] = None,
-) -> None:
-    """Copy parents' notify subscriptions to a child, cursor caught up to the
-    child's current event so a late ``link_tasks`` never replays history.
-
-    Single owner of inheritance (create_task, link_tasks, decompose). It must
-    copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
-    completions wake a fresh group session instead of the originating DM.
-
-    Omitting columns here silently degrades routing: a DM-originated child completion falls back to
-    chat_type='group' and wakes a fresh group-scoped session instead of the originating DM (issue #73030).
-    """
-    parent_ids = tuple(dict.fromkeys(p for p in parents if p))
-    if not parent_ids:
-        return
-    row = conn.execute(
-        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (child_id,),
-    ).fetchone()
-    cursor = int(row["cursor"] if row is not None else 0)
-    placeholders = ",".join("?" * len(parent_ids))
-    conn.execute(
-        f"""
-        INSERT OR IGNORE INTO kanban_notify_subs
-            (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-             chat_type, notifier_profile, delivery_mode, delivery_metadata,
-             created_at, last_event_id)
-        SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
-               COALESCE(chat_type, 'dm'), notifier_profile,
-               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
-          FROM kanban_notify_subs
-         WHERE task_id IN ({placeholders})
-        """,
-        (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
-    )
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
@@ -2682,10 +2672,17 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at, completion_state, "
+            "       requires_live_verification FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        if trow and bool(trow["requires_live_verification"]) and trow["completion_state"] != "verified":
+            _append_event(
+                conn, task_id, "completion_refused_missing_live_verification",
+                {"completion_state": trow["completion_state"]},
+            )
+            return False
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
@@ -4195,6 +4192,8 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
+from hermes_cli.kanban_db_completion import record_completion_state
+from hermes_cli.kanban_db_notify import _inherit_notify_subs
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,

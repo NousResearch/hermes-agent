@@ -478,7 +478,7 @@ hermes config set memory.provider byterover
 | | |
 |---|---|
 | **适合场景** | 带用户 profile 和会话级图谱构建的语义召回 |
-| **依赖** | `hermes memory setup` 通过 PM 准备 Supermemory SDK；[云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Supermemory SDK；[云端 API key](https://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
 | **数据存储** | Supermemory 云端或自托管 |
 | **费用** | 云端按 Supermemory 定价 / 自托管免费 |
 

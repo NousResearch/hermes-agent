@@ -14,7 +14,13 @@ vi.mock('@/hermes', async importOriginal => {
   }
 })
 
-import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  clearSessionDraft,
+  freshDraftScope,
+  rotateFreshDraftKey,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
@@ -123,6 +129,21 @@ describe('__runDeadSessionPrunePass', () => {
 
     expect(takeSessionDraft('dead-draft-session').text).toBe('')
     expect(takeSessionDraft('__new__').text).toBe('brand new')
+  })
+
+  it('never prunes the live per-lifecycle new-chat draft (__new__:<uuid>)', async () => {
+    $sessions.set([row('unrelated')])
+    // The fresh chat's own bucket (#66662) — not a session id, so probing it
+    // 404s and a naive sweep deletes the text the user is still typing.
+    rotateFreshDraftKey()
+    stashSessionDraft(null, 'unsent text in a brand new chat', [])
+    expect(takeSessionDraft(null).text).toBe('unsent text in a brand new chat')
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(takeSessionDraft(null).text).toBe('unsent text in a brand new chat')
+    expect(getSessionMock).not.toHaveBeenCalledWith(freshDraftScope(), expect.anything())
   })
 
   it('drops queued prompts for dead sessions and keeps live ones', async () => {
@@ -301,6 +322,11 @@ describe('watchDeadSessionPrune', () => {
       $sessions.set([row('a')])
       vi.advanceTimersByTime(1_000)
       $sessions.set([row('a'), row('b')])
+      // jsdom queues a 0 ms storage-event timer for every localStorage write
+      // (the pinned-id persistence above included), so drain those first: the
+      // contract under test is that the churn does not stack a SECOND sweep
+      // timer, not that the environment holds no timers at all.
+      await vi.advanceTimersByTimeAsync(0)
       expect(vi.getTimerCount()).toBe(1)
 
       vi.advanceTimersByTime(1_000)

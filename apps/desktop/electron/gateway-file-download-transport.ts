@@ -13,6 +13,8 @@ import { DEFAULT_FETCH_TIMEOUT_MS, resolveTimeoutMs } from './hardening'
 
 export interface GatewayDownloadOptions {
   bearer?: string
+  /** The remote connection's own headers (an access-proxy service token, say); the credential wins a clash. */
+  remoteHeaders?: Record<string, string>
   timeoutMs?: number
   /** Idle deadline for a body being read (reset per chunk); defaults to the fetch timeout. */
   bodyIdleTimeoutMs?: number
@@ -55,14 +57,26 @@ export function downloadViaTokenToFile(
       {
         agent: downloadAgentFor(parsed.protocol),
         method: 'GET',
-        headers: options.bearer
-          ? { Authorization: `Bearer ${options.bearer}` }
-          : { 'X-Hermes-Session-Token': token ?? '' }
+        headers: {
+          ...options.remoteHeaders,
+          ...(options.bearer
+            ? { Authorization: `Bearer ${options.bearer}` }
+            : { 'X-Hermes-Session-Token': token ?? '' })
+        }
       },
       (response: http.IncomingMessage): void => {
         // Headers end the connection deadline, not the user's save-dialog time;
         // a body that then stops arriving mid-read is bounded by the idle deadline.
         request.setTimeout(0)
+
+        // Node does not follow redirects, so a 3xx body is an access proxy's page, never the file.
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
+          request.destroy()
+          reject(new Error(`Unexpected download redirect (${response.statusCode})`))
+
+          return
+        }
+
         destroyStalledBody(response, bodyIdleMs(options))
         void finalizeGatewayDownload(
           response,

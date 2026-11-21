@@ -171,6 +171,53 @@ test.each(authCases)(
   }
 )
 
+test.each(authCases)(
+  '$name transport sends the remote connection headers under its credential',
+  async ({ options, header, value }: AuthCase): Promise<void> => {
+    // #155024: a gateway behind an access proxy needs the connection's own headers on the download too.
+    const received: Deferred<http.IncomingHttpHeaders> = deferred<http.IncomingHttpHeaders>()
+
+    const baseUrl: string = await serve((request: http.IncomingMessage, response: http.ServerResponse): void => {
+      received.resolve(request.headers)
+      response.end('payload')
+    })
+
+    const destination: string = path.join(directory, 'report.pdf')
+
+    expect(
+      await downloadViaTokenToFile(`${baseUrl}/download`, 'session-token', context, saveDialog(destination), {
+        ...options,
+        remoteHeaders: { 'CF-Access-Client-Id': 'service-token', [header]: 'not-the-credential' }
+      })
+    ).toEqual({ saved: true, path: destination })
+
+    const headers: http.IncomingHttpHeaders = await received.promise
+    expect(headers['cf-access-client-id']).toBe('service-token')
+    expect(headers[header]).toBe(value)
+  }
+)
+
+test.each(authCases)(
+  '$name transport refuses a redirect instead of saving its body as the file',
+  async ({ options }: AuthCase): Promise<void> => {
+    const baseUrl: string = await serve((_request: http.IncomingMessage, response: http.ServerResponse): void => {
+      response.writeHead(302, { Location: 'https://access.example/login' })
+      response.end('<html>302 Found</html>')
+    })
+
+    const showSaveDialog = vi.fn(async (): Promise<GatewaySaveDialogResult> => ({
+      canceled: false,
+      filePath: path.join(directory, 'report.pdf')
+    }))
+
+    await expect(
+      downloadViaTokenToFile(`${baseUrl}/download`, 'session-token', context, { showSaveDialog }, options)
+    ).rejects.toThrow('Unexpected download redirect (302)')
+    expect(showSaveDialog).not.toHaveBeenCalled()
+    expect(await fs.promises.readdir(directory)).toEqual([])
+  }
+)
+
 interface FixtureSession {
   partition: string
 }

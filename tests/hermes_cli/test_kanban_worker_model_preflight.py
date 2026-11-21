@@ -67,6 +67,31 @@ def test_resolvable_model_still_spawns(dispatch_profile, config_yaml, task):
     assert row.status == "running" and row.worker_pid == 424242
 
 
+@pytest.mark.parametrize("provider, env_var, yaml_url", [
+    ("custom", "CUSTOM_BASE_URL", ""),
+    ("custom", "CUSTOM_BASE_URL", "  base_url: https://stale.example.test/v1\n"),
+    ("openrouter", "OPENROUTER_BASE_URL", ""),
+], ids=["custom-dotenv", "custom-overrides-yaml", "openrouter-dotenv"])
+def test_assignee_dotenv_local_endpoint_defers_in_dispatch_and_owner(
+        dispatch_profile, provider, env_var, yaml_url):
+    from agent.runtime_scope import bind_profile_scope
+    from gateway.session_kanban import kanban_launch_policy
+    from gateway.session_worker_construct import route_runtime
+    from hermes_cli.config_effective import load_user_config_effective
+
+    profile, spawned = dispatch_profile
+    endpoint = "http://127.0.0.1:9/v1"
+    (profile / ".env").write_text(f"{env_var}={endpoint}\nOPENROUTER_API_KEY=fixture-key\n", encoding="utf-8")
+    _, result, task, _, _ = _dispatch(profile, f"model:\n  provider: {provider}\n{yaml_url}")
+    with bind_profile_scope(profile, hydrate_secrets=False):
+        config = load_user_config_effective()
+        policy = kanban_launch_policy(task, str(profile), config)
+        assert policy.model == ""
+        runtime, _ = route_runtime(policy, policy.config(), policy.model, None, fallback=False)
+        assert runtime["base_url"] == endpoint
+    assert spawned and result.spawned
+
+
 def _card(**kw):
     return SimpleNamespace(**{"id": "t_x", "assignee": "worker", "model_override": None, "provider_override": None, **kw})
 
@@ -142,6 +167,21 @@ def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp
     assert task_model(_card(), config) == ("", False)
     assert kanban_launch_policy(_card(reasoning_effort=None), str(tmp_path), config).model == ""
     assert opened == []
+
+
+@pytest.mark.parametrize("profile_model, expected", [
+    ({"provider": "custom:cloud"}, ("", True)),
+    ({"provider": "anthropic"}, ("claude-opus-4-6", False)),
+], ids=["named-entry", "builtin-provider"])
+def test_a_local_dotenv_url_does_not_move_a_route_that_ignores_it(profile_model, expected, monkeypatch):
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: {"anthropic": "claude-opus-4-6"}.get(provider, ""))
+    config = {"model": profile_model, "custom_providers": [{"name": "cloud", "base_url": "https://cloud.example.test/v1"}]}
+    assert task_model(_card(), config) == expected
 
 
 def test_owner_policy_takes_the_card_model_or_refuses_before_a_receipt(tmp_path, monkeypatch):

@@ -32,12 +32,22 @@ def task_model(task, config) -> tuple[str, bool]:
              if identity.startswith('custom:') else None) or {}
     if str(entry.get('model') or '').strip():
         return str(entry['model']).strip(), False
-    # A named entry runs on its own URL (runtime_provider_custom), whatever model.base_url still says.
-    base_url = str(entry.get('base_url') or held.get('base_url') or '')
+    base_url = _route_base_url(identity, held, entry)
     if identity == 'auto' or (base_url and _self_hosted(base_url)):
         return '', False
     model = '' if entry else get_default_model_for_provider(identity)
     return model, not model and not get_fallback_chain(config)
+
+
+def _route_base_url(identity, held, entry) -> str:
+    from agent.secret_scope import get_secret_str
+
+    # A named entry owns its own URL; the bare custom and OpenRouter runtime also honor scoped .env.
+    base_url = str(entry.get('base_url') or held.get('base_url') or '').strip()
+    if entry or identity not in ('custom', 'openrouter'):
+        return base_url
+    return (get_secret_str('CUSTOM_BASE_URL').strip() or base_url
+            or get_secret_str('OPENROUTER_BASE_URL').strip())
 
 
 def _self_hosted(base_url) -> bool:

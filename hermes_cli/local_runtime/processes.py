@@ -1,4 +1,4 @@
-"""Contain each managed Windows router tree without adopting the owner process."""
+"""Contain each managed router tree without adopting the owner process."""
 
 from __future__ import annotations
 
@@ -107,15 +107,24 @@ def server_child_env(base_env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def spawn_server(cmd, **kwargs) -> tuple[subprocess.Popen, _WindowsJob | None]:
+def spawn_server(cmd, *, owned: bool = False, **kwargs) -> tuple[subprocess.Popen, _WindowsJob | None]:
     """Start a router, returning its process and an owner-held containment handle.
 
     Keep the job until shutdown and call close() to terminate the entire tree.
-    Windows closes it automatically if the owner dies. Other hosts retain Popen's
-    ordinary behavior. Assignment happens before the child's first instruction.
+    Windows closes it automatically if the owner dies. On POSIX ``owned=True`` gives
+    the same guarantee: the router leads its own process group (its model children
+    stay in it) and that group goes to this process's owner-death supervisor, which
+    kills it the moment the owner dies by any cause (#126631). Without it Popen's
+    ordinary behavior applies (this is also the generic bounded-probe spawner, whose
+    short-lived children need no supervision). Assignment happens before the
+    child's first instruction.
     """
     if sys.platform != "win32":
-        return subprocess.Popen(cmd, **kwargs), None
+        if not owned:
+            return subprocess.Popen(cmd, **kwargs), None
+        from hermes_cli.process_identity import spawn_owned
+
+        return spawn_owned(cmd, purpose="llama-server", **kwargs), None
     job = _WindowsJob()
     proc = None
     try:

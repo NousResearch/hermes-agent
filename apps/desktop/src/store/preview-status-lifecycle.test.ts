@@ -14,7 +14,7 @@ afterEach(() => {
   window.localStorage.clear()
 })
 
-it('moves local dismissals on rename and removes only the deleted owner', () => {
+it('moves local dismissals on rename and removes only the deleted owner', async () => {
   for (const [runtime, connectionId] of [
     ['rename-local', 'local'],
     ['rename-remote', 'remote']
@@ -24,7 +24,7 @@ it('moves local dismissals on rename and removes only the deleted owner', () => 
     dismissPreviewArtifact(runtime, '/work/rename.html', 'rename-stored')
   }
 
-  migrateTilesForProfile('before-rename', 'after-rename')
+  await migrateTilesForProfile('before-rename', 'after-rename')
   recordSessionEventScope({ session_id: 'rename-new', connectionId: 'local', profile: 'after-rename' })
   recordPreviewArtifact('rename-new', '/work/rename.html', '/work', 'rename-stored')
   recordPreviewArtifact('rename-remote', '/work/rename.html', '/work', 'rename-stored')

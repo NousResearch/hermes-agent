@@ -12,7 +12,7 @@ from hermes_cli.nous_account import (
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
-    fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider, normalize_modal_mode,
+    coerce_modal_mode, fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider,
     resolve_modal_backend_state, resolve_openai_audio_api_key
 )
 
@@ -389,7 +389,7 @@ def _browser_feature(
 
 def _modal_feature(terminal_cfg: dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
     terminal_backend = _norm(terminal_cfg.get("backend"), "local")
-    modal_mode = normalize_modal_mode(terminal_cfg.get("modal_mode"))
+    modal_mode = coerce_modal_mode(terminal_cfg.get("modal_mode"))
     direct_modal = has_direct_modal_credentials()
     modal_state = resolve_modal_backend_state(modal_mode, has_direct=direct_modal, managed_ready=managed, managed_enabled=managed_tools_flag)
     is_modal = terminal_backend == "modal"
@@ -699,21 +699,21 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
         if auth_state is None:
             auth_state = auth._nous_device_code_login()
         from hermes_cli.anon_auth import settle_after_upgrade
-        from hermes_cli.guest_handoff import deferred, result_lines
-        with deferred() as handoff:  # a replaced free tier hands its apps over once both saves land
-            with auth._auth_store_lock():
-                auth_store = auth._load_auth_store()
-                auth._save_provider_state(auth_store, "nous", auth_state)
-                if prior_active_provider:
-                    auth_store["active_provider"] = prior_active_provider
-                else:
-                    auth_store.pop("active_provider", None)
-                auth._save_auth_store(auth_store)
-            auth._write_shared_nous_state(auth_state)
+        from hermes_cli.guest_handoff import drain, result_lines
+        with auth._auth_store_lock():
+            auth_store = auth._load_auth_store()
+            auth._save_provider_state(auth_store, "nous", auth_state)
+            if prior_active_provider:
+                auth_store["active_provider"] = prior_active_provider
+            else:
+                auth_store.pop("active_provider", None)
+            auth._save_auth_store(auth_store)
+        auth._write_shared_nous_state(auth_state, renewal=False)
+        handoff = drain()  # a replaced free tier hands its apps over once both saves land
         auth._sync_nous_pool_from_auth_store()
         settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print("  Nous Portal login successful.")
-        for line in (line for view in handoff.results for line in result_lines(view)):
+        for line in (line for view in handoff for line in result_lines(view)):
             print(f"  {line}")
         return True
     except KeyboardInterrupt:

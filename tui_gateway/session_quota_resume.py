@@ -150,6 +150,7 @@ def _maybe_fire_quota_resume(sid: str, session: dict) -> None:
         return
     if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
+    claim = session.get("_notif_turn_claim")
     # Past this point the resume either dispatches or is abandoned; never left pending.
     _clear_quota_resume(session)
     if _ensure_active_session_slot(sid, session) is not None:
@@ -169,7 +170,8 @@ def _maybe_fire_quota_resume(sid: str, session: dict) -> None:
         )
     except Exception as exc:
         _notif_log_failure("quota-resume dispatch failed", exc)
-        _notif_release_turn(session)
+        # A refusing admission already released ``running`` (a user prompt may own it since): release only our claim.
+        _notif_release_claim(session, claim)
 
 
 def register(server) -> None:

@@ -1,0 +1,19 @@
+name: proxy
+title: Proxy
+repo: https://github.com/proxy-intell/proxy-agent-plugins
+sha: a77abeb0e7aaef703f1b7a230386415cdd89c3db
+subdir: hermes
+description: "Creative strategy and marketing engineering on live ad-library data through the hosted Proxy MCP: a brand's live ads from the Meta Ad Library, Google Ads Transparency Center, LinkedIn Ad Library and TikTok's EU ad library, keyword search on Meta, video ad transcripts, image analysis and competitor discovery, for creative briefs and scheduled competitor radars (Hermes cron). Portable Agent Plugins v1 package with one research skill; OAuth uses pinned mcp-remote@0.1.49 over npx stdio, so Node.js 20.18.1+ and npm are required. Disclosure — read-only (no ad-account access, no spend); every tool call, with its brand names, keywords and ad URLs, goes to mcp.useproxy.dev, and the tool set is served by that server at runtime and is not covered by the pinned sha; sign-in runs npx mcp-remote@0.1.49 from the npm registry (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores its OAuth tokens in ~/.mcp-auth, so sign in from an interactive chat before scheduling cron runs. Free tier 20 credits/day."
+maintainer: Proxy
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/proxy-intell/proxy-agent-plugins/tree/main/hermes#readme
+version: "1.0.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

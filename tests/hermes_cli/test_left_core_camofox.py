@@ -35,7 +35,6 @@ capabilities:
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(lcm, "_attempted", set())
-    monkeypatch.setattr(lcm, "_undelivered", {})
     for name in ("CAMOFOX_URL", "BROWSER_CDP_URL"):
         monkeypatch.delenv(name, raising=False)
     managed = tmp_path / "managed"

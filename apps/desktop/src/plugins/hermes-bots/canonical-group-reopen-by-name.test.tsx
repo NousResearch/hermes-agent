@@ -17,27 +17,14 @@ import { translateBots } from './i18n-test-helper'
 const { request, notify, openWorkspace, catalog } = vi.hoisted(() => ({
   request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), catalog: { patch: null as null | ((t: Record<string, unknown>) => unknown) }
 }))
+
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
+  const { localGatewaySdkMock } = await import('./canonical-group-contract-test-utils')
   const { en } = await import('@/i18n/en')
 
-  return {
-    ...sdk,
-    gatewayActivationEpoch: () => 1,
-    host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
-      request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
-      connections: vi.fn(async () => []),
-      state: {
-        ...sdk.host.state,
-        connectionId: sdk.atom<string | null>('local'),
-        profile: sdk.atom('default'),
-        gateway: sdk.atom('open')
-      }
-    },
-    useI18n: () => ({ locale: 'en', t: catalog.patch ? catalog.patch(en as unknown as Record<string, unknown>) : en }),
-    usePluginI18n: () => translateBots
-  }
+  return { ...await localGatewaySdkMock(sdk, request, () => translateBots, { notify, openWorkspace, connections: vi.fn(async () => []) }),
+    useI18n: () => ({ locale: 'en', t: catalog.patch ? catalog.patch(en as unknown as Record<string, unknown>) : en }) }
 })
 vi.mock('./group-chat-parts', async importOriginal => ({
   ...await importOriginal<typeof GroupChatParts>(),
@@ -96,7 +83,7 @@ it('adopts the existing gateway room by name instead of minting a fork', async (
   gateway(() => ({ rooms: [{ room_id: 'other', name: 'Elsewhere', members }, original], next_offset: null }))
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
   expect(methods()).not.toContain('groups.create')
-  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
   const stateCall = request.mock.calls.find(call => call[1] === 'groups.state')
   expect(stateCall?.[2]).toMatchObject({ room_id: 'room-original' })
 })
@@ -117,7 +104,7 @@ it('fails closed with a retry when the room lookup fails: retry, never mint', as
   })
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
   expect(screen.getByRole('alert').textContent).toContain('gateway warming up')
-  const start = screen.queryByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement | null
+  const start = screen.queryByRole('button', { name: 'Start new group' }) as HTMLButtonElement | null
   expect(start === null || start.disabled).toBe(true)
 
   if (start) {await act(async () => { fireEvent.click(start) })}
@@ -129,13 +116,32 @@ it('fails closed with a retry when the room lookup fails: retry, never mint', as
   expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: 'room-original' })
 })
 
-it('still offers to start a gateway group for a legacy room with no gateway room of that name', async () => {
+it.each([true, false])('Start keeps the original tab and read-only history without navigation (visible: %s)', async visible => {
+  $groupChats.set({ Team: { log: [{ id: 'earlier', at: 1, from: { kind: 'user', name: 'You' },
+    text: 'Earlier local message\n\nMEDIA:/tmp/private.png' }], running: false, watermarks: {} } })
   gateway(() => ({ rooms: [{ room_id: 'other', name: 'Elsewhere', members }], next_offset: null }))
-  await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
-  const start = screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement
+  const normal = request.getMockImplementation()!
+  let finish!: () => void
+  request.mockImplementation((route, method, params) => method === 'groups.create'
+    ? new Promise(resolve => { finish = () => resolve({ room: { ...original, room_id: params.room_id } }) })
+    : normal(route, method, params))
+  const view = await act(async () => render(<GroupChatWorkspace group="Team" members={roster} />))
+  const start = screen.getByRole('button', { name: 'Start new group' }) as HTMLButtonElement
   expect(start.disabled).toBe(false)
   await act(async () => { fireEvent.click(start) })
+  view.rerender(<GroupChatWorkspace group="Team" members={roster} visible={visible} />)
+  await act(async () => { finish() })
+  expect(openWorkspace).not.toHaveBeenCalled()
+  await act(async () => { view.rerender(<GroupChatWorkspace group="Team" members={roster} />) })
   expect(methods().filter(m => m === 'groups.create')).toHaveLength(1)
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
+  const created = request.mock.calls.find(call => call[1] === 'groups.create')![2].room_id
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: created })
+  fireEvent.click(screen.getByText(/^Earlier messages/, { selector: 'summary' }))
+  const earlier = screen.getByRole('region', { name: /^Earlier messages/ })
+  expect(earlier.textContent).toContain('Earlier local message')
+  expect(earlier.querySelector('img, video, audio, button, textarea')).toBeNull()
+  expect(methods()).not.toContain('groups.send')
 })
 
 // Review on #140972: a name binding must stay on the (connection, profile) it was
@@ -178,12 +184,15 @@ it('a late lookup from a superseded connection does not publish its room', async
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
 
   await act(async () => { state.connectionId.set('remote') })
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false)
+  // The remote lookup answered (no such room); these Bots live on `local`, so it cannot seat them.
+  const elsewhere = 'This group chat can’t continue here: it has bots on other computers'
+  expect(screen.getByText(text => text.startsWith(elsewhere))).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
 
   await act(async () => { releaseA({ rooms: [original], next_offset: null }) })
   expect(methods()).not.toContain('groups.state')
   expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.connectionId === 'local')).toBe(false)
-  expect(screen.getByRole('button', { name: 'Start gateway group' })).toBeTruthy()
+  expect(screen.getByText(text => text.startsWith(elsewhere))).toBeTruthy()
 })
 
 // Review on #140972 (F4): a room NAME spelled like another connection's key
@@ -225,4 +234,27 @@ it('renders the lookup states and Retry from the active catalog, not hardcoded E
 
   await act(async () => { releaseList({ rooms: [], next_offset: null }) })
   expect(screen.getByText('T:missing')).toBeTruthy()
+})
+
+const owner = { kind: 'gateway' as const, connectionId: 'remote', profile: 'owner-profile', roomId: 'room-original' }
+const savedOwner = { ...owner, connectionId: 'saved-owner', profile: 'default', roomId: 'saved-room' }
+const roomKey = 'canonical:remote:owner-profile:room-original'
+
+it.each([
+  { origin: 'name', group: 'Team', stored: owner, expected: owner },
+  { origin: 'key', group: roomKey, stored: savedOwner, expected: owner },
+  { origin: 'name', group: roomKey, stored: savedOwner, expected: savedOwner }
+] as const)('$origin open of $group keeps its owner after restart and peer removal', async ({ origin, group, stored, expected }) => {
+  $groupChats.set({ [group]: { log: [], watermarks: {}, engine: stored } })
+  gateway(() => ({ rooms: [original, { ...original, room_id: savedOwner.roomId, name: roomKey }], next_offset: null }))
+  const mixed = [{ name: 'alpha', connectionId: 'local' }, { name: 'default', connectionId: 'remote', remoteSource: true }]
+  const view = await act(async () => render(<GroupChatWorkspace group={group} members={mixed} origin={origin} />))
+  expect(request.mock.calls.find(call => call[1] === 'groups.list')?.[0]).toMatchObject({ connectionId: expected.connectionId, targetProfile: expected.profile })
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: expected.roomId })
+  view.unmount()
+  $canonicalGroupBindings.set({})
+  request.mockClear()
+  await act(async () => { render(<GroupChatWorkspace group={group} members={mixed.slice(0, 1)} origin={origin} />) })
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[0]).toMatchObject({ connectionId: expected.connectionId, targetProfile: expected.profile })
+  expect(methods()).not.toContain('groups.create')
 })

@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { mergeUsage, parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -7,6 +7,7 @@ import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
+import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -32,10 +33,12 @@ import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import {
   $activeGatewayProfile,
-  $newChatProfile,
   captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayProfile,
-  normalizeProfileKey
+  invalidateNewChatIntent,
+  normalizeProfileKey,
+  pinNewChatProfile
 } from '@/store/profile'
 import {
   $connection,
@@ -69,6 +72,7 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
+import { remoteBrowserManageRefusal } from './browser-manage-refusal'
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
@@ -266,7 +270,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         return false
       }
 
-      const submissionId = options?.submission_id ?? crypto.randomUUID()
+      const submissionId = options?.submission_id ?? randomUuid()
 
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
@@ -1021,10 +1025,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const result = await requestGateway<{ value?: string }>('config.set', params)
+            const result = await requestGateway<{ status?: string; value?: string }>('config.set', params)
+            const value = result.value || params.value
 
             applyReasoningSlashResult(result.value)
-            renderSlashOutput(`reasoning: ${result.value || params.value}`)
+            // Typed while a reply streams: the owner applies the level from the next turn.
+            renderSlashOutput(
+              result.status === 'deferred'
+                ? translateNow('shell.modelMenu.pickDeferred', value)
+                : `reasoning: ${value}`
+            )
           } catch (err) {
             if (isMissingRpcMethod(err)) {
               await runExec(ctx)
@@ -1162,8 +1172,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
+          invalidateNewChatIntent()
+          let intent = currentNewChatIntent()
+
           try {
             const { profiles } = await getProfiles()
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             const match = profiles.find(profile => profile.name === target)
 
             if (!match) {
@@ -1176,16 +1194,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
+            const key = pinNewChatProfile(match.name)
+            intent = currentNewChatIntent()
             await ensureGatewayProfile(key)
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             // Capture the source the swap landed on (null on the v1 profile path)
             // so the draft's owner matches the socket that will mint it.
             captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
-            notifyError(err, copy.setProfileFailed)
+            if (intent === currentNewChatIntent()) {
+              notifyError(err, copy.setProfileFailed)
+            }
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {
@@ -1335,9 +1359,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if ((cmdAction === 'connect' || cmdAction === 'disconnect') && $connection.get()?.mode === 'remote') {
-            renderSlashOutput(
-              '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
-            )
+            renderSlashOutput(remoteBrowserManageRefusal(cmdAction))
 
             return
           }

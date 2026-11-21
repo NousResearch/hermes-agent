@@ -1,0 +1,562 @@
+"""Generic ACP (Agent Client Protocol) stdio client behind a minimal OpenAI-client facade.
+
+The public base for ``external_process`` model providers: a provider profile's
+``create_client`` returns an :class:`ACPClient` (or a subclass). Each request starts a
+short-lived ACP session with the agent CLI, sends the formatted conversation as one prompt,
+collects text chunks, and returns the minimal OpenAI-client shape.
+
+Subclasses customise the launch defaults and vendor quirks through class attributes
+(``default_command``, ``default_args``, ``command_env_vars``, ``args_env_var``,
+``marker_base_url``, ``placeholder_model``, ``label``, ``missing_command_hint``,
+``unsupported_transport_hint``) and two hooks (:meth:`ACPClient.model_entry_disabled`,
+:meth:`ACPClient.early_exit_error`).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import errno
+import json
+import logging
+import os
+import queue
+import re
+import shlex
+import subprocess
+import tempfile
+import threading
+import time
+from collections import deque
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from agent.acp_openai_bridge import (
+    completion_to_stream_chunks as _completion_to_stream_chunks,
+    extract_tool_calls_from_text as _extract_tool_calls_from_text,
+    render_tool_bridge_sections as _render_tool_bridge_sections,
+)
+from agent.file_safety import (
+    get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
+from agent.redact import redact_sensitive_text
+from agent.runtime_cwd import resolve_agent_cwd
+
+logger = logging.getLogger(__name__)
+_DEFAULT_TIMEOUT_SECONDS = 900.0
+# ACP JSON-RPC error code meaning "authentication required" (the agent CLI is not signed in).
+_ACP_AUTH_REQUIRED = -32000
+_ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
+# Probe verdicts per binary path (~50ms --help paid once per process). Only definitive
+# True/False is cached, so a CLI installed mid-session is picked up.
+_ACP_PROBE_CACHE: dict[str, bool] = {}
+_PROMPT_PREAMBLE = (
+    "You are being used as the active ACP agent backend for Hermes.",
+    "Use ACP capabilities to complete tasks.",
+    "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+    "If no tool is needed, answer normally.",
+)
+_INITIALIZE_PARAMS = {
+    "protocolVersion": 1,
+    "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
+    "clientInfo": {"name": "hermes-agent", "title": "Hermes Agent", "version": "0.0.0"},
+}
+def _acp_supported(command: str, args: list[str]) -> bool | None:
+    """Tri-state ``--acp`` probe (a CLI without the flag exits 1 and the parent would wait the
+    full child timeout for stdout that never arrives). True = help advertises --acp; False =
+    help ran cleanly without it (caller fast-fails); None = inconclusive (binary missing /
+    --help failed → normal spawn error). Skipped when ``--acp`` is not in ``args`` (custom transport)."""
+    if "--acp" not in args:
+        return True
+    if (cached := _ACP_PROBE_CACHE.get(command)) is not None:
+        return cached
+    try:
+        probe = subprocess.run(
+            [command, "--help"],
+            # Explicit codec because text=True alone decodes with the
+            # locale default and crashes on non-ASCII help text under
+            # GBK/CP932 locales.
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if probe.returncode != 0:
+        return None
+    # ``--acp`` as a flag token; tolerate spacing and ``[--acp]`` variants.
+    verdict = _ACP_PROBE_CACHE[command] = bool(re.search(r"(?:^|[\s\[])--acp(?:[\s=\],]|$)", probe.stdout, re.MULTILINE))
+    return verdict
+
+
+def _resolve_home_dir() -> str:
+    """Stable HOME for child ACP processes; the temp dir as a last resort so the child never starts HOME-less."""
+    if home := os.environ.get("HOME", "").strip():
+        return home
+    if (expanded := os.path.expanduser("~")) and expanded != "~":
+        return expanded
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_dir.strip() or tempfile.gettempdir()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+    except Exception:
+        return tempfile.gettempdir()
+
+
+def _build_subprocess_env() -> dict[str, str]:
+    # Lazy: the env policy imports hermes_cli.config, and provider plugins import this module
+    # while hermes_cli.config is still initializing (discovery runs from it).
+    from hermes_constants import apply_subprocess_home_env
+    from tools.environments.local import hermes_subprocess_env
+
+    # An ACP agent drives a model and needs LLM provider credentials; the central helper still
+    # strips Tier-1 secrets (bot tokens, GitHub auth, infra).
+    # See #29157.
+    env = hermes_subprocess_env(inherit_credentials=True)
+    env["HOME"] = _resolve_home_dir()
+    apply_subprocess_home_env(env)
+    return env
+
+
+def _jsonrpc_result(message_id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": message_id, "result": result}
+
+
+def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
+
+
+def _never_disabled(entry: dict[str, Any]) -> bool:
+    return False
+
+
+def _enabled_id_list(entries: Any, key: str, disabled: Callable[[dict[str, Any]], bool] = _never_disabled) -> list[str]:
+    """Ordered unique ids of the entries ``disabled`` does not reject."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get(key) or "").strip()
+        if not value or value in seen or disabled(entry):
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _model_config_option(session: dict[str, Any]) -> dict[str, Any] | None:
+    return next((option for option in (session.get("configOptions") or []) if isinstance(option, dict)
+                 and "model" in (option.get("category"), option.get("id"))), None)
+
+
+def _session_model_ids(session: dict[str, Any], disabled: Callable[[dict[str, Any]], bool] = _never_disabled) -> list[str]:
+    """Account-authorized model ids advertised by ``session/new`` in ACP v1 or its legacy extension."""
+    if option := _model_config_option(session):
+        return _enabled_id_list(option.get("options"), "value", disabled)
+    return _legacy_session_model_ids(session, disabled)
+
+
+def _legacy_session_model_ids(session: dict[str, Any], disabled: Callable[[dict[str, Any]], bool] = _never_disabled) -> list[str]:
+    return _enabled_id_list((session.get("models") or {}).get("availableModels"), "modelId", disabled)
+
+
+def _model_selection_request(
+    session: dict[str, Any], requested_model: str, *, placeholder: str = "",
+    disabled: Callable[[dict[str, Any]], bool] = _never_disabled,
+) -> tuple[str, dict[str, str]] | None:
+    """ACP request selecting ``requested_model`` for ``session``: stable v1
+    ``session/set_config_option``, else the pre-stabilization ``session/set_model`` when no
+    model config option is advertised. A reported model list is authoritative: unknown and
+    ``disabled`` ids return None instead of being sent, as does the provider's ``placeholder``
+    id (meaning "the session default")."""
+    session_id = str(session.get("sessionId") or "").strip()
+    requested_model = str(requested_model or "").strip()
+    if not session_id or not requested_model or requested_model == placeholder:
+        return None
+    option = _model_config_option(session)
+    if option:
+        if requested_model not in _enabled_id_list(option.get("options"), "value", disabled):
+            return None
+        return "session/set_config_option", {"sessionId": session_id, "configId": str(option.get("id") or "model"), "value": requested_model}
+    available = _legacy_session_model_ids(session, disabled)
+    return None if available and requested_model not in available else ("session/set_model", {"sessionId": session_id, "modelId": requested_model})
+
+
+def _format_messages_as_prompt(
+    messages: list[dict[str, Any]], model: str | None = None, tools: list[dict[str, Any]] | None = None, tool_choice: Any = None,
+) -> str:
+    # Deliberately no "requested model" line: the model is applied for real via ACP session/set_model;
+    # a prompt-text mention makes a substituted backend model FALSELY self-identify as the requested
+    # one. The whole Hermes toolset is forwarded; the agent's own tools run inside the agent.
+    sections: list[str] = [*_PROMPT_PREAMBLE, *_render_tool_bridge_sections(tools, tool_choice)]
+    transcript: list[str] = []
+    for message in (m for m in messages if isinstance(m, dict)):
+        role = str(message.get("role") or "unknown").strip().lower()
+        if rendered := _render_message_content(message.get("content")):
+            transcript.append(f"{_ROLE_LABELS.get(role, 'Context')}:\n{rendered}")
+    if transcript:
+        sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
+    sections.append("Continue the conversation from the latest user request.")
+    return "\n\n".join(section.strip() for section in sections if section and section.strip())
+
+
+def _render_message_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, dict):
+        if "text" in content:
+            return str(content.get("text") or "").strip()
+        return content["content"].strip() if isinstance(content.get("content"), str) else json.dumps(content, ensure_ascii=True)
+    if isinstance(content, list):
+        parts = [item if isinstance(item, str) else item["text"].strip() for item in content if isinstance(item, str)
+                 or (isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip())]
+        return "\n".join(parts).strip()
+    return str(content).strip()
+
+
+def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:
+    # Raw-string check BEFORE resolve(): resolving an NT-namespace path is the NTLM-leak trigger.
+    if nt_error := get_nt_namespace_error(path_text, verb=verb):
+        raise PermissionError(nt_error)
+    if not Path(path_text).is_absolute():
+        raise PermissionError("ACP file-system paths must be absolute.")
+    resolved, root = Path(path_text).resolve(), Path(cwd).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError(f"Path '{resolved}' is outside the session cwd '{root}'.") from exc
+    return resolved
+
+
+def _effective_timeout(timeout: Any) -> float:
+    """Normalise a float or httpx.Timeout-like object to wall-clock seconds (largest component wins)."""
+    if isinstance(timeout, (int, float)):
+        return float(timeout)
+    candidates = [getattr(timeout, attr, None) for attr in ("read", "write", "connect", "pool", "timeout")]
+    return max((float(v) for v in candidates if isinstance(v, (int, float))), default=_DEFAULT_TIMEOUT_SECONDS)
+
+
+def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
+    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd, verb="Read")
+    if block_error := get_read_block_error(str(path)):
+        raise PermissionError(block_error)
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        content = ""
+    line, limit = params.get("line"), params.get("limit")
+    if isinstance(line, int) and line > 1:
+        end = line - 1 + limit if isinstance(limit, int) and limit > 0 else None
+        content = "".join(content.splitlines(keepends=True)[line - 1:end])
+    return {"content": redact_sensitive_text(content, force=True) if content else content}
+
+
+def _fs_write_text_file(params: dict[str, Any], cwd: str) -> Any:
+    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd, verb="Write")
+    if denied := get_write_denied_error(str(path)):
+        raise PermissionError(denied)
+    if is_write_approval_required(str(path)):  # soft-gated for interactive tools; the ACP shim has no human channel → fail closed
+        raise PermissionError(f"Write denied: '{path}' requires interactive approval and cannot be written through the ACP file bridge.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(params.get("content") or ""), encoding="utf-8")
+    return None
+
+
+_FS_HANDLERS = {"fs/read_text_file": _fs_read_text_file, "fs/write_text_file": _fs_write_text_file}
+
+
+class ACPClient:
+    """Minimal OpenAI-client-compatible facade over one ACP agent CLI spoken to on stdio.
+
+    Construct it with the resolved ``command``/``args`` (what
+    ``resolve_external_process_provider_credentials`` returns for the provider); the class
+    attributes below are only the fallback when a caller passes neither.
+    """
+
+    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess over stdio, so it is
+    # already a complete client (never re-dispatch through a wire adapter) and async-safe as-is.
+    HERMES_SKIP_TRANSPORT_WRAP = True
+    HERMES_SKIP_ASYNC_WRAP = True
+
+    #: Binary and argv tail used when the caller passes no command/args; env vars win, in order.
+    default_command: str = ""
+    default_args: tuple[str, ...] = ()
+    command_env_vars: tuple[str, ...] = ()
+    args_env_var: str = ""
+    #: ``base_url`` reported when none is passed (an ``acp://`` marker, never dialled).
+    marker_base_url: str = "acp://agent"
+    #: Model id meaning "the session default": never sent as a model selection.
+    placeholder_model: str = "acp"
+    #: Product name in errors and log lines.
+    label: str = "ACP"
+    #: Error text after "Could not start <label> command '<cmd>'." (default names ``command_env_vars``).
+    missing_command_hint: str = ""
+    #: Sentence appended when the agent answers a request with ACP's auth-required error (code -32000),
+    #: e.g. the CLI's own login command; None = the agent's message alone.
+    auth_required_hint: str | None = None
+    #: Error text after the ``--acp`` probe rejects the CLI.
+    unsupported_transport_hint: str = (
+        "Either install a CLI release that supports --acp, or point the provider at a working command/args pair.")
+
+    def model_entry_disabled(self, entry: dict[str, Any]) -> bool:
+        """True when an advertised model entry is unavailable to this account (vendor ``_meta``)."""
+        return False
+
+    def early_exit_error(self, stderr_text: str) -> str | None:
+        """Error message for a CLI that exited before answering, or None for the generic one."""
+        return None
+
+    def _resolve_command(self) -> str:
+        return next((v for name in self.command_env_vars if (v := os.getenv(name, "").strip())), "") or self.default_command
+
+    def _resolve_args(self) -> list[str]:
+        override = os.getenv(self.args_env_var, "").strip() if self.args_env_var else ""
+        return shlex.split(override) or list(self.default_args)
+
+    def _request_error(self, method: str, err: Any) -> str:
+        text = f"{self.label} {method} failed: {(err.get('message') if isinstance(err, dict) else None) or err}"
+        auth_required = isinstance(err, dict) and err.get("code") == _ACP_AUTH_REQUIRED
+        return f"{text} {self.auth_required_hint}" if auth_required and self.auth_required_hint else text
+
+    def _missing_command_hint(self) -> str:
+        if self.missing_command_hint:
+            return self.missing_command_hint
+        return f"Install the agent CLI or set {'/'.join(self.command_env_vars)}." if self.command_env_vars else "Install the agent CLI."
+
+    def __init__(
+        self, *, api_key: str | None = None, base_url: str | None = None, default_headers: dict[str, str] | None = None,
+        acp_command: str | None = None, acp_args: list[str] | None = None, acp_cwd: str | None = None, command: str | None = None,
+        args: list[str] | None = None, **_: Any,
+    ):
+        self.api_key, self.base_url = api_key or self.placeholder_model, base_url or self.marker_base_url
+        self._default_headers = dict(default_headers or {})
+        self._acp_command = acp_command or command or self._resolve_command()
+        self._acp_args = list(acp_args or args or self._resolve_args())
+        # The session's workspace, not the process cwd: under the gateway every turn runs in
+        # the daemon (or a managed worker) whose own cwd is unrelated to the client's.
+        self._acp_cwd = str(Path(acp_cwd or resolve_agent_cwd()).resolve())
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
+        self.is_closed = False
+        # Clients are cached and shared across concurrent callers (auxiliary tasks, async
+        # dispatch), so several ACP sessions can be live on one instance. Track every live
+        # child — a single slot would let one session's teardown kill a sibling's process
+        # while its own leaked.
+        self._active_processes: set[subprocess.Popen[str]] = set()
+        self._active_process_lock = threading.Lock()
+
+    @staticmethod
+    def _terminate_process(proc: subprocess.Popen[str]) -> None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+    def _release_process(self, proc: subprocess.Popen[str]) -> None:
+        """Reap one session's own child. ``is_closed`` flips only when the last live
+        session drains — marking it while siblings still run would tell lifecycle code
+        to rebuild a client that is mid-request."""
+        with self._active_process_lock:
+            self._active_processes.discard(proc)
+            if not self._active_processes:
+                self.is_closed = True
+        self._terminate_process(proc)
+
+    def close(self) -> None:
+        with self._active_process_lock:
+            procs, self._active_processes = tuple(self._active_processes), set()
+        self.is_closed = True
+        for proc in procs:
+            self._terminate_process(proc)
+
+    def _create_chat_completion(
+        self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
+    ) -> Any:
+        prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
+        response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
+        tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
+        message = SimpleNamespace(
+            content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
+            reasoning_details=None,
+        )
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if tool_calls else "stop")],
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0, prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
+            model=model or self.placeholder_model,
+        )
+        return _completion_to_stream_chunks(completion) if stream else completion
+
+    def _spawn(self) -> subprocess.Popen[str]:
+        # Fast-fail when the CLI rejects --acp (else the parent waits the full child timeout for stdout that
+        # never arrives). ``None`` falls through to the spawn's established start error.
+        if _acp_supported(self._acp_command, self._acp_args) is False:
+            preview = " ".join(self._acp_args[:3]) if self._acp_args else "(none)"
+            raise RuntimeError(
+                f"ACP transport not supported by '{self._acp_command}': `{preview}` is rejected as an unknown option. This "
+                "usually means the CLI is an older release (e.g. Claude Code v2.x) or a different tool than expected. "
+                + self.unsupported_transport_hint
+            )
+        try:
+            from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
+
+            # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
+            # pipes stay intact for the ACP wire.
+            proc = subprocess.Popen(
+                [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
+                creationflags=windows_hide_flags(),
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"Could not start {self.label} command '{self._acp_command}'. {self._missing_command_hint()}") from exc
+        if proc.stdin is None or proc.stdout is None:
+            proc.kill()
+            raise RuntimeError(f"{self.label} process did not expose stdin/stdout pipes.")
+        with self._active_process_lock:
+            self._active_processes.add(proc)
+            self.is_closed = False
+        return proc
+
+    @contextlib.contextmanager
+    def _session(
+        self, timeout_seconds: float, *, allow_file_requests: bool = True
+    ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
+        """Start one ACP process and yield its ``session/new`` result plus request callable."""
+        proc = self._spawn()
+        inbox: queue.Queue[dict[str, Any]] = queue.Queue()
+        stderr_tail: deque[str] = deque(maxlen=40)
+
+        def _decode(line: str) -> dict[str, Any]:
+            try:
+                return json.loads(line)
+            except Exception:
+                return {"raw": line.rstrip("\n")}
+
+        def _pump(stream, sink) -> None:
+            for line in stream or ():
+                sink(line)
+
+        threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
+        stderr_pump = threading.Thread(
+            target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
+        stderr_pump.start()
+        request_ids = iter(range(1, 1 << 62))
+        # One budget for the WHOLE session (initialize + session/new + any prompt), not per
+        # request: a hung CLI must not get 2x the caller's timeout on the foreground /model path.
+        session_deadline = time.monotonic() + timeout_seconds
+
+        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
+                     reasoning_parts: list[str] | None = None) -> Any:
+            request_id = next(request_ids)
+            try:
+                proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
+                proc.stdin.flush()
+            except OSError as exc:  # the CLI stopped reading: EPIPE, or EINVAL on a Windows pipe
+                if not isinstance(exc, BrokenPipeError) and exc.errno != errno.EINVAL:
+                    raise
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)  # dying: report its exit text below, not a bare EPIPE
+                if proc.poll() is None:  # alive but deaf: fail now, not after the whole request timeout
+                    raise
+            deadline = session_deadline
+            while time.monotonic() < deadline and proc.poll() is None:
+                try:
+                    msg = inbox.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if self._handle_server_message(
+                    msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
+                    reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
+                ) or msg.get("id") != request_id:
+                    continue
+                if "error" in msg:
+                    raise RuntimeError(self._request_error(method, msg.get("error") or {}))
+                return msg.get("result")
+            if proc.poll() is not None:
+                # The pump can still hold the crash text when poll() first sees the exit; reading
+                # it too early turned a dead CLI into a TimeoutError, which retries differently.
+                stderr_pump.join(timeout=1.0)
+                stderr_text = "\n".join(stderr_tail).strip()
+                if (vendor_error := self.early_exit_error(stderr_text)) is not None:
+                    raise RuntimeError(vendor_error)
+                raise RuntimeError(f"{self.label} process exited early: {stderr_text or f'exit code {proc.returncode}'}")
+            raise TimeoutError(f"Timed out waiting for {self.label} response to {method}.")
+
+        try:
+            _request("initialize", _INITIALIZE_PARAMS)
+            session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
+            if not str(session.get("sessionId") or "").strip():
+                raise RuntimeError(f"{self.label} did not return a sessionId.")
+            yield session, _request
+        finally:
+            self._release_process(proc)
+
+    def list_models(self, *, timeout_seconds: float = 15.0) -> list[str]:
+        """Return the enabled models advertised by a short-lived authenticated ACP session."""
+        with self._session(timeout_seconds, allow_file_requests=False) as (session, _):
+            return _session_model_ids(session, self.model_entry_disabled)
+
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+        # No `--model` spawn flag: agent CLIs may validate it (an unknown id aborts the spawn) yet ignore it
+        # for the session, so the model is applied over ACP after session/new instead.
+        requested_model = str(model or "").strip()
+        with self._session(timeout_seconds) as (session, _request):
+            session_id = str(session.get("sessionId") or "").strip()
+            if requested_model and requested_model != self.placeholder_model:
+                try:
+                    selection = _model_selection_request(
+                        session, requested_model, placeholder=self.placeholder_model, disabled=self.model_entry_disabled)
+                    if selection is not None:
+                        _request(*selection)
+                    else:
+                        logger.warning("%s does not offer model %r; using the session default.", self.label, requested_model)
+                # _request raises RuntimeError/TimeoutError/OSError (broken pipe); vendor ``session/new`` payload
+                # drift (e.g. a non-list ``configOptions``) raises TypeError/AttributeError in the parsers.
+                # Either way model choice degrades to the session default instead of failing the turn.
+                except (RuntimeError, TimeoutError, OSError, TypeError, AttributeError) as exc:
+                    logger.warning("%s model selection for %r failed; continuing with the session default: %s",
+                                   self.label, requested_model, exc)
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]}
+            _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts)
+            return "".join(text_parts), "".join(reasoning_parts)
+
+    def _handle_server_message(
+        self, msg: dict[str, Any], *, process: subprocess.Popen[str], cwd: str, text_parts: list[str] | None, reasoning_parts: list[str] | None,
+        allow_file_requests: bool = True,
+    ) -> bool:
+        """Consume a server->client message; True when handled (notification or request answered)."""
+        method = msg.get("method")
+        if not isinstance(method, str):
+            return False
+        if method == "session/update":
+            update = (msg.get("params") or {}).get("update") or {}
+            content = update.get("content") or {}
+            chunk_text = str(content.get("text") or "") if isinstance(content, dict) else ""
+            sinks = {"agent_message_chunk": text_parts, "agent_thought_chunk": reasoning_parts}
+            if chunk_text and (sink := sinks.get(str(update.get("sessionUpdate") or "").strip())) is not None:
+                sink.append(chunk_text)
+            return True
+        if process.stdin is None:
+            return True
+        message_id = msg.get("id")
+        if method == "session/request_permission":
+            response = _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
+        elif method in _FS_HANDLERS:
+            if not allow_file_requests:
+                response = _jsonrpc_error(message_id, -32601, "File access is unavailable during model discovery.")
+            else:
+                try:
+                    response = _jsonrpc_result(message_id, _FS_HANDLERS[method](msg.get("params") or {}, cwd))
+                except Exception as exc:
+                    response = _jsonrpc_error(message_id, -32602, str(exc))
+        else:
+            response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Hermes yet.")
+        process.stdin.write(json.dumps(response) + "\n")
+        process.stdin.flush()
+        return True

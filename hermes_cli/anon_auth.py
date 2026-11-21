@@ -215,6 +215,19 @@ def free_inference_active(state: Any = None) -> bool:
     return is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
 
 
+def own_trial_active(profile_only: bool = False) -> bool:
+    """:func:`free_inference_active` for readiness checks. ``profile_only`` reads this profile's own
+    auth.json only: a named profile must not look ready on the default profile's trial
+    (``current_nous_state`` falls back to the root store)."""
+    if not profile_only:
+        return free_inference_active()
+    from hermes_cli.auth import _load_auth_store, _provider_state_in
+    try:
+        return free_inference_active(_provider_state_in(_load_auth_store(), "nous") or {})
+    except OSError:  # unreadable store: ``_load_auth_store`` already logged it
+        return False
+
+
 def trial_model() -> str:
     """The last rung of model resolution, below every model the user named (``model.default``, a cron
     or task pin): ``nous/welcome`` while the welcome trial carries inference, else ''. Never written to
@@ -448,13 +461,13 @@ def exchange_anon_jwt(
 def apply_exchange_to_state(state: dict[str, Any], exchanged: dict[str, Any]) -> None:
     """Write a fresh exchange result into a guest state in place: an inference token (token, expiry,
     routing) into the state itself, a connectors-only one into ``connectors_token`` beside it."""
-    from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
+    from hermes_cli.auth_nous import _nous_jwt_deadline, _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
     now = datetime.now(UTC)
-    exp = claims.get("exp")
-    if isinstance(exp, (int, float)):
-        expires_at = datetime.fromtimestamp(float(exp), tz=UTC)
+    deadline = _nous_jwt_deadline(claims, now.isoformat())
+    if deadline is not None:
+        expires_at = datetime.fromtimestamp(deadline, tz=UTC)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
     if is_connectors_only(access_token):
@@ -512,7 +525,7 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any], 
     }
     _store_provider_state(auth_store, "nous", state, set_active=False)
     _save_auth_store(auth_store)
-    _write_shared_nous_state(state)
+    _write_shared_nous_state(state, renewal=False)
     logger.info("Nous free tier ready (identity minted)")
     return state
 
@@ -629,7 +642,8 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
         _store_provider_state, _resolve_verify)
     from hermes_cli.auth_nous import (
-        _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state)
+        _SHARED_RENEWAL_KEY, _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state,
+        _write_shared_nous_state)
     portal = _portal_base_url()
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -637,14 +651,14 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds, 5.0)):
             shared = _read_shared_nous_state()
             if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
-                state = dict(shared)
+                state = {k: v for k, v in shared.items() if k != _SHARED_RENEWAL_KEY}  # another account's tokens
                 _store_provider_state(auth_store, "nous", state, set_active=not is_guest_state(state))
                 _save_auth_store(auth_store)
                 logger.debug("Nous identity adopted from the shared store")
                 return state
             if profile_state:
                 if not shared:
-                    _write_shared_nous_state(profile_state)
+                    _write_shared_nous_state(profile_state, renewal=False)
                 return profile_state
             # A caller queued on these locks behind a mint that just failed waits out its cooldown.
             failure = _mint_failure_for_profile()
@@ -1028,11 +1042,15 @@ def _account_state_from_token(
 ) -> dict[str, Any]:
     """The ``providers.nous`` shape for the signed-in account (same fields the device-code login writes)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, _coerce_ttl_seconds, _optional_base_url, _tls_state_from_verify
-    from hermes_cli.auth_nous import _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, refresh_nous_oauth_from_state
+    from hermes_cli.auth_nous import (
+        _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, _validate_nous_inference_url_from_network,
+        refresh_nous_oauth_from_state)
     now = datetime.now(UTC)
     ttl = _coerce_ttl_seconds(token_data.get("expires_in", 0))
+    # The token response is network input and this URL receives the account bearer: same allowlist
+    # as the device-code login and refresh; a refused value falls back to the registry default.
     inference_url = (
-        _optional_base_url(token_data.get("inference_base_url"))
+        _validate_nous_inference_url_from_network(_optional_base_url(token_data.get("inference_base_url")))
         or PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/"))
     state = {
         "portal_base_url": portal_base_url, "inference_base_url": inference_url,

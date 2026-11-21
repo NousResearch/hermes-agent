@@ -60,6 +60,12 @@ def daemon(tmp_path, model_peer, request):
         "approvals": {"mode": "manual", "timeout": 60},
         "model": {"provider": "custom", "default": "local-wire-stub", "base_url": model_url},
         "auxiliary": {"title_generation": {"enabled": False}},
+        # The autouse inventory stub above cannot reach these child processes, and every ACP
+        # session/new|load|fork builds its model picker there. Keep them off the internet: a cold
+        # catalog fetch blocks the reply for up to 8 s per URL and models.dev for 15 s, and a
+        # degraded runner network pushed session/new past the 40 s RPC bound.
+        "model_catalog": {"enabled": False},
+        "models_dev": {"url": model_url.removesuffix("/v1") + "/models-dev-offline"},
     }
     for key, value in (request.param.items() if isinstance(getattr(request, 'param', None), dict) else ()):
         config.setdefault(key, {}).update(value)

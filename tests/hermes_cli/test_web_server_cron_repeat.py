@@ -28,15 +28,8 @@ def client(monkeypatch, isolated_profiles):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-    monkeypatch.setattr(
-        hermes_state,
-        "DEFAULT_DB_PATH",
-        get_hermes_home() / "state.db",
-    )
     test_client = TestClient(app)
     test_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return test_client
@@ -118,3 +111,15 @@ def test_create_accepts_cli_string_repeat_forms(client, repeat, expected_times):
 
     assert response.status_code == 200
     assert response.json()["repeat"] == {"times": expected_times, "completed": 0}
+
+
+def test_create_stores_the_missed_run_policy_only_when_given(client):
+    """The editor's Missed runs choice must reach the job; omitting it keeps the default (no key)."""
+    chosen = client.post(
+        "/api/cron/jobs",
+        json={"prompt": "nightly", "schedule": "0 3 * * *", "name": "skip missed", "catch_up": False},
+    )
+    plain = client.post("/api/cron/jobs", json={"prompt": "nightly", "schedule": "0 3 * * *", "name": "default"})
+
+    assert chosen.status_code == 200 and chosen.json()["catch_up"] is False
+    assert plain.status_code == 200 and "catch_up" not in plain.json()

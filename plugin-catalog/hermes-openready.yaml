@@ -1,0 +1,22 @@
+name: hermes-openready
+repo: https://github.com/socraticblock/hermes-openready
+sha: f369c7e207789ed6650132636fdf9b014232053f
+title: Open-Ready Publish Guard
+description: "Prepare an open-source release candidate from a private repository and refuse to publish it: five tools (status, doctor, candidate, verify, gate) plus a pre_tool_call guard that inspects the terminal tool and blocks or escalates the publish commands it recognises - the gh, gh api and curl shapes that create a public repository or change visibility - until the owner has approved that exact candidate digest. It does not claim to catch every way to publish. No tool can push, change visibility or upload: candidate writes a local candidate directory and verify may write one packet under .openready-private/. The approval check runs the separately installed Open-Ready CLI with an allowlisted child environment carrying no Hermes provider keys or GitHub tokens. Disclosure — the tools run the separately installed Open-Ready CLI (openready_bin / openready_python from your config) as child processes with an allowlisted environment (no Hermes provider keys or GitHub tokens); openready_candidate writes a candidate directory at <repo>/.openready-candidate and openready_verify with write_packet writes one file at <repo>/.openready-private/packets/packet.json; the pre_tool_call guard inspects every terminal command and blocks, or sends to Hermes' approval prompt, the recognised gh / gh api / curl commands that create a public repository or change visibility, which is not a complete barrier (other tools, scripts or shell forms can still publish)."
+maintainer: socraticblock
+category: automation
+docs_url: https://github.com/socraticblock/hermes-openready#readme
+version: "0.1.0"
+requires_hermes: ">=0.20.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - openready_status
+    - openready_doctor
+    - openready_candidate
+    - openready_verify
+    - openready_gate
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

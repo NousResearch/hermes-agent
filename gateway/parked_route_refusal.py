@@ -23,7 +23,7 @@ import logging
 import time
 from contextlib import contextmanager
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class ParkedRouteRefused(Exception):
         super().__init__('The routed profile is not being served right now; retry this delivery')
 
 
-class ParkedProfileRefusal(RuntimeStoreError):
+class ParkedProfileRefusal(AuthorityRefusal):
     """Producer admission refused because the delivery routes to the parked *profile*: retryable
     (``runtime_draining``), but for as long as the park lasts, so an ordered transport acknowledges it
     and refuses it to the sender (:func:`refuse_parked_route`) instead of redelivering it."""

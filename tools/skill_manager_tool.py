@@ -10,6 +10,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 import contextvars as _ctxvars
 import hashlib
 import json
+import os
 from contextlib import ExitStack, suppress
 import logging
 import re
@@ -221,9 +222,22 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 def _iter_skill_dirs(root: Path):
     from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
-        if not is_excluded_skill_path(skill_md):
-            yield skill_md.parent
+    seen: set[str] = set()
+    for dirpath, dirnames, files in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        dirnames[:] = [
+            d for d in dirnames
+            if not is_excluded_skill_path(Path(dirpath) / d / "SKILL.md")
+            and os.path.realpath(os.path.join(dirpath, d)) not in seen
+        ]
+        if "SKILL.md" in files:
+            skill_md = Path(dirpath) / "SKILL.md"
+            if not is_excluded_skill_path(skill_md):
+                yield skill_md.parent
 
 
 def _read_frontmatter_name(skill_md: Path) -> Optional[str]:

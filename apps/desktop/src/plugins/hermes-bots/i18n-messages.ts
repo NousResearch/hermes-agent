@@ -369,6 +369,10 @@ export type BotsMessages = {
     start: string
     attaching: string
     streamLost: string
+    enterFullscreen: string
+    exitFullscreen: string
+    fullscreenFailed: string
+    fullscreenHint: string
     reconnect: string
     takeOver: string
     handBack: string

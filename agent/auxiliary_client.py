@@ -6545,7 +6545,7 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
     # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
     # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
-    from agent.reasoning_effort import chat_endpoint_efforts, clamp_reasoning_config
+    from agent.reasoning_effort import chat_endpoint_efforts, clamp_glm53_effort, clamp_reasoning_config
     from agent.auxiliary_reasoning_floor import known_reasoning_floor
     if isinstance(extra_body, dict):
         task_reasoning = extra_body.get("reasoning")
@@ -6555,6 +6555,9 @@ def _build_call_kwargs(
             if reasoning_config is None:
                 reasoning_config = task_reasoning
     reasoning_config = clamp_reasoning_config(known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task), chat_endpoint_efforts(model, effective_base))
+    # Z.AI's own hosts refuse ``medium`` for GLM-5.3 on every endpoint; the same host-scoped clamp the
+    # main transport applies must run here too, or an aux/MoA task sends the doomed level and 400s.
+    reasoning_config = clamp_glm53_effort(model, reasoning_config, effective_base)
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, data_use_requirement(messages))
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)

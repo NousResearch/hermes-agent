@@ -15,6 +15,18 @@ from utils import base_url_host_matches
 logger = logging.getLogger(__name__)
 
 
+def _publish_consuming_model(agent: Any) -> None:
+    """Publish the model that will read the next tool result.
+
+    ``vision_analyze`` decides native pixels vs aux text from this runtime.
+    A route swap that only mutates ``agent.model`` leaves the previous model
+    in scope, so a blind fallback gets a stub instead of a description.
+    """
+    from agent.turn_context import _publish_runtime_main
+
+    _publish_runtime_main(agent)
+
+
 class RouteEntryClient(NamedTuple):
     """What the fallback swap builds for an entry. ``client`` is None when the provider has no
     usable client; ``model`` is normalized for the provider (a MoA entry keeps its preset name)."""
@@ -124,6 +136,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
     if commit_pool_choice and choice is not None:
         choice.commit()
+    # vision_analyze reads this runtime, not agent.model; publish the swapped-in model.
+    _publish_consuming_model(agent)
     return old_model, old_provider
 
 
@@ -168,6 +182,7 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     # Undo the identity rewrite so the prompt is byte-identical to the stored copy again
     # (prefix cache match).
     rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+    _publish_consuming_model(agent)
 
 
 def reinstall_primary_runtime(

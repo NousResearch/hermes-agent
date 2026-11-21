@@ -272,7 +272,8 @@ export function dropPageRowsOfStoppedTurns(window: ChatMessage[], page: ChatMess
  * boundary: the window's whole fold stays and the page's partial copy goes.
  * A compaction rewrite renumbers the page's stored rows but keeps each row's
  * message_uid, so the same cut is decided by uid when the ids no longer pair
- * (#123294).
+ * (#123294) — still only when the window's fold carries a row the page does
+ * not, so a page that already holds the whole renumbered turn keeps its copy.
  */
 export function dropPageFoldsCutByTheBoundary(window: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
   const pageRows = page.flatMap(transcriptRowIds)
@@ -282,6 +283,7 @@ export function dropPageFoldsCutByTheBoundary(window: ChatMessage[], page: ChatM
   }
 
   const pageFirst = Math.min(...pageRows)
+  const pageUids = new Set(page.flatMap(transcriptUids))
 
   const wholeFolds = window
     .map(message => ({ rows: new Set(transcriptRowIds(message)), uids: new Set(transcriptUids(message)) }))
@@ -294,8 +296,13 @@ export function dropPageFoldsCutByTheBoundary(window: ChatMessage[], page: ChatM
     return (
       (rows.length > 0 && wholeFolds.some(whole => rows.every(id => whole.rows.has(id)))) ||
       // The renumbered partial copy: its uids still name rows the window's
-      // whole fold carries, so the same suffix-cut test pairs it by uid.
-      (uids.length > 0 && wholeFolds.some(whole => uids.every(uid => whole.uids.has(uid))))
+      // whole fold carries, so the same suffix-cut test pairs it by uid — but
+      // only when that fold still carries a row the page does not, so a page
+      // that already holds the whole turn keeps its renumbered copy.
+      (uids.length > 0 &&
+        wholeFolds.some(
+          whole => uids.every(uid => whole.uids.has(uid)) && [...whole.uids].some(uid => !pageUids.has(uid))
+        ))
     )
   }
 

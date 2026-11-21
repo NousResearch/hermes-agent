@@ -382,3 +382,118 @@ it('keeps one copy when the page brings the whole turn the window holds cut', ()
     ).toHaveLength(1)
   }
 })
+
+it('keeps the renumbered generation when both the window and the page hold the whole turn', () => {
+  const call = (id: string) => ({
+    id,
+    type: 'function' as const,
+    function: { name: 'terminal', arguments: '{"command":"echo"}' }
+  })
+
+  const original: SessionMessage[] = [
+    { id: 100, message_uid: 'm100', role: 'user', content: 'older prompt', timestamp: TIMESTAMP },
+    {
+      id: 101,
+      message_uid: 'm101',
+      role: 'assistant',
+      content: 'look one',
+      timestamp: TIMESTAMP + 1,
+      tool_calls: [call('c1')]
+    },
+    {
+      id: 102,
+      message_uid: 'm102',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 2,
+      tool_call_id: 'c1',
+      tool_name: 'terminal'
+    },
+    {
+      id: 103,
+      message_uid: 'm103',
+      role: 'assistant',
+      content: 'look two',
+      timestamp: TIMESTAMP + 3,
+      tool_calls: [call('c2')]
+    },
+    {
+      id: 104,
+      message_uid: 'm104',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 4,
+      tool_call_id: 'c2',
+      tool_name: 'terminal'
+    },
+    {
+      id: 105,
+      message_uid: 'm105',
+      role: 'assistant',
+      content: 'look three',
+      timestamp: TIMESTAMP + 5,
+      tool_calls: [call('c3')]
+    },
+    {
+      id: 106,
+      message_uid: 'm106',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 6,
+      tool_call_id: 'c3',
+      tool_name: 'terminal'
+    },
+    { id: 107, message_uid: 'm107', role: 'assistant', content: 'older answer', timestamp: TIMESTAMP + 7 }
+  ]
+
+  const newer: SessionMessage[] = [
+    { id: 300, message_uid: 'm300', role: 'user', content: 'newer prompt', timestamp: TIMESTAMP + 20 },
+    { id: 301, message_uid: 'm301', role: 'assistant', content: 'newer answer', timestamp: TIMESTAMP + 21 }
+  ]
+
+  // The compaction dropped the window's oldest rows and renumbered the turn
+  // it kept: the window holds ancient rows the page no longer carries plus
+  // the whole turn under its pre-compaction ids (100-107), the page holds the
+  // same whole turn under the renumbered ids (200-207), the same message_uid
+  // on each row. The ancient rows keep the graft on the merge path — a page
+  // that covered every window row would take over directly. There the
+  // boundary cut used to drop the page's copy of the turn — its uids all
+  // name rows a window fold carries — leaving the window's stale generation
+  // on screen. The cut now requires the window fold to still carry a row the
+  // page does not, so the page's renumbered copy takes the slots instead.
+  const older: SessionMessage[] = [
+    { id: 90, message_uid: 'm90', role: 'user', content: 'ancient prompt', timestamp: TIMESTAMP - 10 },
+    { id: 91, message_uid: 'm91', role: 'assistant', content: 'ancient answer', timestamp: TIMESTAMP - 9 }
+  ]
+
+  const window = toChatMessages([...older, ...original, ...newer])
+
+  const page = toChatMessages([...original.map((message, index) => ({ ...message, id: 200 + index })), ...newer])
+
+  const merged = graftRefreshedTailOntoBackfill(page, window)
+
+  const visible = render(merged)
+
+  for (const text of [
+    'ancient prompt',
+    'ancient answer',
+    'older prompt',
+    'look one',
+    'look two',
+    'look three',
+    'older answer',
+    'newer prompt',
+    'newer answer'
+  ]) {
+    expect(
+      visible.filter(item => item === text),
+      text
+    ).toHaveLength(1)
+  }
+
+  const turnRows = merged.filter(message => message.rowId !== undefined && message.rowId > 91 && message.rowId < 300)
+
+  // The renumbered generation won: the window's stale rows never render, and
+  // future reads and actions resolve the ids the store still holds.
+  expect(turnRows.map(message => message.rowId)).toEqual([200, 201])
+})

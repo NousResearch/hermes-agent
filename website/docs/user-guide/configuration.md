@@ -520,6 +520,7 @@ Runs commands on a remote server over SSH. Uses ControlMaster for connection reu
 terminal:
   backend: ssh
   persistent_shell: true           # Carry exported env vars between commands (default: true)
+  ssh_sync_files: true             # Sync local skills and Hermes files to the SSH host (default: true)
 ```
 
 **Required environment variables:**
@@ -536,7 +537,8 @@ TERMINAL_SSH_USER=ubuntu
 | `TERMINAL_SSH_PORT` | `22` | SSH port |
 | `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
 | `TERMINAL_SSH_PERSISTENT` | follows `terminal.persistent_shell` (`true`) | Carry exported env vars between commands |
-| `TERMINAL_SSH_SYNC_FILES` | `true` | Synchronize Hermes files automatically with the SSH host. Set `terminal.ssh_sync_files` to `false` to disable it. |
+
+**File sync:** `terminal.ssh_sync_files` (configured in `config.yaml` only; defaults to `true`) controls whether Hermes automatically uploads local skills and synced files to the remote SSH host. Set `terminal.ssh_sync_files: false` to disable automatic file synchronization.
 
 **How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`, then captures the remote login shell's environment once into a snapshot file. Every command runs as a fresh `bash -c` that sources that snapshot, `cd`s to the tracked working directory, and runs your command.
 

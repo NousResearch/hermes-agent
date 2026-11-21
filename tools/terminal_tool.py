@@ -810,6 +810,21 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     return cwd, host_cwd
 
 
+def _ssh_sync_files_enabled() -> bool:
+    """``terminal.ssh_sync_files`` from config.yaml (default true; config-only, no env var)."""
+    from hermes_cli.config import cfg_get
+    from hermes_cli.config_effective import load_user_config_effective
+
+    try:
+        value = cfg_get(load_user_config_effective(), "terminal", "ssh_sync_files", default=True)
+    except Exception:
+        logger.debug("terminal.ssh_sync_files unreadable; using default", exc_info=True)
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off")
+    return value is not False
+
+
 def _get_env_config() -> dict[str, Any]:
     """Resolve the terminal configuration dict from TERMINAL_* env vars."""
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
@@ -858,7 +873,7 @@ def _get_env_config() -> dict[str, Any]:
         "ssh_user": _tenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": _tenv("TERMINAL_SSH_KEY", ""),
-        "ssh_sync_files": _tenv_bool("TERMINAL_SSH_SYNC_FILES", "true"),
+        "ssh_sync_files": _ssh_sync_files_enabled(),
         # Exported env carries across commands (cwd always does). SSH follows
         # terminal.persistent_shell; local has its own knob. Both default on.
         "ssh_persistent": _tenv_bool(

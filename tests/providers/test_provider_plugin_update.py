@@ -133,3 +133,47 @@ def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     # The fixed release after it loads clean: nothing the broken one half-imported is reused.
     assert "new sessions use this version" in activation_hint(update_to(4))
     assert get_provider_profile("demo-provider").create_client().version == "v4"
+
+
+def test_frozen_snapshot_symlinks_external_runtime_dirs_and_cleanup_preserves_them(plugin):
+    from providers import get_provider_profile
+
+    _write(plugin, 1)
+    venv_marker = plugin / ".venv" / "bin" / "python"
+    venv_marker.parent.mkdir(parents=True, exist_ok=True)
+    venv_marker.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    profile = get_provider_profile("demo-provider")
+    assert profile is not None
+    mod_file = sys.modules[profile.__class__.__module__].__file__
+    assert mod_file is not None
+    snap_dir = Path(mod_file).resolve().parent
+    assert snap_dir != plugin
+    snap_venv = snap_dir / ".venv"
+    assert snap_venv.is_symlink()
+    assert snap_venv.resolve() == (plugin / ".venv").resolve()
+    assert (snap_venv / "bin" / "python").is_file()
+
+    # Removing the snapshot on exit unlinks the symlink without touching the real .venv.
+    shutil.rmtree(snap_dir)
+    assert venv_marker.is_file()
+
+
+def test_late_created_runtime_dir_is_linked_on_next_sweep(plugin):
+    from providers import get_provider_profile
+
+    _write(plugin, 1)
+    profile = get_provider_profile("demo-provider")
+    assert profile is not None
+    mod_file = sys.modules[profile.__class__.__module__].__file__
+    assert mod_file is not None
+    snap_dir = Path(mod_file).resolve().parent
+    assert not (snap_dir / ".venv").exists()
+
+    venv_marker = plugin / ".venv" / "bin" / "python"
+    venv_marker.parent.mkdir(parents=True, exist_ok=True)
+    venv_marker.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    _forced_sweep()
+    assert (snap_dir / ".venv").is_symlink()
+    assert (snap_dir / ".venv" / "bin" / "python").is_file()

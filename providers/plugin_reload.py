@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 # Directories inside a plugin tree that never hold code the provider imports.
 _SKIP_DIRS = frozenset({"__pycache__", ".git", "node_modules", "tests", "evals", ".venv"})
 _SNAPSHOT_IGNORE = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".venv")
+# Runtime directories excluded from copytree (large / non-relocatable) but symlinked back
+# into the frozen copy so external-runtime plugins still resolve them relative to __file__.
+_RUNTIME_DIRS = (".venv", "node_modules")
 # The directory is Hermes-private, and these names are reserved in it. A sweep reclaims "owned-" roots (made under
 # the setup lock) once their owner.lock exists and nobody holds it, and finishes "_REAPING_PREFIX" claims; entries
 # under any other name are never touched.
@@ -141,6 +144,21 @@ def _new_root() -> Path:
     return root
 
 
+def _link_runtime_dirs(plugin_dir: Path, staged_dir: Path) -> None:
+    """Expose excluded runtime directories (.venv, node_modules) from *plugin_dir* in *staged_dir*
+    via symlinks without copying them."""
+    for name in _RUNTIME_DIRS:
+        src = plugin_dir / name
+        dst = staged_dir / name
+        if src.is_dir() and not dst.exists() and not dst.is_symlink():
+            try:
+                dst.symlink_to(src, target_is_directory=True)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                logger.warning("Could not symlink %s for provider plugin %s: %s", name, plugin_dir.name, exc)
+
+
 def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     """A frozen copy of *plugin_dir* for *module_name* (per home, plugin and tree), named like the original
     (load errors key on it). Copied into a private directory and published by one rename, so a concurrent scan
@@ -151,12 +169,15 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
             _snapshot_root = _new_root()
     target = _snapshot_root / module_name / plugin_dir.name
     if target.is_dir():
+        _link_runtime_dirs(plugin_dir, target)
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix=".copy-", dir=target.parent))
     try:
-        shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_SNAPSHOT_IGNORE)
-        os.rename(private / plugin_dir.name, target)
+        staged = private / plugin_dir.name
+        shutil.copytree(plugin_dir, staged, ignore=_SNAPSHOT_IGNORE)
+        _link_runtime_dirs(plugin_dir, staged)
+        os.rename(staged, target)
     except OSError:
         if not target.is_dir():  # another scan publishing the same copy first is fine
             raise
@@ -191,6 +212,10 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     fingerprint = tree_fingerprint(plugin_dir)
     live = layer.trees.get(base_name)
     if live is not None and live[0] == fingerprint:
+        if _snapshot_root is not None:
+            live_dir = _snapshot_root / live[1] / plugin_dir.name
+            if live_dir.is_dir():
+                _link_runtime_dirs(plugin_dir, live_dir)
         return
     module_name = f"{base_name}_{fingerprint}"
     staging = P._HomeLayer()

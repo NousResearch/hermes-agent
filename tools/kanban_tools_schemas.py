@@ -205,7 +205,10 @@ KANBAN_SCHEDULE_SCHEMA = _schema(
         "Park your task as 'scheduled' while it waits for a time or external event. This ends the current run and makes the "
         "task non-dispatchable until an orchestrator unblocks it; it does not "
         "create a timer. Put any wake-up marker such as "
-        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``."
+        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``. "
+        "To wait for a background process you started, pass ``wait_for_process`` and ``until``: "
+        "the dispatcher reopens the task without a model call when the process exits or the "
+        "deadline passes. After a successful call, end your turn."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -213,6 +216,10 @@ KANBAN_SCHEDULE_SCHEMA = _schema(
             "Optional reason or machine-readable wake-up marker recorded on "
             "the completed run and scheduled event."
         )),
+        "wait_for_process": _prop("string", (
+            "Session id of a background process you started with terminal(background=true)"
+        )),
+        "until": _prop("string", "ISO-8601 deadline with a timezone, required with wait_for_process"),
     },
     [],
 )

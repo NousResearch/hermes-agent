@@ -882,10 +882,64 @@ def _handle_schedule(args: dict, **kw) -> str:
                "goal_mode tasks cannot be scheduled: use kanban_block with kind "
                f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
                "blocker, or kanban_complete so the completion judge can evaluate it.")
+        wait = _process_wait_for(args)
         ok = kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid), wait=wait)
         _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
-        return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
+        if wait is None:
+            return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
+        return _ok_landed(
+            kb, conn, tid, "scheduled", reason=reason, wait_for_process=wait["session_id"],
+            until=_iso_utc(wait["until"]),
+            note="Parked until the process exits or the deadline passes. End your turn now; do not poll.")
+
+
+def _iso_utc(epoch: float) -> str:
+    from datetime import UTC, datetime
+    return datetime.fromtimestamp(int(epoch), UTC).isoformat()
+
+
+def _process_wait_for(args: dict) -> Optional[dict]:
+    """The ``kanban_schedule`` wait condition for ``wait_for_process``/``until``, or None when neither
+    is given. Rejects anything the dispatcher could not observe: a finished, remote or unlogged job.
+    Looks the session up with ``process_registry.get`` only: wait/poll/read_log consume its
+    completion notice."""
+    from datetime import datetime
+    from hermes_cli.kanban_db_wake import process_wait
+    from tools.process_registry import process_registry
+    from tools.process_registry_output_log import adoptable_log, recorded_exit_code
+
+    sid, raw_until = args.get("wait_for_process"), args.get("until")
+    if sid is None and raw_until is None:
+        return None
+    _check(sid is not None, "until is only valid together with wait_for_process "
+           "(kanban_schedule does not create a timer).")
+    _check(isinstance(sid, str) and sid.strip(), "wait_for_process must be a background process session id")
+    _check(raw_until is not None, "wait_for_process requires until: an ISO-8601 deadline with a timezone.")
+    now = time.time()
+    now_iso = _iso_utc(now)
+    try:
+        deadline = datetime.fromisoformat(str(raw_until).strip())
+    except ValueError:
+        raise _Reject(f"until must be an ISO-8601 timestamp with a timezone (now: {now_iso}).") from None
+    _check(deadline.tzinfo is not None, f"until must include a timezone, e.g. {now_iso} (now: {now_iso}).")
+    _check(deadline.timestamp() > now, f"until must be in the future (now: {now_iso}).")
+    session = process_registry.get(sid.strip())
+    _check(session is not None, f"wait_for_process: no background process {sid!r} in this session.")
+    code = recorded_exit_code(session.output_log) if session.output_log else None
+    if code is None and session.exited:
+        code = session.exit_code
+    _check(not session.exited and code is None,
+           f"process {session.id} already exited with code {code}; nothing to wait for. "
+           "The task was not scheduled.")
+    _check(session.pid_scope == "host" and session.pid,
+           f"wait_for_process: process {session.id} does not run on this host (remote backend); "
+           "the dispatcher cannot observe it.")
+    _check(adoptable_log(session.output_log),
+           f"wait_for_process: process {session.id} has no output log under this profile "
+           "(only background processes started by a kanban worker can be awaited).")
+    return process_wait(session_id=session.id, pid=session.pid, output_log=session.output_log,
+                        until=int(deadline.timestamp()))
 
 
 @_kanban_handler("kanban_request_review")

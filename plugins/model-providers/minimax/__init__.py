@@ -17,6 +17,48 @@ def _is_minimax_global_openai_base_url(base_url: str | None) -> bool:
     return (parsed.hostname or "").lower() == "api.minimax.io" and parsed.path.rstrip("/").lower() == "/v1"
 
 
+def _minimax_oauth_picker_catalog(force_refresh: bool = False) -> list[str] | None:
+    """Live model catalog for the MiniMax OAuth provider.
+
+    The OAuth endpoint publishes the account's own model list at
+    ``{inference_base_url}/v1/models`` (Anthropic Messages shape: ``data[].id``). Without this
+    hook the picker could only ever render the curated static list, so a model MiniMax
+    released after the last catalog edit stayed invisible even though the account could serve
+    it — the picker asked nobody, it replayed a hardcoded list.
+
+    Returns ``None`` when no credential is available or the endpoint is unreachable, so the
+    caller falls through to the curated list instead of showing an empty catalog.
+    """
+    try:
+        from hermes_cli.auth_minimax import resolve_minimax_oauth_runtime_credentials
+        creds = resolve_minimax_oauth_runtime_credentials()
+    except Exception:
+        return None
+    token = creds.get("api_key")
+    base_url = str(creds.get("base_url") or "").strip()
+    if not token or not base_url:
+        return None
+
+    try:
+        import httpx
+        response = httpx.get(
+            base_url.rstrip("/") + "/v1/models",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
+
+    ids: list[str] = []
+    for entry in (payload.get("data") or []) if isinstance(payload, dict) else []:
+        model_id = str((entry or {}).get("id") or "").strip()
+        if model_id and model_id not in ids:
+            ids.append(model_id)
+    return ids or None
+
+
 class MiniMaxProfile(ProviderProfile):
     """MiniMax — M3 OpenAI-compatible reasoning controls."""
 
@@ -54,6 +96,7 @@ minimax_oauth = MiniMaxProfile(
     signup_url="https://api.minimax.io/",
     env_vars=(),  # OAuth — tokens in auth.json, not env
     base_url="https://api.minimax.io/anthropic", auth_type="oauth_external", default_aux_model="MiniMax-M2.7",
+    picker_catalog=_minimax_oauth_picker_catalog,
 )
 
 register_provider(minimax)

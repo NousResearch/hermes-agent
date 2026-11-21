@@ -2657,6 +2657,18 @@ def _teardown_cron_agent(
         timeout_seconds=timeout_seconds)
 
 
+class _OwnershipLostEvent(threading.Event):
+    """A fire-claim loss latch that also carries WHY the claim was lost.
+
+    ``cancel_reason()`` reads ``.reason`` off the cancel source. Without it the operator-facing
+    error falls back to the legacy "cron fire ownership was lost" wording even when the real cause
+    was a ledger/claim write that could not be completed — that wording sent the 2026-11-16
+    investigation after a phantom atomicity bug in the claim handoff.
+    """
+
+    reason: Optional[str] = None
+
+
 def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
     """Run ``run`` while keeping this job's owned durable fire claim fresh."""
     claim = job.get("fire_claim")
@@ -2666,7 +2678,12 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
-    lost_ownership = threading.Event()
+    lost_ownership = _OwnershipLostEvent()
+
+    def _lose_ownership(reason: str) -> None:
+        """Stamp WHY the claim was lost before tearing the run down."""
+        lost_ownership.reason = reason
+        lost_ownership.set()
 
     def _finish_unstarted(error: str) -> None:
         execution_id = job.get("execution_id")
@@ -2694,6 +2711,7 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
 
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
+        last_error: Optional[BaseException] = None
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
                 if not heartbeat_fire_claim(job_id, expected_owner=owner):
@@ -2706,19 +2724,25 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                             job_id, expected_owner=owner):
                         last_confirmed = time.monotonic()
                         continue
-                    lost_ownership.set()
+                    _lose_ownership(
+                        "another process now owns this job's fire claim")
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
                         job_id)
                     return
                 last_confirmed = time.monotonic()
-            except Exception:
+                last_error = None
+            except Exception as exc:
+                last_error = exc
                 logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
                 if (
                     time.monotonic() - last_confirmed
                     >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
                 ):
-                    lost_ownership.set()
+                    _lose_ownership(
+                        "fire claim could not be renewed for "
+                        f"{_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:.0f}s "
+                        f"({type(last_error).__name__}: {last_error})")
                     logger.warning(
                         "Job '%s': fire_claim could not be renewed within %.1fs; "
                         "interrupting uncertain run",
@@ -3443,6 +3467,20 @@ def _run_one_job_body(
             reset_terminal_scope(_terminal_scope_token)
 
 
+def _ledger_call(fn, *args, **kwargs):
+    """A ledger call that must not turn transient SQLite contention into a job failure.
+
+    The post-handoff waiter reads and writes the same ledger the worker is writing. On 2026-11-16
+    (loadavg 118) a locked statement escaped the 5s busy timeout, ``_wait_for_external_cron_worker``
+    wrapped it as ``_ExternalWorkerPostHandoffError`` and the job was booked as
+    "Restart-safe cron worker failed after handoff: database is locked" while its worker had not
+    even adopted the row. Retry the transient case instead of failing the fire.
+    """
+    from cron.executions import retry_on_lock
+
+    return retry_on_lock(fn, *args, **kwargs)
+
+
 def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
@@ -3458,7 +3496,7 @@ def _wait_for_external_cron_worker_body(
     worker or change its ledger ownership.
     """
     def _is_terminal() -> bool:
-        current = get_execution(execution_id)
+        current = _ledger_call(get_execution, execution_id)
         return bool(current and current.get("status") in _TERMINAL_STATES)
 
     # The worker commits its terminal row before its process exits, so exit is
@@ -3483,7 +3521,7 @@ def _wait_for_external_cron_worker_body(
         # The worker can commit its terminal row and exit between the first
         # read and wait(). Re-read the exact attempt before declaring that
         # it died without terminalizing.
-        current = get_execution(execution_id)
+        current = _ledger_call(get_execution, execution_id)
         if current and current.get("status") in FIRER_FINISHED_STATES:
             return True
         # If the adopted worker died without terminalizing, its owner is
@@ -3501,11 +3539,11 @@ def _wait_for_external_cron_worker_body(
         from cron.scheduler_worker_failure import external_worker_exited_reason
 
         reason = external_worker_exited_reason(returncode)
-        if not terminalize_dead_owner(execution_id, reason=reason):
-            recover_interrupted_executions()
+        if not _ledger_call(terminalize_dead_owner, execution_id, reason=reason):
+            _ledger_call(recover_interrupted_executions)
             # A concurrent sweep may have won the unknown transition. Still
             # surface this waiter's exit code and stderr instead of discarding them.
-            current = get_execution(execution_id)
+            current = _ledger_call(get_execution, execution_id)
             if current and current.get("status") in FIRER_FINISHED_STATES:
                 return True
         stderr_tail = ""
@@ -3520,6 +3558,23 @@ class _ExternalWorkerPostHandoffError(RuntimeError):
     """The waiter failed after the worker was spawned and may own the execution."""
 
 
+def _worker_process_gone(process) -> bool:
+    """True only when the cron worker process is provably gone.
+
+    Called from a ``finally``: an un-pollable duck-typed object (tests, callers passing a
+    stand-in) must read as "not gone", so cleanup never raises over the in-flight wait error and
+    never deletes a payload a booting worker has not read yet. Doubt is resolved toward keeping
+    the files.
+    """
+    poll = getattr(process, "poll", None)
+    if not callable(poll):
+        return False
+    try:
+        return poll() is not None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
 def _wait_for_external_cron_worker(
     process: subprocess.Popen,
     *,
@@ -3528,10 +3583,15 @@ def _wait_for_external_cron_worker(
     handoff_files: tuple[Path, ...] = (),
     stderr_path: Optional[Path] = None,
 ) -> bool:
+    settled = False
     try:
-        return _wait_for_external_cron_worker_body(
+        result = _wait_for_external_cron_worker_body(
             process, execution_id=execution_id, stderr_path=stderr_path
         )
+        # The body only returns once the attempt is terminal (completed/failed/cancelled) or its
+        # worker is dead, so a normal return is itself proof that no payload is still needed.
+        settled = True
+        return result
     except Exception as wait_error:
         raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
     finally:
@@ -3540,13 +3600,22 @@ def _wait_for_external_cron_worker(
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(_key)
                 _scope_isolated_job_ids.discard(_key)
-        # The execution is terminal or its worker is dead: nobody will read a
-        # payload or acknowledgement left behind by a late/unread handoff.
-        for stale in handoff_files:
-            try:
-                stale.unlink(missing_ok=True)
-            except OSError:
-                pass
+        # Only clean up handoff files when nobody can still need them: the wait settled (the body
+        # only returns on a terminal attempt), or the worker process is gone. A worker that is
+        # still booting has not read its payload yet; deleting it from here made the worker fail
+        # with "could not load payload" (2026-11-16 13:54:29) — a waiter-side failure turned into a
+        # guaranteed orphan run. A live worker removes its own payload after reading it
+        # (``_run_external_worker_payload``).
+        # NOTE: no ``return`` here — this is a ``finally`` and returning would swallow the
+        # in-flight ``_ExternalWorkerPostHandoffError``. ``process`` is duck-typed in tests and
+        # callers, so an un-pollable object must not mask the wait error either.
+        if settled or _worker_process_gone(process):
+            # Nobody will read a payload or acknowledgement left behind by a late/unread handoff.
+            for stale in handoff_files:
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def _launch_external_cron_worker(job: dict) -> bool:

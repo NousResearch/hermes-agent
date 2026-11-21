@@ -34,6 +34,6 @@ if (!process.env.HERMES_E2E_RUN_TMP) {
   process.env.TMP = root
   process.on('exit', () => {
     reapRunBackends(candidate => candidate === root)
-    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 }

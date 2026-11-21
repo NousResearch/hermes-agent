@@ -43,6 +43,34 @@ class TestSkillManageBatch(unittest.TestCase):
             op.setdefault("name", name)
         return json.loads(self.smt.skill_manage(action="", name="", operations=ops))
 
+    def test_rollback_keeps_symlinks_as_links(self):
+        # A failed batch restores the skill from its snapshot. The snapshot must keep a link as a
+        # link: copying through it would turn the link into a regular file holding its target's bytes.
+        outside = os.path.join(self.home, "outside.txt")
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("not part of the skill")
+        self.assertTrue(self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])["success"])
+        refs = os.path.join(self.home, "skills", "probe", "references")
+        os.makedirs(refs)
+        with open(os.path.join(refs, "real.md"), "w", encoding="utf-8") as f:
+            f.write("real")
+        try:
+            os.symlink("real.md", os.path.join(refs, "inside.md"))
+            os.symlink(outside, os.path.join(refs, "outside.md"))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+
+        r = self._call("probe", [
+            {"action": "write_file", "file_path": "references/new.md", "file_content": "new"},
+            {"action": "patch", "old_string": "NOT IN THE FILE", "new_string": "x"},
+        ])
+        self.assertFalse(r["success"], r)
+        for name in ("inside.md", "outside.md"):
+            self.assertTrue(os.path.islink(os.path.join(refs, name)), f"{name} came back as a regular file")
+        self.assertEqual(os.readlink(os.path.join(refs, "inside.md")), "real.md")
+        self.assertEqual(os.readlink(os.path.join(refs, "outside.md")), outside)
+        self.assertFalse(os.path.exists(os.path.join(refs, "new.md")))
+
     def test_create_plus_files_atomic(self):
         r = self._call("probe", [
             {"action": "create", "content": SK.format(n="probe")},

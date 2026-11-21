@@ -2297,22 +2297,23 @@ body.guest-pointer-lock :is(webview, iframe) {
   padding: 0 !important;
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
+/* A Bot Mode room renders replies through the same MarkdownTextContent, so its
+   tables need the same Typography reset; without it `.prose :where(table)`
+   adds a 2em top margin inside the bordered table card. */
+:is([data-slot='aui_assistant-message-content'], [data-slot='group-chat-message-content']) .aui-md .aui-md-table {
   border-spacing: 0;
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table > table,
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead,
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table tbody,
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table tr,
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table th,
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table td {
+:is([data-slot='aui_assistant-message-content'], [data-slot='group-chat-message-content'])
+  .aui-md
+  .aui-md-table
+  :is(table, thead, tbody, tr, th, td) {
   margin: 0 !important;
   margin-block-start: 0 !important;
   margin-block-end: 0 !important;
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
+:is([data-slot='aui_assistant-message-content'], [data-slot='group-chat-message-content']) .aui-md .aui-md-table thead {
   border-bottom-color: var(--ui-stroke-tertiary) !important;
 }
 

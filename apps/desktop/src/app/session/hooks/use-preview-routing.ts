@@ -14,15 +14,10 @@ import {
   renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
-import type { PreviewOwner } from '@/store/preview-ownership'
 import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
-import {
-  $focusedRuntimeId,
-  $sessionTiles,
-  previewScopeForRuntime,
-  storedSessionIdForRuntimeId
-} from '@/store/session-states'
+import { visibleSessionIdentity } from '@/store/session-identity'
+import { $focusedRuntimeId } from '@/store/session-states'
 
 type EventHandler = (event: GatewayEvent) => void
 
@@ -36,27 +31,18 @@ function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
-function sessionIsOnScreen(sessionId: string): boolean {
-  return (
-    sessionId === $focusedRuntimeId.get() ||
-    sessionId === $activeSessionId.get() ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
-  )
+function trimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
-/** The stored id whose drawer an agent's preview event belongs to: the session
- *  that ran the tool, not whichever one holds focus (#73890). A runtime with no
- *  stored id yet is a fresh draft, whose tabs are ownerless until adopted. */
-function previewOwnerForEvent(sessionId: string | undefined): null | string {
-  return sessionId ? storedSessionIdForRuntimeId(sessionId) : $focusedStoredSessionId.get()
-}
-
-/** The full identity an agent's close acts for: its stored id, the runtime
- *  (its pending tabs) and its profile (the only pins it may close). */
-function previewCloserForEvent(sessionId: string | undefined): PreviewOwner {
-  return sessionId
-    ? { profile: previewScopeForRuntime(sessionId), runtimeId: sessionId, sessionId: previewOwnerForEvent(sessionId) }
-    : previewOwnerForEvent(sessionId)
+function previewIdentityForEvent(event: GatewayEvent) {
+  return event.session_id
+    ? visibleSessionIdentity({
+        activeSessionId: $activeSessionId.get(),
+        sessionId: event.session_id,
+        source: event
+      })
+    : undefined
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -106,16 +92,18 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         // open (offer, don't hijack). Routes through the same normalizer as
         // the file browser so URLs, localhost, and file paths all resolve.
         const { url, label } = asRecord(event.payload)
-        const target = typeof url === 'string' ? url.trim() : ''
+        const target = trimmedString(url)
 
-        if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
+        const owner = previewIdentityForEvent(event)
+
+        if (target && (!event.session_id || owner)) {
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
             async resolved => {
               if (!resolved) {
                 return
               }
 
-              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
+              const trimmedLabel = trimmedString(label)
               // The agent's loopback is the GATEWAY's loopback. Give the pane a
               // URL this machine can load, keeping the original as the label so
               // the user still sees the address the agent named.
@@ -124,11 +112,11 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
               openPreview(
                 renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
-                previewOwnerForEvent(event.session_id),
+                event.session_id ? owner!.sessionId : $focusedStoredSessionId.get(),
                 // The runtime that ran the tool, should its stored id lag.
-                event.session_id || undefined,
+                owner?.runtimeId || event.session_id || undefined,
                 // Its profile: another profile's pinned Browser is not its to navigate.
-                event.session_id ? previewScopeForRuntime(event.session_id) : undefined
+                owner?.profile
               )
             }
           )
@@ -142,13 +130,15 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         // a session the user can see may tidy the pane it opened; a hidden
         // background turn must not dismiss the user's preview.
         const { url } = asRecord(event.payload)
-        const target = typeof url === 'string' ? url.trim() : ''
+        const target = trimmedString(url)
 
-        if (event.session_id && !sessionIsOnScreen(event.session_id)) {
+        const identity = previewIdentityForEvent(event)
+
+        if (event.session_id && !identity) {
           return
         }
 
-        const owner = previewCloserForEvent(event.session_id)
+        const owner = event.session_id ? identity! : $focusedStoredSessionId.get()
 
         if (!target) {
           closeAgentPreview(owner, [])

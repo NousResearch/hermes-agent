@@ -34,6 +34,7 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { ExternalLink } from '@/lib/external-link'
+import { parseFrontmatter } from '@/lib/frontmatter'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
@@ -487,8 +488,28 @@ const MARKDOWN_COMPONENTS = {
 const PREVIEW_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkPreviewFileLinks]
 const PREVIEW_REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypePreviewHeadingIds]
 
+// A note's leading YAML frontmatter is metadata, not prose: as markdown it
+// renders as a rule, one run-on paragraph of `key: value` lines and a
+// setext heading. Show it as a key/value block above the body instead.
+function FrontmatterBlock({ meta }: { meta: [string, string][] }) {
+  return (
+    <div
+      className="mb-3 grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3"
+      data-preview-frontmatter=""
+    >
+      {meta.map(([key, value], index) => (
+        <div className="flex gap-2 text-[0.68rem] leading-4" key={`${index}:${key}`}>
+          <span className="w-28 shrink-0 font-medium text-(--ui-text-tertiary)">{key}</span>
+          <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">{value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {
-  const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+  const { body, meta } = useMemo(() => parseFrontmatter(text), [text])
+  const mathText = useMemo(() => normalizeFilePreviewMath(body), [body])
 
   return (
     <PreviewNoteContext.Provider value={filePath}>
@@ -497,6 +518,7 @@ export function MarkdownPreview({ filePath, text }: { filePath?: string; text: s
         data-preview-markdown=""
         data-selectable-text="true"
       >
+        {meta.length > 0 && <FrontmatterBlock meta={meta} />}
         <Streamdown
           components={MARKDOWN_COMPONENTS}
           controls={false}

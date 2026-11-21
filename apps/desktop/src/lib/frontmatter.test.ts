@@ -22,6 +22,12 @@ describe('parseFrontmatter', () => {
     ])
   })
 
+  it('keeps fenced prose that has no key lines as body', () => {
+    const text = '---\nJust a thought between rules\n---\n\nMore.'
+
+    expect(parseFrontmatter(text)).toEqual({ body: text, meta: [] })
+  })
+
   it('returns the whole content as body when there is no frontmatter', () => {
     expect(parseFrontmatter('# Just a skill')).toEqual({ body: '# Just a skill', meta: [] })
   })

@@ -423,7 +423,8 @@ it.each(['owner', 'lender'])('keeps the draft and a working Retry after a failed
 
 it.each(Object.keys(CANONICAL_GROUP_LOCALES) as (keyof typeof CANONICAL_GROUP_LOCALES)[])('calls a duplicate-member refusal a group chat (%s)', language => {
   const terms = { en: 'group chat', ja: 'グループチャット', zh: '群聊', 'zh-hant': '群組聊天', ar: 'محادثة المجموعة',
-    ru: 'группового чата', fr: 'discussion de groupe', de: 'Gruppenchat', es: 'chat de grupo' }
+    ru: 'группового чата', fr: 'discussion de groupe', de: 'Gruppenchat', es: 'chat de grupo',
+    cs: 'Skupinový chat' }
 
   const message = canonicalGroupCreateError({ canonicalGroupProblem: 'duplicateMember' }, CANONICAL_GROUP_LOCALES[language])
   expect(message).toContain(terms[language])

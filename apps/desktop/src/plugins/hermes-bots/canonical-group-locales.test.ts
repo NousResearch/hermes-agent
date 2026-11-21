@@ -63,7 +63,8 @@ const bannedTerms = {
   ru: /комнат|групп[а-яё]* шлюза|исполнител[а-яё]* групп|драйвер[а-яё]*\s+групп[а-яё]*|каноническ/iu,
   fr: /chats? de groupe|\bsalons?\b|groupes? de (?:la )?passerelle|pilote de groupe|canonique/iu,
   de: /\b(?:gruppen|chat)?(?:raum|räume)|Gateway-Gruppe|Gruppentreiber|kanonisch/iu,
-  es: /chats? grupal(?:es)?|(?<![\p{L}\p{M}])salas?(?![\p{L}\p{M}])|grupos? de (?:la )?pasarela|controlador de grupo|canónic/iu
+  es: /chats? grupal(?:es)?|(?<![\p{L}\p{M}])salas?(?![\p{L}\p{M}])|grupos? de (?:la )?pasarela|controlador de grupo|canónic/iu,
+  cs: /\bpokoj\w*|kanál\w* brány|kanonick\w*|hostovan\w* místnost/iu
 } satisfies Record<keyof typeof BOTS_LOCALES, RegExp>
 
 function visibleStrings(value: unknown): string[] {

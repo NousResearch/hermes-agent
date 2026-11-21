@@ -5,7 +5,9 @@
 it: ``skill_manage`` refuses every mutating action, ``write_file``/``patch`` refuse any path inside
 the skill's directory, and ``terminal`` refuses commands that write there. The lock record itself
 is protected the same way, and the agent cannot run ``hermes curator unlock``. The user's own edits
-(Desktop editor, their own editor, the CLI) are not gated.
+are not gated — with one exception: archiving a locked skill is refused on every surface, including
+``hermes curator archive`` in the user's own shell and Delete in the Desktop/TUI journey overlay,
+because ``skill_usage.archive_skill`` is where the refusal lives. Unlock first, then archive.
 
 The terminal check reads the command's write targets (redirections, tee, cp/mv/rm/sed -i and
 friends, git in the skill's tree, ``cd`` into it, inline interpreter code naming it). It is a

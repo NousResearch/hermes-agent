@@ -164,6 +164,40 @@ def test_replacement_refuses_an_owner_serving_another_home(tmp_path, home, owner
     assert owner.poll() is None
 
 
+_DESCENDANT = '''
+import os, subprocess, sys
+from pathlib import Path
+
+generations, owner_pid, home = int(sys.argv[1]), int(sys.argv[2]) or os.getpid(), Path(sys.argv[3])
+if generations:  # this process is the owner or sits between it and the caller: go one generation down
+    raise SystemExit(subprocess.run(
+        [sys.executable, __file__, str(generations - 1), str(owner_pid), str(home)]).returncode)
+from gateway.status import get_process_start_time
+from hermes_cli import gateway_runtime_replace as replace
+
+replace._install_root = lambda: home
+verdict = replace._verified_owner(home, {
+    "protocol": 1, "kind": "hermes-gateway", "pid": owner_pid, "hermes_home": str(home),
+    "start_time": get_process_start_time(owner_pid), "supervisor": "manual"})
+print("verdict:", verdict if isinstance(verdict, str) else "verified")
+'''
+
+
+@pytest.mark.parametrize("generations", [1, 2, 3])
+def test_replacement_never_targets_the_gateway_the_caller_descends_from(tmp_path, home, generations):
+    """#142520: gateway -> cron script -> ``hermes -z``. The CLI is the gateway's grandchild, the guard
+    only knew its own pid and its parent's, and the gateway was stopped in the middle of its own job."""
+    import subprocess
+    import sys
+    script = tmp_path / "descendant.py"
+    script.write_text(_DESCENDANT, encoding="utf-8")
+    repo_root = str(Path(replace.__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [repo_root, os.environ.get("PYTHONPATH")]))}
+    ran = subprocess.run([sys.executable, str(script), str(generations), "0", str(home)],
+                         env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert "verdict: owner_unverified" in ran.stdout, ran.stdout + ran.stderr
+
+
 def test_replacement_never_targets_itself(home, monkeypatch):
     import time
     monkeypatch.setattr(replace, "_install_root", lambda: home)

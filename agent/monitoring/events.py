@@ -75,4 +75,18 @@ class CronExecutionEvent(_MonitoringEvent):
     ts_ns: int = field(default_factory=time.time_ns)
 
 
-__all__ = ["CronExecutionEvent", "GatewayDiagnosticEvent", "GatewayHealthEvent"]
+@dataclass(slots=True)
+class ManagedProcessEvent(_MonitoringEvent):
+    """Content-free lifecycle of a process Hermes keeps outside any turn: a Bot Desktop screen, or a child
+    process group the owner-death supervisor reaps. Vocabulary: ``agent.monitoring.managed_processes``."""
+    EVENT: ClassVar[str] = "managed_process"
+    subsystem: str
+    action: str
+    outcome: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    count: Optional[int] = None
+    ts_ns: int = field(default_factory=time.time_ns)
+
+
+__all__ = ["CronExecutionEvent", "GatewayDiagnosticEvent", "GatewayHealthEvent", "ManagedProcessEvent"]

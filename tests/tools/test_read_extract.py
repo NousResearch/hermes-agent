@@ -11,9 +11,11 @@ Run with:  python -m pytest tests/tools/test_read_extract.py -v
 """
 
 import base64
+import io
 import json
 import os
 import shlex
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -561,6 +563,117 @@ class TestXlsxExtraction(unittest.TestCase):
             fh.write(b"nope")
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
+
+
+# ---------------------------------------------------------------------------
+# OOXML part size ceiling — #150199: a tiny, highly compressible part must not
+# buy unbounded CPU and RSS in the process that runs read_file.
+# ---------------------------------------------------------------------------
+
+_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _dense_docx(path, empty_paragraphs):
+    """A DOCX whose ``word/document.xml`` inflates to ~6 bytes per empty paragraph."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        with z.open("word/document.xml", "w", force_zip64=True) as fh:
+            fh.write(f'<?xml version="1.0"?><w:document xmlns:w="{_NS_W}"><w:body>'.encode())
+            chunk = b"<w:p/>" * 100_000
+            for _ in range(empty_paragraphs // 100_000):
+                fh.write(chunk)
+            fh.write(b"</w:body></w:document>")
+
+
+def _sheet_xlsx(path, rows, numbered=True):
+    """An XLSX with one visible sheet of *rows* cells.
+
+    ``numbered=False`` writes the same row markup every time, which is what a real dense sheet
+    looks like to a compressor: tens of MiB of XML from a few hundred KB on disk.
+    """
+    workbook = (f'<workbook xmlns="{_NS_S}" xmlns:r="{_REL_NS}"><sheets>'
+                '<sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    rels = ('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="{_REL_NS}/worksheet"/>'
+            '</Relationships>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", rels)
+        with z.open("xl/worksheets/sheet1.xml", "w", force_zip64=True) as fh:
+            fh.write(f'<worksheet xmlns="{_NS_S}"><sheetData>'.encode())
+            if not numbered:
+                chunk = b'<row><c><v>1</v></c></row>' * 100_000
+                for _ in range(rows // 100_000):
+                    fh.write(chunk)
+            for start in range(1, rows + 1, 100_000) if numbered else ():
+                fh.write(b"".join(
+                    b'<row r="%d"><c r="A%d"><v>%d</v></c></row>' % (n, n, n)
+                    for n in range(start, min(start + 100_000, rows + 1))))
+            fh.write(b"</sheetData></worksheet>")
+
+
+class TestOoxmlPartCeiling(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rex_ceil_")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _refusal(self, path):
+        with self.assertRaises(ExtractionError) as ctx:
+            extract_document_text(path)
+        return str(ctx.exception)
+
+    def test_oversized_docx_body_is_refused(self):
+        """36 MiB of empty paragraphs from a ~0.4 MB DOCX: refused, not parsed (was ~5 s / 650 MiB)."""
+        p = os.path.join(self.tmp, "dense.docx")
+        _dense_docx(p, 6_000_000)
+        self.assertLess(os.path.getsize(p), 1024 * 1024)
+        message = self._refusal(p)
+        self.assertIn("word/document.xml", message)
+        self.assertIn("32 MiB limit", message)
+
+    def test_oversized_worksheet_is_refused(self):
+        """The same ceiling covers a worksheet part, which used to become a whole parse tree."""
+        p = os.path.join(self.tmp, "dense.xlsx")
+        _sheet_xlsx(p, 1_500_000, numbered=False)   # ~36 MiB of <row> elements
+        self.assertLess(os.path.getsize(p), 1024 * 1024)
+        message = self._refusal(p)
+        self.assertIn("xl/worksheets/sheet1.xml", message)
+        self.assertIn("32 MiB limit", message)
+
+    def test_ceiling_is_a_size_check_on_every_part(self):
+        """Enforced before parsing, so an ordinary part is refused under a lowered ceiling."""
+        from tools import read_extract
+
+        p = os.path.join(self.tmp, "small.docx")
+        _write_docx(p, f'<?xml version="1.0"?><w:document xmlns:w="{_NS_W}"><w:body>'
+                       '<w:p><w:r><w:t>hi</w:t></w:r></w:p></w:body></w:document>')
+        with mock.patch.object(read_extract, "_MAX_PART_BYTES", 64, create=True):
+            message = self._refusal(p)
+        self.assertIn("word/document.xml", message)
+
+    def test_reader_refuses_bytes_past_the_ceiling(self):
+        """The central directory's ``file_size`` is the archive's claim; the read is bounded too."""
+        from tools import read_extract
+
+        reader_cls = getattr(read_extract, "_PartReader", None)
+        if reader_cls is None:
+            self.skipTest("no bounded part reader")
+        reader = reader_cls(io.BytesIO(b"x" * 256), "word/document.xml")
+        with mock.patch.object(read_extract, "_MAX_PART_BYTES", 64):
+            with self.assertRaises(ExtractionError) as ctx:
+                reader.read(256)
+        self.assertIn("word/document.xml", str(ctx.exception))
+
+    def test_row_budget_survives_streaming(self):
+        """Streaming still stops at ``_MAX_XLSX_ROWS_PER_SHEET`` rows per sheet."""
+        p = os.path.join(self.tmp, "rows.xlsx")
+        _sheet_xlsx(p, 6_000)
+        rows = [line for line in extract_document_text(p).splitlines() if line.strip().isdigit()]
+        self.assertEqual(len(rows), 5_000)
+        self.assertEqual(rows[0], "1")
+        self.assertEqual(rows[-1], "5000")
 
 
 # ---------------------------------------------------------------------------

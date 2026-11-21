@@ -16,8 +16,8 @@ metadata:
 Query Hyperliquid market and account data through the public `/info` endpoint.
 Read-only — no API key, no signing, no order placement.
 
-12 commands: `dexs`, `markets`, `spots`, `candles`, `funding`, `l2`, `state`,
-`spot-balances`, `fills`, `orders`, `review`, `export`. Stdlib only
+13 commands: `dexs`, `markets`, `spots`, `candles`, `funding`, `l2`, `state`,
+`spot-balances`, `fills`, `open-orders`, `orders`, `review`, `export`. Stdlib only
 (`urllib`, `json`, `argparse`).
 
 ---
@@ -41,7 +41,7 @@ The script reads `${HERMES_HOME:-~/.hermes}/.env` for two optional defaults:
 - `HYPERLIQUID_API_URL` — defaults to `https://api.hyperliquid.xyz`. Set to
   `https://api.hyperliquid-testnet.xyz` for testnet.
 - `HYPERLIQUID_USER_ADDRESS` — default address for `state`, `spot-balances`,
-  `fills`, `orders`, and `review`. If unset, pass the address as the first
+  `fills`, `open-orders`, `orders`, and `review`. If unset, pass the address as the first
   positional argument.
 
 A project `.env` in the current working directory is honored as a dev fallback.
@@ -74,12 +74,13 @@ hyperliquid_client.py l2 <coin> [--levels N]
 hyperliquid_client.py state [address] [--dex DEX]
 hyperliquid_client.py spot-balances [address] [--limit N]
 hyperliquid_client.py fills [address] [--hours N] [--limit N] [--aggregate-by-time]
+hyperliquid_client.py open-orders [address] [--dex DEX] [--limit N]
 hyperliquid_client.py orders [address] [--limit N]
 hyperliquid_client.py review [address] [--coin COIN] [--hours N] [--fills N]
 hyperliquid_client.py export <coin> [--interval 1h] [--hours N] [--output PATH]
 ```
 
-For `state`, `spot-balances`, `fills`, `orders`, and `review`, the address is
+For `state`, `spot-balances`, `fills`, `open-orders`, `orders`, and `review`, the address is
 optional when `HYPERLIQUID_USER_ADDRESS` is set in `${HERMES_HOME:-~/.hermes}/.env`.
 
 ---
@@ -148,6 +149,30 @@ python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   orders --limit 25
 ```
+
+Use `open-orders` for pending orders and current position PnL:
+
+```bash
+python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+  open-orders 0xabc... --dex mydex --limit 0 --json
+```
+
+This reads `frontendOpenOrders` and `clearinghouseState` for the same address
+and dex. Omit `--dex` for the first perp dex. The table shows current positions
+with exchange-reported uPnL separately from orders, including TP/SL order type,
+trigger price/condition, reduce-only and position TP/SL flags. Unfilled orders
+and trigger/limit prices are **not** realized or projected PnL.
+
+JSON contains `user`, `dex`, `summary`, `positions`, `orders`, and `count`.
+Children are flattened recursively in parent-first API order; `parent_oid`
+retains the link (null for roots). Match positions by exact `coin` within the
+selected dex, not by removing HIP-3 prefixes. Do not allocate position PnL to
+orders; orders without a position have no position PnL. Both API calls are
+snapshots fetched sequentially, not an atomic account snapshot.
+
+`--limit` defaults to 20 order rows including children; 0 or a negative value
+returns all rows. `count` is the total before limiting; positions are never
+limited. `orders` remains the historical-orders command, unchanged.
 
 ### 6. Generate a Trade Review
 

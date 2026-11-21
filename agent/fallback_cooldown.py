@@ -26,7 +26,9 @@ def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> 
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
     the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
     rate-limit failovers leaving the primary with a valid future ``reset_at``."""
-    if reason not in _RATE_LIMIT_FAILOVER_REASONS or getattr(agent, "_fallback_activated", False):
+    # A billing/quota refusal is not a temporary token bucket, even with a short reset.
+    if (reason not in _RATE_LIMIT_FAILOVER_REASONS or reason == FailoverReason.billing
+            or getattr(agent, "_fallback_activated", False)):
         return False
     try:
         from hermes_cli.config import load_config

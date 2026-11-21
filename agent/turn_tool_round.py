@@ -115,17 +115,10 @@ def run_tool_round(
     )
     append_message(messages, assistant_msg)
 
-    # Mixed batch: error-result invalid calls and drop them from execution.
+    # Mixed batch: filter out invalid calls so only valid ones dispatch.
+    # Synthetic error results are appended after tool execution so the pre-execution
+    # flush only persists the assistant turn (#49045).
     if _invalid_batch_calls:
-        for tc in _invalid_batch_calls:
-            append_message(messages, {
-                "role": "tool",
-                "name": tc.function.name,
-                "tool_call_id": coalesce_tool_call_id(tc),
-                "content": _invalid_tool_name_error_content(
-                    tc.function.name, agent.valid_tool_names
-                ),
-            })
         assistant_message.tool_calls = [
             tc for tc in assistant_message.tool_calls if tc.function.name in agent.valid_tool_names
         ]
@@ -172,6 +165,30 @@ def run_tool_round(
     maybe_prepare(agent, messages, origin="tool-batch")
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    if _invalid_batch_calls:
+        for tc in _invalid_batch_calls:
+            append_message(messages, {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": coalesce_tool_call_id(tc),
+                "content": _invalid_tool_name_error_content(
+                    tc.function.name, agent.valid_tool_names
+                ),
+            })
+        try:
+            persisted = agent._flush_messages_to_session_db(messages, conversation_history)
+        except Exception as exc:
+            persisted = False
+            from hermes_state import classify_persistence_error
+            agent._last_persistence_error_cause = classify_persistence_error(exc)
+            logger.warning(
+                "Incremental invalid-tool-result persistence failed (session=%s): %s",
+                agent.session_id or "none", exc,
+            )
+        if persisted is False:
+            agent._incremental_persistence_failed = True
+            if getattr(agent, "_last_persistence_error_cause", None) is None:
+                agent._last_persistence_error_cause = "unknown"
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)

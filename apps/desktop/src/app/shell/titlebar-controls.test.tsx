@@ -28,10 +28,13 @@ function NavigateProbe() {
   return null
 }
 
-function renderControls(pathname: string, props?: { leftTools?: TitlebarTool[]; tools?: TitlebarTool[] }) {
+function renderControls(
+  pathname: string,
+  props?: { leftTools?: TitlebarTool[]; locale?: 'ar' | 'en'; tools?: TitlebarTool[] }
+) {
   return render(
     <MemoryRouter initialEntries={[pathname]}>
-      <I18nProvider configClient={null} initialLocale="en">
+      <I18nProvider configClient={null} initialLocale={props?.locale ?? 'en'}>
         <NavigateProbe />
         <TitlebarControls leftTools={props?.leftTools} onOpenSettings={() => {}} tools={props?.tools} />
       </I18nProvider>
@@ -235,6 +238,37 @@ describe('titlebar app-action cluster', () => {
       expect(intents).toEqual([
         { id: CHAT_SIDEBAR_PANE_ID, mode: 'toggle' },
         { id: FILE_BROWSER_PANE_ID, mode: 'toggle' }
+      ])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
+  })
+
+  // In RTL the tree's first column (sessions) renders on the physical right,
+  // so the physical buttons swap targets: each folds the column on its side.
+  it("toggles the column on each button's own physical side in RTL", () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    )
+    $narrowViewport.set(true)
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/', { locale: 'ar' })
+
+      const left = within(screen.getByLabelText('تحكم النافذة')).getByRole('button', {
+        name: /الشريط الجانبي/
+      })
+
+      const right = screen.getByRole('button', { name: /الشريط الأيمن/ })
+      fireEvent.click(left)
+      fireEvent.click(right)
+      expect(intents).toEqual([
+        { id: FILE_BROWSER_PANE_ID, mode: 'toggle' },
+        { id: CHAT_SIDEBAR_PANE_ID, mode: 'toggle' }
       ])
     } finally {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)

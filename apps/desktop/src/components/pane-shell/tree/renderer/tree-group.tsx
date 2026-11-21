@@ -730,7 +730,7 @@ export function TreeGroup({
           style={topEdge ? { height: topHeaderHeight } : undefined}
         >
           {topEdge && (
-            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
+            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-start, 100%)' }} />
           )}
           {pageHeader && headerVisible ? (
             <div
@@ -885,7 +885,7 @@ export function TreeGroup({
                       style={{ cursor: 'grab' }}
                     >
                       {chrome.tabLead ? (
-                        <span className="ml-2 -mr-1 flex shrink-0 items-center">
+                        <span className="flex shrink-0 items-center">
                           <TabKeyHint groupId={node.id} slot={index + 1}>
                             {chrome.tabLead()}
                           </TabKeyHint>
@@ -946,7 +946,7 @@ export function TreeGroup({
             />
           )}
           {topEdge && (
-            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-right, 0px)' }} />
+            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-end, 0px)' }} />
           )}
         </div>
       )}

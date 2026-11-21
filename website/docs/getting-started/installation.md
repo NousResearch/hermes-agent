@@ -13,6 +13,16 @@ description: "Install Hermes Agent with desktop bundles, source installers, Dock
 
 Get Hermes Agent up and running in under two minutes!
 
+:::note Official sources
+Hermes Agent's official websites are `nousresearch.com` and its subdomains,
+such as [hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com/)
+and [nousresearch.com](https://nousresearch.com/). Its source code is published
+only under the [github.com/NousResearch](https://github.com/NousResearch)
+organization. Treat any other website that offers Hermes Agent downloads,
+installers or docs as unofficial, even when it uses the Hermes name. See
+[Official Domains & Phishing Safety](./official-domains.md) for the full list.
+:::
+
 :::tip Platform Support
 For the full platform support matrix (which OSes, distribution methods, and
 platform-gated features are supported), see **[Platform Support](./platform-support.md)**.

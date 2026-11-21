@@ -38,6 +38,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/managed-scope',
         'user-guide/remote-config',
         'user-guide/configuring-models',
+        'user-guide/local-models',
         {
           type: 'category',
           label: 'Secrets',

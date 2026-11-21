@@ -145,6 +145,140 @@ builds, headless CLI machines), see
 [Run Hermes Locally with Ollama](../guides/local-ollama-setup.md) and
 [Run Local LLMs on Mac](../guides/local-llm-on-mac.md).
 
+## Running Hermes with local or small models
+
+The managed runtime above sizes everything for you. These tips cover the other
+cases: a server you run yourself (llama.cpp, Ollama, LM Studio, vLLM, SGLang, any
+custom OpenAI-compatible endpoint) or a small model that needs a leaner setup.
+They come from reports by people running Hermes on their own hardware. Every
+key below is a regular `~/.hermes/config.yaml` setting.
+
+### Set the context length explicitly
+
+Hermes reads the window from the server when it can, but many local servers
+report their training maximum or a small default, not the window they actually
+allocated. Set the value yourself so that compression and the context meter use
+the right number:
+
+```yaml
+model:
+  provider: custom
+  base_url: http://127.0.0.1:8080/v1
+  default: my-model
+  context_length: 65536     # the window the server really serves
+```
+
+- The number must match the server: `-c` for llama.cpp, `--max-model-len` for
+  vLLM, and `num_ctx` / `OLLAMA_CONTEXT_LENGTH` for Ollama. With Ollama you can
+  also set `model.ollama_num_ctx` so that Hermes requests that window on each
+  call.
+- Hermes needs at least **64,000 tokens**, and a smaller window is refused at
+  startup. The one exception is `provider: lmstudio` with an explicit positive
+  `model.context_length`, which can run below that. llama.cpp parallel slots
+  split the total (`-c 65536 -np 4` gives each slot 16K), so use `-np 1` or
+  raise `-c`.
+- Check the `Context limit: … tokens` line at startup to confirm the value
+  Hermes is using.
+
+### Turn reasoning off for non-reasoning instruct models
+
+When the effort is unset, a custom endpoint gets `medium`. For a plain instruct
+model, or a hybrid model you want in its non-thinking mode, turn it off:
+
+```yaml
+agent:
+  reasoning_effort: none
+```
+
+When reasoning is off, Hermes sends `reasoning_effort: "none"` on custom
+endpoints, plus `think: false` on Ollama URLs. To turn it off for only some
+models, use `agent.reasoning_overrides` (see
+[Reasoning Effort](./configuration.md#reasoning-effort)). In a session,
+`/reasoning none --global` does the same thing and saves it to config.
+
+### Trim enabled toolsets to cut prompt tokens
+
+Every enabled tool's schema is sent on every call. On a slow local model, this
+fixed prompt is most of the prefill time before the first token. Measure it,
+then turn off what you don't use:
+
+```bash
+hermes prompt-size            # byte breakdown of system prompt + tool schemas
+hermes tools                  # per-platform tool checklist
+```
+
+```yaml
+agent:
+  disabled_toolsets:          # removed everywhere (CLI and every gateway platform)
+    - browser
+    - image_gen
+```
+
+For a single run, `hermes chat --toolsets file,terminal` enables only the
+toolsets you list. See
+[Global Toolset Disable](./configuration.md#global-toolset-disable).
+
+### Fall back to a local endpoint
+
+A local server works well as a safety net behind a cloud primary, or behind a
+second local server. `fallback_providers` is tried in order when the primary
+fails with rate-limit, overload or connection errors:
+
+```yaml
+fallback_providers:
+  - provider: custom
+    model: my-local-model
+    base_url: http://127.0.0.1:8080/v1
+  - provider: llamacpp      # the managed runtime; skipped when it isn't running
+    model: my-managed-model
+```
+
+`hermes fallback add` writes the same list interactively. See
+[Fallback Providers](./features/fallback-providers.md).
+
+### Tune compression for small windows
+
+Compression starts when context usage passes a trigger that Hermes derives from
+`compression.threshold`:
+
+- Windows under 512K use a ratio of at least `0.75`. A 128K model compacts at
+  about 98K.
+- The trigger never drops below 64,000 tokens. Near that minimum it is capped
+  at 85% of the window instead, so a 65,536-token model compacts at about 55.7K
+  whether `threshold` is 0.50, 0.75 or 0.80. Only a `threshold` above 0.85 moves
+  it later.
+
+To compact **earlier** on a small window, set an absolute cap. Hermes uses the
+lower of the cap and the derived trigger:
+
+```yaml
+compression:
+  threshold_tokens: 40000   # compress at 40K or the derived trigger, whichever is lower
+```
+
+The `Context limit: … (compress at …)` startup line shows the trigger in effect.
+The summary itself is written by the `auxiliary.compression` model. If your
+main model is slow, point that model at a faster endpoint (see
+[Auxiliary Models](./configuration.md#auxiliary-models)).
+
+### llama.cpp: cache and checkpoint RAM
+
+`llama-server` keeps reusable prompt caches and per-slot context checkpoints in
+**system RAM**, separate from the model weights and the KV cache. Agent sessions
+have long, growing prompts, so these can take several GB on top of the model.
+On a RAM-limited machine, cap them with server flags (not Hermes settings):
+
+```bash
+# --cache-ram: MiB for the prompt cache (0 disables, -1 = no limit)
+# --ctx-checkpoints: max context checkpoints kept per slot
+llama-server -m model.gguf -c 65536 -np 1 --cache-ram 2048 --ctx-checkpoints 4
+```
+
+Flag names and defaults change between llama.cpp builds, so check
+`llama-server --help` for yours. If a busy server streams slowly enough to trip
+Hermes's stall detector, raise `agent.local_stream_stale_timeout` (default
+900 seconds).
+
 ## Configuration
 
 The managed runtime is controlled by the `local_runtime` section of

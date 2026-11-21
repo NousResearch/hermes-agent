@@ -42,7 +42,8 @@ def test_successful_response_captures_the_actual_cached_request():
     response = SimpleNamespace(model=agent.model, stop_reason="end_turn",
                                content=[SimpleNamespace(type="text", text="answer")], usage=None)
     with patch("agent.turn_response_check.record_response_usage",
-               return_value=SimpleNamespace(compression_attempts=0, rearmed=False)):
+               return_value=SimpleNamespace(compression_attempts=0, rearmed=False)), patch(
+                   "agent.turn_response_check.start_prompt_cache_warming") as warm:
         verdict = check_api_response(
             agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=history,
             api_messages=request["messages"], api_kwargs=request, active_system_prompt="cached prompt",
@@ -53,6 +54,7 @@ def test_successful_response_captures_the_actual_cached_request():
             _preflight_compression_blocked=False, _last_preflight_pressure=None,
         )
     assert verdict.action == "break"
+    warm.assert_called_once_with(agent, request, response)
     seed = getattr(agent, "_anthropic_compaction_seed", None)
     assert seed is not None, "the successful-response stage must capture the cached wire request"
     assert seed.kwargs is request

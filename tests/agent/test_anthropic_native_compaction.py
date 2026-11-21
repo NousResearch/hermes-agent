@@ -405,11 +405,18 @@ def test_default_config_keeps_feature_off():
     assert anc.native_summary_for(_agent(anthropic_native_compaction=False)) is None
 
 
-def test_live_opt_in_is_enabled_and_unset_returns_to_off():
+@pytest.mark.parametrize("compression,native,checkpoint", [
+    ({"anthropic_native": True, "checkpoint_required": True}, True, True),
+    ({"anthropic_native": False, "checkpoint_required": True}, False, True),
+    ({"anthropic_native": True, "checkpoint_required": False}, True, False),
+    ({"anthropic_native": False, "checkpoint_required": False}, False, False),
+    ({}, False, False),
+])
+def test_live_native_and_checkpoint_options_reload_independently(compression, native, checkpoint):
     from tui_gateway.session_compression import _apply_live_compression_config
 
-    agent = _agent(context_compressor=_compressor(), anthropic_native_compaction=False, provider="anthropic")
-    _apply_live_compression_config(agent, {"compression": {"anthropic_native": True}})
-    assert agent.anthropic_native_compaction is True
-    _apply_live_compression_config(agent, {"compression": {}})
-    assert agent.anthropic_native_compaction is False
+    agent = _agent(context_compressor=_compressor(), anthropic_native_compaction=not native,
+                   compression_checkpoint_required=not checkpoint, provider="anthropic")
+    _apply_live_compression_config(agent, {"compression": compression})
+    assert agent.anthropic_native_compaction is native
+    assert agent.compression_checkpoint_required is checkpoint

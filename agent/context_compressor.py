@@ -3726,11 +3726,7 @@ Use this exact structure:
 {content_to_summarize}{_memory_section}"""
 
         # Focus guidance goes last so it takes precedence.
-        if focus_topic:
-            instructions += f"""
-
-FOCUS TOPIC: "{focus_topic}"
-This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+        instructions += self._focus_guidance(focus_topic)
         return [{"role": "system", "content": instructions}, {"role": "user", "content": source_material}]
 
     @staticmethod

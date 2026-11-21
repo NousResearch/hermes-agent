@@ -102,7 +102,7 @@ def run_tool_round(
         prune_native_tool_blocks(provider_data, emitted, assistant_message.tool_calls)
     # Filtering can turn a mixed batch into an all-provider one; re-check the final batch
     # before it is staged (idempotent for already-normalized ids).
-    normalize_provider_tool_call_ids(assistant_message.tool_calls)
+    normalize_provider_tool_call_ids(assistant_message.tool_calls, getattr(assistant_message, "provider_data", None))
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.

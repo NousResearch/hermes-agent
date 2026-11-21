@@ -1,10 +1,11 @@
 import { type AnsiCode, type StyledChar, styledCharsFromTokens, tokenize } from '@alcalzone/ansi-tokenize'
+import stripAnsi from 'strip-ansi'
 
 import { logForDebugging } from '../utils/debug.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 
-import { reorderBidi } from './bidi.js'
+import { type BidiDirection, firstStrongDirection, hasRTLCharacters, needsBidi, reorderBidi } from './bidi.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
 import {
   blitRegion,
@@ -431,6 +432,9 @@ export default class Output {
           const { text, softWrap } = operation
           let { x, y } = operation
           let lines = text.split('\n')
+          // Paragraph direction for soft-wrapped continuation lines (see
+          // continuationDirections); undefined for every other line.
+          let directions = continuationDirections(lines, softWrap, text)
           let swFrom = 0
           let prevContentEnd = 0
 
@@ -510,6 +514,7 @@ export default class Output {
               }
 
               lines = lines.slice(from, to)
+              directions = directions?.slice(from, to)
               swFrom = from
 
               if (y < clip.y1!) {
@@ -529,7 +534,16 @@ export default class Output {
               break
             }
 
-            const contentEnd = writeLineToScreen(screen, line, x, lineY, screenWidth, this.stylePool, this.charCache)
+            const contentEnd = writeLineToScreen(
+              screen,
+              line,
+              x,
+              lineY,
+              screenWidth,
+              this.stylePool,
+              this.charCache,
+              directions?.[offsetY]
+            )
 
             writeCells += contentEnd - x
 
@@ -669,6 +683,68 @@ function flushBuffer(buffer: string, styles: AnsiCode[], stylePool: StylePool, o
 }
 
 /**
+ * UAX #9 resolves the paragraph direction once per paragraph, but Ink hands
+ * over a paragraph already word-wrapped into visual lines. A continuation line
+ * (softWrap[i] === true) therefore inherits the direction of the line that
+ * started its paragraph, so an Arabic paragraph whose wrapped line happens to
+ * start with an English word or a number stays right-to-left. Lines that start
+ * a paragraph get undefined (their own first strong character decides).
+ *
+ * Returns undefined, at no cost, unless software bidi is on and the text
+ * contains RTL characters and was word-wrapped.
+ */
+function continuationDirections(
+  lines: string[],
+  softWrap: boolean[] | undefined,
+  text: string
+): (BidiDirection | undefined)[] | undefined {
+  if (!softWrap || lines.length < 2 || !needsBidi() || !hasRTLCharacters(text)) {
+    return undefined
+  }
+
+  const directions: (BidiDirection | undefined)[] = []
+  let paragraph: BidiDirection | undefined
+
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && softWrap[i] === true) {
+      directions.push(paragraph)
+      // A paragraph with no strong character yet takes the first one it meets.
+      paragraph ??= firstStrongDirection(stripAnsi(lines[i]!))
+    } else {
+      directions.push(undefined)
+      paragraph = firstStrongDirection(stripAnsi(lines[i]!))
+    }
+  }
+
+  return directions
+}
+
+/**
+ * A line's clustered characters in visual order, cached per line. The visual
+ * order depends on the paragraph direction, so a line written with an
+ * inherited direction gets its own cache entry.
+ */
+function clusteredLine(
+  line: string,
+  stylePool: StylePool,
+  charCache: Map<string, ClusteredChar[]>,
+  direction: BidiDirection | undefined
+): ClusteredChar[] {
+  const cacheKey = direction ? `${direction}\0${line}` : line
+  let characters = charCache.get(cacheKey)
+
+  if (!characters) {
+    characters = reorderBidi(
+      styledCharsWithGraphemeClustering(styledCharsFromTokens(tokenize(line)), stylePool),
+      direction
+    )
+    charCache.set(cacheKey, characters)
+  }
+
+  return characters
+}
+
+/**
  * Write a single line's characters into the screen buffer.
  * Extracted from Output.get() so JSC can optimize this tight,
  * monomorphic loop independently — better register allocation,
@@ -686,15 +762,10 @@ function writeLineToScreen(
   y: number,
   screenWidth: number,
   stylePool: StylePool,
-  charCache: Map<string, ClusteredChar[]>
+  charCache: Map<string, ClusteredChar[]>,
+  direction?: BidiDirection
 ): number {
-  let characters = charCache.get(line)
-
-  if (!characters) {
-    characters = reorderBidi(styledCharsWithGraphemeClustering(styledCharsFromTokens(tokenize(line)), stylePool))
-    charCache.set(line, characters)
-  }
-
+  const characters = clusteredLine(line, stylePool, charCache, direction)
   let offsetX = x
 
   for (let charIdx = 0; charIdx < characters.length; charIdx++) {

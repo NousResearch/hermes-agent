@@ -1,18 +1,24 @@
 /**
  * Bidirectional text reordering for terminal rendering.
  *
- * Terminals on Windows do not implement the Unicode Bidi Algorithm,
- * so RTL text (Hebrew, Arabic, etc.) appears reversed. This module
- * applies the bidi algorithm to reorder ClusteredChar arrays from
- * logical order to visual order before Ink's LTR cell placement loop.
+ * Some terminals do not implement the Unicode Bidirectional Algorithm (UAX #9),
+ * so RTL text (Hebrew, Arabic, etc.) appears in logical order, i.e. reversed,
+ * and digit runs inside RTL text come out backwards (10.0.0.138 -> 831.0.0.01).
+ * This module reorders the ClusteredChar array of one already-wrapped line from
+ * logical to visual order before Ink's LTR cell placement loop. Wrapping stays
+ * logical; only the cells of each visual line are permuted, so every cell keeps
+ * its width, style and hyperlink.
  *
- * On macOS terminals (Terminal.app, iTerm2) bidi works natively.
- * Windows Terminal (including WSL) does not implement bidi
- * (https://github.com/microsoft/terminal/issues/538).
+ * Terminals that do bidi themselves (VTE/GNOME Terminal, Konsole, mlterm,
+ * Terminal.app, iTerm2) must NOT get this, or the text is reordered twice.
+ * Without bidi:
+ * - Windows Terminal, including WSL (https://github.com/microsoft/terminal/issues/538),
+ *   and conhost;
+ * - xterm.js: the VS Code integrated terminal and the web dashboard's embedded
+ *   chat (the dashboard sets HERMES_TUI_BIDI=1 on the PTY it spawns).
  *
- * Detection: Windows Terminal sets WT_SESSION; native Windows cmd/conhost
- * also lacks bidi. We enable bidi reordering when running on Windows or
- * inside Windows Terminal (covers WSL).
+ * HERMES_TUI_BIDI=1/0 (also true/false, yes/no, on/off) forces it on or off
+ * and wins over the platform detection.
  */
 import bidiFactory from 'bidi-js'
 
@@ -23,18 +29,58 @@ type ClusteredChar = {
   hyperlink: string | undefined
 }
 
+/** Paragraph direction of a line, from its first strong character (UAX #9 P2/P3). */
+export type BidiDirection = 'ltr' | 'rtl'
+
 let bidiInstance: ReturnType<typeof bidiFactory> | undefined
 let needsSoftwareBidi: boolean | undefined
 
-function needsBidi(): boolean {
+function parseToggle(value: string | undefined): boolean | null {
+  const raw = (value ?? '').trim()
+
+  if (/^(?:1|true|yes|on)$/i.test(raw)) {
+    return true
+  }
+
+  if (/^(?:0|false|no|off)$/i.test(raw)) {
+    return false
+  }
+
+  return null
+}
+
+/**
+ * Whether the TUI must reorder bidi text itself. HERMES_TUI_BIDI overrides;
+ * otherwise only hosts known to lack native bidi get it.
+ */
+export function resolveSoftwareBidi(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  const override = parseToggle(env['HERMES_TUI_BIDI'])
+
+  if (override !== null) {
+    return override
+  }
+
+  return (
+    platform === 'win32' ||
+    typeof env['WT_SESSION'] === 'string' || // WSL in Windows Terminal
+    env['TERM_PROGRAM'] === 'vscode' // VS Code integrated terminal (xterm.js)
+  )
+}
+
+export function needsBidi(): boolean {
   if (needsSoftwareBidi === undefined) {
-    needsSoftwareBidi =
-      process.platform === 'win32' ||
-      typeof process.env['WT_SESSION'] === 'string' || // WSL in Windows Terminal
-      process.env['TERM_PROGRAM'] === 'vscode' // VS Code integrated terminal (xterm.js)
+    needsSoftwareBidi = resolveSoftwareBidi()
   }
 
   return needsSoftwareBidi
+}
+
+/** Test hook: force the gate (true/false) or re-read the environment (undefined). */
+export function setSoftwareBidiForTesting(value: boolean | undefined): void {
+  needsSoftwareBidi = value
 }
 
 function getBidi() {
@@ -46,13 +92,37 @@ function getBidi() {
 }
 
 /**
- * Reorder an array of ClusteredChars from logical order to visual order
- * using the Unicode Bidi Algorithm. Active on terminals that lack native
- * bidi support (Windows Terminal, conhost, WSL).
- *
- * Returns the same array on bidi-capable terminals (no-op).
+ * Direction of the first strong character in `text` (plain text, no ANSI), or
+ * undefined when it has none. Used to carry a paragraph's direction onto its
+ * soft-wrapped continuation lines, which UAX #9 treats as one paragraph.
  */
-export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
+export function firstStrongDirection(text: string): BidiDirection | undefined {
+  const bidi = getBidi()
+
+  for (const ch of text) {
+    const type = bidi.getBidiCharTypeName(ch)
+
+    if (type === 'L') {
+      return 'ltr'
+    }
+
+    if (type === 'R' || type === 'AL') {
+      return 'rtl'
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Reorder an array of ClusteredChars (one visual line) from logical order to
+ * visual order using the Unicode Bidi Algorithm, mirroring paired glyphs such
+ * as brackets in RTL runs (rule L4). `direction` is the paragraph direction;
+ * undefined resolves it from this line's first strong character.
+ *
+ * Returns the same array when the gate is off or the line has no RTL text.
+ */
+export function reorderBidi(characters: ClusteredChar[], direction?: BidiDirection): ClusteredChar[] {
   if (!needsBidi() || characters.length === 0) {
     return characters
   }
@@ -66,23 +136,28 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   }
 
   const bidi = getBidi()
-  const { levels } = bidi.getEmbeddingLevels(plainText, 'auto')
+  const { levels } = bidi.getEmbeddingLevels(plainText, direction ?? 'auto')
 
   // Map bidi levels back to ClusteredChar indices.
   // Each ClusteredChar may be multiple code units in the joined string.
   const charLevels: number[] = []
+  const reordered: ClusteredChar[] = []
   let offset = 0
 
   for (let i = 0; i < characters.length; i++) {
-    charLevels.push(levels[offset]!)
-    offset += characters[i]!.value.length
+    const character = characters[i]!
+    const level = levels[offset]!
+    charLevels.push(level)
+
+    // L4: a mirrored character ('(', '[', '<', '«', ...) at an odd (RTL)
+    // level is shown as its mirror image. Same width, so cells are unchanged.
+    const mirror = (level & 1) === 1 && character.value.length === 1 ? bidi.getMirroredCharacter(character.value) : null
+    reordered.push(mirror ? { ...character, value: mirror } : character)
+    offset += character.value.length
   }
 
-  // Get reorder segments from bidi-js, but we need to work at the
-  // ClusteredChar level, not the string level. We'll implement the
-  // standard bidi reordering: find the max level, then for each level
-  // from max down to 1, reverse all contiguous runs >= that level.
-  const reordered = [...characters]
+  // L2: from the highest level down to the lowest odd level, reverse every
+  // contiguous run at that level or higher.
   const maxLevel = Math.max(...charLevels)
 
   for (let level = maxLevel; level >= 1; level--) {
@@ -99,7 +174,7 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
 
         // Reverse the run in both arrays
         reverseRange(reordered, i, j - 1)
-        reverseRangeNumbers(charLevels, i, j - 1)
+        reverseRange(charLevels, i, j - 1)
         i = j
       } else {
         i++
@@ -120,21 +195,11 @@ function reverseRange<T>(arr: T[], start: number, end: number): void {
   }
 }
 
-function reverseRangeNumbers(arr: number[], start: number, end: number): void {
-  while (start < end) {
-    const temp = arr[start]!
-    arr[start] = arr[end]!
-    arr[end] = temp
-    start++
-    end--
-  }
-}
-
 /**
  * Quick check for RTL characters (Hebrew, Arabic, and related scripts).
  * Avoids running the full bidi algorithm on pure-LTR text.
  */
-function hasRTLCharacters(text: string): boolean {
+export function hasRTLCharacters(text: string): boolean {
   // Hebrew: U+0590-U+05FF, U+FB1D-U+FB4F
   // Arabic: U+0600-U+06FF, U+0750-U+077F, U+08A0-U+08FF, U+FB50-U+FDFF, U+FE70-U+FEFF
   // Thaana: U+0780-U+07BF

@@ -30,7 +30,7 @@ def build_secrets_parser(subparsers) -> None:
     _secrets_cli.register_cli(secrets_bw)
     _op_secrets_cli.register_cli(secrets_op)
 
-    def _dispatch_secrets(args):  # noqa: ANN001
+    def _dispatch_secrets(args):
         sub = getattr(args, "secrets_command", None)
         if sub is None:
             secrets_parser.print_help()

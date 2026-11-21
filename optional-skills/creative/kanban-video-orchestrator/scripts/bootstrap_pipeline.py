@@ -151,7 +151,6 @@ def render_brief(plan: dict) -> str:
             f"| {d.get('format', '?')} | {d.get('resolution', '?')} | "
             f"{d.get('notes', '')} |"
         )
-    deliv_table = "\n".join(deliv_rows) if deliv_rows else "_(none)_"
 
     # Replacements (single-pass)
     replacements = {

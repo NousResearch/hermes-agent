@@ -15,7 +15,8 @@
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
+import { noteUserSessionOpen } from '@/store/session-open-intent'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
@@ -88,6 +89,18 @@ export function openSessionFromPicker(
   navigate: OpenSessionNavigate,
   intent: OpenSessionIntent = 'in-place'
 ): void {
+  // A picker click is an EXPLICIT reselect, even when the row is the chat this
+  // window already shows (#62045): openSession's in-place path would see the
+  // active session on screen, front it (a visual no-op), and never queue a
+  // resume — so the transcript/composer never get the re-attach a sidebar click
+  // on the same row issues via its own door (wiring.tsx openStoredSession →
+  // requestSessionResume). Queue the explicit request here so every picker
+  // surface (/resume overlay, ⌘K, artifacts) matches the sidebar, and
+  // use-route-resume's `explicitlyRequested` branch bypasses its
+  // already-active skip and re-runs resumeSession (which re-fronts the
+  // surface and re-focuses the composer through its normal path).
+  requestSessionResume(storedSessionId)
+
   const workspaceScope = focusedSessionWorkspaceScope()
   const resolved = workspaceScope.workspaceMode === 'bots' && intent === 'in-place' ? 'stack' : intent
 
@@ -128,6 +141,9 @@ export function openSession(
     // No pop-out support → treat like a new tab.
     resolved = 'tab'
   }
+
+  // A chat opened in this window: the launch restore must not close it.
+  noteUserSessionOpen()
 
   if (resolved === 'main') {
     // Canonical relationship chats explicitly own the main workspace. Route

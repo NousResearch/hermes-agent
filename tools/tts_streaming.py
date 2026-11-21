@@ -6,6 +6,7 @@ starts on sentence one. True streamers (``StreamingTTSProvider.stream``) wrap ch
 APIs; providers with no chunked API (edge, the default) get per-sentence playback via
 the sync ``text_to_speech_tool`` path. Adding a streamer is ``@register("name")`` on
 a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver come free.
+Plugin ``TTSProvider``s join by declaring ``streams_pcm`` + ``stream_sample_rate``.
 """
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
 from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -80,7 +82,7 @@ class SentenceChunker:
         self.buf = ""
 
     @classmethod
-    def from_config(cls, tts_config: Dict) -> "SentenceChunker":
+    def from_config(cls, tts_config: dict) -> SentenceChunker:
         """Chunker honouring ``tts.streaming.min_len``. 20 suits English; a CJK opener of 5–7
         characters is a whole clause, so voice setups lower it to speak the first sentence
         alone instead of buffering it behind the second. Floor 1: 0 would emit every boundary."""
@@ -89,12 +91,12 @@ class SentenceChunker:
         except (AttributeError, TypeError, ValueError):  # non-mapping / non-numeric → default
             return cls()
 
-    def feed(self, delta: str) -> List[str]:
+    def feed(self, delta: str) -> list[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
-        out: List[str] = []
+        out: list[str] = []
         start = 0  # skip boundaries that would leave the head too short
         while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
             head = self.buf[: m.end()]
@@ -106,7 +108,7 @@ class SentenceChunker:
             start = 0
         return out
 
-    def flush(self) -> List[str]:
+    def flush(self) -> list[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
         tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
         if m := _THINK_OPEN_RE.search(tail):
@@ -128,7 +130,7 @@ class StreamingTTSProvider(ABC):
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
 
-    def __init__(self, tts_config: Dict, section: Dict):
+    def __init__(self, tts_config: dict, section: dict):
         self.tts_config = tts_config
         self.section = section
 
@@ -142,7 +144,7 @@ class StreamingTTSProvider(ABC):
         """Yield PCM chunks for ``text``. Raise on failure (caller logs)."""
 
 
-_REGISTRY: Dict[str, type[StreamingTTSProvider]] = {}
+_REGISTRY: dict[str, type[StreamingTTSProvider]] = {}
 
 
 def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[StreamingTTSProvider]]:
@@ -152,7 +154,7 @@ def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[Streaming
     return _wrap
 
 
-def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
+def _try_instantiate(name: str, tts_config: dict) -> Optional[StreamingTTSProvider]:
     """Construct the registered streamer *name* if it's usable, else None."""
     cls = _REGISTRY.get(name)
     if cls is None or not cls.available():
@@ -166,22 +168,51 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
 
 # Fallback priority for ``tts.streaming.provider: auto`` — best chunked latency/quality
 # first. Deliberately hard-coded (a UX decision); edge is absent (no chunked-PCM API).
-_PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
+_PROVIDER_PRIORITY: list[str] = ["elevenlabs", "gemini", "openai", "xai"]
+
+
+class _PluginPCMStreamer(StreamingTTSProvider):
+    """A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``; see
+    ``tools.tts_tool_plugins._plugin_pcm_streaming_provider``) behind this ABC."""
+
+    def __init__(self, provider: Any, sample_rate: int, tts_config: dict):
+        super().__init__(tts_config, tts_config.get(provider.name) or {})
+        self._provider, self.sample_rate = provider, sample_rate
+
+    @staticmethod
+    def available() -> bool:
+        return True  # gated at resolve time, per instance
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        yield from _capped(
+            self._provider.stream(text, format="pcm", **_plugin_voice_kwargs(self.tts_config)),
+            f"plugin streamer {self._provider.name}")
+
+
+def _plugin_streamer(name: str, tts_config: dict) -> Optional[StreamingTTSProvider]:
+    found = _plugin_pcm_streaming_provider(name, tts_config)
+    return _PluginPCMStreamer(*found, tts_config) if found is not None else None
 
 
 def resolve_streaming_provider(
-    tts_config: Dict, preferred: Optional[str] = None) -> Optional[StreamingTTSProvider]:
+    tts_config: dict, preferred: Optional[str] = None) -> Optional[StreamingTTSProvider]:
     """Return a ready streamer for the *configured* provider, else ``None``.
     ``tts.streaming.provider`` when set: a name pins that exact streamer (``None`` if unusable);
     ``auto`` returns the first usable in ``_PROVIDER_PRIORITY``. Otherwise the configured TTS
     provider (or ``preferred``): ``None`` means "no chunked API" — the dispatcher speaks
     per-sentence via the sync path, preserving the user's chosen voice. We never silently swap
-    providers just to get streaming."""
+    providers just to get streaming.
+
+    A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``) streams here too, after the
+    built-ins and under the same rules (a pinned name never substitutes another voice)."""
     pinned = str((tts_config.get("streaming") or {}).get("provider") or "").lower().strip()
     if pinned == "auto":
-        return next((inst for name in _PROVIDER_PRIORITY
-                     if (inst := _try_instantiate(name, tts_config))), None)
-    return _try_instantiate(pinned or (preferred or _get_provider(tts_config)).lower().strip(), tts_config)
+        for name in _PROVIDER_PRIORITY:
+            if (inst := _try_instantiate(name, tts_config)) is not None:
+                return inst
+        return _plugin_streamer(_get_provider(tts_config), tts_config)
+    name = pinned or (preferred or _get_provider(tts_config)).lower().strip()
+    return _try_instantiate(name, tts_config) or _plugin_streamer(name, tts_config)
 
 
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
@@ -251,7 +282,7 @@ class OpenAIStreamer(StreamingTTSProvider):
     ``rate=``) overrides it before the first chunk is yielded (#76466).
     """
 
-    def __init__(self, tts_config: Dict, section: Dict):
+    def __init__(self, tts_config: dict, section: dict):
         super().__init__(tts_config, section)
         configured = section.get("pcm_sample_rate", self.sample_rate)
         if isinstance(configured, bool) or not isinstance(configured, (int, float, str)) \
@@ -415,7 +446,7 @@ class XAIStreamer(StreamingTTSProvider):
         import threading
         from contextvars import copy_context
 
-        q: "queue.Queue[object]" = queue.Queue(maxsize=_XAI_QUEUE_MAX)
+        q: queue.Queue[object] = queue.Queue(maxsize=_XAI_QUEUE_MAX)
         done = object()
         stop = threading.Event()
 
@@ -481,7 +512,7 @@ class XAIStreamer(StreamingTTSProvider):
                     message = await asyncio.wait_for(
                         ws.recv(), timeout=self._RECV_TIMEOUT_S
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise RuntimeError(f"xAI streaming TTS: no audio for {self._RECV_TIMEOUT_S}s")
                 except websockets.exceptions.ConnectionClosedOK:
                     return  # clean close, with or without audio.done

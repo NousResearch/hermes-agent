@@ -101,7 +101,7 @@ class TestMaintainPackHealth:
             (repo / f"p{i}.txt").write_text(f"{i}\n")
             _git(repo, "add", "-A")
             _git(repo, "commit", "-qm", f"c{i}")
-            sha = _git(repo, "rev-parse", f"HEAD^{{commit}}").stdout.strip()
+            sha = _git(repo, "rev-parse", "HEAD^{commit}").stdout.strip()
             # One pack per commit object: pipe the sha into pack-objects.
             subprocess.run(
                 ["git", "pack-objects", "-q", str(pack_dir / f"tpack{i}")],
@@ -142,6 +142,52 @@ class TestMaintainPackHealth:
         from cli import _maintain_pack_health
 
         _maintain_pack_health(str(tmp_path / "not-a-repo"))  # must not raise
+
+    def test_pass_refreshes_a_stale_graph_in_a_treeless_clone_without_fetching(self, tmp_path):
+        """A graph that stopped covering HEAD makes every ``git tag --merged HEAD`` walk the gap. In a
+        partial clone over a Bloom graph, a write that recomputes changed paths lazy-fetches the tree
+        of every new commit (#127711): the refresh must write the graph and download nothing. Run from
+        a linked worktree, whose ``.git`` is a file: the object store is the clone's."""
+        import os
+        import time
+
+        from hermes_cli import worktree_ops
+
+        src = tmp_path / "src"
+        src.mkdir()
+        _git(src, "init", "-q")
+        _git(src, "config", "uploadpack.allowFilter", "true")
+
+        def commits(start, n):
+            for i in range(start, start + n):
+                (src / f"d{i % 3}").mkdir(exist_ok=True)
+                (src / f"d{i % 3}" / f"f{i}").write_text(f"{i}\n")
+                _git(src, "add", "-A")
+                _git(src, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "maintenance.auto=false",
+                     "-c", "gc.auto=0", "commit", "-qm", f"c{i}")
+
+        commits(0, 8)
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", "-q", "--filter=tree:0", "--no-checkout", src.as_uri(), str(clone))
+        _git(clone, "commit-graph", "write", "--reachable", "--split", "--changed-paths", "--no-progress")
+        commits(8, 8)
+        _git(clone, "-c", "fetch.writeCommitGraph=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+             "fetch", "-q", "origin")
+        _git(clone, "update-ref", "HEAD", "FETCH_HEAD")
+        info = clone / ".git" / "objects" / "info"
+        old = time.time() - 3 * 86400
+        for graph in (info / "commit-graphs").iterdir():
+            os.utime(graph, (old, old))
+        linked = tmp_path / "linked"
+        _git(clone, "worktree", "add", "-q", "--no-checkout", "--detach", str(linked), "HEAD")
+        packs = sorted((clone / ".git" / "objects" / "pack").glob("*.pack"))
+
+        worktree_ops._maintain_pack_health(str(linked))
+
+        assert (info / "commit-graphs" / "commit-graph-chain").stat().st_mtime > time.time() - 300
+        assert (clone / ".git" / "hermes-commit-graph.fresh").is_file()
+        assert sorted((clone / ".git" / "objects" / "pack").glob("*.pack")) == packs, "the write lazy-fetched"
+        _git(clone, "commit-graph", "verify")
 
 
 class TestRepackStampede:

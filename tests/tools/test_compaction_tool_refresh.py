@@ -5,7 +5,7 @@ the only boundary where the prompt cache is already broken, so it is the
 one sanctioned point for a tool-snapshot rebuild. These tests pin:
 - refresh_agent_mcp_tools(content_aware=True) swaps on CONTENT change under
   a stable name set (the dynamic-schema case its name-only diff missed)
-- content_aware=False keeps the old no-churn behavior (MCP-reload callers)
+- preserve_prefix=True keeps the schema already sent (between-turns refresh)
 """
 import os
 import sys
@@ -51,10 +51,10 @@ class TestContentAwareRefresh(unittest.TestCase):
         self.assertIn("new capabilities",
                       agent.tools[0]["function"]["description"])
 
-    def test_content_change_ignored_when_name_only(self):
-        """MCP-reload callers keep the historical no-churn contract."""
+    def test_content_change_ignored_when_prefix_preserved(self):
+        """Between-turns refresh keeps the schema already sent."""
         agent = self._agent_with("old capabilities text")
-        self._refresh(agent, "new capabilities text", content_aware=False)
+        self._refresh(agent, "new capabilities text", preserve_prefix=True)
         self.assertIn("old capabilities",
                       agent.tools[0]["function"]["description"])
 

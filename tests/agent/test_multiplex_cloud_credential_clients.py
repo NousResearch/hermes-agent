@@ -79,7 +79,7 @@ def test_azure_entra_credential_is_built_from_the_routed_profiles_scope(two_prof
     az.reset_credential_cache()
     try:
         cfg = az.EntraIdentityConfig()
-        import unittest.mock as mock
+        from unittest import mock
         with mock.patch.object(az, "_require_azure_identity", lambda: _FakeSDK()):
             cred_a = _under(a, lambda: az.build_credential(cfg))
             cred_b = _under(b, lambda: az.build_credential(cfg))

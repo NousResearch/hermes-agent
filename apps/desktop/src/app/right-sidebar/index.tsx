@@ -223,7 +223,11 @@ function FilesystemTab({
             size="icon-xs"
             variant="ghost"
           >
-            <Codicon name="collapse-all" size="0.8125rem" />
+            {/* #55358: `collapse-all` draws two offset rounded squares — at
+                13px its top edge reads as an asymmetric hamburger line.
+                `three-bars` is the symmetric three-line glyph from the same
+                codicon vocabulary, matching the eye/refresh siblings. */}
+            <Codicon name="three-bars" size="0.8125rem" />
           </Button>
         </Tip>
       </RightSidebarSectionHeader>

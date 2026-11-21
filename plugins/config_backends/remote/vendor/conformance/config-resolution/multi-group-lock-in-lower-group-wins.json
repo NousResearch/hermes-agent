@@ -1,0 +1,104 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-lock-in-lower-group-wins",
+  "description": "Proves d5-lock: A lower-priority group that locks a key locks it for the principal and supplies the value, over a higher-priority group that sets it unlocked.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-eng",
+      "priority": 20,
+      "values": {
+        "terminal": {
+          "backend": "local"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-sec",
+      "priority": 10,
+      "values": {
+        "terminal": {
+          "backend": "docker"
+        }
+      },
+      "locks": [
+        "terminal.backend"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "terminal": {
+          "backend": "ssh"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "backend": "docker"
+      }
+    },
+    "provenance": {
+      "terminal.backend": "group"
+    },
+    "groupProvenance": {
+      "terminal.backend": "g-sec"
+    },
+    "locks": [
+      {
+        "path": "terminal.backend",
+        "level": "group",
+        "groupId": "g-sec"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "terminal.backend",
+      "value": "ssh",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.backend",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-sec"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "terminal.backend",
+      "value": "x",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

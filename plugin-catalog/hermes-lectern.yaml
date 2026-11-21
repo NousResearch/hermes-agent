@@ -1,0 +1,49 @@
+name: hermes-lectern
+title: Hermes Lectern
+repo: https://github.com/Fiction000/hermes-lectern
+sha: ec89465544bbec0bd6cfea82df8e60dd20d49dfd
+version: "0.5.0"
+description: >-
+  A desk you share with Hermes, inside Hermes Desktop: one dashboard of what Hermes just changed
+  with write_file and patch, recent notes and your tasks that are overdue, due within 7 days or in progress, plus a reader and
+  editor for an Obsidian vault. Open notes reload when Hermes edits them, and saves are
+  conflict-safe: if Hermes or another app changes the note you are editing, your draft is
+  kept and you can keep it, load the disk version or compare the two side by side. Editing
+  is raw Markdown (no visual editor, graph or tabs). Tasks come from task notes
+  (TaskNotes style, by tag or folder) and from checkbox tasks (Obsidian Tasks 📅 dates,
+  Dataview [due:: ] fields). Once you set an attention field or tag, the ones that
+  need you are listed too. English and Japanese UI. All file access goes
+  through the plugin's own dashboard backend: no agent tools or hooks, no shell commands, no network
+  calls beyond Hermes' own API. Tested on macOS; Linux is untested and Windows is not supported.
+  Disclosure — reads the Markdown files of the vault folder you choose, plus image files
+  inside that vault so notes can show them (hidden folders and symlinks are skipped); writes
+  to the vault only when you save or create a note, and has no delete. Stores its settings and
+  a SQLite search index in $HERMES_HOME/hermes-lectern, outside the vault (safe to delete;
+  about 175 MB for a 5,500-note vault). The Desktop side listens to Hermes tool.complete
+  events for write_file and patch to learn which notes Hermes changed, keeps the 50 most
+  recent paths in Desktop local storage, and while you edit a note re-reads that one note
+  through Hermes' API every 8 seconds to notice outside changes. Writes to the clipboard only
+  when a quote cannot be inserted into a chat box. Reads and stores no credentials. Remote images in notes are not loaded
+  (they show as links). No telemetry and no self-update. On Hermes builds that provide the preview.fileOpener area, vault
+  notes opened from elsewhere in Desktop open in Lectern; older builds ignore it and use the
+  normal file preview.
+maintainer: Fiction000
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Fiction000/hermes-lectern#readme
+readme: true
+image: https://raw.githubusercontent.com/Fiction000/hermes-lectern/ec89465544bbec0bd6cfea82df8e60dd20d49dfd/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Fiction000/hermes-lectern/ec89465544bbec0bd6cfea82df8e60dd20d49dfd/screenshots/dashboard-changed-by-hermes.png
+  - https://raw.githubusercontent.com/Fiction000/hermes-lectern/ec89465544bbec0bd6cfea82df8e60dd20d49dfd/screenshots/reader-image.png
+  - https://raw.githubusercontent.com/Fiction000/hermes-lectern/ec89465544bbec0bd6cfea82df8e60dd20d49dfd/screenshots/safe-save-compare.png
+platforms: [linux, macos]
+known_issues:
+  - "Tested on macOS only; Linux is untested. Windows is not supported (the vault path must start with /)."
+  - "The first index reads every note: a 5,500-note vault took about 40 seconds on a Mac."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

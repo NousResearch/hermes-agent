@@ -41,6 +41,21 @@ export default [
     }
   },
   {
+    // crypto.randomUUID is secure-context-only: a Webapp opened over plain HTTP from another
+    // machine has none, so every id minted with it threw and nothing was sent.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/**/*.test.{ts,tsx}'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          property: 'randomUUID',
+          message: 'Use randomUuid from @hermes/shared (plugins: @hermes/plugin-sdk); it works on insecure origins.'
+        }
+      ]
+    }
+  },
+  {
     // Ban mirroring reactive values into refs via useEffect — the "atom-mirrored
     // ref" antipattern. A ref synced from a nanostores atom via useEffect lags the
     // atom by one render, which creates stale-read bugs in callbacks that read the

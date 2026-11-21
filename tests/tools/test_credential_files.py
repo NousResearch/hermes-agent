@@ -1,6 +1,7 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -519,7 +520,7 @@ class TestMapCachePathToContainer:
 class TestToAgentVisiblePathPerBackend:
     """#76577 follow-up: translation covers every backend that relocates the
     Hermes cache — not just docker — and skips the ones where the host path
-    stays correct (local; singularity auto-binds the host home)."""
+    stays correct (local, unknown)."""
 
     def _staged(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -539,7 +540,7 @@ class TestToAgentVisiblePathPerBackend:
         from tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path(staged) == "~/.hermes/attachments/drop.zip"
 
-    @pytest.mark.parametrize("backend", ["local", "singularity", ""])
+    @pytest.mark.parametrize("backend", ["local", ""])
     def test_untranslated_backends_keep_host_path(self, tmp_path, monkeypatch, backend):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", backend)
@@ -581,12 +582,20 @@ class TestIterCacheFiles:
         doc_dir.mkdir(parents=True)
         (doc_dir / "upload.zip").write_bytes(b"PK\x03\x04")
         (doc_dir / "report.pdf").write_bytes(b"%PDF-1.4")
+        old = time.time() - 25 * 3600
+        os.utime(doc_dir / "report.pdf", (old, old))
+        # cache/generated is never swept: sync only its last-24h files (#126445).
+        gen_dir = hermes_home / "cache" / "generated" / "images"
+        gen_dir.mkdir(parents=True)
+        (gen_dir / "fresh.png").write_bytes(b"\x89PNG")
+        (gen_dir / "stale.png").write_bytes(b"\x89PNG")
+        os.utime(gen_dir / "stale.png", (old, old))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         entries = iter_cache_files()
         names = {Path(e["container_path"]).name for e in entries}
-        assert "upload.zip" in names
-        assert "report.pdf" in names
+        assert {"upload.zip", "report.pdf", "fresh.png"} <= names
+        assert "stale.png" not in names
 
     @pytest.mark.require_symlinks
     def test_skips_symlinks(self, tmp_path, monkeypatch):
@@ -627,7 +636,10 @@ class TestMasterCredentialStoresAreNeverMountable:
 
     The bar is the canonical read deny-list: whatever the agent is forbidden to
     ``read_file`` must not be mountable either, so the mount surface can't
-    grant what the read surface denies.
+    grant what the read surface denies. One carve-out: skill-scoped service
+    tokens (``_MOUNTABLE_SERVICE_TOKENS``: the google-workspace token and client secret)
+    are read-denied to the agent but stay mountable, because the skill's own
+    sandboxed scripts are their intended consumer.
     """
 
     @staticmethod
@@ -643,6 +655,7 @@ class TestMasterCredentialStoresAreNeverMountable:
         (home / "mcp-tokens").mkdir()
         (home / "mcp-tokens" / "srv.json").write_text('{"access_token":"t"}')
         (home / "google_token.json").write_text("{}")
+        (home / "google_client_secret.json").write_text("{}")
         return home
 
     @pytest.mark.parametrize(
@@ -665,7 +678,13 @@ class TestMasterCredentialStoresAreNeverMountable:
             assert get_credential_file_mounts() == []
 
     def test_per_service_token_still_mounts(self, tmp_path):
-        """The module's legitimate purpose must keep working."""
+        """The module's legitimate purpose must keep working.
+
+        Doubles as the regression test for the ``_MOUNTABLE_SERVICE_TOKENS``
+        carve-out: ``google_token.json`` is read-denied by
+        ``get_read_block_error()``, so without the carve-out this mount
+        would be refused and the google-workspace skill would lose its
+        token inside Docker/Modal sandboxes."""
         home = self._home(tmp_path)
         with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
             assert register_credential_file("google_token.json") is True
@@ -673,6 +692,56 @@ class TestMasterCredentialStoresAreNeverMountable:
         assert [m["container_path"] for m in mounts] == [
             "/root/.hermes/google_token.json"
         ]
+
+    def test_declared_google_workspace_files_mount_although_read_denied(self, tmp_path):
+        """The skill's two required_credential_files still reach its sandbox (#149056)."""
+        from agent.file_safety import get_read_block_error
+
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_files(["google_token.json", "google_client_secret.json"]) == []
+            for name in ("google_token.json", "google_client_secret.json"):
+                assert get_read_block_error(str(home / name)), name
+            paths = sorted(m["container_path"] for m in get_credential_file_mounts())
+        assert paths == ["/root/.hermes/google_client_secret.json", "/root/.hermes/google_token.json"]
+
+    def test_pending_oauth_state_is_refused(self, tmp_path):
+        """``google_oauth_pending.json`` is read-denied and NOT in the
+        service-token carve-out: no skill declares it, and the in-flight
+        PKCE verifier has no business inside a sandbox."""
+        home = self._home(tmp_path)
+        (home / "google_oauth_pending.json").write_text("{}")
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file("google_oauth_pending.json") is False
+            assert get_credential_file_mounts() == []
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("link_name", ["google_token.json", "google_client_secret.json"])
+    @pytest.mark.parametrize("target", [".env", "auth.json"])
+    def test_carve_out_name_symlinked_at_a_master_store_is_refused(self, tmp_path, link_name, target):
+        """The carve-out judges the file a link resolves to, not the name it was requested by: a
+        ``google_token.json`` planted as a symlink to ``.env`` must not mount ``.env``, and must not
+        make ``.env`` itself mountable."""
+        home = self._home(tmp_path)
+        (home / link_name).unlink()
+        (home / link_name).symlink_to(home / target)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file(link_name) is False
+            assert register_credential_file(target) is False
+            assert get_credential_file_mounts() == []
+
+    def test_carve_out_is_exact_path_not_basename(self, tmp_path):
+        """A nested file that merely shares the carve-out basename gets no
+        special treatment: it is not read-denied (per-location gate), so it
+        mounts on its own merits, while the carve-out never widens to paths
+        outside HERMES_HOME root."""
+        from tools.credential_files import _is_mountable_service_token
+
+        home = self._home(tmp_path)
+        nested = home / "skills" / "g" / "google_token.json"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("{}")
+        assert _is_mountable_service_token(nested.resolve(), home) is False
 
     def test_refused_entry_does_not_block_the_rest_of_the_batch(self, tmp_path):
         home = self._home(tmp_path)

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Optional
 
 from hermes_time import safe_strftime
@@ -53,7 +53,7 @@ def fetch_nous_account(timeout: float):
 
     Shares the one bounded implementation so a stalled portal releases the
     /billing surface at ``timeout`` too (see ``_fetch_portal_account``)."""
-    from agent.account_usage import _fetch_portal_account
+    from agent.account_usage_nous import _fetch_portal_account
     return _fetch_portal_account(timeout)
 
 
@@ -123,6 +123,12 @@ def usage_model_from_account(account_info: Any) -> UsageModel:
     try:
         if account_info is None or not getattr(account_info, "logged_in", False):
             return UsageModel(available=False)
+        # Usage-window plans have no monthly credit grant, so the credit bars don't apply;
+        # /usage falls through to the percent-window renderer instead. A partial/empty block is not a
+        # window plan (same completeness rule as the credits seed).
+        from agent.credits_tracker import _window_seed_fields
+        if _window_seed_fields(getattr(account_info, "usage_window", None)) is not None:
+            return UsageModel(available=False)
         # Sub-structs are dataclasses or None; getattr(None, ..., None) is None, so no guards needed.
         access = getattr(account_info, "paid_service_access_info", None)
         sub = getattr(account_info, "subscription", None)
@@ -164,6 +170,20 @@ def usage_model_from_account(account_info: Any) -> UsageModel:
     except Exception:
         logger.debug("usage ▸ model build failed (fail-open)", exc_info=True)
         return UsageModel(available=False)
+
+
+def usage_model_wire(model: Optional[UsageModel]) -> Optional[dict]:
+    """The model as ``session.account_usage``'s ``nous_usage`` (numbers, not display strings); None when unavailable."""
+    return asdict(model) if model is not None and model.available else None
+
+
+def usage_model_from_wire(value: Any) -> Optional[UsageModel]:
+    """:func:`usage_model_wire`'s dict back to a model; None for anything else. Unknown keys from a newer owner are dropped."""
+    if not isinstance(value, dict):
+        return None
+    known = {f.name for f in fields(UsageModel)}
+    bars = {key: UsageBar(**bar) if isinstance(bar := value.get(key), dict) else None for key in ("plan_bar", "topup_bar")}
+    return UsageModel(**{**{k: v for k, v in value.items() if k in known}, **bars})
 
 
 def build_usage_model(*, timeout: float = 10.0) -> UsageModel:

@@ -43,6 +43,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import type { Details } from 'electron'
+
+import { launchMarkerNeedsReprobe } from './launch-build-identity'
+
 const OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
@@ -53,7 +57,13 @@ export const NVIDIA_EGL_FALLBACK_MARKER_FILENAME = 'nvidia-egl-fallback.json'
  * included on purpose: in #40077 the GPU process exited with exit_code=15 —
  * Chromium's own GPU health check SIGTERM — not a crash reason.
  */
-export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set(['crashed', 'launch-failure', 'killed'])
+export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set<string>([
+  'crashed',
+  'launch-failed' satisfies Details['reason'],
+  // Never emitted by Electron; kept so a recorded/legacy spelling still matches.
+  'launch-failure',
+  'killed'
+])
 
 export type NvidiaEglMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -63,6 +73,8 @@ export interface NvidiaEglMarker {
   version?: string
   /** Full driver version (e.g. "580.178.04") the fallback was witnessed on. */
   driverVersion?: string
+  /** Source builds can share 0.0.0, so retain their immutable build identity. */
+  build?: string
 }
 
 export function nvidiaEglMarkerPath(userDataDir: string): string {
@@ -89,6 +101,10 @@ export function parseNvidiaEglMarker(raw: unknown): NvidiaEglMarker | null {
 
   if (typeof record.driverVersion === 'string' && record.driverVersion) {
     marker.driverVersion = record.driverVersion
+  }
+
+  if (typeof record.build === 'string' && record.build) {
+    marker.build = record.build
   }
 
   return marker
@@ -126,8 +142,17 @@ export function writeNvidiaEglMarker(
   writeFileSync(nvidiaEglMarkerPath(dir), `${JSON.stringify(marker)}\n`, 'utf8')
 }
 
-export function nvidiaEglFallbackMarker(appVersion: string, driverVersion: string): NvidiaEglMarker {
-  return { state: 'fallback', version: appVersion, driverVersion }
+export function nvidiaEglFallbackMarker(
+  appVersion: string,
+  driverVersion: string,
+  buildIdentity?: string
+): NvidiaEglMarker {
+  return {
+    state: 'fallback',
+    version: appVersion,
+    driverVersion,
+    ...(buildIdentity && buildIdentity !== appVersion ? { build: buildIdentity } : {})
+  }
 }
 
 /**
@@ -159,7 +184,7 @@ export function parseNvidiaDriverVersion(procVersion: string): string | null {
 export interface NvidiaEglFallbackDecision {
   enable: boolean
   reason: string | null
-  /** Marker to persist immediately, before GPU children start. */
+  /** Marker to persist only after acquiring the single-instance lock. */
   nextMarker: NvidiaEglMarker
 }
 
@@ -167,104 +192,104 @@ export interface NvidiaEglFallbackDecision {
  * Single launch-time transition: whether this Linux launch routes ANGLE
  * through SwiftShader, and what the marker becomes. The probe shape:
  *
- * - `fallback` marker matching this app version AND driver version → enable,
- *   keep the marker (sticky until either version changes).
- * - `fallback` marker for a different app or driver version → re-probe once:
+ * - `fallback` marker matching this artifact build AND driver version → enable,
+ *   keep the marker until the artifact build or driver changes.
+ * - `fallback` or `booting` marker for an older build/driver → re-probe once:
  *   boot with hardware GL, write `booting`.
- * - `booting` marker left behind by a launch that died before it could mark
+ * - `booting` marker for this same build/driver left by a launch that died before it could mark
  *   `ok` (the "GPU process isn't usable" FATAL abort) → enable; the previous
  *   boot witnessed a GPU death by not surviving.
  * - `ok` or no marker → boot with hardware GL, write `booting` so a death
  *   mid-boot is attributable.
  *
  * The env override `HERMES_DESKTOP_NVIDIA_SWIFTSHADER=1` forces the fallback
- * on regardless of the marker; `=0` keeps it off and clears the marker.
+ * on regardless of the marker; `=0` keeps it off during startup and GPU death.
+ * The lock owner records a healthy boot or clean exit before removing the override.
  */
-export function decideNvidiaEglFallback(options: {
+export interface NvidiaEglFallbackOptions {
   driverMajor: number | null
   driverVersion?: string | null
   marker?: NvidiaEglMarker | null
   appVersion?: string
+  buildIdentity?: string
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   isWsl?: boolean
   remoteDisplayReason?: string | null
-}): NvidiaEglFallbackDecision {
+}
+
+/** The same exclusions govern startup and later GPU-death recovery. */
+export function nvidiaEglFallbackAllowed(options: NvidiaEglFallbackOptions): boolean {
   const env = options.env ?? process.env
-  const platform = options.platform ?? process.platform
-  const isWsl = options.isWsl ?? false
-  const remoteDisplayReason = options.remoteDisplayReason ?? null
-  const driverMajor = options.driverMajor
-  const driverVersion = options.driverVersion ?? null
+
+  const off = (key: string): boolean =>
+    OVERRIDE_OFF.has(
+      String(env[key] || '')
+        .trim()
+        .toLowerCase()
+    )
+
+  return (
+    (options.platform ?? process.platform) === 'linux' &&
+    options.driverMajor !== null &&
+    !options.isWsl &&
+    !options.remoteDisplayReason &&
+    !off('HERMES_DESKTOP_NVIDIA_SWIFTSHADER') &&
+    !off('HERMES_DESKTOP_DISABLE_GPU')
+  )
+}
+
+export function decideNvidiaEglFallback(options: NvidiaEglFallbackOptions): NvidiaEglFallbackDecision {
+  const env = options.env ?? process.env
   const appVersion = options.appVersion ?? ''
+  const driverVersion = options.driverVersion ?? String(options.driverMajor ?? '')
+  const buildIdentity = options.buildIdentity ?? ''
   const marker = options.marker ?? null
 
-  const bootMarker: NvidiaEglMarker = { state: 'booting' }
+  const bootMarker: NvidiaEglMarker = {
+    ...nvidiaEglFallbackMarker(appVersion, driverVersion, buildIdentity),
+    state: 'booting'
+  }
+
+  if (!nvidiaEglFallbackAllowed(options)) {
+    return { enable: false, reason: null, nextMarker: bootMarker }
+  }
 
   const nvidiaOverride = String(env.HERMES_DESKTOP_NVIDIA_SWIFTSHADER || '')
     .trim()
     .toLowerCase()
 
-  if (OVERRIDE_OFF.has(nvidiaOverride)) {
-    return { enable: false, reason: null, nextMarker: bootMarker }
-  }
-
-  if (platform !== 'linux' || driverMajor === null) {
-    // No NVIDIA driver to probe — nothing to persist either.
-    return { enable: false, reason: null, nextMarker: bootMarker }
-  }
-
-  // A user who forced GPU back on (HERMES_DESKTOP_DISABLE_GPU=0) owns that call.
-  const gpuOverride = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
-    .trim()
-    .toLowerCase()
-
-  if (OVERRIDE_OFF.has(gpuOverride)) {
-    return { enable: false, reason: null, nextMarker: bootMarker }
-  }
-
-  // The remote-display path already forces full software rendering; don't pile
-  // ANGLE switches on top of `disableHardwareAcceleration`.
-  if (remoteDisplayReason) {
-    return { enable: false, reason: null, nextMarker: bootMarker }
-  }
-
-  // WSLg reports a healthy vGPU; NVIDIA EGL probing hasn't been reported
-  // broken there. Keep the WSL GPU passthrough path untouched.
-  if (isWsl) {
-    return { enable: false, reason: null, nextMarker: bootMarker }
-  }
-
   if (OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: true, reason: 'override (HERMES_DESKTOP_NVIDIA_SWIFTSHADER)', nextMarker: bootMarker }
   }
 
-  // Witnessed brokenness: sticky only for the same app AND driver version.
-  if (
-    marker?.state === 'fallback' &&
-    marker.version === (appVersion || marker.version) &&
-    marker.driverVersion === (driverVersion ?? marker.driverVersion)
-  ) {
+  const sameBuild =
+    marker?.version === appVersion &&
+    marker.driverVersion === driverVersion &&
+    !launchMarkerNeedsReprobe(marker, { appVersion, buildIdentity })
+
+  if (marker?.state === 'fallback' && sameBuild) {
     return {
       enable: true,
-      reason: `witnessed GPU-process death (app ${marker.version ?? '?'}, driver ${marker.driverVersion ?? '?'})`,
+      reason: `witnessed GPU-process death (app ${marker.version}, driver ${marker.driverVersion})`,
       nextMarker: marker
     }
   }
 
-  // A booting marker that never resolved: the previous launch died before it
-  // could mark a healthy boot — on this driver that means the GPU process
-  // took the app down (the "GPU process isn't usable" FATAL abort wins the
-  // race against our relaunch handler). Trust it and engage.
-  if (marker?.state === 'booting') {
+  // An abort is evidence only for the build and driver that actually attempted it.
+  // A legacy unqualified booting record is trusted only when this launch has no
+  // stronger identity to compare it with; a stamped build re-probes it once.
+  const unqualified = !marker?.version && !marker?.driverVersion && !marker?.build
+  const hasBuildIdentity = Boolean(buildIdentity && buildIdentity !== appVersion)
+
+  if (marker?.state === 'booting' && (sameBuild || (unqualified && !hasBuildIdentity))) {
     return {
       enable: true,
       reason: 'previous launch aborted mid-boot with the GPU probe live',
-      nextMarker: nvidiaEglFallbackMarker(appVersion, driverVersion ?? String(driverMajor))
+      nextMarker: nvidiaEglFallbackMarker(appVersion, driverVersion, buildIdentity)
     }
   }
 
-  // ok, stale fallback (app or driver updated), or first boot: probe the GPU.
   return { enable: false, reason: null, nextMarker: bootMarker }
 }
 
@@ -308,9 +333,10 @@ export function nvidiaEglMarkerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   appVersion?: string
   driverVersion?: string | null
+  buildIdentity?: string
 }): NvidiaEglMarker {
   if (options.fallbackActive) {
-    return nvidiaEglFallbackMarker(options.appVersion ?? '', options.driverVersion ?? '')
+    return nvidiaEglFallbackMarker(options.appVersion ?? '', options.driverVersion ?? '', options.buildIdentity)
   }
 
   return { state: 'ok' }

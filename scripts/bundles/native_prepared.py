@@ -44,7 +44,7 @@ def _source_digest(code: Path) -> str:
     """Ignore only assembly-owned products, leaving admitted source immutable."""
     project = tomllib.loads((code / "pyproject.toml").read_text(encoding="utf-8-sig"))["project"]
     dist = re.sub(r"[-_.]+", "_", project["name"])
-    generated = {"install-stamp.json", "hermes_cli/tui_dist", "hermes_cli/web_dist",
+    generated = {"install-stamp.json", "hermes_cli/tui_dist", "hermes_cli/web_dist", "apps/desktop/dist-webapp",
                  f"{dist}-{project['version']}.dist-info"}
     files = {}
     for directory, dirs, names in os.walk(code):
@@ -129,13 +129,17 @@ def load_prepared(prepared: Path) -> AgentInputs:
         required = {path.relative_to(out).as_posix() for path in _input_paths(inputs, out)}
         if set(data["digests"]) != required:
             raise ValueError("native preparation inventory changed")
-        for name, digest in data["digests"].items():
+        for index, (name, digest) in enumerate(data["digests"].items(), start=1):
+            progress = f"payload verification [{index}/{len(data['digests'])}]: {name}"
+            print(f"{progress} — checking paths and links", flush=True)
             path = out / name
             _owned(path, out)
             _check_links(path, out)
+            print(f"{progress} — hashing files", flush=True)
             actual = _source_digest(path) if path == inputs.code else _digest(path)
             if actual != digest:
                 raise ValueError(f"prepared bytes changed: {name}")
+        print("payload verification complete", flush=True)
         return inputs
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(f"invalid native preparation; run preparation again: {exc}") from exc

@@ -43,7 +43,7 @@ def message_fingerprint(msg: Any) -> Optional[str]:
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
-def _priced_prefix_fingerprint(messages: List[Dict[str, Any]], base_count: int) -> Optional[str]:
+def _priced_prefix_fingerprint(messages: list[dict[str, Any]], base_count: int) -> Optional[str]:
     """Stable digest of the whole provider-priced prefix.
 
     The last priced message fingerprint proves only that one row survived at
@@ -64,7 +64,7 @@ def _priced_prefix_fingerprint(messages: List[Dict[str, Any]], base_count: int) 
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
-def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """Build a usage anchor from provider-reported usage, or None when usage is unusable."""
     try:
         pt = int(prompt_tokens or 0)
@@ -84,7 +84,7 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: L
     }
 
 
-def _anchor_matches(messages: List[Dict[str, Any]], anchor: Dict[str, Any]) -> bool:
+def _anchor_matches(messages: list[dict[str, Any]], anchor: dict[str, Any]) -> bool:
     try:
         base_count = int(anchor.get("base_count") or 0)
     except (TypeError, ValueError):
@@ -105,7 +105,7 @@ def _anchor_matches(messages: List[Dict[str, Any]], anchor: Dict[str, Any]) -> b
     )
 
 
-def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
+def anchored_context_tokens(messages: list[dict[str, Any]], anchor: Optional[dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
     """Anchored prompt+completion tokens plus a rough estimate of ONLY the messages appended since;
     None when the anchor is missing or stale. The anchored response's own reply is skipped (already
     in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
@@ -122,7 +122,7 @@ def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dic
     return total
 
 
-def _serialize(anchor: Any) -> Optional[Dict[str, Any]]:
+def _serialize(anchor: Any) -> Optional[dict[str, Any]]:
     if not isinstance(anchor, dict):
         return None
     try:
@@ -145,12 +145,15 @@ def _serialize(anchor: Any) -> Optional[Dict[str, Any]]:
             "base_prefix_fp": prefix_fp}
 
 
-def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:
+def persist_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]]) -> None:
     """Write (or clear, ``None``) the session row's anchor blob. Best-effort: the row may not exist yet."""
     if getattr(agent, "_persist_disabled", False):
         return
+    from agent.agent_init_session import agent_interface
     session_id = getattr(agent, "session_id", None)
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    store = agent_interface(agent)
+    patcher = (store.sessions.patch_model_config if store is not None
+               else getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None))
     if not session_id or not callable(patcher):
         return
     try:
@@ -159,7 +162,7 @@ def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:
         logger.debug("usage anchor persist failed", exc_info=True)
 
 
-def set_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]], *, turn_base: bool = False) -> None:
+def set_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]], *, turn_base: bool = False) -> None:
     """Install ``anchor`` on the agent (``None`` clears) and mirror it to the session row."""
     agent._usage_anchor = anchor
     if turn_base or anchor is None:
@@ -167,13 +170,16 @@ def set_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]], *, turn_base:
     persist_usage_anchor(agent, anchor)
 
 
-def restore_usage_anchor(agent: Any, conversation_history: Optional[List[Dict[str, Any]]]) -> None:
+def restore_usage_anchor(agent: Any, conversation_history: Optional[list[dict[str, Any]]]) -> None:
     """On a resumed session, adopt the persisted anchor when ``conversation_history`` still carries
     the priced prefix; otherwise clear the stale blob so it can never suppress compression."""
     if getattr(agent, "_usage_anchor", None) is not None or getattr(agent, "_persist_disabled", False):
         return
+    from agent.agent_init_session import agent_interface
     session_id = getattr(agent, "session_id", None)
-    getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+    store = agent_interface(agent)
+    getter = (store.sessions.get_model_config_value if store is not None
+              else getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None))
     if not session_id or not callable(getter) or not isinstance(conversation_history, list):
         return
     try:
@@ -189,10 +195,13 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[List[Dict[st
         persist_usage_anchor(agent, None)
 
 
-def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> Optional[int]:
+def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any, *, persistence: Any = None) -> Optional[int]:
     """Anchored token figure from the session row's persisted anchor, for callers without a live
     agent (gateway hygiene); None when absent, unreadable, or stale against ``messages``."""
-    getter = getattr(session_db, "get_session_model_config_value", None)
+    from agent.agent_init_session import writer_interface
+    store = writer_interface(persistence, session_db)
+    getter = (store.sessions.get_model_config_value if store is not None
+              else getattr(session_db, "get_session_model_config_value", None))
     if not session_id or not callable(getter) or not isinstance(messages, list):
         return None
     try:

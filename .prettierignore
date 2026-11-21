@@ -2,3 +2,4 @@
 # team approval when lockfiles change, so an autofix PR touching one
 # would hang waiting for review.
 package-lock.json
+pnpm-lock.yaml

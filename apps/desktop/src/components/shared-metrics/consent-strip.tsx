@@ -1,32 +1,63 @@
-import { useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useMemo, useState } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { $apiRequestScope } from '@/api/client'
 import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $sharedMetricsDetailsOpen, answerSharedMetricsOffer, type SharedMetricsChoice } from '@/store/shared-metrics'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $sharedMetricsConsent,
+  $sharedMetricsDetailsOpen,
+  answerSharedMetricsOffer,
+  type SharedMetricsChoice,
+  sharedMetricsProfileRequester
+} from '@/store/shared-metrics'
 
-const CHOICES: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
+const CHOICES: readonly SharedMetricsChoice[] = ['share', 'off']
 
 /**
  * The first-run shared-metrics offer, in the composer status stack beside the
  * free-tier strip: it never blocks the composer or takes focus, and it stays
- * until one of the three equal answers is saved (the backend's `decided` is
+ * until one of the two equal answers is saved (the backend's `decided` is
  * the only latch). "Details" opens the full explainer the host paints.
  */
 export function SharedMetricsConsentStrip() {
-  const { requestGateway } = useGatewayRequest()
+  const scope = useStore($apiRequestScope)
+  const activeProfile = useStore($activeGatewayProfile)
+  const profile = normalizeProfileKey(scope.profile ?? activeProfile)
+
+  return <SharedMetricsConsentStripForOwner connectionId={scope.connectionId} key={JSON.stringify([scope.connectionId, profile])} profile={profile} />
+}
+
+interface SharedMetricsConsentStripOwnerProps {
+  connectionId: string | null
+  profile: string
+}
+
+function SharedMetricsConsentStripForOwner({ connectionId, profile }: SharedMetricsConsentStripOwnerProps) {
   const { t } = useI18n()
   const copy = t.sharedMetrics
+  const reask = useStore($sharedMetricsConsent)?.reask === true
   const [saving, setSaving] = useState(false)
+
+  const scopedRequest = useMemo(
+    () => sharedMetricsProfileRequester(
+      <T,>(method: string, params: Record<string, unknown> = {}) =>
+        requestGatewayForAgent<T>(connectionId, profile, method, params),
+      profile
+    ),
+    [connectionId, profile]
+  )
 
   const choose = async (choice: SharedMetricsChoice) => {
     setSaving(true)
 
     try {
-      await answerSharedMetricsOffer(requestGateway, choice)
+      await answerSharedMetricsOffer(scopedRequest, choice, `${connectionId ?? ''}|${profile}`)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {
@@ -67,7 +98,7 @@ export function SharedMetricsConsentStrip() {
     >
       <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">
         <span className="font-medium">{copy.consentTitle}</span>
-        <span className="text-muted-foreground/80"> {copy.stripBody}</span>
+        <span className="text-muted-foreground/80"> {reask ? copy.stripReaskBody : copy.stripBody}</span>
       </span>
     </StatusRow>
   )

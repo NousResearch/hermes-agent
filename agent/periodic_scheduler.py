@@ -21,7 +21,7 @@ failure never retires the handle: it is re-queued and logged at warning.
 
 from __future__ import annotations
 
-from contextvars import copy_context
+from contextvars import Context, copy_context
 import heapq
 import itertools
 import logging
@@ -38,9 +38,9 @@ _CALLBACK_THREAD_PREFIX = "hermes-periodic-callback"
 class ScheduledHandle:
     """Cancel token for one scheduled periodic callback."""
 
-    __slots__ = ("_fn", "_interval", "_cancelled", "_scheduler", "_runner", "_context")
+    __slots__ = ("_cancelled", "_context", "_fn", "_interval", "_runner", "_scheduler")
 
-    def __init__(self, scheduler: "PeriodicScheduler", fn: Callable[[], object], interval: float):
+    def __init__(self, scheduler: PeriodicScheduler, fn: Callable[[], object], interval: float):
         self._scheduler = scheduler
         self._fn = fn
         self._interval = interval
@@ -79,7 +79,7 @@ class PeriodicScheduler:
 
     def _cancel(self, handle: ScheduledHandle, wait: Optional[float]) -> None:
         with self._cond:
-            handle._cancelled = True
+            self._retire(handle)
             self._cond.notify()
             runner = handle._runner
         if wait and runner is not None and threading.current_thread() is not runner:
@@ -90,7 +90,7 @@ class PeriodicScheduler:
         so ``cancel`` can never observe a half-set runner."""
         runner = threading.Thread(
             target=self._run_callback,
-            args=(handle,),
+            args=(handle, handle._fn, handle._context),
             name=f"{_CALLBACK_THREAD_PREFIX}-{id(handle):x}",
             daemon=True,
         )
@@ -109,21 +109,29 @@ class PeriodicScheduler:
                 self._requeue(handle)
                 self._cond.notify()
 
+    @staticmethod
+    def _retire(handle: ScheduledHandle) -> None:
+        """Mark cancelled and drop the callback (``_cond`` held). The callback is usually a bound method of
+        the handle's owner, which keeps the handle: an owner -> handle -> method -> owner cycle that outlives
+        the turn and, on a quiet gateway, pins the whole agent until a full GC."""
+        handle._cancelled = True
+        handle._fn = handle._context = None
+
     def _requeue(self, handle: ScheduledHandle) -> None:
         """Push ``handle``'s next due time (``_cond`` held)."""
         heapq.heappush(self._heap, (time.monotonic() + handle._interval, next(self._seq), handle))
 
-    def _run_callback(self, handle: ScheduledHandle) -> None:
+    def _run_callback(self, handle: ScheduledHandle, fn: Callable[[], object], context: Context) -> None:
         stop = False
         try:
-            stop = handle._context.run(handle._fn) is False
+            stop = context.run(fn) is False
         except Exception:
-            logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
+            logger.debug("periodic callback %r raised", fn, exc_info=True)
         finally:
             with self._cond:
                 handle._runner = None
                 if stop:
-                    handle._cancelled = True
+                    self._retire(handle)
                 elif not handle._cancelled:
                     self._requeue(handle)
                 self._cond.notify()

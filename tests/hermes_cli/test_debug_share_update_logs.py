@@ -67,6 +67,23 @@ class TestCaptureDefaultLogSnapshots:
         assert "Desktop GUI build failed" in snaps["update"].tail_text
         assert "ELIFECYCLE" in snaps["handoff"].tail_text
 
+    def test_snapshots_read_the_root_home_update_logs_under_a_profile(self, tmp_path, monkeypatch):
+        """``hermes update`` and the hand-off scripts write the ROOT home's logs, whatever profile."""
+        from hermes_cli.debug import _capture_default_log_snapshots
+
+        root = tmp_path / "root"
+        profile = root / "profiles" / "coder"
+        (root / "logs").mkdir(parents=True)
+        (profile / "logs").mkdir(parents=True)
+        (root / "logs" / "update.log").write_text(UPDATE_LOG_BODY)
+        (root / "logs" / "desktop-update-handoff.log").write_text(HANDOFF_LOG_BODY)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        snaps = _capture_default_log_snapshots(100)
+
+        assert "Desktop GUI build failed" in snaps["update"].tail_text
+        assert "ELIFECYCLE" in snaps["handoff"].tail_text
+
     def test_missing_files_report_absence_without_raising(
         self, home_without_update_logs
     ):
@@ -155,21 +172,7 @@ class TestCollectShareBundle:
 
 
 class TestFullLogUploadLabels:
-    """build_debug_share uploads every bundle log — including the new pair."""
-
-    def test_upload_label_list_includes_update_logs(self):
-        """The paste-upload loop must not silently skip the new labels.
-
-        Asserts the label tuple (source-derived behavior contract: the
-        bundle keys are only reachable for upload if listed here).
-        """
-        import inspect
-
-        from hermes_cli import debug
-
-        source = inspect.getsource(debug.build_debug_share)
-        assert '"update.log"' in source
-        assert '"desktop-update-handoff.log"' in source
+    """--local prints every bundle log — including the new pair (--nous ships the bundle)."""
 
     def test_local_print_label_list_includes_update_logs(self):
         """run_debug_share --local prints bundle logs by the same contract."""

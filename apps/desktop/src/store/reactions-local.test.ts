@@ -28,8 +28,7 @@ vi.mock('@/store/profile', async () => {
 
 vi.mock('@/store/reactions', () => ({
   QUICK_REACTIONS: ['❤️'],
-  applyReaction: (_list: unknown, emoji: null | string, author: string) =>
-    emoji ? [{ author, emoji }] : []
+  applyReaction: (_list: unknown, emoji: null | string, author: string) => (emoji ? [{ author, emoji }] : [])
 }))
 
 vi.mock('@/store/session', async () => {
@@ -56,6 +55,7 @@ vi.mock('@/store/session', async () => {
     setMessagingSessions: vi.fn(),
     setMessagingTruncated: vi.fn(),
     setSelectedStoredSessionId: vi.fn(),
+    setSessionProfilesFailed: vi.fn(),
     setSessionProfilesTruncated: vi.fn(),
     setSessionProfilesUsage: vi.fn(),
     setSessions: vi.fn(),
@@ -136,9 +136,9 @@ describe('live reaction overlay scope', () => {
     const persistedForB: MessageReaction[] = [{ at: 0, author: 'agent', emoji: '😴' }]
 
     expect(agentLiveReactions($agentReactions.get(), 4242, SOURCE_B)).toBeUndefined()
-    expect(
-      mergeReactions(persistedForB, undefined, agentLiveReactions($agentReactions.get(), 4242, SOURCE_B))
-    ).toEqual(persistedForB)
+    expect(mergeReactions(persistedForB, undefined, agentLiveReactions($agentReactions.get(), 4242, SOURCE_B))).toEqual(
+      persistedForB
+    )
     // The owning source still sees its live overlay.
     expect(agentLiveReactions($agentReactions.get(), 4242, SOURCE_A)).toEqual(AGENT_THUMBS_UP)
   })

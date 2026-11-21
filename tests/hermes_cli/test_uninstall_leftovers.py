@@ -33,7 +33,7 @@ def launch_agents(fake_home, monkeypatch):
         lambda: agents / "ai.hermes.gateway.plist", raising=False,
     )
     # _remove_launchd_gateway imports it from hermes_cli.gateway at call time.
-    import hermes_cli.gateway as gateway
+    from hermes_cli import gateway
     monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: agents / "ai.hermes.gateway.plist")
     return agents
 

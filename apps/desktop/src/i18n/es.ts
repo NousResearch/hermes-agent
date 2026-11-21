@@ -608,7 +608,7 @@ export const esOverrides = {
       'composer.voice': 'Iniciar / detener conversación por voz',
       'composer.reasoningUp': 'Subir nivel de razonamiento',
       'composer.reasoningDown': 'Bajar nivel de razonamiento',
-      'view.toggleSidebar': 'Alternar barra lateral de sesiones',
+      'view.toggleSidebar': 'Alternar barra lateral izquierda',
       'view.cycleSidebarGrouping': 'Cambiar la agrupación de sesiones',
       'view.toggleRightSidebar': 'Alternar explorador de archivos',
       'view.toggleReview': 'Alternar panel de revisión',

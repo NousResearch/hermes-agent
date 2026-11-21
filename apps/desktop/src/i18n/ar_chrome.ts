@@ -99,7 +99,7 @@ export const arChrome = {
       'composer.dictate': 'بدء / إيقاف الإملاء',
       'composer.reasoningUp': 'رفع مستوى التفكير',
       'composer.reasoningDown': 'خفض مستوى التفكير',
-      'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
+      'view.toggleSidebar': 'تبديل الشريط الجانبي الأيسر',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
       'view.showFiles': 'إظهار متصفح الملفات',

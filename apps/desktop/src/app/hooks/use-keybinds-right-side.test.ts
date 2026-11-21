@@ -16,9 +16,10 @@ vi.mock('@/app/right-sidebar/terminal/reveal-focus', async importOriginal => ({
 
 import { useKeybinds } from '@/app/hooks/use-keybinds'
 import { findGroupOfPane, group, type LayoutNode, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $collapsedTreeSides, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { isMacPlatform } from '@/lib/platform'
+import { $panesFlipped, setFileBrowserOpen, setSidebarOpen } from '@/store/layout'
 
 // ⌘J dispatch must resolve the SAME physical right target the toggle mutates:
 // a Browser column registers `placement: 'main'`, so the semantic side gate
@@ -39,6 +40,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   toggleTerminalPane.mockClear()
+  $layoutTree.set(null)
+  $panesFlipped.set(false)
+  $collapsedTreeSides.set(new Set())
+  $hiddenTreePanes.set(new Set())
+  setSidebarOpen(true)
+  setFileBrowserOpen(true)
   unmountKeybinds = renderHook(
     () =>
       useKeybinds({
@@ -56,6 +63,37 @@ beforeEach(() => {
 afterEach(() => {
   unmountKeybinds?.()
   $layoutTree.set(null)
+})
+
+describe('mod+B (view.toggleSidebar)', () => {
+  it.each([false, true])('round-trips only the physical left column (flipped=%s)', flipped => {
+    $panesFlipped.set(flipped)
+    const left = flipped ? 'files' : 'sessions'
+    const right = flipped ? 'sessions' : 'files'
+    $layoutTree.set(split('row', [group([left]), group(['workspace']), group([right])]))
+    const untouched = findGroupOfPane($layoutTree.get() as LayoutNode, right)
+    const main = findGroupOfPane($layoutTree.get() as LayoutNode, 'workspace')
+
+    for (const minimized of [true, false]) {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          code: 'KeyB',
+          ctrlKey: !isMacPlatform(),
+          key: 'b',
+          metaKey: isMacPlatform()
+        })
+      )
+
+      expect(Boolean(findGroupOfPane($layoutTree.get() as LayoutNode, left)?.minimized)).toBe(minimized)
+      expect(findGroupOfPane($layoutTree.get() as LayoutNode, right)).toEqual(untouched)
+      expect(findGroupOfPane($layoutTree.get() as LayoutNode, 'workspace')).toEqual(main)
+      expect($collapsedTreeSides.get().size).toBe(0)
+      expect($hiddenTreePanes.get().size).toBe(0)
+      expect(toggleTerminalPane).not.toHaveBeenCalled()
+    }
+  })
 })
 
 describe('⌘J (view.toggleRightSidebar)', () => {

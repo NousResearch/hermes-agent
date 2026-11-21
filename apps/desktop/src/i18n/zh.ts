@@ -389,7 +389,7 @@ export const zhOverrides = {
       'composer.dictate': '开始 / 停止听写',
       'composer.reasoningUp': '提高推理等级',
       'composer.reasoningDown': '降低推理等级',
-      'view.toggleSidebar': '切换会话侧边栏',
+      'view.toggleSidebar': '切换左侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
       'view.toggleStatusbar': '切换状态栏',

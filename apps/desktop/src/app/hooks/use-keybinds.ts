@@ -47,9 +47,9 @@ import {
   layoutHasRightSide,
   requestSessionSearchFocus,
   setFileBrowserOpen,
+  toggleLeftSide,
   togglePanesFlipped,
-  toggleRightSide,
-  toggleSidebarOpen
+  toggleRightSide
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { toggleBrowserTab } from '@/store/preview'
@@ -346,7 +346,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'workspace.openFolder': () => void openFolderAsProject(),
 
     // Narrow-viewport reveal is handled inside the store toggles now.
-    'view.toggleSidebar': toggleSidebarOpen,
+    'view.toggleSidebar': toggleLeftSide,
     'view.cycleSidebarGrouping': cycleSidebarGrouping,
     // ⌘J toggles the physical right side — whatever column lives there in the
     // live tree (the Browser preview column, the files column). Falls back to

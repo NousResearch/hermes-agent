@@ -2436,6 +2436,17 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
+        # Carry the operator's stable IDs through, not just open_id.
+        #
+        # Session keys prefer union_id (source.user_id_alt) over open_id (gateway/session.py
+        # _canonical_participant). Feishu's CallBackOperator carries union_id/user_id on the
+        # card-action event, but this path used to pass None for both, so card clicks landed in
+        # open_id-keyed sessions while text messages from the same person landed in
+        # union_id-keyed sessions — one human, two sessions, and per-user session state
+        # (approvals, prompts) silently split. Same union_id under two apps (different
+        # open_ids) also split into two sessions.
+        operator_user_id = str(getattr(operator, "user_id", "") or "") or None
+        operator_union_id = str(getattr(operator, "union_id", "") or "") or None
         if not chat_id or not open_id:
             logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
             return
@@ -2451,7 +2462,7 @@ class FeishuAdapter(BasePlatformAdapter):
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
-            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
+            sender_id=SimpleNamespace(open_id=open_id, user_id=operator_user_id, union_id=operator_union_id), event_chat_type="group",
             raw_message=data, message_id=token or str(uuid.uuid4()),
         )
 

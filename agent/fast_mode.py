@@ -60,6 +60,7 @@ def begin_turn(agent: Any, conversation_history: Any) -> None:
     """Open (or refuse) the fast window at a user-turn boundary."""
     mode = getattr(agent, "service_tier", None)
     agent._fast_until = 0.0
+    agent._standard_speed_turn_models = set()
     if mode not in BOUNDED_MODES:
         return
     if mode == "cold" and any(
@@ -86,8 +87,14 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
         overrides.update(
             resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url) or {}
         )
-    if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
+    model = getattr(agent, "model", None)
+    if "speed" in overrides and model in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)
+    if ("speed" in overrides or overrides.get("service_tier") in STATIC_TIERS) and isinstance(
+            standard := getattr(agent, "_standard_speed_turn_models", None), set) and model in standard:
+        overrides.pop("speed", None)
+        if overrides.get("service_tier") in STATIC_TIERS:
+            overrides.pop("service_tier")
     from agent.codex_service_tiers import apply_daybreak, negotiate_request_tier
     negotiate_request_tier(agent, overrides)
     apply_daybreak(agent, overrides)
@@ -105,6 +112,30 @@ def fast_mode_unprovisioned(api_error: Any, api_kwargs: Any) -> bool:
     if headers is None:
         return False
     return any(str(headers.get(name, "")).strip() == "0" for name in _FAST_LIMIT_HEADERS)
+
+
+def fast_tier_busy(api_error: Any, api_kwargs: Any) -> bool:
+    """True for a 429 / 529 / 5xx on a request that asked for the fast tier (``speed: "fast"`` or
+    ``service_tier: priority|ultrafast``). The tier has its own capacity and rate limit, so the same
+    model at standard speed may still answer."""
+    status = getattr(api_error, "status_code", None)
+    if not isinstance(status, int) or not (status == 429 or status >= 500) or not isinstance(api_kwargs, dict):
+        return False
+    speed = api_kwargs.get("speed") or (api_kwargs.get("extra_body") or {}).get("speed")
+    return speed == "fast" or api_kwargs.get("service_tier") in STATIC_TIERS
+
+
+def use_standard_speed_this_turn(agent: Any) -> bool:
+    """Send the current model at standard speed until the next user turn. False when it already
+    is, so a busy fast tier costs at most one extra request per model per turn."""
+    model = getattr(agent, "model", None)
+    models = getattr(agent, "_standard_speed_turn_models", None)
+    if not isinstance(models, set):
+        models = agent._standard_speed_turn_models = set()
+    if not model or model in models:
+        return False
+    models.add(model)
+    return True
 
 
 def mark_fast_mode_unavailable(agent: Any) -> bool:

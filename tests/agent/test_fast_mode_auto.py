@@ -194,3 +194,43 @@ def test_recovery_retries_at_standard_speed_before_classification():
     assert (retry, prompt) == (True, "sys")
     assert agent._fast_mode_unavailable_models == {"claude-opus-5"}
     assert any("standard speed" in line for line in printed)
+
+
+class _StatusError(Exception):
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.status_code = status
+
+
+def test_busy_fast_tier_retries_same_model_at_standard_speed_once_per_turn():
+    from agent.turn_recovery import recover_before_classification
+
+    for overrides, sent in (
+        ({"speed": "fast"}, {"model": "claude-opus-5-5", "extra_body": {"speed": "fast"}}),
+        ({"service_tier": "priority"}, {"model": "gpt-5.4", "service_tier": "priority"}),
+    ):
+        agent = _agent(service_tier="priority", model=sent["model"], request_overrides=dict(overrides),
+                       log_prefix="", _fast_mode_unavailable_models=set(), _image_rejecting_models=set(),
+                       _vprint=lambda *a, **k: None)
+        for status in (429, 529, 503):
+            fast_mode.begin_turn(agent, conversation_history=[])
+            assert fast_mode.effective_request_overrides(agent) == overrides
+            retry, _ = recover_before_classification(
+                agent, _StatusError(status), messages=[], api_messages=[], api_kwargs=sent, active_system_prompt="s")
+            assert retry is True
+            assert fast_mode.effective_request_overrides(agent) == {}  # same model, standard speed
+            # Standard speed failing too goes on to normal handling (backoff, fallback).
+            assert recover_before_classification(
+                agent, _StatusError(status), messages=[], api_messages=[], api_kwargs=sent, active_system_prompt="s")[0] is False
+        agent.model = "fallback-model"  # a fallback model still gets its own fast attempt
+        assert agent.model not in agent._standard_speed_turn_models
+        fast_mode.begin_turn(agent, conversation_history=[{"role": "user", "content": "x"}])
+        agent.model = sent["model"]
+        assert fast_mode.effective_request_overrides(agent) == overrides  # next turn asks for fast again
+
+
+def test_busy_fast_tier_ignores_standard_requests_and_client_errors():
+    assert fast_mode.fast_tier_busy(_StatusError(429), {"model": "gpt-5.4"}) is False
+    assert fast_mode.fast_tier_busy(_StatusError(400), {"service_tier": "priority"}) is False
+    assert fast_mode.fast_tier_busy(_StatusError(429), {"service_tier": "flex"}) is False
+    assert fast_mode.fast_tier_busy(RuntimeError("boom"), {"service_tier": "priority"}) is False

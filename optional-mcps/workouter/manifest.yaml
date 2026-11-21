@@ -1,0 +1,25 @@
+manifest_version: 1
+name: workouter
+connector_slug: workouter
+description: Build and retrieve structured workouts and request Apple Watch delivery.
+source: https://workouter.co/docs/mcp
+transport:
+  type: http
+  url: https://workouter.co/api/mcp
+auth:
+  type: oauth
+suggest:
+  keywords:
+    - workouter
+  hosts:
+    - workouter.co
+post_install: |
+  Authenticate with Workouter in the browser. Tools require an active Pro account.
+  For read-only access, clear optional creation and email permissions before approving.
+  Restart Hermes or run /reload-mcp, then ask to list your saved Workouter workouts.
+  Phone delivery requires the Workouter iPhone app and a paired Apple Watch.
+  Push acceptance is not Watch receipt. Missing delivery observations remain unconfirmed.
+  Email sends only to your account address with separate permission.
+  Reauthorize with: hermes mcp login workouter
+  Inspect tool access with: hermes mcp configure workouter
+  Setup and support: https://workouter.co/docs/mcp and https://workouter.co/contact

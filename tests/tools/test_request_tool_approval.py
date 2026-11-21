@@ -247,3 +247,53 @@ class TestRequestToolApproval:
         )
         res = request_tool_approval("computer_use", "click", rule_key="cua")
         assert res == {"approved": True, "message": None}
+
+
+class TestRuleKeyNormalisation:
+    """``rule_key`` must mint ONE ``plugin_rule:`` string whichever entry point asks: the
+    ``pre_tool_call`` approve directive strips the plugin's key while a direct
+    ``request_tool_approval()`` call used it verbatim, so an Always grant made on one path
+    never matched the other (#153435)."""
+
+    def test_always_grant_matches_its_stripped_twin(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        prompts = []
+
+        def answer(*_a, **_k):
+            prompts.append(1)
+            return "always"
+
+        # The reporter's key: a 40-char description slice that happens to end in a space.
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", answer)
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", answer)
+        granted: set[str] = set()
+        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: pk in granted)
+        monkeypatch.setattr(approval, "approve_session", lambda sk, pk: None)
+        monkeypatch.setattr(approval, "approve_permanent", granted.add)
+        monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
+
+        # 1. The middleware path calls the gate directly with the whitespace-edged key.
+        first = request_tool_approval("drive_upload", "create a Drive file via a", rule_key="drive_write:create ")
+        assert first["approved"] is True
+        assert granted == {"plugin_rule:drive_write:create"}
+
+        # 2. The pre_tool_call path asks with the stripped key; the Always grant must match.
+        second = request_tool_approval("drive_upload", "create a Drive file via a", rule_key="drive_write:create")
+        assert second["approved"] is True
+        assert len(prompts) == 1, "a grant made with a whitespace-edged rule_key must match its stripped twin"
+
+    def test_blank_rule_key_falls_back_to_the_derived_key(self, monkeypatch):
+        """A whitespace-only key is no key: it must fall back to the tool+reason hash instead of
+        minting an empty ``plugin_rule:`` grain."""
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "deny")
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *a, **k: "deny")
+
+        blank = request_tool_approval("terminal", "smtp send", rule_key="   ")["pattern_key"]
+        derived = request_tool_approval("terminal", "smtp send")["pattern_key"]
+        assert blank == derived
+        assert blank.startswith("plugin_rule:terminal:")

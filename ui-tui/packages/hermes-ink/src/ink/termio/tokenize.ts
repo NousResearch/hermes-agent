@@ -36,6 +36,8 @@ type TokenizerOptions = {
    * Only enable for keyboard input; output streams must preserve line endings.
    */
   legacyAltEnter?: boolean
+  /** Keep ESC+DEL/BS together for legacy Alt+Backspace keyboard input only. */
+  legacyAltBackspace?: boolean
 }
 
 /**
@@ -59,13 +61,14 @@ export function createTokenizer(options?: TokenizerOptions): Tokenizer {
   let lastFlushedBuffer = ''
   const x10Mouse = options?.x10Mouse ?? false
   const legacyAltEnter = options?.legacyAltEnter ?? false
+  const legacyAltBackspace = options?.legacyAltBackspace ?? false
 
   return {
     feed(input: string): Token[] {
       // Real bytes arrived — any kept partial is no longer stale.
       lastFlushedBuffer = ''
 
-      const result = tokenize(input, currentState, currentBuffer, false, x10Mouse, legacyAltEnter)
+      const result = tokenize(input, currentState, currentBuffer, false, x10Mouse, legacyAltEnter, legacyAltBackspace)
 
       currentState = result.state.state
       currentBuffer = result.state.buffer
@@ -74,7 +77,7 @@ export function createTokenizer(options?: TokenizerOptions): Tokenizer {
     },
 
     flush(): Token[] {
-      const result = tokenize('', currentState, currentBuffer, true, x10Mouse, legacyAltEnter)
+      const result = tokenize('', currentState, currentBuffer, true, x10Mouse, legacyAltEnter, legacyAltBackspace)
       currentState = result.state.state
       currentBuffer = result.state.buffer
 
@@ -110,13 +113,21 @@ type InternalState = {
   buffer: string
 }
 
+function isLegacyAltControl(code: number, legacyAltEnter: boolean, legacyAltBackspace: boolean): boolean {
+  return (
+    (legacyAltEnter && (code === C0.CR || code === C0.LF)) ||
+    (legacyAltBackspace && (code === C0.DEL || code === C0.BS))
+  )
+}
+
 function tokenize(
   input: string,
   initialState: State,
   initialBuffer: string,
   flush: boolean,
   x10Mouse: boolean,
-  legacyAltEnter: boolean
+  legacyAltEnter: boolean,
+  legacyAltBackspace: boolean
 ): { tokens: Token[]; state: InternalState } {
   const tokens: Token[] = []
 
@@ -184,10 +195,9 @@ function tokenize(
           // 'O' - SS3
           result.state = 'ss3'
           i++
-        } else if (legacyAltEnter && (code === C0.CR || code === C0.LF)) {
-          // Legacy terminals encode Alt+Enter as ESC followed by CR or LF.
-          // Keep both bytes in one token so the key parser can preserve Alt.
-          // A standalone Escape is emitted by flush() before a later Enter;
+        } else if (isLegacyAltControl(code, legacyAltEnter, legacyAltBackspace)) {
+          // Keep legacy Alt+Enter/Backspace intact before text-control splitting.
+          // A standalone Escape is emitted by flush() before a later control key;
           // without that timing boundary the legacy encoding is ambiguous.
           i++
           emitSequence(data.slice(seqStart, i))

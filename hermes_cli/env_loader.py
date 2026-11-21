@@ -443,6 +443,39 @@ def _resolve_dotenv_assignments(
     return resolved
 
 
+def environ_before_dotenv(name: str) -> str | None:
+    """*name* as the environment this process was started with set it: ``os.environ`` with what this
+    process's dotenv passes published peeled back. None when it was not set there."""
+    with _DOTENV_LOCK:
+        return _dotenv_lookup_env(None).get(name)
+
+
+def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[str] = frozenset()) -> dict[str, str]:
+    """What ``load_hermes_dotenv`` would publish from the checkout's *project_env* in a process started
+    for *home* now, read-only, with the names in *removed* gone from *home*'s ``.env``: the process's own
+    environment (this process's dotenv output peeled back), then *home*'s ``.env`` with override, then
+    *project_env* with override only when *home* has no ``.env`` (else it fills gaps), ``${VAR}`` expanded
+    by the same rules at each layer."""
+    with _DOTENV_LOCK:
+        lookup_env = _dotenv_lookup_env(None)
+    user_env = home / ".env"
+    try:
+        home_assignments = [item for item in _parse_dotenv_file(user_env) if item[0] not in removed]
+    except OSError:
+        home_assignments = []
+    for name, value in _resolve_dotenv_assignments(home_assignments, lookup_env, override=True).items():
+        if value is not None:
+            lookup_env[name] = value
+    try:
+        assignments = _parse_dotenv_file(project_env)
+    except OSError:
+        return {}
+    override = not user_env.exists()
+    return {name: value for name, value in
+            _resolve_dotenv_assignments(assignments, lookup_env, override=override).items()
+            if value is not None and (override or name not in lookup_env)}
+
+
 def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the

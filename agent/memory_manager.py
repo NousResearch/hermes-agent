@@ -605,6 +605,12 @@ class MemoryManager:
     def get_all_tool_names(self) -> set:
         return set(self._tool_to_provider)
 
+    def get_provider_tool_map(self) -> dict[str, str]:
+        """``{tool name: provider name}`` for every tool a provider registered. Core tool names cannot
+        register, the core ``memory`` tool never appears here (#157197): the achievements scan stores
+        this map per session so provider calls are counted by ownership, not by name."""
+        return {tool_name: provider.name for tool_name, provider in self._tool_to_provider.items()}
+
     def has_tool(self, tool_name: str) -> bool:
         return tool_name in self._tool_to_provider
 

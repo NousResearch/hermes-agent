@@ -154,3 +154,41 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         kwargs["agent_identity"] = get_active_profile_name()
         kwargs["agent_workspace"] = "hermes"
     return kwargs
+
+
+#: The ``model_config`` sidecar key holding a session's ``{tool name: provider name}`` memory-tool map.
+#: The dashboard's achievements plugin reads it from its own persistence reader and cannot import agent
+#: code, so both sides spell the (single, provider-owned) key literally.
+_MEMORY_TOOLS_MODEL_CONFIG_KEY = "memory_tools"
+
+
+def record_memory_provider_tools(agent: Any) -> None:
+    """Persist this session's ``{tool name: provider name}`` map into its ``model_config`` sidecar.
+
+    The achievements scan sees stored tool names only, so provider calls were counted by whether the
+    name happened to contain "memory" (#157197): hindsight-style providers scored zero. One merge-patch
+    write per build records the exposed surface beside the session's other sidecar state; the scanner
+    then counts every provider call without naming providers in the plugin. A name a provider stopped
+    exposing keeps working for history that used it — the merge-patch is the same no-rewrite choice the
+    other sidecar writers make around tool rebuilds.
+    """
+    manager = getattr(agent, "_memory_manager", None)
+    if manager is None:
+        return
+    provider_tools = getattr(manager, "get_provider_tool_map", None)
+    if not callable(provider_tools):
+        return
+    raw_map = provider_tools() or {}
+    tool_map: dict[str, str] = raw_map if isinstance(raw_map, dict) else {}
+    if not tool_map:
+        return
+    session_id = getattr(agent, "session_id", None)
+    db = getattr(agent, "_session_db", None)
+    if not session_id or db is None:
+        return
+    try:
+        store = agent_interface(agent)
+        patch = store.sessions.patch_model_config if store is not None else db.patch_session_model_config
+        patch(session_id, {_MEMORY_TOOLS_MODEL_CONFIG_KEY: tool_map})
+    except Exception as exc:
+        logger.warning("Memory provider tool map not recorded for session %s", session_id, exc_info=exc)

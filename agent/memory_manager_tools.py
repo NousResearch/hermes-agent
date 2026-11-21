@@ -103,4 +103,9 @@ def inject_memory_provider_tools(agent: Any) -> int:
             agent.valid_tool_names.add(schema["name"])
             existing_tool_names.add(schema["name"])
             added += 1
+    from agent.agent_init_memory_provider import record_memory_provider_tools
+    # The scan sees stored tool names only; the map recorded beside the tool surface it describes
+    # (#157197) is what lets it count provider calls by ownership. A best-effort sidecar write
+    # cannot fail the injection; a provider whose toolset is gated off above records nothing.
+    record_memory_provider_tools(agent)
     return added

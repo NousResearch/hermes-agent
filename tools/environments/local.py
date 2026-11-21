@@ -31,6 +31,7 @@ from tools.environments.local_env_policy import (
     _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
     strip_profile_gate_env, strip_supervised_process_identity)
+from tools.environments.local_login_path import login_shell_path, prepend_login_shell_path
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 from tools.environments.base_session_env import (
@@ -1249,10 +1250,13 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = cmd_string.replace(token, str(secret_fd)).replace(_secret_gen_token(session_id), generation)
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
-        # spawn env's dirs a resetting profile dropped are re-appended (#56634).
+        # spawn env's dirs a resetting profile dropped are re-appended (#56634). A zsh
+        # user's login PATH goes first, after path_helper and before the init files,
+        # so dirs those files add still win (#129103).
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
+            cmd_string = prepend_login_shell_path(cmd_string, login_shell_path())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.

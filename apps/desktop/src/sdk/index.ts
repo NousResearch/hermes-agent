@@ -23,10 +23,8 @@ import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
 import { mutateSessionFenced } from '@/api/sessions'
-import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
-import type { ClientSessionState } from '@/app/types'
 import {
   $newSessionTabAction,
   $paneVisible,
@@ -84,11 +82,7 @@ import {
   $gatewayState,
   $messages,
   $selectedStoredSessionId,
-  $sessions,
-  getSessionOwnerHints,
-  rememberedSessionProfile,
   requestSessionResume,
-  sessionMatchesStoredId,
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
@@ -110,6 +104,17 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
 import { logBotWake } from './bot-wake-log'
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import {
+  $focusedAwaitingResponse,
+  $focusedBusy,
+  $focusedModel,
+  $focusedProvider,
+  $focusedReasoningEffort,
+  $focusedSessionOwner,
+  $focusedSessionProfile,
+  $focusedUsage,
+  type PluginFocusedSessionOwner
+} from './focused-state'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
@@ -126,6 +131,7 @@ import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export * from './areas'
+export type { PluginFocusedSessionOwner } from './focused-state'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
@@ -133,94 +139,6 @@ export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-
 // -- state: readonly views over the app's live atoms -------------------------
 
 const readonlyAtom = <T>(atomLike: ReadableAtom<T>): ReadableAtom<T> => atomLike
-
-/**
- * Turn flag for the FOCUSED chat — same semantics as the statusbar's busy
- * pulse. While the focused surface is the primary workspace (or a draft with
- * no runtime slice yet) this reads the primary view, which itself falls back
- * to the global draft atoms. Once a session TILE holds focus, the tile's own
- * state slice is authoritative — a background session can never leak in.
- */
-const focusedTurnFlag = (
-  select: (state: ClientSessionState) => boolean,
-  $primary: ReadableAtom<boolean>
-): ReadableAtom<boolean> =>
-  computed(
-    [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $primary],
-    (focused, selected, state, primary) =>
-      !focused || focused === selected ? primary : Boolean(state && select(state))
-  )
-
-const $focusedBusy = focusedTurnFlag(state => state.busy, PRIMARY_SESSION_VIEW.$busy)
-
-const $focusedAwaitingResponse = focusedTurnFlag(
-  state => state.awaitingResponse,
-  PRIMARY_SESSION_VIEW.$awaitingResponse
-)
-
-export interface PluginFocusedSessionOwner {
-  connectionId: string
-  profile: string
-}
-
-/**
- * Connection-qualified owner of the FOCUSED chat. The gateway-routing atom
- * (`$activeGatewayProfile`) answers "which backend is the live socket homed
- * on" — but tab/tile focus moves without swapping the socket, and a cold
- * start can restore a route into a session the booting gateway doesn't own.
- * Any per-bot readout must follow the chat the user is LOOKING AT, so this
- * resolves the focused stored session to a unique immutable owner hint or a
- * unique connection-qualified aggregated row. Ambiguous or unresolved focused
- * ids fail closed with null; only a draft/no focused id uses the active gateway
- * owner. `focusedSessionProfile` remains the profile-only compatibility ladder.
- */
-const $focusedSessionOwner = computed(
-  [$focusedStoredSessionId, $sessions, $activeGatewayProfile, $connection],
-  (focused, sessions, activeProfile, connection): PluginFocusedSessionOwner | null => {
-    const activeConnectionId = String(connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')).trim()
-
-    const fallback = {
-      connectionId: activeConnectionId,
-      profile: normalizeProfileKey(activeProfile)
-    }
-
-    if (!focused) {
-      return fallback
-    }
-
-    const hints = getSessionOwnerHints(focused)
-
-    if (hints.length === 1) {
-      return {
-        connectionId: hints[0].connectionId,
-        profile: normalizeProfileKey(hints[0].profile)
-      }
-    }
-
-    if (hints.length > 1) {
-      return null
-    }
-
-    const owners = new Map<string, PluginFocusedSessionOwner>()
-
-    for (const row of sessions.filter(session => sessionMatchesStoredId(session, focused))) {
-      const connectionId = String(row.connection_id || '').trim()
-      const profile = normalizeProfileKey(row.profile)
-
-      if (connectionId) {
-        owners.set(`${connectionId}::${profile}`, { connectionId, profile })
-      }
-    }
-
-    return owners.size === 1 ? [...owners.values()][0] : null
-  }
-)
-
-const $focusedSessionProfile = computed(
-  [$focusedSessionOwner, $focusedStoredSessionId, $sessions, $activeGatewayProfile],
-  (owner, focused, sessions, activeProfile) =>
-    owner?.profile || rememberedSessionProfile(sessions, focused, activeProfile)
-)
 
 /** Runtime session id → mid-turn. Not gateway socket state. */
 const $busyBySession = computed($sessionStates, states => {
@@ -232,10 +150,6 @@ const $busyBySession = computed($sessionStates, states => {
 
   return map
 })
-
-/** Live usage of the FOCUSED session, projected out of the streamed session
- *  state — the same readout the core statusbar's context chip paints. */
-const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
 
 const $activeConnectionId = computed($connection, connection => {
   if (!connection) {
@@ -575,6 +489,16 @@ export const host = {
     connectionId: readonlyAtom<null | string>($activeConnectionId),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
+    /** Model the FOCUSED chat is on — the value its model pill shows, following
+     *  the user between tiles (unlike `model`, which is the composer draft). */
+    focusedModel: readonlyAtom<string>($focusedModel),
+    /** Provider the FOCUSED chat is on. A named custom endpoint can read as its
+     *  config key (`my-endpoint`) right after a pick and as the canonical
+     *  identity (`custom:my-endpoint`) once the backend reports — normalize
+     *  before comparing two of these. */
+    focusedProvider: readonlyAtom<string>($focusedProvider),
+    /** Reasoning effort of the FOCUSED chat ('' when the model has none). */
+    focusedReasoningEffort: readonlyAtom<string>($focusedReasoningEffort),
     /** Runtime id of the FOCUSED chat session — the interacted tile, else the
      *  primary. Prefer this over `activeSessionId` for any readout that
      *  should follow the user between tiles (context, tokens, cost). */

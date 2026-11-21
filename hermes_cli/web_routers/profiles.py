@@ -1001,7 +1001,16 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
     def _run():
         from hermes_cli import profile_describer
-        return profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+        from hermes_cli.web_server_profiles import _config_profile_scope
+
+        # describe_profile reads this profile's API key through the auxiliary
+        # client. Under multiplexing an unscoped secret read is fail-closed, so
+        # without a bound scope the generation always dies as
+        # "LLM error: UnscopedSecretError" regardless of configuration.
+        # _config_profile_scope rather than _profile_scope: this call can sit on
+        # the network for 60 s and must not hold the config mutation lock.
+        with _config_profile_scope(name):
+            return profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
 
     with _profile_errors("POST /api/profiles/%s/describe-auto failed", name,
                          not_found=(), bad_request=()):

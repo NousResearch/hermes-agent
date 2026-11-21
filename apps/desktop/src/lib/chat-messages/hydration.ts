@@ -36,9 +36,15 @@ const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
 // Native ingress persists the image-routing hints followed by one placeholder
-// per flattened image part. Recognize that suffix only, not quoted caption prose.
+// per flattened image part. A multimodal turn then flattens injected context
+// (recalled memory, a gateway interface note) after that block
+// (agent/turn_context.py::_append_multimodal_context). The tail is not the ask:
+// requiring it to be absent hides the suffix, so the bubble keeps the raw hints
+// and no longer matches the live turn's caption — switching back paints the
+// prompt a second time. Quoted caption prose still fails this shape, because it
+// has no screenshot run after the hint lines.
 function persistedImageRefs(text: string) {
-  const suffix = /\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n)+)((?:\[screenshot\](?:\n|$))+)$/.exec(text)
+  const suffix = /\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n)+)((?:\[screenshot\](?:\n|$))+)/.exec(text)
 
   if (!suffix) { return extractImageRefs(text) }
   const paths = [...suffix[1].matchAll(/^\[Image attached(?: at)?: (.+)\]$/gm)].map(match => match[1])

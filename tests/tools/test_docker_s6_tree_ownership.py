@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tools.docker_root_script_harness import dropped_command, redirect_root_tools
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKER_DIR = REPO_ROOT / "docker"
 ROOT_SCANDIR = "/run/service"
@@ -47,9 +49,12 @@ def _fake_bin(tmp_path: Path, log: Path, names: dict[str, str], sub: str = "fake
 
 
 def _run(script: Path, bindir: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run a copy of ``script`` whose pinned root PATH and absolute drop tools use ``bindir``."""
+    copy = bindir / f"script-{script.parent.name}-{script.name}"
+    copy.write_text(redirect_root_tools(script.read_text(encoding="utf-8"), bindir), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "HERMES_DASHBOARD"}
     env["PATH"] = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
-    return subprocess.run([_sh(), str(script), *args], capture_output=True, text=True, env=env, check=False)
+    return subprocess.run([_sh(), str(copy), *args], capture_output=True, text=True, env=env, check=False)
 
 
 def _calls(log: Path, name: str) -> list[list[str]]:
@@ -103,7 +108,8 @@ def test_profile_gateway_scandir_is_supervised_unprivileged(tmp_path: Path) -> N
         proc = _run(run, bindir)
         assert proc.returncode == 0, (run, proc.stderr)
         for args in _calls(log, "s6-setuidgid"):
-            if args[1:2] == ["s6-svscan"]:
+            _child_path, child = dropped_command(args)
+            if child[:1] and Path(child[0]).name == "s6-svscan":
                 supervisors.append((run.parent.name, args))
         assert not _calls(log, "s6-svscan"), f"{run} runs s6-svscan as root"
 

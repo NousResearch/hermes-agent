@@ -49,9 +49,22 @@ if [ ! -x "$REAL" ]; then
     exit 127
 fi
 
+# PATH for the hermes CLI: the caller's PATH plus the hermes user's
+# ~/.local/bin (profile aliases, pip --user, uv tool), appended after it. That
+# directory is on the hermes-writable volume, so it is never handed to a
+# process that keeps root.
+hermes_path="${PATH:-/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin}"
+case ":$hermes_path:" in
+    *:/opt/data/.local/bin:*) ;;
+    *) hermes_path="$hermes_path:/opt/data/.local/bin" ;;
+esac
+
 # Already non-root? Just exec the real binary. This is the hot path for
 # supervised processes (uid 10000) and for `docker exec --user hermes`.
-if [ "$(id -u)" != "0" ]; then
+# id by absolute path: this branch decides whether the drop below happens.
+if [ "$(/usr/bin/id -u)" != "0" ]; then
+    PATH="$hermes_path"
+    export PATH
     exec "$REAL" "$@"
 fi
 
@@ -84,4 +97,4 @@ fi
 # fail with EACCES. Mirrors main-wrapper.sh.
 export HOME=/opt/data
 
-exec "$S6_SUID" hermes "$REAL" "$@"
+exec "$S6_SUID" hermes /usr/bin/env PATH="$hermes_path" "$REAL" "$@"

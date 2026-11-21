@@ -515,6 +515,10 @@ class S6ServiceManager:
             "set -e",
             "export HOME=/opt/data",
             "cd /opt/data",
+            # with-contenv restores the image PATH (root-owned dirs only); the gateway also gets the
+            # hermes user's ~/.local/bin, appended after the system dirs.
+            'case ":$PATH:" in *:/opt/data/.local/bin:*) ;; *) PATH="$PATH:/opt/data/.local/bin" ;; esac',
+            "export PATH",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")

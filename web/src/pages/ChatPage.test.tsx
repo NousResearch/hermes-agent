@@ -30,9 +30,12 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
+  private bellListener: (() => void) | null = null;
   parser = {
     registerOscHandler: vi.fn(),
   };
@@ -40,6 +43,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -68,12 +72,21 @@ class FakeTerminal {
     return { dispose() {} };
   }
 
+  onBell(listener: () => void) {
+    this.bellListener = listener;
+    return { dispose: () => { this.bellListener = null; } };
+  }
+
   onResize() {
     return { dispose() {} };
   }
 
   onScroll() {
     return { dispose() {} };
+  }
+
+  emitBell() {
+    this.bellListener?.();
   }
 
   get buffer() {
@@ -100,11 +113,13 @@ const apiMocks = vi.hoisted(() => ({
 const uploadChatImage = vi.hoisted(() =>
   vi.fn(async () => ({ path: "/tmp/pasted.png" })),
 );
+const playTerminalBell = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
   uploadChatImage,
 }));
+vi.mock("@/lib/terminal-bell", () => ({ playTerminalBell }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
@@ -214,6 +229,7 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   webglInstances.length = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -279,6 +295,19 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("plays a browser cue when xterm receives BEL (#140035)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    FakeTerminal.instances[0].emitBell();
+
+    expect(playTerminalBell).toHaveBeenCalledOnce();
+  });
+
   it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
     vi.useFakeTimers();
     try {

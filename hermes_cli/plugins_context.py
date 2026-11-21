@@ -547,20 +547,30 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         auth gate (non-loopback bind without ``--insecure``). Wrong type / duplicate name warn and
         are ignored, never raised."""
         from hermes_cli.dashboard_auth import DashboardAuthProvider
-        from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
+        from hermes_cli.dashboard_auth.registry import (
+            clear_profile_dashboard_auth_refusals, record_profile_dashboard_auth_refusal,
+            register_global_provider, unregister_global_provider,
+        )
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
             return
         launch_scope = _facade().hermes_home_key(_facade().get_process_hermes_home())
         if self._manager.scope_key != launch_scope:
-            _facade().logger.warning(
+            # Same sentence the WARNING already logs. The refusal quotes it until
+            # this plugin's registration is accepted.
+            fmt = (
                 "Plugin '%s' tried to register dashboard-auth provider %r "
                 "from profile scope %s; ignoring it because dashboard auth "
-                "is owned by launch scope %s.",
+                "is owned by launch scope %s."
+            )
+            args = (
                 self.manifest.name,
                 provider.name,
                 self._manager.scope_key,
                 launch_scope,
             )
+            _facade().logger.warning(fmt, *args)
+            record_profile_dashboard_auth_refusal(
+                self.manifest.name, self._manager.scope_key, fmt % args)
             return
         registry_name = provider.name
         # The auth registry is process-global (lifetime = web server). Disposing it on a routine
@@ -577,6 +587,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             _facade().logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
                                      self.manifest.name, getattr(provider, "name", "?"), e)
             return
+        clear_profile_dashboard_auth_refusals(plugin_name=self.manifest.name)
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)
         _facade().logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,

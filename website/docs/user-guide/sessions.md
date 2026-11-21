@@ -389,6 +389,28 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### Browse and Search Sessions
+
+```bash
+hermes sessions browse
+hermes sessions browse --source telegram --limit 200
+```
+
+`browse` opens an interactive picker: `↑`/`↓` to move, `Enter` to resume, `d` to delete (with a
+y/N confirmation), `Esc` to quit. Start typing to search; `Esc` clears the query first and only
+exits on the second press.
+
+Search covers both halves of a session:
+
+- **Metadata** — title, preview, session id, and source, matched as you type.
+- **Message text** — the full transcript (SQLite FTS5). A session titled "Weekly prep" is still
+  found by typing `kubernetes` if that is what you talked about. Rows found only this way are
+  flagged with `*` in the title column, and the matching excerpt is shown in the footer so you
+  can see why it matched.
+
+Terms are prefix-matched (`deploy` finds "deployment"), space-separated terms are ANDed, and
+`"quoted phrases"`, `OR`, and `NOT` work as in the session search tool.
+
 ### Export Sessions
 
 `hermes sessions export` is one surface for every export format, selected with `--format`:

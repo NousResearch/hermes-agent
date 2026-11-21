@@ -1021,8 +1021,10 @@ def _cmd_browse(args, *, persistence=None):
         persistence.close()
         print("No sessions found.")
         return
-    try:  # keep the store open: the picker uses it for status tags and 'd' delete
-        selected_id = _session_browse_picker(sessions, store=persistence)
+    try:  # keep the store open: the picker uses it for status tags, 'd' delete and content search
+        selected_id = _session_browse_picker(
+            sessions, store=persistence, source=getattr(args, "source", None),
+            exclude_sources=_default_exclude(args))
     finally:
         persistence.close()
     if not selected_id:

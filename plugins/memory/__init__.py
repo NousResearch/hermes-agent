@@ -600,8 +600,8 @@ def parked_provider_notice(name: str) -> Optional[str]:
 def _enable_command(name: str) -> str:
     """``plugins enable`` for the active home from any shell, so HERMES_HOME names that home. A
     profile-shaped HERMES_HOME already beats the sticky profile; any other home needs ``-p default``,
-    which resolves to HERMES_HOME itself (:func:`hermes_cli.profiles.profile_root_for_env_home`)."""
-    from hermes_cli.profiles import profile_root_for_env_home
+    which resolves to HERMES_HOME itself (:func:`hermes_cli.profile_env.profile_root_for_env_home`)."""
+    from hermes_cli.profile_env import profile_root_for_env_home
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     selector = "" if profile_root_for_env_home(str(home), home) != home else "-p default "

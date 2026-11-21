@@ -15,6 +15,7 @@ from agent.display import build_tool_preview
 logger = logging.getLogger(__name__)
 
 # Hermes tool name -> ACP ToolKind (anything unlisted is "other").
+# browser_exec, _cdp, _dialog and _vault are core; the other browser_* names are the Camofox plugin's tools.
 TOOL_KIND_MAP: dict[str, ToolKind] = {
     name: kind
     for kind, names in {
@@ -23,7 +24,8 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
         "edit": ("write_file", "patch", "skill_manage"),
         "search": ("search_files",),
         "execute": ("terminal", "process", "execute_code", "browser_click", "browser_type", "browser_scroll",
-                    "browser_press", "browser_back", "delegate_task", "image_generate", "text_to_speech"),
+                    "browser_press", "browser_back", "browser_exec", "browser_cdp", "browser_dialog", "browser_vault",
+                    "delegate_task", "image_generate", "text_to_speech"),
         "fetch": ("web_search", "web_extract", "browser_navigate"),
         "other": ("todo",),
         "think": ("_thinking",),
@@ -40,6 +42,7 @@ _POLISHED_TOOLS = {
     "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
     # Skills / web / browser / media
     "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
+    "browser_exec", "browser_cdp", "browser_dialog", "browser_vault",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
     "browser_back", "browser_snapshot", "browser_console", "browser_get_images", "browser_vision",
     "vision_analyze", "image_generate", "text_to_speech",
@@ -511,6 +514,56 @@ def _format_browser_result(tool_name: str, data: Args, args: Args) -> Optional[s
     return _truncate_text("\n".join(lines), limit=7000)
 
 
+_SCREENSHOT_ENVELOPE_HEAD = '{"_multimodal": true, "text_summary": '
+
+
+def _close_cut_object(cut: str) -> Optional[Args]:
+    """A flat JSON object cut off at any character: the tail that cannot be closed (half an escape, a key) is dropped."""
+    for end in range(len(cut), max(len(cut) - 64, 0), -1):
+        try:
+            return json.loads(cut[:end] + '"}')
+        except ValueError:
+            continue
+    return None
+
+
+def _unwrap_browser_exec_result(result: Optional[str]) -> Optional[str]:
+    """``browser_exec``'s own JSON from behind what carries it: a screenshot's ``_multimodal`` envelope, or the
+    gateway's ``{"output": <the first 32 KiB of that JSON>, "truncated": true}`` past its event cap."""
+    data = _json_loads_maybe(result)
+    if not isinstance(data, dict):
+        return result
+    if data.get("_multimodal"):
+        return data.get("text_summary")
+    if not (data.get("truncated") and isinstance(cut := data.get("output"), str)):
+        return result
+    if cut.startswith(_SCREENSHOT_ENVELOPE_HEAD):
+        if isinstance(summary := _json_loads_maybe(cut[len(_SCREENSHOT_ENVELOPE_HEAD):]), str):
+            return summary  # the cut only reached the image
+        # The envelope is ASCII-escaped, so the cut can split a surrogate pair, and editors reject half of one.
+        cut = str((_close_cut_object(cut) or {}).get("text_summary")).encode("utf-8", "ignore").decode()
+    if not (run := _close_cut_object(cut)):
+        return result
+    return json.dumps({**run, "truncated": "Cut by the event size limit: what came after the cut is not shown."})
+
+
+@_structured()
+def _format_browser_exec_result(tool_name: str, data: Args, args: Args) -> Optional[str]:
+    exit_code = data.get("exit_code")
+    if exit_code is None and (failed := _failure(data, f"{tool_name} failed")):
+        return failed
+    lines = [f"Exit code: {exit_code}" if exit_code is not None else "Execution complete"]
+    lines += [f"- **{label}:** {data[key]}" for key, label in (
+        ("screenshot_path", "Screenshot"), ("workspace", "Workspace"), ("session", "Session"),
+        ("real_profile_unavailable", "Note"), ("truncated", "Note"),
+    ) if data.get(key)]
+    # Capped per field so a long stdout cannot crowd out stderr; fenced so page text stays literal.
+    for key, label in (("output", "Output:"), ("stderr", "Stderr:")):
+        if text := str(data.get(key) or "").rstrip():
+            lines += ["", label, _fenced_text(_truncate_text(text))]
+    return "\n".join(lines)
+
+
 @_structured(text_fallback=True)
 def _format_media_or_cron_result(tool_name: str, data: Args, args: Args) -> Optional[str]:
     if failed := _failure(data, f"{tool_name} failed"):
@@ -630,6 +683,7 @@ _COMPLETION_FORMATTERS: dict[str, _Formatter] = {
     "skill_manage": _format_skill_manage_result,
     "web_search": _format_web_search_result,
     **{n: _format_browser_result for n in ("browser_navigate", "browser_snapshot", "browser_vision", "browser_get_images")},
+    "browser_exec": _format_browser_exec_result,
     **{n: _format_media_or_cron_result for n in ("vision_analyze", "image_generate", "cronjob")},
 }
 
@@ -819,6 +873,8 @@ def build_tool_complete(
     """Create a ToolCallUpdate (progress) event for a completed tool call.
 
     ``is_error`` is the executor's own verdict; the result-text heuristic stays as fallback."""
+    if tool_name == "browser_exec":
+        result = _unwrap_browser_exec_result(result)
     if tool_name == "web_extract":  # errors only; success stays compact via the title
         error_text = _format_web_extract_result(tool_name, result, function_args)
         content = [_text(error_text)] if error_text else None

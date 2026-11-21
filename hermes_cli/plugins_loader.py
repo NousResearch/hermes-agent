@@ -299,6 +299,8 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
 
 
 class PluginLoaderMixin:
+    _foreign_host_required: bool = False
+
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
         :meth:`discover_and_load` (never emitted by an install RPC) with one
@@ -673,7 +675,14 @@ class PluginLoaderMixin:
     def _runs_in_plugin_host(self, manifest: PluginManifest) -> bool:
         """``plugins.isolation: host`` sends every non-bundled Python plugin to the profile's host."""
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-        return manifest.source != "bundled" and isolation_mode() == ISOLATION_HOST
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+
+        mode = isolation_mode()
+        if mode == ISOLATION_HOST and self.scope_key != hermes_home_key(get_routing_process_hermes_home()):
+            # Reloads and host restarts may run after the cron scope exits. A foreign manager
+            # that required isolation must never downgrade its plugins to this interpreter.
+            self._foreign_host_required = True
+        return manifest.source != "bundled" and (mode == ISOLATION_HOST or self._foreign_host_required)
 
     def _plugin_host(self) -> Any:
         """This manager's plugin host (one process per profile home), created on first use. Creation

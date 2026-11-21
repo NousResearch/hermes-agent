@@ -18,6 +18,7 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
 from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from tui_gateway.slash_fuzzy import fuzzy_rank_slash_items, normalize_slash_search_query
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -442,25 +443,33 @@ class SlashCommandCompleter(Completer):
                 yield from _prefix_completions(
                     ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
             return
-        word = text[1:]
+        yield from self._command_token_completions(text[1:])
 
-        def _cmd_completion(cmd_name: str, meta: str):
-            return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
-
+    def _command_rows(self):
+        """``(name, meta)`` per completable command in source order: built-ins (gated by
+        ``_command_allowed``), skill bundles, skill commands, plugin commands."""
         for cmd, desc in COMMANDS.items():
-            if self._command_allowed(cmd) and cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], desc)
+            if self._command_allowed(cmd):
+                yield cmd[1:], desc
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():
-            if cmd[1:].startswith(word):
-                skill_count = len(info.get("skills", []))
-                yield _cmd_completion(
-                    cmd[1:], f"▣ {info.get('description', 'Skill bundle')} ({skill_count} skills)")
+            skill_count = len(info.get("skills", []))
+            yield cmd[1:], f"▣ {info.get('description', 'Skill bundle')} ({skill_count} skills)"
         for cmd, info in self._iter_skill_commands().items():
-            if cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
+            yield cmd[1:], f"⚡ {info.get('description', 'Skill command')}"
         for cmd_name, desc in self._plugin_commands().items():
-            if cmd_name.startswith(word):
-                yield _cmd_completion(cmd_name, f"🔌 {desc or 'Plugin command'}")
+            yield cmd_name, f"🔌 {desc or 'Plugin command'}"
+
+    def _command_token_completions(self, word: str):
+        """Command-name stage. Bare ``/`` lists every row; a typed token keeps the name-prefix
+        hits and merges in name-substring and description-word hits, ranked by the TUI's scorer
+        (``tui_gateway.slash_fuzzy``) so both surfaces offer the same matches in the same tiers."""
+        rows = [{"text": name, "meta": meta} for name, meta in self._command_rows()]
+        if word:
+            prefix_rows = [row for row in rows if row["text"].startswith(word)]
+            rows, _ = fuzzy_rank_slash_items(prefix_rows, rows, normalize_slash_search_query(word))
+        for row in rows:
+            name = row["text"]
+            yield _completion(self._completion_text(name, word), word, f"/{name}", row["meta"])
 
     def _plugin_commands(self) -> Mapping[str, str]:
         """``{name: description}``: the provider's (the classic CLI asks its gateway), else, when it

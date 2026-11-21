@@ -29,7 +29,8 @@ from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
 
-IMAGE = "alpine:3.23"
+# The same digest-pinned ref the musl-source-build job in pm-bundle.yml pulls.
+IMAGE = "alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
 
 
 def _docker_reason() -> str | None:

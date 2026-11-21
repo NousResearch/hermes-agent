@@ -37,6 +37,7 @@ on:
       - '!pm/**/*.md'
       - 'scripts/bundles/**'
       - 'scripts/ci/desktop_build_cache.py'
+      - 'scripts/ci/setup_toolchain.py'
       - '.github/actions/desktop-build-cache/**'
       - 'scripts/windows-build-deps.ps1'
       - 'scripts/build/windows-deps.ps1'
@@ -155,7 +156,7 @@ jobs:
     timeout-minutes: 30
     env:
       # Pinned by digest so a tag move cannot change what the lane builds against.
-      HERMES_ALPINE_IMAGE_REF: "alpine:3.23@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2"
+      HERMES_ALPINE_IMAGE_REF: "alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:

@@ -6,19 +6,22 @@
  */
 import type { KeyboardEvent } from 'react'
 
+import { URL_PROSE_BOUNDARY } from '@/lib/url-boundary'
+
 import { quoteRefValue, REF_RE, refChipElement, replaceBeforeCaret } from './rich-editor'
 import { textBeforeCaret } from './text-utils'
 
 // An explicit scheme only — `example.com` bare is too easy to hit by accident
 // (a filename, a version, a sentence). Brackets and quotes fence a URL in prose;
 // parens don't, so they stay in and an unbalanced tail is trimmed below.
-const URL_RE = /https?:\/\/[^\s<>[\]{}"'`]+/gi
+const URL_CHARS = `[^\\s<>[\\]{}"'\`${URL_PROSE_BOUNDARY}]+`
+const URL_RE = new RegExp(`https?:\\/\\/${URL_CHARS}`, 'gi')
 // Anchored, non-global twin for the whole-payload check: `exec` on the shared
 // global `URL_RE` would leave its `lastIndex` past the match, and `matchAll`
 // inherits that offset, so the `linkifyUrls` call later in the same paste
 // handler would start scanning after the link and chip nothing.
-const EXACT_URL_RE = /^https?:\/\/[^\s<>[\]{}"'`]+$/i
-const TYPED_URL_RE = /(?:^|\s)(https?:\/\/[^\s<>[\]{}"'`]+)$/i
+const EXACT_URL_RE = new RegExp(`^https?:\\/\\/${URL_CHARS}$`, 'i')
+const TYPED_URL_RE = new RegExp(`(?:^|\\s)(https?:\\/\\/${URL_CHARS})$`, 'i')
 
 /** A half-open `[start, end)` span of the draft text. */
 interface TextRange {

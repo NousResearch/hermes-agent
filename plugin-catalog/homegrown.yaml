@@ -1,0 +1,26 @@
+name: homegrown
+title: Homegrown
+repo: https://github.com/Cam-Smith-One/hermes-homegrown
+sha: 11ff8cbefd5a945f3a9730907d289de4dc557aa6
+version: "0.1.0"
+description: "Hermes builds you small apps that stay: trackers, logs, CRMs, checklists, each with its own saved data. Use them on a Desktop Apps page or live inline in chat, and have Hermes read and update their data from any chat or platform; open copies refresh live. Six homegrown_* tools, versioned code with rollback, recoverable deletes, bundled skill homegrown:build-app. Disclosure — no network calls, shell commands, background processes, credentials or telemetry; writes only under HERMES_HOME/plugin-data/homegrown/. Registers backend routes under /api/plugins/homegrown/ for its Desktop half. The Desktop half renders agent-written HTML in the SDK SandboxedFrame with all network blocked by an injected CSP; each app reaches only its own data through a message bridge, and app.ask() can submit a prompt only into a visible chat composer."
+maintainer: Cam-Smith-One
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Cam-Smith-One/hermes-homegrown#readme
+screenshots:
+  - https://raw.githubusercontent.com/Cam-Smith-One/hermes-homegrown/11ff8cbefd5a945f3a9730907d289de4dc557aa6/docs/live-app-in-chat.jpg
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - homegrown_create_app
+    - homegrown_update_app
+    - homegrown_list_apps
+    - homegrown_read_app
+    - homegrown_app_data
+    - homegrown_delete_app
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -50,6 +50,10 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        "dispatch_enabled": True,
+        "auto_decompose_enabled": True,
+        "review_dispatch_enabled": True,
+        "auto_estimate_enabled": False,
     }
     try:
         p = board_metadata_path(slug)
@@ -70,6 +74,8 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    dispatch_enabled: Optional[bool] = None, auto_decompose_enabled: Optional[bool] = None,
+    review_dispatch_enabled: Optional[bool] = None, auto_estimate_enabled: Optional[bool] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -89,6 +95,14 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    for key, value in (
+        ("dispatch_enabled", dispatch_enabled),
+        ("auto_decompose_enabled", auto_decompose_enabled),
+        ("review_dispatch_enabled", review_dispatch_enabled),
+        ("auto_estimate_enabled", auto_estimate_enabled),
+    ):
+        if value is not None:
+            meta[key] = bool(value)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -104,6 +118,7 @@ def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
     project_id: Optional[str] = None,
+    auto_estimate_enabled: Optional[bool] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
     normed = _kb._require_slug(slug)
@@ -113,6 +128,7 @@ def create_board(
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id, archived=False,
+        auto_estimate_enabled=auto_estimate_enabled,
     )
     # Touch the DB so list_boards() sees it immediately.
     _kb.init_db(board=normed)

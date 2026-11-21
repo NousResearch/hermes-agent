@@ -180,6 +180,12 @@ type KanbanMessages = {
   pinnedBoards: string
   pinnedBoardsHint: string
   newBoardDots: string
+  // board-header dispatcher toggles
+  headerDispatch: string
+  headerDecompose: string
+  headerReview: string
+  headerEstimate: string
+  headerEnforcementPendingHint: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
   // in-app dialog titles, which stand alone.
@@ -416,6 +422,11 @@ export const en: KanbanMessages = {
   pinnedBoards: 'Pinned boards',
   pinnedBoardsHint: 'Drag to reorder, or press Alt + Left/Right',
   newBoardDots: 'New board…',
+  headerDispatch: 'Dispatch',
+  headerDecompose: 'Decompose',
+  headerReview: 'Review',
+  headerEstimate: 'Auto estimate',
+  headerEnforcementPendingHint: 'Not yet enforced — toggling this has no effect on dispatch/decompose/review yet.',
   exportDots: 'Export…',
   importDots: 'Import…',
   renameDots: 'Rename…',
@@ -647,6 +658,11 @@ const ja: KanbanMessages = {
   pinnedBoards: '固定したボード',
   pinnedBoardsHint: 'ドラッグ、または Alt + 左右キーで並べ替え',
   newBoardDots: '新しいボード…',
+  headerDispatch: 'ディスパッチ',
+  headerDecompose: '分解',
+  headerReview: 'レビュー',
+  headerEstimate: '自動見積もり',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
   renameDots: '名前を変更…',
@@ -876,6 +892,11 @@ const zh: KanbanMessages = {
   pinnedBoards: '已固定面板',
   pinnedBoardsHint: '拖动或按 Alt + 左/右方向键重新排序',
   newBoardDots: '新建面板…',
+  headerDispatch: '调度',
+  headerDecompose: '分解',
+  headerReview: '审查',
+  headerEstimate: '自动估算',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: '导出…',
   importDots: '导入…',
   renameDots: '重命名…',
@@ -1104,6 +1125,11 @@ const zhHant: KanbanMessages = {
   pinnedBoards: '已釘選面板',
   pinnedBoardsHint: '拖曳或按 Alt + 左/右方向鍵重新排序',
   newBoardDots: '新增面板…',
+  headerDispatch: '調度',
+  headerDecompose: '分解',
+  headerReview: '審查',
+  headerEstimate: '自動估算',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: '匯出…',
   importDots: '匯入…',
   renameDots: '重新命名…',

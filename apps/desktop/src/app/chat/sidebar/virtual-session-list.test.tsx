@@ -121,4 +121,34 @@ describe('VirtualSessionList row measurement', () => {
       sessionRowEstimate('detailed') + onePreviewLine + oneTitleLine
     )
   })
+
+  it('estimates the next row of a kind from the last REAL measurement, not the constant', () => {
+    // The recurring glitch (not #88473's cold-start case, which the estimate
+    // constants already cover): THIS machine's actual row height can differ
+    // from the cross-platform constant on every row the virtualizer has
+    // never measured yet, which is every row a resize/scroll/prop change
+    // reveals for the first time — not just the very first one. A row
+    // estimated from the previous row's real measurement tracks reality
+    // instead of restating the same guess every time.
+    const realHeightPx = 41
+    const originalRect = Element.prototype.getBoundingClientRect
+
+    Element.prototype.getBoundingClientRect = () => ({ height: realHeightPx }) as DOMRect
+    stableVirtualizer.getVirtualItems = () => [{ index: 1, key: 's1', start: 0 }] as never
+
+    try {
+      const { container } = renderList()
+      const measuredRow = container.querySelector('[data-index="1"]')
+
+      expect(measuredRow).not.toBeNull()
+      // estimateSize(2) asks about a same-kind row ('s2') that has never been
+      // on screen — it must now read the real measurement, not fall back to
+      // the compact constant (26px) that seeded the cache before mount.
+      expect(estimateSize(2)).toBe(realHeightPx)
+      expect(estimateSize(2)).not.toBe(sessionRowEstimate('compact'))
+    } finally {
+      Element.prototype.getBoundingClientRect = originalRect
+      stableVirtualizer.getVirtualItems = () => []
+    }
+  })
 })

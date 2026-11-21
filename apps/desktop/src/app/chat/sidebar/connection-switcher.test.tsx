@@ -80,8 +80,23 @@ afterEach(() => {
 })
 
 describe('ConnectionSwitcher', () => {
-  it('adds no source chrome for a local-only setup', () => {
+  it('keeps the gateway door visible on a local-only setup', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local')]))
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
+
+    expect(trigger.textContent).toContain('This device')
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual(['This device'])
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Manage gateways…' }))
+    expect(onConnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders nothing before the registry is known', () => {
+    $connectionsRegistry.set(null)
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.queryByRole('group', { name: 'Registered gateways' })).toBeNull()

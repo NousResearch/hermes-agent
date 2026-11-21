@@ -88,7 +88,12 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     return () => window.removeEventListener('keydown', closeOnEscape, { capture: true })
   }, [menuOpen])
 
-  if (connections.length <= 1) {
+  // Only an unloaded registry leaves this door meaningless — there is nothing to
+  // name yet. A single registered gateway still renders: hiding the chip at one
+  // connection made a registry that failed to hydrate indistinguishable from a
+  // build that removed the switcher, and it took away the only in-window route to
+  // another backend and to Settings → Gateways.
+  if (!registry) {
     return null
   }
 

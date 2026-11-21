@@ -296,7 +296,26 @@ export const arAssistant = {
       reject: 'رفض',
       alwaysTitle: 'السماح دائما',
       alwaysDescription: pattern => `السماح دائما بالأوامر المطابقة لـ ${pattern}`,
-      alwaysAllow: 'السماح دائما'
+      alwaysAllow: 'السماح دائما',
+      deny: 'رفض',
+      allow: 'السماح',
+      allowHint: 'حتى إيقاف بيئة العزل',
+      denyReason: 'سبب الرفض',
+      denyReasonPlaceholder: 'أخبر Hermes بالسبب (اختياري)',
+      access: {
+        title: 'الوصول إلى المجلد',
+        readOnly: 'قراءة فقط',
+        readWrite: 'قراءة وكتابة',
+        alwaysTitle: 'السماح دائمًا بهذا المجلد؟',
+        alwaysDescription:
+          'تتم إضافة المجلد إلى بيئة العزل لهذا الملف الشخصي. لن يسأل Hermes عنه مرة أخرى في أي محادثة.'
+      },
+      network: {
+        title: 'الوصول إلى موقع',
+        alwaysTitle: 'السماح دائمًا بهذا الموقع؟',
+        alwaysDescription:
+          'تتم إضافة الموقع إلى المواقع المسموح بها لهذا الملف الشخصي. لن يسأل Hermes عنه مرة أخرى في أي محادثة.'
+      }
     },
     clarify: {
       notReady: 'غير جاهز',

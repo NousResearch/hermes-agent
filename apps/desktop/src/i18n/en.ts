@@ -2,6 +2,7 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
+import { enApproval } from './en_approval'
 import { enBackupTransfer } from './en_backup_transfer'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
@@ -484,6 +485,12 @@ export const en: Translations = {
       approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
+      accessTitle: 'Folder access needed',
+      accessTitleNamed: session => `Folder access needed — ${session}`,
+      networkTitle: 'Website access needed',
+      networkTitleNamed: session => `Website access needed — ${session}`,
+      allowAction: 'Allow',
+      denyAction: 'Deny',
       inputTitle: 'Input needed',
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
@@ -4578,27 +4585,7 @@ export const en: Translations = {
       sendEdited: 'Send edited message',
       attachingFile: 'Attaching…'
     },
-    approval: {
-      gatewayDisconnected:
-        'Hermes is offline right now. The command is still waiting for your answer (until the approval timeout). Reconnect, then send it again.',
-      sendFailed: 'Could not send your answer',
-      reconnect: 'Reconnect',
-      timedOutSystemLine:
-        'Approval timed out — the command was not run. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.',
-      openSafetySettings: 'Open Safety settings',
-      run: 'Run',
-      command: 'Command',
-      commandDetails: 'Command details',
-      moreOptions: 'More approval options',
-      allowSession: 'Allow this session',
-      alwaysAllowMenu: 'Always allow…',
-      jumpToApproval: 'Approval needed',
-      reject: 'Reject',
-      alwaysTitle: 'Always allow this command?',
-      alwaysDescription: pattern =>
-        `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
-      alwaysAllow: 'Always allow'
-    },
+    approval: enApproval,
     clarify: enClarify,
     themePicker: enThemePicker,
     catalogInstall: enCatalogInstall,

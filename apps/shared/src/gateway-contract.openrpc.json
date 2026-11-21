@@ -5357,6 +5357,14 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalAccessLevel": {
+        "enum": [
+          "read",
+          "read_write"
+        ],
+        "title": "ApprovalAccessLevel",
+        "type": "string"
+      },
       "ApprovalCancelledPayload": {
         "additionalProperties": false,
         "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
@@ -5403,6 +5411,15 @@
           "deny"
         ],
         "title": "ApprovalChoice",
+        "type": "string"
+      },
+      "ApprovalKind": {
+        "enum": [
+          "command",
+          "access",
+          "network"
+        ],
+        "title": "ApprovalKind",
         "type": "string"
       },
       "ApprovalPendingParams": {
@@ -5495,7 +5512,7 @@
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.",
+        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.\n\n``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with\n``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``\n(``host``, and an optional display ``label``). ``risk`` is one short line shown under the\nfolder or site. On those two kinds ``once`` allows until the sandbox is switched off and\n``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5581,6 +5598,76 @@
             ],
             "default": null,
             "title": "Gateway Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "access": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalAccessLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Host"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Risk"
           }
         },
         "required": [
@@ -5592,7 +5679,7 @@
       },
       "ApprovalRespondParams": {
         "additionalProperties": false,
-        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest.",
+        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is\nwhy the user denied an ``access`` or ``network`` card; command approvals ignore it.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5645,6 +5732,18 @@
             ],
             "default": null,
             "title": "Request Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -5669,6 +5768,7 @@
       },
       "ApprovalResult": {
         "additionalProperties": false,
+        "description": "``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it.",
         "properties": {
           "choice": {
             "$ref": "#/components/schemas/ApprovalChoice"
@@ -5684,6 +5784,18 @@
             ],
             "default": null,
             "title": "All"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -51520,7 +51632,7 @@
   "x-server-requests": [
     {
       "name": "approval",
-      "summary": "A dangerous command awaits the user's decision.",
+      "summary": "A dangerous command, or a sandbox's folder or site request, awaits the user's decision.",
       "params": [
         {
           "name": "params",

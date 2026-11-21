@@ -87,21 +87,97 @@ export interface ApprovalRequest extends KeyedPrompt {
   choices?: string[]
   command: string
   description: string
+  /** What the card asks for; absent means a command (`ApprovalRequestParams.kind`). */
+  kind?: ApprovalKind
   requestId?: string
+  /** One short line under the folder or site. */
+  risk?: string
   serverRequestId?: string
   smartDenied?: boolean
+  /** The folder (`access`) or site (`network`) the card names. */
+  target?: ApprovalTarget
 }
+
+// A sandbox asks for a folder (`access`) or a site (`network`) through the same
+// `approval` request and answer as a command. These cards can outlive the turn
+// that raised them: the sandbox, not the agent loop, waits on the answer.
+export type ApprovalKind = 'command' | 'access' | 'network'
+export type ApprovalAccessLevel = 'read' | 'read_write'
+
+export interface ApprovalAccessTarget {
+  access?: ApprovalAccessLevel
+  path: string
+}
+
+export interface ApprovalNetworkTarget {
+  host: string
+  /** A display name for the site, e.g. the Hermes tool that uses it. */
+  label?: string
+}
+
+export type ApprovalTarget = ApprovalAccessTarget | ApprovalNetworkTarget
+
+type ApprovalKindFields = Pick<ApprovalRequest, 'kind' | 'risk' | 'target'>
+
+const wireText = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined
+
+/** The kind, target and risk an approval payload carries (live request params,
+ *  `approval.pending` entries, resume snapshots). Missing or unknown kinds read
+ *  as a command, so an older or newer backend never gets a blank card. */
+export function approvalKindFields(raw: Record<string, unknown> | null | undefined): ApprovalKindFields {
+  if (!raw || (raw.kind !== 'access' && raw.kind !== 'network')) {
+    return {}
+  }
+
+  const risk = wireText(raw.risk)
+  const fields: ApprovalKindFields = { kind: raw.kind, ...(risk ? { risk } : {}) }
+
+  if (raw.kind === 'access') {
+    const path = wireText(raw.path)
+    const access = raw.access === 'read' || raw.access === 'read_write' ? raw.access : undefined
+
+    return path ? { ...fields, target: { path, ...(access ? { access } : {}) } } : fields
+  }
+
+  const host = wireText(raw.host)
+  const label = wireText(raw.label)
+
+  return host ? { ...fields, target: { host, ...(label ? { label } : {}) } } : fields
+}
+
+export const isCommandApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean =>
+  !request.kind || request.kind === 'command'
+
+export const accessTarget = (request: ApprovalRequest): ApprovalAccessTarget | null =>
+  request.kind === 'access' && request.target && 'path' in request.target && !('host' in request.target)
+    ? (request.target as ApprovalAccessTarget)
+    : null
+
+export const networkTarget = (request: ApprovalRequest): ApprovalNetworkTarget | null =>
+  request.kind === 'network' && request.target && 'host' in request.target
+    ? (request.target as ApprovalNetworkTarget)
+    : null
+
+/** How a network card names its site: the sender's label, else the host. */
+export const networkTargetName = (target: ApprovalNetworkTarget): string => target.label || target.host
 
 interface ApprovalGateway {
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>
 }
 
 interface PendingApprovalPayload {
+  access?: unknown
   allow_permanent?: boolean
   choices?: unknown
   command?: unknown
   description?: unknown
+  host?: unknown
+  kind?: unknown
+  label?: unknown
+  path?: unknown
   request_id?: unknown
+  risk?: unknown
   smart_denied?: boolean
 }
 
@@ -162,7 +238,9 @@ const approval = {
 
     $approvalQueues.set({ ...queues, [key]: next })
   },
-  clear(sessionId?: string | null, requestId?: string) {
+  // Drops `requestId` (or every approval) from the session's queue; `drop`
+  // picks the entries instead when given.
+  clear(sessionId?: string | null, requestId?: string, drop?: (item: ApprovalRequest) => boolean) {
     if (sessionId === undefined) {
       approvalRevision += 1
     } else {
@@ -179,7 +257,11 @@ const approval = {
         continue
       }
 
-      const remaining = requestId ? queue.filter(item => item.requestId !== requestId) : EMPTY_APPROVALS
+      const remaining = drop
+        ? queue.filter(item => !drop(item))
+        : requestId
+          ? queue.filter(item => item.requestId !== requestId)
+          : EMPTY_APPROVALS
 
       if (remaining.length === queue.length) {
         continue
@@ -331,7 +413,8 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
         requestId: pending.request_id,
         sessionId,
-        smartDenied: pending.smart_denied === true
+        smartDenied: pending.smart_denied === true,
+        ...approvalKindFields(pending as Record<string, unknown>)
       })
     })
   )
@@ -360,13 +443,18 @@ function isRequestTimeoutError(error: unknown): boolean {
   return error instanceof Error && /request timed out/i.test(error.message)
 }
 
+/** `reason`: why the user denied a folder or site card, passed back with the
+ *  answer. Command approvals never send one. */
 export async function answerApproval(
   gateway: ApprovalGateway | null,
   request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
   choice: string,
-  all = false
+  all = false,
+  reason?: string
 ): Promise<void> {
-  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
+  const why = reason?.trim() ? { reason: reason.trim() } : {}
+
+  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}), ...why })) {
     return
   }
 
@@ -377,6 +465,7 @@ export async function answerApproval(
   const params = {
     all,
     choice,
+    ...why,
     ...(request.requestId ? { request_id: request.requestId } : {}),
     session_id: request.sessionId ?? undefined
   }
@@ -414,6 +503,10 @@ export const sessionApprovalRequests = (sessionId: string | null) =>
   computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+/** True while the session holds a command approval. Folder and site cards are
+ *  not about the turn's tool rows, so they never stand in for them. */
+export const sessionCommandApprovalPending = (sessionId: string | null) =>
+  computed($approvalQueues, all => (all[keyFor(sessionId)] ?? EMPTY_APPROVALS).some(isCommandApproval))
 /** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
  *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
@@ -519,9 +612,14 @@ export function sessionAwaitingInput(sessionId: string | null) {
   )
 }
 
-// Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
-// or every parked prompt when no session is given (global reset / tests).
-export function clearAllPrompts(sessionId?: string | null): void {
+// Drop in-flight prompts for `sessionId` across every kind — or every parked
+// prompt when no session is given (global reset / tests). `turn-end` is for a
+// turn that ended on its own (complete, error, running→false): folder and site
+// approvals outlive it because the sandbox, not the turn, waits on them. Stop,
+// close and reclaim use `all`.
+export type ClearPromptsMode = 'all' | 'turn-end'
+
+export function clearAllPrompts(sessionId?: string | null, mode: ClearPromptsMode = 'all'): void {
   if (sessionId === undefined) {
     approval.reset()
     sudo.reset()
@@ -533,7 +631,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     return
   }
 
-  approval.clear(sessionId)
+  approval.clear(sessionId, undefined, mode === 'turn-end' ? isCommandApproval : undefined)
   sudo.clear(sessionId)
   secret.clear(sessionId)
   vaultUnlock.clear(sessionId)

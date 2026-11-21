@@ -9,6 +9,7 @@ import { $gateway } from '@/store/gateway'
 import {
   $approvalRequest,
   APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+  type ApprovalRequest,
   clearAllPrompts,
   sessionApprovalRequests,
   setApprovalRequest
@@ -401,5 +402,266 @@ describe('PendingApprovalStack', () => {
 
     expect(rpc).not.toHaveBeenCalledWith('approval.respond', expect.anything())
     expect($approvalRequest.get()).toBeNull()
+  })
+})
+
+describe('folder and site approval cards', () => {
+  function setAccess(extra: Partial<ApprovalRequest> = {}) {
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      choices: ['once', 'always', 'deny'],
+      command: '',
+      description: 'Allow read and write access to C:\\Users\\me\\docs',
+      kind: 'access',
+      requestId: 'sandbox-card-1',
+      risk: 'The agent can change and delete files in this folder.',
+      serverRequestId: 'srq-approval',
+      sessionId: 'sess-1',
+      target: { access: 'read_write', path: 'C:\\Users\\me\\docs' },
+      ...extra
+    })
+  }
+
+  function setSite(extra: Partial<ApprovalRequest> = {}) {
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      choices: ['once', 'always', 'deny'],
+      command: '',
+      description: 'Allow the sandbox to reach example.com',
+      kind: 'network',
+      requestId: 'sandbox-card-2',
+      risk: 'Any program in the sandbox, http and https.',
+      serverRequestId: 'srq-approval',
+      sessionId: 'sess-1',
+      target: { host: 'example.com' },
+      ...extra
+    })
+  }
+
+  const reasonField = () => screen.getByRole('textbox', { name: 'Reason for denying' }) as HTMLInputElement
+
+  it('renders a folder card: the folder, its access level, the risk line; Deny / Always allow… / Allow', async () => {
+    setAccess()
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Folder access')).toBeTruthy()
+    expect(screen.getByText('C:\\Users\\me\\docs')).toBeTruthy()
+    expect(screen.getByText(/Read and write/)).toBeTruthy()
+    expect(screen.getByText('The agent can change and delete files in this folder.')).toBeTruthy()
+    expect(screen.getAllByRole('button').map(button => button.textContent?.replace('↵', '').trim())).toEqual([
+      'Deny',
+      'Always allow…',
+      'Allow'
+    ])
+    expect(screen.queryByText(/Command/)).toBeNull()
+    expect(container.querySelector('pre')).toBeNull()
+    expect(container.querySelector('[data-approval-kind="access"] .codicon-folder')).not.toBeNull()
+    expect(screen.queryByRole('textbox')).toBeNull()
+
+    fireEvent.pointerMove(screen.getByRole('button', { name: /^Allow/ }), { pointerType: 'mouse' })
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Until the sandbox is switched off')
+  })
+
+  it('names a read-only folder as read only', () => {
+    setAccess({ target: { access: 'read', path: 'C:\\Users\\me\\docs' } })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText(/Read only/)).toBeTruthy()
+    expect(screen.queryByText(/Read and write/)).toBeNull()
+  })
+
+  it('hides the turn activity row for a folder card and shows it for a command', () => {
+    setAccess()
+    const { container, unmount } = render(<PendingApprovalStack />)
+
+    expect(container.querySelector('[data-approval-activity]')).toBeNull()
+    unmount()
+
+    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-cmd' })
+    const second = render(<PendingApprovalStack />)
+    expect(second.container.querySelector('[data-approval-activity]')).not.toBeNull()
+  })
+
+  it('renders a site card: the host and the risk line', () => {
+    setSite()
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Website access')).toBeTruthy()
+    expect(screen.getByText('example.com')).toBeTruthy()
+    expect(screen.getByText('Any program in the sandbox, http and https.')).toBeTruthy()
+    expect(container.querySelector('.codicon-globe')).not.toBeNull()
+    expect(container.querySelector('.codicon-terminal')).toBeNull()
+  })
+
+  it('names a site by its label when the request carries one', () => {
+    setSite({ target: { host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' } })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Web search (api.keenable.ai)')).toBeTruthy()
+  })
+
+  it('answers Allow with {choice: "once"}', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setSite()
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Allow/ }))
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'once' }))
+  })
+
+  it('Deny opens a reason field; Enter sends the reason with {choice: "deny"}', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setSite()
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Deny$/ }))
+    expect(respond).not.toHaveBeenCalled()
+    const field = reasonField()
+    expect(document.activeElement).toBe(field)
+    expect(field.placeholder).toBe('Tell Hermes why (optional)')
+    expect(field.maxLength).toBe(500)
+    // While the field is open the card offers Cancel and Deny only.
+    expect(screen.getAllByRole('button').map(button => button.textContent?.replace('↵', '').trim())).toEqual([
+      'Cancel',
+      'Deny'
+    ])
+
+    fireEvent.change(field, { target: { value: '  Not this site  ' } })
+    fireEvent.submit(field.closest('form')!)
+
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'deny', reason: 'Not this site' }))
+    await waitFor(() => expect(sessionApprovalRequests('sess-1').get()).toEqual([]))
+  })
+
+  it('sends no reason when the field is left empty', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setAccess()
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Deny$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Deny/ }))
+
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'deny' }))
+  })
+
+  it('Escape in the reason field cancels: nothing is sent and the card is back', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setAccess()
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Deny$/ }))
+    fireEvent.change(reasonField(), { target: { value: 'draft' } })
+    fireEvent.keyDown(reasonField(), { key: 'Escape' })
+
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByRole('button', { name: /^Allow/ })).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Deny$/ })))
+    expect(respond).not.toHaveBeenCalled()
+    expect(sessionApprovalRequests('sess-1').get()).toHaveLength(1)
+  })
+
+  it('the stack’s Escape opens the reason field, Escape closes it, Enter then denies', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setSite()
+    render(<PendingApprovalStack />)
+
+    act(() => {
+      handleApprovalKey(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+    })
+    releaseApprovalKey()
+    expect(reasonField()).toBeTruthy()
+    expect(respond).not.toHaveBeenCalled()
+
+    // Focus left the field: the stack's keys act on Cancel and Deny.
+    act(() => reasonField().blur())
+    act(() => {
+      handleApprovalKey(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+    })
+    releaseApprovalKey()
+    expect(screen.queryByRole('textbox')).toBeNull()
+
+    act(() => {
+      handleApprovalKey(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+    })
+    releaseApprovalKey()
+    act(() => reasonField().blur())
+    act(() => {
+      handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }))
+    })
+
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'deny' }))
+  })
+
+  it('carries the reason on the approval.respond fallback of a restored card', async () => {
+    const rpc = mockGateway()
+    setAccess({ serverRequestId: undefined })
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Deny$/ }))
+    fireEvent.change(reasonField(), { target: { value: 'Private' } })
+    fireEvent.submit(reasonField().closest('form')!)
+
+    await waitFor(() =>
+      expect(rpc).toHaveBeenCalledWith(
+        'approval.respond',
+        { all: false, choice: 'deny', reason: 'Private', request_id: 'sandbox-card-1', session_id: 'sess-1' },
+        APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+        undefined
+      )
+    )
+  })
+
+  it('never offers a per-session allow, and drops Always allow… when the request does not list it', () => {
+    setSite({ choices: ['once', 'session', 'always', 'deny'] })
+    const { unmount } = render(<PendingApprovalStack />)
+
+    expect(screen.queryByText(/session/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
+    unmount()
+    clearAllPrompts()
+
+    setSite({ choices: ['once', 'deny'] })
+    render(<PendingApprovalStack />)
+
+    expect(screen.queryByRole('button', { name: 'Always allow…' })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Allow/ })).toBeTruthy()
+  })
+
+  it('confirms Always allow with folder copy, no command block and no config.yaml claim', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setAccess()
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Always allow…' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('Always allow this folder?')
+    expect(dialog.textContent).toContain('profile’s sandbox')
+    expect(dialog.textContent).not.toMatch(/config\.yaml|command/i)
+    expect(dialog.querySelector('pre')).toBeNull()
+    expect(respond).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Always allow' }))
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'always' }))
+  })
+
+  it('titles the site confirm with site copy', async () => {
+    mockGateway()
+    liveApproval()
+    setSite()
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Always allow…' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('Always allow this site?')
+    expect(dialog.textContent).toContain('allowed sites')
+    expect(dialog.textContent).toContain('example.com')
   })
 })

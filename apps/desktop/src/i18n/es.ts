@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esApproval } from './es_approval'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
@@ -502,6 +503,12 @@ export const esOverrides = {
       approvalTitleNamed: session => `Se necesita aprobación — ${session}`,
       approveAction: 'Aprobar',
       rejectAction: 'Rechazar',
+      accessTitle: 'Se necesita acceso a una carpeta',
+      accessTitleNamed: session => `Se necesita acceso a una carpeta — ${session}`,
+      networkTitle: 'Se necesita acceso a un sitio web',
+      networkTitleNamed: session => `Se necesita acceso a un sitio web — ${session}`,
+      allowAction: 'Permitir',
+      denyAction: 'Denegar',
       inputTitle: 'Se necesita información',
       inputTitleNamed: session => `Se necesita una respuesta — ${session}`,
       inputBody: 'Hermes espera tu respuesta.',
@@ -5137,26 +5144,7 @@ export const esOverrides = {
       sendEdited: 'Enviar edición',
       attachingFile: 'Adjuntando…'
     },
-    approval: {
-      gatewayDisconnected:
-        'Hermes está sin conexión ahora mismo. El comando sigue esperando tu respuesta (hasta que se agote el tiempo de aprobación). Reconéctate y vuelve a enviarla.',
-      sendFailed: 'No se pudo enviar tu respuesta',
-      reconnect: 'Reconectar',
-      timedOutSystemLine:
-        'Se agotó el tiempo de aprobación: el comando no se ejecutó. Pide a Hermes que lo intente de nuevo o sube el límite en Configuración → Seguridad → Tiempo de aprobación.',
-      openSafetySettings: 'Abrir configuración de seguridad',
-      run: 'Ejecutar',
-      command: 'Comando',
-      moreOptions: 'Más opciones de aprobación',
-      allowSession: 'Permitir esta sesión',
-      alwaysAllowMenu: 'Permitir siempre…',
-      jumpToApproval: 'Aprobación necesaria',
-      reject: 'Rechazar',
-      alwaysTitle: '¿Permitir siempre este comando?',
-      alwaysDescription: pattern =>
-        `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
-      alwaysAllow: 'Permitir siempre'
-    },
+    approval: esApproval,
     clarify: esClarify,
     themePicker: esThemePicker,
     catalogInstall: {

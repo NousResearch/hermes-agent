@@ -134,6 +134,10 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
                            name, source.scheme, owner)
             return False
         _registry._target(scope, create=True)[name] = source
+        # Provenance also shapes the remediation hint: bundled sources are
+        # `hermes secrets <name>` subcommands, plugin sources own a top-level
+        # `hermes <name>` group. Every scoped registration is plugin-derived.
+        source.origin = "builtin" if (builtin and scope is None) else "plugin"
         if scope is None:
             _SOURCE_ORIGINS[name] = "builtin" if builtin else "plugin"
     return True

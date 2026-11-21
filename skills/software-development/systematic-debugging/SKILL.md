@@ -103,7 +103,9 @@ You MUST complete each phase before proceeding to the next.
 - Make the signal sharper: assert the exact symptom, not generic success.
 - Make it more deterministic: pin time, seed randomness, isolate filesystem, freeze network.
 
-For non-deterministic bugs, the immediate goal is a higher reproduction rate, not perfection. Run the trigger 100x, parallelize, add stress, narrow timing windows, or inject sleeps. A 50% flake is debuggable; a 1% flake usually is not.
+For non-deterministic bugs, first look for deterministic evidence: instrumentation, controlled scheduling, synchronization, fake clocks, or fixture-local delays. When repetition helps, set a small attempt count (for example, up to 10) and a short wall-clock limit; run sequentially by default and stop at either limit. Do not add CPU-, memory-, disk-, or network-saturating work to a shared host. Permission to investigate a flaky test is not permission to load-test the machine.
+
+If a reproduction appears to require synthetic load or parallel stress, stop before running it. Explain the hypothesis and ask the operator to approve concrete resource and time limits. Without approval, continue with bounded attempts and instrumentation, then report the observed failure rate and remaining uncertainty; do not escalate load just to force a failure.
 
 **Action:** Use the `terminal` tool to run the tight loop:
 
@@ -114,8 +116,8 @@ pytest tests/test_module.py::test_name -v
 # Or run a scripted repro
 python scripts/repro_bug.py
 
-# Or run a high-repetition flaky repro
-for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done
+# Or run a bounded, sequential flaky repro (choose a small count and time cap)
+for i in {1..10}; do pytest tests/test_flake.py::test_name -q || break; done
 ```
 
 ### 3. Check Recent Changes
@@ -383,6 +385,7 @@ delegate_task(
     2. Reproduce the issue
     3. Trace the data flow to find root cause
     4. Report findings — do NOT fix yet
+    Do NOT run synthetic load or parallel stress. If needed, propose worker, resource, and time limits and wait for operator approval.
 
     Error: [paste full error]
     File: [path to failing code]

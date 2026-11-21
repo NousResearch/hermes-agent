@@ -334,7 +334,7 @@ def nous_model_supports_vision(
     if allow_fetch and not src.get("vision_refreshed"):
         caps_by_id = src.get("cache")
         if caps_by_id is None or not _records_vision(caps_by_id):
-            with _VISION_READ_LOCK:
+            with _vision_read_lock():
                 caps_by_id = _caps_cached(src)
                 if _needs_vision_read(src, caps_by_id):
                     fresh = _fetch_caps(src, timeout=timeout, force=caps_by_id is not None)
@@ -348,7 +348,18 @@ def nous_model_supports_vision(
     return verdict if isinstance(verdict, bool) else None
 
 
-_VISION_READ_LOCK = threading.Lock()
+_VISION_READ_LOCKS: dict[str, threading.Lock] = {}
+_VISION_READ_LOCKS_GUARD = threading.Lock()
+
+
+def _vision_read_lock() -> threading.Lock:
+    """One lock per profile home: the catalog slots are per profile, so a slow Portal read for one
+    profile must not hold up another profile's first image."""
+    from hermes_constants import hermes_home_key
+
+    key = hermes_home_key()
+    with _VISION_READ_LOCKS_GUARD:
+        return _VISION_READ_LOCKS.setdefault(key, threading.Lock())
 
 
 def _needs_vision_read(src: _CapsSource, caps_by_id: Optional[Caps]) -> bool:

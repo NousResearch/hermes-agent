@@ -323,8 +323,13 @@ def _probe_nous_catalog(provider: str, model: str, cfg: Optional[dict[str, Any]]
     :func:`_probe_models_dev`; the catalog is cached in memory and mirrored to disk."""
     if _clean_str(provider).lower() != "nous":
         return None
-    from hermes_cli.models_reasoning_caps import nous_model_supports_vision
+    from hermes_cli.models_reasoning_caps import nous_catalog_url, nous_model_supports_vision
 
+    # The catalog describes the Portal the saved credentials name; a run pointed at another
+    # endpoint (``--base-url`` to staging or a proxy) gets no verdict from it, so it stays unknown.
+    base = _resolve_inference_base_url(cfg, provider).rstrip("/").removesuffix("/v1")
+    if base and f"{base}/v1/models" != nous_catalog_url():
+        return None
     return nous_model_supports_vision(model, allow_fetch=True)
 
 

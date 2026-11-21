@@ -685,8 +685,11 @@ def _run_write_gate(build_staging):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+    from tools.skill_provenance import BACKGROUND_REVIEW, get_review_trigger
     payload, gist = build_staging(wa)
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    origin = wa.current_origin()
+    trigger = get_review_trigger() if origin == BACKGROUND_REVIEW else None
+    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=origin, review_trigger=trigger)
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 
@@ -716,16 +719,26 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
-def apply_skill_pending(payload: dict[str, Any], origin: str = "foreground") -> str:
+def apply_skill_pending(
+    payload: dict[str, Any], origin: str = "foreground", review_trigger: str | None = None,
+) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler). A write the
-    background-review fork staged keeps its mandatory scan; only the scan, not the fork's other
-    guards, follows it, since the approving user has not skill_view'd the target."""
-    from tools.skill_provenance import BACKGROUND_REVIEW
+    background-review fork staged keeps its mandatory scan and ledger attribution (curator actor +
+    review_trigger); only the scan, not the fork's other guards, follows it, since the approving
+    user has not skill_view'd the target."""
+    from tools import skill_ledger as _ledger
+    from tools.skill_provenance import BACKGROUND_REVIEW, reset_review_trigger, set_review_trigger
+    is_bg = origin == BACKGROUND_REVIEW
     token = _skill_gate_bypass.set(True)
-    bg_token = _replaying_background_write.set(origin == BACKGROUND_REVIEW)
+    bg_token = _replaying_background_write.set(is_bg)
+    trigger_token = set_review_trigger(review_trigger if is_bg else None)
+    actor_token = _ledger.set_ledger_actor("curator") if is_bg else None
     try:
         return _skill_manage_from(payload)
     finally:
+        if actor_token is not None:
+            _ledger.reset_ledger_actor(actor_token)
+        reset_review_trigger(trigger_token)
         _replaying_background_write.reset(bg_token)
         _skill_gate_bypass.reset(token)
 
@@ -757,10 +770,18 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
     with suppress(Exception):
         from tools import skill_ledger as _ledger
+        from tools.skill_provenance import get_review_trigger, is_background_review
         _post = _find_skill(name)
         # delete: consolidation vs prune, and whether the recoverable archive handled it
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
                      if action == "delete" else {})
+        # Which door the review fork came through (``automatic``, ``focus_only``, or ``refine``):
+        # all three share ``write_origin='background_review'`` (so all record ``actor: curator``),
+        # and staged background-review writes carry ``review_trigger`` through ``/skills approve``.
+        if (is_background_review() or _replaying_background_write.get()) and (
+            _trigger := get_review_trigger()
+        ):
+            _evidence["review_trigger"] = _trigger
         _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
         _ledger.record_mutation(
             action, name, before=ledger_before if ledger_before is not None else [],

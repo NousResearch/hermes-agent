@@ -430,3 +430,158 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+# ---------------------------------------------------------------------------
+# Skill write-approval attribution through staging + replay
+# ---------------------------------------------------------------------------
+
+_SKILL_DOC = "---\nname: {name}\ndescription: Use when testing staged approval.\n---\n\nInitial rule.\n"
+
+
+def _stage_skill_in_review_fork(hermes_home, monkeypatch, *, explicit: bool, focus, call_fn):
+    """Execute ``call_fn()`` inside a real ``spawn_background_review_thread`` fork turn."""
+    from pathlib import Path
+    from types import SimpleNamespace
+    from typing import Any
+    from agent import background_review
+    from run_agent import AIAgent
+
+    skills_dir = Path(hermes_home) / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills_dir])
+    monkeypatch.setattr("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None)
+    out = {}
+
+    def _create(**_kw):
+        out["staged"] = call_fn()
+        msg = SimpleNamespace(content="Done.", reasoning_content=None, reasoning=None, tool_calls=None)
+        usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=msg, finish_reason="stop")], model="test-model", usage=usage,
+        )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_create)),
+        close=lambda: None,
+    )
+    monkeypatch.setattr("agent.process_bootstrap._OPENAI_CLS_CACHE", lambda **_kw: client)
+
+    parent: Any = AIAgent(
+        api_key="test-key", base_url="http://127.0.0.1:9/v1", model="test-model",
+        quiet_mode=True, session_id="sess-wa", skip_context_files=True, skip_memory=True,
+    )
+    parent._cached_system_prompt = "stable parent prompt"
+    import contextvars
+    target, _prompt = background_review.spawn_background_review_thread(
+        parent, [], review_memory=False, review_skills=True, focus=focus, task_cfg={}, explicit=explicit,
+    )
+    contextvars.copy_context().run(target)
+    return out["staged"]
+
+
+@pytest.mark.parametrize(
+    ("explicit", "focus", "expected_trigger"),
+    [
+        (False, None, "automatic"),
+        (True, None, "refine"),
+        (False, "tighten error handling", "focus_only"),
+    ],
+)
+def test_approved_background_review_skill_write_preserves_curator_and_trigger(
+    hermes_home, monkeypatch, explicit, focus, expected_trigger
+):
+    """With ``skills.write_approval = true``, every background-review skill write stages first;
+    approving it from the foreground CLI must still record ``actor == 'curator'`` and the fork's
+    ``review_trigger`` in the permanent ledger without re-arming the fork's interactive guards."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import skill_ledger, write_approval as wa
+    from tools.skill_manager_guards import mark_background_review_skill_read
+    from tools.skill_manager_tool import skill_manage
+
+    skills_dir = Path(hermes_home) / "skills"
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills_dir])
+
+    # Seed an agent-created skill before turning the approval gate on, then stage a patch from the
+    # review fork so replay also proves the fork's skill_view read guard stays off for the approver.
+    def _seed():
+        return json.loads(skill_manage(
+            action="", name="",
+            operations=[{"action": "create", "name": "review-skill",
+                         "content": _SKILL_DOC.format(name="review-skill")}],
+        ))
+
+    assert _stage_skill_in_review_fork(
+        hermes_home, monkeypatch, explicit=explicit, focus=focus, call_fn=_seed,
+    )["success"] is True
+
+    _set_approval("skills", True)
+
+    def _stage_patch():
+        mark_background_review_skill_read(skills_dir / "review-skill" / "SKILL.md")
+        return json.loads(skill_manage(
+            action="", name="",
+            operations=[{"action": "patch", "name": "review-skill",
+                         "old_string": "Initial rule.", "new_string": "Curated rule."}],
+        ))
+
+    staged = _stage_skill_in_review_fork(
+        hermes_home, monkeypatch, explicit=explicit, focus=focus, call_fn=_stage_patch,
+    )
+    assert staged.get("staged") is True, staged
+    pid = staged["pending_id"]
+
+    # Foreground approval (no skill_view in this context) applies the write and preserves provenance.
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", pid]) or ""
+    assert "Approved 1 skills write(s)." in out, out
+    assert "Curated rule." in (skills_dir / "review-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+    patch_rows = [r for r in skill_ledger.list_entries(skill="review-skill") if r["action"] == "patch"]
+    assert len(patch_rows) == 1
+    assert (patch_rows[0]["actor"], patch_rows[0]["evidence"].get("review_trigger")) == (
+        "curator",
+        expected_trigger,
+    )
+
+
+def test_approved_foreground_skill_write_keeps_agent_actor_without_review_trigger(
+    hermes_home, monkeypatch
+):
+    """A foreground staged skill write approved alongside (or after) a background-review write
+    still records ``actor == 'agent'`` and carries no ``review_trigger``."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import skill_ledger, write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+
+    skills_dir = Path(hermes_home) / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills_dir])
+    _set_approval("skills", True)
+
+    bg_staged = _stage_skill_in_review_fork(
+        hermes_home, monkeypatch, explicit=False, focus=None,
+        call_fn=lambda: json.loads(skill_manage(
+            action="", name="",
+            operations=[{"action": "create", "name": "bg-skill",
+                         "content": _SKILL_DOC.format(name="bg-skill")}],
+        )),
+    )
+    fg_staged = json.loads(skill_manage(
+        action="", name="",
+        operations=[{"action": "create", "name": "fg-skill",
+                     "content": _SKILL_DOC.format(name="fg-skill")}],
+    ))
+    assert bg_staged.get("staged") is True and fg_staged.get("staged") is True
+    fg_record = wa.get_pending(wa.SKILLS, fg_staged["pending_id"])
+    assert fg_record is not None and "review_trigger" not in fg_record
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", "all"]) or ""
+    assert "Approved 2 skills write(s)." in out, out
+
+    (fg_entry,) = skill_ledger.list_entries(skill="fg-skill")
+    assert fg_entry["actor"] == "agent"
+    assert "review_trigger" not in fg_entry["evidence"]
+    (bg_entry,) = skill_ledger.list_entries(skill="bg-skill")
+    assert (bg_entry["actor"], bg_entry["evidence"].get("review_trigger")) == ("curator", "automatic")

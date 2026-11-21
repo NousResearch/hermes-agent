@@ -521,6 +521,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        text = self._resolve_html_links(activity, text)
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(
@@ -542,6 +543,64 @@ class TeamsAdapter(BasePlatformAdapter):
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+
+    @staticmethod
+    def _resolve_html_links(activity: Any, text: str) -> str:
+        """Append hyperlink targets that only exist in the ``text/html`` mirror attachment.
+
+        Teams renders a pasted SharePoint link as its *label* in ``activity.text``; the URL is
+        carried only by an ``href`` in the ``text/html`` attachment, which ``_cache_attachment``
+        skips (it mirrors the message body, it is not a file). The agent therefore saw a bare
+        file name with no way to open it, and nothing was logged (#157194).
+        """
+        from html.parser import HTMLParser
+
+        class _Anchors(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self.found: list[tuple[str, str]] = []
+                self._href: str | None = None
+                self._label: list[str] = []
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                if tag != "a":
+                    return
+                href = dict(attrs).get("href")
+                if href:
+                    self._href, self._label = href, []
+
+            def handle_data(self, data: str) -> None:
+                if self._href is not None:
+                    self._label.append(data)
+
+            def handle_endtag(self, tag: str) -> None:
+                if tag == "a" and self._href is not None:
+                    self.found.append(("".join(self._label).strip(), self._href))
+                    self._href, self._label = None, []
+
+        resolved: list[str] = []
+        for att in getattr(activity, "attachments", None) or []:
+            if (getattr(att, "content_type", None) or "").lower() != "text/html":
+                continue
+            content = getattr(att, "content", None)
+            if not isinstance(content, str):
+                continue
+            parser = _Anchors()
+            try:
+                parser.feed(content)
+            except Exception:  # malformed markup must not drop the message
+                continue
+            for label, href in parser.found:
+                if href in text or href in resolved:
+                    continue
+                # Keep the label when the body only carried it as plain text, so the agent can
+                # still tell which file the link points at; a label that *is* the URL needs no repeat.
+                resolved.append(
+                    f"{label} ({href})" if label and label != href and label not in text else href
+                )
+        if not resolved:
+            return text
+        return "\n".join([text, *resolved]) if text else "\n".join(resolved)
 
     @staticmethod
     def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:

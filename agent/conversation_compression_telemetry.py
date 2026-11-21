@@ -84,12 +84,12 @@ def _log_attempt_record(payload: dict[str, Any]) -> None:
 
 
 # Fields describing the rewritten transcript; the input-side counts (messages_before, tokens_before) stay.
-_CANDIDATE_EFFECT_FIELDS = ("messages_after", "tokens_after", "tokens_reclaimed", "items_dropped")
+_CANDIDATE_EFFECT_FIELDS = ("messages_after", "tokens_after", "tokens_reclaimed", "items_dropped", "result_estimated_tokens")
 
 
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None, include_last_telemetry: bool = True,
+    commit_started_at: float | None = None, include_last_telemetry: bool = True, result_estimated_tokens: int | None = None,
     attempt_seed: dict[str, Any] | None = None, history_rewritten: bool | None = None,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt.
@@ -120,6 +120,8 @@ def _emit_compression_attempt_telemetry(
         )
         if history_rewritten is not None:
             payload["history_rewritten"] = history_rewritten
+        if result_estimated_tokens is not None:
+            payload["result_estimated_tokens"] = max(0, int(result_estimated_tokens))
         if commit_status != "committed" and not history_rewritten:
             # A refused or rolled-back candidate never reached the transcript: report no effect it did not have.
             for key in _CANDIDATE_EFFECT_FIELDS:

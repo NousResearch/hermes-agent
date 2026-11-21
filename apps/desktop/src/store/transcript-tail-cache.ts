@@ -1,22 +1,15 @@
 import type { ChatMessage } from '@/lib/chat-messages'
 import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
-// ── Durable transcript-tail cache (#89206 "feels instant" layer) ────────────
-// The in-memory warm cache (sessionStateByRuntimeIdRef) makes same-window
-// re-opens instant, but dies with the window — so every app launch, backend
-// reap, or profile respawn pays a full network round-trip before ANYTHING
-// paints, and on a cold multi-profile boot that round-trip sits behind a
-// backend spawn. This cache persists a bounded tail of each stored session's
-// transcript in localStorage: a wake paints the cached tail at ~0ms, the
-// paint-first hydration completes immediately, and the REST prefetch /
-// runtime resume reconcile the authoritative transcript when they land
-// (the existing reconcilers already treat painted content as "previous").
+// Durable, display-only transcript tails for session resume. A scoped cached
+// tail can paint while REST and runtime resume supply authoritative history.
+// Persistence survives a window reload; it never owns runtime identity or
+// replaces backend history.
 //
 // Scope and bounds:
-//   - TAIL ONLY (last TAIL_MESSAGES), size-capped per entry; oversized
-//     messages evict the entry rather than truncating a message mid-parts.
+//   - TAIL ONLY (last TAIL_MESSAGES), size-capped per entry. Keep whole
+//     messages; skip the save if even the newest message alone cannot fit.
 //   - LRU across MAX_ENTRIES sessions; corrupt entries self-evict.
-//   - Same trust domain as state.db on the same disk — no new exposure.
 //   - Keyed by stored session id (durable identity), never runtime id,
 //     SCOPED by the owning {connectionId, profile} (#94828). Stored ids are
 //     only unique WITHIN one profile's state.db, and localStorage survives
@@ -34,7 +27,8 @@ const PREFIX = 'hermes.transcript-tail.v2:'
 const LEGACY_ROOT = 'hermes.transcript-tail.v1'
 const INDEX_KEY = 'hermes.transcript-tail.v2-index'
 const TAIL_MESSAGES = 40
-const MAX_ENTRY_BYTES = 256 * 1024
+// Preserve the existing serialized-string limit (UTF-16 code units).
+const MAX_ENTRY_LENGTH = 256 * 1024
 const MAX_ENTRIES = 50
 
 /** Owning scope of an entry — same shape the REST layer threads through
@@ -160,6 +154,40 @@ function touchIndex(store: Storage, suffix: string): void {
   writeIndex(store, ids)
 }
 
+/** Keep fitting tails on the single-serialization path; search only oversized
+ *  tails so retaining more history doesn't multiply normal save work. */
+function serializeLargestTail(messages: ChatMessage[], savedAt: number): string | null {
+  const bounded = messages.slice(-TAIL_MESSAGES)
+
+  try {
+    const full = JSON.stringify({ messages: bounded, savedAt } satisfies CacheEntry)
+
+    if (full.length <= MAX_ENTRY_LENGTH) {
+      return full
+    }
+
+    let low = 1
+    let high = bounded.length - 1
+    let best: string | null = null
+
+    while (low <= high) {
+      const count = Math.floor((low + high) / 2)
+      const serialized = JSON.stringify({ messages: bounded.slice(-count), savedAt } satisfies CacheEntry)
+
+      if (serialized.length <= MAX_ENTRY_LENGTH) {
+        best = serialized
+        low = count + 1
+      } else {
+        high = count - 1
+      }
+    }
+
+    return best
+  } catch {
+    return null // Non-serializable live parts must not break session resume.
+  }
+}
+
 /** Persist the tail of a session's transcript. No-op on empty/oversized.
  *  Pass the session's owning scope ({connectionId, profile}, or just the
  *  profile name) so the entry can only ever be read against that backend. */
@@ -175,30 +203,10 @@ export function saveTranscriptTail(
     return
   }
 
-  const entry: CacheEntry = { messages: messages.slice(-TAIL_MESSAGES), savedAt: Date.now() }
+  const serialized = serializeLargestTail(messages, Date.now())
 
-  let serialized: string
-
-  try {
-    serialized = JSON.stringify(entry)
-  } catch {
-    return // non-serializable parts (live handles) — skip, never throw
-  }
-
-  if (serialized.length > MAX_ENTRY_BYTES) {
-    // Retry with a shorter tail before giving up; a session dominated by a
-    // few huge tool results still caches its recent turns.
-    const shorter: CacheEntry = { messages: messages.slice(-8), savedAt: entry.savedAt }
-
-    try {
-      serialized = JSON.stringify(shorter)
-    } catch {
-      return
-    }
-
-    if (serialized.length > MAX_ENTRY_BYTES) {
-      return
-    }
+  if (!serialized) {
+    return
   }
 
   const suffix = entrySuffix(id, scope)

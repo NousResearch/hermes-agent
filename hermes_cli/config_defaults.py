@@ -1748,9 +1748,6 @@ DEFAULT_CONFIG = {
         # created this way are user-owned in the same flat jobs table. Interactive toolsets
         # (messaging/clarify) stay denied in cron regardless.
         "allow_agent_scheduling": False,
-        # Tell chat sessions to propose jobs the user did not ask for. False drops only that prompt
-        # line (new sessions): jobs the user requests and their approval cards are unchanged.
-        "proactive_guidance": True,
         # Pre-dispatch validation: before building any agent machinery, verify the provider API key
         # resolves (unless a fallback chain exists), attached skills are ready, and delivery
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.

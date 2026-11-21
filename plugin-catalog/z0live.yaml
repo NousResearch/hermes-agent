@@ -1,27 +1,32 @@
 name: z0live
 repo: https://github.com/kvnloo/z0live
-sha: 8cdb912aa853fc0081e5b34ce78bcbb3e79feb3d
+sha: 1de6c55ec00ec4e63de2f9dcce91e9403eb7fdf5
 version: "0.2.0"
 description: >-
   z0live is a self-hosted realtime voice stack that runs beside Hermes: GPT-Live or Grok Voice as the voice,
-  a second voice (Grok) that answers when called by name, and fast/medium/slow model lanes that answer while
-  Hermes works. The repo is the plugin. z0live_status reports the engine for the next call, the second voice,
+  a second voice that answers when called by name (the plugin switches it between Grok and off; a GPT-Live
+  guest on another Hermes profile is set in the stack's own voices.json), and
+  fast/medium/slow model lanes that answer while Hermes works. The repo is the plugin; GPL-3.0-only.
+  z0live_status reports the engine for the next call, the second voice,
   the lane models, lane server health and a summary of the latest call's event trace (read only).
   z0live_configure sets the engine (gpt-live or grok), the second voice (grok or off) and the tier models.
-  z0live_lanes and /z0live-lanes show or change the helper-lane board in plain words. Disclosure: the tools
+  z0live_lanes and /z0live-lanes show or change the helper-lane board in plain words. z0live_say sends a
+  fixed stock progress line (no free text) to the live call linked to the requesting session, over a
+  loopback endpoint with a shared token read through get_secret. Disclosure: the tools
   read z0live's local files (lanes config, tier and voice overrides, call traces), write only those override
-  files and the lanes board, make one loopback GET to z0live's lane server, and may run the plugin's own
+  files and the lanes board, make one loopback GET to z0live's lane server and one loopback POST for z0live_say,
+  and may run the plugin's own
   `bin/z0live engine`. The voice services themselves are installed separately (deploy/macos/install.sh) and
-  hold their own logins. Nothing is sent off the machine by the plugin, no credentials are read, and no
-  telemetry is emitted.
+  hold their own logins. Nothing is sent off the machine by the plugin. The only secret it reads is its own optional
+  Z0LIVE_PROGRESS_TOKEN, through get_secret, and no telemetry is emitted.
 maintainer: kvnloo
 tier: community
 category: voice
-docs_url: https://github.com/kvnloo/z0live/blob/8cdb912aa853fc0081e5b34ce78bcbb3e79feb3d/README.md
+docs_url: https://github.com/kvnloo/z0live/blob/1de6c55ec00ec4e63de2f9dcce91e9403eb7fdf5/README.md
 requires_hermes: ">=0.21.5"
 platforms: []
 capabilities:
-  provides_tools: [z0live_status, z0live_configure, z0live_lanes]
+  provides_tools: [z0live_status, z0live_configure, z0live_lanes, z0live_say]
   provides_hooks: []
   provides_middleware: []
   requires_env: []

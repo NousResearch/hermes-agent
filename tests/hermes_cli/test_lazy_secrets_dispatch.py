@@ -115,6 +115,47 @@ class TestSecretsDispatchE2E:
         )
         assert "ImportError" not in result.stderr
 
+    def test_bitwarden_bare_group_shows_group_help(self) -> None:
+        """`hermes secrets bitwarden` must print group help, not recurse.
+
+        Regression for #92799: register_subcommands() set func defaults on the
+        leaf handlers (setup/status/...) but left the intermediate group parser
+        (bitwarden) inheriting the parent's _dispatch_secrets, which then
+        redispatched through args.func — itself — until RecursionError.
+        """
+        result = _run_hermes(["secrets", "bitwarden"])
+        assert result.returncode == 0, (
+            f"bare `secrets bitwarden` crashed:\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "RecursionError" not in result.stderr
+        assert "usage: hermes secrets bitwarden" in result.stdout
+        assert "setup" in result.stdout
+
+    def test_onepassword_bare_group_shows_group_help(self) -> None:
+        """`hermes secrets onepassword` must print group help, not recurse."""
+        result = _run_hermes(["secrets", "onepassword"])
+        assert result.returncode == 0, (
+            f"bare `secrets onepassword` crashed:\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "RecursionError" not in result.stderr
+        assert "usage: hermes secrets onepassword" in result.stdout
+        assert "sync" in result.stdout
+
+    def test_secrets_bare_shows_parent_help(self) -> None:
+        """`hermes secrets` with no subcommand must print parent help."""
+        result = _run_hermes(["secrets"])
+        assert result.returncode == 0, (
+            f"bare `secrets` crashed:\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "usage: hermes secrets" in result.stdout
+        assert "bitwarden" in result.stdout
+
 
 
 class TestUpdatePathE2E:

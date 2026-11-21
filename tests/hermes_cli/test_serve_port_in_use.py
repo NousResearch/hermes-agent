@@ -156,6 +156,7 @@ def test_conflict_emits_sentinel_and_exit_75(tmp_path):
     assert proc.returncode == 75, f"exit={proc.returncode}\n{out}"
     assert f"BACKEND_PORT_IN_USE port={port}" in out
     assert f"Port {port}" in out  # human hint line
+    assert f"held by PID {os.getpid()}" in out  # names the holder (this test process)
     assert "HERMES_BACKEND_READY" not in out  # never claimed ready
     # exactly one machine sentinel line
     assert out.count("BACKEND_PORT_IN_USE") == 1

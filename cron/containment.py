@@ -201,30 +201,92 @@ def unit_state(unit: str) -> tuple[str, Optional[str]]:
     return props.get("ActiveState", "unknown"), (props.get("ControlGroup", "") or None)
 
 
-def cgroup_procs(cgroup: Optional[str]) -> list[int]:
-    """PIDs still inside a cgroup path. Missing path == empty (already gone)."""
-    if not cgroup:
-        return []
+# cgroup_procs verification outcomes (fail-closed contract):
+_CGROUP_VERIFIED_EMPTY = "verified-empty"    # path readable, parses to zero PIDs
+_CGROUP_VERIFIED_ABSENT = "verified-absent"  # cgroup dir (and procs file) genuinely gone
+_CGROUP_HAS_PIDS = "has-pids"                # path readable, live PIDs inside
+_CGROUP_UNVERIFIABLE = "unverifiable"        # PermissionError/other OSError, malformed
+                                             # content, or a cgroup path we cannot validate
+# systemd states under which the unit cannot hold processes. When systemd
+# reports one of these AND no ControlGroup property, systemd itself is the
+# authority that the cgroup is gone (verified absent) — no /sys read needed.
+_DEAD_STATES = ("inactive", "failed", "not-found", "unknown", "inactive (dead)")
+
+
+def cgroup_procs(cgroup: Optional[str]) -> tuple[str, list[int]]:
+    """Verify a cgroup's live PIDs, failing closed.
+
+    Returns ``(status, pids)`` where status is exactly one of:
+
+    - ``"verified-empty"``: the cgroup.procs path exists, is readable and
+      parses to zero PIDs.
+    - ``"verified-absent"``: the cgroup directory itself is genuinely gone
+      (``FileNotFoundError`` on cgroup.procs with the parent dir also gone).
+    - ``"has-pids"``: readable and parsed; ``pids`` lists the live PIDs.
+    - ``"unverifiable"``: PermissionError or any other OSError, non-integer
+      or malformed cgroup.procs content, or a cgroup path that cannot be
+      validated. Callers MUST treat this as NOT verified — never as empty.
+
+    An empty/None ``cgroup`` string cannot be validated here, so it is
+    ``"unverifiable"``; ``stop_unit`` substitutes systemd's own authoritative
+    no-cgroup report for dead units before consulting this function.
+    """
+    if not isinstance(cgroup, str) or not cgroup.strip():
+        return _CGROUP_UNVERIFIABLE, []
     path = _PROC_CGROUP_ROOT / cgroup.lstrip("/") / "cgroup.procs"
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return [int(pid) for pid in handle.read().split() if pid.isdigit()]
-    except (OSError, ValueError):
-        return []
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Verified absent only when the cgroup directory itself is gone.
+        if not path.parent.exists():
+            return _CGROUP_VERIFIED_ABSENT, []
+        # Procs file missing but the cgroup dir still exists: cannot verify.
+        return _CGROUP_UNVERIFIABLE, []
+    except OSError:
+        # PermissionError and friends: we could NOT read the cgroup.
+        return _CGROUP_UNVERIFIABLE, []
+    pids: list[int] = []
+    for token in raw.split():
+        if not token.isdigit():
+            # Malformed content: refuse to guess, fail closed.
+            return _CGROUP_UNVERIFIABLE, []
+        pids.append(int(token))
+    return (_CGROUP_VERIFIED_EMPTY, []) if not pids else (_CGROUP_HAS_PIDS, pids)
+
+
+def _cgroup_snapshot(state: str, cgroup: Optional[str]) -> tuple[str, list[int]]:
+    """``cgroup_procs`` verdict for a systemd (state, cgroup) snapshot.
+
+    A dead unit that reports NO ControlGroup is verified absent by systemd
+    itself — there is nothing left to read. A live unit that reports no
+    ControlGroup is unverifiable: fail closed.
+    """
+    if not cgroup:
+        if state in _DEAD_STATES:
+            return _CGROUP_VERIFIED_ABSENT, []
+        return _CGROUP_UNVERIFIABLE, []
+    return cgroup_procs(cgroup)
 
 
 def stop_unit(unit: str) -> str:
-    """Stop one transient scope and verify its cgroup is empty.
+    """Stop one transient scope and verify its cgroup is empty — failing
+    closed on every unverifiable state.
 
-    Returns ``"clean"`` (stopped/verified empty), ``"gone"`` (already dead),
+    Returns ``"clean"`` (stopped/verified empty), ``"gone"`` (verified absent),
     or ``"leftover:<detail>"`` / ``"error:<detail>"`` — anything not clean is
-    reported as NOT dead, never swallowed as success."""
+    reported as NOT dead, never swallowed as success. An unreadable or
+    malformed cgroup.procs (pre-stop check, post-stop check, or post-SIGKILL
+    re-verification) returns ``error:unverifiable-cgroup``, never clean/gone.
+    """
     state, cgroup = unit_state(unit)
     if state.startswith("error:"):
         return state
-    if state in ("inactive", "failed", "not-found", "unknown", "inactive (dead)"):
-        if not cgroup_procs(cgroup):
-            return "gone" if state in ("not-found", "unknown") else "clean"
+    if state in _DEAD_STATES:
+        status, _pids = _cgroup_snapshot(state, cgroup)
+        if status == _CGROUP_UNVERIFIABLE:
+            return "error:unverifiable-cgroup"
+        # verified-empty or verified-absent for a dead unit.
+        return "gone" if state in ("not-found", "unknown") else "clean"
     try:
         subprocess.run([SYSTEMCTL, "--user", "stop", unit],
                        capture_output=True, text=True,
@@ -234,7 +296,10 @@ def stop_unit(unit: str) -> str:
     except OSError as exc:
         return f"error:{type(exc).__name__}"
     state, cgroup = unit_state(unit)
-    if cgroup_procs(cgroup):
+    status, _pids = _cgroup_snapshot(state, cgroup)
+    if status == _CGROUP_UNVERIFIABLE:
+        return "error:unverifiable-cgroup"
+    if status == _CGROUP_HAS_PIDS:
         # Escalate once: SIGKILL the whole cgroup, then re-verify.
         try:
             subprocess.run([SYSTEMCTL, "--user", "kill", "--signal=SIGKILL", unit],
@@ -244,11 +309,13 @@ def stop_unit(unit: str) -> str:
             pass
         time.sleep(_KILL_SETTLE_SECONDS)
         state, cgroup = unit_state(unit)
-    if state.startswith("error:"):
-        return state
-    if cgroup_procs(cgroup):
+        status, _pids = _cgroup_snapshot(state, cgroup)
+    if state.startswith("error:") or status == _CGROUP_UNVERIFIABLE:
+        # Post-kill verification could not be trusted: fail closed.
+        return "error:unverifiable-cgroup"
+    if status == _CGROUP_HAS_PIDS:
         return f"leftover:{state}"
-    return "clean"
+    return "gone" if state in ("not-found", "unknown") else "clean"
 
 
 def end(execution_id: object) -> dict[str, list[str]]:

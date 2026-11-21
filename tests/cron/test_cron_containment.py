@@ -242,7 +242,215 @@ def test_stop_unit_escalates_to_sigkill_when_stop_refused(fake_systemctl, tmp_pa
 
 def report_survivors(fake_systemctl, cgroup):
     from cron import containment
-    return containment.cgroup_procs(cgroup)
+    _status, pids = containment.cgroup_procs(cgroup)
+    return pids
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed cgroup verification
+# ---------------------------------------------------------------------------
+
+def test_cgroup_procs_distinguishes_empty_absent_and_pids(fake_systemctl):
+    from cron import containment
+
+    # Verified empty: readable file, zero PIDs.
+    _make_cgroup(fake_systemctl, "/empty.scope", pids=())
+    assert containment.cgroup_procs("/empty.scope") == ("verified-empty", [])
+
+    # Has PIDs: readable file, live PIDs.
+    _make_cgroup(fake_systemctl, "/busy.scope", pids=("11", "22"))
+    assert containment.cgroup_procs("/busy.scope") == ("has-pids", [11, 22])
+
+    # Verified absent: cgroup dir (and its procs file) genuinely gone.
+    assert containment.cgroup_procs("/never-existed.scope") == ("verified-absent", [])
+
+    # Unverifiable: procs file missing but the cgroup dir still exists.
+    (fake_systemctl["sysfs"] / "dangling.scope").mkdir()
+    assert containment.cgroup_procs("/dangling.scope") == ("unverifiable", [])
+
+    # Unverifiable: empty/None cgroup path cannot be validated here.
+    assert containment.cgroup_procs(None) == ("unverifiable", [])
+    assert containment.cgroup_procs("") == ("unverifiable", [])
+
+
+def test_cgroup_procs_fails_closed_on_permission_error(fake_systemctl):
+    from cron import containment
+
+    procs = fake_systemctl["sysfs"] / "denied.scope"
+    procs.mkdir()
+    (procs / "cgroup.procs").write_text("4321\n")
+    (procs / "cgroup.procs").chmod(0o000)
+    try:
+        assert containment.cgroup_procs("/denied.scope") == ("unverifiable", [])
+    finally:
+        (procs / "cgroup.procs").chmod(0o644)
+
+
+def test_cgroup_procs_fails_closed_on_malformed_content(fake_systemctl):
+    from cron import containment
+
+    _make_cgroup(fake_systemctl, "/garbage.scope", pids=("4321", "not-a-pid"))
+    assert containment.cgroup_procs("/garbage.scope") == ("unverifiable", [])
+
+
+@_systemctl_stub
+def test_stop_unit_fails_closed_on_permission_error(fake_systemctl, tmp_path, monkeypatch):
+    """An unreadable cgroup.procs is NOT a verified-empty cgroup: stop_unit
+    must return an error status, never clean/gone."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    unit = "hermes-cron-x-perm.scope"
+    cgroup = "/user.slice/u.service/a.slice/perm.scope"
+    _set_unit(fake_systemctl, unit, "inactive", cgroup)  # dead, but cgroup unreadable
+    _make_cgroup(fake_systemctl, cgroup)
+    procs = fake_systemctl["sysfs"] / cgroup.lstrip("/") / "cgroup.procs"
+    procs.chmod(0o000)
+    try:
+        assert containment.stop_unit(unit) == "error:unverifiable-cgroup"
+    finally:
+        procs.chmod(0o644)
+
+
+@_systemctl_stub
+def test_stop_unit_fails_closed_on_malformed_procs(fake_systemctl, tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    unit = "hermes-cron-x-garbage.scope"
+    cgroup = "/user.slice/u.service/a.slice/garbage.scope"
+    _set_unit(fake_systemctl, unit, "inactive", cgroup)
+    _make_cgroup(fake_systemctl, cgroup, pids=("4321", "oops"))
+    assert containment.stop_unit(unit) == "error:unverifiable-cgroup"
+
+
+@_systemctl_stub
+def test_stop_unit_fails_closed_post_kill_on_unverifiable(fake_systemctl, tmp_path, monkeypatch):
+    """SIGKILL escalation whose re-verification is unreadable must fail closed,
+    not report clean."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    unit = "hermes-cron-x-postkill.scope"
+    cgroup = "/user.slice/u.service/a.slice/postkill.scope"
+    _set_unit(fake_systemctl, unit, "active", cgroup, stubborn=True)
+    _make_cgroup(fake_systemctl, cgroup)
+    procs = fake_systemctl["sysfs"] / cgroup.lstrip("/") / "cgroup.procs"
+    monkeypatch.setattr(containment, "_KILL_SETTLE_SECONDS", 0.0)
+    # chmod AFTER the first (readable) post-stop snapshot: the post-kill
+    # re-verification is then unverifiable, which must fail closed.
+    _original_run = containment.subprocess.run
+
+    def _deny_after_stop(cmd, **kw):
+        result = _original_run(cmd, **kw)
+        if cmd[1:3] == ["--user", "stop"]:
+            procs.chmod(0o000)
+        return result
+
+    monkeypatch.setattr(containment.subprocess, "run", _deny_after_stop)
+    try:
+        assert containment.stop_unit(unit) == "error:unverifiable-cgroup"
+    finally:
+        procs.chmod(0o644)
+
+
+@_systemctl_stub
+def test_end_keeps_registry_on_unverifiable_unit(fake_systemctl, tmp_path, monkeypatch):
+    """PermissionError reading cgroup.procs: end() must report the unit as
+    leftover and PRESERVE the registry dir for retry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    exec_id = "exec-unverifiable"
+    containment.begin(exec_id)
+    unit = containment.new_unit_name(exec_id)
+    containment.register_unit(exec_id, unit)
+    cgroup = "/user.slice/u.service/a.slice/denied.scope"
+    _set_unit(fake_systemctl, unit, "inactive", cgroup)
+    _make_cgroup(fake_systemctl, cgroup)
+    procs = fake_systemctl["sysfs"] / cgroup.lstrip("/") / "cgroup.procs"
+    procs.chmod(0o000)
+    try:
+        report = containment.end(exec_id)
+    finally:
+        procs.chmod(0o644)
+    assert report["stopped"] == []
+    assert len(report["leftover"]) == 1 and "unverifiable" in report["leftover"][0]
+    assert containment.registered_units(exec_id) == [unit], "registry must be kept"
+
+
+@_systemctl_stub
+def test_end_mixed_clean_and_unverifiable_preserves_registry(fake_systemctl, tmp_path, monkeypatch):
+    """One clean unit must not let partial teardown delete the registry while
+    another unit is unverifiable."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    exec_id = "exec-mixed"
+    containment.begin(exec_id)
+    clean_unit = containment.new_unit_name(exec_id)
+    bad_unit = containment.new_unit_name(exec_id)
+    containment.register_unit(exec_id, clean_unit)
+    containment.register_unit(exec_id, bad_unit)
+    _set_unit(fake_systemctl, clean_unit, "active", "/user.slice/u.service/a.slice/clean.scope")
+    _make_cgroup(fake_systemctl, "/user.slice/u.service/a.slice/clean.scope", pids=())
+    bad_cgroup = "/user.slice/u.service/a.slice/bad.scope"
+    _set_unit(fake_systemctl, bad_unit, "inactive", bad_cgroup)
+    _make_cgroup(fake_systemctl, bad_cgroup)
+    procs = fake_systemctl["sysfs"] / bad_cgroup.lstrip("/") / "cgroup.procs"
+    procs.chmod(0o000)
+    try:
+        report = containment.end(exec_id)
+    finally:
+        procs.chmod(0o644)
+    assert clean_unit in report["stopped"]
+    assert len(report["leftover"]) == 1
+    assert containment.registered_units(exec_id), "registry must survive mixed teardown"
+
+
+@_systemctl_stub
+def test_end_verified_absent_cgroup_is_gone_and_registry_removed(fake_systemctl, tmp_path, monkeypatch):
+    """Unit inactive and the cgroup dir genuinely gone: verified absent ->
+    gone, and the registry is still removable."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    exec_id = "exec-absent"
+    containment.begin(exec_id)
+    unit = containment.new_unit_name(exec_id)
+    containment.register_unit(exec_id, unit)
+    # inactive unit pointing at a cgroup that does not exist at all.
+    _set_unit(fake_systemctl, unit, "inactive",
+              "/user.slice/u.service/a.slice/vanished.scope")
+
+    report = containment.end(exec_id)
+
+    assert report == {"stopped": [unit], "leftover": []}
+    assert not (tmp_path / "home" / "cron" / "containment" / exec_id).exists()
+
+
+@_systemctl_stub
+def test_sweep_stale_keeps_registry_on_unverifiable_end(fake_systemctl, tmp_path, monkeypatch):
+    """An unverifiable end() result during the stale sweep keeps the registry
+    and is logged as a survivor, not counted as swept."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from cron import containment
+
+    exec_id = "exec-sweep-unverifiable"
+    containment.begin(exec_id)
+    unit = containment.new_unit_name(exec_id)
+    containment.register_unit(exec_id, unit)
+    cgroup = "/user.slice/u.service/a.slice/sweep-denied.scope"
+    _set_unit(fake_systemctl, unit, "inactive", cgroup)
+    _make_cgroup(fake_systemctl, cgroup)
+    procs = fake_systemctl["sysfs"] / cgroup.lstrip("/") / "cgroup.procs"
+    procs.chmod(0o000)
+    try:
+        swept = containment.sweep_stale(lambda _exec_id: False)
+    finally:
+        procs.chmod(0o644)
+    assert swept == 0, "unverifiable teardown must not count as swept"
+    assert containment.registered_units(exec_id) == [unit], "registry must be kept"
 
 
 def test_stop_unit_reports_gone_for_unknown_unit(fake_systemctl, tmp_path, monkeypatch):

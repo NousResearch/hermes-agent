@@ -293,6 +293,53 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
 
 
+def test_load_pool_coerces_borrowed_anthropic_priority_without_writing_root(profile_env, monkeypatch):
+    from agent.credential_pool import load_pool
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    root_file = profile_env["global"] / "auth.json"
+    _write(root_file, _make_auth_store(pool={
+        "anthropic": [{"id": "glob-str", "label": "a", "auth_type": "api_key",
+                       "priority": "5", "source": "manual", "access_token": "fake-key-a"}],
+    }))
+    before = root_file.read_bytes()
+    assert load_pool("anthropic").entries()[0].priority == 0
+    assert root_file.read_bytes() == before
+    profile_file = profile_env["profile"] / "auth.json"
+    assert not profile_file.exists() or not json.loads(profile_file.read_text()).get("credential_pool", {}).get("anthropic")
+
+
+def test_load_pool_coerces_borrowed_priority_without_copying_root_rows(profile_env):
+    """A malformed priority on a borrowed root row is coerced in memory only: loading must not
+    materialize the root pool in the profile (that copy would shadow later root updates)."""
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    root_file = profile_env["global"] / "auth.json"
+    _write(root_file, _make_auth_store(pool={
+        "openrouter": [
+            {"id": "glob-str", "label": "a", "auth_type": "api_key", "priority": "1",
+             "source": "manual", "access_token": "fake-key-a"},
+            {"id": "glob-int", "label": "b", "auth_type": "api_key", "priority": 0,
+             "source": "manual", "access_token": "fake-key-b"},
+        ],
+    }))
+    root_before = root_file.read_bytes()
+
+    entries = load_pool("openrouter").entries()
+
+    assert sorted((e.id, e.priority) for e in entries) == [("glob-int", 0), ("glob-str", 1)]
+    profile_file = profile_env["profile"] / "auth.json"
+    profile_rows = (json.loads(profile_file.read_text()).get("credential_pool", {}).get("openrouter")
+                    if profile_file.exists() else None)
+    assert not profile_rows
+    assert root_file.read_bytes() == root_before
+    # The profile still reads the live root pool, not a frozen copy.
+    assert {e["id"] for e in read_credential_pool("openrouter")} == {"glob-str", "glob-int"}
+
+
 
 
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):

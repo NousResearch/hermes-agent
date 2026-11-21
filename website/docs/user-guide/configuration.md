@@ -1176,6 +1176,15 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 
 Archive files follow the spillover rules: a file is kept while any `state.db` row still points at it and is otherwise swept after `sessions.retention_days`. Rows keep pointing at it after a compaction (as inactive rows), so a referenced archive stays on disk until its session is deleted, and `sessions.auto_prune` is off by default: without it, archives are never removed. The prune never runs when `compression.checkpoint_required` is on (also after a live config change) or when the session has no store row to archive the originals into. This runs only under the built-in `compressor` engine; other context engines inherit a no-op.
 
+The proactive cost-only prune also retains successful native `read_file` results for
+`AGENTS.override.md`, `AGENTS.md`, `agents.md`, `CLAUDE.md`, `claude.md`, and `.cursorrules`.
+For an absolute path and the same requested range, a later complete read can supersede an
+earlier complete read; failed reads and repeat-read stubs cannot. Partial reads and relative
+paths are kept conservatively because their coverage or working directory may differ.
+Retained content still counts toward the reclaim gate. This does not pin files during full
+compression or microcompaction, automatically reload them, or preserve instruction hints
+embedded in unrelated tool results. Ordinary tool results remain eligible for pruning.
+
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
 :::

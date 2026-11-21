@@ -197,6 +197,53 @@ def test_an_adopted_baseline_never_replaces_this_runs_own(tmp_path, monkeypatch)
     assert not whole and "a.py" in why, "this run's own baseline was dropped for the adopted one"
 
 
+
+def _self_managed_checkout(tmp_path: Path, monkeypatch) -> Path:
+    root = tmp_path / "checkout"
+    (root / ".git").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr("hermes_cli.steward.read_install_stamp", lambda root: {"updateMechanism": "self"})
+    monkeypatch.setattr("pm.client.is_runtime", lambda: False)
+    return root
+
+
+def test_a_pm_runtime_that_cannot_answer_reads_the_recorded_state_instead(tmp_path, monkeypatch):
+    """#143478: after a rollback the selected PM runtime is the older release's, so the probe
+    (which never bootstraps) cannot answer. That is not stale dependencies: the gate reads the
+    recorded state in this process, and a sync that did not land still holds the set."""
+    from pm import client
+    from pm.package import InstallError
+
+    root = _self_managed_checkout(tmp_path, monkeypatch)
+
+    def cold(operation, arguments, **kwargs):
+        raise InstallError("pm-runtime", "not installed or outdated and lazy installs are disabled")
+
+    monkeypatch.setattr(client, "_request", cold)
+    read = []
+    monkeypatch.setattr("pm.install.venv_is_current", lambda **kwargs: read.append(kwargs) or True)
+    assert pause_record._deps_hold_resume(root) is False, "synced dependencies stranded the set"
+    assert read == [{"project_root": root}], "the recorded state was read for another checkout"
+    monkeypatch.setattr("pm.install.venv_is_current", lambda **kwargs: False)
+    assert pause_record._deps_hold_resume(root) is True, "a sync that did not land released the set"
+
+    def unreadable(**kwargs):
+        raise ImportError("ruamel")
+
+    monkeypatch.setattr("pm.install.venv_is_current", unreadable)
+    assert pause_record._deps_hold_resume(root) is False, "unknown currency held the set"
+
+
+def test_stale_dependencies_still_hold_the_paused_set(tmp_path, monkeypatch):
+    from pm import client
+
+    root = _self_managed_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(client, "_request", lambda operation, arguments, **kwargs: False)
+    assert pause_record._deps_hold_resume(root) is True
+    monkeypatch.setattr(client, "_request", lambda operation, arguments, **kwargs: True)
+    assert pause_record._deps_hold_resume(root) is False
+
 def _orphan(tmp_path: Path, profiles: dict) -> None:
     """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
     owner = _child(f"""

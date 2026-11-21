@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 349
+   "undecided": 352
   },
   "rpc": {
    "authority": 113,
@@ -83,6 +83,7 @@
   {"current_path": "hermes_cli.web_routers.config_env:get_egress_status", "decision": "undecided", "handler": "GET /api/egress/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_env_vars", "decision": "undecided", "handler": "GET /api/env", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:list_managed_files", "decision": "undecided", "handler": "GET /api/files", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.files_archive:download_managed_archive", "decision": "undecided", "handler": "GET /api/files/archive", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:download_managed_file", "decision": "undecided", "handler": "GET /api/files/download", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:read_managed_file", "decision": "undecided", "handler": "GET /api/files/read", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:stream_managed_file", "decision": "undecided", "handler": "GET /api/files/stream", "kind": "http", "ref": ""},
@@ -235,6 +236,7 @@
   {"current_path": "hermes_cli.web_routers.dashboard_ui:post_plugin_visibility", "decision": "undecided", "handler": "POST /api/dashboard/plugins/{name:path}/visibility", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.desktop_plugins:reconcile_desktop_plugins; surface: desktop_plugins", "decision": "undecided", "handler": "POST /api/desktop-plugins/reconcile", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:reveal_env_var", "decision": "undecided", "handler": "POST /api/env/reveal", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.files_archive:upload_managed_archive", "decision": "undecided", "handler": "POST /api/files/archive", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:create_managed_directory", "decision": "undecided", "handler": "POST /api/files/mkdir", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:issue_file_ticket; surface: browser_files", "decision": "undecided", "handler": "POST /api/files/ticket", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:upload_managed_file", "decision": "undecided", "handler": "POST /api/files/upload", "kind": "http", "ref": ""},
@@ -352,6 +354,7 @@
   {"current_path": "hermes_cli.web_routers.delegation:save_model_routes", "decision": "undecided", "handler": "PUT /api/delegation/backends/model_map", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.delegation:save_profile_routes", "decision": "undecided", "handler": "PUT /api/delegation/backends/profile_routes", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:set_env_var", "decision": "undecided", "handler": "PUT /api/env", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.files_archive:upload_managed_archive", "decision": "undecided", "handler": "PUT /api/files/archive", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:update_learning_node", "decision": "undecided", "handler": "PUT /api/learning/node", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.mcp:replace_mcp_servers", "decision": "undecided", "handler": "PUT /api/mcp/servers", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.mcp:set_mcp_server_enabled", "decision": "undecided", "handler": "PUT /api/mcp/servers/{name}/enabled", "kind": "http", "ref": ""},

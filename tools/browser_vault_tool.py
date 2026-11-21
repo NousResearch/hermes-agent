@@ -655,6 +655,10 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
         written = write_backend_code(backend, handle, meta, origin, lambda code: write(code, backend.name))
         if written is not None:
             return written
+    from agent.vault_sms_otp import wait_for_code
+    sms_code = wait_for_code(origin)
+    if sms_code:
+        return write(sms_code, "sms")
     prompt = get_code_prompt_callback()
     if prompt is None or not can_prompt_here(prompt):
         return json.dumps({"success": False, "error_type": "prompt_unavailable",

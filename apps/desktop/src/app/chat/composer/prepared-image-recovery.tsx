@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { listPreparedImageDrafts } from '@/app/session/hooks/use-prompt-actions/prepared-submissions'
+import { listPreparedImageDrafts, removePreparedSubmission } from '@/app/session/hooks/use-prompt-actions/prepared-submissions'
 import { captureSubmissionDestination } from '@/app/session/hooks/use-prompt-actions/submission-destination'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Button } from '@/components/ui/button'
@@ -43,6 +43,12 @@ export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore
         onRestore(draft.text, draft.attachments, draft.id)
         setDrafts(current => current.filter(entry => entry.key !== draft.key))
       }} size="sm" type="button" variant="outline">{t.composer.restoreImageDraft}</Button>
+      <Button onClick={() => {
+        setDrafts(current => current.filter(entry => entry.key !== draft.key))
+        void removePreparedSubmission(draft.key, draft.id).catch(error => {
+          notifyError(error, t.composer.queueLostDiscard)
+        })
+      }} size="sm" type="button" variant="outline">{t.composer.queueLostDiscard}</Button>
     </div>
   ))
 }

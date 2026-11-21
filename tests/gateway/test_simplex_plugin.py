@@ -543,3 +543,137 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     assert len(warnings) == 1
     assert "['alice']" in warnings[0]
     assert "bob" not in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# 11. Quoted replies: the quote must survive to the prompt
+# ---------------------------------------------------------------------------
+
+def _make_quoted_chat_item(
+    text: str = "what does this mean?",
+    *,
+    quoted_content: dict | None = None,
+    quoted_id=59,
+    quoted_dir: str = "directSnd",
+) -> dict:
+    """An inbound text item that quotes another message.
+
+    ``quotedItem`` is a SIBLING of ``content``/``meta`` on the item, and its ``content``
+    holds the quoted MsgContent directly (no ``msgContent`` wrapper).
+    """
+    quoted: dict = {
+        "chatDir": {"type": quoted_dir},
+        "sentAt": "2026-11-01T17:12:39Z",
+        "content": quoted_content if quoted_content is not None else {
+            "type": "text", "text": "the  quoted   words\n"},
+    }
+    if quoted_id is not None:
+        quoted["itemId"] = quoted_id
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 3, "profile": {"displayName": "TS", "fullName": "TS"}},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 200, "itemTs": "2026-11-02T07:00:00Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": text}},
+            "quotedItem": quoted,
+        },
+    }
+
+
+def _capture_adapter(monkeypatch):
+    """Adapter whose inbound events are captured instead of processed."""
+    adapter = _adapter_with_ws()
+    captured: list = []
+    enqueued: list = []
+
+    async def _handle(event):
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", _handle)
+    monkeypatch.setattr(adapter, "_enqueue_text_event", lambda e: enqueued.append(e))
+    return adapter, captured, enqueued
+
+
+@pytest.mark.asyncio
+async def test_quoted_reply_reaches_the_event(monkeypatch):
+    adapter, captured, enqueued = _capture_adapter(monkeypatch)
+    await adapter._handle_chat_item(_make_quoted_chat_item())
+
+    assert len(captured) == 1 and not enqueued, "a quoted reply must bypass text batching"
+    event = captured[0]
+    assert event.reply_to_message_id == "59"
+    assert event.reply_to_text == "the quoted words", "whitespace must be normalised"
+    assert event.reply_to_is_own_message is True
+    assert event.text == "what does this mean?"
+
+
+@pytest.mark.asyncio
+async def test_quote_of_another_person_is_not_marked_as_own(monkeypatch):
+    adapter, captured, _ = _capture_adapter(monkeypatch)
+    await adapter._handle_chat_item(_make_quoted_chat_item(quoted_dir="directRcv"))
+    assert captured[0].reply_to_is_own_message is False
+
+
+@pytest.mark.asyncio
+async def test_null_quoted_id_drops_the_quote_instead_of_a_bogus_pointer(monkeypatch):
+    # Upstream sends a null itemId when the quoted item was never received.
+    adapter, captured, enqueued = _capture_adapter(monkeypatch)
+    await adapter._handle_chat_item(_make_quoted_chat_item(quoted_id=None))
+
+    delivered = captured + enqueued
+    assert len(delivered) == 1
+    assert delivered[0].reply_to_message_id is None, 'a null id must not become the string "None"'
+    assert delivered[0].reply_to_text == ""
+    assert enqueued, "without a usable quote, ordinary batching applies again"
+
+
+@pytest.mark.asyncio
+async def test_quoted_media_without_caption_gets_a_label(monkeypatch):
+    adapter, captured, _ = _capture_adapter(monkeypatch)
+    await adapter._handle_chat_item(_make_quoted_chat_item(
+        quoted_content={"type": "image", "text": "", "image": {"file": {}}}))
+    assert captured[0].reply_to_text == "[image]"
+    assert captured[0].reply_to_message_id == "59"
+
+
+@pytest.mark.asyncio
+async def test_quoted_image_bytes_are_never_read(monkeypatch):
+    """A quoted image embeds megabytes; only ``content.text`` may be touched."""
+    adapter, captured, _ = _capture_adapter(monkeypatch)
+    huge = "A" * (8 * 1024 * 1024)
+    await adapter._handle_chat_item(_make_quoted_chat_item(
+        quoted_content={"type": "image", "text": "", "image": {"file": {"source": huge}}}))
+    assert captured[0].reply_to_text == "[image]"
+
+
+@pytest.mark.asyncio
+async def test_quoted_text_is_truncated(monkeypatch):
+    adapter, captured, _ = _capture_adapter(monkeypatch)
+    await adapter._handle_chat_item(_make_quoted_chat_item(
+        quoted_content={"type": "text", "text": "x" * 5000}))
+    preview = captured[0].reply_to_text
+    assert len(preview) <= 1003 and preview.endswith("...")
+
+
+@pytest.mark.asyncio
+async def test_malformed_quote_never_loses_the_message(monkeypatch):
+    adapter, captured, enqueued = _capture_adapter(monkeypatch)
+    item = _make_quoted_chat_item()
+    item["chatItem"]["quotedItem"] = "not a dict"
+    await adapter._handle_chat_item(item)
+    delivered = captured + enqueued
+    assert len(delivered) == 1, "a bad quote must not swallow the user's message"
+    assert delivered[0].text == "what does this mean?"
+
+
+@pytest.mark.asyncio
+async def test_message_without_a_quote_keeps_batching(monkeypatch):
+    adapter, captured, enqueued = _capture_adapter(monkeypatch)
+    item = _make_quoted_chat_item()
+    del item["chatItem"]["quotedItem"]
+    await adapter._handle_chat_item(item)
+    assert enqueued and not captured
+    assert enqueued[0].reply_to_message_id is None

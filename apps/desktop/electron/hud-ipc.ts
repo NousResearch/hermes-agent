@@ -6,6 +6,7 @@ import { type BrowserWindow, ipcMain, screen } from 'electron'
 
 import { createHudDragSession } from './hud-drag'
 import { normalizeHudResizeBounds } from './hud-geometry'
+import { hudVibrancySupported } from './hud-overlay'
 import { hudWindowingView, resolveHudWindowing } from './hud-windowing'
 import { hudFrostFor, type TranslucencyState } from './translucency'
 
@@ -14,6 +15,7 @@ function hudWindowing() {
 }
 
 export interface HudIpcDeps {
+  darwinMajor: number
   isMac: boolean
   /** Main's authoritative translucency state (Settings → Appearance). */
   getTranslucencyState: () => TranslucencyState
@@ -25,6 +27,7 @@ export interface HudIpcDeps {
 }
 
 export function registerHudIpc({
+  darwinMajor,
   isMac,
   getTranslucencyState,
   getHudWindow,
@@ -120,7 +123,7 @@ export function registerHudIpc({
     applied = signature
     appliedTo = hudWindow
 
-    if (isMac && typeof hudWindow.setVibrancy === 'function') {
+    if (isMac && hudVibrancySupported(darwinMajor) && typeof hudWindow.setVibrancy === 'function') {
       hudWindow.setVibrancy(frost.vibrancy)
     }
 

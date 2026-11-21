@@ -87,6 +87,19 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
     assert "gpt-5.3-codex-900k" not in model_ids
 
 
+def test_picker_synthesizes_900k_for_both_gpt61_tiers():
+    """Sol and Terra are both exact-slug eligible on the 6.1 tier: the Codex
+    catalog publishes the identical 500K default / 872K ceiling for the pair,
+    so leaving Terra out capped it at its advertised 500K with no opt-in."""
+    from hermes_cli.codex_models import _finalize_codex_models
+
+    out = _finalize_codex_models(["gpt-6.1-sol", "gpt-6.1-terra"])
+
+    for base in ("gpt-6.1-sol", "gpt-6.1-terra"):
+        assert f"{base}-900k" in out
+        assert out.index(f"{base}-900k") == out.index(base) + 1
+
+
 def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
     """Eligibility is an exact predicate, not a family-prefix match:
     ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and

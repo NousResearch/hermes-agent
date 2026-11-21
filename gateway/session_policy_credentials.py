@@ -212,8 +212,9 @@ def _check_scope(authority, source, policy, home, skip):
     """Refuse, by name, a reference from another home or profile, or a secret whose endpoint the policy
     moved without re-binding it. A change to anything else in the policy (model name, reasoning, toolsets,
     an unrelated provider or MCP server, a policy field a later release added) is not a credential change."""
+    from hermes_constants import same_profile_id
     for name, mine in (('home', str(home)), ('profile', authority.profile_id)):
-        if source[name] != mine:
+        if source[name] != mine and not same_profile_id(source[name], mine):
             raise AuthorityRefusal('launch_credentials_unavailable', field=name,
                                    detail=f'the frozen config credentials belong to another {name}')
     if 'bound' not in source:

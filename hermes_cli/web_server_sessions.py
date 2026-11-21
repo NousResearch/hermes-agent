@@ -93,7 +93,8 @@ def _session_mutation_context(request, profile):
     if owner is None:
         raise HTTPException(status_code=403, detail='profile_mismatch')
     authority = owner
-    if native is not None and native['profile_id'] != authority.profile_id:
+    from hermes_constants import same_profile_id
+    if native is not None and not same_profile_id(native['profile_id'], authority.profile_id):
         raise HTTPException(status_code=403, detail='profile_mismatch')
     if native is not None:
         # One transport per verified native request, so the grant's own profile can claim its old

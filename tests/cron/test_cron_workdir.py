@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.cron.conftest import claim_stamp
 
 
 def _run_owned_job(job, tmp_path):
@@ -39,7 +40,7 @@ def _run_owned_job(job, tmp_path):
     )
     row = {
         "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
+        "principal_id": "cron-owner", **claim_stamp(persistence, ref.session_id), "payload": {"text": ""},
     }
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,

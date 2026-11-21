@@ -27,11 +27,11 @@ class BlobFiles(dict[str, bytes]):
 
 
 def blob_files(store: Any, placement: HostedPlacement) -> BlobFiles:
-    """The blob directory of ``placement``: the bound profile's for ``'profile'``, the install's root ``shared-state.db`` directory for ``'shared'``."""
+    """The blob directory of ``placement``: the bound profile's for ``'profile'``, the install's root ``shared-state.db`` directory for ``'shared'`` (a pinned scope's own copy of it)."""
     if placement == "profile":
         parent: dict[str, Any] = store.scope_store(store.scope)
     elif placement == "shared":
-        parent = store.backend.file_store(shared_state_path(Path(store.scope.profile_dir)))
+        parent = store.backend.shared_file_store(store.scope, shared_state_path(Path(store.scope.profile_dir)))
     else:
         raise ValueError(f"unknown hosted-room placement {placement!r}")
     files: BlobFiles = parent.setdefault(_FILES_KEY, BlobFiles())

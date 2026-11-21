@@ -468,7 +468,7 @@ class InMemorySessionSearch:
     def _rebuild_authority(self, scope: ProfileScope) -> threading.Lock:
         """The per-store rebuild authority; kept off the scope store (the authority reference deep-copies those tables)."""
         with self._authorities_guard:
-            return self._authorities.setdefault(scope.hermes_home_key, threading.Lock())
+            return self._authorities.setdefault(scope.store_key, threading.Lock())
 
     # ── fixture seeding seam ─────────────────────────────────────────────────
 

@@ -186,11 +186,11 @@ class _StagedView:
 
     def __init__(self, backend: Any, scope: ProfileScope, store: dict[str, Any]) -> None:
         self._backend = backend
-        self._key = scope.hermes_home_key
+        self._key = scope.store_key
         self._store = store
 
     def scope_store(self, scope: ProfileScope) -> dict[str, Any]:
-        if scope.hermes_home_key == self._key:
+        if scope.store_key == self._key:
             return self._store
         store: dict[str, Any] = self._backend.scope_store(scope)
         return store

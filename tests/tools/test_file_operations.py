@@ -452,6 +452,41 @@ class TestSearchFilesIncludesDirectories:
         assert str(visible_dir) in result.files
         assert str(hidden_dir) not in result.files
 
+    @pytest.mark.platforms("posix")
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    def test_rg_zero_matches_excludes_pruned_hidden_directories(self, tmp_path):
+        """A zero-match directory probe must not leak pruned paths (#140390)."""
+        root = tmp_path / "search"
+        (root / ".hidden" / "nested.bak").mkdir(parents=True)
+        (root / "work").mkdir()
+        (root / "work" / "a.txt").write_text("x")
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*.bak", path=str(root), target="files")
+
+        assert result.error is None
+        assert result.files == []
+        assert result.total_count == 0
+
+    @pytest.mark.platforms("macos")
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    def test_rg_bsd_find_returns_only_matching_visible_entries(self, tmp_path):
+        """BSD find's fallback must keep real matches and exclude pruned paths."""
+        root = tmp_path / "search"
+        (root / ".hidden" / "nested.bak").mkdir(parents=True)
+        (root / ".hidden.bak").mkdir()
+        directory = root / "visible.bak"
+        directory.mkdir()
+        file = root / "file.bak"
+        file.write_text("x")
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*.bak", path=str(root), target="files")
+
+        assert result.error is None
+        assert set(result.files) == {str(directory), str(file)}
+        assert result.total_count == 2
+
     def test_find_lane_never_returns_the_search_root_itself(self, tmp_path, monkeypatch):
         """The root is excluded by path identity — not by ``-mindepth 1``, which
         would also exclude the depth-0 operand match a symlinked root depends on

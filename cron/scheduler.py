@@ -1367,9 +1367,9 @@ def drain_delivery_queue(adapters, loop) -> int:
     if not _path().exists():
         return 0
     def send(queued_job, queued_content, queued_for_failure):
-        error = _deliver_result(
-            queued_job, queued_content, adapters=adapters, loop=loop,
-            for_failure=queued_for_failure,
+        from cron.scheduler_delivery import _dispatch_queued_delivery
+        error = _dispatch_queued_delivery(
+            queued_job, queued_content, queued_for_failure, adapters=adapters, loop=loop,
         )
         # The ping left the process: book the incident alerted. A notice every target hid
         # (warning notifications suppressed) is a durable disposition, not an alert.
@@ -3089,6 +3089,9 @@ def _save_compose_deliver(
         queued_job = dict(job)
         if d.failure_incident_id:
             queued_job["_failure_incident_id"] = d.failure_incident_id
+        from cron.scheduler_delivery import _prepare_bot_chat_queue
+        queued_job, deliver_content = _prepare_bot_chat_queue(
+            queued_job, deliver_content, for_failure=not d.success)
         # The queue row IS the send: publish it under the same fence as a direct send, so a claim
         # stolen after the lost() sample above cannot leave this stale fire's notice queued.
         with fence.side_effect_fence() as owns_delivery:

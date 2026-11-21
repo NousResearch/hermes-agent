@@ -41,7 +41,8 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     LINE has no ``MAX_MESSAGE_LENGTH``, so its 4096 default is used: conservative, never cut."""
     from gateway.platforms.base import fit_prefix
     from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, code_fence, ea_header_text, fit_fenced, ea_reason_label_text, format_approval_deadline_line)
+        approval_timeout_seconds, code_fence, ea_header_text, elide_heredoc_bodies, fit_fenced, ea_reason_label_text,
+        format_approval_deadline_line)
     limit = adapter.max_message_length_for_chat(chat_id)
     measure = adapter.message_len_fn_for_chat(chat_id)
     heading = t("gateway.exec_approval.smart_deny_heading") if smart_denied else f"⚠️ **{ea_header_text()}**"
@@ -69,6 +70,8 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     notice = t("gateway.exec_approval.truncated_deny_only", total=len(command)) + "\n"
     # The fence is sized from the shortened command, so it always closes within the cut; the budget stays
     # under the whole command so the "shortened" notice is never shown beside the full text.
-    shown, fence = fit_fenced(command, lambda fence: fit_prefix(command, max(0, min(
-        measure(command) - 1, limit - measure(prompt(deny, notice, "", fence)) - measure("..."))), measure))
+    elided = elide_heredoc_bodies(command)  # a cut keeps the commands after a long heredoc, not its text
+    shown, fence = fit_fenced(command, lambda fence: fit_prefix(elided, max(0, min(
+        measure(elided) - 1 if elided == command else measure(elided),
+        limit - measure(prompt(deny, notice, "", fence)) - measure("..."))), measure))
     return prompt(deny, notice, shown, fence), True

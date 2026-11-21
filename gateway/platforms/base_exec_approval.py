@@ -92,6 +92,32 @@ def code_fence(command: str) -> str:
     return "`" * max(3, max((len(run) for run in re.findall(r"`+", command)), default=0) + 1)
 
 
+_HEREDOC_OPEN = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w-]*)\2")
+_HEREDOC_KEEP = 2  # body lines kept before the elision mark
+
+
+def elide_heredoc_bodies(command: str) -> str:
+    """``command`` for a shortened preview: each heredoc body longer than ``_HEREDOC_KEEP + 1`` lines keeps its
+    first lines, then ``…``, then its end line, so the commands after a long heredoc (the step and its target)
+    are what a prefix cut keeps. Display only: the caller still treats any difference from ``command`` as a cut
+    preview (Deny-only unless the whole command is shown), and a body with no end line is left as it is."""
+    lines, out, i = command.split("\n"), [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        tags = [(m.group(1) == "-", m.group(3)) for m in _HEREDOC_OPEN.finditer(lines[i])]
+        i += 1
+        for strip_tabs, tag in tags:  # bash reads several heredocs opened on one line in order
+            end = next((j for j in range(i, len(lines)) if (lines[j].lstrip("\t") if strip_tabs else lines[j]) == tag), None)
+            if end is None:
+                out.extend(lines[i:])
+                return "\n".join(out)
+            body = lines[i:end]
+            out.extend(body if len(body) <= _HEREDOC_KEEP + 1 else body[:_HEREDOC_KEEP] + ["…"])
+            out.append(lines[end])
+            i = end + 1
+    return "\n".join(out)
+
+
 def fit_fenced(command: str, fit) -> tuple[str, str]:
     """``(shown, fence)``: the fence is sized from the text actually shown, not the whole ``command``, so
     a long backtick run the cut drops cannot inflate the card past the platform cap. ``fit(fence)``
@@ -140,6 +166,7 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     # A ``` inside the shown preview would close a markdown fence early; a longer fence holds it, and its
     # extra backticks come out of the preview budget.
     base = adapter._exec_approval_cmd_budget(description, smart_denied)
+    elided = elide_heredoc_bodies(command)  # a cut keeps the commands after a long heredoc, not its text
 
     def fit(fence: str) -> str:
         budget = base - 2 * (len(fence) - 3)
@@ -148,7 +175,7 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
             return preview
         # The notice shares the cap the budget was sized for; a tiny fixed budget keeps half its preview.
         left = budget - adapter.message_len_fn(cut_notice)
-        return adapter._ea_fit(command, max(left, 0) if capped else max(left, budget // 2))
+        return adapter._ea_fit(elided, max(left, 0) if capped else max(left, budget // 2))
 
     preview, fence = fit_fenced(command, fit)
     truncated = preview != command

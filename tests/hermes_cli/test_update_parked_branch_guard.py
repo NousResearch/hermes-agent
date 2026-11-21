@@ -151,9 +151,8 @@ def test_equivalent_cherry_picked_commit_is_still_safe(repo_pair):
     assert reason == ""
 
 
-def test_config_opt_out_blocks_auto_switch(repo_pair, monkeypatch):
-    """updates.auto_switch_parked_branch: false disables auto-switch even
-    when the branch is clean and merged."""
+def test_config_opt_out_cannot_disable_in_place_update(repo_pair, monkeypatch):
+    """The old auto-switch opt-out cannot leave a checkout stale anymore."""
     import hermes_cli.config as hermes_config
 
     monkeypatch.setattr(
@@ -164,8 +163,8 @@ def test_config_opt_out_blocks_auto_switch(repo_pair, monkeypatch):
     safe, reason = update_cmd._assess_parked_branch_switch(
         GIT, repo_pair, "old-feature", "main"
     )
-    assert safe is False
-    assert reason == "disabled"
+    assert safe is True
+    assert reason == ""
 
 
 def test_missing_origin_ref_is_unverifiable(repo_pair):
@@ -453,14 +452,10 @@ def test_update_skips_and_warns_on_dirty_parked_branch(
     assert stashes == ""
 
 
-def test_update_switches_unmerged_parked_branch_with_kept_notice(
+def test_update_merges_unmerged_parked_branch_in_place(
     repo_pair, monkeypatch, capsys
 ):
-    """Default strategy ("switch"): clean tree + unmerged commits → the
-    update proceeds (non-interactive callers like the desktop update button
-    cannot resolve a skip), prints the loud 'kept' notice, ends on main
-    fast-forwarded to origin/main, and the commits stay on the parked
-    branch untouched."""
+    """A parked branch is updated in place; local and fetched commits both survive."""
     (repo_pair / "feature.txt").write_text("unmerged work\n", encoding="utf-8")
     _git(repo_pair, "add", "feature.txt")
     _git(repo_pair, "commit", "-qm", "feature work")
@@ -482,19 +477,16 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
 
     out = capsys.readouterr().out
     assert "CODE UPDATE SKIPPED" not in out
-    # Ends on main, fast-forwarded.
+    # The checkout remains on the branch that owns the local code.
     assert (
         _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        == "main"
+        == "old-feature"
     )
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
-    assert head == remote
-    # The unmerged commit is still exactly where it was, on the branch.
-    assert (
-        _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
-        == feature_sha
-    )
+    assert head != remote
+    assert _git(repo_pair, "merge-base", "--is-ancestor", remote, head, check=False).returncode == 0
+    assert _git(repo_pair, "merge-base", "--is-ancestor", feature_sha, head, check=False).returncode == 0
 
 
 def test_update_updates_unmerged_branch_in_place_when_configured(
@@ -546,17 +538,10 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
 
 
-def test_switch_branch_flag_overrides_in_place_strategy(
+def test_switch_branch_flag_cannot_bypass_merge(
     repo_pair, monkeypatch, capsys
 ):
-    """--switch-branch overrides updates.parked_branch_strategy:
-    update_in_place for one run: the unmerged branch is LEFT ALONE and the
-    update runs on the target instead.
-
-    A long-lived feature branch does not want an update-driven merge commit
-    in its history (#89507 review). The branch tip must be byte-identical
-    afterwards, while the checkout ends up on the updated target.
-    """
+    """The compatibility flag is ignored so upgrades cannot silently leave local code behind."""
     import hermes_cli.config as hermes_config
 
     monkeypatch.setattr(
@@ -590,25 +575,23 @@ def test_switch_branch_flag_overrides_in_place_strategy(
 
     out = capsys.readouterr().out
     assert "CODE UPDATE SKIPPED" not in out
-    # Checkout moved to the target and picked up its code...
+    assert "--switch-branch is deprecated and ignored" in out
+    # Checkout remains on the local branch and picked up the target code...
     assert (
         _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        == "main"
+        == "old-feature"
     )
     assert (repo_pair / "b.txt").exists()
-    # ...and the feature branch was not written to at all.
-    assert (
-        _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
-        == branch_tip_before
-    )
+    # ...and the feature branch now contains both histories.
+    branch_tip_after = _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
+    assert branch_tip_after != branch_tip_before
+    assert _git(repo_pair, "merge-base", "--is-ancestor", branch_tip_before, branch_tip_after, check=False).returncode == 0
 
 
-def test_update_auto_switches_clean_merged_parked_branch(
+def test_update_fast_forwards_clean_merged_parked_branch_in_place(
     repo_pair, monkeypatch, capsys
 ):
-    """Clean + fully merged parked branch → auto-switch back to main, pull,
-    say so, and STAY on main afterwards (sabotage-proven: reverting the
-    guard re-parks the checkout and this test fails on the branch assert)."""
+    """A clean branch with no local-only commits fast-forwards in place."""
     _patch_update_flow(monkeypatch, repo_pair)
     # Stop the flow right after the pull/branch logic: the dependency
     # install phase begins with _abort_dependency_sync_if_self_locked.
@@ -627,22 +610,18 @@ def test_update_auto_switches_clean_merged_parked_branch(
 
     out = capsys.readouterr().out
     assert "CODE UPDATE SKIPPED" not in out
-    # The checkout ends up ON main, fast-forwarded to origin/main.
+    # The checkout stays on the parked branch, fast-forwarded to origin/main.
     assert (
         _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        == "main"
+        == "old-feature"
     )
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
     assert head == remote
 
 
-def test_update_up_to_date_path_does_not_repark_merged_branch(tmp_path, monkeypatch):
-    """commit_count == 0 path: before this fix, the updater switched BACK to
-    the parked feature branch after checking main ("Restore stash and switch
-    back to original branch") — silently re-parking the checkout so every
-    subsequent update repeated the incident. A clean, fully merged parked
-    branch must now END on main."""
+def test_update_up_to_date_path_keeps_the_checked_out_branch(tmp_path, monkeypatch):
+    """The no-op path must not switch away from the branch being operated on."""
     origin = tmp_path / "origin"
     origin.mkdir()
     _git(origin, "init", "-q", "-b", "main")
@@ -674,9 +653,9 @@ def test_update_up_to_date_path_does_not_repark_merged_branch(tmp_path, monkeypa
     with pytest.raises(_StopFlow):
         hermes_main.cmd_update(args)
 
-    # The regression: old code ran `git checkout old-feature` here.
+    # No branch switch is needed when the checked-out branch is already current.
     assert (
-        _git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+        _git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "old-feature"
     )
 
 

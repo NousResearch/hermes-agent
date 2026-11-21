@@ -160,6 +160,7 @@ def test_source_check_and_apply_land_on_selected_release(releases, monkeypatch, 
     expected = releases.commits[1 if channel == "stable" else 2]
     assert len(applied) == 1
     assert applied[0]["expected_sha"] == expected
+    assert applied[0]["require_exact_target_sha"] is True
     assert applied[0]["source"] == str(releases.root.resolve())
     assert git(releases.root, "rev-parse", "HEAD") == expected
     if start != "old":

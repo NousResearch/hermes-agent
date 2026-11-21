@@ -173,8 +173,10 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                       env_ship.args[2])
 
     def test_timezone_shell_quoted_in_remote_execution(self):
-        """HERMES_TIMEZONE must be shell-quoted in the sourced sandbox.env file
-        to prevent injection at source time."""
+        """TZ must be shell-quoted in the sourced sandbox.env file to prevent injection.
+
+        Inject at the shipping boundary; configured timezone validation is tested separately.
+        """
         class FakeEnv:
             def __init__(self):
                 self.commands = []
@@ -203,7 +205,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
              patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=fake_thread), \
-             patch.dict(os.environ, {"HERMES_TIMEZONE": malicious_tz}):
+             patch("tools.code_execution_tool.get_timezone_name", return_value=malicious_tz):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")

@@ -1,0 +1,41 @@
+#
+# docker-compose.macos.yml — macOS / Windows Docker Desktop override
+#
+# Docker Desktop (macOS and Windows) runs containers inside a Linux VM, so
+# `network_mode: host` maps to the VM's network namespace — NOT the Mac/PC
+# host. Ports bound inside the VM are invisible to the host browser, and
+# `ports:` mappings are silently ignored while host networking is active.
+# The fix is the compose default bridge network plus explicitly published
+# ports (the same shape as docker-compose.windows.yml).
+#
+# The dashboard service shares the gateway container's network namespace
+# (`network_mode: "service:gateway"`) so the gateway-liveness PID probe and
+# the dashboard's own binds keep working exactly as under host networking;
+# only the GATEWAY container's ports are published, on loopback only.
+#
+# Usage:
+#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) \
+#     docker compose -f docker-compose.yml -f docker-compose.macos.yml up -d
+#
+# Then open http://localhost:9119 (HERMES_DASHBOARD=1) in the Mac browser.
+
+services:
+  gateway:
+    network_mode: bridge
+    ports:
+      # Dashboard only — published on loopback, matching the base file's
+      # localhost-only posture. The dashboard binds 127.0.0.1 inside the
+      # shared namespace, so the container-side bind never engages the
+      # auth gate on a providerless install.
+      - "127.0.0.1:9119:9119"
+      # To also expose the OpenAI-compatible API server to the Mac, also
+      # uncomment API_SERVER_HOST/API_SERVER_KEY in the base file and add:
+      # - "127.0.0.1:8642:8642"
+
+  dashboard:
+    # Share the gateway's bridge-network namespace: host networking without
+    # the VM problem. The dashboard reaches the gateway's loopback ports and
+    # the gateway-liveness PID probe works (same PID namespace, same netns).
+    network_mode: "service:gateway"
+    # The base file's `network_mode: host` and its own published ports
+    # (none) are overridden; ports belong on the gateway service above.

@@ -90,11 +90,13 @@ Dashboard 由 s6 监管：若进程崩溃，`s6-supervise` 会在短暂退避后
 | 环境变量 | 描述 | 默认值 |
 |---------------------|-------------|---------|
 | `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以启用受监管的 dashboard 服务 | *（未设置——服务已注册但保持关闭）* |
-| `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `0.0.0.0` |
+| `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
 | `HERMES_DASHBOARD_INSECURE` | **已弃用 / 空操作。** 以前用于绕过鉴权门控；自 2026 年 6 月的安全加固起，它不再禁用鉴权。任何非回环绑定都必须配置鉴权提供方 | *（被忽略——请改为配置提供方）* |
 
-容器内的 dashboard 默认绑定 `0.0.0.0`，否则发布的 `-p 9119:9119` 端口将无法从宿主机访问。若你要把它限制在容器回环地址（例如 sidecar / 反向代理拓扑），请显式设置 `HERMES_DASHBOARD_HOST=127.0.0.1`。
+容器内的 dashboard 默认绑定 `127.0.0.1`（与 `hermes dashboard` CLI 相同的安全回环默认值），因此全新的容器绝不会提供无鉴权的 dashboard。若要通过发布的 `-p 9119:9119` 端口对外提供 dashboard，请设置 `HERMES_DASHBOARD_HOST=0.0.0.0` **并**配置鉴权提供方——未配置提供方的非回环绑定会在启动时被拒绝（退出码 78，服务被停放）。若你要把它限制在容器回环地址（例如 sidecar / 反向代理拓扑），请保持 `HERMES_DASHBOARD_HOST=127.0.0.1`。
+
+在 **macOS / Windows Docker Desktop** 上，`network_mode: host` 与容器内的回环绑定都无法到达宿主机（它们被映射进 Docker Desktop 的 Linux 虚拟机）。请使用仓库自带的 compose 覆盖文件：`docker compose -f docker-compose.yml -f docker-compose.macos.yml up -d` 会在宿主机上发布 `127.0.0.1:9119`（见 `docker-compose.macos.yml`）。
 
 当以下两项同时满足时，dashboard 的鉴权门控会自动启用：
 

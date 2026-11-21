@@ -21,6 +21,7 @@
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
+import { downloadWithRetry } from './media_download_retry.js';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
@@ -811,7 +812,7 @@ async function startSocket() {
         senderNumber,
         botIds,
         isGroup,
-        downloadMedia: async (mediaMsg) => downloadMediaMessage(mediaMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }),
+        downloadMedia: (mediaMsg) => downloadWithRetry(() => downloadMediaMessage(mediaMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage })),
         cacheDirs: {
           image: IMAGE_CACHE_DIR,
           document: DOCUMENT_CACHE_DIR,

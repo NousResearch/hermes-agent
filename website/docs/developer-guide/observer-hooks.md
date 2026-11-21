@@ -165,6 +165,14 @@ API hooks describe provider attempts inside the agent loop:
 - structured `error = {"type": ..., "message": ...}`
 - sanitized failed request payload: `request`
 
+All three hooks carry `credential_scope` (see
+[Credential Scope](./credential-scope.md)): the opaque identity of the
+credential selected for this attempt, gated by the `llm.credential_scope`
+plugin capability. `post_api_request` and `api_request_error` also carry
+`quota_observation`: the outcome class, HTTP status, Retry-After and
+provider-sent `x-ratelimit-*` windows for this attempt, gated by the
+`llm.quota_observation` capability (same page).
+
 The sanitized `request`, `response`, and `error` fields are the canonical
 observer inputs for new consumers.
 

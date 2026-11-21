@@ -108,8 +108,16 @@ class TurnContext:
     # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
     # correlate by real tool-call ID instead of tool name.
     _native_slack_task_cards: bool = False
+    # Rich cards (display.tool_progress_native, on top of the native cards above); closed once cleanup starts.
+    _rich_slack_task_cards: bool = False
+    _task_cards_closed: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Slack-native thinking card (opt-in beside native_task_cards): narration between tool
+    # calls flows into one per-turn card (gateway/run_turn_runner_thinking.py) instead of the
+    # per-segment interim-commentary replies.
+    _native_slack_thinking_cards: bool = False
+    thinking_queue: Any = None
 
     @property
     def _status_adapter(self) -> Any:

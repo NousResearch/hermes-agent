@@ -88,6 +88,35 @@ async def run(repo: str, out: str):
     results["task_card"] = {"first": {"success": r1.success, "error": r1.error},
                             "second": {"success": r2.success, "error": r2.error}}
 
+    # --- Thinking-card rail (per-point rows): one task_update per burst, appended
+    # EXACTLY ONCE -- Slack concatenates details when a row is re-sent across frames
+    # (live-proven on the probe card), so details must never appear twice. Sealed with
+    # plain stopStream (a final re-send would concatenate on the last row).
+    f1 = await adapter.send_thinking_card_progress("C1", ["First burst."], metadata=metadata)
+    f2 = await adapter.send_thinking_card_progress("C1", ["First burst.", "Second burst."], metadata=metadata)
+    await adapter.stop_thinking_card_progress("C1", metadata=metadata)
+    thinking_appends = [e for e in log if e["method"] == "chat.appendStream"
+                        and any(str(c.get("id", "")).startswith("thinking-")
+                                for c in e["body"].get("chunks", []))]
+    rows = [c for e in thinking_appends for c in e["body"]["chunks"]
+            if str(c.get("id", "")).startswith("thinking-")]
+    arrival = [c for c in rows if c.get("details") is not None]
+    flip = [c for c in rows if c.get("details") is None]
+    details_list = [c.get("details") for c in arrival]
+    results["thinking_card"] = {
+        "first": {"success": f1.success, "error": f1.error},
+        "second": {"success": f2.success, "error": f2.error},
+        "appends": len(thinking_appends),
+        "row_ids": [c.get("id") for c in arrival],
+        "details_by_row": details_list,
+        "details_sent_exactly_once": len(details_list) == len(set(details_list)),
+        "arrival_statuses": [c.get("status") for c in arrival],
+        "flip_rows_details_free": all("details" not in c for c in flip),
+        "flip_statuses": [c.get("status") for c in flip],
+        "first_chunk_types": [c.get("type") for c in thinking_appends[0]["body"]["chunks"]]
+        if thinking_appends else [],
+    }
+
     # --- Text stream rail (regression): start(markdown_text) + append(markdown_text) + stop(markdown_text)
     d1 = await adapter.send_draft("C2", 1, "Hello", metadata=metadata)
     d2 = await adapter.send_draft("C2", 1, "Hello world", metadata=metadata)
@@ -113,7 +142,8 @@ async def run(repo: str, out: str):
     seq = [(e["method"], sorted(e["body"].keys()), e["response"].get("error")) for e in log]
     for s in seq:
         print(*s)
-    print("violations:", len(violations), "| task_card:", results["task_card"], "| text_stream:", results["text_stream"])
+    print("violations:", len(violations), "| task_card:", results["task_card"],
+          "| thinking_card:", results["thinking_card"], "| text_stream:", results["text_stream"])
     return 1 if violations else 0
 
 

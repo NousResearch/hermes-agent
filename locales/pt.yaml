@@ -866,6 +866,16 @@ gateway:
     task_status_error: "erro"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes está trabalhando"
+    thinking_card_title: "{name} está pensando"
+    task_card_earlier: "{count} anteriores: {trail}"
+    task_card_failed_one: "falhou"
+    task_card_done: "{count} etapas executadas"
+    task_card_done_one: "1 etapa executada"
+    task_card_failed_suffix: " · {failed} com falha"
+    task_card_stopped: "Parado · {steps}"
+    task_stopped: "parado"
+    reasoning_card_live: "Pensando…"
+    reasoning_card_done: "Pensou por {seconds}s"
   pairing:
     validity_hour: "{hours} hora"
     validity_hours: "{hours} horas"
@@ -1371,6 +1381,7 @@ platform:
       still_working: "ainda trabalhando… ({elapsed})"
     task_card:
       title: "O Hermes está trabalhando"
+      continued: "Continua abaixo ⤵"
     slash:
       reply_truncated: "\n\n_[Resposta truncada: {count} parte(s) a mais excederam o limite de resposta efêmera do Slack.]_"
       running: "Executando `/{command}`…"

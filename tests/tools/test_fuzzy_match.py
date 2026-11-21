@@ -799,3 +799,29 @@ class TestBackslashDoublingDrift:
         result, count, _strategy, err = self.replace(content, old, new)
         assert count == 1 and err is None
         assert result == "print('hello there')\nrest = 1\n"
+
+
+class TestTrailingNewlineIsALineEnd:
+    """A trailing newline in old_string ends its last line; it never asks for a blank line (qwen-code#13484)."""
+
+    @pytest.mark.parametrize("content, old, new, expected", [
+        # whole-line copy of a line with trailing-whitespace drift, followed by a non-blank line
+        ("def f():\n    x = 1  \n    y = 2\n", "    x = 1\n", "    x = 3\n", "def f():\n    x = 3\n    y = 2\n"),
+        # multi-line block, next line non-blank: matched by line_trimmed, indentation kept
+        ("class A:\n    def foo():\n        return 1\n    def bar():\n",
+         "def foo():\n    return 1\n", "def foo():\n    return 42\n",
+         "class A:\n    def foo():\n        return 42\n    def bar():\n"),
+        # unterminated final line: matches, and no newline is invented
+        ("a\n  b  ", "b\n", "B\n", "a\n  B"),
+    ])
+    def test_whole_line_edit_matches_without_a_following_blank_line(self, content, old, new, expected):
+        result, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert (err, count, result) == (None, 1, expected)
+
+    def test_every_whole_line_copy_counts_toward_ambiguity(self):
+        """Base saw only the copy followed by a blank line and silently edited it."""
+        content = " a \nfoo\na \n\na \nb\n"
+        result, count, _strategy, err = fuzzy_find_and_replace(content, "a\n", "X\n")
+        assert count == 0 and "Found 3 matches" in err and result == content
+        result, count, _strategy, err = fuzzy_find_and_replace(content, "a\n", "X\n", replace_all=True)
+        assert (err, count, result) == (None, 3, " X\nfoo\nX\n\nX\nb\n")

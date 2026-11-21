@@ -1,4 +1,4 @@
-import type { PluginRestOptions } from '@hermes/plugin-sdk'
+import { host, type PluginRestOptions } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -85,13 +85,49 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function openDrawer() {
+function openDrawer(onClose = vi.fn()) {
   return render(
     <QueryClientProvider client={client}>
-      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={onClose} onOpen={vi.fn()} />
     </QueryClientProvider>
   )
 }
+
+describe('task attachment preview', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('opens a markdown attachment in the preview rail and gets the modal out of its way', async () => {
+    const preview = vi.spyOn(host, 'preview').mockResolvedValue(true)
+    const save = vi.fn()
+    const onClose = vi.fn()
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 5, filename: 'plan.md', stored_path: '/persisted/attachments/t_example/plan.md' }]
+    }
+    openDrawer(onClose)
+    fireEvent.click(await screen.findByRole('button', { name: `${en.openAttachment} plan.md` }))
+    await waitFor(() => expect(preview).toHaveBeenCalledWith('/persisted/attachments/t_example/plan.md'))
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('falls back to saving a copy when the attachment has nothing to preview', async () => {
+    vi.spyOn(host, 'preview').mockResolvedValue(false)
+    const save = vi.fn().mockResolvedValue({ saved: true })
+    const onClose = vi.fn()
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 6, filename: 'bundle.zip', stored_path: '/persisted/bundle.zip' }] }
+    openDrawer(onClose)
+    fireEvent.click(await screen.findByRole('button', { name: `${en.openAttachment} bundle.zip` }))
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/persisted/bundle.zip', suggestedName: 'bundle.zip' })
+      )
+    )
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})
 
 describe('task attachment compatibility', () => {
   it('downloads the persisted attachment through its original remote owner', async () => {
@@ -140,11 +176,13 @@ describe('task attachment compatibility', () => {
     )
   })
 
-  it('disables downloads with no persisted path instead of guessing a workspace path', async () => {
+  it('disables open and download with no persisted path instead of guessing a workspace path', async () => {
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md' }] }
     openDrawer()
-    const button = await screen.findByRole('button', { name: 'Download gone.md' })
-    expect((button as HTMLButtonElement).disabled).toBe(true)
+
+    for (const name of [`${en.openAttachment} gone.md`, 'Download gone.md']) {
+      expect(((await screen.findByRole('button', { name })) as HTMLButtonElement).disabled).toBe(true)
+    }
   })
 
   it('reports a failed download and allows retry', async () => {

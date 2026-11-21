@@ -26,6 +26,10 @@ export const jaNotifications = {
       label: 'バックグラウンドタスク完了',
       description: 'バックグラウンドのターミナルコマンドが完了しました。'
     },
+    inbox: {
+      label: 'スケジュール済みジョブの結果',
+      description: 'スケジュール済みジョブが完了し、結果が受信トレイに届きました。'
+    },
     credits: {
       label: 'クレジット通知',
       description: 'クレジットの利用が停止または復旧しました。'

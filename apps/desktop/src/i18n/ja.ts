@@ -12,6 +12,7 @@ import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaGatewayHost } from './ja_gateway_host'
+import { jaInbox } from './ja_inbox'
 import { jaLocalModels } from './ja_local_models'
 import { jaMemoryLayers } from './ja_memory_layers'
 import { jaModelMenu } from './ja_model_menu'
@@ -43,6 +44,7 @@ export const jaOverrides = {
     close: '閉じる'
   },
   sharedMetrics: jaSharedMetrics,
+  inbox: jaInbox,
   firstRun: jaFirstRun,
   intro: introJa,
   sessionImport: jaConnectors.sessionImport,
@@ -2212,7 +2214,8 @@ export const jaOverrides = {
       capabilities: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ'
+      cron: 'スケジュール済みジョブ',
+      inbox: '受信トレイ'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

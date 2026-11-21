@@ -237,6 +237,10 @@ export const zhHantSettings = {
           label: '背景工作完成',
           description: '背景終端機指令已完成。'
         },
+        inbox: {
+          label: '排程工作結果',
+          description: '排程工作已完成，結果已送達收件匣。'
+        },
         credits: {
           label: '額度提醒',
           description: '額度存取被暫停或恢復。'

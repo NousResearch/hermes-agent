@@ -11,6 +11,7 @@ import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantFirstRun } from './zh-hant_first_run'
+import { zhHantInbox } from './zh-hant_inbox'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
@@ -139,6 +140,7 @@ export const zhHantOverrides = {
     stripDetails: '詳細資訊'
   },
   firstRun: zhHantFirstRun,
+  inbox: zhHantInbox,
   intro: introZhHant,
   sessionImport: zhHantConnectors.sessionImport,
   common: zhHantCommon.common,

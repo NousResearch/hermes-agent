@@ -11,6 +11,7 @@ import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhGatewayHost } from './zh_gateway_host'
+import { zhInbox } from './zh_inbox'
 import { zhLocalModels } from './zh_local_models'
 import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
@@ -41,6 +42,7 @@ export const zhOverrides = {
     close: '关闭'
   },
   sharedMetrics: zhSharedMetrics,
+  inbox: zhInbox,
   firstRun: zhFirstRun,
   intro: introZh,
   connectors: zhConnectorCard,
@@ -3131,7 +3133,8 @@ export const zhOverrides = {
       capabilities: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务'
+      cron: '定时任务',
+      inbox: '收件箱'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

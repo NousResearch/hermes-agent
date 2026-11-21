@@ -196,7 +196,8 @@ export const arChrome = {
       capabilities: 'المهارات',
       messaging: 'المراسلة',
       artifacts: 'العناصر',
-      cron: 'المهام المجدولة'
+      cron: 'المهام المجدولة',
+      inbox: 'صندوق الوارد'
     },
     searchAria: 'البحث في الجلسات',
     searchPlaceholder: 'البحث في الجلسات...',

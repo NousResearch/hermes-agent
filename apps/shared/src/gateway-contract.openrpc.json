@@ -22074,6 +22074,147 @@
         "title": "ImageRenderResult",
         "type": "object"
       },
+      "InboxItem": {
+        "additionalProperties": false,
+        "description": "A scheduled job's finished (or still running) run session filed into the profile's Inbox.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_name": {
+            "title": "Job Name",
+            "type": "string"
+          },
+          "delivered_at": {
+            "title": "Delivered At",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "job_id",
+          "job_name",
+          "delivered_at",
+          "preview",
+          "unread",
+          "running"
+        ],
+        "title": "InboxItem",
+        "type": "object"
+      },
+      "InboxListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "InboxListParams",
+        "type": "object"
+      },
+      "InboxListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InboxItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unread_count": {
+            "title": "Unread Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "unread_count"
+        ],
+        "title": "InboxListResult",
+        "type": "object"
+      },
+      "InboxReadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "read": {
+            "default": true,
+            "title": "Read",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "InboxReadParams",
+        "type": "object"
+      },
+      "InboxReadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "unread"
+        ],
+        "title": "InboxReadResult",
+        "type": "object"
+      },
       "InflightTurn": {
         "additionalProperties": false,
         "description": "``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting\nclient rebuilds its bubbles from.",
@@ -50953,6 +51094,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalAttachedImageResult"
+        }
+      }
+    },
+    {
+      "name": "inbox.list",
+      "summary": "The owning profile's Inbox: cron run sessions filed by deliver=inbox, newest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InboxListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InboxListResult"
+        }
+      }
+    },
+    {
+      "name": "inbox.read",
+      "summary": "Mark one Inbox item read (or unread): the session's shared last_read_at watermark.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InboxReadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InboxReadResult"
         }
       }
     },

@@ -10,6 +10,7 @@ import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
+import { ruInbox } from './ru_inbox'
 import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
@@ -35,6 +36,7 @@ export const ruOverrides = {
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
+  inbox: ruInbox,
   firstRun: ruFirstRun,
   sessionImport: ruConnectors.sessionImport,
   common: {
@@ -2469,7 +2471,8 @@ export const ruOverrides = {
       capabilities: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи'
+      cron: 'Запланированные задачи',
+      inbox: 'Входящие'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',

@@ -1,0 +1,15 @@
+name: words-into-music
+repo: https://github.com/constantinginga/words-into-music-mcp
+sha: 54b8d8fe78e2a2132ff7ca76333da17bd748d39f
+description: "Create original songs from an idea or your own lyrics, check generation progress and browse your private song library through the hosted Words into Music Streamable HTTP MCP server, plus a skill that walks the agent through preparing a brief, confirming the one-credit cost and polling the job. Portable Agent Plugins v1 package (plugin.json, mcp.json, skills/), no plugin code. Requires a Words into Music account and browser OAuth consent (add the server with --auth oauth, then hermes mcp login words-into-music); no API key or client secret is stored in the plugin. Disclosure — hosted-only connector: song briefs, lyrics and titles you send go to mcp.wordsintomusic.com under your Words into Music OAuth sign-in; start_song spends one existing song credit and is declared as a costed tool, and the server is declared untrusted so Hermes asks before every write-capable call; the server also exposes create_checkout_link, which only creates a Stripe checkout link you open yourself to buy a plan or song pack and never charges a saved card."
+maintainer: constantinginga
+tier: community
+category: tools
+docs_url: https://github.com/constantinginga/words-into-music-mcp#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

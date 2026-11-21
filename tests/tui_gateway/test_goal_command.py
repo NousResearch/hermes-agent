@@ -595,9 +595,7 @@ def test_recovery_is_not_conditional_on_a_successful_reply(
     server, turn_env, monkeypatch, tmp_path, outcome,
 ):
     from hermes_cli.goals import GoalManager
-    import hermes_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     session_key = "profile-recovery"
     secondary = tmp_path / "secondary"
     secondary.mkdir()
@@ -745,10 +743,7 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
 ):
     from hermes_cli import goals
     from hermes_constants import get_hermes_home
-    import hermes_state
 
-    # Restore call-time profile resolution; conftest pins this constant to one DB.
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     sid, key, record = session
     secondary = tmp_path / "secondary"
     secondary.mkdir()

@@ -33,7 +33,7 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
 
     request = prepared.request
     env = bootstrap_environment(request.source, request.work, request.cache, inherited)
-    selection = verified_tools(["python", "node", "npm"], source_store=request.cache / "tools",
+    selection = verified_tools(["python", "node", "pnpm"], source_store=request.cache / "tools",
                                target=request.target, lock=Lockfile(request.source / "pm/lock.json"))
     if prepared.python != selection.entries["python"].binary or prepared.node != selection.entries["node"].binary:
         raise ValueError("prepared Python/Node paths do not match selected tools; prepare again")
@@ -100,7 +100,7 @@ def select_variant(prepared: PreparedDesktop, variant: str | None) -> str:
     variant = variant or request.variant
     if variant != request.variant and not (
         {variant, request.variant} == {"bundled", "store"} and request.tag
-        and channel_for_tag(request.tag) == "stable"
+        and channel_for_tag(request.tag) in ("stable", "canary")
     ):
         raise ValueError("requested variant was not prepared")
     return variant

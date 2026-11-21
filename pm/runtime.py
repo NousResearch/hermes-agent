@@ -24,7 +24,7 @@ def runtime_environment() -> dict[str, str]:
     from hermes_constants import get_hermes_home
     from pm.paths import store_root
 
-    from pm.environment import _base_environment
+    from pm.environment import _base_environment  # noqa: TID251
 
     env = _base_environment()
     env["HERMES_HOME"] = str(get_hermes_home())
@@ -136,7 +136,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     """
     from pm.filesystem import lock_fd
     from pm.lock import _write
-    from pm.runtime_stage import stage_runtime
+    from pm.runtime_stage import stage_runtime  # noqa: TID251
 
     project = project or Path(__file__).resolve().parent
     identity = _inputs(project, python)
@@ -221,7 +221,7 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
     if is_runtime():
         return Path(sys.executable)
     from pm.environments import install_state_dir
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.paths import repo_root
 
     project = repo_root()

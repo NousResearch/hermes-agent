@@ -413,12 +413,16 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         print("    use `hermes sessions recover --source <snapshot> --output <separate-path>`")
         print("    to salvage transcripts into a separate output.")
         return False
+    # The restore ran; only SQLite finding bad bytes in the result is a failure (#147938).
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    return bool(restored.get("valid"))
+    return restored.get("valid") is not False
 
 
-def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
-    """Integrity check + auto-restore for ONE home's state.db from its newest valid snapshot.
+def _verify_and_restore_one_state_db(home: Path, *, label: str, snapshot_id: str | None = None) -> None:
+    """Integrity check for ONE home's state.db; auto-restore only from the snapshot THIS update took.
+
+    An unreadable (locked/held) database is never restored over, and an older snapshot on disk is
+    never a restore source: either would roll healthy data back (#147938).
     Never raises: a guard that crashes the update tail is worse than what it detects."""
     try:
         from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
@@ -430,32 +434,30 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if ok.get("valid"):
             logger.debug("Post-update state.db integrity OK (%s): %s", label, ok.get("message"))
             return
+        if ok.get("valid") is None:
+            print(f"  ⚠ state.db verification deferred ({label}): {ok.get('message', 'unknown error')}")
+            return
         print()
         print(f"⚠ state.db is corrupted after update ({label}): " + ok.get("message", "unknown error"))
-        snap_root = _quick_snapshot_root(home)
-        if not snap_root.exists():
-            print("  ⚠ No pre-update snapshot for this home")
+        snap_state = _quick_snapshot_root(home) / snapshot_id / "state.db" if snapshot_id else None
+        if snap_state is None or not snap_state.is_file():
+            print("  ⚠ No state.db snapshot from this update for this home; state.db left unchanged.")
             return
-        for snap_dir in sorted((d for d in snap_root.iterdir() if d.is_dir()), reverse=True):
-            snap_state = snap_dir / "state.db"
-            if not snap_state.exists():
-                continue
-            if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
-                continue
-            try:
-                if _restore_state_db_from_snapshot(state_path, snap_state):
-                    print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
-                else:
-                    print("  ✗ Auto-restore did not complete; see the restore diagnostic above.")
-            except OSError as exc:
-                print(f"  ✗ Auto-restore file copy failed: {exc}")
+        if verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid") is not True:
+            print(f"  ⚠ Snapshot {snapshot_id} did not verify; state.db left unchanged.")
             return
-        print("  ⚠ No valid pre-update snapshot found for this home")
+        try:
+            if _restore_state_db_from_snapshot(state_path, snap_state):
+                print(f"  ✓ Auto-restored from snapshot {snapshot_id} ({label})")
+            else:
+                print("  ✗ Auto-restore did not complete; see the restore diagnostic above.")
+        except OSError as exc:
+            print(f"  ✗ Auto-restore file copy failed: {exc}")
     except Exception as exc:
         logger.debug("Post-update state.db guard (%s) failed: %s", label, exc)
 
 
-def _verify_and_restore_state_dbs_post_update() -> None:
+def _verify_and_restore_state_dbs_post_update(snapshot_id: str | None = None) -> None:
     """Integrity guard for the ROOT state.db AND every sibling profile's (the snapshot covers
     siblings, so the guard must too or a corrupt profile DB goes undetected).
 
@@ -463,11 +465,13 @@ def _verify_and_restore_state_dbs_post_update() -> None:
     """
     from hermes_cli.update_cmd import get_hermes_home
     home = get_hermes_home()
-    _verify_and_restore_one_state_db(home, label="default home")
+    _verify_and_restore_one_state_db(home, label="default home", snapshot_id=snapshot_id)
     with _best_effort('Sibling-profile state.db guard sweep failed: %s'):
         from hermes_cli.backup import _sibling_profile_homes
+        from hermes_cli.update_cmd_config import _LAST_SIBLING_SNAPSHOTS
         for name, profile_home in _sibling_profile_homes(home):
-            _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
+            _verify_and_restore_one_state_db(
+                profile_home, label=f"profile {name}", snapshot_id=_LAST_SIBLING_SNAPSHOTS.get(name))
 
 
 def _invalidate_live_plugin_catalog_caches() -> None:
@@ -646,15 +650,17 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     )
-    if _integrity.get("valid"):
+    if _integrity.get("valid") is not False:  # None: unreadable now, re-checked after the update
         return
     print(f"  ⚠ state.db integrity check FAILED after snapshot: {_integrity.get('message', 'unknown error')}")
     _snap_state = _quick_snapshot_root(get_hermes_home()) / snapshot_id / "state.db"
     if not _snap_state.exists():
         print("  ⚠ Snapshot does not contain state.db (was skipped or too large).")
-    elif verify_sqlite_integrity(_snap_state, check_header=True, run_pragma=True).get("valid"):
+    elif (_snap_ok := verify_sqlite_integrity(_snap_state, check_header=True, run_pragma=True).get("valid")):
         print("  ✓ Snapshot copy is valid — continuing update.")
         print("    If state.db is lost after update it will be auto-restored.")
+    elif _snap_ok is None:
+        print("  ⚠ Snapshot copy could not be verified right now; it will not be auto-restored.")
     else:
         print("  ✗ Snapshot copy ALSO failed integrity — the source was already corrupted before the backup.")
     print()
@@ -1010,7 +1016,7 @@ def _run_post_update_maintenance(
 
     # state.db integrity guard for root home AND every profile; restore from own snapshot.
     with _best_effort('Post-update state.db integrity check failed: %s'):
-        _verify_and_restore_state_dbs_post_update()
+        _verify_and_restore_state_dbs_post_update(pre_update_snapshot_id)
 
     # Both shallow history and missing tags can hide the release identity.
     # Refresh them before the completion line and install stamp read it.

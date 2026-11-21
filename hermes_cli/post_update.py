@@ -178,6 +178,8 @@ def step_state_db_guard() -> dict:
     result = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
     if result.get("valid"):
         return {"ok": True}
+    if result.get("valid") is None:  # locked or held right now; not evidence of corruption (#147938)
+        return {"ok": True, "skipped": "integrity-indeterminate"}
     message = result.get("message", "unknown error")
     logger.error(
         "state.db failed integrity check after a code update: %s — "

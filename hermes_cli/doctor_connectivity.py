@@ -152,13 +152,13 @@ def _probe_openrouter() -> ProbeResult:
 def _probe_anthropic() -> ProbeResult:
     name = "Anthropic API"
     from hermes_cli.auth import get_anthropic_key
-    key = get_anthropic_key()
+    from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
+    key = get_anthropic_key() or resolve_anthropic_token() or ""
     if not key:
         return _skip(name)
     try:
         import httpx
         from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
-        from agent.anthropic_credentials import _is_oauth_token
         is_oauth = _is_oauth_token(key)
         headers = {"anthropic-version": "2023-06-01", **({"Authorization": f"Bearer {key}", "anthropic-beta": ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)}
                                                          if is_oauth else {"x-api-key": key})}

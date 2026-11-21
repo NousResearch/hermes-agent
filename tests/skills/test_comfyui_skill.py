@@ -11,11 +11,91 @@ import os
 import subprocess
 import sys
 import textwrap
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "optional-skills" / "creative" / "comfyui" / "scripts"
+
+
+def _load_hardware_check():
+    spec = spec_from_file_location("comfyui_hardware_check", SCRIPTS / "hardware_check.py")
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_multi_nvidia_gpu_report_is_json_serializable():
+    """The selected GPU must not create a circular `all_gpus` reference."""
+    hardware_check = _load_hardware_check()
+    nvidia_smi = "\n".join(
+        [
+            "0, NVIDIA RTX 3060, 12288, 576.52",
+            "1, NVIDIA RTX 4090, 24576, 576.52",
+        ]
+    )
+
+    with (
+        patch.object(hardware_check.shutil, "which", return_value="nvidia-smi"),
+        patch.object(hardware_check, "_run", return_value=nvidia_smi),
+    ):
+        gpu = hardware_check.detect_nvidia()
+
+    assert gpu == {
+        "vendor": "nvidia",
+        "index": 1,
+        "name": "NVIDIA RTX 4090",
+        "vram_gb": 24.0,
+        "driver": "576.52",
+        "all_gpus": [
+            {
+                "vendor": "nvidia",
+                "index": 0,
+                "name": "NVIDIA RTX 3060",
+                "vram_gb": 12.0,
+                "driver": "576.52",
+            },
+            {
+                "vendor": "nvidia",
+                "index": 1,
+                "name": "NVIDIA RTX 4090",
+                "vram_gb": 24.0,
+                "driver": "576.52",
+            },
+        ],
+    }
+    assert json.loads(json.dumps(gpu))["name"] == "NVIDIA RTX 4090"
+
+
+def test_multi_rocm_gpu_report_is_json_serializable():
+    """ROCm's sibling multi-GPU path has the same no-cycle contract."""
+    hardware_check = _load_hardware_check()
+    rocm_smi = json.dumps(
+        {
+            "card0": {
+                "Card series": "Radeon RX 7900 XT",
+                "VRAM Total Memory (B)": str(20 * 1024**3),
+            },
+            "card1": {
+                "Card series": "Radeon RX 7900 XTX",
+                "VRAM Total Memory (B)": str(24 * 1024**3),
+            },
+        }
+    )
+
+    with (
+        patch.object(hardware_check.shutil, "which", return_value="rocm-smi"),
+        patch.object(hardware_check, "_run", return_value=rocm_smi),
+    ):
+        gpu = hardware_check.detect_rocm()
+
+    assert gpu["name"] == "Radeon RX 7900 XTX"
+    assert len(gpu["all_gpus"]) == 2
+    assert json.loads(json.dumps(gpu))["vram_gb"] == 24.0
 
 # Text reads that must not depend on the host locale. The workflow and schema
 # JSON are user-authored files (exported by ComfyUI or hand-edited), so they

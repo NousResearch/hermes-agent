@@ -5,6 +5,7 @@ claim_dispatch -> mark_job_run), the same calls the cronjob tool, the dashboard 
 ticker make around the agent run.
 """
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -38,6 +39,30 @@ def _fire(job_id, **claim_kwargs):
     assert isinstance(claimed, dict), "fire was not claimed"
     assert claim_dispatch(job_id)
     assert mark_job_run(job_id, success=True, expected_fire_owner=claimed["fire_claim"]["by"])
+
+
+@pytest.mark.parametrize("forwarded", [False, True])
+def test_manual_run_preserves_a_reminder_in_the_second_fall_back_hour(clock, forwarded):
+    zone = ZoneInfo("America/New_York")
+    clock["now"] = datetime(2026, 11, 1, 1, 45, tzinfo=zone)
+    job = create_job("remind me", "in 30m", name="fall-back reminder")
+    slot = job["next_run_at"]
+    assert datetime.fromisoformat(slot).timestamp() - clock["now"].timestamp() == 1800
+
+    if forwarded:
+        trigger_job(job["id"])
+    _fire(job["id"], manual=not forwarded)
+
+    after = get_job(job["id"])
+    assert (after["state"], after["next_run_at"]) == ("scheduled", slot)
+    assert after["repeat"] == {"times": 1, "completed": 0}
+
+    clock["now"] = datetime(2026, 11, 1, 1, 15, 5, tzinfo=zone, fold=1)
+    assert [due["id"] for due in get_due_jobs()] == [job["id"]]
+    _fire(job["id"])
+    done = get_job(job["id"])
+    assert (done["state"], done["next_run_at"]) == ("completed", None)
+    assert done["repeat"] == {"times": 1, "completed": 1}
 
 
 def test_manual_run_keeps_the_scheduled_oneshot_and_it_still_fires(clock):

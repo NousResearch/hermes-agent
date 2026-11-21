@@ -381,3 +381,27 @@ describe('submissionCore.submitPrompt — typed voice stop on the shared gateway
     expect(getUiState().status).toBe('running…')
   })
 })
+
+describe('submissionCore.submitPrompt — busy correction carrying an image', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('readmits it as a queued prompt instead of retaining an unsendable control', async () => {
+    const request = vi.fn(async (_method: string, params: Record<string, unknown>) => ({ admission_id: 'a1', input_id: params.submission_id, status: 'queued' }))
+    const gw = { isCanonical: true, request } as unknown as GatewayClient
+    const deps = makeDeps(gw)
+
+    const item = { controlMethod: 'session.steer', executionGeneration: 3, submissionId: 'img-1', text: 'see this',
+      attachments: [{ path: '/tmp/shot.png', mime: 'image/png' }] } as never as Record<string, unknown>
+
+    submitPrompt('see this', deps, true, undefined, { behindTurn: true, skipDetectDrop: true, queueItem: item as never })
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    expect(request.mock.calls[0]![0]).toBe('prompt.submit')
+    expect(request.mock.calls[0]![1]).toMatchObject({ submission_id: 'img-1', queued: true, attachments: [{ path: '/tmp/shot.png', mime: 'image/png' }] })
+    expect(request.mock.calls[0]![1]).not.toHaveProperty('execution_generation')
+    expect(item).not.toHaveProperty('controlMethod')
+    expect(item.legacyAttempted).toBe(false)
+  })
+})

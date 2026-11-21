@@ -400,12 +400,15 @@ export function submitPrompt(
       prepareQueueItem(item, submitText, opts, ownsTurn, show)
     }
 
+    // Defensive: useSubmission routes image input to the queue before staging a control. A
+    // control was never sent here, so its whole input is admitted behind the turn rather
+    // than retained as an unconfirmed delivery nothing could resend.
     if (item?.controlMethod && item.attachments?.length) {
-      item.settle?.(false)
-
       if (focused()) {
         deps.sys(t('canonical.submit.busyTextOnly'))
       }
+
+      readmit(item)
 
       return
     }

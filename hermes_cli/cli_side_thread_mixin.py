@@ -48,7 +48,7 @@ class CLISideThreadMixin:
         if request.action == "explore":
             return self._btw_explore(request.text)
         result = run_thread_command(self.session_id, request)
-        return self._btw_thread_result(result.text, result.prompt)
+        return self._btw_thread_result(result.fallback_text or result.text, result.prompt)
 
     def _btw_thread_result(self, text: str, prompt: str = "") -> None:
         """Show a --threads/--stop/--promote result; a promotion's prompt becomes the next turn."""
@@ -122,7 +122,9 @@ class CLISideThreadMixin:
         task_id, wait, reply = gateway_side.start_btw(
             connection, self.session_id, arg, on_progress=on_progress if explore else None)
         if task_id is None:
-            return self._btw_thread_result(str(reply.get("text") or ""), str(reply.get("prompt") or ""))
+            # A side chat (``--open``) docks only in the Desktop app: show the fallback line.
+            text = reply.get("fallback_text") or reply.get("text")
+            return self._btw_thread_result(str(text or ""), str(reply.get("prompt") or ""))
         tid_box.append(task_id)
         preview = _preview(request.text)
         if explore:

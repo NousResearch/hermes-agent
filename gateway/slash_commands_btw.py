@@ -40,7 +40,8 @@ class GatewayBtwCommandsMixin:
         result = run_thread_command(session_entry.session_id, request)
         if result.prompt:
             self._enqueue_btw_turn(event, result.prompt)
-        return result.text
+        # A side chat (``--open``) docks only in the Desktop app: chats get the fallback line.
+        return result.fallback_text or result.text
 
     def _enqueue_btw_turn(self, event: MessageEvent, prompt: str) -> None:
         """A promoted report as the chat's next turn: the adapter FIFO, or for a local

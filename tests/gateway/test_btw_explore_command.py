@@ -112,3 +112,13 @@ async def test_explore_without_a_live_agent_is_refused_at_once():
     assert "send a message first" in reply.lower()
     assert side_thread.list_threads("chat-sess") == []
     assert runner._background_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_open_tells_the_chat_side_chats_are_a_desktop_feature():
+    runner = _runner(None)
+    thread = side_thread.register_thread("chat-sess", "t")
+    thread._finish("done", answer="report")
+    reply = await runner._handle_btw_command(_make_event(text="/btw --open"))
+    assert "Desktop" in reply and thread.thread_id in reply
+    assert runner.adapter._pending_messages == {}

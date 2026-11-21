@@ -117,3 +117,12 @@ def test_plain_btw_still_answers_without_tools():
     explore.assert_not_called()
     assert ask.call_args.args[0] == "which file was it?"
     assert cli.workers[0].body == "foo.py"
+
+
+def test_open_shows_the_desktop_only_line_in_the_cli():
+    cli = _cli()
+    thread = side_thread.register_thread("sess-cli", "t")
+    thread._finish("done", answer="report")
+    _run(cli, "/btw --open")
+    assert cli.queued == []
+    assert any("Desktop" in line for line in cli.printed)

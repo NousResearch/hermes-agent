@@ -42,6 +42,23 @@ def is_guardrail_refusal(result: Any) -> bool:
     return isinstance(data, dict) and data.get(GUARDRAIL_REFUSAL_KEY) is True
 
 
+# Set by a tool whose call the USER declined on an approval card (a schedule card's Deny). The call
+# did what it should: it asked and got an answer. Counting it as a failure lets three denied jobs
+# trip the loop guardrail's "keep using tools" warning, the opposite of "never retry it".
+USER_DECLINED_KEY = "declined"
+
+
+def is_user_decline(result: Any) -> bool:
+    """Return True when ``result`` (JSON string or parsed dict) is a user's declined approval."""
+    data = result
+    if isinstance(result, str):
+        try:
+            data = json.loads(result.strip())
+        except ValueError:
+            return False
+    return isinstance(data, dict) and data.get(USER_DECLINED_KEY) is True
+
+
 # A quoted "error"/"failed" in a result's head marks it failed UNLESS it is a key whose value is
 # empty: success payloads routinely carry ``"error": null`` per item (web_extract) or a
 # ``"failed": 0`` count, and a bare substring test flagged every one of them.

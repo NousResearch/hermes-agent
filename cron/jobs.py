@@ -1802,7 +1802,7 @@ def create_job(
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
     wrap_response: Optional[bool] = None,
-    first_run_at: Optional[str] = None,
+    approve: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1815,8 +1815,8 @@ def create_job(
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
-    (0 = never catch up). wrap_response: None inherits cron.wrap_response, a bool overrides it.
-    first_run_at: the first run a user already approved (still in the future); else computed now."""
+    (0 = never catch up). wrap_response: None inherits cron.wrap_response, a bool overrides it. approve(job):
+    sees the finished, validated record outside the store lock; it may move next_run_at, raising saves nothing."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1824,14 +1824,11 @@ def create_job(
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
     parsed_schedule = parse_schedule(schedule)
-    # Normalize repeat: treat 0 or negative values as None (infinite). String forms
-    # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
-    # (#66824/#64520/#7142/#71987/#95706).
+    # 0/negative repeat -> None (forever); string forms coerce via the chokepoint shared with update
+    # (#66824/#64520/#7142/#71987/#95706). A one-shot runs once.
     repeat = normalize_repeat_value(repeat)
-    if parsed_schedule["kind"] == "once" and repeat is None:
-        repeat = 1
-    if deliver is None:
-        deliver = "origin" if origin else "local"
+    repeat = 1 if parsed_schedule["kind"] == "once" and repeat is None else repeat
+    deliver = deliver if deliver is not None else ("origin" if origin else "local")
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
 
@@ -1859,8 +1856,7 @@ def create_job(
     name = name or label_source[:50].strip()
     if pinned and not f["model"]:
         f["provider"], f["model"] = _main_model_pin()
-    next_run_at = first_run_at if first_run_at and _parse_aware(first_run_at) > _hermes_now() else (
-        _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "", f["timezone"]))
+    next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "", f["timezone"])
 
     job = {
         "id": job_id,
@@ -1912,6 +1908,8 @@ def create_job(
         if value is not None:
             job[key] = value
 
+    if approve is not None:
+        approve(job)
     with _jobs_lock():
         save_jobs(load_jobs() + [job])
     return job

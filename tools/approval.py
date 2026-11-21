@@ -1213,6 +1213,44 @@ def _presence(approval_callback=None) -> tuple:
     return approval_callback, is_cli, is_gateway, is_ask
 
 
+SCHEDULE_PATTERN_KEY = "cron_create"
+_NO_SCHEDULE_CARD_SOURCES = frozenset({"kanban", "oneshot"})
+
+
+def schedule_card_skip_reason(*, platform: str | None = None, session_key: str | None = None,
+                              live: bool = False) -> str | None:
+    """Why a model-created job would be saved without a "Schedule this job?" card, or None when one is
+    shown. The one answer both the gate (``tools/cronjob_tools.py``) and the proactive prompt line
+    (``agent/system_prompt.py``) read, so the model is never pushed to create jobs where none asks.
+
+    No card: approvals are bypassed (yolo, ``approvals.mode: off``); no one can answer (cron, ``-q`` and
+    other finite turns, kanban workers, unattended platforms including ``api_server``, whose stock
+    OpenAI-compatible clients never answer an ``approval.request``); with *session_key*, the user
+    already allowed new jobs; with *live* (the gate, inside the turn), no surface is bound to ask on.
+    The prompt line is built once per session, so it reads only the session's fixed facts."""
+    if _yolo_active() or approval_context._get_approval_mode() == "off":
+        return "approvals are off (yolo or approvals.mode: off)"
+    platform = platform or _get_session_platform()
+    if platform == "cron" or platform in approval_context._UNATTENDED_APPROVAL_PLATFORMS \
+            or approval_context._no_user_can_answer() or _launch_source() in _NO_SCHEDULE_CARD_SOURCES:
+        return "nobody can answer an approval here"
+    if session_key is not None and is_approved(session_key, SCHEDULE_PATTERN_KEY):
+        return "the user already allowed new jobs"
+    if live and not any(_presence()[1:]):
+        return "nobody can answer an approval here"
+    return None
+
+
+def _launch_source() -> str:
+    """The gateway-frozen launch source of the running session (``kanban``, ``oneshot``, ``cli``...), or ''."""
+    try:
+        from gateway.session_policy import active_policy
+    except ImportError:  # install without the gateway package
+        return ""
+    policy = active_policy()
+    return policy.source if policy is not None else ""
+
+
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",

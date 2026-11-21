@@ -32,7 +32,6 @@ _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
 from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
-    compute_next_run,
     get_job,
     is_job_runnable,
     list_jobs,
@@ -710,15 +709,6 @@ def _action_create(a: dict[str, Any]) -> str:
     context_from = a["context_from"]
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
-    # A model-initiated create asks the user only once the job would actually save, and saves the
-    # first run the card showed: a relative one-shot ("in 2h") is pinned before asking, so the wait
-    # for an answer does not move it.
-    if a["approve"] is not None:
-        a["schedule"] = _pinned_one_shot(a["schedule"])
-        a["first_run_at"] = _first_run_at(a["schedule"], a["timezone"])
-        if (refusal := a["approve"](a)) is not None:
-            return refusal
-
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
         job = create_job_with_scheduler_registration(
@@ -742,12 +732,15 @@ def _action_create(a: dict[str, Any]) -> str:
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
-            first_run_at=a.get("first_run_at"),
+            # A model-initiated create asks inside create_job, once the record is final and valid.
+            approve=_approve_new_job if a["approve"] else None,
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
+    except _ScheduleDeclined as declined:
+        return declined.args[0]
     _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.",
         "Created PAUSED — resume to schedule, or explicitly run now." if not job.get("enabled", True) else None,
         _local_delivery_notice(job, deliver))))
@@ -1102,9 +1095,9 @@ def cronjob(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int | str] = None,
-    approve: Optional[Any] = None) -> str:
-    """Unified cron job management tool. ``approve(args)`` (model-tool dispatch only) runs after a create's
-    validation and returns a refusal JSON to stop it; CLI, dashboard and Desktop callers never pass it."""
+    approve: bool = False) -> str:
+    """Unified cron job management tool. ``approve`` (model-tool dispatch only) shows a model-initiated
+    create on a schedule card first; CLI, dashboard and Desktop callers never pass it."""
     a = dict(locals())
     try:
         normalized = (action or "").strip().lower()
@@ -1145,14 +1138,14 @@ CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Schedule reminders, follow-ups and checks: once, a few times, or recurring.
 
-Be proactive: when the conversation reveals a moment the user will need help at later, create a job for it without waiting to be asked, then tell the user in one line what you scheduled. Typical moments:
+Good uses, each at the moment the help is needed:
 - Appointments and events: a heads-up with enough lead time to get there (the day before for a morning slot, a leave-by time with the route).
 - Trips: online check-in when it opens (about 24h before departure), leave for the airport, arrival paperwork the destination needs, getting from the airport to the hotel, the return flight. A few one-shots at those moments beat one recurring job; use each moment's local zone.
 - Deadlines and things owed: a morning-of nudge for a deadline, a reply or document the user said they still owe, something they promised to send.
 - Habits and goals: a handful of runs at sensible times (`repeat`), not a forever schedule.
 - Things to re-check until they change: a price, a restock, a flight's status, a flaky site, a deploy. Use `monitor` for a URL so unchanged ticks cost nothing; otherwise a few runs whose prompt says to answer [SILENT] when nothing changed.
 - After an event: check how it went, or offer the next step.
-Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs over an open-ended schedule, waking-hours times, and the least frequent cadence that helps unless the user gave one. A job drafts, reminds and checks; it never sends, buys or submits on the user's behalf. Where someone can answer, the user approves each new job before it is saved, so a declined job is a normal answer: never retry it.
+Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs over an open-ended schedule, waking-hours times, and the least frequent cadence that helps unless the user gave one. A job drafts, reminds and checks; it never sends, buys or submits on the user's behalf. A new job or an edit may be shown to the user for approval before it is saved; a declined one is their answer: never retry it.
 
 Cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
 
@@ -1283,82 +1276,89 @@ _HANDLER_FORWARDED_ARGS = (
     "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
-def _pinned_one_shot(schedule: str) -> str:
-    """A one-shot schedule as its absolute instant; recurring (or unparseable, reported by create)
-    schedules unchanged."""
-    try:
-        parsed = parse_schedule(str(schedule))
-    except ValueError:
-        return schedule
-    return parsed["run_at"] if parsed.get("kind") == "once" and parsed.get("run_at") else schedule
+class _ScheduleDeclined(Exception):
+    """A model-initiated create or update the user did not approve; ``args[0]`` is the tool result."""
 
 
-def _first_run_at(schedule: str, timezone: Any) -> Optional[str]:
-    """The first run as of now: the instant the card shows and, once approved, the job keeps."""
-    try:
-        return compute_next_run(parse_schedule(str(schedule)), timezone=timezone)
-    except ValueError:
-        return None  # create reports the bad schedule or zone itself
-
-
-def _approval_when(parsed: dict[str, Any], timezone: Any, first: Optional[str]) -> str:
-    """The schedule as the user will experience it: its own wording plus the first run in the
-    profile's clock with the zone named, so an offset timestamp or a pinned zone is never read as
-    local time."""
+def _approval_when(job: dict[str, Any]) -> str:
+    """When the saved job will actually run: a one-shot's own instant, else the schedule's wording (with
+    its pinned zone) plus the first run, both in the profile's clock with the zone named. A one-shot's
+    instant is absolute once parsed, so a ``timezone`` pin never moves it and is not shown beside it."""
     from hermes_time import now as hermes_now
-    when = parsed.get("display", "")
-    if isinstance(timezone, str) and timezone.strip():
-        when += f" {timezone.strip()}"
-    if first:
-        local = datetime.fromisoformat(first).astimezone(hermes_now().tzinfo)
-        when += f", first run {local.strftime('%a %b %d %H:%M %Z')}"
-    return when
+    local = lambda iso: datetime.fromisoformat(iso).astimezone(hermes_now().tzinfo).strftime("%a %b %d %H:%M %Z")
+    schedule = job.get("schedule") or {}
+    if not job.get("enabled", True):
+        return f"{job.get('schedule_display', '')}, created paused: it will not run until resumed"
+    if schedule.get("kind") == "once" and job.get("next_run_at"):
+        return f"once, {local(job['next_run_at'])}"
+    zone = f" {job['timezone']}" if job.get("timezone") else ""
+    first = f", first run {local(job['next_run_at'])}" if job.get("next_run_at") else ""
+    return f"{job.get('schedule_display', '')}{zone}{first}"
 
 
-def _approval_task(args: dict[str, Any]) -> str:
-    """What the job will actually run: the script alone for a no-agent job, else the prompt or skills
-    plus any attached script, so the card never describes work that will not happen."""
-    script = str(args.get("script") or "").strip()
-    if args.get("no_agent"):
-        return f"runs script {script}"
-    skills = ", ".join(_canonical_skills(args.get("skill"), args.get("skills")))
-    task = str(args.get("prompt") or "").strip()  # whole: it is what the user consents to; surfaces page it
-    task = f"{task} (skills: {skills})" if task and skills else task or f"skills: {skills}"
-    return f"{task} (after running script {script})" if script else task
+def _approval_task(job: dict[str, Any]) -> str:
+    """What the saved job will actually run: the script alone for a no-agent job, else the prompt or
+    skills plus any attached script, and whatever runs or goes out beside it (a monitor checked first
+    each tick, a delivery target other than this chat), so the card never hides work that will happen."""
+    script = job.get("script") or ""
+    if job.get("no_agent"):
+        task = f"runs script {script}"
+    else:
+        skills = ", ".join(job.get("skills") or [])
+        task = job.get("prompt") or ""  # whole: it is what the user consents to; surfaces page it
+        task = f"{task} (skills: {skills})" if task and skills else task or f"skills: {skills}"
+        task = f"{task} (after running script {script})" if script else task
+    extras = [f"checks {label} {job[key]} first each run" for key, label in
+              (("monitor_script", "script"), ("monitor_url", "URL")) if job.get(key)]
+    if job.get("deliver") not in (None, "origin", "local"):
+        extras.append(f"delivers to {job['deliver']}")
+    return "; ".join([task, *extras])
 
 
-def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
-    """None when the model may create this (already validated) job, else the JSON refusal. Asks the user
-    through the shared approval gate (CLI panel, TUI prompt, Desktop card, messaging /approve) only when
-    someone is there to answer: cron runs (``cron.allow_agent_scheduling``), ``-q`` and unattended platforms
-    keep creating jobs as before rather than turning a consent card nobody can see into a silent deny."""
-    from cron.jobs import normalize_repeat_value
-    from cron.jobs_invariants import validate_schedule_knobs
-    from tools.approval import _presence, _run_approval_gate
+def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str) -> None:
+    """Show one schedule card through the shared gate; return on approval, raise ``_ScheduleDeclined``
+    otherwise. A context where no card would be shown (``schedule_card_skip_reason``) returns at once and
+    says why in the log, as it did before cards existed."""
+    from tools.approval import SCHEDULE_PATTERN_KEY, _run_approval_gate, schedule_card_skip_reason
+    from tools.approval_context import get_current_session_key
 
-    _cb, is_cli, is_gateway, is_ask = _presence()
-    name = args.get("name") or "new job"
-    if not (is_cli or is_gateway or is_ask):
-        logger.info("cronjob create %r saved without a card: nobody can answer an approval here", name)
-        return None
-    try:
-        parsed = parse_schedule(str(args.get("schedule") or ""))
-        validate_schedule_knobs(parsed, args.get("timezone"), args.get("grace_minutes"))
-        when = _approval_when(parsed, args.get("timezone"), args.get("first_run_at"))
-        repeat = normalize_repeat_value(args.get("repeat"))
-    except ValueError:
-        return None  # create reports the bad schedule itself; nothing is saved
-    runs = f", {repeat} runs" if repeat and repeat > 1 else ""
+    reason = schedule_card_skip_reason(session_key=get_current_session_key(), live=True)
+    if reason:
+        logger.info("cronjob %s %r applied without a card: %s", pattern_key_action, name, reason)
+        return
     result = _run_approval_gate(
-        pattern_key="cron_create", description=f"Schedule \"{name}\" ({when}{runs}): {_approval_task(args)}",
-        display_target=f"<cronjob_manage> (schedule \"{name}\")",
-        subject="Creating a scheduled job requires the user's approval", noun="scheduled jobs",
+        pattern_key=SCHEDULE_PATTERN_KEY, description=description, display_target=display_target,
+        subject="Scheduling a job requires the user's approval", noun="scheduled jobs",
         advice="Tell the user what you wanted to schedule; do not retry.",
-        autoapprove_log_prefix="cronjob create", kind="schedule")
+        autoapprove_log_prefix=f"cronjob {pattern_key_action}", kind="schedule")
     if result.get("approved"):
-        return None
-    return tool_error(result.get("message") or "The user declined this scheduled job. Do not retry it.",
-                      success=False, declined=True)
+        return
+    outcome = result.get("outcome")
+    message = {
+        "denied": "The user declined this on the schedule card; nothing was saved. Tell them in one line "
+                  "what you wanted to schedule, and do not retry it.",
+        "timeout": "The user did not answer the schedule card in time; nothing was saved. Do not retry it.",
+    }.get(outcome, "The schedule card was not approved; nothing was saved. Do not retry it.")
+    raise _ScheduleDeclined(tool_error(message, success=False, declined=True,
+                                       **({"user_summary": result["user_summary"]} if result.get("user_summary") else {})))
+
+
+def _approve_new_job(job: dict[str, Any]) -> None:
+    """``create_job``'s ``approve`` hook for a model-initiated create: the card describes the finished,
+    validated record (its saved name, when it actually runs, paused, monitor, delivery), so every rule
+    create enforces has passed before the user is asked. A run time that went by while the card waited
+    moves to the schedule's next one; a one-shot past its grace window is refused."""
+    from cron.jobs import _next_run_or_reject_past_oneshot, _parse_aware
+    from hermes_time import now as hermes_now
+
+    times = (job.get("repeat") or {}).get("times")
+    runs = f", {times} runs" if times and times > 1 else ""
+    _ask_schedule_card(pattern_key_action="create", name=job["name"],
+                       description=f"Schedule \"{job['name']}\" ({_approval_when(job)}{runs}): {_approval_task(job)}",
+                       display_target=f"<cronjob_manage> (schedule \"{job['name']}\")")
+    if job.get("next_run_at") and _parse_aware(job["next_run_at"]) <= hermes_now():
+        job["next_run_at"] = _next_run_or_reject_past_oneshot(
+            job["schedule"], job["name"], job["schedule"].get("run_at"), "", job.get("timezone"))
 
 
 def _cronjob_handler(args, **kw):
@@ -1373,7 +1373,7 @@ def _cronjob_handler(args, **kw):
         monitor_url=_mon_url,
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
-        approve=_creation_approval_error,
+        approve=True,
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},
     )
 

@@ -110,6 +110,46 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_boot_witness_fingerprint_tolerates_small_start_time_drift(board, monkeypatch):
+    """macOS may shift one process' create time by <=2 s between reads; that is
+    still the same process when the boot witness is unchanged."""
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|10100")
+
+    assert kbd._pid_recycled(12345, "boot:1|10000") is False
+    assert kbd._pid_recycled(12345, "other-boot:1|10000") is True
+
+
+def test_live_task_command_repairs_identity_and_prevents_duplicate(board, monkeypatch):
+    """Independent command-line proof wins over a false fingerprint mismatch:
+    keep one running worker, refresh its identity, and leave a visible warning."""
+    conn = board
+    tid = kb.create_task(conn, title="liveness probe", assignee="worker")
+    kb.claim_task(conn, tid)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 12345, worker_started_at = 'boot:1|10000', "
+            "started_at = ? WHERE id = ?",
+            (int(time.time()) - 60, tid),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = 12345, worker_started_at = 'boot:1|10000' "
+            "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (tid,),
+        )
+    monkeypatch.setattr(kbd, "_worker_alive", lambda _pid, _started: False)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(kbd, "_pid_is_task_worker", lambda _pid, _tid: True)
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|10100")
+
+    assert kbd.detect_crashed_workers(conn) == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == 12345
+    saved = conn.execute("SELECT worker_started_at FROM tasks WHERE id = ?", (tid,)).fetchone()
+    assert saved["worker_started_at"] == "boot:1|10100"
+    assert any(e.kind == "worker_identity_repaired" for e in kb.list_events(conn, tid))
+    assert any("did not start a second one" in c.body for c in kb.list_comments(conn, tid))
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

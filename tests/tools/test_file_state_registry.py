@@ -156,6 +156,41 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertNotIn(p, registry._path_locks)
         self.assertNotIn(p, registry._path_lock_users)
 
+    def test_lock_path_timeout_raises_and_cleans_users(self):
+        p = self._mk()
+        holder_entered = threading.Event()
+        release_holder = threading.Event()
+        timeout_raised = threading.Event()
+
+        def holder() -> None:
+            with file_state.lock_path(p):
+                holder_entered.set()
+                release_holder.wait(timeout=2.0)
+
+        def waiter() -> None:
+            holder_entered.wait(timeout=2.0)
+            with self.assertRaises(TimeoutError):
+                with file_state.lock_path(p, timeout=0.05):
+                    pass
+            timeout_raised.set()
+
+        t_hold = threading.Thread(target=holder)
+        t_wait = threading.Thread(target=waiter)
+        t_hold.start()
+        t_wait.start()
+
+        self.assertTrue(timeout_raised.wait(timeout=2.0))
+        registry = file_state.get_registry()
+        # while holder still runs, waiter user count must have been decremented (only 1 user left)
+        self.assertEqual(registry._path_lock_users.get(p), 1)
+
+        release_holder.set()
+        t_hold.join(timeout=2.0)
+        t_wait.join(timeout=2.0)
+
+        self.assertNotIn(p, registry._path_locks)
+        self.assertNotIn(p, registry._path_lock_users)
+
     def test_clear_file_ops_cache_releases_task_state(self):
         p = self._mk()
         task_id = "finished-task"

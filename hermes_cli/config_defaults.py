@@ -2545,12 +2545,12 @@ DEFAULT_CONFIG = {
         # Upstream secret source: env = process env; bitwarden = refetch via `bws secret list` on
         # each proxy restart (requires secrets.bitwarden.enabled).
         "credential_source": "env",
-        # True: the Docker backend refuses to start a sandbox if the proxy is enabled but not
-        # running. False: fall back to direct outbound with real credentials.
+        # True: Docker refuses a sandbox while the proxy is enabled but down; False: direct + real keys.
         "enforce_on_docker": True,
-        # With credential_source bitwarden, a missing BWS token/project_id or an empty fetch makes
-        # the daemon raise. True silently falls back to host env (useful mid-migration). A leftover
-        # fail_on_uncovered_providers key is ignored.
+        # True: SSH sandboxes reach the proxy over a reverse forward (fail closed when it is down).
+        "ssh_tunnel": False,
+        # credential_source bitwarden: a missing BWS token/project_id or empty fetch raises; True
+        # falls back to host env (mid-migration). A leftover fail_on_uncovered_providers is ignored.
         "allow_env_fallback": False,
         # SSRF deny list. None/empty = loopback, link-local (incl. 169.254.169.254 metadata),
         # RFC1918. Explicit [] opts out (only for hermetic loopback tests).

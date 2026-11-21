@@ -40,3 +40,27 @@ async def test_approval_replay_reads_are_served_from_the_owner_projection(tmp_pa
             assert received.get('result') == {'acknowledged': False}, received
         finally:
             await viewer.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_replay_keeps_a_schedule_cards_kind(tmp_path):
+    """A reconnect, or answering the card queued ahead of it, replays ``approval.pending`` and the Desktop
+    redraws each card from it: a schedule card registered by the gate must come back as a schedule card."""
+    with storage_handle(tmp_path) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='current')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
+                                     instance_id='current', persistence=db, epoch=epoch)
+        live = authority.sessions['s'] = LiveSession(None, 'route')
+        live.controls.register('s', 'route', 1, {'request_id': 'job', 'kind': 'schedule',
+                                                 'command': '<cronjob_manage> (schedule a new job)',
+                                                 'description': 'Schedule "water" (every 2h): drink water'})
+        live.controls.register('s', 'route', 1, {'request_id': 'cmd', 'command': 'rm -rf build',
+                                                 'description': 'recursive delete'})
+        viewer = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        try:
+            pending = await viewer.dispatch({'id': 1, 'method': 'approval.pending', 'params': {'session_id': 's'}})
+            kinds = {row['request_id']: row.get('kind') for row in pending['result']['approvals']}
+            assert kinds == {'job': 'schedule', 'cmd': None}, pending
+        finally:
+            await viewer.close()

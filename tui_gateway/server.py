@@ -689,6 +689,13 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
     return _approval_request_payload(approval) if approval else None
 
 
+def _deny_reason(answer: dict) -> dict:
+    """``{"reason": ...}`` when the answer carries the user's typed deny reason (a Desktop folder/site card), else
+    nothing: ``resolve_gateway_approval`` relays it to the agent in the BLOCKED message."""
+    reason = answer.get("reason")
+    return {"reason": reason} if isinstance(reason, str) and reason.strip() else {}
+
+
 def _emit_approval_request(sid: str, data: dict | None) -> None:
     """Send an ``approval`` server request with the command redacted: a credential-shaped value
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
@@ -716,7 +723,7 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
             return
         choice = str(result.get("choice") or "deny")
         _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
-                                           request_id=request_id or None)
+                                           request_id=request_id or None, **_deny_reason(result))
 
     settle = server_requests.send_async("approval", sid, payload, on_result)
     # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another

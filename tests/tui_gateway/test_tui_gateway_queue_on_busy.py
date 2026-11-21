@@ -594,11 +594,13 @@ def test_busy_submit_claims_attached_image_for_queued_turn(monkeypatch):
 def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeypatch):
     """A later paste must not replace the image already claimed by B."""
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    monkeypatch.setattr(
-        server,
-        "_run_prompt_submit",
-        lambda rid, sid, _session, text, **kwargs: dispatched.append((rid, sid, text, kwargs)),
-    )
+    def admit_and_record(rid, sid, _session, text, *, on_admitted, **kwargs):
+        assert callable(on_admitted)
+        on_admitted()
+        dispatched.append((rid, sid, text, kwargs))
+        return True
+
+    monkeypatch.setattr(server, "_run_prompt_submit", admit_and_record)
     agent = types.SimpleNamespace(
         _supports_active_turn_redirect=True,
         redirect=lambda _text: (_ for _ in ()).throw(AssertionError("images must queue")),

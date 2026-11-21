@@ -49,6 +49,13 @@ def approval_input_words(input_key: str) -> tuple[str, ...]:
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+
+class _SessionCoordinationUnavailable(str):
+    """Import-independent refusal: the registry module itself may be unavailable."""
+
+    reason = "SESSION_COORDINATION_UNAVAILABLE"
+
+
 # A local session's ``pre_command`` (gateway/session_commands.py), awaited by the mid-run dispatch once it
 # accepts a command and before it acts, so a refused one fires nothing. Unset on messaging.
 BUSY_ACCEPTED: contextvars.ContextVar = contextvars.ContextVar("busy_accepted", default=None)
@@ -362,10 +369,10 @@ class GatewayBusySessionMixin:
         """Claim a cross-process active-session slot for a new gateway turn."""
         if self._is_session_running(session_key):
             return None, None
-        limit_message = self._active_session_limit_message(session_key)
-        if limit_message is not None:
-            return None, limit_message
         try:
+            limit_message = self._active_session_limit_message(session_key)
+            if limit_message is not None:
+                return None, limit_message
             from hermes_cli.active_sessions import try_acquire_active_session
             platform = source.platform.value if source and source.platform else "gateway"
             return try_acquire_active_session(
@@ -386,8 +393,11 @@ class GatewayBusySessionMixin:
                 },
             )
         except Exception as exc:
-            logger.warning("Failed to claim active session slot: %s", exc)
-            return None, None
+            logger.warning("Failed to claim active session slot (%s)", type(exc).__name__)
+            return None, _SessionCoordinationUnavailable(
+                "Hermes could not coordinate session ownership. "
+                "No work was started; please try again."
+            )
 
     @staticmethod
     def _agent_has_active_subagents(running_agent: Any) -> bool:

@@ -806,6 +806,31 @@ function confirmUsageLimit(usageLimit: UsageLimit, ctx: GatewayEventHandlerConte
   })
 }
 
+/** `/btw` lines: an answer or side-thread report (`btw.complete`), or one tool step of a
+ *  `/btw --explore` side thread (`btw.progress`), printed beside the main turn. */
+function sideThreadLine(
+  ev: Extract<AnyGatewayEvent, { type: 'btw.complete' | 'btw.progress' }>,
+  sys: (text: string) => void
+): void {
+  const payload = ev.payload
+
+  if (!payload) {
+    return
+  }
+
+  if (ev.type === 'btw.progress') {
+    if (payload.text) {
+      sys(`[btw ${payload.task_id}] ┊ ${payload.text}`)
+    }
+
+    return
+  }
+
+  const question = 'question' in payload ? payload.question : null
+
+  sys(`[btw${question ? ` "${question}"` : ''}] ${payload.text}`)
+}
+
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
   syncThemeToTerminalBackground()
 
@@ -1666,13 +1691,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'btw.complete':
-        if (!ev.payload) {
-          return
-        }
 
-        sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
-
-        return
+      case 'btw.progress':
+        return sideThreadLine(ev, sys)
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line

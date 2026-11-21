@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import { test, vi } from 'vitest'
 
@@ -51,10 +52,15 @@ function makeFakePty(): FakePty {
 }
 
 function makeSender(id: number) {
+  const events = new EventEmitter()
+
   return {
     id,
     isDestroyed: () => false,
-    once: vi.fn(),
+    once: events.once.bind(events),
+    removeListener: events.removeListener.bind(events),
+    listenerCount: events.listenerCount.bind(events),
+    emit: events.emit.bind(events),
     send: vi.fn()
   }
 }
@@ -116,6 +122,7 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
   const exitSend = sender.send.mock.calls.find(([channel]) => String(channel).endsWith(':exit'))
 
   assert.deepEqual(exitSend?.[1], { code: 0, signal: null })
+  assert.equal(sender.listenerCount('destroyed'), 0)
 
   // …and once the exit is flushed the session is fully gone.
   const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
@@ -124,15 +131,29 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
 })
 
 test('explicit dispose kills the PTY and drops the session', async () => {
-  const { fake, session } = await startSession()
+  const { fake, sender, session } = await startSession()
 
   const dispose = handles.map.get('hermes:terminal:dispose') as (event: unknown, id: string) => boolean
 
+  assert.equal(sender.listenerCount('destroyed'), 1)
   assert.equal(dispose({}, session.id), true)
+  assert.equal(sender.listenerCount('destroyed'), 0)
   assert.equal(fake.pty.kill.mock.calls.length >= 1, true)
 
   const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
 
   assert.equal(write({}, session.id, 'echo hi'), false)
+  assert.equal(dispose({}, session.id), false)
+})
+
+test('destroying the renderer disposes its live terminal', async () => {
+  const { fake, sender, session } = await startSession()
+
+  sender.emit('destroyed')
+  assert.equal(fake.pty.kill.mock.calls.length, 1)
+  assert.equal(sender.listenerCount('destroyed'), 0)
+
+  const dispose = handles.map.get('hermes:terminal:dispose') as (event: unknown, id: string) => boolean
+
   assert.equal(dispose({}, session.id), false)
 })

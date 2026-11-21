@@ -260,6 +260,7 @@ export function registerTerminalIpc({
     }
 
     terminalSessions.delete(id)
+    sessionInfo.removeOwnerListener()
 
     try {
       sessionInfo.pty.kill()
@@ -415,10 +416,12 @@ export function registerTerminalIpc({
       sendExit: payload => send('exit', payload)
     })
 
+    const onOwnerDestroyed = () => disposeTerminalSession(id)
     terminalSessions.set(id, {
       outputGate,
       pty: ptyProcess,
       webContentsId: event.sender.id,
+      removeOwnerListener: () => event.sender.removeListener('destroyed', onOwnerDestroyed),
       ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
     })
 
@@ -437,7 +440,7 @@ export function registerTerminalIpc({
         // Already reaped.
       }
     })
-    event.sender.once('destroyed', () => disposeTerminalSession(id))
+    event.sender.once('destroyed', onOwnerDestroyed)
 
     return { connectionId: spawnedOn(owner, sshTarget), cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
   })

@@ -43,7 +43,7 @@ type Start = (
 ) => Promise<{ connectionId?: null | string; id: string; shell: string; unavailable?: string }>
 
 function makeSender(id: number) {
-  return { id, isDestroyed: () => false, once: vi.fn(), send: vi.fn() }
+  return { id, isDestroyed: () => false, once: vi.fn(), removeListener: vi.fn(), send: vi.fn() }
 }
 
 function fakePty() {

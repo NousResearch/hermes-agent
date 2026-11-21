@@ -324,6 +324,8 @@ def cmd_check_updates(args: Any | None = None) -> None:
             status = "[green]update available[/green]"
         elif r.update_available is False:
             status = "[dim]up to date[/dim]"
+            if r.reason:  # e.g. a PyPI row kept informational under a catalog pin
+                status = f"{status}\n[dim italic]{r.reason}[/dim italic]"
         else:
             status = f"[yellow]unknown[/yellow]\n[dim]{escape(r.reason or '')}[/dim]"
         table.add_row(

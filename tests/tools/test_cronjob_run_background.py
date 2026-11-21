@@ -355,3 +355,53 @@ class TestCronjobRunToolIntegration:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_mode"] == "background"
         assert out["job"]["delegation_id"]
+
+
+class TestNoAgentSyncFallback:
+    """--no-agent script jobs must never dispatch as agent delegations (hx-dk4).
+
+    Repro (2026-11-11, runtime-v5; grecon-bd8 + independent loki repro):
+    `hermes cron run` on a --no-agent --script job dispatched an async
+    delegation whose owner (the short-lived CLI process) exited before
+    terminal recording — the script never ran, the run row stuck 'claimed',
+    and later direct fires reported "already being fired by the scheduler".
+    The sync fallback records the terminal state in-process.
+    """
+
+    def test_no_agent_job_falls_back_to_sync_without_claiming(self):
+        job = _job("job-noagent-01")
+        job["no_agent"] = True
+        job["script"] = "hx-dk4-probe.sh"
+        job.pop("prompt", None)
+        with _bound_session_key():
+            with patch("tools.cronjob_tools.claim_job_for_fire") as m_claim, \
+                 patch("tools.async_delegation.dispatch_async_delegation") as m_disp:
+                res = _try_dispatch_background_run(job, session_id="cli-durable-session")
+        assert res is None            # caller falls back to _execute_job_now
+        m_claim.assert_not_called()   # no claim consumed on the dispatch path
+        m_disp.assert_not_called()    # no delegation spawned
+
+    def test_run_action_no_agent_runs_sync_not_background(self):
+        """Handler-level: cronjob(action='run') on a no-agent job returns the
+        terminal sync result — no background handle, no delegation id."""
+        job = _job("job-noagent-02")
+        job["no_agent"] = True
+        job["script"] = "hx-dk4-probe.sh"
+        job.pop("prompt", None)
+        with _bound_session_key():
+            with patch("tools.cronjob_tools.resolve_job_ref", return_value=job), \
+                 patch("tools.cronjob_tools._hand_off_primary_routed_run", return_value=None), \
+                 patch("tools.cronjob_tools._forward_relay_fronted_run", return_value=None), \
+                 patch("tools.async_delegation.dispatch_async_delegation") as m_disp, \
+                 patch("tools.cronjob_tools._execute_job_now",
+                       return_value={"claimed": True, "success": True, "error": None}) as m_sync, \
+                 patch("tools.cronjob_tools._refreshed_job_view",
+                       return_value={"id": "job-noagent-02", "name": job["name"]}):
+                out = json.loads(cronjob(action="run", job_id="job-noagent-02"))
+        assert out["success"] is True
+        assert out["job"]["executed"] is True
+        assert out["job"]["execution_success"] is True
+        assert out["job"].get("execution_mode") != "background"
+        assert "delegation_id" not in out["job"]
+        m_disp.assert_not_called()
+        m_sync.assert_called_once()

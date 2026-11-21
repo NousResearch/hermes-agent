@@ -2641,7 +2641,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, force: bool = False, signal_fn=None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2649,7 +2649,9 @@ def complete_task(
     approval. A ``running`` task under a live claim is only completed with
     proof of ownership (``expected_run_id``) or ``force=True`` (explicit
     operator override) — otherwise :class:`LiveClaimError`, the same fence
-    :func:`request_review` applies. With no active run the handoff fields survive via
+    :func:`request_review` applies. An external close ends the displaced worker
+    synchronously (``complete_worker_termination``); self-completion is never
+    signalled. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
@@ -2733,6 +2735,13 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+    # A close from any other process must not leave the card's executor writing
+    # against a workspace nothing tracks (see kanban_db_termination). An
+    # ``expected_run_id`` close is proof of ownership — the caller IS that run, so
+    # it is a self-completion and is never signalled (a hang afterwards belongs to
+    # the deferred reaper, #111791); ``force`` and no-proof closes are external.
+    if prior_status in ("running", "review") and (force or expected_run_id is None):
+        terminate_displaced_worker(conn, task_id, trow, event_kind="complete_worker_termination", run_id=run_id, signal_fn=signal_fn)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -3792,13 +3801,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
     own archive — it kept executing (and pushing work) against a task nothing
     tracked anymore (#76196). Snapshot pid+claim inside the archive txn so the
-    kill is contingent on THIS caller winning the archive transition (a losing
-    concurrent archiver must never signal the pid); the kill itself runs after
-    commit — ``_poll_worker_exit`` can wait ~5 s and must not hold the write
-    lock. Post-release kill is safe here because ``archived`` is terminal: no
-    dispatcher can spawn a duplicate worker off the released claim. The
-    termination outcome lands as its own ``archive_worker_termination`` event so
-    the ``archived`` event stays atomic with the status flip.
+    kill is contingent on THIS caller winning the transition (a losing concurrent
+    archiver must never signal the pid); the post-commit kill and its
+    ``archive_worker_termination`` audit live in ``kanban_db_termination``.
     """
     with write_txn(conn):
         row = conn.execute(
@@ -3808,7 +3813,6 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         if not row:
             return False
         was_running = row["status"] == "running"
-        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -3823,9 +3827,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
-        with write_txn(conn):
-            _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
+        terminate_displaced_worker(conn, task_id, row, event_kind="archive_worker_termination", run_id=run_id, signal_fn=signal_fn, own_worker_guard=False)
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
@@ -4229,3 +4231,4 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+from hermes_cli.kanban_db_termination import terminate_displaced_worker

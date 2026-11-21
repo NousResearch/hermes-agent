@@ -335,14 +335,21 @@ async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     return {"ok": True, "status": flow.snapshot()["status"]}
 
 
-@router.get("/api/mcp/oauth/callback/{server_name:path}")
+@router.api_route("/api/mcp/oauth/callback/{server_name:path}", methods=["GET", "POST"])
 async def mcp_oauth_callback(
+    request: Request,
     server_name: str,
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
     iss: Optional[str] = None,
 ):
+    if request.method == "POST":  # response_mode=form_post: the redirect's parameters are the body
+        from tools.mcp_oauth import _FORM_POST_MAX_BYTES, _parse_redirect_query
+        ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        body = await request.body() if ctype == "application/x-www-form-urlencoded" else b""
+        form = _parse_redirect_query(body.decode("utf-8", "replace") if len(body) <= _FORM_POST_MAX_BYTES else "")
+        code, state, error, iss = form["code"], form["state"], form["error"], form["iss"]
     _gc_mcp_oauth_flows()
     with _mcp_oauth_flows_lock:
         candidates = [

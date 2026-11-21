@@ -30,6 +30,8 @@ import { ipcMain } from 'electron'
 
 const DEFAULT_WAIT_TIMEOUT_MS = 5 * 60 * 1000
 const MAX_PENDING_LISTENERS = 8
+// A form-post redirect carries code/state/iss; anything larger than this is not one.
+const FORM_POST_MAX_CHARS = 16 * 1024
 
 const DONE_HTML =
   '<!doctype html><meta charset="utf-8"><title>Authorization received</title>' +
@@ -103,33 +105,53 @@ export function registerMcpOauthCallbackIpc() {
     const id = String(nextId++)
 
     const server = http.createServer((req, res) => {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(DONE_HTML)
+      const answer = (query: string) => {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        res.end(DONE_HTML)
 
-      const url = req.url || '/'
+        // Ignore favicon and other noise — wait for the code= / error= hit.
+        if (!/(^|&)(code|error)=/.test(query)) {
+          return
+        }
 
-      // Ignore favicon and other noise — wait for the ?code= / ?error= hit.
-      if (!/[?&](code|error)=/.test(url)) {
+        let code: null | string = null
+        let state: null | string = null
+        let error: null | string = null
+        let iss: null | string = null
+
+        try {
+          const params = new URLSearchParams(query)
+
+          code = params.get('code')
+          state = params.get('state')
+          error = params.get('error')
+          iss = params.get('iss')
+        } catch {
+          error = 'unparseable callback URL'
+        }
+
+        settle(id, { code, error, iss, state })
+      }
+
+      if (req.method !== 'POST') {
+        answer((req.url || '/').split('?')[1] || '')
+
         return
       }
 
-      let code: null | string = null
-      let state: null | string = null
-      let error: null | string = null
-      let iss: null | string = null
+      // response_mode=form_post: the redirect's parameters arrive as an urlencoded body.
+      const form = /^application\/x-www-form-urlencoded\b/i.test(req.headers['content-type'] || '')
+      let body = ''
 
-      try {
-        const parsed = new URL(url, 'http://127.0.0.1')
+      req.setEncoding('utf8')
+      req.on('data', (chunk: string) => {
+        body += chunk
 
-        code = parsed.searchParams.get('code')
-        state = parsed.searchParams.get('state')
-        error = parsed.searchParams.get('error')
-        iss = parsed.searchParams.get('iss')
-      } catch {
-        error = 'unparseable callback URL'
-      }
-
-      settle(id, { code, error, iss, state })
+        if (body.length > FORM_POST_MAX_CHARS) {
+          req.destroy()
+        }
+      })
+      req.on('end', () => answer(form ? body : ''))
     })
 
     await new Promise<void>((resolve, reject) => {

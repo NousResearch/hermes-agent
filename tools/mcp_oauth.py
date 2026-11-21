@@ -674,6 +674,25 @@ def _parse_redirect_query(query: str) -> dict[str, Any]:
     return {k: params.get(k, [None])[0] for k in ("code", "state", "error", "iss")}
 
 
+# A form-post redirect carries code/state/iss; anything larger than this is not one.
+_FORM_POST_MAX_BYTES = 16 * 1024
+
+
+def _redirect_query(handler: BaseHTTPRequestHandler) -> str:
+    """The redirect's parameters as a query string: the URL query for GET, or an urlencoded body for an
+    OAuth 2.0 Form Post Response Mode POST (``response_mode=form_post``); ``""`` for any other POST."""
+    if handler.command != "POST":
+        return urlparse(handler.path).query
+    ctype = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        return ""
+    if ctype != "application/x-www-form-urlencoded" or not 0 < length <= _FORM_POST_MAX_BYTES:
+        return ""
+    return handler.rfile.read(length).decode("utf-8", "replace")
+
+
 def _result_taken(result: dict) -> bool:
     return result.get("auth_code") is not None or result.get("error") is not None
 
@@ -700,7 +719,7 @@ def _make_callback_handler() -> tuple[type, dict]:
         timeout = 60
 
         def do_GET(self) -> None:
-            parsed = _parse_redirect_query(urlparse(self.path).query)
+            parsed = _parse_redirect_query(_redirect_query(self))
             status = 200
             if not parsed["code"] and not parsed["error"]:
                 # Browsers follow the real /callback with queryless fetches (/favicon.ico); an unconditional
@@ -717,6 +736,8 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(f"<html><body>{body}</body></html>".encode())
+
+        do_POST = do_GET  # response_mode=form_post
 
         def log_request(self, code: str = "-", size: str = "-") -> None:
             logger.debug("OAuth callback: %s %s", self.command, urlparse(self.path).path)  # never the query (carries the code)

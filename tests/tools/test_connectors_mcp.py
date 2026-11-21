@@ -122,7 +122,7 @@ def _catalog(backend):
         return names, ""
 
     with patch("tools.connectors.mcp._catalog_names", return_value=CATALOG), \
-         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
+         patch("tools.connectors.mcp._configured_servers", return_value=CONFIGURED), \
          patch("tools.connectors.mcp._default_backend", return_value=backend), \
          patch("tools.connectors.mcp._register_connected", side_effect=register):
         yield
@@ -247,12 +247,24 @@ def _off_desktop(args, **kw):
 
 
 def test_off_desktop_authorize_returns_the_link_at_once_and_opens_no_operation(backend):
-    out = _off_desktop({"action": "authorize", "connectors": [_mcp_target("paper")]}, mcp_backend=backend)
+    # 'linear' carries a url, so it is the one configured server an OAuth flow can apply to.
+    out = _off_desktop({"action": "authorize", "connectors": [_mcp_target("linear")]}, mcp_backend=backend)
 
     (target,) = out["targets"]
     assert target["state"] == TargetState.initiated.value
-    assert target["connect_url"] == "https://auth.example/paper/1"
+    assert target["connect_url"] == "https://auth.example/linear/1"
     assert out["status"] == "initiated"
+    assert live.current("s1") is None
+
+
+def test_authorize_is_refused_for_a_stdio_server_before_the_operation_opens(backend):
+    """A stdio server takes env keys, not OAuth. Refusing it up front says which action works
+    instead of opening a card and failing inside the flow."""
+    out = _off_desktop({"action": "authorize", "connectors": [_mcp_target("paper")]}, mcp_backend=backend)
+
+    assert "stdio" in out["error"]
+    assert "enable" in out["error"]
+    assert backend.calls == []  # refused before any backend call
     assert live.current("s1") is None
 
 
@@ -294,6 +306,28 @@ def test_install_is_catalog_only_and_lists_the_catalog_on_a_miss():
 def test_enable_and_authorize_need_a_configured_server():
     out = json.loads(manage_connections({"action": "enable", "connectors": [{"name": "figma", "mcp": True}]}))
     assert "figma" in out["error"] and "paper" in out["error"]
+
+
+def test_status_also_reports_the_local_mcp_servers():
+    """A status answer naming only hosted connectors cannot answer "is my MCP server connected":
+    the model reads the missing server as a disconnect and starts a connection it already has."""
+    client = FakeClient()
+    out = json.loads(manage_connections({"action": "status"}, client_factory=lambda: client))
+
+    servers = {row["name"]: row for row in out["mcp_servers"]}
+    assert "paper" in servers, out
+    assert servers["paper"]["transport"] == "stdio"
+    assert servers["linear"]["transport"] == "http"
+    assert "connected" in servers["paper"]
+    assert "tools" in servers["paper"]
+
+
+def test_status_accepts_an_mcp_target_and_filters_to_it():
+    client = FakeClient()
+    out = json.loads(manage_connections(
+        {"action": "status", "connectors": [{"name": "paper", "mcp": True}]}, client_factory=lambda: client))
+
+    assert [row["name"] for row in out["mcp_servers"]] == ["paper"]
 
 
 # ---------------------------------------------------------------------------
@@ -349,11 +383,11 @@ def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_o
     nobody to answer it. The link goes to the model instead, the way it does off the desktop."""
     with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
          patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
-        out = json.loads(manage_connections({"action": "authorize", "connectors": [_mcp_target("paper")]},
+        out = json.loads(manage_connections({"action": "authorize", "connectors": [_mcp_target("linear")]},
                                             connection_callback=None, session_id="s1", mcp_backend=backend))
 
     assert out["status"] == "initiated"
-    assert out["targets"][0]["connect_url"] == "https://auth.example/paper/1"
+    assert out["targets"][0]["connect_url"] == "https://auth.example/linear/1"
     assert live.current("s1") is None
 
 

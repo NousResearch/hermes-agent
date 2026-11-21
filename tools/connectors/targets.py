@@ -94,7 +94,7 @@ def validate_action(action: str, managed: list[HostedTarget], mcp: list[str]) ->
                 f"'{action}' requires 'connectors': the MCP server name(s), e.g. "
                 "[{\"name\": \"linear\", \"mcp\": true}]."
             )
-    elif mcp:
+    elif mcp and action != "status":
         return (
             f"'{action}' is a managed-connector action; MCP targets ({', '.join(mcp)}) use "
             f"{', '.join(MCP_ACTIONS)}."

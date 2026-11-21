@@ -2004,11 +2004,20 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     _parts = []
                     if _want_iteration_detail:
                         _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
-                    _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                    if _action:
-                        _parts.append(str(_action))
+                    # ``current_tool`` is a raw tool id; ``last_activity_desc`` is engine
+                    # bookkeeping ("receiving stream response"). Both are localized for display —
+                    # the durable stamps themselves stay canonical English.
+                    from agent.session_activity import localized_activity_label
+                    _tool = _a.get("current_tool")
+                    if _tool:
+                        _label = localized_activity_label(f"executing tool: {_tool}")
+                        _parts.append(_label or str(_tool))
+                    else:
+                        _action = localized_activity_label(_a.get("last_activity_desc"))
+                        if _action:
+                            _parts.append(_action)
                     if _parts:
-                        _status_detail = " — " + ", ".join(_parts)
+                        _status_detail = " — " + t("gateway.busy.ack_detail_joiner").join(_parts)
             _heartbeat_text = (
                 disp._generic_status_phrase("status")
                 if _long_running_mode == "generic"

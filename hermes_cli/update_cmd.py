@@ -1754,7 +1754,21 @@ def _apply_pulled_update(
 
 
 def _pause_gateways_for_update(opts):
-    """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs.
+
+    Never before this update owns the install (#149520): a gateway paused by an update that then
+    refuses or waits on another update's lock leaves the Desktop with no backend and nothing that
+    says why. ``cmd_update`` took the lock already; a process tree that does not hold it (a live
+    update elsewhere holds the checkout kernel lock or a live marker) refuses here, before any stop.
+    """
+    from hermes_cli import update_lock as _lock
+    root = _m().PROJECT_ROOT
+    if not _lock.holds_checkout_lock(root) and _lock.update_in_progress(root):
+        print(_lock.describe_holder(_lock.read_live_update(install_root=root)
+                                    or _lock.UpdateHolder(pid=0, age_seconds=0.0, held=True)))
+        print("  No gateway was paused.")
+        _record_stop("lock_held")
+        sys.exit(_lock.UPDATE_EXIT_CONCURRENT)
     try:
         return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
             no_gateway_restart=opts.no_gateway_restart, force=opts.force)

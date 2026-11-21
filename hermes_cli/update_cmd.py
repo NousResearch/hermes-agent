@@ -1949,10 +1949,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _apply_pulled_update(
             git_cmd, branch, movement_baseline, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
-    except subprocess.CalledProcessError as e:
-        try:
-            _handle_update_called_process_error(
-                e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
-                target_repository=target_repository, completion_request=completion_request)
-        finally:
-            _resume_paused_gateways_at_exit(_windows_gateway_resume, completion_request)
+    except (subprocess.CalledProcessError, KeyboardInterrupt) as e:
+        from hermes_cli.update_cmd_pause_gate import _raise_if_update_interrupted
+        _raise_if_update_interrupted(e, _m().PROJECT_ROOT)
+        _handle_update_called_process_error(
+            e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
+            target_repository=target_repository, completion_request=completion_request)
+    finally:
+        _resume_paused_gateways_at_exit(_windows_gateway_resume, completion_request)

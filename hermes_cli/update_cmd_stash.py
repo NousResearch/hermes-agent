@@ -686,11 +686,15 @@ def _restore_stashed_changes(
     # rejected on that difference (#130101). Anything else, including a native extension or
     # bytecode that shadows a healthy module, is still compared.
     non_runtime = _restore_is_non_runtime(git_cmd, cwd, stash_ref)
-    for module, error in (() if non_runtime else
-                          _critical_module_import_failures(cwd, report_runtime_errors=True).items()):
-        if clean_import_failures.get(module) != error:
-            reject(f"agent import {module or 'unknown'}", error[1])
-            break
+    if not non_runtime:
+        restored_import_failures = _critical_module_import_failures(cwd, report_runtime_errors=True)
+        if clean_import_failures is None or restored_import_failures is None:
+            print("⚠ Import health could not be verified; skipping the stash import comparison.")
+        else:
+            for module, error in restored_import_failures.items():
+                if clean_import_failures.get(module) != error:
+                    reject(f"agent import {module or 'unknown'}", error[1])
+                    break
     if replaced:
         # The restored tree is healthy, but dropping the stash would lose the user's copies.
         print(f"⚠ The update added {len(replaced)} file(s) where you had untracked files of the same name:")

@@ -167,11 +167,6 @@ def _hosted_ocr_config() -> tuple:
     return enabled, api_key, None
 
 
-def hosted_ocr_available() -> bool:
-    """Probe for read_file's schema line; a key failing at conversion time surfaces in NEEDS-OCR."""
-    return _hosted_ocr_config()[0]
-
-
 def _needs_ocr_warning(path: str, pages, hosted_error: str = "") -> str:
     """NeedsOcrError result when hosted OCR is off/failed; hints at CHECKING for an OCR skill
     (never names one) and never advertises the hosted_ocr knob."""

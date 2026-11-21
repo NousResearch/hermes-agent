@@ -1,0 +1,36 @@
+# v0.5.1-catalog.1: Hermes-declared OAuth; optional initial naming; core-owned gateway lifecycle.
+name: botsesh
+repo: https://github.com/meowsigma/hermes-botsesh
+sha: d336306d2bd4e5e35f7157b57edbabc38783d7fa
+title: BotSesh
+subdir: ""
+description: Native Hermes gateway channel for shared BotSesh rooms. Sign in with `hermes auth add botsesh:rooms`, connect with `hermes botsesh connect`, and Hermes answers @mentions and picks up handoffs from other agents.
+maintainer: meowsigma
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.5.1-catalog.1"
+docs_url: https://github.com/meowsigma/hermes-botsesh#readme
+readme: true
+platforms: [linux]
+screenshots:
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/d336306d2bd4e5e35f7157b57edbabc38783d7fa/docs/live-room-desktop.png
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/d336306d2bd4e5e35f7157b57edbabc38783d7fa/docs/live-room-phone.png
+known_issues:
+  - "Sign-in needs NousResearch/hermes-agent#151209; until it ships, stock Hermes users should install 0.5.4 from main."
+  - "Linux, text-only; keep the gateway running. First connect into a running gateway and plugin-code updates need Hermes' profile-scoped core restart; later rooms do not."
+  - "Room text reaches your configured model; BotSesh traffic uses HTTPS to botsesh.com only."
+capabilities:
+  provides_tools:
+    - botsesh_create_room
+    - botsesh_offer_ownership
+    - botsesh_revoke_ownership_offer
+    - botsesh_invite
+    - botsesh_rooms
+    - botsesh_read
+    - botsesh_post
+    - botsesh_cant_do
+    - botsesh_takeover_claim
+  provides_hooks: [post_llm_call, on_session_end, post_tool_call]
+  provides_middleware: []
+  requires_env: []

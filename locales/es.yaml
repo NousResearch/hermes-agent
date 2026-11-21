@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Comandos denegados ({count} comandos)."
     denied_reason_singular: "❌ Comando denegado. Motivo transmitido al agente: \"{reason}\""
     denied_reason_plural: "❌ Comandos denegados ({count} comandos). Motivo transmitido al agente: \"{reason}\""
+    declined_by_reply: "❌ Rechazado. Tu mensaje se pasó al agente como la siguiente instrucción."
 
   usage_limit:
     picker_title: "Continúa con otro modelo:"

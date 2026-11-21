@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ 命令已拒绝（{count} 条命令）。"
     denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
     denied_reason_plural: "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
+    declined_by_reply: "❌ 已拒绝。你的消息已作为下一条指令转交给代理。"
 
   usage_limit:
     picker_title: "换个模型继续："

@@ -51,6 +51,7 @@ The full set of keys:
 | `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
 | `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Exception: an api_server session whose client can answer the card (`/v1/runs` and streaming chat completions, via `POST /v1/runs/{id}/approval`) still gets the approval request. Mirrors `cron_mode`. |
 | `approvers` | `["*"]` | Who may answer a pending approval from a messaging chat. `["*"]`: any admitted member. `[]` or a list of user ids: the requester, those ids and the platform admins only — see [Who can answer an approval in a shared chat](#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers). |
+| `typed_reply_declines` | `false` | When true, a chat message you send while an approval is pending (anything other than an approval word such as `yes` / `no`, or a `/command`) declines every pending approval you may answer, and the agent reads your message as its next instruction ("no, run `git clean -n` first"). The blocked turn continues with it instead of queuing your message behind the approval. Works on every messaging platform and for `POST /v1/runs/{id}/steer`. Someone who may not answer the approval only steers or queues as before. See [Answering an approval with a message](#answering-an-approval-with-a-message-approvalstyped_reply_declines). |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
@@ -291,6 +292,17 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 A messaging approval never asks you to approve a command you cannot read in full. When the command is too long for the approval card, Hermes first sends the whole command as its own message (split across several messages if needed), and the card says the preview was shortened. If the full command cannot be shown (the send fails, or the command itself contains a triple-backtick fence), the card offers **Deny** only. Review such a command in the CLI or the desktop app. On platforms that cut long messages instead of splitting them (ntfy, DingTalk, Photon, LINE), the plain-text prompt puts the answer instructions before the command. When the command would still be cut, the prompt offers only `/deny` and shows the same "preview shortened" notice.
 
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
+
+#### Answering an approval with a message (`approvals.typed_reply_declines`)
+
+By default only an approval word (`yes`, `approve`, `no`, `deny`, `always`, `session` and their translations), a button or `/approve` / `/deny` answers a pending approval. Any other message follows `busy_input_mode`, so it waits behind a turn that is itself waiting on you, and the approval ends up timing out.
+
+```yaml
+approvals:
+  typed_reply_declines: true
+```
+
+With this on, any other text message declines the pending approvals and goes to the agent as your instruction, exactly like `/deny <your message>` but read as what to do next. Chat replies with *❌ Declined. Your message was passed to the agent as the next instruction.* Approval words, slash commands, attachments and voice notes keep their current handling. The same applies to `POST /v1/runs/{id}/steer` while the run is `waiting_for_approval`: the response carries `"declined_approvals": N` and the steer text is not delivered a second time.
 
 #### Who can answer an approval in a shared chat (`approvals.approvers`)
 

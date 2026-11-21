@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ コマンドを拒否しました ({count} 件)。"
     denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
     denied_reason_plural: "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
+    declined_by_reply: "❌ 拒否しました。メッセージは次の指示としてエージェントに渡されました。"
 
   usage_limit:
     picker_title: "別のモデルで続ける:"

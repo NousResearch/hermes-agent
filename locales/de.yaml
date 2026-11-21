@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Befehle abgelehnt ({count} Befehle)."
     denied_reason_singular: "❌ Befehl abgelehnt. Grund an den Agenten weitergeleitet: \"{reason}\""
     denied_reason_plural: "❌ Befehle abgelehnt ({count} Befehle). Grund an den Agenten weitergeleitet: \"{reason}\""
+    declined_by_reply: "❌ Abgelehnt. Deine Nachricht wurde als nächste Anweisung an den Agenten weitergegeben."
 
   usage_limit:
     picker_title: "Mit einem anderen Modell weitermachen:"

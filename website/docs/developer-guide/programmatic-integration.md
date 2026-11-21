@@ -230,7 +230,7 @@ Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 
 `POST /v1/runs/{id}/steer` is the HTTP equivalent of Hermes `/steer`: it does not create a new user turn or immediately rewrite the assistant output already in flight. Instead, the text is appended to the live run and becomes visible to the agent after the next tool boundary, so it can course-correct without discarding the current tool-calling loop.
 
-`/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
+`/v1/runs/{id}/steer` is only accepted while the run status is `running`, or `waiting_for_approval` when `approvals.typed_reply_declines` is on: then the steer declines every pending approval of the run, the agent reads the text as the user's next instruction, and the response adds `"declined_approvals": N`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
 
 A `200` (and the `run.steered` event) means the text was **queued**, not that the agent consumed it. If a steer lands after the agent's final response — with no later tool boundary to deliver it at — the undelivered text is returned as `pending_steer` on the terminal event (`run.completed`, `run.failed`, or `run.cancelled`) and run status, so the client can replay it as the next user turn instead of losing it.
 

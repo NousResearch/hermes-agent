@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ رُفضت الأوامر ({count} أوامر)."
     denied_reason_singular: "❌ رُفض الأمر. السبب المُبلّغ للوكيل: \"{reason}\""
     denied_reason_plural: "❌ رُفضت الأوامر ({count} أوامر). السبب المُبلّغ للوكيل: \"{reason}\""
+    declined_by_reply: "❌ تم الرفض. نُقلت رسالتك إلى الوكيل كتعليمات تالية."
 
   usage_limit:
     picker_title: "Keep going on another model:"

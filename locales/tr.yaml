@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Komutlar reddedildi ({count} komut)."
     denied_reason_singular: "❌ Komut reddedildi. Gerekçe ajana iletildi: \"{reason}\""
     denied_reason_plural: "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
+    declined_by_reply: "❌ Reddedildi. Mesajınız bir sonraki talimat olarak ajana iletildi."
 
   usage_limit:
     picker_title: "Başka bir modelle devam et:"

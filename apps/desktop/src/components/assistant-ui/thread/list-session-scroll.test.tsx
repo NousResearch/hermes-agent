@@ -808,7 +808,10 @@ describe('list session-scroll restore', () => {
     }
 
     act(() => window.dispatchEvent(new Event('beforeunload')))
-    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: SCROLL_H - CLIENT_H })
+    // The stranded landing — the top of the bounded window — must not become
+    // the reading position (#131165): the release leaves the remembered
+    // target untouched instead of persisting the clamp's metrics.
+    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: 9000 })
     expect(viewportEl(container).scrollTop).toBe(0)
 
     if (outcome === 'failed') {

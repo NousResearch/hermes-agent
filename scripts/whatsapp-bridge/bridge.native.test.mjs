@@ -7,10 +7,10 @@
 
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
+import { extractMessageContent, getAggregateVotesInPollMessage, getContentType, proto } from '@whiskeysockets/baileys';
 
 import {
   addMentions,
@@ -18,6 +18,7 @@ import {
   buildTextSendPayload,
   createBoundedMessageStore,
   extractBridgeEvent,
+  getMessageContent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
@@ -625,5 +626,130 @@ import {
   assert.equal(event.quotedText, 'Example appointment at 11:40');
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
 }
+
+// -- associated child messages (HD second upload, motion-photo clip) ------
+// Each case below prints its own line; the section fails once, at its end, so a
+// run against a helper without the change shows every case that it misses.
+const envelopeFailures = [];
+const envelopeCase = async (name, fn) => {
+  try {
+    await fn();
+    console.log(`  ✓ ${name}`);
+  } catch (err) {
+    const why = err.message.replace(/\s+/g, ' ').trim().slice(0, 160);
+    envelopeFailures.push(`${name}: ${why}`);
+    console.log(`  ✗ ${name}: ${why}`);
+  }
+};
+
+await envelopeCase('a message with documentWithCaptionMessage and associatedChildMessage stays a document', async () => {
+  // It stays what it was before associatedChildMessage was peeled: the
+  // document. Baileys' normalizeMessageContent ranks the two the same way, so
+  // the media downloadMedia fetches is the one the event describes.
+  const dir = mkdtempSync(path.join(tmpdir(), 'wa-media-'));
+  const downloaded = [];
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'both-envelopes', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        documentWithCaptionMessage: {
+          message: { documentMessage: { caption: 'the signed contract', fileName: 'contract.pdf', mimetype: 'application/pdf', url: 'https://mmg.whatsapp.net/doc' } },
+        },
+        associatedChildMessage: { message: { imageMessage: { mimetype: 'image/jpeg', url: 'https://mmg.whatsapp.net/hd' } } },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    downloadMedia: async (m) => {
+      downloaded.push(getContentType(extractMessageContent(m.message)));
+      return Buffer.from('document-bytes');
+    },
+    cacheDirs: { image: dir, document: dir },
+  });
+  assert.equal(event.mediaType, 'document');
+  assert.equal(event.nativeType, 'documentMessage');
+  assert.equal(event.body, 'the signed contract');
+  assert.deepEqual(downloaded, ['documentMessage']);
+});
+
+// WhatsApp sends some media as a second message wrapped in
+// associatedChildMessage; the known cases are the HD copy of a photo or video
+// and the clip of a motion photo. Without the unwrap the event has no body and
+// no media, and bridge.js drops it as `ignored / empty`. The whole message goes
+// to downloadMedia, as in bridge.js; Baileys' extractMessageContent must find
+// the media inside.
+for (const [label, type, associationType, child, prefix, ext] of [
+  ['an HD image', 'image', 10, { imageMessage: { mimetype: 'image/jpeg', url: 'https://mmg.whatsapp.net/hd' } }, 'img_', '.jpg'],
+  ['a motion-photo clip', 'video', 12, { videoMessage: { mimetype: 'video/mp4', url: 'https://mmg.whatsapp.net/clip' } }, 'vid_', '.mp4'],
+]) {
+  await envelopeCase(`associatedChildMessage holding ${label} yields a media event`, async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wa-media-'));
+    const downloaded = [];
+    const event = await extractBridgeEvent({
+      msg: {
+        key: { id: `child-${type}`, remoteJid: '120363001234567890@g.us', participant: '15550001111@s.whatsapp.net', fromMe: false },
+        messageTimestamp: 123,
+        message: {
+          messageContextInfo: { messageAssociation: { associationType, parentMessageKey: { id: `parent-${type}` } } },
+          associatedChildMessage: { message: child },
+        },
+      },
+      chatId: '120363001234567890@g.us',
+      senderId: '15550001111@s.whatsapp.net',
+      senderNumber: '15550001111',
+      isGroup: true,
+      downloadMedia: async (m) => {
+        downloaded.push(getContentType(extractMessageContent(m.message)));
+        return Buffer.from(`${type}-bytes`);
+      },
+      cacheDirs: { image: dir, document: dir },
+    });
+    assert.equal(event.hasMedia, true);
+    assert.equal(event.mediaType, type);
+    assert.equal(event.nativeType, `${type}Message`);
+    assert.equal(event.body, `[${type} received]`);
+    assert.deepEqual(downloaded, [`${type}Message`]);
+    assert.equal(event.mediaUrls.length, 1);
+    assert.ok(path.basename(event.mediaUrls[0]).startsWith(prefix) && event.mediaUrls[0].endsWith(ext));
+    assert.equal(readFileSync(event.mediaUrls[0], 'utf8'), `${type}-bytes`);
+  });
+}
+
+// An envelope whose inner message is unset: a decoded protobuf gives null
+// there, not undefined. Such a message must stay an object, never become null:
+// bridge.js reads messageContent.pollUpdateMessage right after
+// getMessageContent, inside the messages.upsert handler.
+const decoded = (message) => proto.Message.decode(proto.Message.encode(proto.Message.fromObject(message)).finish());
+const emptyEnvelopeCases = [];
+for (const envelope of ['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'documentWithCaptionMessage', 'associatedChildMessage']) {
+  emptyEnvelopeCases.push([`${envelope} with message: null`, { [envelope]: { message: null } }]);
+  emptyEnvelopeCases.push([`${envelope} without inner message, decoded`, decoded({ [envelope]: {} })]);
+}
+emptyEnvelopeCases.push(['ephemeralMessage holding associatedChildMessage with message: null', { ephemeralMessage: { message: { associatedChildMessage: { message: null } } } }]);
+emptyEnvelopeCases.push(['ephemeralMessage holding associatedChildMessage without inner message, decoded', decoded({ ephemeralMessage: { message: { associatedChildMessage: {} } } })]);
+for (const [name, message] of emptyEnvelopeCases) {
+  await envelopeCase(`${name}: an object, no media, empty body`, async () => {
+    const msg = { key: { id: `empty-${name}`, remoteJid: '15551234567@s.whatsapp.net', fromMe: false }, messageTimestamp: 123, message };
+    const content = getMessageContent(msg);
+    assert.ok(content !== null && typeof content === 'object', `getMessageContent returned ${content}`);
+    const event = await extractBridgeEvent({
+      msg,
+      chatId: '15551234567@s.whatsapp.net',
+      senderId: '15551234567@s.whatsapp.net',
+      senderNumber: '15551234567',
+      downloadMedia: async () => { throw new Error('no media expected'); },
+    });
+    assert.equal(event.hasMedia, false);
+    assert.equal(event.body, '');
+  });
+}
+await envelopeCase('associatedChildMessage without inner message stays the message as it came', async () => {
+  const message = { associatedChildMessage: { message: null } };
+  assert.equal(getMessageContent({ message }), message);
+});
+
+assert.deepEqual(envelopeFailures, [], `envelope cases that failed:\n  ${envelopeFailures.join('\n  ')}`);
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

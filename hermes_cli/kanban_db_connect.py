@@ -1139,6 +1139,14 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
 
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Double-checked under the write lock: the connect() init lock can time out and
+        # proceed unlocked, so a sibling process may have completed this same rebuild
+        # between the check above and BEGIN. Rebuilding an already-current table here
+        # would rename the fresh table away and reassign AUTOINCREMENT ids a second time.
+        drifted = [t for t in drifted if _table_has_drifted(conn, t)]
+        if not drifted:
+            conn.execute("COMMIT")  # nothing left to do — release the write lock
+            return
         for table in drifted:
             create_sql, index_sqls = _REBUILD_SPECS[table]
             old_cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({table})")]

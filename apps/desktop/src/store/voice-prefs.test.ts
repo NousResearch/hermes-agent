@@ -20,31 +20,62 @@ import {
   applyVoiceStopPhraseFromConfig
 } from './voice-prefs'
 
+/**
+ * Install a fresh in-memory Storage on BOTH aliases the code can reach.
+ *
+ * The code under test writes through `window.localStorage` (see `@/lib/storage`), while
+ * the suite's setup installs its own storage polyfill on `globalThis`/`window` when the
+ * runtime's own accessor resolves to nothing. Spying on the bare global therefore lands
+ * on a different object than the writer uses as soon as the file is scheduled into a
+ * worker that took a different branch of that setup — the write then escapes the spy and
+ * the assertion reads a stale value. Installing the storage explicitly keeps the case
+ * independent of that.
+ */
+function installTestStorage(overrides: Partial<Storage> = {}): Storage {
+  const store = new Map<string, string>()
+
+  const storage = {
+    get length() {
+      return store.size
+    },
+    key: (index: number) => [...store.keys()][index] ?? null,
+    getItem: (key: string) => store.get(String(key)) ?? null,
+    setItem: (key: string, value: string) => void store.set(String(key), String(value)),
+    removeItem: (key: string) => void store.delete(String(key)),
+    clear: () => store.clear(),
+    ...overrides
+  } as Storage
+
+  for (const target of [globalThis, (globalThis as { window?: unknown }).window].filter(Boolean)) {
+    Object.defineProperty(target, 'localStorage', { value: storage, configurable: true, writable: true })
+  }
+
+  return storage
+}
+
 it('keeps the desktop toggle local across config refreshes', async () => {
   for (const fails of [false, true]) {
     for (const enabled of [false, true]) {
-      localStorage.clear()
+      const storage = installTestStorage(
+        fails
+          ? {
+              setItem: () => {
+                throw new DOMException('Full', 'QuotaExceededError')
+              }
+            }
+          : {}
+      )
+
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
-
-      if (fails) {
-        write.mockImplementation(() => {
-          throw new DOMException('Full', 'QuotaExceededError')
-        })
-      }
 
       vi.mocked(saveHermesConfig).mockClear()
 
-      try {
-        await prefs.setAutoSpeakReplies(enabled)
-        prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
-        expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
-        expect(saveHermesConfig).not.toHaveBeenCalled()
-        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
-      } finally {
-        write.mockRestore()
-      }
+      await prefs.setAutoSpeakReplies(enabled)
+      prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
+      expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
+      expect(saveHermesConfig).not.toHaveBeenCalled()
+      expect(storage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
     }
   }
 })
@@ -52,27 +83,25 @@ it('keeps the desktop toggle local across config refreshes', async () => {
 it('migrates the legacy preference once, not on every refresh', async () => {
   for (const fails of [false, true]) {
     for (const enabled of [false, true]) {
-      localStorage.clear()
+      const storage = installTestStorage(
+        fails
+          ? {
+              setItem: () => {
+                throw new DOMException('Denied', 'SecurityError')
+              }
+            }
+          : {}
+      )
+
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
 
-      if (fails) {
-        write.mockImplementation(() => {
-          throw new DOMException('Denied', 'SecurityError')
-        })
-      }
-
-      try {
-        prefs.applyAutoSpeakFromConfig(null)
-        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBeNull()
-        prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: enabled } })
-        prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
-        expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
-        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
-      } finally {
-        write.mockRestore()
-      }
+      prefs.applyAutoSpeakFromConfig(null)
+      expect(storage.getItem('hermes.desktop.autoSpeakReplies')).toBeNull()
+      prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: enabled } })
+      prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
+      expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
+      expect(storage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
     }
   }
 })

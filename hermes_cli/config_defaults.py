@@ -2545,9 +2545,10 @@ DEFAULT_CONFIG = {
         # Upstream secret source: env = process env; bitwarden = refetch via `bws secret list` on
         # each proxy restart (requires secrets.bitwarden.enabled).
         "credential_source": "env",
-        # True: the Docker backend refuses to start a sandbox if the proxy is enabled but not
-        # running. False: fall back to direct outbound with real credentials.
+        # True: refuse a Docker sandbox while the proxy is enabled but down. False: go direct.
         "enforce_on_docker": True,
+        # True (Linux): sandboxes join a per-profile `--internal` network; iron-proxy is the only exit.
+        "docker_internal_network": False,
         # With credential_source bitwarden, a missing BWS token/project_id or an empty fetch makes
         # the daemon raise. True silently falls back to host env (useful mid-migration). A leftover
         # fail_on_uncovered_providers key is ignored.
@@ -2555,8 +2556,7 @@ DEFAULT_CONFIG = {
         # SSRF deny list. None/empty = loopback, link-local (incl. 169.254.169.254 metadata),
         # RFC1918. Explicit [] opts out (only for hermetic loopback tests).
         "upstream_deny_cidrs": None,
-        # Extra allowed upstream hosts beyond the bundled major-provider defaults; wildcards
-        # (`*.foo.com`) supported.
+        # Extra allowed upstream hosts beyond the bundled provider defaults; `*.foo.com` works.
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.

@@ -31,7 +31,7 @@ from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
-    check_forward_env_collisions, merge_egress_env,
+    check_forward_env_collisions, internal_network_host_args, merge_egress_env,
 )
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
@@ -707,13 +707,12 @@ class DockerEnvironment(BaseEnvironment):
             cwd = mount
             self.cwd = mount
         volume_args.extend(_readonly_skill_mount_args())
-        egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
-            self._egress_and_env_args(extra_args))
-        volume_args.extend(egress_volume_args)
-        user_args = _host_user_args(run_as_host_user)
-
         # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
         self._docker_exe = find_docker() or "docker"
+        egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
+            self._egress_and_env_args(extra_args, network))
+        volume_args.extend(egress_volume_args)
+        user_args = _host_user_args(run_as_host_user)
 
         # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1 and exec
         # /run/s6/basedir/bin/init during startup. For those images we must (a) skip Docker's --init (two
@@ -779,7 +778,7 @@ class DockerEnvironment(BaseEnvironment):
         self.init_session()
 
     # --- __init__ helpers ---
-    def _egress_and_env_args(self, extra_args) -> tuple[str, list[str], list[str], list[str], list[str]]:
+    def _egress_and_env_args(self, extra_args, network: bool) -> tuple[str, list[str], list[str], list[str], list[str]]:
         """Egress credential-injection proxy plumbing (CA mount + HTTPS_PROXY/CA-bundle env so
         outbound traffic routes through the host-side proxy and the sandbox receives proxy tokens
         instead of real API keys), merged with docker_env into name-only ``-e`` args, plus the
@@ -787,6 +786,9 @@ class DockerEnvironment(BaseEnvironment):
         validated_extra)``; sets ``self._run_env_values`` (injected into the docker-client
         subprocess env at run time and reused verbatim by container-recreation recovery)."""
         egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
+        if egress_env_overrides and network:
+            # docker_network: false (--network=none) is stricter than the internal egress network.
+            egress_host_args = internal_network_host_args(self._docker_exe, egress_host_args)
         egress_label = _egress_reuse_fingerprint(egress_volume_args, egress_env_overrides, egress_host_args)
         enforce_egress = _egress_enforce_on_docker() if egress_env_overrides else True
         critical_egress_names = _critical_egress_env_names(egress_env_overrides)

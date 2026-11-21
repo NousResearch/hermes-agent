@@ -80,6 +80,12 @@ proxy:
   # is unavailable.
   enforce_on_docker: true
 
+  # Opt-in structural isolation (Linux Docker Engine). When true, Docker
+  # sandboxes join a per-profile `--internal` network (no default route,
+  # IPv6 off) and iron-proxy binds that network's gateway, so the proxy is
+  # the sandbox's only exit. See "Internal network" below.
+  docker_internal_network: false
+
   # When `credential_source: bitwarden` but the BWS access token /
   # project_id is missing OR the bws fetch returns no values for mapped
   # providers, the daemon raises by default (matches the spirit of "I
@@ -102,6 +108,50 @@ proxy:
   # and Nous Research.
   extra_allowed_hosts: []
 ```
+
+### Internal network: the proxy as the only exit
+
+By default the sandbox sits on Docker's default bridge, which has a route to the internet. The proxy only sees traffic from clients that honour `HTTPS_PROXY`. A process that ignores it (`curl --noproxy '*'`, a raw socket, a tool with its own network stack) connects directly and skips the allowlist and the token swap.
+
+Set `proxy.docker_internal_network: true` to close that gap on Linux:
+
+```yaml
+proxy:
+  enabled: true
+  enforce_on_docker: true
+  docker_internal_network: true
+```
+
+Then run `hermes egress restart`. Hermes:
+
+1. Creates the profile's network `hermes-egress-<profile>-<hash>` with `docker network create --internal --ipv6=false`, or reuses it if it already exists. An internal network has no default route and no NAT.
+2. Rewrites iron-proxy's listeners in `proxy.yaml` to bind that network's gateway IP (for example `172.18.0.1:9090`). The gateway is the host's own address on the network, and the only address a sandbox on it can reach.
+3. Starts Docker sandboxes with `--network <that network>` and `--add-host host.docker.internal:<gateway>`, so `HTTPS_PROXY=http://host.docker.internal:<port>` still works.
+
+Result inside the sandbox:
+
+| Request | Default bridge | `docker_internal_network: true` |
+|---|---|---|
+| `curl https://api.groq.com/...` (allowlisted, through the proxy) | reaches upstream | reaches upstream |
+| `curl https://example.com` (not allowlisted) | 403 from the proxy | 403 from the proxy |
+| `curl --noproxy '*' https://example.com` | **200, proxy bypassed** | fails: no route |
+| raw TCP to `1.1.1.1:443` | **connects** | `Network is unreachable` |
+
+The setting fails closed. Sandbox creation refuses to start, even with `enforce_on_docker: false`, when:
+
+- the network cannot be created,
+- a network with that name exists but is not `Internal` or has IPv6 enabled (remove it with `docker network rm <name>` and Hermes recreates it), or
+- iron-proxy is not listening on the network's gateway (run `hermes egress restart`).
+
+`hermes egress status` shows the network in its **Docker network** row. Setting the key back to `false` and running `hermes egress restart` returns the bind to the default bridge.
+
+Containers created before the switch are not reused: the network is part of the sandbox's egress fingerprint, so the next sandbox starts fresh on the internal network. `terminal.docker_network: false` (`--network=none`) still wins, because it is stricter.
+
+Limits:
+
+- **Linux Docker Engine only.** On Docker Desktop (macOS/Windows) the network gateway lives inside Desktop's VM, where the host's iron-proxy cannot bind. Hermes refuses to start a sandbox with the setting on there.
+- **Host services on the gateway.** The sandbox can still reach the host at the gateway IP, so a host service listening on `0.0.0.0` is reachable from the sandbox on that port. Bind host services to `127.0.0.1` (or a specific interface) if the sandbox must not see them.
+- **One bind per daemon.** iron-proxy v0.39 binds a single address, so while the setting is on, this profile's proxy is reachable only from its internal network, not from containers on the default bridge.
 
 ### Default allowed upstream hosts
 
@@ -372,7 +422,7 @@ When the Docker backend starts a container with `proxy.enabled: true` and the da
 
 `NODE_OPTIONS=--use-openssl-ca` is appended to whatever you already have in `docker_env.NODE_OPTIONS`. This forces Node through the OpenSSL store that `SSL_CERT_FILE` controls, narrowing the asymmetry. It does NOT cover code that explicitly passes its own `ca` option to `tls.connect()` or `https.request()`, but it closes the easy case.
 
-This is a known v1 limitation. Track [github.com/ironsh/iron-proxy/issues](https://github.com/ironsh/iron-proxy/issues) for an upstream resolution; in the meantime, do not run untrusted Node code that opens raw sockets in a sandbox you're depending on egress isolation for.
+On the default bridge this is a known v1 limitation: do not run untrusted Node code that opens raw sockets in a sandbox you depend on for egress isolation. With `proxy.docker_internal_network: true` (Linux), a raw socket has no route out, so the only path left goes through the proxy.
 
 ### docker\_env collisions
 
@@ -423,7 +473,7 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 
 - A compromised host process. If the agent process itself is compromised, real keys in the host's `~/.hermes/.env` are exposed regardless. This is a defense-in-depth feature for *sandbox* compromise, not host compromise.
 - **Loss of the trusted-proxy boundary itself.** The token-swap guarantee assumes the sandbox trusts the mounted CA cert (`/etc/ssl/certs/hermes-egress-ca.crt`) and that traffic actually reaches *our* iron-proxy. If the CA private key is stolen, or sandbox egress is redirected to attacker-controlled proxy infrastructure, an adversary-in-the-middle can present a valid leaf cert and the proxy tokens are no longer a meaningful boundary (cf. [MITRE ATT&CK T1588.004](https://attack.mitre.org/techniques/T1588/004/) — obtained TLS certificate material enabling AiTM). Protect the CA key (it's `0600`, host-only) and the proxy endpoint accordingly.
-- Sandbox processes that bypass `HTTPS_PROXY` by using a raw socket. The proxy can't intercept what doesn't route to it. Node.js is partially mitigated via `NODE_OPTIONS=--use-openssl-ca` (see caveat above).
+- Sandbox processes that bypass `HTTPS_PROXY` by using a raw socket, **unless** `proxy.docker_internal_network: true` is set (Linux). On the default bridge the proxy can't intercept what doesn't route to it; on the internal network such traffic has no route at all. See [Internal network](#internal-network-the-proxy-as-the-only-exit).
 - Credential files explicitly mounted into Docker (`terminal.credential_files` or skill-registered mounts). Egress protects provider env vars; it does not inspect arbitrary mounted files. Do not mount real provider credentials into an enforced egress sandbox.
 - Allowlisted-host data exfiltration. If `api.openai.com` is allowed, an agent could embed exfil data in a request body to that host. The daemon log captures the request happened but doesn't prevent it.
 - Uncovered providers (AWS Bedrock SigV4, GCP Vertex service-account OAuth). Their env vars stay in the sandbox; if you enable them, those credentials bypass the proxy entirely. See [Uncovered providers](#uncovered-providers).

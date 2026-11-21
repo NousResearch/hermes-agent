@@ -1,0 +1,27 @@
+name: skill-review
+title: Skill Review
+repo: https://github.com/hosakb/hermes-skill-review
+sha: de4699690dfe66b1e1e9cf361e2a1aa77e7cd1d7
+description: >-
+  Desktop review tab for staged skill and memory writes. Shows each pending change from skills.write_approval
+  and memory.write_approval as a visual diff block per file and lets you accept or reject each block, or all
+  blocks of a file. Disclosure: reads pending records under <HERMES_HOME>/pending/skills and /pending/memory
+  and each profile's MEMORY.md, USER.md and SKILL.md files; rewrites pending records on reject, edit and
+  remove; on Accept, Hermes's own approval code writes the change to the profile's skill or memory files;
+  makes no network calls, collects no telemetry and reads no credentials; registers no tools or hooks.
+maintainer: hosakb
+tier: community
+category: desktop
+requires_hermes: ">=0.23.2"
+version: "0.2.1"
+docs_url: https://github.com/hosakb/hermes-skill-review/blob/14c3f50fb288d65ce04a15f6c0a67192df8d92cb/README.md
+image: https://raw.githubusercontent.com/hosakb/hermes-skill-review/14c3f50fb288d65ce04a15f6c0a67192df8d92cb/docs/banner.png
+platforms: []
+known_issues:
+  - "Backend uses internal Hermes modules (write-approval and memory store); a Hermes release can break it."
+  - "Dragging the review tab into the chat zone lets cmd-W close it and switch the plugin off."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

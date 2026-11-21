@@ -84,8 +84,17 @@ class TestInitialize:
         assert isinstance(resp, InitializeResponse)
         assert resp.protocol_version == acp.PROTOCOL_VERSION
 
-
-
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("gateway_viewer", [True, False], ids=["gateway-viewer", "in-process"])
+    async def test_initialize_advertises_http_and_sse_mcp(self, agent, gateway_viewer):
+        """ACP clients only send HTTP/SSE MCP servers in session/new|load when the wire payload
+        advertises them; an omitted mcpCapabilities means both default to false. `hermes acp`
+        runs the gateway viewer (a bare ``HermesACPAgent()``), so both agents must advertise it."""
+        acp_agent = HermesACPAgent() if gateway_viewer else agent
+        resp = await acp_agent.initialize(protocol_version=1)
+        payload = resp.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
+        assert payload["mcpCapabilities"]["http"] is True
+        assert payload["mcpCapabilities"]["sse"] is True
 
     @pytest.mark.asyncio
     async def test_initialize_advertises_provider_and_terminal_auth_methods(self, agent, monkeypatch):

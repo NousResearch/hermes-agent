@@ -861,7 +861,8 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
 class _GateSpec:
     noun: str                 # "command" | "code" — for the pending STOP text
     transport: bool           # offer the selected plugin transport first
-    user_approved: bool       # human approval resets the denial tally
+    user_approved: bool       # attach the explicit human-consent marker to a grant
+    reset_denials_on_approval: bool  # clear the smart-denial circuit-breaker tally on grant
     redact_cli: bool          # CLI prompt + hooks see the redacted copy
     pending_keys: bool        # pending fallback: redacted ``pending_approval`` shape (True)
                               # vs raw ``approval_required`` (False)
@@ -927,7 +928,7 @@ _STOP_ACTION = (
 )
 
 _COMMAND_GATE = _GateSpec(
-    noun="command", transport=True, user_approved=True, redact_cli=False, pending_keys=True,
+    noun="command", transport=True, user_approved=True, reset_denials_on_approval=True, redact_cli=False, pending_keys=True,
     notify_failed="BLOCKED: Failed to send approval request to user. Do NOT retry.",
     gateway_refused="BLOCKED: Command {reason}.{reason_addendum}" + _STOP_COMMAND
                     + "{timeout_addendum}{breaker}",
@@ -942,7 +943,7 @@ _COMMAND_GATE = _GateSpec(
     smart_log="Smart approval: auto-approved '{command}' ({description})",
 )
 _EXECUTE_CODE_GATE = _GateSpec(
-    noun="code", transport=True, user_approved=True, redact_cli=True, pending_keys=True,
+    noun="code", transport=True, user_approved=True, reset_denials_on_approval=True, redact_cli=True, pending_keys=True,
     notify_failed="BLOCKED: Failed to send execute_code approval request to user. Do NOT retry.",
     gateway_refused=(
         "BLOCKED: execute_code script {reason}.{reason_addendum} The user has "
@@ -960,10 +961,9 @@ _EXECUTE_CODE_GATE = _GateSpec(
     ),
     smart_log="Smart approval: auto-approved execute_code for session {session_key}",
 )
-# Plugin-escalated tool calls / protected writes: no transport, no breaker,
-# no user_approved marker (parity with the historical gate).
+# Plugin-escalated tool calls / protected writes: consent is marked, but approval does not reset the command breaker.
 _ACTION_GATE = _GateSpec(
-    noun="action", transport=False, user_approved=False, redact_cli=False, pending_keys=False,
+    noun="action", transport=False, user_approved=True, reset_denials_on_approval=False, redact_cli=False, pending_keys=False,
     notify_failed="BLOCKED: Failed to send approval request to user. Do NOT retry.",
     gateway_refused="BLOCKED: Action {reason}.{reason_addendum}" + _STOP_ACTION
                     + "{timeout_addendum}",
@@ -1066,7 +1066,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if not one_shot:
             _persist_choice(session_key, choice, pattern_keys)
         if spec.user_approved:
-            return _user_approved(session_key, description)
+            if spec.reset_denials_on_approval:
+                return _user_approved(session_key, description)
+            return {"approved": True, "message": None, "user_approved": True, "description": description}
         return _approved()
 
     if spec.transport:

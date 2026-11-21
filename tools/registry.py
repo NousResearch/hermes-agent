@@ -109,6 +109,11 @@ def _module_registers_tools(module_path: Path) -> bool:
         for stmt in tree.body)
 
 
+# Flat modules discovery never imports: the package itself, the registry, and MCP (its tools
+# register per server at runtime). The tool-discovery guard reads this same set.
+NOT_TOOL_MODULES = frozenset({"__init__.py", "registry.py", "mcp_tool.py"})
+
+
 def _tool_module_candidates(tools_path: Path) -> list[Path]:
     """Flat ``tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
     sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
@@ -138,7 +143,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
     cache_dirty = False
     module_names: list[str] = []
     for path in _tool_module_candidates(tools_path):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+        if path.name in NOT_TOOL_MODULES:
             continue
         rel_parts = path.relative_to(tools_path).with_suffix("").parts
         if len(rel_parts) > 1 and not (path.parent / "__init__.py").exists():

@@ -33,14 +33,11 @@ METRIC_FIX = {
     " FILE_LINES), or replace a branch ladder with a dict/table -> handler",
     "FUNC_LINES": "extract phases into named helpers or a topic module in the `<stem>/` folder",
     "NESTING": "return early, or extract the inner block into a helper",
-    "FILE_LINES": "offset the growth in the same PR by making a folder: turn `<stem>.py` into a"
-    " `<stem>/` package (with `__init__.py`) and move an existing function or class into a topic"
-    " module there (moved code keeps its cap); never a new flat `<stem>_<topic>.py`. A model tool"
-    " in a folder registers from `tools/<stem>/tool.py`, the only file tool discovery imports"
-    " there. A root module or an `acp_adapter/` one also lists its new package in pyproject's"
-    " `[tool.setuptools.packages.find] include`, or the wheel drops it. New tests go in"
-    " `tests/<area>/<stem>/test_<topic>.py` (with `__init__.py`);"
-    " new behaviour never goes into a facade. Folder shape: root AGENTS.md § Packages and"
+    "FILE_LINES": "offset the growth in the same PR: turn `<stem>.py` into a `<stem>/` package and"
+    " move an existing function or class into a topic module there (moved code keeps its cap)."
+    " A root or `acp_adapter/` module's new package joins pyproject's `packages.find` include, or"
+    " the wheel drops it. A test file splits into `tests/<area>/<stem>/test_<topic>.py` files"
+    " (with `__init__.py`). Flat siblings, tools and facades: root AGENTS.md § Packages and"
     " Python shape",
     "MEASURE": "the file must parse and measure (a file that cannot be measured cannot be"
     " judged); fix the syntax, or report the measurer bug",

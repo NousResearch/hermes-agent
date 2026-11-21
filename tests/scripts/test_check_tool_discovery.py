@@ -43,6 +43,12 @@ def test_flat_modules_and_package_tool_py_pass(tmp_path):
     assert unreached_registrations(tools_dir) == []
 
 
+def test_registration_in_a_module_discovery_skips_is_flagged(tmp_path):
+    # discover_builtin_tools never imports tools/mcp_tool.py, registry.py or __init__.py.
+    tools_dir = _tracked_tools(tmp_path, {"__init__.py": "", "mcp_tool.py": _REGISTERS})
+    assert unreached_registrations(tools_dir) == [tools_dir / "mcp_tool.py"]
+
+
 def test_package_tool_py_without_init_is_flagged(tmp_path):
     tools_dir = _tracked_tools(tmp_path, {"__init__.py": "", "pkg/tool.py": _REGISTERS})
     assert unreached_registrations(tools_dir) == [tools_dir / "pkg/tool.py"]

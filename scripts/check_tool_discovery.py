@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
 from hermes_agent.compat.paths import current_path
-from tools.registry import _module_registers_tools, _tool_module_candidates
+from tools.registry import NOT_TOOL_MODULES, _module_registers_tools, _tool_module_candidates
 
 
 def unreached_registrations(tools_dir: Path) -> list[Path]:
@@ -31,7 +31,8 @@ def unreached_registrations(tools_dir: Path) -> list[Path]:
     }
     # Discovery also skips a package without __init__.py (setuptools would drop it from the wheel).
     discovered = {p for p in _tool_module_candidates(tools_dir)
-                  if p.parent == tools_dir or (p.parent / "__init__.py").is_file()}
+                  if p.name not in NOT_TOOL_MODULES
+                  and (p.parent == tools_dir or (p.parent / "__init__.py").is_file())}
     return sorted(registering - discovered)
 
 

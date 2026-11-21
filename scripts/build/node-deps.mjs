@@ -336,7 +336,9 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   return { source, workspaces: selected }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Node resolves symlinks in import.meta.url but not in argv[1]; compare canonical paths.
+const mainEntry = process.argv[1] ? resolve(process.argv[1]) : ''
+if (mainEntry && existsSync(mainEntry) && import.meta.url === pathToFileURL(realpathSync(mainEntry)).href) {
   // The Python bundle driver uses this same resolver, not a second layout probe.
   if (process.argv[2] === '--pnpm') {
     const child = spawnSync(pnpmCommand(), process.argv.slice(3), { stdio: 'inherit' })

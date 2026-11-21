@@ -161,8 +161,10 @@ export async function rmTree(dir) {
   }
 }
 
+// Node resolves symlinks in import.meta.url but not in process.argv[1], so compare
+// against the canonical entry path: a symlinked checkout must still run main().
 export function isMain(url) {
-  return process.argv[1] && url === pathToFileURL(path.resolve(process.argv[1])).href
+  return Boolean(process.argv[1]) && url === pathToFileURL(canonical(path.resolve(process.argv[1]))).href
 }
 
 export function frontendArgs(args, extra = {}) {

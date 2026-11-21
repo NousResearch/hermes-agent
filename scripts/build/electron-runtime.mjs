@@ -63,7 +63,9 @@ export function prepareElectronRuntime({ source, install = true, env = process.e
   return executable
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Node resolves symlinks in import.meta.url but not in argv[1]; compare canonical paths.
+const mainEntry = process.argv[1] ? resolve(process.argv[1]) : ''
+if (mainEntry && existsSync(mainEntry) && import.meta.url === pathToFileURL(realpathSync(mainEntry)).href) {
   const { values } = parseArgs({ options: {
     source: { type: 'string' }, 'no-install': { type: 'boolean', default: false },
   } })

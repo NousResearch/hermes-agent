@@ -25,7 +25,7 @@ from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
-from gateway.run_inbound_media import rehome_inbound_media
+from gateway.run_inbound_media import rehome_inbound_media, with_attachment_notes
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_inbound_moa import GatewayInboundMoaMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
@@ -402,7 +402,14 @@ class GatewayInboundMixin(
             return _retain("voice transcription produced no usable text")
         # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
         # they can retry; on timeout the agent unblocks with an empty response.
-        if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
+        if _raw_clarify_reply.startswith("/"):
+            return None
+        # A free-text answer keeps its attachments (the file the agent just asked for): each gets the
+        # path note a normal turn would carry. A choice pick stays the bare label; an attachment-only
+        # reply to a choice prompt is prose, so the release below hands it to a normal turn.
+        if event.media_urls and (not _pending_clarify.choices or _pending_clarify.awaiting_text):
+            _raw_clarify_reply = with_attachment_notes(type(self), event, _raw_clarify_reply)
+        if not _raw_clarify_reply:
             return None
         # Settle only the clarify the sender was checked against: transcription awaits, and the
         # session may hold another member's question by now. If ours is gone, this is a message.

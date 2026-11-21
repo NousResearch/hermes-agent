@@ -928,3 +928,268 @@ def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Pat
             "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
         ).fetchone()
         assert (run["outcome"], run["profile"]) == ("blocked", None)
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher gate: the assignee's profile must be able to load ``sdlc-review``
+# ---------------------------------------------------------------------------
+
+
+def _make_reviewer_profile(
+    home: Path,
+    name: str,
+    *,
+    disabled: bool = False,
+    installed: bool = True,
+    no_skills: bool = False,
+    tracked: bool = False,
+) -> Path:
+    """A real profile directory, as ``hermes profile create`` leaves it.
+
+    ``disabled`` lists ``sdlc-review`` under ``skills.disabled``. ``installed=False`` leaves it out of
+    the profile's skills dir; ``no_skills`` adds the ``--no-skills`` marker (the launch will not seed it)
+    and ``tracked`` records it in the bundled manifest (a skill deleted on purpose stays tracked), the
+    two cases where the worker's startup sync does not bring it back.
+    ``domain-review`` is always installed so a card can pin it.
+    """
+    profile = home / "profiles" / name
+    profile.mkdir(parents=True)
+    if no_skills:
+        (profile / ".no-bundled-skills").write_text("", encoding="utf-8")
+    if tracked:
+        (profile / "skills").mkdir()
+        (profile / "skills" / ".bundled_manifest").write_text("sdlc-review:0123abcd" + chr(10), encoding="utf-8")
+    (profile / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - sdlc-review\n" if disabled else "skills: {}\n",
+        encoding="utf-8",
+    )
+    for skill in ("domain-review", "sdlc-review") if installed else ("domain-review",):
+        folder = profile / "skills" / "review" / skill
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(
+            f"---\nname: {skill}\ndescription: test skill {skill}\n---\nBody of {skill}.\n",
+            encoding="utf-8",
+        )
+    return profile
+
+
+def _park_in_review(conn, assignee: str, *, skills=None, title: str = "needs review") -> str:
+    tid = kb.create_task(conn, title=title, assignee=assignee, skills=skills or [])
+    claimed = kb.claim_task(conn, tid)
+    assert claimed is not None
+    assert kb.request_review(conn, tid, summary="ready", expected_run_id=claimed.current_run_id)
+    return tid
+
+
+@pytest.mark.parametrize("pinned", [[], ["domain-review"]], ids=["pins-nothing", "pins-another-skill"])
+@pytest.mark.parametrize(
+    ("profile_kwargs", "reason"),
+    [
+        ({"disabled": True}, "disabled"),
+        ({"installed": False, "no_skills": True}, "missing"),
+        ({"installed": False, "tracked": True}, "missing"),
+    ],
+    ids=["disabled-in-config", "no-skills-profile", "deleted-on-purpose"],
+)
+def test_review_lane_leaves_card_when_profile_cannot_load_review_skill(
+    kanban_home: Path, profile_kwargs: dict, reason: str, pinned: list[str]
+) -> None:
+    """#99251: the dispatcher force-adds ``sdlc-review``; a profile that cannot load it
+    would crash the reviewer at launch (card pins nothing: every skill unknown, exit 1) or
+    review with no review skill (card pins another skill: warning only). Neither may
+    happen: the card stays in ``review`` and the operator is told why."""
+    _make_reviewer_profile(kanban_home, "reviewer", **profile_kwargs)
+    spawned: list[list[str]] = []
+
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer", skills=pinned)
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, ws, *a, **k: spawned.append(list(task.skills or [])))
+
+        assert spawned == []
+        assert not result.spawned
+        assert result.skipped_review_skill_unavailable == [(tid, "reviewer", reason)]
+        assert kb.get_task(conn, tid).status == "review"
+        assert _events(conn, tid, "review_skill_unavailable") == [
+            ("review_skill_unavailable", {"assignee": "reviewer", "skill": "sdlc-review", "reason": reason})
+        ]
+
+
+def test_review_lane_still_spawns_a_healthy_reviewer(kanban_home: Path) -> None:
+    """Control for the cases above: same card, skill present and enabled -> claimed, with the
+    reviewer skill appended after the card's own."""
+    _make_reviewer_profile(kanban_home, "reviewer")
+    spawned: list[list[str]] = []
+
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer", skills=["domain-review"])
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, ws, *a, **k: spawned.append(list(task.skills or [])))
+
+        assert [s[0] for s in result.spawned] == [tid]
+        assert getattr(result, "skipped_review_skill_unavailable", []) == []
+        assert spawned == [["domain-review", "sdlc-review"]]
+        assert _events(conn, tid, "review_skill_unavailable") == []
+
+
+def test_review_lane_trusts_the_startup_sync_to_install_a_skill_the_profile_predates(kanban_home: Path) -> None:
+    """A profile created before ``sdlc-review`` shipped lacks it on disk, yet its first launch installs
+    it (``sync_skills``). Parking the card would be a false alarm that never recovers, because the
+    dispatcher is what would have started that profile."""
+    _make_reviewer_profile(kanban_home, "reviewer", installed=False)
+    spawned: list[list[str]] = []
+
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer")
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, ws, *a, **k: spawned.append(list(task.skills or [])))
+
+        assert [s[0] for s in result.spawned] == [tid]
+        assert spawned == [["sdlc-review"]]
+        assert getattr(result, "skipped_review_skill_unavailable", []) == []
+
+
+def test_review_lane_picks_the_card_up_once_the_skill_is_back(kanban_home: Path) -> None:
+    """The skip is not sticky: fixing the profile is enough, nothing to reset on the card."""
+    profile = _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+    spawned: list[list[str]] = []
+
+    def spawn(task, ws, *a, **k):
+        spawned.append(list(task.skills or []))
+
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer")
+        assert kbd.dispatch_once(conn, spawn_fn=spawn).skipped_review_skill_unavailable
+        assert spawned == []
+
+        (profile / "config.yaml").write_text("skills: {}\n", encoding="utf-8")
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+        assert [s[0] for s in result.spawned] == [tid]
+        assert spawned == [["sdlc-review"]]
+
+
+def test_review_skill_unavailable_event_is_written_once_per_cause(kanban_home: Path) -> None:
+    """The dispatcher ticks every few seconds: the card must not collect an event per tick."""
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer")
+        for _ in range(3):
+            res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+            assert res.skipped_review_skill_unavailable == [(tid, "reviewer", "disabled")]
+        assert len(_events(conn, tid, "review_skill_unavailable")) == 1
+
+
+def test_review_skill_unavailable_dry_run_reports_but_writes_nothing(kanban_home: Path) -> None:
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer")
+        res = kbd.dispatch_once(conn, dry_run=True)
+
+        assert res.skipped_review_skill_unavailable == [(tid, "reviewer", "disabled")]
+        assert _events(conn, tid, "review_skill_unavailable") == []
+
+
+def test_review_skill_gate_only_applies_to_the_review_lane(kanban_home: Path) -> None:
+    """A ready card of the same profile is untouched: ``sdlc-review`` is only forced on reviews."""
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+    spawned: list[str] = []
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="plain work", assignee="reviewer")
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, ws, *a, **k: spawned.append(task.id))
+
+        assert spawned == [tid]
+        assert getattr(result, "skipped_review_skill_unavailable", []) == []
+
+
+def test_skipped_review_card_does_not_reserve_the_spawn_slot_of_ready_work(kanban_home: Path) -> None:
+    """With one slot (``max_spawn=1``) the dispatcher keeps it for a review card it can really
+    launch. A review card it will skip must not hold the slot while ready work waits."""
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+    _make_reviewer_profile(kanban_home, "builder")
+    spawned: list[str] = []
+
+    with kbc.connect() as conn:
+        _park_in_review(conn, "reviewer")
+        ready = kb.create_task(conn, title="ready work", assignee="builder")
+        result = kbd.dispatch_once(
+            conn, max_spawn=1, spawn_fn=lambda task, ws, *a, **k: spawned.append(task.id)
+        )
+
+        assert spawned == [ready]
+        assert [s[0] for s in result.spawned] == [ready]
+
+
+def test_has_spawnable_review_ignores_cards_the_dispatcher_will_skip(kanban_home: Path) -> None:
+    """Health telemetry calls ``0 spawned`` with spawnable work "stuck". A review card parked on
+    purpose behind a missing review skill is waiting for a human, not stuck."""
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+    _make_reviewer_profile(kanban_home, "other")
+
+    with kbc.connect() as conn:
+        _park_in_review(conn, "reviewer")
+        assert kbd.has_spawnable_review(conn) is False
+
+        _park_in_review(conn, "other", title="another review")
+        assert kbd.has_spawnable_review(conn) is True
+
+
+def test_review_skill_gate_never_writes_into_the_profile(kanban_home: Path) -> None:
+    """The dispatcher asks every tick. The worker's loader records skill usage and seeds the home on each
+    call, so the gate must read files only: no counter, backup or seeded file may appear in a profile."""
+    profiles = {
+        "healthy": _make_reviewer_profile(kanban_home, "healthy"),
+        "disabled": _make_reviewer_profile(kanban_home, "disabled", disabled=True),
+        "no-skills": _make_reviewer_profile(kanban_home, "no-skills", installed=False, no_skills=True),
+    }
+
+    def tree(root: Path) -> list[tuple[str, int, int]]:
+        return sorted(
+            (str(f.relative_to(root)), f.stat().st_size, f.stat().st_mtime_ns) for f in root.rglob("*") if f.is_file()
+        )
+
+    before = {name: tree(path) for name, path in profiles.items()}
+    with kbc.connect() as conn:
+        for name in profiles:
+            _park_in_review(conn, name, title=name)
+        for _ in range(3):
+            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None, dry_run=True)
+            for name in profiles:
+                kbd.review_skill_problem(name)
+    assert {name: tree(path) for name, path in profiles.items()} == before
+
+
+def test_review_skill_gate_fails_open_when_it_cannot_judge(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doubt never parks a card: no profile home to read (the existence gate owns that case) and
+    skills switched off in this process both leave the legacy behaviour."""
+    assert kbd.review_skill_problem("") is None
+    assert kbd.review_skill_problem("nobody-home") is None
+
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+    assert kbd.review_skill_problem("reviewer") == "disabled"
+
+    from agent import skill_commands
+
+    monkeypatch.setattr(skill_commands, "_skills_off", lambda: True)
+    assert kbd.review_skill_problem("reviewer") is None
+
+
+def test_dispatch_cli_reports_review_cards_left_for_a_human(
+    kanban_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _make_reviewer_profile(kanban_home, "reviewer", disabled=True)
+    with kbc.connect() as conn:
+        tid = _park_in_review(conn, "reviewer")
+
+    def run(as_json: bool) -> str:
+        args = SimpleNamespace(dry_run=True, max=None, failure_limit=kbd.DEFAULT_FAILURE_LIMIT, json=as_json)
+        assert kanban_ops._cmd_dispatch(args) == 0
+        return capsys.readouterr().out
+
+    payload = json.loads(run(True))
+    assert payload["skipped_review_skill_unavailable"] == [
+        {"task_id": tid, "assignee": "reviewer", "reason": "disabled"}
+    ]
+    assert f"Skipped (review skill disabled for reviewer; card stays in review for a human): {tid}" in run(False)

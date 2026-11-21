@@ -1,0 +1,22 @@
+name: bw-duplicate-endpoints
+title: Hermes Duplicate Settings
+repo: https://github.com/BeeWorks-IT/bw-duplicate-endpoints
+sha: 4374558d9e6143939529a5e2446b9dd51094736d
+version: "1.0.0"
+description: "Duplicate custom OpenAI-compatible endpoints between Hermes profiles from a guided Desktop settings page (Settings > Plugins > Duplicate Custom Endpoints): pick a source profile, select endpoints, choose targets, copy with or without API keys, or create one new endpoint on several profiles at once from a single form; update-or-skip conflicts, optional connection probe, confirmation matrix and read-back verification of every write; plus profile management (display name/description, per-profile backend enablement, default model route activation) and duplication defaults. English UI. Disclosure — reads and writes every profile's config.yaml (endpoint entries, plugins allow-lists, optionally the model route) and profile.yaml through Hermes' own profile-scoped config handlers, dashboard endpoint handlers and plugin admission transaction; resolves endpoint API keys via agent.secret_scope.get_secret and stores copies through Hermes' credential store into the target profile's .env (key values never reach the UI or API responses); the optional probe calls only each endpoint's own base_url with its own key; no telemetry, no background processes, no agent tools or hooks."
+maintainer: BeeWorks-IT
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/BeeWorks-IT/bw-duplicate-endpoints/blob/4374558d9e6143939529a5e2446b9dd51094736d/README.md
+image: https://raw.githubusercontent.com/BeeWorks-IT/bw-duplicate-endpoints/4374558d9e6143939529a5e2446b9dd51094736d/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/BeeWorks-IT/bw-duplicate-endpoints/4374558d9e6143939529a5e2446b9dd51094736d/docs/screenshots/duplicate-page.png
+  - https://raw.githubusercontent.com/BeeWorks-IT/bw-duplicate-endpoints/4374558d9e6143939529a5e2446b9dd51094736d/docs/screenshots/settings-page.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

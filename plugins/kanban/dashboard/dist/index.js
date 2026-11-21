@@ -264,6 +264,14 @@
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
 
+  // Sentinel slug for the cross-board aggregate view. The backend accepts
+  // ``?board=*`` on GET /board only — every write endpoint rejects it (400),
+  // so the aggregate view is read-only: drag, bulk select and inline create
+  // are disabled there and per-task writes go through the task's own board
+  // (the task drawer resolves it from the card).
+  const ALL_BOARDS = "*";
+  function isAllBoards(slug) { return slug === ALL_BOARDS; }
+
   // Docs link — surfaced as a `?` icon next to the board switcher and as
   // `title=` hints on unlabelled controls. Kept in one place so rebrands or
   // path changes are a single edit.
@@ -627,6 +635,9 @@
     const kanbanDialogs = useKanbanDialogs(t);
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
+    // Cross-board aggregate mode: board === "*" (see ALL_BOARDS). Read-only
+    // grid; per-task writes (task drawer) resolve the card's own board slug.
+    const isAggregate = isAllBoards(board);
     const [showNewBoard, setShowNewBoard] = useState(false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
 
@@ -651,6 +662,10 @@
     const [configApplied, setConfigApplied] = useState(false);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
+    // Board the open drawer belongs to. Only set in aggregate mode (a card's
+    // id is only unique within its own board); single-board mode passes
+    // ``board`` straight through to the drawer.
+    const [selectedTaskBoard, setSelectedTaskBoard] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
@@ -715,8 +730,9 @@
           }
           // If the stored slug isn't in the list any longer (board was
           // deleted in the CLI while dashboard was open), fall back to
-          // default so the UI doesn't hang on a 404.
-          if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
+          // default so the UI doesn't hang on a 404. The aggregate sentinel
+          // is never in the list — it is a view, not a board.
+          if (board && board !== "default" && !isAllBoards(board) && !boards.find(function (b) { return b.slug === board; })) {
             setBoard("default");
             writeSelectedBoard("default");
           }
@@ -747,6 +763,13 @@
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
+      // Aggregate view: /events tails ONE board's task_events (event ids are
+      // per-database, so there is no cross-board cursor). Poll the merged read
+      // instead — one cheap fan-out per tick, no second stream protocol.
+      if (isAggregate) {
+        const timer = setInterval(function () { scheduleReload(); }, 8000);
+        return function () { clearInterval(timer); };
+      }
       wsClosedRef.current = false;
       function openWs() {
         if (wsClosedRef.current) return;
@@ -978,6 +1001,23 @@
         .catch(function () { /* dialog cancelled */ });
     }, [requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
+    // Opens the task drawer. ``boardSlug`` comes from the card in aggregate
+    // mode; fall back to scanning the loaded grid (AttentionStrip only knows
+    // the id) and finally to ``board`` for the single-board case.
+    const openTask = useCallback(function (taskId, boardSlug) {
+      let slug = boardSlug || null;
+      if (!slug && isAggregate) {
+        for (const col of (boardData && boardData.columns) || []) {
+          for (const tk of col.tasks || []) {
+            if (tk.id === taskId && tk.board) { slug = tk.board; break; }
+          }
+          if (slug) break;
+        }
+      }
+      setSelectedTaskBoard(slug);
+      setSelectedTaskId(taskId);
+    }, [isAggregate, boardData]);
+
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
       setLastSelectedId(null);
@@ -1175,6 +1215,7 @@
       setTenantFilter("");
       setAssigneeFilter("");
       setIncludeArchived(false);
+      setSelectedTaskBoard(null);
       clearSelected();
     }, [board, clearSelected]);
 
@@ -1309,10 +1350,11 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
+          aggregate: isAggregate,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
@@ -1342,6 +1384,7 @@
           board: filteredBoard,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
+          readOnly: isAggregate,
           selectedIds,
           failedIds,
           draggingTaskId,
@@ -1354,18 +1397,24 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
-          boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          // Aggregate mode: the drawer must read/write the card's own board.
+          // ``undefined`` only happens if the card vanished from the grid —
+          // the drawer then falls back to the backend's active board.
+          boardSlug: isAggregate ? (selectedTaskBoard || undefined) : board,
+          onClose: function () { setSelectedTaskId(null); setSelectedTaskBoard(null); },
+          onOpenTask: openTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
-          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          // Dependency editors must only offer tasks from the same board —
+          // ids are per-board and links cannot cross boards.
+          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, [])
+            .filter(function (tk) { return !isAggregate || tk.board === selectedTaskBoard; }),
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
           // Hook for the side-drawer's doPatch to use the same in-app
@@ -2118,18 +2167,22 @@
   function BoardSwitcher(props) {
     const { t } = useI18n();
     const list = props.boardList || [];
+    const aggregate = isAllBoards(props.board);
     const current = list.find(function (b) { return b.slug === props.board; });
-    const currentName = current && current.name ? current.name : props.board;
-    const currentTotal = current ? current.total : 0;
+    const totalAcrossAllBoards = list.reduce(function (n, b) { return n + (b.total || 0); }, 0);
+    const currentName = aggregate
+      ? tx(t, "allBoards", "All boards")
+      : (current && current.name ? current.name : props.board);
+    const currentTotal = aggregate ? totalAcrossAllBoards : (current ? current.total : 0);
     const hasMultipleBoards = list.length > 1;
 
     // Hide entirely when only the default board exists AND it's empty —
     // single-project users never see boards UI unless they ask for it.
     // We show the [+ New board] affordance as soon as any board has a
     // task (so the user can discover multi-project before they need it)
-    // OR when any non-default board exists.
-    const totalAcrossAllBoards = list.reduce(function (n, b) { return n + (b.total || 0); }, 0);
-    const shouldShow = hasMultipleBoards || totalAcrossAllBoards > 0;
+    // OR when any non-default board exists. ``aggregate`` forces it on so a
+    // stored "all boards" selection can always be switched back.
+    const shouldShow = hasMultipleBoards || totalAcrossAllBoards > 0 || aggregate;
     if (!shouldShow) {
       return h("div", {
         className: "hermes-kanban-boardswitcher-compact",
@@ -2170,28 +2223,39 @@
                   : (b.name || b.slug);
                 return h(SelectOption, { key: b.slug, value: b.slug }, label);
               }),
+              // Aggregate entry — same switcher, same option styling. Only
+              // offered when more than one board actually exists.
+              hasMultipleBoards
+                ? h(SelectOption, { key: ALL_BOARDS, value: ALL_BOARDS },
+                    `${tx(t, "allBoards", "All boards")} · ${totalAcrossAllBoards}`)
+                : null,
             ),
             h("span", { className: "text-xs text-muted-foreground" },
-              `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+              aggregate
+                ? tx(t, "allBoardsCount", "{n} tasks across {b} boards",
+                    { n: currentTotal || 0, b: list.length })
+                : `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
             h(BoardProjectBadge, { board: current, onUnbind: props.onUnbindProject }),
           ),
         ),
         h("div", { className: "flex-1" }),
         h(DocsLink, null),
-        h(Button, {
+        // Board-scoped actions are hidden in the aggregate view: the sentinel
+        // is not a real board, so PATCH/DELETE /boards/* would 400.
+        !aggregate ? h(Button, {
           onClick: props.onSettingsClick,
           size: "sm",
           className: "h-8",
           title: tx(t, "boardSettingsTitle",
             "Board settings — name, description, and the default project directory new tasks inherit"),
-        }, tx(t, "boardSettings", "Settings")),
+        }, tx(t, "boardSettings", "Settings")) : null,
         h(Button, {
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
-        props.board !== "default"
+        props.board !== "default" && !aggregate
           ? h(Button, {
             onClick: function () {
               const msg = tx(t, "archiveBoardConfirm",
@@ -2598,7 +2662,9 @@
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
       h("div", { className: "flex-1" }),
-      h(Button, {
+      // Aggregate view: the dispatcher nudge is a write against one board, and
+      // the sentinel is not a board — hide it instead of letting it 400.
+      props.aggregate ? null : h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
         title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
@@ -2926,6 +2992,7 @@
           column: col,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
+          readOnly: props.readOnly,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
           draggingTaskId: props.draggingTaskId,
@@ -2939,7 +3006,7 @@
           allTasks: props.allTasks,
         });
       }),
-      h(TrashDropZone, {
+      props.readOnly ? null : h(TrashDropZone, {
         draggingTaskId: props.draggingTaskId,
         selectedIds: props.selectedIds,
         onDelete: props.onDelete,
@@ -2973,12 +3040,14 @@
     }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected]);
 
     const handleDragOver = function (e) {
+      if (props.readOnly) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (!dragOver) setDragOver(true);
     };
     const handleDragLeave = function () { setDragOver(false); };
     const handleDrop = function (e) {
+      if (props.readOnly) return;
       e.preventDefault();
       setDragOver(false);
       const taskId = e.dataTransfer.getData(MIME_TASK);
@@ -3018,7 +3087,8 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
-        h(Checkbox, {
+        // Aggregate view is read-only: no bulk selection, no inline create.
+        props.readOnly ? null : h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
@@ -3034,7 +3104,7 @@
         h("span", { className: "hermes-kanban-column-count",
                     title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
           props.column.tasks.length),
-        h("button", {
+        props.readOnly ? null : h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
           title: tx(t, "createTask", "Create task in this column"),
@@ -3065,7 +3135,11 @@
                   ),
                   lane.tasks.map(function (tk) {
                     return h(TaskCard, {
-                      key: tk.id, task: tk,
+                      // Ids are only unique per board — key on the pair so the
+                      // aggregate view cannot merge two boards' cards.
+                      key: (tk.board ? tk.board + "/" : "") + tk.id, task: tk,
+                      draggable: !props.readOnly,
+                      selectable: !props.readOnly,
                       selected: props.selectedIds.has(tk.id),
                       failed: props.failedIds && props.failedIds.has(tk.id),
                       draggingTaskId: props.draggingTaskId,
@@ -3079,7 +3153,9 @@
               })
             : props.column.tasks.map(function (tk) {
                 return h(TaskCard, {
-                  key: tk.id, task: tk,
+                  key: (tk.board ? tk.board + "/" : "") + tk.id, task: tk,
+                  draggable: !props.readOnly,
+                  selectable: !props.readOnly,
                   selected: props.selectedIds.has(tk.id),
                   failed: props.failedIds && props.failedIds.has(tk.id),
                   draggingTaskId: props.draggingTaskId,
@@ -3122,10 +3198,15 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    // Aggregate ("all boards") view passes draggable/selectable=false: a card
+    // move / trash-drop is a write against ONE board and task ids repeat across
+    // boards, so that grid is a read-only overview (the drawer still edits).
+    const draggable = props.draggable !== false;
 
     useEffect(function () {
+      if (!draggable) return undefined;
       return attachTouchDrag(cardRef.current, t.id);
-    }, [t.id]);
+    }, [t.id, draggable]);
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
@@ -3143,6 +3224,12 @@
       }
     };
     const handleClick = function (e) {
+      // Read-only aggregate cards: no multi-select (bulk writes are per-board),
+      // any modifier-click just opens the task.
+      if (props.selectable === false) {
+        props.onOpen(t.id, t.board);
+        return;
+      }
       if (e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -3155,12 +3242,12 @@
         props.toggleSelected(t.id, true);
         return;
       }
-      props.onOpen(t.id);
+      props.onOpen(t.id, t.board);
     };
     const handleKeyDown = function (e) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        props.onOpen(t.id);
+        props.onOpen(t.id, t.board);
       }
       if (e.key === "Escape") {
         if (props.toggleSelected) props.toggleSelected(t.id, false);
@@ -3183,10 +3270,10 @@
         props.draggingSource ? "hermes-kanban-card--dragging-source" : "",
         stalenessClass(t),
       ),
-      draggable: true,
+      draggable: draggable,
       tabIndex: 0,
       role: "button",
-      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
+      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}` + (t.board_name ? ` — ${t.board_name}` : ""),
       onDragStart: handleDragStart,
       onClick: handleClick,
       onKeyDown: handleKeyDown,
@@ -3194,7 +3281,7 @@
       h(Card, null,
         h(CardContent, { className: "hermes-kanban-card-content" },
           h("div", { className: "hermes-kanban-card-row" },
-            h("label", {
+            props.selectable === false ? null : h("label", {
               className: "hermes-kanban-card-check-wrap",
               title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
@@ -3231,6 +3318,15 @@
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
+              : null,
+            // Origin board label — only present in the aggregate ("All boards")
+            // view, where the backend tags every card with board / board_name.
+            t.board_name
+              ? h(Badge, {
+                  variant: "outline",
+                  className: "hermes-kanban-tag hermes-kanban-board-tag",
+                  title: `From board: ${t.board_name} (${t.board})`,
+                }, t.board_name)
               : null,
             progress
               ? h("span", {

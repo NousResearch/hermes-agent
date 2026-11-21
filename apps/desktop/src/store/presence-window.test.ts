@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { HermesGateway } from '@/api/client'
+import { createSessionRpcDispatcher } from '@/app/contrib/session-rpc-dispatcher'
 import { captureSubmissionDestination } from '@/app/session/hooks/use-prompt-actions/submission-destination'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
@@ -14,8 +15,14 @@ import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from './ga
 import { setNativeNotifyEnabled, setNativeNotifyKind } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { createPresenceReporter, startPresenceReporter } from './presence'
-import { $activeSessionId, $selectedStoredSessionId, forgetSessionOwnerHintsForConnection, setSessionOwnerHint } from './session'
-import { $sessionStates } from './session-states'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $sessions,
+  forgetSessionOwnerHintsForConnection,
+  setSessionOwnerHint
+} from './session'
+import { $sessionStates, clearAllSessionStates, recordSessionEventScope } from './session-states'
 
 interface Frame {
   id?: string
@@ -121,7 +128,8 @@ afterEach(() => {
   $gateway.set(null)
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
-  $sessionStates.set({})
+  clearAllSessionStates()
+  $sessions.set([])
   $layoutTree.set(null)
   forgetSessionOwnerHintsForConnection('conn-a')
   window.location.hash = ''
@@ -155,6 +163,59 @@ describe('the report goes where a submit for the session in view goes', () => {
     expect(owner.socket.methods()).toContain('prompt.submit')
     expect(ambient.socket.methods()).not.toContain('client.activity')
     expect(ambient.socket.methods()).not.toContain('prompt.submit')
+  })
+
+  describe('a session whose row names only a profile', () => {
+    /** The composer's submit for `stored-1` on the window's real session dispatcher. */
+    async function submit(ambient: HermesGateway) {
+      const dispatch = createSessionRpcDispatcher({
+        ambientRequest: (method, params) => ambient.request(method, params),
+        runtimeIdByStoredSessionIdRef: { current: new Map([['stored-1', 'rt-1']]) },
+        selectedStoredSessionIdRef: { current: 'stored-1' },
+        sessionStateByRuntimeIdRef: { current: new Map([['rt-1', createClientSessionState('stored-1')]]) }
+      })
+
+      await captureSubmissionDestination('stored-1', dispatch)
+        .requestGateway('prompt.submit', { session_id: 'rt-1', text: 'hi' })
+        .catch(() => undefined)
+      await settle()
+    }
+
+    async function start() {
+      const primary = await openGateway()
+      setPrimaryGateway(primary.gateway, 'work')
+      $gateway.set(primary.gateway)
+      $sessions.set([{ id: 'stored-1', profile: 'work' } as never])
+      showChat()
+
+      return primary
+    }
+
+    it('reports on the socket the submit uses', async () => {
+      const primary = await start()
+
+      stop = startPresenceReporter()
+      document.dispatchEvent(new Event('keydown'))
+      await settle()
+      await submit(primary.gateway)
+
+      expect(primary.socket.methods()).toContain('prompt.submit')
+      expect(reports(primary.socket)).toEqual([expect.objectContaining({ sessions: ['rt-1'] })])
+    })
+
+    it('reports nowhere the submit would not go when its events came from another connection', async () => {
+      const primary = await start()
+      // The runtime's own events proved its exact owner: another connection serving the same profile.
+      recordSessionEventScope({ connectionId: 'conn-b', profile: 'work', session_id: 'rt-1' })
+
+      stop = startPresenceReporter()
+      document.dispatchEvent(new Event('keydown'))
+      await settle()
+      await submit(primary.gateway)
+
+      expect(primary.socket.methods()).not.toContain('prompt.submit')
+      expect(reports(primary.socket)).toEqual([])
+    })
   })
 
   it('reports nothing for a draft, and never creates or resumes a session to report', async () => {

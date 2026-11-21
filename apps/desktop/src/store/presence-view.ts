@@ -2,14 +2,17 @@
  * Which session this window is presenting, and the live connection a submit for it would use.
  *
  * Read-only by construction: it never dials, resumes, creates or binds anything. It resolves the
- * same pair the composer does (`use-prompt-actions/submit.ts` checks the routed stored session
- * against the bound runtime before it sends; `submission-destination.ts` captures the owner with
- * `knownOwnerForSession` and routes through `requestForSessionProfile`), and answers "nothing in
- * view" wherever the composer would first have to resume or create one.
+ * same pair a submit does: `use-prompt-actions/submit.ts` checks the routed stored session against
+ * the bound runtime before it sends, and `submission-destination.ts` captures the owner with
+ * `knownOwnerForSession`. An exact route owner is sent on directly; any other owner is handed to
+ * the window's session dispatcher, which decides the owner again (`sessionRpcOwner`, where the
+ * runtime's own events can name another connection), so that decision is the one used here. It
+ * answers "nothing in view" wherever the composer would first have to resume or create one.
  */
 
 import { registryBackendScopeKey } from '@hermes/shared'
 
+import { sessionRpcOwner } from '@/app/contrib/session-rpc-dispatcher'
 import { routeSessionId } from '@/app/routes'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, $paneVisible, isPaneVisible } from '@/components/pane-shell/tree/store'
@@ -80,8 +83,11 @@ export function presenceView(): PresenceView {
     return { channel: $gateway.get(), kind: 'none' }
   }
 
-  // Captured with the stored id first, exactly as the composer captures its destination.
-  const channel = ownerChannel(knownOwnerForSession(bound.storedId))
+  // Captured with the stored id first, exactly as the composer captures its destination; only an
+  // exact route skips the dispatcher's own decision.
+  const captured = knownOwnerForSession(bound.storedId)
+  const owner = isSessionOwnerRoute(captured) ? captured : sessionRpcOwner(bound.storedId, bound.runtimeId)
+  const channel = ownerChannel(owner)
 
   return channel === undefined ? { kind: 'unroutable' } : { channel, kind: 'session', sessionId: bound.runtimeId }
 }

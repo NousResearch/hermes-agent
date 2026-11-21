@@ -209,6 +209,23 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
                 [str(repo), str(dependency_site(environment))])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
+    if not cfg:
+        # The gateway may have been started from a uv-managed base interpreter through the venv
+        # pythonw launcher, so ``interpreter.parent.parent`` is the uv Python directory and has no
+        # pyvenv.cfg. The launcher exports VIRTUAL_ENV; consult it so the overlay branch below still
+        # exposes the venv's third-party packages to the cron child (#153043). Only accept it when
+        # that venv was created from this very interpreter directory, so a stray VIRTUAL_ENV from an
+        # unrelated environment cannot leak its packages into the child.
+        virtual_env = os.environ.get("VIRTUAL_ENV", "")
+        if virtual_env:
+            env_venv_dir = _sched.Path(virtual_env)
+            env_cfg = _read_windows_pyvenv_cfg(env_venv_dir)
+            env_home = env_cfg.get("home", "")
+            same_base = bool(env_home) and os.path.normcase(
+                os.path.abspath(env_home)) == os.path.normcase(os.path.abspath(str(interpreter.parent)))
+            if env_cfg and same_base:
+                venv_dir = env_venv_dir
+                cfg = env_cfg
     home = cfg.get("home", "")
     site_packages = venv_dir / "Lib" / "site-packages"
     if "uv" in cfg and home:

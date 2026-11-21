@@ -83,6 +83,71 @@ def test_search_memo_miss_across_providers_and_buckets():
     assert memo.lookup("firecrawl", "other", 5) is None   # different query
 
 
+def test_web_search_memo_never_crosses_profiles(monkeypatch):
+    """One multiplexed process, two profiles on the same provider: profile B has no key, so its
+    search must fail on its own scope, never be answered from profile A's paid response (#158297)."""
+    import os
+    from pathlib import Path
+
+    from agent import web_search_registry
+    from agent.runtime_scope import bind_profile_scope
+    from agent.secret_scope import get_secret, set_multiplex_active
+    from agent.web_search_provider import WebSearchProvider
+    from tools import web_tools
+
+    home_a = Path(os.environ["HERMES_HOME"])
+    home_b = home_a / "profiles" / "b"
+    home_b.mkdir(parents=True)
+    for home, env in ((home_a, "MEMOTEST_API_KEY=key-a\n"), (home_b, "")):
+        (home / "config.yaml").write_text("web:\n  search_backend: memotest\n  keyless_rescue: false\n")
+        (home / ".env").write_text(env)
+
+    seen_keys = []
+
+    class _KeyedProvider(WebSearchProvider):
+        name = "memotest"
+
+        def is_available(self):
+            return True
+
+        def search(self, query, limit=5):
+            key = get_secret("MEMOTEST_API_KEY")
+            seen_keys.append(key)
+            if not key:
+                return {"success": False, "error": "MEMOTEST_API_KEY is not set"}
+            return _ok_response(1)
+
+    with web_search_registry._lock:
+        previous = dict(web_search_registry._providers)
+        web_search_registry._providers.clear()
+    web_search_registry.register_provider(_KeyedProvider())
+    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+    set_multiplex_active(True)
+    try:
+        with bind_profile_scope(home_a):
+            assert json.loads(web_tools.web_search_tool("same query"))["success"]
+        with bind_profile_scope(home_b):
+            result = json.loads(web_tools.web_search_tool("same query"))
+    finally:
+        with web_search_registry._lock:
+            web_search_registry._providers.clear()
+            web_search_registry._providers.update(previous)
+
+    assert not result["success"] and "not set" in result["error"]
+    assert seen_keys == ["key-a", None]
+
+
+def test_search_memo_bypassed_when_served_profile_is_unbound():
+    """Multiplexed but no profile bound: no shared bucket to read, write or wait on."""
+    from agent.secret_scope import set_multiplex_active
+
+    set_multiplex_active(True)
+    memo = SearchMemo()
+    memo.store("firecrawl", "q", 5, _ok_response())
+    assert memo.lookup("firecrawl", "q", 5) is None
+    assert memo.flight_lock("firecrawl", "q", 5) is not memo.flight_lock("firecrawl", "q", 5)
+
+
 def test_search_memo_expires_after_ttl(monkeypatch):
     memo = SearchMemo()
     memo.store("firecrawl", "q", 5, _ok_response())

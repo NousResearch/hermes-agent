@@ -498,6 +498,30 @@ def redeem_codex_reset_credit(
     return _codex_reset_outcome(body, available)
 
 
+def _anthropic_scoped_limit_windows(payload: dict) -> list[AccountUsageWindow]:
+    """Model-scoped weekly caps from the ``limits[]`` array (``kind="weekly_scoped"``).
+
+    Plans that report the high-tier model-family budget only here leave the flat
+    ``seven_day_opus``/``seven_day_sonnet`` keys null, so without this a login reads
+    fully healthy while an active scoped limit rejects its requests. The model name
+    comes from ``scope.model.display_name`` (e.g. "Fable" -> "Fable week").
+    """
+    windows: list[AccountUsageWindow] = []
+    for lim in payload.get("limits") or []:
+        if not isinstance(lim, dict) or lim.get("kind") != "weekly_scoped" or not _is_num(lim.get("percent")) or isinstance(lim.get("percent"), bool):
+            continue
+        model = ((lim.get("scope") or {}).get("model") or {}) if isinstance(lim.get("scope"), dict) else {}
+        name = str(model.get("display_name") or "").strip() if isinstance(model, dict) else ""
+        windows.append(AccountUsageWindow(
+            label=f"{name} week" if name else "Model week",
+            used_percent=max(0.0, min(100.0, float(lim["percent"]))),
+            reset_at=_parse_dt(lim.get("resets_at")),
+            detail="limit active" if lim.get("is_active") else None,
+            scope="model",
+        ))
+    return windows
+
+
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
@@ -520,6 +544,11 @@ def _fetch_anthropic_account_usage(
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
+    model_labels = {w.label for w in windows if w.scope == "model"}
+    for window in _anthropic_scoped_limit_windows(payload):
+        if window.label not in model_labels:
+            windows.append(window)
+            model_labels.add(window.label)
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")

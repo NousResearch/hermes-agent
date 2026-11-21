@@ -210,6 +210,9 @@ def check_api_response(
     # Arm a bounded replay (smallest output cap) of THIS request before the clock's guaranteed window
     # ends, so a tool round longer than the TTL does not turn the next request into a full-price cache write.
     start_prompt_cache_warming(agent, api_kwargs, response)
+    # The answered request is the cache-warm source of a native compaction summary (opt-in, no-op otherwise).
+    from agent.anthropic_native_compaction import record_compaction_seed
+    record_compaction_seed(agent, api_kwargs, messages)
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

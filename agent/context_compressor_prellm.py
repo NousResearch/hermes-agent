@@ -90,3 +90,45 @@ class PreLlmSkipMixin:
                 self.threshold_tokens, self._prellm_skip_count,
             )
         return True
+
+    def _compute_summary_budget(self, turns_to_summarize: list[dict[str, Any]]) -> int:
+        """Scale the summary token budget with content size and context window."""
+        from agent.context_compressor import _MIN_SUMMARY_TOKENS, _SUMMARY_RATIO, estimate_messages_tokens_rough
+
+        content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        budget = int(content_tokens * _SUMMARY_RATIO)
+        return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
+
+    def _size_efficiency_skip(self, messages: list[dict[str, Any]], force: bool) -> bool:
+        """Decline automatic compression before pruning, preserving the original transcript.
+
+        Use provider prompt usage rather than caller-overridden current_tokens, matching
+        the original eligibility rule (#21470). Compare the unpruned window with the
+        summary target plus 500 estimated overhead tokens. This is an eligibility
+        heuristic: the target is prompt guidance, not a cap on generated output.
+        Explicit manual compression bypasses it.
+        """
+        from agent.context_compressor import estimate_messages_tokens_rough
+
+        _auto_tokens = self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        if not force:
+            _guard_start = self._protect_head_size(messages)
+            _guard_start = self._align_boundary_forward(messages, _guard_start)
+            _guard_end = self._find_tail_cut_by_tokens(messages, _guard_start)
+            if _guard_start < _guard_end:
+                _guard_turns = messages[_guard_start:_guard_end]
+                _guard_tokens = estimate_messages_tokens_rough(_guard_turns)
+                _guard_budget = self._compute_summary_budget(_guard_turns)
+                if (
+                    _auto_tokens >= self.threshold_tokens
+                    and _guard_tokens <= _guard_budget + 500
+                ):
+                    if not self.quiet_mode:
+                        logger.info(
+                            "Compression skipped: compressible window (~%d tokens) not "
+                            "larger than summary budget (%d tokens)",
+                            _guard_tokens,
+                            _guard_budget + 500,
+                        )
+                    return True
+        return False

@@ -1,10 +1,12 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
+import { $uiCopyOnSelect } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
-import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { copyTextToClipboard, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
@@ -12,7 +14,8 @@ import {
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
-  type ParsedVoiceRecordKey
+  type ParsedVoiceRecordKey,
+  resolveCopyOnSelect
 } from '../lib/platform.js'
 import { isTermuxTuiMode } from '../lib/termux.js'
 
@@ -786,6 +789,12 @@ const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
+export const shouldCopyMouseSelection = (
+  configured: boolean | null | undefined,
+  mask: string | undefined,
+  platformIsMac = isMac
+): boolean => !mask && resolveCopyOnSelect(configured, platformIsMac)
+
 export function TextInput({
   columns = 80,
   value,
@@ -818,6 +827,7 @@ export function TextInput({
   // the parent's answer, so they edit the next draft instead of the submitted one.
   const postSubmitKeys = useRef<null | Parameters<InputHandler>[]>(null)
   const handleInputRef = useRef<InputHandler>(() => {})
+  const copyOnSelect = useStore($uiCopyOnSelect)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -1028,7 +1038,7 @@ export function TextInput({
         const range = selRange()
 
         if (range) {
-          void writeClipboardText(vRef.current.slice(range.start, range.end))
+          void copyTextToClipboard(vRef.current.slice(range.start, range.end))
         }
       },
       cut: () => {
@@ -1400,8 +1410,8 @@ export function TextInput({
 
     const normalized = selRange()
 
-    if (isMac && normalized) {
-      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
+    if (shouldCopyMouseSelection(copyOnSelect, mask) && normalized) {
+      void copyTextToClipboard(vRef.current.slice(normalized.start, normalized.end))
     }
   }
 
@@ -1803,15 +1813,17 @@ export function TextInput({
         // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
-          const decision = decideRightClickAction(vRef.current, selRange())
+          const decision = decideRightClickAction(vRef.current, selRange(), !mask)
 
           if (decision.action === 'copy') {
-            void writeClipboardText(decision.text)
+            void copyTextToClipboard(decision.text)
 
             return
           }
 
-          emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+          if (decision.action === 'paste') {
+            emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+          }
 
           return
         }
@@ -1901,11 +1913,12 @@ interface TextInputProps {
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
-export type RightClickDecision = { action: 'copy'; text: string } | { action: 'paste' }
+export type RightClickDecision = { action: 'copy'; text: string } | { action: 'ignore' } | { action: 'paste' }
 
 /**
  * Decide what right-click should do on the composer:
  *   - non-empty selection → copy that text to the clipboard
+ *   - non-empty masked selection → ignore it so plaintext cannot leave the input
  *   - no selection (or empty/collapsed range) → fall through to paste
  *
  * Mirrors terminal-native behavior (xterm, iTerm, gnome-terminal) where
@@ -1916,9 +1929,14 @@ export type RightClickDecision = { action: 'copy'; text: string } | { action: 'p
  */
 export function decideRightClickAction(
   value: string,
-  range: { end: number; start: number } | null
+  range: { end: number; start: number } | null,
+  copyable = true
 ): RightClickDecision {
   if (range && range.end > range.start) {
+    if (!copyable) {
+      return { action: 'ignore' }
+    }
+
     const text = value.slice(range.start, range.end)
 
     if (text) {

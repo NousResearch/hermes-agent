@@ -1,0 +1,25 @@
+name: hermes-share
+repo: https://github.com/Sahil-SS9/hermes-share
+sha: "ae150ff08016927fb4dbc4a28ba8c3a2616cb868"
+subdir: ""
+title: "Session Share"
+version: "0.2.1"
+description: "Share one or several sessions as a redacted, revocable secret GitHub gist with /share, and import a shared bundle back with /share import. A bundle is up to three kinds of file in one gist, every one of them rendered by the public `hermes sessions export` CLI: the importable jsonl, a readable Markdown transcript, and a standalone HTML page per session. The preview lists every session with its redaction counts and file sizes; nothing is uploaded until /share confirm. Credentials become non-reusable sentinels (never a head/tail mask), home paths become ~, and the account and host names are replaced; redaction cannot be switched off. /share import reads a gist or file, detects the format from content (Hermes export, Claude Code transcript, Codex rollout), shows what is inside, and imports only on /share import confirm. Disclosure — reads the sessions you name through `hermes sessions export` and the session index through hermes_state, and uploads them only after /share confirm as a secret (unlisted, not private) GitHub gist through your existing gh login; imports download over HTTPS only (8 MB cap) and are never executed; on chat platforms /share covers only the calling chat's session and its own gists, and import is off, until the owner turns on allow_gateway_selectors / allow_gateway_import."
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/Sahil-SS9/hermes-share#readme
+readme: true
+platforms: [linux, macos, windows]
+known_issues:
+  - "Needs `ctx.redact_text()` on the host (NousResearch/hermes-agent#150220). On a Hermes without it, /share refuses by name instead of importing an internal module."
+  - "Hermes-to-Hermes import needs `hermes sessions import --from hermes` (NousResearch/hermes-agent#87988); until a host has it that path refuses by name. Claude Code and Codex imports work today."
+  - "Import from a chat platform is refused until `plugins.entries.hermes-share.settings.allow_gateway_import` is true, because an import writes into that Hermes's own store. Sharing and /unshare work on chat platforms without it."
+  - "On a chat platform, /share covers only the calling session and /share list and /unshare see only that chat's gists, until `plugins.entries.hermes-share.settings.allow_gateway_selectors` is true. Gists shared by 0.2.0 carry no session key, so they can be removed only from a local session (or with that setting on)."
+  - "A gist is secret, not private: unlisted and not searchable, but readable by anyone with the URL."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

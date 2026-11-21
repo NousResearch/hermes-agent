@@ -75,6 +75,37 @@ describe('writeDiffToTerminal sync-marker gating (#66490 main-screen gap)', () =
   })
 })
 
+describe('supportsExtendedKeys', () => {
+  // Rex (TERM_PROGRAM=rex) reports Kitty CSI-u correctly, e.g. Option+Backspace
+  // as \x1b[127;3u. Without the push it falls back to legacy ESC DEL, which the
+  // tokenizer splits into Escape + Backspace.
+  it('advertises extended keys for rex', async () => {
+    const { env } = await import('../utils/env.js')
+    const { supportsExtendedKeys } = await import('./terminal.js')
+    const saved = env.terminal
+
+    try {
+      env.terminal = 'rex'
+      expect(supportsExtendedKeys()).toBe(true)
+    } finally {
+      env.terminal = saved
+    }
+  })
+
+  it('does not advertise extended keys for unknown terminals', async () => {
+    const { env } = await import('../utils/env.js')
+    const { supportsExtendedKeys } = await import('./terminal.js')
+    const saved = env.terminal
+
+    try {
+      env.terminal = 'Apple_Terminal'
+      expect(supportsExtendedKeys()).toBe(false)
+    } finally {
+      env.terminal = saved
+    }
+  })
+})
+
 describe('skipKittyKeyboardProtocol', () => {
   // Ghostty's kitty disambiguate mode strips the Alt modifier from
   // Backspace (Option+Backspace arrives as bare \x7f instead of CSI-u

@@ -36,6 +36,7 @@ from agent.error_classifier import (
 from agent.auxiliary_custom_credentials import (
     _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
+from agent.usage_pricing import hoist_choice_usage, response_usage
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
@@ -6924,7 +6925,7 @@ def _create_with_progress_once(
     # total ceiling instead of idling out (#114938). Progress ticks only for
     # substantive stream payloads or a completed usable response.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
-        response = client.chat.completions.create(**kwargs)
+        response = hoist_choice_usage(client.chat.completions.create(**kwargs))
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
@@ -6946,7 +6947,7 @@ def _create_with_progress_once(
         chunks = _STREAM_REJECTED
     if chunks is _STREAM_REJECTED:
         _notify_aux_dispatch()
-        response = client.chat.completions.create(**kwargs)
+        response = hoist_choice_usage(client.chat.completions.create(**kwargs))
         _notify_aux_provider_response()
         return response
     # Some shims (MoA quiet mode, defensive adapters) return a complete response despite
@@ -7062,8 +7063,7 @@ class _ChatStreamAccumulator:
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
-        chunk_usage = getattr(chunk, "usage", None)
-        if chunk_usage:
+        if chunk_usage := response_usage(chunk):
             self.usage = chunk_usage
         if progress is not None:
             # llama-server is still reading the prompt: new tokens read keep the compression fence

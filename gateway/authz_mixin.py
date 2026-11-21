@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
@@ -454,6 +454,13 @@ class GatewayAuthorizationMixin:
             return adapter
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
         platform, profile = getattr(source, "platform", None), getattr(source, "profile", None)
+        if not profile:
+            # A source whose ``profile`` was never stamped still carries its lane in the session key
+            # (``agent:<profile>:<platform>:...``). Reading it there keeps an identity-less SECONDARY
+            # lane on its own bot; without it the lookup below resolves through the PRIMARY map and the
+            # lane's status bubbles and notices go out the default bot — the wrong-bot row the pinned
+            # identity exists to close, reachable from the one path that has no identity to consult.
+            profile = self._lane_profile(source)
         # A pinned identity NAMES the receiving bot (live or restored from ``transport_profile``).
         # If that bot has no adapter right now it is offline: fail closed rather than fall through to
         # the runtime profile's bot — that fallthrough is the "restored lane answers from the wrong
@@ -466,6 +473,24 @@ class GatewayAuthorizationMixin:
         # Preserve the routed-primary native fallback before considering Relay.
         adapter = self._authorization_adapter(platform, profile) or self._routed_primary_adapter(source)
         return adapter if adapter is not None else self._fronting_relay(platform, profile)
+
+    def _lane_profile(self, source: Any) -> Optional[str]:
+        """Profile named by *source*'s session key, ``None`` for the primary/default lane.
+
+        Only the runtime lane is read here — never used to *pin* a transport: a routed lane can run as
+        one profile while another bot receives it, and that case is answered by
+        ``identity.transport_profile`` above. This is the weaker, last-resort signal for sources that
+        carry no identity at all.
+        """
+        key = str(getattr(source, "session_key", "") or "")
+        parts = key.split(":")
+        if len(parts) < 2 or parts[0] != "agent" or parts[1] in ("", "main"):
+            return None
+        try:
+            from gateway.session import profile_from_session_key_namespace
+            return profile_from_session_key_namespace(parts[1])
+        except Exception:
+            return None
 
     def _fronting_relay(self, platform: Optional[Platform], profile: Optional[str]):
         """The Relay in *profile*'s adapter map that fronts *platform*, else None.

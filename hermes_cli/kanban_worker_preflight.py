@@ -41,13 +41,28 @@ def task_model(task, config) -> tuple[str, bool]:
 
 def _route_base_url(identity, held, entry) -> str:
     from agent.secret_scope import get_secret_str
+    from hermes_cli.runtime_provider_custom import _LLAMACPP_ALIASES
 
     # A named entry owns its own URL; the bare custom and OpenRouter runtime also honor scoped .env.
     base_url = str(entry.get('base_url') or held.get('base_url') or '').strip()
-    if entry or identity not in ('custom', 'openrouter'):
+    if entry:
         return base_url
+    if identity not in ('custom', 'openrouter'):
+        return base_url or _builtin_base_url(identity, get_secret_str)
+    if not base_url and str(held.get('provider') or '').strip().lower() in _LLAMACPP_ALIASES:
+        return 'http://127.0.0.1'  # the managed llama.cpp server on this host (_resolve_llamacpp_runtime)
     return (get_secret_str('CUSTOM_BASE_URL').strip() or base_url
             or get_secret_str('OPENROUTER_BASE_URL').strip())
+
+
+def _builtin_base_url(identity, get_secret_str) -> str:
+    """Where a built-in provider runs with no ``model.base_url``: its scoped ``*_BASE_URL``, else its registry
+    default (``_api_key_provider_runtime``; ``provider: openai`` reads ``OPENAI_BASE_URL``, ``expand_direct_api_alias``)."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
+    pconfig = PROVIDER_REGISTRY.get(identity)
+    env_var = getattr(pconfig, 'base_url_env_var', '') or ('OPENAI_BASE_URL' if identity in _DIRECT_API_BASE_URLS else '')
+    return (get_secret_str(env_var).strip() if env_var else '') or getattr(pconfig, 'inference_base_url', '')
 
 
 def _self_hosted(base_url) -> bool:

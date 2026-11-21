@@ -97,7 +97,7 @@ These compile and can give a result that differs from stdlib:
 | B5 | `pos > endpos` | `compile("").match("abc", 3, 0)`: match → `None` |
 | B6 | RE2-only syntax is accepted where stdlib raises | `\pL`, `\p{Greek}`, `\z`, `(?<name>a)`, `(?U)a+` |
 | B7 | IGNORECASE classes with members above U+FFFF follow Python 3.14's rule on every interpreter | |
-| B8 | An interpreter whose Unicode version has no entry in `hermes_re/_tables.py` gets RE2's own `\w` / `\d` | caught by `tests/hermes_re/test_tables_current.py` |
+| B8 | An interpreter whose Unicode version, or an RE2 build whose Unicode generation, has no entry in `hermes_re/_tables.py` gets RE2's own `\w` / `\d` where they differ | caught by `tests/hermes_re/test_tables_current.py` |
 
 Also: `error.pos` / `lineno` / `colno` are `None`; `Pattern.flags` omits inline flags; `groupindex` is a
 `dict`; a `bytearray` / `memoryview` subject yields results of that type.
@@ -216,4 +216,8 @@ Lint bans `import re` (code-health rule HX018, later ruff `TID251`) outside a na
 
 The Unicode tables in `hermes_re/_tables.py` are generated: after a Python or google-re2 upgrade run
 `python scripts/gen_hermes_re_tables.py` and commit the result (`--check` verifies it, and so does
-`tests/hermes_re/test_tables_current.py`).
+`tests/hermes_re/test_tables_current.py`). RE2's Unicode data depends on the BUILD, not only the
+google-re2 version: the wheels use RE2's bundled tables (Unicode 15.1), a libre2 built with
+`RE2_USE_ICU` (Alpine, hence the musl lane; Nix) takes `\p{..}` from ICU. Entries are keyed by Python's
+Unicode version and the build's generation (`hermes_re._engine.unicode_generation()`), so run the
+generator once per build kind (e.g. a wheel venv and the musl container).

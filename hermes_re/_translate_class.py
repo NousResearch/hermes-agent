@@ -5,7 +5,8 @@ Stdlib-only; no regex engine.
 ``bracket(body, ascii_only, icase)`` translates a whole ``[...]``.
 
 Unicode `\w` is RE2's ``[\p{L}\p{N}_]`` corrected by a static delta table for the running Python's
-Unicode version (``_tables``), likewise `\d` over ``\p{Nd}``; `\s` is enumerated.
+Unicode version and every known RE2 Unicode generation (``_tables``), likewise `\d` over
+``\p{Nd}``; `\s` is enumerated.
 Under IGNORECASE the class is folded here, from Python's own case tables, and emitted inside
 ``(?-i:...)`` so RE2 neither folds it again nor folds the ``\p{..}`` properties.
 """
@@ -29,21 +30,29 @@ class Unsupported(ValueError):
     """Class syntax this translator does not handle; the message says what."""
 
 
-def _unicode_cells() -> dict:
-    """Positive `d w s` cell sets for the running interpreter's Unicode version."""
-    global _unicode
-    table = _TABLES.get(unicodedata.unidata_version)
-    if table is None:  # unknown Unicode version: uncorrected RE2 tables (gen_tables.py --check flags it)
-        table = {"W_ADD": (), "W_SUB": (), "D_ADD": (), "D_SUB": (), "SPACE": _TABLES["16.0.0"]["SPACE"]}
-    w_add, w_sub, d_add, d_sub = (tuple(table[key]) for key in ("W_ADD", "W_SUB", "D_ADD", "D_SUB"))
-    keep_w = _r.complement(w_sub)
-    # What each cell can contain: ASCII membership is fixed, W_ADD lies in cell O by definition,
-    # W_SUB in L/N, D_SUB in Nd, D_ADD outside Nd.
+def _care(w_add: tuple, w_sub: tuple, d_add: tuple, d_sub: tuple) -> tuple:
+    """What each cell can contain under ONE RE2 generation: ASCII membership is fixed, W_ADD lies
+    in cell O by definition, W_SUB in L/N, D_SUB in Nd, D_ADD outside Nd."""
     upper = _r.intersect(((128, _r.MAX),), _r.complement(_r.union(w_add, d_sub)))
-    care = (_r.union(upper, ((65, 90), (97, 122))),
+    return (_r.union(upper, ((65, 90), (97, 122))),
             _r.union(_r.intersect(((128, _r.MAX),), _r.complement(_r.union(w_add, d_add))), ((48, 57),)),
             upper,
             _r.complement(_r.union(_r.union(w_sub, d_sub), ((48, 57), (65, 90), (97, 122)))))
+
+
+def _unicode_cells() -> dict:
+    """Positive `d w s` cell sets for the running interpreter's Unicode version, exact under EVERY
+    RE2 generation the table knows for it (the deltas are united, the cells' possible contents
+    too): the engine's generation is unknown here, ``compile()`` translates without the engine.
+    An ADD is a Python member, a SUB is not, so neither union can be wrong for another build."""
+    global _unicode
+    table = _TABLES.get(unicodedata.unidata_version)
+    if table is None:  # unknown Unicode version: uncorrected RE2 tables (gen_tables.py --check flags it)
+        table = {"SPACE": _TABLES["16.0.0"]["SPACE"], "RE2": {"": {"W_ADD": (), "W_SUB": (), "D_ADD": (), "D_SUB": ()}}}
+    deltas = [[tuple(entry[key]) for key in ("W_ADD", "W_SUB", "D_ADD", "D_SUB")] for entry in table["RE2"].values()]
+    w_add, w_sub, d_add, d_sub = (functools.reduce(_r.union, column) for column in zip(*deltas))
+    care = functools.reduce(_r.cells_union, (_care(*delta) for delta in deltas))
+    keep_w = _r.complement(w_sub)
     _unicode = {
         "w": (keep_w, keep_w, keep_w, _r.union(w_add, ((95, 95),))),
         "d": (d_add, _r.complement(d_sub), d_add, d_add),

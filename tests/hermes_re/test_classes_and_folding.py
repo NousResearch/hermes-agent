@@ -60,9 +60,10 @@ def test_the_generated_unicode_table_knows_this_interpreter():
 
 def test_the_generated_unicode_table_is_exact_for_this_interpreter_and_engine():
     # The table corrects RE2's `[\p{L}\p{N}_]` / `\p{Nd}` to Python's `\w` / `\d`. Recompute the delta from the
-    # running interpreter (str predicates) and the installed engine, and compare with the shipped entry.
+    # running interpreter (str predicates) and the installed engine, and compare with the shipped entry
+    # for the engine's Unicode generation (RE2's bundled tables or, built with RE2_USE_ICU, ICU's).
     from re2 import _re2
-    from hermes_re import _tables
+    from hermes_re import _engine, _tables
     points = [cp for cp in range(0x110000) if not 0xD800 <= cp <= 0xDFFF]
     text = "".join(map(chr, points))
     data = text.encode("utf-8")
@@ -93,10 +94,11 @@ def test_the_generated_unicode_table_is_exact_for_this_interpreter_and_engine():
     space = {ord(ch) for ch in text if ch.isspace()}
     engine_word, engine_digit = engine_set(r"[\p{L}\p{N}_]"), engine_set(r"\p{Nd}")
     shipped = _tables.TABLES[unicodedata.unidata_version]
-    assert ranges(word - engine_word) == list(shipped["W_ADD"])
-    assert ranges(engine_word - word) == list(shipped["W_SUB"])
-    assert ranges(digit - engine_digit) == list(shipped["D_ADD"])
-    assert ranges(engine_digit - digit) == list(shipped["D_SUB"])
+    entry = shipped["RE2"][_engine.unicode_generation()]  # this build's Unicode generation
+    assert ranges(word - engine_word) == list(entry["W_ADD"])
+    assert ranges(engine_word - word) == list(entry["W_SUB"])
+    assert ranges(digit - engine_digit) == list(entry["D_ADD"])
+    assert ranges(engine_digit - digit) == list(entry["D_SUB"])
     assert ranges(space) == list(shipped["SPACE"])
 
 

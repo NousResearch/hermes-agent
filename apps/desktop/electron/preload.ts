@@ -450,6 +450,20 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   dropPreviewSigninsForProfile: (request: { profile: string }) =>
     ipcRenderer.invoke('hermes:preview-signins:profile-deleted', request),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  downloads: {
+    start: payload => ipcRenderer.invoke('hermes:download:start', payload),
+    pause: id => ipcRenderer.invoke('hermes:download:pause', id),
+    resume: id => ipcRenderer.invoke('hermes:download:resume', id),
+    cancel: id => ipcRenderer.invoke('hermes:download:cancel', id),
+    list: () => ipcRenderer.invoke('hermes:download:list'),
+    dismiss: id => ipcRenderer.invoke('hermes:download:dismiss', id),
+    onProgress: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:download:progress', listener)
+
+      return () => ipcRenderer.removeListener('hermes:download:progress', listener)
+    }
+  },
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed
     // only if the page asks for the human). Resolves with how it ended.

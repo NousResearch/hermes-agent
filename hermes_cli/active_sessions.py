@@ -157,11 +157,21 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
 
 
 def session_owner_details(session_id: str, entry: dict[str, Any]) -> str:
-    """The ``Details:`` line shared by every owner-refusal message."""
+    """The ``Details:`` line shared by every owner-refusal message.
+
+    The age is when the holder CLAIMED the chat, not its last activity (the registry does not
+    record activity), so say "claimed": "opened 13m ago" reads as idle for 13 minutes while the
+    holder may have written a turn seconds ago. A liveness-tracked (Desktop) holder is released
+    by the idle reaper (tui_gateway/session_reaper.py) — say so, or the user concludes the chat is
+    stuck until that window closes."""
     surface = str(entry.get("surface") or "another surface")
     started = _optional_float(entry.get("started_at"))
     age = f" {format_age(time.time() - started)} ago" if started else ""
-    return f"Details: session {session_id} opened by {surface}{age}."
+    details = f"Details: session {session_id} claimed by {surface}{age}."
+    if entry.get("track_liveness") is True:
+        details += (" It is released automatically once the chat has been idle there for about"
+                    " 10-15 minutes (no turn or background work running).")
+    return details
 
 
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:

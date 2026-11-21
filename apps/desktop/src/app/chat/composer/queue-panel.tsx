@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
@@ -6,8 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { CornerDownLeft, iconSize, Pencil, SteeringWheel } from '@/lib/icons'
+import { downscaleDataUrlForPreview, FALLBACK_PLACEHOLDER } from '@/lib/image-resize'
 import { cn } from '@/lib/utils'
+import type { ComposerAttachment } from '@/store/composer'
 import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
 
 interface QueuePanelProps {
@@ -37,6 +40,55 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
 /** A preview long enough (or multiline enough) that two lines may still hide
  *  part of it — the entry gets an in-place expand/collapse toggle (#45664). */
 const shouldOfferExpandedPreview = (preview: string) => preview.length > 140 || preview.includes('\n')
+
+const MAX_QUEUE_THUMBS = 4
+
+/** One queued image's preview: the bounded data thumbnail when the chip has one, else the saved file
+ *  read and downscaled (a pasted screenshot carries only a window-local `blob:` URL, which a restored
+ *  queue cannot paint). Anything unreadable renders nothing: the "N attachments" note still counts it. */
+function QueuedThumb({ attachment }: { attachment: ComposerAttachment }) {
+  const inline = attachment.thumbnailUrl?.startsWith('data:') ? attachment.thumbnailUrl : undefined
+  const [src, setSrc] = useState<string | undefined>(inline)
+  const path = inline ? undefined : attachment.path
+
+  useEffect(() => {
+    if (!path || !window.hermesDesktop) {
+      return
+    }
+
+    let alive = true
+
+    void Promise.resolve(window.hermesDesktop.readFileDataUrl(path))
+      .then(async url => (url && !isReadFileErrorResult(url) ? downscaleDataUrlForPreview(url) : undefined))
+      .then(thumb => alive && thumb && thumb !== FALLBACK_PLACEHOLDER && setSrc(thumb))
+      .catch(() => undefined)
+
+    return () => {
+      alive = false
+    }
+  }, [path])
+
+  return src ? (
+    <img
+      alt={attachment.label}
+      className="size-5 rounded-sm border border-border/55 object-cover"
+      draggable={false}
+      src={src}
+    />
+  ) : null
+}
+
+function QueuedThumbs({ attachments }: { attachments: ComposerAttachment[] }) {
+  const images = attachments.filter(a => a.kind === 'image' && (a.thumbnailUrl?.startsWith('data:') || a.path))
+
+  return images.length > 0 ? (
+    <span className="flex items-center gap-1" data-slot="queue-thumbs">
+      {images.slice(0, MAX_QUEUE_THUMBS).map(a => (
+        <QueuedThumb attachment={a} key={a.occurrenceId ?? a.id} />
+      ))}
+    </span>
+  ) : null
+}
 
 export function QueuePanel({
   busy,
@@ -150,6 +202,7 @@ export function QueuePanel({
           {(attachmentsCount > 0 || isEditing || lost) && (
             <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
               {lost && <span data-slot="queue-lost-note">{c.queueLostNote}</span>}
+              {attachmentsCount > 0 && <QueuedThumbs attachments={entry.attachments} />}
               {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
               {isEditing && (
                 <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">

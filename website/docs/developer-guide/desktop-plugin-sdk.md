@@ -731,6 +731,31 @@ Migration for the held catalog plugins:
   row's status dot (the durable id it needed from `_lineage_root_id` is the
   slot's `sessionId`).
 
+#### Styling sidebar rows — state attributes and slots
+
+Restyle the sidebar from a theme or a plugin `<style>` with these attributes,
+not the Tailwind classes that paint them today (those change between releases):
+
+| Hook | On | Meaning |
+|---|---|---|
+| `[data-session-row]` | each session row | the row itself |
+| `[data-status]` | session row | the state its dot paints: `idle`, `working`, `stalled`, `background`, `needs-input`, `unread`, `draft` |
+| `[data-selected]` | session row | the session open in the focused pane |
+| `[data-open-elsewhere]` | session row | open in another pane or window |
+| `[data-pinned]`, `[data-unread]` | session row | pinned; marked unread |
+| `[data-working="true"]` | session row | a turn is live (`working`, `stalled` or `background`) |
+| `[data-slot="sidebar-panel-label"]` | section label (Pinned, Projects…) | its marker is `[data-slot="sidebar-panel-label-dot"]` |
+| `[data-slot="sidebar-workspace-header"]`, `[data-slot="sidebar-group-row"]` | project / lane headers | |
+| `[data-slot="sidebar-date-divider"]` | "Yesterday" / "Last week" captions | |
+| `[data-slot="sidebar-show-more"]` | "Show all N sessions" | |
+| `[data-slot="sidebar-pinned-empty"]` | the no-pins hint | `[data-filtered]` when a filter, not an empty list, hides the pins |
+
+```css
+/* Thin amber rail on rows waiting for you; hide the pin hint until there are pins */
+[data-session-row][data-status="needs-input"] { box-shadow: inset 2px 0 0 #f59e0b; }
+[data-slot="sidebar-group"]:has([data-slot="sidebar-pinned-empty"]:not([data-filtered])) { display: none; }
+```
+
 `COMPOSER_AREAS.modelPill` overrides the model pill's **label** — a provider
 (`{ label: (ctx: ComposerModelPillContext) => string | null }`) receives
 `{ model, reasoningEffort, compact }` and returns the text to show, or `null` to

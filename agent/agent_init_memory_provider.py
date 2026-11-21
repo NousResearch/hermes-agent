@@ -5,11 +5,16 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
 from agent.agent_init_session import agent_interface
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
+from persistence import SessionId
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 logger = logging.getLogger("run_agent")
 
@@ -109,6 +114,46 @@ def _stored_transcript_kwargs(agent) -> dict[str, Any]:
     return {"resumed": resumed, "message_count": count}
 
 
+def _session_project_id(store: Persistence | None, session_id: str, hermes_home: str) -> str | None:
+    """Find the project for a destination session through its profile's owner store."""
+    if store is None:
+        return None
+    from hermes_cli import projects_db
+
+    try:
+        if store.scope.hermes_home_key != hermes_home_key(hermes_home):
+            return None
+        registry = store.scope.profile_dir / "projects.db"
+        if not registry.is_file():
+            return None
+        sid = SessionId(session_id)
+        row = store.sessions.get(sid)
+        if row is None:
+            return None
+        cwd = row.cwd
+        owner = row.chat_id or ""
+        route = row.session_key or ""
+        if sid.startswith("local-") or owner.startswith("local-") or route.split(":", 3)[2:3] == ["local"]:
+            if not owner:
+                return None
+            # A local session's display path can differ from the owner's execution workspace.
+            binding = store.bindings.receipt(SessionId(owner))
+            if binding.session_id != owner or binding.route != route or sid not in binding.lineage:
+                return None
+            cwd = binding.policy.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            return None
+        path = Path(cwd)
+        if not path.is_absolute() or not path.is_dir():
+            return None
+        with projects_db.connect_closing(registry) as conn:
+            project = projects_db.project_for_path(conn, cwd)
+        return project.id if project is not None else None
+    except Exception:  # health: allow BLE001 -- unavailable attribution must not disable the provider
+        logger.debug("Could not resolve memory provider session project", exc_info=True)
+        return None
+
+
 def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
@@ -121,6 +166,12 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         "agent_context": getattr(agent, "memory_agent_context", None)
         or (platform if platform in ("cron", "subagent") else "primary"),
     }
+    store = agent_interface(agent)
+    kwargs["_session_store"] = store
+    kwargs["session_project_id"] = (
+        _session_project_id(store, agent.session_id, kwargs["hermes_home"])
+        if kwargs["agent_context"] == "primary" else None
+    )
     # Documented in MemoryProvider.initialize: forks tell their shape apart by platform + parent.
     if getattr(agent, "_parent_session_id", None):
         kwargs["parent_session_id"] = agent._parent_session_id
@@ -131,7 +182,6 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
     # Session title (e.g. honcho derives chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
-            store = agent_interface(agent)
             _st = (store.sessions.get_title(agent.session_id) if store is not None
                    else agent._session_db.get_session_title(agent.session_id))
             if _st:

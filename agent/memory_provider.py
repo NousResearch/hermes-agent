@@ -36,6 +36,9 @@ def spawn_context_thread(target: Callable[..., Any], *, name: str, daemon: bool 
 # checkpoint (normalized evidence handoff + strict-mode failure propagation).
 PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
 
+# The agent supplies trusted session_project_id metadata on initialize and rebind.
+SESSION_PROJECT_ATTRIBUTION_VERSION = 1
+
 # Default glyph for recall indicators; providers may use their own brand mark.
 INDICATOR_GLYPH = "🧠"
 
@@ -131,6 +134,9 @@ class MemoryProvider(ABC):
         store gives ``False`` and a count of 0 or 1; a ``/branch`` child seeded with copied history
         reports the copy. Read both with ``kwargs.get``: older Hermes omits them. A mid-process
         ``/resume`` rebinds through :meth:`on_session_switch` instead.
+
+        ``session_project_id`` is the opaque ID of the named Hermes project owning the
+        session's verified workspace in its profile, or None when attribution is unavailable.
         """
 
     def unavailable_reason(self) -> str:
@@ -203,7 +209,8 @@ class MemoryProvider(ABC):
         """session_id reassigned mid-process (/resume, /branch, /reset, /new, compression)
         without teardown: rebind per-session state so later writes land in the right record.
         ``reset`` is True only for a genuinely new conversation (flush buffers); ``rewound``:
-        same id but the transcript was truncated."""
+        same id but the transcript was truncated. ``session_project_id`` describes
+        the destination session and may be absent or None."""
 
     def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Extract insights from ``messages`` about to be compressed, fed into the summary prompt."""

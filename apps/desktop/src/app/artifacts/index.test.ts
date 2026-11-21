@@ -652,6 +652,38 @@ describe('loadArtifactsForSessions', () => {
     expect(result.failures).toEqual([])
   })
 
+  it('publishes completed sessions and stops before starting more work after cancellation', async () => {
+    const controller = new AbortController()
+    const sessions = [
+      makeSession({ id: 'session-1' }),
+      makeSession({ id: 'session-2' }),
+      makeSession({ id: 'session-3' })
+    ]
+    const published: string[][] = []
+
+    const loadPage = vi.fn(async (session: SessionInfo) => {
+      if (session.id === 'session-2') {
+        controller.abort()
+      }
+
+      return {
+        messages: [{ content: `https://example.com/${session.id}.png`, role: 'assistant' as const, timestamp: 2000 }]
+      }
+    })
+
+    await expect(
+      loadArtifactsForSessions(sessions, loadPage, {
+        onProgress: result => published.push(result.artifacts.map(artifact => artifact.sessionId)),
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    // Aborted while session-2's page was in flight: that page is discarded
+    // (not recorded as a failure) and session-3 never starts.
+    expect(loadPage).toHaveBeenCalledTimes(2)
+    expect(published).toEqual([['session-1']])
+  })
+
   it('discards a failed session and continues after an oversized later page', async () => {
     const sessions = [
       makeSession({ id: 'session-1' }),

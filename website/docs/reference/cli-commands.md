@@ -1884,6 +1884,11 @@ Subcommands:
 | `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
+| `send <session> TEXT [--wait] [--timeout SECS] [--json]` | Queue a prompt on a gateway-hosted session; `--wait` prints the reply with the `chat -q` exit code (124 on timeout). `<session>` here and below is an id, unique id prefix, title, or `-` (this directory's last session). See [Sessions → Drive a Session From a Script](../user-guide/sessions.md#drive-a-session-from-a-script). |
+| `wait <session>... [--any\|--all] [--timeout SECS]` | Block until the sessions have no running or queued turn (exit 124 on timeout; nothing is interrupted). |
+| `watch <session> [--follow]` | Stream a session's replies and tool calls until it is idle. |
+| `log <session> [--json] [--types PATTERN] [--limit N]` | Print the stored transcript (messages, tool calls, tool results). |
+| `interrupt <session> [--json]` | Stop the running turn, like `/stop` (alias `stop`). Exit 0 interrupted, 3 nothing running. |
 | `optimize` | Reclaim disk space: merge FTS5 index segments + VACUUM. Non-destructive — no session data changes. |
 | `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
 | `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |

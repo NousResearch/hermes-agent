@@ -19,6 +19,8 @@ DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
+from hermes_constants import DEFAULT_INDICATOR_STYLE  # single source; keep ui-tui interfaces.ts in parity
+
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
@@ -886,7 +888,7 @@ DEFAULT_CONFIG = {
         # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
-        "tui_status_indicator": "kaomoji",
+        "tui_status_indicator": DEFAULT_INDICATOR_STYLE,
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
         # fights terminal auto-scroll in non-fullscreen mode.

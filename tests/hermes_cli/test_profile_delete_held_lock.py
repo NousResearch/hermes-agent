@@ -213,6 +213,21 @@ def test_an_interrupted_delete_keeps_its_leftovers_from_create(profile, monkeypa
     assert (profile / "preserved-note.txt").read_text() == "keep me"
 
 
+def test_a_finished_delete_never_tombstones_a_create_that_cleared_it(profile, monkeypatch):
+    """Another process's same-name create can clear the tombstone right after rmtree; recording the
+    finished delete must not write it back over that create's new profile."""
+    from hermes_constants import clear_named_profile_deleted, named_profile_is_deleted
+    rmtree = profiles._rmtree_with_retry
+
+    def removed_then_created_elsewhere(path, onexc):
+        rmtree(path, onexc)
+        clear_named_profile_deleted(path)  # what create_profile does before staging its new tree
+
+    monkeypatch.setattr(profiles, "_rmtree_with_retry", removed_then_created_elsewhere)
+    profiles.delete_profile("owned-delete", yes=True)
+    assert not named_profile_is_deleted(profile)
+
+
 def test_a_retried_partial_delete_leaves_a_replaceable_post_delete_shell(profile, monkeypatch):
     """The retry that finishes a partial delete records a plain delete again, so a shell a stale
     writer re-creates afterwards is replaced by ``create`` instead of refused as unfinished."""

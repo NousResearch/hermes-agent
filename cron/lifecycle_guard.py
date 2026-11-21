@@ -595,6 +595,29 @@ def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bo
     return True
 
 
+_DATA_FILE_MAGICS = (
+    # Data files that a POSIX shell cannot execute: a ledger/database referenced by a script body
+    # is a *mention*, not an unreadable script (#303). Deliberately narrow — a padded or oversized
+    # *script* (shebang, or plain text) still fails closed.
+    b"SQLite format 3\x00",
+)
+
+
+def _is_data_file(path: Path) -> bool:
+    """True when *path* starts with a known data-file signature (SQLite ledger, …).
+
+    Used to keep the reference walk honest: an executable shell script must be scannable, a
+    data file need not be. Unreadable for any other reason (permissions, race) still says False,
+    so the caller keeps its fail-closed verdict.
+    """
+    try:
+        with open(_resolve_lenient(path), "rb") as fh:
+            head = fh.read(64)
+    except OSError:
+        return False
+    return head.startswith(_DATA_FILE_MAGICS)
+
+
 def _unreadable_reason(path: Path) -> str:
     """Name why an *executed* script failed closed without being scanned (live SQLite, device,
     oversized). Message-only: the fail-closed verdict itself came from the bounded reader."""
@@ -1506,7 +1529,9 @@ def _contains_unsafe_gateway_action(
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
-            if candidate_executed:
+            # A data file (SQLite ledger …) referenced from a script body is a mention, not an
+            # executed script: unreadable/oversized is not a refusal for it (#303).
+            if candidate_executed and not _is_data_file(script_path):
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
             continue
         if script_text is None and read_remote_script is not None:

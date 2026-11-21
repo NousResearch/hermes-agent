@@ -59,8 +59,12 @@ _RE_USERNAME = re.compile(
 
 
 def _normalize_text(value: str) -> str:
-    value = unicodedata.normalize("NFKD", value).lower()
-    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+    value = unicodedata.normalize("NFKD", value)
+    plain = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    # Also give the camelCase words (``emailAddress``, ``otpCode``): the lower case alone removes the
+    # word boundary. The plain form stays, for patterns that name a joined word (``ccnumber``).
+    split = re.sub(r"[^a-z0-9]+", " ", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value).lower()).strip()
+    return plain if split == plain else f"{plain} {split}"
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,9 @@ _RE_OTP = re.compile(
     r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
 )
+# A name or label that is only "code" ("code", "Enter code", "Enter the code"). A qualified code (promo
+# code, zip code, coupon code) does not match.
+_RE_BARE_CODE = re.compile(r"^(?:enter\s+)?(?:the\s+|your\s+)?code$")
 
 
 def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginControl]:
@@ -157,7 +164,9 @@ def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginC
             continue
         if c.type not in ("text", "tel", "number", "password", ""):
             continue
-        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
+        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))) or any(
+            _RE_BARE_CODE.match(_normalize_text(p)) for p in (c.name, c.label) if p
+        ):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
     return out
 
@@ -196,6 +205,9 @@ def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLogin
     if control.type in ("password", "email"):
         return None
     searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    if _RE_EMAIL.search(searchable):
+        # An "Email address" box of type text is not a street address box.
+        return None
     for pattern, token in _CHECKOUT_HEURISTICS:
         if pattern.search(searchable):
             return ClassifiedLoginControl(control, 70, token)
@@ -321,8 +333,8 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_guarded(_FILL_JS_TEMPLATE, expected_origin).replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    return _fill_markers(_guarded(_FILL_JS_TEMPLATE, expected_origin), {
+        "__OPTION_MATCH__": _OPTION_MATCH_JS, "__FILLS__": payload, "__NONCE__": json.dumps(nonce)})
 
 
 # The opening of every script that carries a vault value or decides where one is typed. Strict mode
@@ -348,6 +360,15 @@ _ORIGIN_GUARD_JS = """  "use strict";
 def _guarded(template: str, expected_origin: str) -> str:
     return template.replace("__ORIGIN_GUARD__", _ORIGIN_GUARD_JS.replace(
         "__EXPECTED_ORIGIN__", json.dumps(expected_origin)))
+
+
+_RE_MARKER = re.compile(r"__(?:OPTION_MATCH|FILLS|NONCE|UNSTAMP|REFOCUS)__")
+
+
+def _fill_markers(template: str, values: dict[str, str]) -> str:
+    """Replace every marker in one pass. A value (the payload holds the secret) is never searched for
+    markers again, so a password that contains ``__NONCE__`` or ``__UNSTAMP__`` stays as it is."""
+    return _RE_MARKER.sub(lambda m: values[m.group(0)], template)
 
 
 # How a requested value names a <select> option: by value or visible text, trimmed and
@@ -430,9 +451,9 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, expect
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_guarded(_VERIFY_JS_TEMPLATE, expected_origin).replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
-            .replace("__UNSTAMP__", "true" if unstamp else "false"))
+    return _fill_markers(_guarded(_VERIFY_JS_TEMPLATE, expected_origin), {
+        "__OPTION_MATCH__": _OPTION_MATCH_JS, "__FILLS__": payload, "__NONCE__": json.dumps(nonce),
+        "__UNSTAMP__": "true" if unstamp else "false"})
 
 
 def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_origin: str,
@@ -461,8 +482,8 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
     )
-    return (_guarded(_FOCUS_JS_TEMPLATE, expected_origin).replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
-            .replace("__REFOCUS__", "true" if refocus else "false"))
+    return _fill_markers(_guarded(_FOCUS_JS_TEMPLATE, expected_origin), {
+        "__FILLS__": payload, "__NONCE__": json.dumps(nonce), "__REFOCUS__": "true" if refocus else "false"})
 
 
 _FOCUS_JS_TEMPLATE = """(() => {
@@ -558,8 +579,8 @@ def build_clear_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     script of a fill it acts only on ``expected_origin``.
     """
     payload = json.dumps([{"index": f["index"]} for f in fills])
-    return (_guarded(_CLEAR_JS_TEMPLATE, expected_origin).replace("__FILLS__", payload)
-            .replace("__NONCE__", json.dumps(nonce)))
+    return _fill_markers(_guarded(_CLEAR_JS_TEMPLATE, expected_origin), {
+        "__FILLS__": payload, "__NONCE__": json.dumps(nonce)})
 
 
 _VERIFY_JS_TEMPLATE = r"""(() => {

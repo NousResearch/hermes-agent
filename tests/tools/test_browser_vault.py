@@ -148,6 +148,9 @@ class TestVaultStore:
         assert normalize_origin("https://Example.com:443/login?x=1") == "https://example.com"
         assert normalize_origin("http://localhost:8931/") == "http://localhost:8931"
         assert normalize_origin("http://site.test:80") == "http://site.test"
+        # An IPv6 literal keeps its brackets, the way ``window.location.origin`` gives it.
+        assert normalize_origin("http://[::1]:8080/login") == "http://[::1]:8080"
+        assert normalize_origin("https://[2001:DB8::1]:443") == "https://[2001:db8::1]"
         with pytest.raises(VaultError):
             normalize_origin("example.com")
 
@@ -285,6 +288,34 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 # Browser tool: origin binding + gating
 # ---------------------------------------------------------------------------
+
+    def test_camel_case_names_keep_their_words(self):
+        """``emailAddress`` and ``otpCode`` are the same words as ``email_address`` and ``otp_code``."""
+        from agent.vault_login_classifier import classify_checkout_control, classify_otp_controls
+
+        res = classify_login_control(_ctrl(name="emailAddress"))
+        assert res is not None and res.token == "email"
+        assert classify_otp_controls([_ctrl(name="otpCode")])
+        # A joined word that a pattern names as one word still matches.
+        assert classify_checkout_control(_ctrl(name="ccNumber")).token == "cc-number"
+
+    def test_a_field_named_only_code_is_a_code_field(self):
+        """The tab probe selects ``input[name*=code i]``: a box that says only "code" must be found too.
+        A qualified code (promo, zip, coupon) is still not a second factor."""
+        from agent.vault_login_classifier import classify_otp_controls
+
+        for name, label in (("code", "Enter code"), ("code", ""), ("", "Enter the code")):
+            assert classify_otp_controls([_ctrl(name=name, label=label)]), (name, label)
+        for name, label in (("promo_code", "Promo code"), ("zip", "Zip code"), ("coupon", "Enter coupon code")):
+            assert classify_otp_controls([_ctrl(name=name, label=label)]) == [], (name, label)
+
+    def test_an_email_address_text_box_is_not_a_street_address(self):
+        """A ``type=text`` box labelled "Email address" must not take the saved street address."""
+        from agent.vault_login_classifier import classify_checkout_control
+
+        assert classify_checkout_control(_ctrl(name="email", label="Email address")) is None
+        assert classify_checkout_control(_ctrl(name="street", label="Street address")).token == "address-line1"
+
 
 class TestBrowserVaultTools:
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
@@ -973,6 +1004,25 @@ class TestBrowserVaultTools:
              patch.object(browser_vault_tool.time, "monotonic", side_effect=lambda: clock["now"]):
             out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
         assert out["success"] is False and out["error_type"] == "fill_reverted"
+
+    def test_a_failed_read_back_clears_what_landed_and_counts_what_did_not(self):
+        """All or nothing: a field that kept its value is cleared when another did not, and the error
+        counts every field that did not land, a re-rendered one (``missing``) too."""
+        from tools import browser_vault_tool
+
+        sent = []
+
+        def page(_task_id, expression):
+            sent.append(expression)
+            return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": [0]})}
+
+        fills = [{"index": 0, "value": "alice"}, {"index": 1, "value": "pw"}]
+        with patch.object(browser_vault_tool, "_eval_js_secret", side_effect=page), \
+             patch.object(browser_vault_tool, "_FILL_VERIFY_CEILING_S", 0), \
+             patch.object(browser_vault_tool.time, "sleep"):
+            out = browser_vault_tool._read_back("t", fills, "n", "https://example.com")
+        assert out["error_type"] == "fill_reverted" and "1 of 2 field(s)" in out["error"]
+        assert "cleared" in sent[-1]
 
     def test_a_value_that_settles_after_a_mask_rewrite_is_a_fill(self, store):
         """The other half of stability: a mask that writes twice reads wrong first, then holds."""

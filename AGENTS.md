@@ -85,7 +85,7 @@ hermes-agent/
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
-└── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
+└── website/              # Docusaurus (developer-guide/: area long form); mintlify-docs/ copy
 ```
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);

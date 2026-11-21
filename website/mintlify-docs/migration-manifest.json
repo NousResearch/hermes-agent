@@ -1,0 +1,3120 @@
+{
+  "discovered": 442,
+  "pages": [
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/acp-internals",
+      "normalized_path": "/developer-guide/acp-internals",
+      "converted_file": "developer-guide/acp-internals.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters",
+      "normalized_path": "/developer-guide/adding-platform-adapters",
+      "converted_file": "developer-guide/adding-platform-adapters.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/adding-providers",
+      "normalized_path": "/developer-guide/adding-providers",
+      "converted_file": "developer-guide/adding-providers.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/adding-tools",
+      "normalized_path": "/developer-guide/adding-tools",
+      "converted_file": "developer-guide/adding-tools.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop",
+      "normalized_path": "/developer-guide/agent-loop",
+      "converted_file": "developer-guide/agent-loop.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/architecture",
+      "normalized_path": "/developer-guide/architecture",
+      "converted_file": "developer-guide/architecture.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/billing-lifecycle",
+      "normalized_path": "/developer-guide/billing-lifecycle",
+      "converted_file": "developer-guide/billing-lifecycle.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/browser-provider-plugin",
+      "normalized_path": "/developer-guide/browser-provider-plugin",
+      "converted_file": "developer-guide/browser-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/browser-supervisor",
+      "normalized_path": "/developer-guide/browser-supervisor",
+      "converted_file": "developer-guide/browser-supervisor.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/browser-vault-plugin",
+      "normalized_path": "/developer-guide/browser-vault-plugin",
+      "converted_file": "developer-guide/browser-vault-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/chronos-managed-cron-contract",
+      "normalized_path": "/developer-guide/chronos-managed-cron-contract",
+      "converted_file": "developer-guide/chronos-managed-cron-contract.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/cli-internals",
+      "normalized_path": "/developer-guide/cli-internals",
+      "converted_file": "developer-guide/cli-internals.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/codebase-ownership",
+      "normalized_path": "/developer-guide/codebase-ownership",
+      "converted_file": "developer-guide/codebase-ownership.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/completion-backlog-delivery",
+      "normalized_path": "/developer-guide/completion-backlog-delivery",
+      "converted_file": "developer-guide/completion-backlog-delivery.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/config-backend",
+      "normalized_path": "/developer-guide/config-backend",
+      "converted_file": "developer-guide/config-backend.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching",
+      "normalized_path": "/developer-guide/context-compression-and-caching",
+      "converted_file": "developer-guide/context-compression-and-caching.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/context-engine-plugin",
+      "normalized_path": "/developer-guide/context-engine-plugin",
+      "converted_file": "developer-guide/context-engine-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/contributing",
+      "normalized_path": "/developer-guide/contributing",
+      "converted_file": "developer-guide/contributing.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills",
+      "normalized_path": "/developer-guide/creating-skills",
+      "converted_file": "developer-guide/creating-skills.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/cron-internals",
+      "normalized_path": "/developer-guide/cron-internals",
+      "converted_file": "developer-guide/cron-internals.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/delegation-provider-plugin",
+      "normalized_path": "/developer-guide/delegation-provider-plugin",
+      "converted_file": "developer-guide/delegation-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk",
+      "normalized_path": "/developer-guide/desktop-plugin-sdk",
+      "converted_file": "developer-guide/desktop-plugin-sdk.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/egress-internals",
+      "normalized_path": "/developer-guide/egress-internals",
+      "converted_file": "developer-guide/egress-internals.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/extending-the-cli",
+      "normalized_path": "/developer-guide/extending-the-cli",
+      "converted_file": "developer-guide/extending-the-cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-classic-cli",
+      "normalized_path": "/developer-guide/gateway-classic-cli",
+      "converted_file": "developer-guide/gateway-classic-cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-command-parity",
+      "normalized_path": "/developer-guide/gateway-command-parity",
+      "converted_file": "developer-guide/gateway-command-parity.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-internals",
+      "normalized_path": "/developer-guide/gateway-internals",
+      "converted_file": "developer-guide/gateway-internals.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-local-sessions",
+      "normalized_path": "/developer-guide/gateway-local-sessions",
+      "converted_file": "developer-guide/gateway-local-sessions.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-monitoring",
+      "normalized_path": "/developer-guide/gateway-monitoring",
+      "converted_file": "developer-guide/gateway-monitoring.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-session-lifecycle",
+      "normalized_path": "/developer-guide/gateway-session-lifecycle",
+      "converted_file": "developer-guide/gateway-session-lifecycle.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-ssh-clients",
+      "normalized_path": "/developer-guide/gateway-ssh-clients",
+      "converted_file": "developer-guide/gateway-ssh-clients.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners",
+      "normalized_path": "/developer-guide/hosted-profile-owners",
+      "converted_file": "developer-guide/hosted-profile-owners.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/image-gen-provider-plugin",
+      "normalized_path": "/developer-guide/image-gen-provider-plugin",
+      "converted_file": "developer-guide/image-gen-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/macos-bundle-updates",
+      "normalized_path": "/developer-guide/macos-bundle-updates",
+      "converted_file": "developer-guide/macos-bundle-updates.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/memory-provider-plugin",
+      "normalized_path": "/developer-guide/memory-provider-plugin",
+      "converted_file": "developer-guide/memory-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/micro-compaction",
+      "normalized_path": "/developer-guide/micro-compaction",
+      "converted_file": "developer-guide/micro-compaction.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/middleware",
+      "normalized_path": "/developer-guide/middleware",
+      "converted_file": "developer-guide/middleware.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/model-provider-plugin",
+      "normalized_path": "/developer-guide/model-provider-plugin",
+      "converted_file": "developer-guide/model-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/multiplexing-gateway",
+      "normalized_path": "/developer-guide/multiplexing-gateway",
+      "converted_file": "developer-guide/multiplexing-gateway.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/observer-hooks",
+      "normalized_path": "/developer-guide/observer-hooks",
+      "converted_file": "developer-guide/observer-hooks.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/plugin-llm-access",
+      "normalized_path": "/developer-guide/plugin-llm-access",
+      "converted_file": "developer-guide/plugin-llm-access.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/application-declarations",
+      "normalized_path": "/developer-guide/plugins/application-declarations",
+      "converted_file": "developer-guide/plugins/application-declarations.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission",
+      "normalized_path": "/developer-guide/plugins/catalog-submission",
+      "converted_file": "developer-guide/plugins/catalog-submission.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/index",
+      "normalized_path": "/developer-guide/plugins/index",
+      "converted_file": "developer-guide/plugins/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/public-api",
+      "normalized_path": "/developer-guide/plugins/public-api",
+      "converted_file": "developer-guide/plugins/public-api.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/pm-audit-status",
+      "normalized_path": "/developer-guide/pm-audit-status",
+      "converted_file": "developer-guide/pm-audit-status.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration",
+      "normalized_path": "/developer-guide/programmatic-integration",
+      "converted_file": "developer-guide/programmatic-integration.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/prompt-assembly",
+      "normalized_path": "/developer-guide/prompt-assembly",
+      "converted_file": "developer-guide/prompt-assembly.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/provider-runtime",
+      "normalized_path": "/developer-guide/provider-runtime",
+      "converted_file": "developer-guide/provider-runtime.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/relay-connector-contract",
+      "normalized_path": "/developer-guide/relay-connector-contract",
+      "converted_file": "developer-guide/relay-connector-contract.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics",
+      "normalized_path": "/developer-guide/relay-shared-metrics",
+      "converted_file": "developer-guide/relay-shared-metrics.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/secret-source-plugin",
+      "normalized_path": "/developer-guide/secret-source-plugin",
+      "converted_file": "developer-guide/secret-source-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/session-storage",
+      "normalized_path": "/developer-guide/session-storage",
+      "converted_file": "developer-guide/session-storage.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/shared-bundle-builds",
+      "normalized_path": "/developer-guide/shared-bundle-builds",
+      "converted_file": "developer-guide/shared-bundle-builds.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/source-update-completion",
+      "normalized_path": "/developer-guide/source-update-completion",
+      "converted_file": "developer-guide/source-update-completion.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/stable-releases",
+      "normalized_path": "/developer-guide/stable-releases",
+      "converted_file": "developer-guide/stable-releases.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/state-db-recovery",
+      "normalized_path": "/developer-guide/state-db-recovery",
+      "converted_file": "developer-guide/state-db-recovery.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/streaming-tts",
+      "normalized_path": "/developer-guide/streaming-tts",
+      "converted_file": "developer-guide/streaming-tts.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/subagent-lifecycle-api",
+      "normalized_path": "/developer-guide/subagent-lifecycle-api",
+      "converted_file": "developer-guide/subagent-lifecycle-api.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/terminal-environment-plugin",
+      "normalized_path": "/developer-guide/terminal-environment-plugin",
+      "converted_file": "developer-guide/terminal-environment-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/tools-runtime",
+      "normalized_path": "/developer-guide/tools-runtime",
+      "converted_file": "developer-guide/tools-runtime.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/trajectory-format",
+      "normalized_path": "/developer-guide/trajectory-format",
+      "converted_file": "developer-guide/trajectory-format.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/video-gen-provider-plugin",
+      "normalized_path": "/developer-guide/video-gen-provider-plugin",
+      "converted_file": "developer-guide/video-gen-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/web-search-provider-plugin",
+      "normalized_path": "/developer-guide/web-search-provider-plugin",
+      "converted_file": "developer-guide/web-search-provider-plugin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/worktree-ui-dev",
+      "normalized_path": "/developer-guide/worktree-ui-dev",
+      "converted_file": "developer-guide/worktree-ui-dev.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
+      "normalized_path": "/getting-started/installation",
+      "converted_file": "getting-started/installation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/learning-path",
+      "normalized_path": "/getting-started/learning-path",
+      "converted_file": "getting-started/learning-path.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/nix-setup",
+      "normalized_path": "/getting-started/nix-setup",
+      "converted_file": "getting-started/nix-setup.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/official-domains",
+      "normalized_path": "/getting-started/official-domains",
+      "converted_file": "getting-started/official-domains.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/platform-support",
+      "normalized_path": "/getting-started/platform-support",
+      "converted_file": "getting-started/platform-support.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/quickstart",
+      "normalized_path": "/getting-started/quickstart",
+      "converted_file": "getting-started/quickstart.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/termux",
+      "normalized_path": "/getting-started/termux",
+      "converted_file": "getting-started/termux.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/getting-started/updating",
+      "normalized_path": "/getting-started/updating",
+      "converted_file": "getting-started/updating.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/agent-email-address",
+      "normalized_path": "/guides/agent-email-address",
+      "converted_file": "guides/agent-email-address.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/automate-with-cron",
+      "normalized_path": "/guides/automate-with-cron",
+      "converted_file": "guides/automate-with-cron.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/automation-blueprints",
+      "normalized_path": "/guides/automation-blueprints",
+      "converted_file": "guides/automation-blueprints.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/aws-bedrock",
+      "normalized_path": "/guides/aws-bedrock",
+      "converted_file": "guides/aws-bedrock.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/azure-foundry",
+      "normalized_path": "/guides/azure-foundry",
+      "converted_file": "guides/azure-foundry.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/cron-script-only",
+      "normalized_path": "/guides/cron-script-only",
+      "converted_file": "guides/cron-script-only.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/cron-troubleshooting",
+      "normalized_path": "/guides/cron-troubleshooting",
+      "converted_file": "guides/cron-troubleshooting.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/daily-briefing-bot",
+      "normalized_path": "/guides/daily-briefing-bot",
+      "converted_file": "guides/daily-briefing-bot.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/delegation-patterns",
+      "normalized_path": "/guides/delegation-patterns",
+      "converted_file": "guides/delegation-patterns.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/desktop-native-signin",
+      "normalized_path": "/guides/desktop-native-signin",
+      "converted_file": "guides/desktop-native-signin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/github-pr-review-agent",
+      "normalized_path": "/guides/github-pr-review-agent",
+      "converted_file": "guides/github-pr-review-agent.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/google-gemini",
+      "normalized_path": "/guides/google-gemini",
+      "converted_file": "guides/google-gemini.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/google-vertex",
+      "normalized_path": "/guides/google-vertex",
+      "converted_file": "guides/google-vertex.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/local-llm-on-mac",
+      "normalized_path": "/guides/local-llm-on-mac",
+      "converted_file": "guides/local-llm-on-mac.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/local-ollama-setup",
+      "normalized_path": "/guides/local-ollama-setup",
+      "converted_file": "guides/local-ollama-setup.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/manage-hermes-cloud-with-mcp",
+      "normalized_path": "/guides/manage-hermes-cloud-with-mcp",
+      "converted_file": "guides/manage-hermes-cloud-with-mcp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/microsoft-graph-app-registration",
+      "normalized_path": "/guides/microsoft-graph-app-registration",
+      "converted_file": "guides/microsoft-graph-app-registration.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/migrate-from-openclaw",
+      "normalized_path": "/guides/migrate-from-openclaw",
+      "converted_file": "guides/migrate-from-openclaw.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/minimax-oauth",
+      "normalized_path": "/guides/minimax-oauth",
+      "converted_file": "guides/minimax-oauth.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh",
+      "normalized_path": "/guides/oauth-over-ssh",
+      "converted_file": "guides/oauth-over-ssh.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/operate-teams-meeting-pipeline",
+      "normalized_path": "/guides/operate-teams-meeting-pipeline",
+      "converted_file": "guides/operate-teams-meeting-pipeline.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/pipe-script-output",
+      "normalized_path": "/guides/pipe-script-output",
+      "converted_file": "guides/pipe-script-output.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/python-library",
+      "normalized_path": "/guides/python-library",
+      "converted_file": "guides/python-library.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/run-hermes-with-nous-portal",
+      "normalized_path": "/guides/run-hermes-with-nous-portal",
+      "converted_file": "guides/run-hermes-with-nous-portal.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/run-nemotron-3-ultra-free",
+      "normalized_path": "/guides/run-nemotron-3-ultra-free",
+      "converted_file": "guides/run-nemotron-3-ultra-free.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/secure-hermes-on-a-work-machine",
+      "normalized_path": "/guides/secure-hermes-on-a-work-machine",
+      "converted_file": "guides/secure-hermes-on-a-work-machine.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/team-telegram-assistant",
+      "normalized_path": "/guides/team-telegram-assistant",
+      "converted_file": "guides/team-telegram-assistant.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/tips",
+      "normalized_path": "/guides/tips",
+      "converted_file": "guides/tips.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/troubleshooting-agent-quality",
+      "normalized_path": "/guides/troubleshooting-agent-quality",
+      "converted_file": "guides/troubleshooting-agent-quality.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/use-mcp-with-hermes",
+      "normalized_path": "/guides/use-mcp-with-hermes",
+      "converted_file": "guides/use-mcp-with-hermes.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/use-soul-with-hermes",
+      "normalized_path": "/guides/use-soul-with-hermes",
+      "converted_file": "guides/use-soul-with-hermes.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/use-voice-mode-with-hermes",
+      "normalized_path": "/guides/use-voice-mode-with-hermes",
+      "converted_file": "guides/use-voice-mode-with-hermes.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/webhook-github-pr-review",
+      "normalized_path": "/guides/webhook-github-pr-review",
+      "converted_file": "guides/webhook-github-pr-review.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/work-with-skills",
+      "normalized_path": "/guides/work-with-skills",
+      "converted_file": "guides/work-with-skills.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
+      "normalized_path": "/guides/xai-grok-oauth",
+      "converted_file": "guides/xai-grok-oauth.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/index",
+      "normalized_path": "/index",
+      "converted_file": "index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/integrations/buzz",
+      "normalized_path": "/integrations/buzz",
+      "converted_file": "integrations/buzz.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/integrations/index",
+      "normalized_path": "/integrations/index",
+      "converted_file": "integrations/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/integrations/nous-portal",
+      "normalized_path": "/integrations/nous-portal",
+      "converted_file": "integrations/nous-portal.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/integrations/providers",
+      "normalized_path": "/integrations/providers",
+      "converted_file": "integrations/providers.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/mirror/hermes-agent/website/docs/index",
+      "normalized_path": "/mirror/hermes-agent/website/docs/index",
+      "converted_file": "mirror/hermes-agent/website/docs/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/mirror/hermes-agent/website/docs/reference/automation-blueprints-catalog",
+      "normalized_path": "/mirror/hermes-agent/website/docs/reference/automation-blueprints-catalog",
+      "converted_file": "mirror/hermes-agent/website/docs/reference/automation-blueprints-catalog.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/mirror/hermes-agent/website/docs/user-stories",
+      "normalized_path": "/mirror/hermes-agent/website/docs/user-stories",
+      "converted_file": "mirror/hermes-agent/website/docs/user-stories.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/mirror/hermes-agent/website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/index",
+      "normalized_path": "/mirror/hermes-agent/website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/index",
+      "converted_file": "mirror/hermes-agent/website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/mirror/hermes-agent/website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-stories",
+      "normalized_path": "/mirror/hermes-agent/website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-stories",
+      "converted_file": "mirror/hermes-agent/website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-stories.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/automation-blueprints-catalog",
+      "normalized_path": "/reference/automation-blueprints-catalog",
+      "converted_file": "reference/automation-blueprints-catalog.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/cli-commands",
+      "normalized_path": "/reference/cli-commands",
+      "converted_file": "reference/cli-commands.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/cli-symbols",
+      "normalized_path": "/reference/cli-symbols",
+      "converted_file": "reference/cli-symbols.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/environment-variables",
+      "normalized_path": "/reference/environment-variables",
+      "converted_file": "reference/environment-variables.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/faq",
+      "normalized_path": "/reference/faq",
+      "converted_file": "reference/faq.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference",
+      "normalized_path": "/reference/mcp-config-reference",
+      "converted_file": "reference/mcp-config-reference.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog",
+      "normalized_path": "/reference/model-catalog",
+      "converted_file": "reference/model-catalog.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/optional-skills-catalog",
+      "normalized_path": "/reference/optional-skills-catalog",
+      "converted_file": "reference/optional-skills-catalog.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/package-management",
+      "normalized_path": "/reference/package-management",
+      "converted_file": "reference/package-management.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/profile-commands",
+      "normalized_path": "/reference/profile-commands",
+      "converted_file": "reference/profile-commands.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/skills-catalog",
+      "normalized_path": "/reference/skills-catalog",
+      "converted_file": "reference/skills-catalog.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/slash-commands",
+      "normalized_path": "/reference/slash-commands",
+      "converted_file": "reference/slash-commands.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/tools-reference",
+      "normalized_path": "/reference/tools-reference",
+      "converted_file": "reference/tools-reference.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference",
+      "normalized_path": "/reference/toolsets-reference",
+      "converted_file": "reference/toolsets-reference.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/backup-and-transfer",
+      "normalized_path": "/user-guide/backup-and-transfer",
+      "converted_file": "user-guide/backup-and-transfer.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode",
+      "normalized_path": "/user-guide/bot-mode",
+      "converted_file": "user-guide/bot-mode.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/checkpoints-and-rollback",
+      "normalized_path": "/user-guide/checkpoints-and-rollback",
+      "converted_file": "user-guide/checkpoints-and-rollback.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/cli",
+      "normalized_path": "/user-guide/cli",
+      "converted_file": "user-guide/cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/configuration",
+      "normalized_path": "/user-guide/configuration",
+      "converted_file": "user-guide/configuration.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/configuring-models",
+      "normalized_path": "/user-guide/configuring-models",
+      "converted_file": "user-guide/configuring-models.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/desktop",
+      "normalized_path": "/user-guide/desktop",
+      "converted_file": "user-guide/desktop.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/docker",
+      "normalized_path": "/user-guide/docker",
+      "converted_file": "user-guide/docker.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/egress/index",
+      "normalized_path": "/user-guide/egress/index",
+      "converted_file": "user-guide/egress/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/egress/iron-proxy",
+      "normalized_path": "/user-guide/egress/iron-proxy",
+      "converted_file": "user-guide/egress/iron-proxy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/egress/network-isolation",
+      "normalized_path": "/user-guide/egress/network-isolation",
+      "converted_file": "user-guide/egress/network-isolation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp",
+      "normalized_path": "/user-guide/features/acp",
+      "converted_file": "user-guide/features/acp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server",
+      "normalized_path": "/user-guide/features/api-server",
+      "converted_file": "user-guide/features/api-server.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/batch-processing",
+      "normalized_path": "/user-guide/features/batch-processing",
+      "converted_file": "user-guide/features/batch-processing.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen",
+      "normalized_path": "/user-guide/features/bot-screen",
+      "converted_file": "user-guide/features/bot-screen.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/browser",
+      "normalized_path": "/user-guide/features/browser",
+      "converted_file": "user-guide/features/browser.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/built-in-plugins",
+      "normalized_path": "/user-guide/features/built-in-plugins",
+      "converted_file": "user-guide/features/built-in-plugins.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/code-execution",
+      "normalized_path": "/user-guide/features/code-execution",
+      "converted_file": "user-guide/features/code-execution.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/codex-app-server-runtime",
+      "normalized_path": "/user-guide/features/codex-app-server-runtime",
+      "converted_file": "user-guide/features/codex-app-server-runtime.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/computer-use",
+      "normalized_path": "/user-guide/features/computer-use",
+      "converted_file": "user-guide/features/computer-use.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files",
+      "normalized_path": "/user-guide/features/context-files",
+      "converted_file": "user-guide/features/context-files.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/context-references",
+      "normalized_path": "/user-guide/features/context-references",
+      "converted_file": "user-guide/features/context-references.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/credential-pools",
+      "normalized_path": "/user-guide/features/credential-pools",
+      "converted_file": "user-guide/features/credential-pools.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/credential-vault",
+      "normalized_path": "/user-guide/features/credential-vault",
+      "converted_file": "user-guide/features/credential-vault.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/cron",
+      "normalized_path": "/user-guide/features/cron",
+      "converted_file": "user-guide/features/cron.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/curator",
+      "normalized_path": "/user-guide/features/curator",
+      "converted_file": "user-guide/features/curator.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation",
+      "normalized_path": "/user-guide/features/delegation",
+      "converted_file": "user-guide/features/delegation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/deliverable-mode",
+      "normalized_path": "/user-guide/features/deliverable-mode",
+      "converted_file": "user-guide/features/deliverable-mode.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/document-extraction",
+      "normalized_path": "/user-guide/features/document-extraction",
+      "converted_file": "user-guide/features/document-extraction.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/extending-the-dashboard",
+      "normalized_path": "/user-guide/features/extending-the-dashboard",
+      "converted_file": "user-guide/features/extending-the-dashboard.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers",
+      "normalized_path": "/user-guide/features/fallback-providers",
+      "converted_file": "user-guide/features/fallback-providers.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/goals",
+      "normalized_path": "/user-guide/features/goals",
+      "converted_file": "user-guide/features/goals.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/heartbeat",
+      "normalized_path": "/user-guide/features/heartbeat",
+      "converted_file": "user-guide/features/heartbeat.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/honcho",
+      "normalized_path": "/user-guide/features/honcho",
+      "converted_file": "user-guide/features/honcho.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks",
+      "normalized_path": "/user-guide/features/hooks",
+      "converted_file": "user-guide/features/hooks.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/image-generation",
+      "normalized_path": "/user-guide/features/image-generation",
+      "converted_file": "user-guide/features/image-generation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban-multi-gateway",
+      "normalized_path": "/user-guide/features/kanban-multi-gateway",
+      "converted_file": "user-guide/features/kanban-multi-gateway.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban-tutorial",
+      "normalized_path": "/user-guide/features/kanban-tutorial",
+      "converted_file": "user-guide/features/kanban-tutorial.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban-worker-lanes",
+      "normalized_path": "/user-guide/features/kanban-worker-lanes",
+      "converted_file": "user-guide/features/kanban-worker-lanes.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban",
+      "normalized_path": "/user-guide/features/kanban",
+      "converted_file": "user-guide/features/kanban.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/language-packs",
+      "normalized_path": "/user-guide/features/language-packs",
+      "converted_file": "user-guide/features/language-packs.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/loops",
+      "normalized_path": "/user-guide/features/loops",
+      "converted_file": "user-guide/features/loops.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/lsp",
+      "normalized_path": "/user-guide/features/lsp",
+      "converted_file": "user-guide/features/lsp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
+      "normalized_path": "/user-guide/features/mcp",
+      "converted_file": "user-guide/features/mcp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/memory-providers",
+      "normalized_path": "/user-guide/features/memory-providers",
+      "converted_file": "user-guide/features/memory-providers.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/memory",
+      "normalized_path": "/user-guide/features/memory",
+      "converted_file": "user-guide/features/memory.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mixture-of-agents",
+      "normalized_path": "/user-guide/features/mixture-of-agents",
+      "converted_file": "user-guide/features/mixture-of-agents.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/overview",
+      "normalized_path": "/user-guide/features/overview",
+      "converted_file": "user-guide/features/overview.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/personality",
+      "normalized_path": "/user-guide/features/personality",
+      "converted_file": "user-guide/features/personality.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/pets",
+      "normalized_path": "/user-guide/features/pets",
+      "converted_file": "user-guide/features/pets.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog",
+      "normalized_path": "/user-guide/features/plugin-catalog",
+      "converted_file": "user-guide/features/plugin-catalog.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins",
+      "normalized_path": "/user-guide/features/plugins",
+      "converted_file": "user-guide/features/plugins.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/provider-routing",
+      "normalized_path": "/user-guide/features/provider-routing",
+      "converted_file": "user-guide/features/provider-routing.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/skills",
+      "normalized_path": "/user-guide/features/skills",
+      "converted_file": "user-guide/features/skills.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/skins",
+      "normalized_path": "/user-guide/features/skins",
+      "converted_file": "user-guide/features/skins.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify",
+      "normalized_path": "/user-guide/features/spotify",
+      "converted_file": "user-guide/features/spotify.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/subscription-proxy",
+      "normalized_path": "/user-guide/features/subscription-proxy",
+      "converted_file": "user-guide/features/subscription-proxy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway",
+      "normalized_path": "/user-guide/features/tool-gateway",
+      "converted_file": "user-guide/features/tool-gateway.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-search",
+      "normalized_path": "/user-guide/features/tool-search",
+      "converted_file": "user-guide/features/tool-search.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/tools",
+      "normalized_path": "/user-guide/features/tools",
+      "converted_file": "user-guide/features/tools.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/tts",
+      "normalized_path": "/user-guide/features/tts",
+      "converted_file": "user-guide/features/tts.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/vision",
+      "normalized_path": "/user-guide/features/vision",
+      "converted_file": "user-guide/features/vision.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode",
+      "normalized_path": "/user-guide/features/voice-mode",
+      "converted_file": "user-guide/features/voice-mode.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/wake-word",
+      "normalized_path": "/user-guide/features/wake-word",
+      "converted_file": "user-guide/features/wake-word.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard",
+      "normalized_path": "/user-guide/features/web-dashboard",
+      "converted_file": "user-guide/features/web-dashboard.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/web-search",
+      "normalized_path": "/user-guide/features/web-search",
+      "converted_file": "user-guide/features/web-search.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/x-search",
+      "normalized_path": "/user-guide/features/x-search",
+      "converted_file": "user-guide/features/x-search.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/git-worktrees",
+      "normalized_path": "/user-guide/git-worktrees",
+      "converted_file": "user-guide/git-worktrees.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/import-from-other-agents",
+      "normalized_path": "/user-guide/import-from-other-agents",
+      "converted_file": "user-guide/import-from-other-agents.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/local-models",
+      "normalized_path": "/user-guide/local-models",
+      "converted_file": "user-guide/local-models.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/managed-scope",
+      "normalized_path": "/user-guide/managed-scope",
+      "converted_file": "user-guide/managed-scope.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/a2a",
+      "normalized_path": "/user-guide/messaging/a2a",
+      "converted_file": "user-guide/messaging/a2a.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/bluebubbles",
+      "normalized_path": "/user-guide/messaging/bluebubbles",
+      "converted_file": "user-guide/messaging/bluebubbles.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/buzz",
+      "normalized_path": "/user-guide/messaging/buzz",
+      "converted_file": "user-guide/messaging/buzz.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/dingtalk",
+      "normalized_path": "/user-guide/messaging/dingtalk",
+      "converted_file": "user-guide/messaging/dingtalk.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
+      "normalized_path": "/user-guide/messaging/discord",
+      "converted_file": "user-guide/messaging/discord.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/email",
+      "normalized_path": "/user-guide/messaging/email",
+      "converted_file": "user-guide/messaging/email.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/feishu",
+      "normalized_path": "/user-guide/messaging/feishu",
+      "converted_file": "user-guide/messaging/feishu.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
+      "normalized_path": "/user-guide/messaging/google_chat",
+      "converted_file": "user-guide/messaging/google_chat.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/homeassistant",
+      "normalized_path": "/user-guide/messaging/homeassistant",
+      "converted_file": "user-guide/messaging/homeassistant.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/index",
+      "normalized_path": "/user-guide/messaging/index",
+      "converted_file": "user-guide/messaging/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
+      "normalized_path": "/user-guide/messaging/irc",
+      "converted_file": "user-guide/messaging/irc.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
+      "normalized_path": "/user-guide/messaging/line",
+      "converted_file": "user-guide/messaging/line.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/matrix",
+      "normalized_path": "/user-guide/messaging/matrix",
+      "converted_file": "user-guide/messaging/matrix.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/mattermost",
+      "normalized_path": "/user-guide/messaging/mattermost",
+      "converted_file": "user-guide/messaging/mattermost.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/msgraph-webhook",
+      "normalized_path": "/user-guide/messaging/msgraph-webhook",
+      "converted_file": "user-guide/messaging/msgraph-webhook.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
+      "normalized_path": "/user-guide/messaging/ntfy",
+      "converted_file": "user-guide/messaging/ntfy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/open-webui",
+      "normalized_path": "/user-guide/messaging/open-webui",
+      "converted_file": "user-guide/messaging/open-webui.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
+      "normalized_path": "/user-guide/messaging/photon",
+      "converted_file": "user-guide/messaging/photon.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/qqbot",
+      "normalized_path": "/user-guide/messaging/qqbot",
+      "converted_file": "user-guide/messaging/qqbot.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
+      "normalized_path": "/user-guide/messaging/raft",
+      "converted_file": "user-guide/messaging/raft.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/relay",
+      "normalized_path": "/user-guide/messaging/relay",
+      "converted_file": "user-guide/messaging/relay.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal",
+      "normalized_path": "/user-guide/messaging/signal",
+      "converted_file": "user-guide/messaging/signal.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex",
+      "normalized_path": "/user-guide/messaging/simplex",
+      "converted_file": "user-guide/messaging/simplex.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack",
+      "normalized_path": "/user-guide/messaging/slack",
+      "converted_file": "user-guide/messaging/slack.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/sms",
+      "normalized_path": "/user-guide/messaging/sms",
+      "converted_file": "user-guide/messaging/sms.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams-meetings",
+      "normalized_path": "/user-guide/messaging/teams-meetings",
+      "converted_file": "user-guide/messaging/teams-meetings.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+      "normalized_path": "/user-guide/messaging/teams",
+      "converted_file": "user-guide/messaging/teams.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram",
+      "normalized_path": "/user-guide/messaging/telegram",
+      "converted_file": "user-guide/messaging/telegram.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks",
+      "normalized_path": "/user-guide/messaging/webhooks",
+      "converted_file": "user-guide/messaging/webhooks.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/wecom-callback",
+      "normalized_path": "/user-guide/messaging/wecom-callback",
+      "converted_file": "user-guide/messaging/wecom-callback.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/wecom",
+      "normalized_path": "/user-guide/messaging/wecom",
+      "converted_file": "user-guide/messaging/wecom.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin",
+      "normalized_path": "/user-guide/messaging/weixin",
+      "converted_file": "user-guide/messaging/weixin.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp-cloud",
+      "normalized_path": "/user-guide/messaging/whatsapp-cloud",
+      "converted_file": "user-guide/messaging/whatsapp-cloud.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp",
+      "normalized_path": "/user-guide/messaging/whatsapp",
+      "converted_file": "user-guide/messaging/whatsapp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/yuanbao",
+      "normalized_path": "/user-guide/messaging/yuanbao",
+      "converted_file": "user-guide/messaging/yuanbao.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/multi-connection-desktop",
+      "normalized_path": "/user-guide/multi-connection-desktop",
+      "converted_file": "user-guide/multi-connection-desktop.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/multi-profile-gateways",
+      "normalized_path": "/user-guide/multi-profile-gateways",
+      "converted_file": "user-guide/multi-profile-gateways.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/profile-distributions",
+      "normalized_path": "/user-guide/profile-distributions",
+      "converted_file": "user-guide/profile-distributions.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/profiles",
+      "normalized_path": "/user-guide/profiles",
+      "converted_file": "user-guide/profiles.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/remote-config",
+      "normalized_path": "/user-guide/remote-config",
+      "converted_file": "user-guide/remote-config.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden",
+      "normalized_path": "/user-guide/secrets/bitwarden",
+      "converted_file": "user-guide/secrets/bitwarden.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/command",
+      "normalized_path": "/user-guide/secrets/command",
+      "converted_file": "user-guide/secrets/command.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/index",
+      "normalized_path": "/user-guide/secrets/index",
+      "converted_file": "user-guide/secrets/index.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/onepassword",
+      "normalized_path": "/user-guide/secrets/onepassword",
+      "converted_file": "user-guide/secrets/onepassword.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/security",
+      "normalized_path": "/user-guide/security",
+      "converted_file": "user-guide/security.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery",
+      "normalized_path": "/user-guide/session-storage-recovery",
+      "converted_file": "user-guide/session-storage-recovery.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/sessions",
+      "normalized_path": "/user-guide/sessions",
+      "converted_file": "user-guide/sessions.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/apple/apple-apple-notes",
+      "normalized_path": "/user-guide/skills/bundled/apple/apple-apple-notes",
+      "converted_file": "user-guide/skills/bundled/apple/apple-apple-notes.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/apple/apple-apple-reminders",
+      "normalized_path": "/user-guide/skills/bundled/apple/apple-apple-reminders",
+      "converted_file": "user-guide/skills/bundled/apple/apple-apple-reminders.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/apple/apple-findmy",
+      "normalized_path": "/user-guide/skills/bundled/apple/apple-findmy",
+      "converted_file": "user-guide/skills/bundled/apple/apple-findmy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/apple/apple-imessage",
+      "normalized_path": "/user-guide/skills/bundled/apple/apple-imessage",
+      "converted_file": "user-guide/skills/bundled/apple/apple-imessage.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code",
+      "normalized_path": "/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code",
+      "converted_file": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex",
+      "normalized_path": "/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex",
+      "converted_file": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use",
+      "normalized_path": "/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use",
+      "converted_file": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent",
+      "normalized_path": "/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent",
+      "converted_file": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-architecture-diagram",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-architecture-diagram",
+      "converted_file": "user-guide/skills/bundled/creative/creative-architecture-diagram.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-ascii-video",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-ascii-video",
+      "converted_file": "user-guide/skills/bundled/creative/creative-ascii-video.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-baoyu-infographic",
+      "converted_file": "user-guide/skills/bundled/creative/creative-baoyu-infographic.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-claude-design",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-claude-design",
+      "converted_file": "user-guide/skills/bundled/creative/creative-claude-design.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-humanizer",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-humanizer",
+      "converted_file": "user-guide/skills/bundled/creative/creative-humanizer.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-manim-video",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-manim-video",
+      "converted_file": "user-guide/skills/bundled/creative/creative-manim-video.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-p5js",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-p5js",
+      "converted_file": "user-guide/skills/bundled/creative/creative-p5js.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-popular-web-designs",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-popular-web-designs",
+      "converted_file": "user-guide/skills/bundled/creative/creative-popular-web-designs.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music",
+      "normalized_path": "/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music",
+      "converted_file": "user-guide/skills/bundled/creative/creative-songwriting-and-ai-music.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/devops/devops-sdlc-review",
+      "normalized_path": "/user-guide/skills/bundled/devops/devops-sdlc-review",
+      "converted_file": "user-guide/skills/bundled/devops/devops-sdlc-review.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/email/email-email-inbox-triage",
+      "normalized_path": "/user-guide/skills/bundled/email/email-email-inbox-triage",
+      "converted_file": "user-guide/skills/bundled/email/email-email-inbox-triage.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/email/email-himalaya",
+      "normalized_path": "/user-guide/skills/bundled/email/email-himalaya",
+      "converted_file": "user-guide/skills/bundled/email/email-himalaya.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/media/media-youtube-content",
+      "normalized_path": "/user-guide/skills/bundled/media/media-youtube-content",
+      "converted_file": "user-guide/skills/bundled/media/media-youtube-content.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian",
+      "normalized_path": "/user-guide/skills/bundled/note-taking/note-taking-obsidian",
+      "converted_file": "user-guide/skills/bundled/note-taking/note-taking-obsidian.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-document-to-action-items",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-document-to-action-items",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-document-to-action-items.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-google-workspace",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-google-workspace",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-google-workspace.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-maps",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-maps",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-maps.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-meeting-action-items",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-meeting-action-items",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-meeting-action-items.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-microsoft-office",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-microsoft-office",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-microsoft-office.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-pdf",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-pdf",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-pdf.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-product-price-monitor",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-product-price-monitor",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-product-price-monitor.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/productivity/productivity-weekly-review-planning",
+      "normalized_path": "/user-guide/skills/bundled/productivity/productivity-weekly-review-planning",
+      "converted_file": "user-guide/skills/bundled/productivity/productivity-weekly-review-planning.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/research/research-arxiv",
+      "normalized_path": "/user-guide/skills/bundled/research/research-arxiv",
+      "converted_file": "user-guide/skills/bundled/research/research-arxiv.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/research/research-competitor-news-monitor",
+      "normalized_path": "/user-guide/skills/bundled/research/research-competitor-news-monitor",
+      "converted_file": "user-guide/skills/bundled/research/research-competitor-news-monitor.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/research/research-grounded-citations",
+      "normalized_path": "/user-guide/skills/bundled/research/research-grounded-citations",
+      "converted_file": "user-guide/skills/bundled/research/research-grounded-citations.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/social-media/social-media-xurl",
+      "normalized_path": "/user-guide/skills/bundled/social-media/social-media-xurl",
+      "converted_file": "user-guide/skills/bundled/social-media/social-media-xurl.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-codebase-inspection",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-codebase-inspection",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-codebase-inspection.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-dogfood",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-dogfood",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-dogfood.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-github",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-github",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-github.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-requesting-code-review",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-requesting-code-review.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-simplify-code",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-simplify-code",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-simplify-code.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-spike",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-spike",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-spike.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-systematic-debugging",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-systematic-debugging.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development",
+      "normalized_path": "/user-guide/skills/bundled/software-development/software-development-test-driven-development",
+      "converted_file": "user-guide/skills/bundled/software-development/software-development-test-driven-development.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/web/web-blocked-page-recovery",
+      "normalized_path": "/user-guide/skills/bundled/web/web-blocked-page-recovery",
+      "converted_file": "user-guide/skills/bundled/web/web-blocked-page-recovery.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/google-workspace",
+      "normalized_path": "/user-guide/skills/google-workspace",
+      "converted_file": "user-guide/skills/google-workspace.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands",
+      "normalized_path": "/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands",
+      "converted_file": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/blockchain/blockchain-evm",
+      "normalized_path": "/user-guide/skills/optional/blockchain/blockchain-evm",
+      "converted_file": "user-guide/skills/optional/blockchain/blockchain-evm.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/blockchain/blockchain-hyperliquid",
+      "normalized_path": "/user-guide/skills/optional/blockchain/blockchain-hyperliquid",
+      "converted_file": "user-guide/skills/optional/blockchain/blockchain-hyperliquid.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/blockchain/blockchain-solana",
+      "normalized_path": "/user-guide/skills/optional/blockchain/blockchain-solana",
+      "converted_file": "user-guide/skills/optional/blockchain/blockchain-solana.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/communication/communication-one-three-one-rule",
+      "normalized_path": "/user-guide/skills/optional/communication/communication-one-three-one-rule",
+      "converted_file": "user-guide/skills/optional/communication/communication-one-three-one-rule.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-ai-presenter-video",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-ai-presenter-video",
+      "converted_file": "user-guide/skills/optional/creative/creative-ai-presenter-video.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-anatomy",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-anatomy",
+      "converted_file": "user-guide/skills/optional/creative/creative-anatomy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-archify",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-archify",
+      "converted_file": "user-guide/skills/optional/creative/creative-archify.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-ascii-art",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-ascii-art",
+      "converted_file": "user-guide/skills/optional/creative/creative-ascii-art.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-auteur",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-auteur",
+      "converted_file": "user-guide/skills/optional/creative/creative-auteur.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-baoyu-article-illustrator",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-baoyu-article-illustrator",
+      "converted_file": "user-guide/skills/optional/creative/creative-baoyu-article-illustrator.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-baoyu-comic",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-baoyu-comic",
+      "converted_file": "user-guide/skills/optional/creative/creative-baoyu-comic.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-brag-slim",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-brag-slim",
+      "converted_file": "user-guide/skills/optional/creative/creative-brag-slim.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-brag",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-brag",
+      "converted_file": "user-guide/skills/optional/creative/creative-brag.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-comfyui",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-comfyui",
+      "converted_file": "user-guide/skills/optional/creative/creative-comfyui.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-concept-diagrams",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-concept-diagrams",
+      "converted_file": "user-guide/skills/optional/creative/creative-concept-diagrams.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-creative-ideation",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-creative-ideation",
+      "converted_file": "user-guide/skills/optional/creative/creative-creative-ideation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-design-md",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-design-md",
+      "converted_file": "user-guide/skills/optional/creative/creative-design-md.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-draw-your-font",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-draw-your-font",
+      "converted_file": "user-guide/skills/optional/creative/creative-draw-your-font.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-dream-loop",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-dream-loop",
+      "converted_file": "user-guide/skills/optional/creative/creative-dream-loop.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-excalidraw",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-excalidraw",
+      "converted_file": "user-guide/skills/optional/creative/creative-excalidraw.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-heartmula",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-heartmula",
+      "converted_file": "user-guide/skills/optional/creative/creative-heartmula.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-hyperframes",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-hyperframes",
+      "converted_file": "user-guide/skills/optional/creative/creative-hyperframes.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-impeccable",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-impeccable",
+      "converted_file": "user-guide/skills/optional/creative/creative-impeccable.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-ip-as-logo",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-ip-as-logo",
+      "converted_file": "user-guide/skills/optional/creative/creative-ip-as-logo.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-kanban-video-orchestrator",
+      "converted_file": "user-guide/skills/optional/creative/creative-kanban-video-orchestrator.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-meme-generation",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-meme-generation",
+      "converted_file": "user-guide/skills/optional/creative/creative-meme-generation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-mono-color",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-mono-color",
+      "converted_file": "user-guide/skills/optional/creative/creative-mono-color.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-pixel-art",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-pixel-art",
+      "converted_file": "user-guide/skills/optional/creative/creative-pixel-art.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-pretext",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-pretext",
+      "converted_file": "user-guide/skills/optional/creative/creative-pretext.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-simple-english",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-simple-english",
+      "converted_file": "user-guide/skills/optional/creative/creative-simple-english.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-sketch",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-sketch",
+      "converted_file": "user-guide/skills/optional/creative/creative-sketch.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-social-media-content-calendar",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-social-media-content-calendar",
+      "converted_file": "user-guide/skills/optional/creative/creative-social-media-content-calendar.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-system-atlas",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-system-atlas",
+      "converted_file": "user-guide/skills/optional/creative/creative-system-atlas.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-tldraw-offline",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-tldraw-offline",
+      "converted_file": "user-guide/skills/optional/creative/creative-tldraw-offline.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-unreal-mcp",
+      "normalized_path": "/user-guide/skills/optional/creative/creative-unreal-mcp",
+      "converted_file": "user-guide/skills/optional/creative/creative-unreal-mcp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/data-science/data-science-jupyter-notebook",
+      "normalized_path": "/user-guide/skills/optional/data-science/data-science-jupyter-notebook",
+      "converted_file": "user-guide/skills/optional/data-science/data-science-jupyter-notebook.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-actual-setup",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-actual-setup",
+      "converted_file": "user-guide/skills/optional/devops/devops-actual-setup.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-docker-management",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-docker-management",
+      "converted_file": "user-guide/skills/optional/devops/devops-docker-management.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-hermes-s6-container-supervision",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-hermes-s6-container-supervision",
+      "converted_file": "user-guide/skills/optional/devops/devops-hermes-s6-container-supervision.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-inference-sh-cli",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-inference-sh-cli",
+      "converted_file": "user-guide/skills/optional/devops/devops-inference-sh-cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-pinggy-tunnel",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-pinggy-tunnel",
+      "converted_file": "user-guide/skills/optional/devops/devops-pinggy-tunnel.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-setup-wizard-generator",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-setup-wizard-generator",
+      "converted_file": "user-guide/skills/optional/devops/devops-setup-wizard-generator.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/devops/devops-watchers",
+      "normalized_path": "/user-guide/skills/optional/devops/devops-watchers",
+      "converted_file": "user-guide/skills/optional/devops/devops-watchers.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test",
+      "normalized_path": "/user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test",
+      "converted_file": "user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/email/email-agentmail",
+      "normalized_path": "/user-guide/skills/optional/email/email-agentmail",
+      "converted_file": "user-guide/skills/optional/email/email-agentmail.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-3-statement-model",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-3-statement-model",
+      "converted_file": "user-guide/skills/optional/finance/finance-3-statement-model.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-comps-analysis",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-comps-analysis",
+      "converted_file": "user-guide/skills/optional/finance/finance-comps-analysis.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-dcf-model",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-dcf-model",
+      "converted_file": "user-guide/skills/optional/finance/finance-dcf-model.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-excel-author",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-excel-author",
+      "converted_file": "user-guide/skills/optional/finance/finance-excel-author.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-lbo-model",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-lbo-model",
+      "converted_file": "user-guide/skills/optional/finance/finance-lbo-model.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-merger-model",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-merger-model",
+      "converted_file": "user-guide/skills/optional/finance/finance-merger-model.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-polymarket",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-polymarket",
+      "converted_file": "user-guide/skills/optional/finance/finance-polymarket.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-pptx-author",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-pptx-author",
+      "converted_file": "user-guide/skills/optional/finance/finance-pptx-author.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/finance/finance-stocks",
+      "normalized_path": "/user-guide/skills/optional/finance/finance-stocks",
+      "converted_file": "user-guide/skills/optional/finance/finance-stocks.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/gaming/gaming-minecraft-modpack-server",
+      "normalized_path": "/user-guide/skills/optional/gaming/gaming-minecraft-modpack-server",
+      "converted_file": "user-guide/skills/optional/gaming/gaming-minecraft-modpack-server.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/gaming/gaming-pokemon-player",
+      "normalized_path": "/user-guide/skills/optional/gaming/gaming-pokemon-player",
+      "converted_file": "user-guide/skills/optional/gaming/gaming-pokemon-player.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/health/health-fitness-nutrition",
+      "normalized_path": "/user-guide/skills/optional/health/health-fitness-nutrition",
+      "converted_file": "user-guide/skills/optional/health/health-fitness-nutrition.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/health/health-neuroskill-bci",
+      "normalized_path": "/user-guide/skills/optional/health/health-neuroskill-bci",
+      "converted_file": "user-guide/skills/optional/health/health-neuroskill-bci.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mcp/mcp-fastmcp",
+      "normalized_path": "/user-guide/skills/optional/mcp/mcp-fastmcp",
+      "converted_file": "user-guide/skills/optional/mcp/mcp-fastmcp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway",
+      "normalized_path": "/user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway",
+      "converted_file": "user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mcp/mcp-mcporter",
+      "normalized_path": "/user-guide/skills/optional/mcp/mcp-mcporter",
+      "converted_file": "user-guide/skills/optional/mcp/mcp-mcporter.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/media/media-gif-search",
+      "normalized_path": "/user-guide/skills/optional/media/media-gif-search",
+      "converted_file": "user-guide/skills/optional/media/media-gif-search.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/media/media-songsee",
+      "normalized_path": "/user-guide/skills/optional/media/media-songsee",
+      "converted_file": "user-guide/skills/optional/media/media-songsee.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-accelerate",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-accelerate",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-accelerate.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-chroma",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-chroma",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-chroma.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-evaluation-evaluating-llms-harness",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-evaluation-evaluating-llms-harness",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-evaluation-evaluating-llms-harness.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-faiss",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-faiss",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-faiss.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-flash-attention",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-flash-attention",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-flash-attention.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-inference-llama-cpp",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-inference-llama-cpp",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-inference-llama-cpp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-inference-serving-llms-vllm",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-inference-serving-llms-vllm",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-inference-serving-llms-vllm.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-lambda-labs",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-lambda-labs",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-lambda-labs.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-modal",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-modal",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-modal.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-models-segment-anything-model",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-models-segment-anything-model",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-models-segment-anything-model.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-nemo-curator",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-nemo-curator",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-nemo-curator.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-obliteratus",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-obliteratus",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-obliteratus.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-peft",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-peft",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-peft.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-pytorch-fsdp",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-pytorch-fsdp",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-pytorch-fsdp.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-pytorch-lightning",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-pytorch-lightning",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-pytorch-lightning.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-research-dspy",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-research-dspy",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-research-dspy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-saelens",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-saelens",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-saelens.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-simpo",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-simpo",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-simpo.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-slime",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-slime",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-slime.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-tensorrt-llm",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-tensorrt-llm",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-tensorrt-llm.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-torchtitan",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-torchtitan",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-torchtitan.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-training-axolotl",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-training-axolotl",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-training-axolotl.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/mlops/mlops-training-unsloth",
+      "normalized_path": "/user-guide/skills/optional/mlops/mlops-training-unsloth",
+      "converted_file": "user-guide/skills/optional/mlops/mlops-training-unsloth.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/payments/payments-stripe-link-cli",
+      "normalized_path": "/user-guide/skills/optional/payments/payments-stripe-link-cli",
+      "converted_file": "user-guide/skills/optional/payments/payments-stripe-link-cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/payments/payments-stripe-projects",
+      "normalized_path": "/user-guide/skills/optional/payments/payments-stripe-projects",
+      "converted_file": "user-guide/skills/optional/payments/payments-stripe-projects.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-box",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-box",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-box.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-canvas",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-canvas",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-canvas.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-decision-questionnaire",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-decision-questionnaire",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-decision-questionnaire.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-here-now",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-here-now",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-here-now.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-live-dashboard",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-live-dashboard",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-live-dashboard.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-memento-flashcards",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-memento-flashcards.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-property-listings",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-property-listings",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-property-listings.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-shop",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-shop",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-shop.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-siyuan",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-siyuan",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-siyuan.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/productivity/productivity-telephony",
+      "normalized_path": "/user-guide/skills/optional/productivity/productivity-telephony",
+      "converted_file": "user-guide/skills/optional/productivity/productivity-telephony.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-bioinformatics",
+      "normalized_path": "/user-guide/skills/optional/research/research-bioinformatics",
+      "converted_file": "user-guide/skills/optional/research/research-bioinformatics.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-blogwatcher",
+      "normalized_path": "/user-guide/skills/optional/research/research-blogwatcher",
+      "converted_file": "user-guide/skills/optional/research/research-blogwatcher.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-darwinian-evolver",
+      "normalized_path": "/user-guide/skills/optional/research/research-darwinian-evolver",
+      "converted_file": "user-guide/skills/optional/research/research-darwinian-evolver.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-domain-intel",
+      "normalized_path": "/user-guide/skills/optional/research/research-domain-intel",
+      "converted_file": "user-guide/skills/optional/research/research-domain-intel.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-drug-discovery",
+      "normalized_path": "/user-guide/skills/optional/research/research-drug-discovery",
+      "converted_file": "user-guide/skills/optional/research/research-drug-discovery.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-gitnexus-explorer",
+      "normalized_path": "/user-guide/skills/optional/research/research-gitnexus-explorer",
+      "converted_file": "user-guide/skills/optional/research/research-gitnexus-explorer.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-llm-wiki",
+      "normalized_path": "/user-guide/skills/optional/research/research-llm-wiki",
+      "converted_file": "user-guide/skills/optional/research/research-llm-wiki.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-osint-investigation",
+      "normalized_path": "/user-guide/skills/optional/research/research-osint-investigation",
+      "converted_file": "user-guide/skills/optional/research/research-osint-investigation.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-parallel-cli",
+      "normalized_path": "/user-guide/skills/optional/research/research-parallel-cli",
+      "converted_file": "user-guide/skills/optional/research/research-parallel-cli.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-qmd",
+      "normalized_path": "/user-guide/skills/optional/research/research-qmd",
+      "converted_file": "user-guide/skills/optional/research/research-qmd.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-research-paper-writing",
+      "normalized_path": "/user-guide/skills/optional/research/research-research-paper-writing",
+      "converted_file": "user-guide/skills/optional/research/research-research-paper-writing.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-rss-feeds",
+      "normalized_path": "/user-guide/skills/optional/research/research-rss-feeds",
+      "converted_file": "user-guide/skills/optional/research/research-rss-feeds.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/research/research-scrapling",
+      "normalized_path": "/user-guide/skills/optional/research/research-scrapling",
+      "converted_file": "user-guide/skills/optional/research/research-scrapling.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/security/security-1password",
+      "normalized_path": "/user-guide/skills/optional/security/security-1password",
+      "converted_file": "user-guide/skills/optional/security/security-1password.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/security/security-godmode",
+      "normalized_path": "/user-guide/skills/optional/security/security-godmode",
+      "converted_file": "user-guide/skills/optional/security/security-godmode.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/security/security-oss-forensics",
+      "normalized_path": "/user-guide/skills/optional/security/security-oss-forensics",
+      "converted_file": "user-guide/skills/optional/security/security-oss-forensics.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/security/security-sherlock",
+      "normalized_path": "/user-guide/skills/optional/security/security-sherlock",
+      "converted_file": "user-guide/skills/optional/security/security-sherlock.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/security/security-unbroker",
+      "normalized_path": "/user-guide/skills/optional/security/security-unbroker",
+      "converted_file": "user-guide/skills/optional/security/security-unbroker.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/security/security-web-pentest",
+      "normalized_path": "/user-guide/skills/optional/security/security-web-pentest",
+      "converted_file": "user-guide/skills/optional/security/security-web-pentest.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/smart-home/smart-home-openhue",
+      "normalized_path": "/user-guide/skills/optional/smart-home/smart-home-openhue",
+      "converted_file": "user-guide/skills/optional/smart-home/smart-home-openhue.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/social-media/social-media-reddit-reading",
+      "normalized_path": "/user-guide/skills/optional/social-media/social-media-reddit-reading",
+      "converted_file": "user-guide/skills/optional/social-media/social-media-reddit-reading.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-ast-grep",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-ast-grep",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-ast-grep.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-code-wiki",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-code-wiki",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-code-wiki.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-grill-me",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-grill-me",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-grill-me.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-node-inspect-debugger",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-node-inspect-debugger",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-node-inspect-debugger.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-pr-lens",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-pr-lens",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-pr-lens.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-python-debugpy",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-python-debugpy",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-python-debugpy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-rest-graphql-debug",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-rest-graphql-debug",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-rest-graphql-debug.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development",
+      "normalized_path": "/user-guide/skills/optional/software-development/software-development-subagent-driven-development",
+      "converted_file": "user-guide/skills/optional/software-development/software-development-subagent-driven-development.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy",
+      "normalized_path": "/user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy",
+      "converted_file": "user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/web-development/web-development-har-derived-api-client",
+      "normalized_path": "/user-guide/skills/optional/web-development/web-development-har-derived-api-client",
+      "converted_file": "user-guide/skills/optional/web-development/web-development-har-derived-api-client.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/web-development/web-development-page-agent",
+      "normalized_path": "/user-guide/skills/optional/web-development/web-development-page-agent",
+      "converted_file": "user-guide/skills/optional/web-development/web-development-page-agent.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/web-development/web-development-publish-site",
+      "normalized_path": "/user-guide/skills/optional/web-development/web-development-publish-site",
+      "converted_file": "user-guide/skills/optional/web-development/web-development-publish-site.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/web-development/web-development-scrollcraft",
+      "normalized_path": "/user-guide/skills/optional/web-development/web-development-scrollcraft",
+      "converted_file": "user-guide/skills/optional/web-development/web-development-scrollcraft.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/switching-to-source",
+      "normalized_path": "/user-guide/switching-to-source",
+      "converted_file": "user-guide/switching-to-source.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/tui",
+      "normalized_path": "/user-guide/tui",
+      "converted_file": "user-guide/tui.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/which-file-does-what",
+      "normalized_path": "/user-guide/which-file-does-what",
+      "converted_file": "user-guide/which-file-does-what.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/windows-native",
+      "normalized_path": "/user-guide/windows-native",
+      "converted_file": "user-guide/windows-native.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-guide/windows-wsl-quickstart",
+      "normalized_path": "/user-guide/windows-wsl-quickstart",
+      "converted_file": "user-guide/windows-wsl-quickstart.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/user-stories",
+      "normalized_path": "/user-stories",
+      "converted_file": "user-stories.mdx",
+      "status": "done",
+      "notes": ""
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/skills",
+      "normalized_path": "/skills",
+      "converted_file": "skills.mdx",
+      "status": "done",
+      "notes": "Converted from website/src/pages/skills/index.tsx into snippets/skills-hub.jsx; catalog JSON fetched at runtime from nousresearch.github.io/hermes-agent/docs/api/"
+    },
+    {
+      "source_url": "https://hermes-agent.nousresearch.com/docs/plugins",
+      "normalized_path": "/plugins",
+      "converted_file": "plugins.mdx",
+      "status": "done",
+      "notes": "Converted from website/src/pages/plugins/index.tsx into snippets/plugins-catalog.jsx; catalog JSON fetched at runtime from nousresearch.github.io/hermes-agent/docs/api/. Per-plugin and author pages link to the source site."
+    }
+  ],
+  "excluded": [
+    {
+      "source_url": "zh-Hans locale",
+      "status": "excluded",
+      "notes": "i18n locale not in migration scope (en default only)"
+    }
+  ]
+}

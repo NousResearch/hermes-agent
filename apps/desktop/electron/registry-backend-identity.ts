@@ -8,6 +8,7 @@
  */
 
 import { connectionInstallIds } from './connection-caches'
+import { runtimeKindFromStatus } from './connection-config'
 
 const IDENTITY_PROBE_BUDGET_MS = 2_000
 
@@ -93,10 +94,20 @@ export function createPrimaryInstallIdResolver(deps: PrimaryInstallIdDeps): () =
   }
 }
 
+/** Last-known backend facts for a registry entry (display-only); each is absent until a probe has seen it. */
+export function knownBackendFacts(connectionId: string): { installId?: string; runtimeKind?: 'container' | 'native' } {
+  const known = connectionInstallIds.get(connectionId)
+
+  return {
+    ...(known?.id ? { installId: known.id } : {}),
+    ...(known?.runtimeKind ? { runtimeKind: known.runtimeKind } : {})
+  }
+}
+
 /** Record the install_id a connection's `/api/status` body reports (or its absence). */
 export function rememberConnectionInstallId(connectionId: string, statusBody: unknown): string | undefined {
   const id = installIdFromStatus(statusBody)
-  connectionInstallIds.set(connectionId, { id, ts: Date.now() })
+  connectionInstallIds.set(connectionId, { id, runtimeKind: runtimeKindFromStatus(statusBody), ts: Date.now() })
 
   return id
 }
@@ -121,7 +132,9 @@ export async function probeCachedConnectionInstallId(
       return cached.id
     }
 
-    connectionInstallIds.set(connectionId, { id: undefined, ts: Date.now() })
+    // Cache the id miss but keep the runtime kind: a backend whose install_id is unpersistable
+    // would otherwise lose it on every probe.
+    connectionInstallIds.set(connectionId, { id: undefined, runtimeKind: cached?.runtimeKind, ts: Date.now() })
 
     return undefined
   }

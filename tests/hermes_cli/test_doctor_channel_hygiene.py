@@ -27,6 +27,12 @@ def test_stale_records_warned_with_reason_texts(tmp_path, capsys, monkeypatch):
     gone = tmp_path / "gone"
     live = tmp_path / "live"
     live.mkdir()
+    booting = tmp_path / "booting"
+    booting.mkdir()
+
+    from hermes_cli.update_channel import install_id
+
+    booting_key = install_id(booting)
     config = {
         "update": {
             "installs": {
@@ -34,6 +40,9 @@ def test_stale_records_warned_with_reason_texts(tmp_path, capsys, monkeypatch):
                 "deadbeefdeadbeef": {"path": str(gone), "channel": "main"},
                 # replaced: path exists but keys to a different sha16
                 "0" * 16: {"path": str(live), "channel": "stable"},
+                # unclaimed: path keys to its own sha16 but no live
+                # installs/<sha16>/facts.json claims the record
+                booting_key: {"path": str(booting), "channel": "canary"},
             }
         }
     }
@@ -44,6 +53,14 @@ def test_stale_records_warned_with_reason_texts(tmp_path, capsys, monkeypatch):
     assert "safe to remove update.installs.deadbeefdeadbeef" in out
     assert f"Stale channel record: {'0' * 16}" in out
     assert "different install now" in out
+    assert f"Stale channel record: {booting_key}" in out
+    # The unclaimed hint names the removal cost, never "safe to remove":
+    # dropping the record also drops its channel override and
+    # resolve_update_channel() falls back to the default channel.
+    assert (
+        f"removing update.installs.{booting_key} also drops its recorded channel"
+    ) in out
+    assert f"safe to remove update.installs.{booting_key}" not in out
 
 
 def test_unreadable_config_degrades_to_a_warning(capsys):

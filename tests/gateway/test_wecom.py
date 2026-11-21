@@ -442,22 +442,21 @@ class TestSend:
         adapter._send_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_group_send_fails_early_without_req_id(self):
-        """Group chats with no cached req_id must fail with a clear error
-        instead of attempting APP_CMD_SEND (which WeCom will reject)."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+    async def test_group_send_attempts_native_delivery_without_req_id(self):
+        """A known group without passive context gets the same native attempt as an unknown chat."""
+        from plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        # No req_id cached for this group
         adapter._group_chat_ids.add("group-no-req")
         adapter._send_request = AsyncMock(return_value={"errcode": 0})
 
         result = await adapter.send("group-no-req", "hello group")
 
-        assert result.success is False
-        assert "req_id" in (result.error or "").lower()
-        # Should NOT attempt APP_CMD_SEND
-        adapter._send_request.assert_not_awaited()
+        assert result.success is True
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {"chatid": "group-no-req", "msgtype": "markdown", "markdown": {"content": "hello group"}},
+        )
 
 
 class TestInboundMessages:

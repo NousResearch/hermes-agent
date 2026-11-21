@@ -262,3 +262,20 @@ def test_idle_cli_prints_the_gateway_background_review_summary(capsys):
         assert cli._pending_input.empty()  # a report, not a turn
     finally:
         conn.close()
+
+
+def test_idle_cli_prints_a_plugin_card_once(capsys):
+    """A plugin's card (``ctx.post_card``) is a note between turns: the gateway publishes
+    ``plugin.card`` and an idle classic CLI prints its text once, as a status line, never a turn."""
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        _play(conn, client, [frame("plugin.card", {"plugin_id": "cwplug", "card_id": "share-1",
+                                                   "text": "Share deploy-checklist with your team?"},
+                                   admission=None)])
+        cli._drain_process_notifications("cli-idle")
+        cli._drain_process_notifications("cli-idle")
+        assert capsys.readouterr().out.count("  Share deploy-checklist with your team?") == 1
+        assert cli._pending_input.empty()  # a card, not a turn
+    finally:
+        conn.close()

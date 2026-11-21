@@ -3,6 +3,7 @@ import { type FC, useState } from 'react'
 
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
+import { PluginCardRow, useClaimedPluginCard } from '@/components/assistant-ui/thread/plugin-card'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -91,6 +92,7 @@ export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const pluginCard = useClaimedPluginCard()
 
   const contentRefused = useAuiState(
     s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
@@ -104,6 +106,12 @@ export const SystemMessage: FC = () => {
 
   if (!text) {
     return null
+  }
+
+  // A plugin's card whose Desktop half claims the directive renders as that
+  // plugin's component; unclaimed, it falls through to the plain text row.
+  if (pluginCard) {
+    return <PluginCardRow card={pluginCard} />
   }
 
   if (processResult || (typeof asyncResult === 'string' && asyncResult)) {

@@ -425,6 +425,10 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+function pluginCardMeta(message: ChatMessage): { pluginCard?: ChatMessage['pluginCard'] } {
+  return message.pluginCard ? { pluginCard: message.pluginCard } : {}
+}
+
 // The safety-refused notice rides metadata.custom on the system row, like
 // asyncResult — extracted so toRuntimeMessage keeps its complexity in budget.
 function contentRefusedMeta(
@@ -479,6 +483,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
           ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...pluginCardMeta(message),
           ...contentRefusedMeta(message)
         }
       }

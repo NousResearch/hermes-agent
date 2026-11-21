@@ -19,6 +19,7 @@ export {
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
+export { parsePluginCard } from './plugin-card'
 export {
   branchGroupForUser,
   isLocalSystemNotice,
@@ -45,4 +46,4 @@ export {
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'
 export type { PendingClarifyProjection, SettledClarifyProjection } from './tool-parts'
-export type { ChatMessage, ChatMessagePart, GatewayEventPayload, TimelinePartMetadata } from './types'
+export type { ChatMessage, ChatMessagePart, GatewayEventPayload, PluginCard, TimelinePartMetadata } from './types'

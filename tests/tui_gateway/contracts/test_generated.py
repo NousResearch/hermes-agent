@@ -49,6 +49,8 @@ _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.MULTILINE)
 _FREE_TIER_CHALLENGE = re.compile(r"^CHALLENGE_EVENT = \"([a-z_.]+)\"", re.MULTILINE)
 # Session-authority local-viewer turn projections (gateway/local_viewer_events.py).
 _LOCAL_VIEWER_PUBLISH = re.compile(r"\b(?:publish|_publish_execution)\(\s*\"([a-z_][a-z0-9_.]*)\"")
+# A note row's live event (gateway/session_completion_notes.py: plugin.card).
+_NOTE_PUBLISH = re.compile(r"event_type=\s*['\"]([a-z_][a-z0-9_.]*)['\"]")
 
 
 def _read(path: Path) -> str:
@@ -77,6 +79,7 @@ def emitted_event_names() -> set[str]:
     names.update(_SETUP_READY.findall(_read(REPO / current_path("hermes_cli/free_tier_bootstrap.py"))))
     names.update(_FREE_TIER_CHALLENGE.findall(_read(REPO / current_path("hermes_cli/anon_challenge.py"))))
     names.update(_LOCAL_VIEWER_PUBLISH.findall(_read(REPO / current_path("gateway/local_viewer_events.py"))))
+    names.update(_NOTE_PUBLISH.findall(_read(REPO / current_path("gateway/session_completion_notes.py"))))
     return names
 
 

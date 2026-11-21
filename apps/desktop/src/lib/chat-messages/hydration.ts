@@ -17,6 +17,7 @@ import {
   renderMediaTags,
   textPart
 } from './parts'
+import { parsePluginCard } from './plugin-card'
 import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
@@ -185,7 +186,9 @@ const NOTICE_DISPLAY_KINDS = [
   'failed_turn',
   // A safety-refused turn retained for display: the user's own message, shown
   // greyed with a notice. Rendered through the system path, never a user bubble.
-  'content_refused'
+  'content_refused',
+  // A plugin's card (`ctx.post_card`): a note no one typed, rendered by the plugin.
+  'plugin_card'
 ] as const
 
 // agent/turn_failure_copy.py::CONTENT_REFUSED_DISPLAY_KIND. The retained turn
@@ -288,6 +291,16 @@ function messageInterrupted(metadata: SessionMessage['display_metadata']): boole
   return parseDisplayMetadata(metadata)?.interrupted === true
 }
 
+function pluginCardField(message: SessionMessage): Pick<ChatMessage, 'pluginCard'> {
+  if (message.display_kind !== 'plugin_card') {
+    return {}
+  }
+
+  const pluginCard = parsePluginCard(parseDisplayMetadata(message.display_metadata)?.plugin_card)
+
+  return pluginCard ? { pluginCard } : {}
+}
+
 /** An assistant row read into the tool bubble before it. A reply stopped after a
  *  tool round folds in here, and its row still says the reply was stopped. */
 function foldIntoToolBubble(
@@ -376,6 +389,11 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 
   if (message.display_kind === 'process_complete') {
     return timelineDisplayText(message.display_metadata) ?? 'background process finished'
+  }
+
+  if (message.display_kind === 'plugin_card') {
+    // The row's content is the model's factual line; people read the card's own text.
+    return timelineDisplayText(message.display_metadata) ?? content
   }
 
   return content
@@ -760,6 +778,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...pluginCardField(message),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...promptSubmission(message),

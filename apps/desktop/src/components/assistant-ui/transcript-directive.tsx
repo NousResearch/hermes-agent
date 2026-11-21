@@ -119,6 +119,24 @@ export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> 
   )
 }
 
+/** A directive given as data rather than text: a plugin's card row
+ *  (`ctx.post_card`). Renders the same contribution an assistant's `::name{...}`
+ *  would, or nothing when no plugin claims the name (the caller shows the text). */
+export const ClaimedDirective: FC<{ name: string; attrs: Readonly<Record<string, string>> }> = ({ name, attrs }) => {
+  const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+  const match = claimFor(contributions, name)
+  const parsed = useMemo<ParsedTranscriptDirective>(() => ({ attrs: { ...attrs }, name, source: '' }), [attrs, name])
+
+  return match ? <DirectiveEntry contribution={match} parsed={parsed} streaming={false} /> : null
+}
+
+/** True when a plugin claims directive `name` right now. */
+export function useDirectiveClaimed(name: string | undefined): boolean {
+  const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+
+  return name !== undefined && claimFor(contributions, name) !== undefined
+}
+
 /** A paragraph resolved against the registry: the prose to keep as prose, and
  *  the claimed directives to render as cards, in the order they were written. */
 export type ResolvedParagraphSegment = { kind: 'prose'; text: string } | { kind: 'directive'; source: string }

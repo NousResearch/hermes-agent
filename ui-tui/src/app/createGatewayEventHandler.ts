@@ -113,6 +113,14 @@ export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined)
   return usageChanged(prev, merged) ? merged : prev
 }
 
+// Events whose payload text is printed as one system line in the transcript.
+// review.summary: the self-improvement background review's persistent summary
+// of what it saved to memory/skills, so it never gets lost to a transient
+// status flash (Python-side already formats it as "💾 Self-improvement
+// review: …"). plugin.card: a plugin posted a card (ctx.post_card, no model
+// turn); the terminal shows its text.
+const SYSTEM_LINE_EVENTS: ReadonlySet<string> = new Set(['review.summary', 'plugin.card'])
+
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 // The last gateway skin, kept so the theme can be re-derived when the OSC-11
@@ -1202,6 +1210,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
+    if (SYSTEM_LINE_EVENTS.has(ev.type)) {
+      const text = String((ev.payload as { text?: unknown } | undefined)?.text ?? '').trim()
+
+      if (text) {
+        sys(text)
+      }
+
+      return
+    }
+
     switch (ev.type) {
       case 'connection.request':
         if (ev.payload) {
@@ -1673,20 +1691,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
 
         return
-      case 'review.summary': {
-        // Self-improvement background review emitted a persistent summary
-        // of what it saved to memory/skills. Surface it as a system line
-        // in the transcript so it never gets lost to a transient status
-        // flash. Python-side already formats it as "💾 Self-improvement
-        // review: …".
-        const text = String(ev.payload?.text ?? '').trim()
-
-        if (text) {
-          sys(text)
-        }
-
-        return
-      }
 
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).

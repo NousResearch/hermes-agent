@@ -48,6 +48,8 @@ HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "post_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "apost_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "fork_session": "the returned handle tracks a fork thread of the live session agent in the Hermes process",
+    "post_card": "the card is admitted on the gateway's event loop into a session it owns",
+    "apost_card": "the card is admitted on the gateway's event loop into a session it owns",
 }
 
 # Registered in-process only; skipped (with a warning, the plugin still loads) inside the host

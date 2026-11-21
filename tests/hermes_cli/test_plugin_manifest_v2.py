@@ -296,6 +296,18 @@ class TestConfigSchema:
         settings = {"api_url": "x", "retries": 2, "ratio": 0.5, "flag": True}
         assert validate_config_schema("p", schema, settings) == []
 
+    def test_required_secret_is_checked_through_its_env_var(self, monkeypatch):
+        """A `secret` lives in .env, never in settings — absence there is normal."""
+        schema = {"token": {"type": "secret", "env": "TEST_PLUGIN_TOKEN", "required": True}}
+        monkeypatch.setenv("TEST_PLUGIN_TOKEN", "s3cret")
+        assert validate_config_schema("p", schema, {}) == []
+
+        monkeypatch.delenv("TEST_PLUGIN_TOKEN", raising=False)
+        warnings = validate_config_schema("p", schema, {})
+        assert len(warnings) == 1
+        assert "TEST_PLUGIN_TOKEN" in warnings[0]
+        assert "required" not in warnings[0]
+
     def test_bool_does_not_satisfy_int(self):
         warnings = validate_config_schema(
             "p", {"retries": {"type": "int"}}, {"retries": True}

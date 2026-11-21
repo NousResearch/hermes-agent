@@ -357,6 +357,86 @@ instead of silently eating the click. Open-ended clarify questions render as a p
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
+### Generative cards
+
+With `platforms.slack.extra.card_blocks: true`, the agent can answer with a
+**real card** instead of markdown. It emits a [json-render](https://json-render.dev)
+spec in a ` ```card ` fenced code block:
+
+    Here's the house right now:
+
+    ```card
+    {
+      "root": "card",
+      "elements": {
+        "card": {
+          "type": "Card",
+          "props": { "title": "Home status" },
+          "children": ["kpis", "actions"]
+        },
+        "kpis": { "type": "Fields", "children": ["f1"], "props": {} },
+        "f1": { "type": "Field", "props": { "label": "Lights on", "value": 3 } },
+        "actions": { "type": "Actions", "children": ["b1"], "props": {} },
+        "b1": { "type": "Button", "props": { "id": "kitchen-off", "label": "Turn kitchen light off", "style": "primary" } }
+      }
+    }
+    ```
+
+and the fence becomes a Block Kit card — header, field grid, native table,
+buttons. Supported components are the standard json-render chat catalog ones
+that map onto Slack: Card, Section, Text, Fields, Field, Table, Divider,
+Image, Actions, Button, LinkButton (a `Chart` has no Slack equivalent and
+rejects the card). Anything that fails to render — invalid JSON, an unknown
+component, a spec over Slack's limits — falls back to the ordinary markdown
+path, so a bad card can never lose the message. Only a top-level, closed
+` ```card ` fence counts (an example quoted inside another code block, or a
+fence the model never closed, stays ordinary code); when a reply holds
+several, the last well-formed one is the card.
+
+**Message text.** The fence is stripped from the visible text. The message
+`text` carries the prose around the fence *and* a plain mrkdwn summary of the
+card (title, `label: value` lines, an aligned table), because that text is
+what notifications and screen readers show, and what gets posted on its own if
+Slack rejects the blocks.
+
+**Escaping.** Card props are treated as data, not formatting: `&`, `<` and `>`
+become entities in every mrkdwn surface, so a ticket title containing
+`<!channel>` or `<https://…|label>` cannot ping the room or render a spoofed
+link. Emphasis markers (`*`, `_`) are left alone — Slack has no backslash
+escape.
+
+**Tables.** A `Table` renders as a native `data_table` (paginated; pass
+`pageSize` to control rows per page, default 5). `caption` defaults to
+"Table" because Slack requires it; an empty `rows` renders as a plain `table`
+block. Tables over 100 rows, 20 columns or 20,000 characters across cells
+reject the card.
+
+**Buttons.** A `LinkButton` always renders. A `Button` renders **only when a
+plugin has registered a handler for its `id`** via
+`ctx.register_slack_action_handler` (exact id or regex): a button nobody
+handles shows "This app is not responding" on the first tap, so unhandled
+buttons are dropped (with a gateway warning) and an `Actions` row left empty
+disappears. Hermes' own action ids (approval, clarify, feedback) are never
+reachable from a card.
+
+**Streaming.** The card appears once, when the reply is final. With streaming
+on, the fence is visible as a code block while the model is still writing it;
+turn streaming off for card-heavy agents, or accept the flash.
+
+**Telling the agent.** Nothing in Hermes decides *when* to use a card; the
+system prompt does. The platform hint still tells the model that tables are
+unsupported, so add something like this to `SOUL.md` or the agent's system
+prompt when you enable the flag:
+
+    When a structured answer helps (status overview, a short table of
+    records, a few key figures with a link), reply with prose plus ONE
+    ```card fenced JSON block: {"root": id, "elements": {id: {"type", "props",
+    "children"}}}. Components: Card(title, subtitle), Section, Text(content,
+    style plain|bold|muted), Fields > Field(label, value), Table(headers,
+    rows, caption), Divider, Image(url https, alt), Actions > LinkButton(label,
+    url). Keep the key numbers in the prose too. Never wrap a plain
+    conversational reply in a card.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash
@@ -432,6 +512,13 @@ platforms:
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
 
+      # Render agent-emitted json-render card specs as native Block Kit cards
+      # (default: false). When true, a ```card fenced JSON code block in the
+      # agent's reply becomes a real card — headers, field grids, native
+      # tables, buttons — instead of a code block. See "Generative cards"
+      # below. Anything that fails to render falls back to the markdown path.
+      card_blocks: false
+
       # Render live tool calls as Slack-native plan/task cards. Works with
       # Slack's built-in tool_progress: off default; a tool_progress: off you
       # write yourself disables cards too. Cards need a thread: an un-threaded
@@ -473,6 +560,7 @@ platforms:
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
+| `platforms.slack.extra.card_blocks` | `false` | When `true`, a ` ```card ` fenced JSON block in the agent's reply is rendered as a [json-render](https://json-render.dev) card — native headers, field grids, tables and buttons. See [Generative cards](#generative-cards). |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |

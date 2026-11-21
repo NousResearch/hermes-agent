@@ -3975,6 +3975,23 @@ html[data-hud-window] [data-slot='popover-content'] {
   display: none;
 }
 
+/* Radix positions in viewport pixels, which <html> zoom would scale again.
+   Keep statusbar positioning unscaled and restore the selected scale on its
+   content. Height limits must use that content's CSS pixels too. */
+html[data-hermes-desktop-host='browser'] [data-radix-popper-content-wrapper]:has(> [data-statusbar-menu]) {
+  zoom: calc(1 / var(--browser-ui-scale, 1));
+
+  > [data-statusbar-menu] {
+    zoom: var(--browser-ui-scale, 1);
+    --radix-context-menu-content-available-height: calc(
+      var(--radix-popper-available-height) / var(--browser-ui-scale, 1)
+    ) !important;
+    --radix-dropdown-menu-content-available-height: calc(
+      var(--radix-popper-available-height) / var(--browser-ui-scale, 1)
+    ) !important;
+  }
+}
+
 /* CSS zoom scales viewport units too; browser shells must fit their parent. */
 html[data-hermes-desktop-host='browser'] #root[data-browser-viewport] {
   position: relative;

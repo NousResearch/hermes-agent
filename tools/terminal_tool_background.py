@@ -11,7 +11,6 @@ import sys
 import threading
 from typing import Any, List, Optional
 
-from tools.environments.docker_foreground import adopt_foreground
 from tools.interrupt import is_thread_interrupted
 
 logger = logging.getLogger("tools.terminal_tool")
@@ -283,7 +282,7 @@ def yield_to_background_handler(
                       owner_task_id=task_id or effective_task_id, session_key=session_key,
                       output_so_far=output_so_far)
         if env_type == "docker":
-            session = adopt_foreground(process_registry, env._foreground_commands[id(proc)], proc, **kwargs)
+            session = process_registry.adopt_sandbox(env._foreground_commands[id(proc)], proc, **kwargs)
         else:
             session = process_registry.adopt_local(proc, **kwargs)
         if is_thread_interrupted(caller_tid):

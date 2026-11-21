@@ -92,7 +92,8 @@ def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, s
                     assert alive.returncode == 0, "a stale ownership record must not kill another process"
                 finally:
                     control("bash", "-c", f"printf '%s' {shlex.quote(published)} > {record.directory}/pid")
-            assert process_registry.kill_process(sid)["status"] == "killed"
+            killed = process_registry.kill_process(sid)
+            assert killed["status"] == "killed", killed
             group = result["pid"]
             live_group = control("bash", "-c", 'for f in /proc/[0-9]*/stat; do '
                                  'read -r s < "$f" 2>/dev/null || continue; s=${s##*) }; set -- $s; '

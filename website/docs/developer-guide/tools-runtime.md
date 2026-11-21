@@ -224,6 +224,18 @@ It also supports:
 - PTY mode
 - approval callbacks for dangerous commands
 
+Docker foreground commands retain namespace process-group ownership when yielded to the
+registry. Cancellation sends TERM to the whole owned group, waits the grace period, sends
+KILL to survivors, and verifies termination. Unlike host process teardown, this does not
+give only the parent a separate grace period. A non-trapping workload stops on TERM;
+TERM handlers may legitimately write cleanup output during the grace period, and ignoring
+TERM does not prevent escalation to KILL. A stop acknowledgement is not a transactional
+rollback of side effects already performed.
+
+`tools/process_registry_adoption.py` owns local and sandbox foreground adoption as registry
+methods. Docker's exec wrapper removes its ownership record after the child exits, without
+launching another exec for normal-path cleanup.
+
 `tools/process_registry_checkpoint.py` owns running-process checkpoints and
 PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
 writes one atomic, redacted receipt per process under the profile's

@@ -676,6 +676,7 @@ class DockerEnvironment(BaseEnvironment):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
+        self._foreground_commands: dict[int, DockerForeground] = {}
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
         # Set by terminal_tool._create_environment for session-scoped containers
@@ -1100,20 +1101,19 @@ class DockerEnvironment(BaseEnvironment):
         record = DockerForeground(self)
         proc = self._run_bash_untracked(record.wrap(cmd_string), login=login,
                                         timeout=timeout, stdin_data=stdin_data)
-        vars(self).setdefault("_foreground_commands", {})[id(proc)] = record
+        self._foreground_commands[id(proc)] = record
         return proc
 
     def _wait_for_process(self, proc, *args, **kwargs):
-        record = vars(self).get("_foreground_commands", {}).get(id(proc))
+        record = self._foreground_commands.get(id(proc))
         try:
             return super()._wait_for_process(proc, *args, **kwargs)
         finally:
             if record is not None and not record.adopted:
-                record.cleanup()
                 self._foreground_commands.pop(id(proc), None)
 
     def _kill_process(self, proc):
-        record = vars(self).get("_foreground_commands", {}).get(id(proc))
+        record = self._foreground_commands.get(id(proc))
         if record is not None:
             record.kill()
         super()._kill_process(proc)

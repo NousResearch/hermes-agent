@@ -34,7 +34,7 @@ def test_cancel_terminates_namespace_before_foreground_returns(docker_task, prod
     adopting, finish_adoption = threading.Event(), threading.Event()
     original_check = base.is_interrupted
     original_reap = gateway_run._reap_gateway_turn_processes
-    original_adopt = terminal_tool_background.adopt_foreground
+    original_adopt = process_registry.adopt_sandbox
 
     def adopt(*args, **kwargs):
         if producer == "stop_during_handoff":
@@ -68,7 +68,7 @@ def test_cancel_terminates_namespace_before_foreground_returns(docker_task, prod
 
     monkeypatch.setattr(base, "is_interrupted", check)
     monkeypatch.setattr(gateway_run, "_reap_gateway_turn_processes", reap)
-    monkeypatch.setattr(terminal_tool_background, "adopt_foreground", adopt)
+    monkeypatch.setattr(process_registry, "adopt_sandbox", adopt)
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     cid = wait_until(lambda: _container_id(docker_task), timeout=30, what="Docker environment")

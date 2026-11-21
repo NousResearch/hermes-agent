@@ -1,0 +1,44 @@
+# Community catalog entry — claude-swap-bridge
+#
+# Owner-submitted: the PR author (`satriachandrayw`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the plugin never fetches, downloads or
+# replaces its own files. Updates arrive only through a SHA-bump PR here plus
+# `hermes plugins update claude-swap-bridge`.
+name: claude-swap-bridge
+repo: https://github.com/satriachandrayw/claude-swap-bridge
+sha: 504c372ff5c7a902f83813de2155f45bc484cab3
+description: >-
+  Rotate the Claude Code login between several accounts with claude-swap while Hermes runs
+  the Claude Subscription DirectSDK provider: an api_request_error hook that switches
+  account on a rate limit (so the retry Hermes already performs lands on a fresh login),
+  four tools to read every account's plan limits and manage stored logins, and a refusal to
+  switch when the provider is pinned to a different config directory. Disclosure — the
+  plugin shells out to the user-installed `cswap` (claude-swap) CLI, which reads and writes
+  Claude Code's OAuth credential store (`~/.claude` or `CLAUDE_CONFIG_DIR`, and the macOS
+  Keychain) and rotates which account is active; the plugin itself never reads, holds,
+  refreshes, prints or parses a token, passes only an argv, and makes no network calls of
+  its own. `cswap` calls Anthropic's usage endpoint with each account's token to read plan
+  limits, and its token endpoint when refreshing an inactive account's expired access
+  token. `cswap remove` permanently deletes a stored login, so it sits behind an explicit
+  confirm=true. An optional systemd user unit runs `cswap auto` as a long-running
+  background process that switches accounts on its own; nothing starts it automatically and
+  the README shows how to stop it. The bundled add-account.sh helper runs
+  `claude auth login` (an interactive browser flow, its own disclosure) and refuses to run
+  without a TTY. No telemetry.
+maintainer: satriachandrayw
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/satriachandrayw/claude-swap-bridge/blob/504c372ff5c7a902f83813de2155f45bc484cab3/README.md
+version: "1.0.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - claude_swap_accounts
+    - claude_swap_switch
+    - claude_swap_auto
+    - claude_swap_manage
+  provides_hooks:
+    - api_request_error
+  provides_middleware: []
+  requires_env: []

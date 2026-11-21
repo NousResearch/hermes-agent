@@ -12,10 +12,10 @@ class CuaDriverProvider(ComputerUseProvider):
     display_name = "cua-driver (background)"
 
     def create_backend(self, *, permission_mode: str) -> ComputerUseBackend:
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
+        return self.create_execution_backend(permission_mode=permission_mode, execution_context=None)
 
     def create_execution_backend(self, *, permission_mode: str, execution_context) -> ComputerUseBackend:
+        """``execution_context=None`` is an ordinary session's backend (what ``create_backend`` returns)."""
         from tools.computer_use.cua_backend import CuaDriverBackend
         return CuaDriverBackend(permission_mode=permission_mode, execution_context=execution_context)
 

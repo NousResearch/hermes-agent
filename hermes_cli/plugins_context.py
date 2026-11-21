@@ -416,6 +416,16 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         return plugin_submission(self, content=None, read_only=True, session_key=session_key,
                                  expected_session_id=expected_session_id, request_id=request_id)
 
+    def control_submission(self, action: str, *, session_key: str, expected_session_id: str,
+                           request_id: str, authority_epoch: int,
+                           execution_generation: int | None = None, text: str | None = None) -> dict:
+        """Control this plugin's exact parent turn. Never retry an unknown control outcome."""
+        from hermes_cli.plugins_injection import plugin_submission
+        return plugin_submission(self, content=None, read_only=True, session_key=session_key,
+                                 expected_session_id=expected_session_id, request_id=request_id,
+                                 control=dict(action=action, authority_epoch=authority_epoch,
+                                              execution_generation=execution_generation, text=text))
+
     def session_cwd(self) -> str:
         """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
         from hermes_cli.plugin_session import context_cwd

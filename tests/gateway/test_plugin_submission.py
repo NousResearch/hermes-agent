@@ -232,3 +232,158 @@ async def test_invalid_submission_cannot_be_mistaken_for_status(submission, cont
     assert invalid["admission_id"] is None
     rows = authority.persistence.admissions.list(session_id=identity["expected_session_id"], pending_only=False)
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_cancels_only_its_queued_admission(submission):
+    ctx, _, authority, _, identity = submission
+    queued = await asyncio.to_thread(ctx.submit_message, 'cancel this work', **identity)
+    assert queued['controls'] == ['cancel']
+    stale = await asyncio.to_thread(ctx.control_submission, 'cancel', **identity,
+                                   authority_epoch=queued['authority_epoch'] + 1)
+    assert stale['error'] == 'stale_generation'
+    cancelled = await asyncio.to_thread(ctx.control_submission, 'cancel', **identity,
+                                       authority_epoch=queued['authority_epoch'])
+    assert cancelled['status'] == 'terminal'
+    assert cancelled['control'] == {'action': 'cancel', 'status': 'accepted', 'delivery': 'none'}
+    rows = authority.persistence.admissions.list(session_id=identity['expected_session_id'], pending_only=True)
+    assert [row.payload['text'] for row in rows] == ['human']
+
+
+@pytest.mark.asyncio
+async def test_plugin_controls_running_admission_and_refuses_old_generation(submission, monkeypatch):
+    from gateway.platforms.base import SendResult
+    from gateway.session_contract import SessionRef
+    from gateway.session_results import execution_result
+
+    ctx, runner, authority, source, identity = submission
+    started, release = asyncio.Event(), asyncio.Event()
+    received = []
+    interrupted = []
+
+    class Agent:
+        def steer(self, text):
+            received.append(text)
+            return True
+
+        def hard_interrupt(self):
+            interrupted.append(True)
+
+    async def send(*args, **kwargs):
+        return SendResult(success=True, message_id='sent')
+
+    async def turn(event, source, quick_key, run_generation):
+        if event.text == 'work':
+            ref = SessionRef(authority.profile_id, identity['expected_session_id'])
+            authority.adopt_agent(ref.session_id, run_generation, Agent())
+            authority.sessions[ref.session_id].event_stream.note_progress(
+                run_generation, 'tool.start', {'tool_id': 'one', 'name': 'terminal'})
+            started.set()
+            await release.wait()
+        execution_result.get()['result'] = {'final_response': 'done', 'messages': []}
+        return 'done'
+
+    monkeypatch.setattr(runner._delivery_adapter_for(source), 'send', send)
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    await asyncio.to_thread(ctx.submit_message, 'work', **identity)
+    task = asyncio.create_task(authority._drain(SessionRef(authority.profile_id, identity['expected_session_id'])))
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        observed = await asyncio.to_thread(ctx.submission_status, **identity)
+        assert observed['controls'] == ['steer', 'interrupt']
+        assert observed['progress']['tool'] == 'terminal'
+        args = dict(authority_epoch=observed['authority_epoch'],
+                    execution_generation=observed['execution_generation'])
+        stale = await asyncio.to_thread(ctx.control_submission, 'steer', **identity,
+                                       authority_epoch=args['authority_epoch'],
+                                       execution_generation=args['execution_generation'] + 1, text='wrong')
+        assert stale['error'] == 'stale_generation' and received == []
+        response = await asyncio.to_thread(ctx.control_submission, 'steer', **identity, **args, text='focus tests')
+        assert response['control'] == {'action': 'steer', 'status': 'accepted', 'delivery': 'agent'}
+        assert received == ['focus tests']
+        stopped = await asyncio.to_thread(ctx.control_submission, 'interrupt', **identity, **args)
+        assert stopped['control'] == {'action': 'interrupt', 'status': 'accepted', 'delivery': 'agent'}
+        assert interrupted == [True]
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 10)
+    late = await asyncio.to_thread(ctx.control_submission, 'steer', **identity, **args, text='too late')
+    assert late['error'] == 'stale_generation' and received == ['focus tests']
+
+
+@pytest.mark.asyncio
+async def test_control_request_cannot_borrow_another_plugin_receipt(submission):
+    ctx, _, _, _, identity = submission
+    queued = await asyncio.to_thread(ctx.submit_message, 'owned work', **identity)
+    home = ctx._manager.home_path
+    config = yaml.safe_load((home / 'config.yaml').read_text())
+    config['plugins']['entries']['other-plugin'] = {'allow_gateway_injection': True}
+    (home / 'config.yaml').write_text(yaml.safe_dump(config))
+    other = PluginContext(PluginManifest(name='other-plugin', key='other-plugin', source='user'), ctx._manager)
+    response = await asyncio.to_thread(other.control_submission, 'cancel', **identity,
+                                       authority_epoch=queued['authority_epoch'])
+    assert response['error'] == 'not_found'
+    assert (await asyncio.to_thread(ctx.submission_status, **identity))['status'] == 'queued'
+
+
+@pytest.mark.asyncio
+async def test_claim_winning_cancel_commit_does_not_interrupt_the_claim(submission, monkeypatch):
+    ctx, _, authority, _, identity = submission
+    receipt = await asyncio.to_thread(ctx.submit_message, 'work', **identity)
+    ledger = authority.persistence.admissions
+    human = ledger.claim(epoch=authority.epoch, session_id=identity['expected_session_id'])
+    ledger.settle(epoch=authority.epoch, admission_id=human.admission_id,
+                  generation=human.generation, outcome='completed')
+    cancel = type(ledger).cancel
+
+    def claim_first(self, **kwargs):
+        claimed = self.claim(epoch=authority.epoch, session_id=identity['expected_session_id'])
+        assert claimed.admission_id == receipt['admission_id']
+        return cancel(self, **kwargs)
+
+    monkeypatch.setattr(type(ledger), 'cancel', claim_first)
+    response = await asyncio.to_thread(ctx.control_submission, 'cancel', **identity,
+                                       authority_epoch=receipt['authority_epoch'])
+    assert response['error'] == 'stale_generation'
+    assert ledger.get(admission_id=receipt['admission_id']).status == 'started'
+    assert not authority.pending_stops and not authority.delivered_stops
+
+
+@pytest.mark.asyncio
+async def test_settled_but_unpublished_turn_has_no_controls(submission, monkeypatch):
+    from gateway import session_results
+    from gateway.platforms.base import SendResult
+    from gateway.session_contract import SessionRef
+
+    ctx, runner, authority, source, identity = submission
+    entered, release = threading.Event(), threading.Event()
+    finish = session_results.finish_result
+
+    def held_finish(store, **kwargs):
+        result = finish(store, **kwargs)
+        if kwargs['row']['payload']['text'] == 'work':
+            entered.set()
+            assert release.wait(10)
+        return result
+
+    async def send(*args, **kwargs):
+        return SendResult(success=True, message_id='sent')
+
+    async def turn(event, *args):
+        session_results.execution_result.get()['result'] = {'final_response': 'done', 'messages': []}
+        return 'done'
+
+    monkeypatch.setattr(session_results, 'finish_result', held_finish)
+    monkeypatch.setattr(runner._delivery_adapter_for(source), 'send', send)
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    await asyncio.to_thread(ctx.submit_message, 'work', **identity)
+    task = asyncio.create_task(authority._drain(SessionRef(authority.profile_id, identity['expected_session_id'])))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        observed = await asyncio.to_thread(ctx.submission_status, **identity)
+        assert observed['status'] == 'started' and observed['result'] is None
+        assert observed['controls'] == [] and observed['progress'] == {}
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 10)
+    assert (await asyncio.to_thread(ctx.submission_status, **identity))['status'] == 'terminal'

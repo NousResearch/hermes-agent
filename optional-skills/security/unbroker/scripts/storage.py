@@ -131,7 +131,7 @@ def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     out: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").split("\n"):  # not splitlines(): rows may hold U+2028
         line = line.strip()
         if line:
             out.append(json.loads(line))

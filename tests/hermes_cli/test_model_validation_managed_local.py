@@ -45,3 +45,36 @@ class TestManagedLocalValidation:
     def test_not_staged_and_not_live_still_rejected(self):
         result = _validate("Llama-4-90B-Q4_K_M", staged=())
         assert result["accepted"] is False
+
+
+class TestRefusedStagedModel:
+    """A staged GGUF the launch planner refused never reaches the router's preset list, so every
+    request for it 400s "model not found". Selecting it must fail up front, with the reason."""
+
+    def _validate_with_refusal(self, model, refused_id="Big-33B-Q4_K_M"):
+        from hermes_cli.local_runtime.presets import PresetEntry
+
+        decisions = {
+            refused_id: PresetEntry(
+                model_id=refused_id, window=0, spilled=False,
+                refusal="needs ~29.0 GiB at the 64K floor but only ~25.6 GiB are available",
+            )
+        }
+        with patch(
+            "hermes_cli.local_runtime.presets.read_preset_decisions", return_value=decisions
+        ):
+            return _validate(model, staged=("Qwen3-4B-Q4_K_M", refused_id))
+
+    def test_refused_model_is_rejected_with_the_planners_reason(self):
+        result = self._validate_with_refusal("Big-33B-Q4_K_M")
+        assert (result["accepted"], result["persist"]) == (False, False)
+        assert "can't run on this machine" in result["message"]
+        assert "25.6 GiB" in result["message"]
+
+    def test_refusal_match_is_case_insensitive(self):
+        result = self._validate_with_refusal("big-33b-q4_k_m")
+        assert result["accepted"] is False
+
+    def test_servable_staged_model_is_still_accepted_beside_a_refused_one(self):
+        result = self._validate_with_refusal("Qwen3-4B-Q4_K_M")
+        assert result["accepted"] is True

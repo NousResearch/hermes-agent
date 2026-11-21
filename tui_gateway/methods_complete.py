@@ -11,6 +11,21 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 _BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
+# Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9) resolve into the `\\.\` device
+# namespace: os.path.abspath("C:\dir\nul") == "\\.\nul", so relpath() against a drive path raises
+# "path is on mount '\\.\nul', start on mount 'C:'". A stray `> nul` redirect leaves exactly such an
+# entry on disk, and listing its directory used to crash the whole `complete.path` RPC. Skipped like
+# the VCS/vendor excludes below — such a name is not addressable as a normal path anyway.
+_RESERVED_DEVICE_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"})
+
+
+def _is_reserved_device_name(name: str) -> bool:
+    """True for a Windows reserved device name in any spelling (``nul``, ``NUL.txt``, ``Com1``)."""
+    if not name:
+        return False
+    return name.split(".", 1)[0].upper() in _RESERVED_DEVICE_STEMS
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
     ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
@@ -115,7 +130,7 @@ def _fuzzy_basename_items(root: str, path_part: str, prefix_tag: str) -> list[di
     # and the non-git fallback walk can burn the whole budget on one deep subtree.
     with contextlib.suppress(OSError):
         for entry in os.listdir(root):
-            if entry not in _FUZZY_FALLBACK_EXCLUDES:
+            if entry not in _FUZZY_FALLBACK_EXCLUDES and not _is_reserved_device_name(entry):
                 _consider(entry, entry, os.path.isdir(os.path.join(root, entry)))
     for rel in _list_repo_files(root):
         _consider(rel, os.path.basename(rel), False)
@@ -208,17 +223,27 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
     for entry, is_dir in entries:
         if match and not entry.lower().startswith(match.lower()):
             continue
-        if is_context and (entry in _FUZZY_FALLBACK_EXCLUDES or (not prefix_tag and entry.startswith("."))):
+        if is_context and (entry in _FUZZY_FALLBACK_EXCLUDES or _is_reserved_device_name(entry)
+                           or (not prefix_tag and entry.startswith("."))):
             continue
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
         full = pth.join(search_dir, entry)
-        rel = pth.relpath(full, root).replace(os.sep, "/")
+        try:
+            rel = pth.relpath(full, root).replace(os.sep, "/")
+        except ValueError:
+            # Different mount — a Windows reserved device name (`nul`, `con`, …) resolves to `\\.\`,
+            # which has no path relative to `root`. Not a usable completion, so drop the row rather
+            # than taking down the whole RPC (every keystroke of a `@` browse re-lists this dir).
+            continue
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
         elif word.startswith("~"):
-            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+            try:
+                text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+            except ValueError:
+                continue
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))

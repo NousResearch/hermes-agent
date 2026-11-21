@@ -145,6 +145,15 @@ def build_row_prompt(state: str, frame_count: int, concept: str, *, style: str |
         f"than letting it cross the gap. Silhouettes must NEVER touch, overlap, "
         f"share a shadow, share a ground line, share motion trails, or merge into "
         f"one connected shape. "
+        # One character per region: the segmenter cannot recover a region that
+        # contains a duplicated or stacked figure (it slices as one connected
+        # blob or two half-bodies — the 'split into two beavers' hatch defect).
+        f"POPULATION (critical): each region contains EXACTLY ONE COMPLETE "
+        f"character — a single figure, whole and unmistakable. Never two "
+        f"characters, never one character split into stacked top-half and "
+        f"bottom-half fragments, never a half-body at a region edge. If a pose "
+        f"suggests fast motion, imply it with limb position alone; do NOT draw "
+        f"ghost, echo, duplicate, or after-image copies of the character. "
         # Registration: a clean sprite sheet keeps the character locked in place
         # so only the action moves — this is what stops the loop sliding/pulsing.
         "REGISTRATION (critical): the character is the SAME height and SAME width "

@@ -23,6 +23,7 @@ const buildUiState = (): UiState => ({
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
   liveSessionCount: 0,
+  liveTps: null,
   inlineDiffs: true,
   inlineImages: true,
   mouseTracking: MOUSE_TRACKING,

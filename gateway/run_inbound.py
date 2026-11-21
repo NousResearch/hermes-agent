@@ -32,8 +32,8 @@ from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
 from gateway.run_inbound_unauthorized import (
-    UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
-    unauthorized_owner_hint,
+    UnauthorizedOwnerNotifier, log_undelivered_reply, pairing_code_reply, pairing_profile_arg,
+    pairing_rate_limited_reply, unauthorized_owner_hint,
 )
 from gateway.session import SessionSource, build_session_context, label_shared_sender
 from gateway.turn_lease import TurnLeaseTimeoutError
@@ -103,7 +103,10 @@ class GatewayInboundMixin(
         else:
             reply = pairing_rate_limited_reply()
         if adapter:
-            await adapter.send(source.chat_id, reply)
+            log_undelivered_reply(
+                await adapter.send(source.chat_id, reply), platform_name, source.user_id,
+                "rate-limited pairing reply" if not code else "pairing code",
+            )
         if not code:
             # Record rate limit so subsequent messages are silently ignored
             pairing_store._record_rate_limit(platform_name, source.user_id)
@@ -129,9 +132,11 @@ class GatewayInboundMixin(
         config = getattr(self, "config", None)
         text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
         try:
-            await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
+            result = await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
         except Exception:
             logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
+            return
+        log_undelivered_reply(result, platform_name, source.user_id, "unauthorized-DM decline")
 
     async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
         """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the

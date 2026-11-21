@@ -47,11 +47,20 @@ class OAuthClient:
     hosts: tuple[str, ...]
     client_secret_env: str = ""
     authorize_params: tuple[tuple[str, str], ...] = ()
+    scope_separator: str = " "  # how the scope list is joined; some IdPs (Linear) want ","
+    redirect_port: int = 0  # 0 = OS-assigned; pinned for an IdP that allowlists an exact redirect URI
+    redirect_path: str = "/callback"
 
     @property
     def fingerprint(self) -> str:
-        """Hash of every field: a grant is used only with the entry it was made for."""
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode("utf-8")).hexdigest()
+        """Hash of every field: a grant is used only with the entry it was made for. A field left at its
+        default is not hashed, so an entry that declares none of the later fields keeps its old grant."""
+        fields = {k: v for k, v in asdict(self).items() if k not in _DEFAULTED or v != _DEFAULTED[k]}
+        return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+_DEFAULTED = {"scope_separator": " ", "redirect_port": 0, "redirect_path": "/callback"}
+_REDIRECT_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 
 
 # ── Manifest ───────────────────────────────────────────────────────────────────────────────────────
@@ -108,6 +117,14 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
     params = entry.get("authorize_params") or {}
     if not (isinstance(params, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in params.items())):
         problems.append(f"{where}.authorize_params: must map strings to strings")
+    if entry.get("scope_separator", " ") not in (" ", ","):
+        problems.append(f"{where}.scope_separator: must be a space or a comma")
+    port = entry.get("redirect_port", 0)
+    if isinstance(port, bool) or not isinstance(port, int) or not (port == 0 or 1024 <= port <= 65535):
+        problems.append(f"{where}.redirect_port: must be a port number from 1024 to 65535")
+    path = entry.get("redirect_path", "/callback")
+    if not (isinstance(path, str) and _REDIRECT_PATH_RE.match(path)):
+        problems.append(f"{where}.redirect_path: must be a URL path starting with / (letters, digits, ._~-/)")
     return problems
 
 
@@ -116,7 +133,9 @@ def _client(entry: dict) -> OAuthClient:
         id=entry["id"], authorize_url=entry["authorize_url"], token_url=entry["token_url"],
         scopes=tuple(entry["scopes"]), client_id_env=entry["client_id_env"], hosts=tuple(entry["hosts"]),
         client_secret_env=entry.get("client_secret_env") or "",
-        authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())))
+        authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())),
+        scope_separator=entry.get("scope_separator", " "), redirect_port=entry.get("redirect_port", 0),
+        redirect_path=entry.get("redirect_path", "/callback"))
 
 
 def parse_oauth_clients(manifest: Mapping[str, Any]) -> tuple[list[OAuthClient], list[str]]:
@@ -310,7 +329,7 @@ def _require_granted_scopes(client: OAuthClient, payload: Mapping[str, Any], key
     granted = payload.get("scope")
     if not isinstance(granted, str) or not granted.strip():
         return  # the IdP did not say which scopes it granted
-    missing = [scope for scope in client.scopes if scope not in granted.split()]
+    missing = [scope for scope in client.scopes if scope not in re.split(r"[,\s]+", granted)]
     if missing:
         raise _auth_error(key, "not every permission was granted, so nothing was saved. Missing: "
                           + ", ".join(missing), "oauth_scope_not_granted")
@@ -351,7 +370,8 @@ def _pkce_config(client: OAuthClient, key: str, *, timeout: Optional[float] = No
     return OAuthPKCEConfig(
         client_id=_env(client.client_id_env, "oauth_client_id_missing", key), authorize_url=client.authorize_url,
         token_url=client.token_url, scopes=client.scopes, extra_authorize_params=dict(client.authorize_params),
-        label=key, token_request=_token_request(client, key), timeout_seconds=timeout or 180.0)
+        label=key, token_request=_token_request(client, key), timeout_seconds=timeout or 180.0,
+        scope_separator=client.scope_separator, redirect_port=client.redirect_port, redirect_path=client.redirect_path)
 
 
 # ── Bearer for credentialed_provider_request ───────────────────────────────────────────────────────

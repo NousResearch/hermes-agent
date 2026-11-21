@@ -45,6 +45,7 @@ class OAuthPKCEConfig:
     authorize_url: str
     token_url: str
     scopes: tuple[str, ...] = ()
+    scope_separator: str = " "  # RFC 6749 says space; a few IdPs (Linear) require a comma-joined list
     redirect_port: int = 0  # 0 = OS-assigned; pin it when the IdP allowlists an exact redirect URI
     redirect_path: str = "/callback"
     audience: Optional[str] = None
@@ -180,7 +181,7 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
         "redirect_uri": redirect_uri, "state": state, "code_challenge": _pkce_code_challenge(verifier),
         "code_challenge_method": "S256"}
     if cfg.scopes:
-        params["scope"] = " ".join(cfg.scopes)
+        params["scope"] = cfg.scope_separator.join(cfg.scopes)
     if cfg.audience:
         params["audience"] = cfg.audience
     authorize_url = f"{cfg.authorize_url}{'&' if urlparse(cfg.authorize_url).query else '?'}{urlencode(params)}"
@@ -231,7 +232,7 @@ def pkce_auth_handler(cfg: OAuthPKCEConfig) -> Callable[[str, Any], bool]:
             entry = load_pool(provider).add_entry(PooledCredential(
                 provider=provider, id=uuid.uuid4().hex[:6], label=cfg.label or provider,
                 auth_type=AUTH_TYPE_OAUTH, priority=0, source=POOL_SOURCE, **tokens,
-                extra={"oauth_pkce": {"client_id": cfg.client_id, "scope": " ".join(cfg.scopes)}}))
+                extra={"oauth_pkce": {"client_id": cfg.client_id, "scope": cfg.scope_separator.join(cfg.scopes)}}))
             print(f"Signed in to {cfg.label or provider}; credential {entry.id} added to the pool.")
             return True
         if action == "status":
@@ -281,7 +282,7 @@ def pkce_refresh_credential(cfg: OAuthPKCEConfig) -> Callable[[Any], Mapping[str
                 raise _err(provider, "no refresh_token on the pooled credential.", "oauth_refresh_no_token")
             data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
             if cfg.scopes:
-                data["scope"] = " ".join(cfg.scopes)
+                data["scope"] = cfg.scope_separator.join(cfg.scopes)
             return _post_token(provider, cfg, data, code="oauth_refresh_failed")
 
     return refresh

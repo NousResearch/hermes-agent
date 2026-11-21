@@ -6,6 +6,8 @@ server (PKCE, rotating refresh tokens) and a loopback stub plays the API the bea
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import importlib.util
 import json
 import os
@@ -381,6 +383,8 @@ def test_missing_client_env_fails_before_any_request(idp, api, monkeypatch):
     {"client_secret_env": "OTHER_CLIENT_SECRET"},
     {"authorize_url": "https://login.example.net/authorize"},
     {"authorize_params": {"access_type": "online"}},
+    {"scope_separator": ","},
+    {"redirect_port": 8650},
 ])
 def test_entry_changed_since_sign_in_is_not_used(idp, api, change):
     allowed, _ = api
@@ -390,6 +394,33 @@ def test_entry_changed_since_sign_in_is_not_used(idp, api, change):
     with pytest.raises(ppr.ProviderNotSignedIn, match="changed"):
         changed.call("google", allowed.url)
     assert len(idp.token_requests) == posts and allowed.seen == []
+
+
+def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_working(idp, api):
+    """An IdP that allowlists one redirect URI and wants ``read,write`` scopes (Linear) can be signed in to;
+    an entry that declares neither keeps the fingerprint its existing grants were stored under."""
+    import socket
+    from urllib.parse import parse_qs, urlparse
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    idp.granted_scope = "read write"  # Linear answers space-joined whatever the request used
+    plugin = _signed_in(idp, scopes=["read", "write"], scope_separator=",", redirect_port=port,
+                        redirect_path="/linear/callback")
+    query = parse_qs(urlparse(idp.opened[-1]).query)
+    assert query["scope"] == ["read,write"]
+    assert query["redirect_uri"] == [f"http://127.0.0.1:{port}/linear/callback"]
+    assert idp.token_requests[-1]["redirect_uri"] == f"http://127.0.0.1:{port}/linear/callback"
+    allowed, _ = api
+    assert plugin.call("google", allowed.url).status == 200
+
+    old = plugin_oauth.OAuthClient(id="x", authorize_url="https://a.example/auth", token_url="https://a.example/t",
+                                   scopes=("s",), client_id_env="X_ID", hosts=("api.example.com",))
+    legacy = {k: v for k, v in dataclasses.asdict(old).items()
+              if k not in ("scope_separator", "redirect_port", "redirect_path")}
+    assert old.fingerprint == hashlib.sha256(
+        json.dumps(legacy, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def test_partial_consent_saves_nothing_and_names_what_is_missing(idp):

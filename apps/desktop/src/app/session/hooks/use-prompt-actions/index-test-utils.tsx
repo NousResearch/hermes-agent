@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { BtwSideChat, GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -82,6 +82,7 @@ export function Harness({
   onReady,
   onSeedState,
   openMemoryGraph,
+  openSideChat,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -108,6 +109,7 @@ export function Harness({
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
+  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string) => Promise<boolean>
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -183,6 +185,7 @@ export function Harness({
     activeSessionId: orRuntimeDefault(activeSessionId),
     activeSessionIdRef,
     branchCurrentSession: async () => true,
+    openSideChat,
     busyRef: localBusyRef,
     createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
     getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),

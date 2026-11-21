@@ -1,5 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { isUndeliveredCorrectionRefusal, JsonRpcGatewayError } from '@hermes/shared'
+import { type BtwSideChat, isUndeliveredCorrectionRefusal, JsonRpcGatewayError } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -255,6 +255,7 @@ interface PromptActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
+  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string) => Promise<boolean>
   createBackendSessionForSend: CreateBackendSessionForSend
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
@@ -307,6 +308,7 @@ export function usePromptActions({
   activeSessionIdRef,
   busyRef,
   branchCurrentSession,
+  openSideChat,
   createBackendSessionForSend,
   getRoutedStoredSessionId,
   getRuntimeIdForStoredSession,
@@ -677,6 +679,7 @@ export function usePromptActions({
     activeSessionIdRef,
     appendSessionTextMessage,
     branchCurrentSession,
+    openSideChat,
     busyRef,
     copy,
     createBackendSessionForSend,

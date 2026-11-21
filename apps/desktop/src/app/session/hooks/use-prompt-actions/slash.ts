@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { type BtwResult, mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
+import { type BtwResult, type BtwSideChat, mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -151,6 +151,7 @@ interface SlashCommandDeps {
     storedSessionId?: string | null
   ) => void
   branchCurrentSession: () => Promise<boolean>
+  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string) => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
@@ -194,6 +195,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     activeSessionIdRef,
     appendSessionTextMessage,
     branchCurrentSession,
+    openSideChat,
     busyRef,
     copy,
     createBackendSessionForSend,
@@ -735,6 +737,21 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           try {
             const result = await requestGateway<BtwResult>('prompt.btw', { session_id: sessionId, text: arg })
+
+            if (result.side_chat) {
+              // `/btw --open`: the finished side thread as a child chat, a tab docked beside this one.
+              // A window that cannot dock one (no openSideChat) shows the gateway's fallback line.
+              if (!openSideChat) {
+                renderSlashOutput(result.fallback_text?.trim() || result.text?.trim() || '')
+
+                return
+              }
+
+              renderSlashOutput(result.text?.trim() || '')
+              submitted = await openSideChat(result.side_chat, storedSessionId)
+
+              return
+            }
 
             renderSlashOutput(
               result.text?.trim() ||
@@ -1551,6 +1568,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       activeSessionIdRef,
       appendSessionTextMessage,
       branchCurrentSession,
+      openSideChat,
       busyRef,
       copy,
       createBackendSessionForSend,

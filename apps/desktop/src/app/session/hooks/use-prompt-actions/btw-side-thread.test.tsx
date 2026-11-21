@@ -116,3 +116,44 @@ describe('usePromptActions /btw side threads', () => {
     expect(renderedTexts(states)).toContain('queued')
   })
 })
+
+describe('usePromptActions /btw --open', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  const sideChat = { title: 'btw: find it', messages: [{ role: 'user', content: '/btw --explore find it' }, { role: 'assistant', content: 'net.py:40' }] }
+
+  it('hands the side chat to the dock instead of the transcript', async () => {
+    const openSideChat = vi.fn(async () => true)
+
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'prompt.btw' ? { text: '⤢ Opening btw_ab12cd', side_chat: sideChat, fallback_text: 'desktop only' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} openSideChat={openSideChat} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await handle!.submitText('/btw --open btw_ab12cd')
+
+    expect(openSideChat).toHaveBeenCalledWith(sideChat, expect.anything())
+  })
+
+  it('shows the fallback line when this window cannot dock a side chat', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'prompt.btw' ? { text: '⤢ Opening btw_ab12cd', side_chat: sideChat, fallback_text: 'DESKTOP ONLY' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} onSeedState={s => states.push(s)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await handle!.submitText('/btw --open')
+
+    expect(renderedTexts(states)).toContain('DESKTOP ONLY')
+  })
+})

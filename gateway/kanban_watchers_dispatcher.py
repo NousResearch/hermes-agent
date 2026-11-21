@@ -216,6 +216,57 @@ class _KanbanDispatcher:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
 
+    def paused_reclaim_for_board(self, slug: str) -> list[str]:
+        """While `hermes pause` holds dispatch, release ``running`` cards whose worker is DEAD.
+
+        The ESTOP gate stops new work, and ``dispatch_once`` owns every reclaim sweep, so skipping
+        the whole tick also froze crash detection. A worker that dies mid-pause (OOM-killed scope,
+        or the very worker that engaged the pause) then stayed ``running`` until someone lifted the
+        pause by hand. Only the sweeps that never signal a live process run here:
+        ``detect_crashed_workers`` (host-local PID gone / fingerprint mismatch) and
+        ``reconcile_orphaned_running`` (defers beside a live PID). Stale-heartbeat, claim-TTL and
+        max-runtime reclaim can kill a live worker, so they stay paused, and nothing is
+        promoted or spawned. Returns the reclaimed task ids.
+        """
+        fingerprint = self.board_db_fingerprint(slug)
+        if not self._quarantine_lifted(slug, fingerprint):
+            return []
+        kbd, kbc = _kbd(), _kbc()
+        conn = None
+        try:
+            # Pin-first, as tick_once_for_board: an env-pinned HERMES_KANBAN_DB must win.
+            from hermes_cli import kanban_db as _kb
+            with _kb.pin_first_board_resolution():
+                conn = kbc.connect(board=slug)
+                with kbc._dispatch_tick_lock(self.kb.kanban_db_path(board=slug)) as held:
+                    if not held:
+                        return []
+                    reclaimed = list(kbd.detect_crashed_workers(conn, board=slug))
+                    reclaimed.extend(getattr(kbd.detect_crashed_workers, "_last_rate_limited", []))
+                    reclaimed.extend(getattr(kbd.detect_crashed_workers, "_last_auto_blocked", []))
+                    if self.settings.reconcile_orphans:
+                        reclaimed.extend(kbd.reconcile_orphaned_running(conn))
+            if reclaimed:
+                logger.info("kanban dispatcher [%s]: paused, but released %d dead-worker card(s): %s",
+                            slug, len(reclaimed), ", ".join(reclaimed))
+            return reclaimed
+        except Exception as exc:  # health: allow BLE001 -- per-board sweep boundary: one bad board must not stop the watcher; traceback logged
+            if self.is_corrupt_board_db_error(exc):
+                self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+                logger.error("kanban dispatcher: board %s database %s is not a valid SQLite database; "
+                             "skipping it until the file changes", slug, fingerprint[0])
+                return []
+            logger.exception("kanban dispatcher: paused dead-worker sweep failed on board %s", slug)
+            return []
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    def paused_reclaim(self) -> list[tuple[str, list[str]]]:
+        """:meth:`paused_reclaim_for_board` for every board."""
+        return [(slug, self.paused_reclaim_for_board(slug)) for slug in self._board_slugs()]
+
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
 

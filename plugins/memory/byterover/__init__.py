@@ -101,6 +101,17 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     return env
 
 
+def _brv_json_events(output: str):
+    """Read JSONL envelopes, tolerating older CLI text output."""
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
 def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
@@ -126,6 +137,12 @@ def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = N
         return {"success": False, "error": str(e)}
     stdout, stderr = result.stdout.strip(), result.stderr.strip()
     if result.returncode == 0:
+        # brv can report command/task failure in JSON while exiting zero.
+        for event in _brv_json_events(stdout):
+            data = event.get("data")
+            failed_event = isinstance(data, dict) and data.get("event") == "error"
+            if event.get("success") is False or failed_event:
+                return {"success": False, "error": json.dumps(event)}
         return {"success": True, "output": stdout}
     return {"success": False, "error": stderr or stdout or f"brv exited {result.returncode}"}
 
@@ -185,16 +202,25 @@ class ByteRoverMemoryProvider(MemoryProvider):
                 "Use brv_query to search past knowledge, brv_curate to store important facts, brv_status to check state.")
 
     def _query(self, query: str) -> dict:
-        return _run_brv(["query", "--", query.strip()[:5000]], timeout=_QUERY_TIMEOUT, cwd=self._cwd)
+        result = _run_brv(["query", "--format", "json", "--", query.strip()[:5000]], timeout=_QUERY_TIMEOUT, cwd=self._cwd)
+        if result["success"]:
+            for event in _brv_json_events(result["output"]):
+                data = event.get("data")
+                if isinstance(data, dict) and data.get("event") == "completed" and isinstance(data.get("result"), str):
+                    result["output"] = data["result"]
+        return result
 
     def _curate(self, content: str) -> dict:
-        return _run_brv(["curate", "--", content], timeout=_CURATE_TIMEOUT, cwd=self._cwd)
+        return _run_brv(["curate", "--format", "json", "--", content], timeout=_CURATE_TIMEOUT, cwd=self._cwd)
 
     def _curate_in_background(self, content: str, *, name: str, what: str, on_done: str = "") -> threading.Thread:
         """Spawn a daemon thread that curates ``content``; failures are logged at debug, never raised."""
         def _work():
             try:
-                self._curate(content)
+                result = self._curate(content)
+                if not result["success"]:
+                    logger.debug("ByteRover %s failed", what)
+                    return
                 if on_done:
                     logger.info(on_done)
             except Exception as e:

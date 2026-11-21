@@ -1254,3 +1254,55 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+# ---------------------------------------------------------------------------
+# Group sender display name (shared sessions)
+# ---------------------------------------------------------------------------
+
+
+class TestGroupSenderName:
+    """``_handle_group_message`` prefixes shared-session messages with ``[name]``.
+
+    QQ group events carry ``member_openid`` only, so the name comes from
+    ``extra.group_member_names``; an unlisted member falls back to the first
+    8 chars. A prefix key must work too: for a newcomer the full openid never
+    reaches the logs (they show the resolved display name), so the prefix is
+    the only handle an operator has when adding them to the table.
+    """
+
+    FULL = "12345678ABCDEFABCDEFABCDEFABCDEF"
+
+    def _adapter(self, **extra):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(
+            app_id="a", client_secret="b", group_policy="open", **extra))
+
+    def _user_name(self, adapter, member):
+        seen = {}
+
+        async def fake_ingest(d, msg_id, content, attachments, timestamp, **kwargs):
+            seen.update(kwargs)
+
+        adapter._ingest = fake_ingest
+        asyncio.run(adapter._handle_group_message(
+            {"group_openid": "GRP"}, "m1", "hi",
+            {"member_openid": member}, "2026-01-01T00:00:00Z"))
+        return seen.get("user_name")
+
+    def test_full_openid_key(self):
+        adapter = self._adapter(group_member_names={self.FULL: "示例成员"})
+        assert self._user_name(adapter, self.FULL) == "示例成员"
+
+    def test_prefix_key_names_unnamed_member(self):
+        adapter = self._adapter(group_member_names={"12345678": "示例成员"})
+        assert self._user_name(adapter, self.FULL) == "示例成员"
+
+    def test_full_key_wins_over_prefix_key(self):
+        adapter = self._adapter(group_member_names={
+            self.FULL: "全名", "12345678": "前缀"})
+        assert self._user_name(adapter, self.FULL) == "全名"
+
+    def test_unlisted_member_falls_back_to_prefix(self):
+        adapter = self._adapter(group_member_names={})
+        assert self._user_name(adapter, self.FULL) == "12345678"
+

@@ -120,3 +120,19 @@ class TestVoiceLiveTurnNote:
 
         assert busy_session["client_surface"] == ""
         assert server._hud_surface_note(busy_session) == ""
+
+    def test_over_limit_transcript_keeps_the_newest_turns(self, busy_session):
+        """The desktop lane clips the spoken window before the note is rendered, and the note says
+        "newest last": an over-limit window must lose the OLDEST lines, not what the user just said."""
+        from gateway.session_surface import _VOICE_CONTEXT_LIMIT
+
+        lines = [f"User: line {i:03d} " + "x" * 60 for i in range(150)]
+        server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "and tomorrow?", "queued": True, "surface": "voice-live",
+                   "voice_context": "\n".join(lines)})
+
+        kept = busy_session["voice_live_context"]
+        assert len(kept) <= _VOICE_CONTEXT_LIMIT
+        assert kept.splitlines()[-1] == lines[-1], "the newest line the user just said must survive"
+        assert lines[0] not in kept
+        assert lines[-1] in server._hud_surface_note(busy_session)

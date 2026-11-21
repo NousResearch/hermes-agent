@@ -833,6 +833,11 @@ def _healed_nous_inference_url(refreshed: dict[str, Any]) -> str:
     return url or DEFAULT_NOUS_INFERENCE_URL
 
 
+def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
+    """Persistable ``tls`` block derived from an httpx ``verify`` value."""
+    return {"insecure": verify is False, "ca_bundle": verify if isinstance(verify, str) else None}
+
+
 def _nous_http_client(timeout_seconds: float, verify: Any) -> httpx.Client:
     return httpx.Client(
         timeout=httpx.Timeout(timeout_seconds), headers={"Accept": "application/json"},

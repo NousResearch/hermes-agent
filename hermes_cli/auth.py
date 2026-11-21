@@ -60,7 +60,8 @@ from hermes_cli.auth_nous import (
     _nous_shared_store_path, _pool_first_oauth_status, _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries, _read_shared_nous_state, _refresh_access_token,
     _refresh_nous_or_quarantine, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
-    _token_fingerprint, _try_import_shared_nous_state, _validate_nous_inference_url_from_network,
+    _tls_state_from_verify, _token_fingerprint, _try_import_shared_nous_state,
+    _validate_nous_inference_url_from_network,
     _write_shared_nous_state, fetch_nous_models, get_nous_auth_status_local,
     get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
     resolve_nous_runtime_credentials, step_up_nous_billing_scope)
@@ -1730,11 +1731,6 @@ def _is_expiring(expires_at_iso: Any, skew_seconds: int) -> bool:
     return expires_epoch is None or expires_epoch <= (time.time() + skew_seconds)
 
 
-def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
-    """Persistable ``tls`` block derived from an httpx ``verify`` value."""
-    return {"insecure": verify is False, "ca_bundle": verify if isinstance(verify, str) else None}
-
-
 def _last_auth_error_marker(
     provider: str, error: AuthError, *, reason: str, default_code: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -2305,6 +2301,8 @@ def _update_config_for_provider(
             model_cfg["default"] = default_model
     elif clear_default:
         model_cfg.pop("default", None)
+    from hermes_cli.route_identity import drop_stale_context_pin
+    drop_stale_context_pin(model_cfg, current_model)
     config["model"] = model_cfg
     atomic_config_replace(config_path, config)
     return config_path

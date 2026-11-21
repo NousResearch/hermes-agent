@@ -49,6 +49,40 @@ def _resolve_cli_reasoning(cli) -> None:
     cli._reasoning_user_set = False
 
 
+def _sync_cli_reasoning_from_session(cli) -> None:
+    """Adopt the attached gateway session's live effort into the CLI's display fields.
+
+    A resumed session can own its effort (a ``/reasoning`` pin frozen into the session policy,
+    or a creation-time level) while the CLI's own resolve above reads only the launch profile:
+    the status bar and ``/reasoning`` then report a level the next turn will not run. The
+    gateway owns session state, so ``session.info.reasoning_effort`` — the level the next turn
+    will send — wins when the attachment reports one. An empty/absent value keeps the resolve's
+    result (a session that follows its profile has no own level to adopt).
+    """
+    info = None
+    state_of = getattr(getattr(cli, "agent", None), "_state", None)
+    if callable(state_of):
+        try:
+            info = state_of().info or {}
+        except Exception:
+            info = None
+    if not info:
+        # The resumed agent is built lazily, so the attachment's own snapshot is the only place
+        # the session's level exists on the first frame. Adopt it here, at the source, so every
+        # reader of ``cli.reasoning_config`` agrees instead of each display point re-resolving.
+        snapshot = getattr(getattr(cli, "_session_db", None), "current", None)
+        if isinstance(snapshot, dict):
+            info = snapshot.get("info") or {}
+    effort = str((info or {}).get("reasoning_effort") or "").strip()
+    if not effort:
+        return
+    from hermes_constants import parse_reasoning_effort
+    config = parse_reasoning_effort(effort)
+    if config:
+        cli.reasoning_config = config
+        cli._reasoning_user_set = False
+
+
 def stored_session_route(session_meta, *, current_model, current_provider):
     """The route a resumed session should run on, or ``None`` when the stored one is absent or
     already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the

@@ -17,9 +17,9 @@ delegation dispatcher already read (``HERMES_SINGLE_QUERY_SESSION``), so interac
 Nobody answers or steers a one-shot either, so it also drops what only an interactive user can use:
 ``clarify`` (its toolset is disabled for the session), the mid-turn steering briefing in the system prompt,
 and ``delegate_task``'s live-control surface (children are joined inside the call, so ``action``
-list/steer/stop never has a running child to reach). It also skips the session auto-title call: one-shot
-sessions are hidden from every picker, so the title is never shown, and the call is a second paid request
-(a second CLI spawn on a process provider).
+list/steer/stop never has a running child to reach). It also skips the session title's model upgrade: the
+call is a second paid request (a second CLI spawn on a process provider). The instant title, derived from
+the query with no model call, is still written, since ``hermes sessions list`` shows one-shot sessions.
 """
 from __future__ import annotations
 

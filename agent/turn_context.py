@@ -222,11 +222,9 @@ def _maybe_title_session_at_turn_start(
     platform = str(getattr(agent, "platform", "") or "").lower()
     if platform in _UNTITLED_PLATFORMS:
         return
-    from agent.oneshot_footprint import agent_is_oneshot
-    if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request
-        return
     try:
         from agent.agent_init_session import agent_interface
+        from agent.oneshot_footprint import agent_is_oneshot
         from session_rules.turns import flatten_message_text
         from agent.title_generator import apply_subagent_title, maybe_auto_title
 
@@ -264,7 +262,8 @@ def _maybe_title_session_at_turn_start(
             k: getattr(agent, k, None)
             for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
         }
-        # See #19027.
+        # See #19027. A one-shot keeps the instant title (``hermes sessions list`` shows one-shots) but
+        # skips the model upgrade: a second paid request, a second CLI spawn on a process provider.
         upgrade = maybe_auto_title(
             session_db,
             session_id,
@@ -282,6 +281,7 @@ def _maybe_title_session_at_turn_start(
             ),
             title_preview=title_preview,
             persistence=persistence,
+            model_upgrade=not agent_is_oneshot(agent),
         )
         # Unstarted = the title call would share a self-hosted endpoint with this turn's request
         # (#117296); ``finalize_turn`` starts it once the model has answered.

@@ -293,8 +293,20 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
 
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
     """Parse CLI ``--worker profile:title[:skill,skill]`` values."""
-    parts = [p.strip() for p in raw.split(":", 2)]
-    if len(parts) < 2:
+    profile, separator, remainder = raw.partition(":")
+    if not separator or not profile.strip() or not remainder.strip():
         raise ValueError("worker must be profile:title or profile:title:skill,skill")
-    skills = [s.strip() for s in parts[2].split(",") if s.strip()] if len(parts) == 3 and parts[2] else []
-    return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills)
+
+    title, separator, skill_text = remainder.partition(":")
+    if not separator:
+        return SwarmWorkerSpec(profile=profile.strip(), title=remainder.strip(), body=remainder.strip())
+
+    # Skill names are identifiers, so whitespace in the suffix means the colon
+    # belongs to the title (for example, ``Plan: compare two options``).
+    candidates = [skill.strip() for skill in skill_text.split(",") if skill.strip()]
+    if not candidates or any(" " in skill for skill in candidates):
+        title = remainder.strip()
+        candidates = []
+    else:
+        title = title.strip()
+    return SwarmWorkerSpec(profile=profile.strip(), title=title, body=title, skills=candidates)

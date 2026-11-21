@@ -46,6 +46,25 @@ RestartSteps=5
 
 
 class TestSystemdUnitIsCurrent:
+    def test_system_unit_without_user_uses_explicit_root_for_comparison(self, tmp_path, monkeypatch):
+        """A legacy system unit without User= must not trip the install guard during status."""
+        from hermes_cli import gateway as gw
+
+        unit_file = tmp_path / "hermes-gateway.service"
+        installed = "[Service]\nExecStart=/usr/bin/hermes gateway run\n"
+        unit_file.write_text(installed, encoding="utf-8")
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(gw, "_sync_hermes_home_from_systemd_unit", lambda system=False: None)
+
+        def generate(system=False, run_as_user=None):
+            if system and run_as_user is None:
+                raise ValueError("Refusing to install the gateway system service as root")
+            return installed
+
+        monkeypatch.setattr(gw, "generate_systemd_unit", generate)
+
+        assert gw.systemd_unit_is_current(system=True) is True
+
     def test_unit_without_fatal_config_restart_policy_is_not_current(
         self, tmp_path, monkeypatch,
     ):

@@ -12,7 +12,7 @@
 
 import { clamp } from './layout/geometry.js'
 import type { Screen, StylePool } from './screen.js'
-import { cellAt, cellAtIndex, CellWidth, isWrittenCellAt, setCellStyleId } from './screen.js'
+import { type BidiRow, cellAt, cellAtIndex, CellWidth, isWrittenCellAt, setCellStyleId } from './screen.js'
 
 type Point = { col: number; row: number }
 
@@ -898,35 +898,148 @@ function selectionContentBounds(
  *  column and skip the trailing trim so the word-separator space survives
  *  the join. See Screen.softWrap for why the clamp is necessary. */
 function extractRowText(screen: Screen, row: number, colStart: number, colEnd: number): string {
-  const noSelect = screen.noSelect
   const rowOff = row * screen.width
   const contentEnd = row + 1 < screen.height ? screen.softWrap[row + 1]! : 0
   const lastCol = contentEnd > 0 ? Math.min(colEnd, contentEnd - 1) : colEnd
+
+  // A row the bidi reorderer touched holds VISUAL order in its cells. Copy
+  // must hand back LOGICAL order or the pasted run reads backwards — remap the
+  // record's own span, and only while the cells still match it.
+  const bidiRow = screen.bidiRows.get(row)
+  const bidiOverlaps = bidiRow !== undefined && bidiRow.x <= lastCol && bidiRow.x + bidiRow.width - 1 >= colStart
+
+  if (bidiRow && bidiOverlaps && bidiRowMatchesCells(screen, row, bidiRow)) {
+    const mapped = mapBidiRowText(screen, row, bidiRow, colStart, lastCol)
+
+    return contentEnd > 0 ? mapped : mapped.replace(/\s+$/, '')
+  }
+
   let line = ''
 
   for (let col = colStart; col <= lastCol; col++) {
-    // Skip cells marked noSelect (gutters, line numbers, diff sigils).
-    // Check before cellAt to avoid the decode cost for excluded cells.
-    if (noSelect[rowOff + col] === 1) {
+    line += cellSelectionText(screen, row, col, rowOff)
+  }
+
+  return contentEnd > 0 ? line : line.replace(/\s+$/, '')
+}
+
+/** Verify a record against the cells it claims to describe.
+ *
+ *  A record can outlive the layout it was written for — a sibling write may
+ *  land inside its span, a blit may rewrite the row — and a stale mapping
+ *  silently yields wrong text, which is worse than an unconverted run. So
+ *  re-read the visual clusters it drew: only trust the mapping while the cells
+ *  still hold exactly those characters. */
+function bidiRowMatchesCells(screen: Screen, row: number, rec: BidiRow): boolean {
+  let col = rec.x
+
+  for (let i = 0; i < rec.visual.length; i++) {
+    const width = rec.visualWidths[i]!
+
+    if (width === 0) {
       continue
+    }
+
+    if (col + width > rec.x + rec.width || col >= screen.width) {
+      return false
     }
 
     const cell = cellAt(screen, col, row)
 
-    if (!cell) {
-      continue
+    if (!cell || cell.char !== rec.visual[i]) {
+      return false
     }
 
-    // Skip spacer tails (second half of wide chars) — the head already
-    // contains the full grapheme. SpacerHead is a blank at line-end.
-    if (cell.width === CellWidth.SpacerTail || cell.width === CellWidth.SpacerHead) {
-      continue
-    }
-
-    line += cell.char
+    col += width
   }
 
-  return contentEnd > 0 ? line : line.replace(/\s+$/, '')
+  return col === rec.x + rec.width
+}
+
+/** Text of a single cell for the verbatim (non-remapped) parts of a selection:
+ *  noSelect cells are excluded, and a wide char's spacer head/tail is skipped
+ *  because the head already carries the whole grapheme. */
+function cellSelectionText(screen: Screen, row: number, col: number, rowOff: number): string {
+  if (screen.noSelect[rowOff + col] === 1) {
+    return ''
+  }
+
+  const cell = cellAt(screen, col, row)
+
+  if (!cell || cell.width === CellWidth.SpacerTail || cell.width === CellWidth.SpacerHead) {
+    return ''
+  }
+
+  return cell.char
+}
+
+/**
+ * Rebuild the LOGICAL text for a visual column range of a bidi-reordered row.
+ *
+ * `rec.perm` maps visual position to logical index, and `rec.clusterWidths`
+ * gives each logical cluster's column width, so walking the visual positions
+ * reproduces the exact cell columns. Clusters whose columns fall inside the
+ * selection are collected and re-emitted in logical order — the selection is
+ * a column range on screen, but what the user wants on the clipboard is the
+ * sentence as written.
+ *
+ * Columns the record does not cover belong to another writer on the same row
+ * (streaming siblings, trailing padding, chrome), so they are copied verbatim
+ * from the cells; only the record's own span is reordered.
+ */
+function mapBidiRowText(screen: Screen, row: number, rec: BidiRow, colStart: number, colEnd: number): string {
+  const noSelect = screen.noSelect
+  const rowOff = row * screen.width
+  const first = Math.max(colStart, rec.x)
+  const last = Math.min(colEnd, rec.x + rec.width - 1)
+  const indices: number[] = []
+  const parts: string[] = []
+
+  for (let col = colStart; col < first && col <= colEnd; col++) {
+    parts.push(cellSelectionText(screen, row, col, rowOff))
+  }
+
+  if (first <= last) {
+    const hit = new Set<number>()
+    let col = rec.x
+
+    for (let i = 0; i < rec.perm.length; i++) {
+      const logicalIndex = rec.perm[i]!
+      const width = rec.clusterWidths[logicalIndex]!
+
+      if (width > 0 && col + width > first && col <= last) {
+        // Overlap — but only count a cluster the user can actually select.
+        const from = Math.max(col, first)
+        const to = Math.min(col + width - 1, last)
+
+        for (let c = from; c <= to; c++) {
+          if (noSelect[rowOff + c] !== 1) {
+            hit.add(logicalIndex)
+
+            break
+          }
+        }
+      }
+
+      col += width
+    }
+
+    for (const index of hit) {
+      indices.push(index)
+    }
+
+    indices.sort((a, b) => a - b)
+  }
+
+  if (indices.length > 0) {
+    parts.push(indices.map(index => rec.logical[index]!).join(''))
+  }
+
+  for (let col = last + 1; col <= colEnd; col++) {
+    parts.push(cellSelectionText(screen, row, col, rowOff))
+  }
+
+  return parts.join('')
 }
 
 /** Accumulator for selected text that merges soft-wrapped rows back

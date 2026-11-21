@@ -4,7 +4,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 
-import { reorderBidi } from './bidi.js'
+import { reorderBidiWithMapping } from './bidi.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
 import {
   blitRegion,
@@ -37,6 +37,34 @@ type ClusteredChar = {
   width: number
   styleId: number
   hyperlink: string | undefined
+}
+
+/**
+ * Cache entry for one rendered line. `characters` is what the cell loop draws
+ * (VISUAL order when the bidi reorderer touched the line). The `perm`/
+ * `logical`/`clusterWidths` trio is carried only for reordered lines and is
+ * what lets selection copy map a visual column range back to logical order —
+ * see BidiRow and getSelectedText.
+ */
+type LineCacheEntry = {
+  characters: ClusteredChar[]
+  perm: number[] | undefined
+  logical: string[] | undefined
+  clusterWidths: number[] | undefined
+}
+
+/** A tab or stray escape code would be expanded/skipped by the cell loop, so
+ *  cluster widths would no longer describe the drawn columns — no record. */
+function hasControlChars(values: string[]): boolean {
+  for (const value of values) {
+    const code = value.codePointAt(0)
+
+    if (code !== undefined && code <= 0x1f) {
+      return true
+    }
+  }
+
+  return false
 }
 
 /**
@@ -175,7 +203,7 @@ export default class Output {
 
   private readonly operations: Operation[] = []
 
-  private charCache: Map<string, ClusteredChar[]> = new Map()
+  private charCache: Map<string, LineCacheEntry> = new Map()
 
   constructor(options: Options) {
     const { width, height, stylePool, screen } = options
@@ -686,14 +714,25 @@ function writeLineToScreen(
   y: number,
   screenWidth: number,
   stylePool: StylePool,
-  charCache: Map<string, ClusteredChar[]>
+  charCache: Map<string, LineCacheEntry>
 ): number {
-  let characters = charCache.get(line)
+  let entry = charCache.get(line)
 
-  if (!characters) {
-    characters = reorderBidi(styledCharsWithGraphemeClustering(styledCharsFromTokens(tokenize(line)), stylePool))
-    charCache.set(line, characters)
+  if (!entry) {
+    const logicalChars = styledCharsWithGraphemeClustering(styledCharsFromTokens(tokenize(line)), stylePool)
+    const { visual, perm } = reorderBidiWithMapping(logicalChars)
+    entry = perm
+      ? {
+          characters: visual,
+          perm,
+          logical: logicalChars.map(c => c.value),
+          clusterWidths: logicalChars.map(c => c.width)
+        }
+      : { characters: visual, perm: undefined, logical: undefined, clusterWidths: undefined }
+    charCache.set(line, entry)
   }
+
+  const characters = entry.characters
 
   let offsetX = x
 
@@ -833,6 +872,42 @@ function writeLineToScreen(
       hyperlink: character.hyperlink
     })
     offsetX += isWideCharacter ? 2 : 1
+  }
+
+  // Record the logical line so selection copy can hand back readable text
+  // instead of the reversed visual run sitting in the cells. The record covers
+  // the columns this write produced; a sibling write elsewhere on the row
+  // (streaming text, trailing padding, chrome) leaves it intact, and a write
+  // that lands inside this span drops it — the copy path re-verifies the record
+  // against the cells either way (see BidiRow). Still only when the whole line
+  // fits on the row — otherwise the cell layout diverges from the cumulative
+  // cluster widths the mapping relies on (tab expansion, edge SpacerHead,
+  // off-screen truncation) and a wrong mapping is worse than none.
+  const { perm, logical, clusterWidths } = entry
+
+  if (offsetX > x) {
+    // A record this write overlaps can no longer describe those columns.
+    const prev = screen.bidiRows.get(y)
+
+    if (prev && x < prev.x + prev.width && prev.x < offsetX) {
+      screen.bidiRows.delete(y)
+    }
+  }
+
+  if (perm && logical && clusterWidths && !hasControlChars(logical)) {
+    const width = clusterWidths.reduce((sum, w) => sum + w, 0)
+
+    if (x + width <= screenWidth) {
+      screen.bidiRows.set(y, {
+        x,
+        width,
+        perm,
+        logical,
+        clusterWidths,
+        visual: characters.map(c => c.value),
+        visualWidths: characters.map(c => c.width)
+      })
+    }
   }
 
   return offsetX

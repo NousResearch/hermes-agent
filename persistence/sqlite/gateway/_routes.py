@@ -3,6 +3,7 @@ topic statements, and the topic-table migration the routing verbs run in their o
 
 from __future__ import annotations
 
+import json
 import time
 
 from ..conversation._store.rules import EPOCH_MAX, EPOCH_MIN
@@ -71,24 +72,46 @@ def route_fence_key(namespace, session_id):
 # ``json_valid(...) AND``, so each JSON read sits in a ``CASE WHEN json_valid(...)`` branch.
 # Bound by name (``route_retired_params``): :entry is the route's JSON, :ns its key's
 # ``route_namespace``, :now the save's time.
-ROUTE_RETIRED_SQL = """(
+def route_retired_sql(entry_expr: str = ":entry", ns_expr: str = ":ns") -> str:
+    """The route-retirement predicate over the entry JSON *entry_expr* and its key's namespace
+    *ns_expr* (by default the :entry / :ns names ``route_retired_params`` binds). Other binds:
+    ``:now`` (the save's time), ``:horizon``, ``:retired_prefix``, ``:fence_prefix``."""
+    return f"""(
     EXISTS (SELECT 1 FROM state_meta m
-             WHERE m.key = :retired_prefix || json_extract(:entry, '$.session_id')
-               AND (:ns = 'main' OR NOT CASE WHEN json_valid(m.value)
+             WHERE m.key = :retired_prefix || json_extract({entry_expr}, '$.session_id')
+               AND ({ns_expr} = 'main' OR NOT CASE WHEN json_valid(m.value)
                                              THEN json_extract(m.value, '$.own') IS NOT NULL ELSE 0 END))
     OR EXISTS (SELECT 1 FROM state_meta f
-                WHERE f.key = :fence_prefix || :ns || ':' || json_extract(:entry, '$.session_id')
+                WHERE f.key = :fence_prefix || {ns_expr} || ':' || json_extract({entry_expr}, '$.session_id')
                   AND NOT CASE WHEN json_valid(f.value)
                                THEN coalesce(json_extract(f.value, '$.expires')
                                              AND json_extract(f.value, '$.retired_at') < :now - :horizon, 0)
                                ELSE 0 END
-                  AND (:ns != 'main' OR NOT EXISTS (
-                          SELECT 1 FROM sessions s WHERE s.id = json_extract(:entry, '$.session_id')))))"""
+                  AND ({ns_expr} != 'main' OR NOT EXISTS (
+                          SELECT 1 FROM sessions s WHERE s.id = json_extract({entry_expr}, '$.session_id')))))"""
+
+
+ROUTE_RETIRED_SQL = route_retired_sql()
+
+# The keys of a whole save that the predicate retires, judged for every wanted route in ONE read:
+# ``:wanted`` is a JSON array of {key, entry, ns}, so a full save costs one statement instead of one
+# per route. ``route_retired_many_params`` binds it beside the predicate's own names.
+ROUTE_RETIRED_MANY_SQL = (
+    "SELECT json_extract(w.value, '$.key') FROM json_each(:wanted) w WHERE "
+    + route_retired_sql("json_extract(w.value, '$.entry')", "json_extract(w.value, '$.ns')"))
 
 
 def route_retired_params(session_key, entry_json, now):
     """The named parameters of ``ROUTE_RETIRED_SQL`` for one routing entry saved at *now*."""
     return {'entry': entry_json, 'ns': route_namespace(session_key), 'now': now, 'horizon': RETRY_HORIZON_S,
+            'retired_prefix': RETIRED_PREFIX, 'fence_prefix': ROUTE_FENCE_PREFIX}
+
+
+def route_retired_many_params(routes, now):
+    """The named parameters of ``ROUTE_RETIRED_MANY_SQL`` for ``(session_key, entry_json)`` *routes*."""
+    return {'wanted': json.dumps([{'key': key, 'entry': entry, 'ns': route_namespace(key)}
+                                  for key, entry in routes]),
+            'now': now, 'horizon': RETRY_HORIZON_S,
             'retired_prefix': RETIRED_PREFIX, 'fence_prefix': ROUTE_FENCE_PREFIX}
 
 

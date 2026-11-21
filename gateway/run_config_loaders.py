@@ -238,7 +238,7 @@ class GatewayConfigLoadersMixin:
         from gateway.warning_notifications import warning_notifications_enabled
         try:
             with self._media_delivery_scope_for_source(source):
-                return not warning_notifications_enabled(source.platform)
+                return not warning_notifications_enabled(source.platform, source=source)
         except Exception:
             logger.debug("Warning policy lookup failed for %s; keeping the notice", source.chat_id, exc_info=True)
             return False

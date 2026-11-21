@@ -28,6 +28,13 @@ def _per_platform(platform, value=True, **display):
     return {"display": {**display, "platforms": {platform: {"suppress_warning_notifications": value}}}}
 
 
+def _per_chat_type(platform, chat_type, value=True):
+    return {"display": {"platforms": {platform: {
+        "suppress_warning_notifications": False,
+        "chat_types": {chat_type: {"suppress_warning_notifications": value}},
+    }}}}
+
+
 def _profile(raw):
     _write(get_hermes_home(), raw)
 
@@ -45,6 +52,14 @@ async def test_suppression_keeps_a_healthy_marker_silent(monkeypatch, tmp_path, 
     runner = _runner(monkeypatch, tmp_path)
 
     assert await _live(runner, _event(_source(platform), reply_expected=reply_expected)) == ""
+
+
+@pytest.mark.asyncio
+async def test_chat_type_suppression_hides_the_live_unexpected_silence_notice(monkeypatch, tmp_path):
+    _profile(_per_chat_type("slack", "group"))
+    runner = _runner(monkeypatch, tmp_path)
+
+    assert await _live(runner, _event(_slack_source())) == ""
 
 
 @pytest.mark.asyncio
@@ -80,6 +95,14 @@ async def test_crash_recovery_follows_the_live_decision_under_suppression(monkey
     runner = _runner(monkeypatch, tmp_path)
 
     assert bool(await _recovered(runner, _event(_slack_source()), tmp_path, "slack")) is owed
+
+
+@pytest.mark.asyncio
+async def test_chat_type_suppression_hides_the_crash_recovered_diagnostic(monkeypatch, tmp_path):
+    _profile(_per_chat_type("slack", "group"))
+    runner = _runner(monkeypatch, tmp_path)
+
+    assert not await _recovered(runner, _event(_slack_source()), tmp_path, "slack")
 
 
 @pytest.mark.asyncio

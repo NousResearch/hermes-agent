@@ -113,6 +113,7 @@ class DiscordMediaMixin:
 
     async def _reject_oversized_upload(
         self, channel: Any, file_path: str, filename: str, *, caption: Optional[str] = None,
+        chat_id: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[SendResult]:
         """Preflight ``file_path`` against the channel's upload cap (#50846): a doomed
         ``413`` round-trip is skipped and the user gets a notice naming the size and the
@@ -132,7 +133,8 @@ class DiscordMediaMixin:
             "platform.discord.media.upload_too_large",
             filename=filename, size_mb=f"{size_mb:.1f}", limit_mb=f"{limit_mb:.0f}")
         try:
-            shown = self.warning_notifications_enabled()
+            shown = self.warning_notifications_enabled(  # type: ignore[attr-defined]
+                chat_id=chat_id, metadata=metadata)
             if shown:
                 # Legacy: the notice is posted in-channel only (forum parents get no bare notice).
                 if not self._is_forum_parent(channel):
@@ -167,7 +169,8 @@ class DiscordMediaMixin:
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
-        rejected = await self._reject_oversized_upload(channel, file_path, filename, caption=caption)
+        rejected = await self._reject_oversized_upload(
+            channel, file_path, filename, caption=caption, chat_id=chat_id, metadata=metadata)
         if rejected is not None:
             return rejected
         logger.info(
@@ -299,7 +302,8 @@ class DiscordMediaMixin:
                 if not files:
                     # Everything in this chunk was skipped. Still surface any
                     # oversized-file notices so the drop is not silent.
-                    shown = self.warning_notifications_enabled()
+                    shown = self.warning_notifications_enabled(  # type: ignore[attr-defined]
+                        chat_id=chat_id, metadata=metadata)
                     if not shown and captions:
                         if self._is_forum_parent(channel):
                             await self._send_to_forum(channel, captions[0])
@@ -317,7 +321,9 @@ class DiscordMediaMixin:
                 # Use the first caption if any (Discord only has one message body for the group)
                 content = captions[0] if captions else None
                 if skip_notices:
-                    content = self.warning_text("\n".join(([content] if content else []) + skip_notices), content)
+                    content = self.warning_text(  # type: ignore[attr-defined]
+                        "\n".join(([content] if content else []) + skip_notices), content,
+                        chat_id=chat_id, metadata=metadata)
                 logger.info(
                     "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
                     self.name, len(files), chunk_idx + 1, len(chunks),
@@ -370,7 +376,8 @@ class DiscordMediaMixin:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             filename = os.path.basename(audio_path)
-            rejected = await self._reject_oversized_upload(channel, audio_path, filename, caption=caption)
+            rejected = await self._reject_oversized_upload(
+                channel, audio_path, filename, caption=caption, chat_id=chat_id, metadata=metadata)
             if rejected is not None:
                 return rejected
             reference = self._reply_reference_for_send(reply_to, channel)

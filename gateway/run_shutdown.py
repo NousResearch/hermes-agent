@@ -1103,9 +1103,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             except Exception as e:
                 logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
                 continue
-            # Automatic interrupt diagnostic, resolved under the session's own profile scope (same
-            # shape as the stall watcher). The requester's own chat on an in-chat /restart is the
-            # requested outcome of that command and is never suppressed.
+            # Automatic interrupt diagnostic; the requester's own /restart chat is never suppressed.
             async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
                                    metadata=metadata, dedup_key=dedup_key):
                 if await self._send_shutdown_notice(
@@ -1115,7 +1113,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     delivered.add(dedup_key)
             from gateway.warning_notifications import present_notification
             async with scope:
-                presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
+                presented = await present_notification(_send_active, platform=platform, source=source,
+                                                       diagnostic=restart_key != dedup_key)
             if not presented:
                 notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
         await self._notify_home_channels_of_shutdown(

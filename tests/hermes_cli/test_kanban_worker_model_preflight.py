@@ -50,7 +50,7 @@ def test_unresolved_model_refused_before_spawn_with_task_log(dispatch_profile):
         profile, "model:\n  provider: custom\n  base_url: https://llm.example.test/v1\n")
     assert not spawned and not result.spawned
     assert task.status == "ready" and task.worker_pid is None
-    assert "No model configured for profile worker" in task.last_failure_error
+    assert "No model configured for profile worker; pin one on this card with `hermes kanban set-model`" in task.last_failure_error
     assert any(e.kind == "spawn_failed" and "hermes -p worker model" in e.payload["error"] for e in events)
     assert len(runs) == 1 and runs[0].outcome == "spawn_failed"
     assert "hermes -p worker model" in cli.run_slash(f"--board work log {task_id}")
@@ -89,12 +89,32 @@ def test_a_cards_provider_always_comes_with_its_model(dispatch_profile):
     assert task_model(card, config) == ("task-model", False)
 
 
+@pytest.mark.parametrize("profile_model, expected", [
+    ("profile-model", "profile-model"),
+    ({"provider": "openrouter", "default": "profile-model"}, "profile-model"),
+    ({"provider": "custom:lab"}, "entry-model"),
+    ({"provider": "anthropic"}, "claude-opus-4-6"),
+], ids=["string-profile", "profile-default", "held-named-entry", "catalog-default"])
+def test_a_card_without_a_model_takes_the_profiles(profile_model, expected, monkeypatch):
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: {"anthropic": "claude-opus-4-6"}.get(provider, ""))
+    assert task_model(_card(), {"model": profile_model, "custom_providers": _LAB_ENTRY}) == (expected, False)
+
+
 @pytest.mark.parametrize("config", [
     {"model": {"provider": "custom", "base_url": "http://127.0.0.1:9/v1"}},
     {"model": {"provider": "openrouter", "base_url": "http://127.0.0.1:8000/v1"}},
+    {"model": {"provider": "custom", "base_url": "http://localhost.:8000/v1"}},
+    {"model": {"provider": "custom", "base_url": "http://192.168.1.50:8000/v1"}},
+    {"model": {"provider": "custom", "base_url": "https://llm.example.test/v1"},
+     "fallback_providers": [{"provider": "openrouter", "model": "fallback-model"}]},
+    {"model": {"provider": "custom:lan", "base_url": "https://stale.example.test/v1"},
+     "custom_providers": [{"name": "lan", "base_url": "http://192.168.1.50:8000/v1"}]},
     {"model": {"provider": "auto"}},
     {},
-], ids=["custom-loopback", "builtin-loopback", "auto", "unset"])
+], ids=["custom-loopback", "builtin-loopback", "loopback-trailing-dot", "lan-server", "fallback-chain", "named-lan-entry", "auto", "unset"])
 def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp_path, monkeypatch):
     import socket
 
@@ -124,6 +144,35 @@ def test_deferred_routes_are_left_to_the_turn_without_a_network_call(config, tmp
     assert opened == []
 
 
+def test_owner_policy_takes_the_card_model_or_refuses_before_a_receipt(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    from gateway.session_contract import SessionActor
+    from gateway.session_kanban import build_kanban_policy
+    from hermes_cli import kanban_db as kb, models
+    from hermes_cli.kanban_db_connect import connect
+    from persistence.core.errors import AuthorityRefusal
+
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda name: str(tmp_path))
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: {"anthropic": "claude-opus-4-6"}.get(provider, ""))
+    kb.create_board("owned")
+    with closing(connect(board="owned")) as conn:
+        task_id = kb.create_task(conn, title="needs a model", assignee="default", workspace_kind="dir", workspace_path=str(tmp_path))
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id)
+    actor = SessionActor("owner", str(tmp_path), frozenset({"session:create"}), "transport")
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
+    params = dict(board="owned", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
+    assert build_kanban_policy(connection, params, {"model": {"provider": "anthropic"}})[0].model == "claude-opus-4-6"
+    with pytest.raises(AuthorityRefusal) as refused:
+        build_kanban_policy(connection, params, {"model": {"provider": "custom", "base_url": "https://llm.example.test/v1"}})
+    assert (refused.value.reason, refused.value.field) == ("invalid_params", "model")
+    assert refused.value.detail.startswith("No model configured for profile default")
+
+
 def test_preflight_never_imports_the_gateway_runner(tmp_path):
     import os
     import subprocess
@@ -151,7 +200,7 @@ def test_preflight_never_imports_the_gateway_runner(tmp_path):
     assert out.returncode == 0, out.stderr
     lines = out.stdout.strip().splitlines()
     assert lines[0].startswith("refused No model configured for profile worker")
-    assert f"HERMES_HOME={profile.parent.parent}" in lines[0]
+    assert f"HERMES_HOME={profile.parent.parent}" in lines[0] and str(profile) not in lines[0]
     assert lines[-1] == "False None"
 
 

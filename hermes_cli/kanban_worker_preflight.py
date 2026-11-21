@@ -1,7 +1,6 @@
 """A claimed card's model, resolved once for the dispatcher's pre-spawn refusal and the owner's launch
 policy, and the refusal itself. Imports no gateway runner: the dispatcher reads config only."""
 import logging
-import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -9,15 +8,14 @@ logger = logging.getLogger(__name__)
 def task_model(task, config) -> tuple[str, bool]:
     """``(model, unresolved)`` the card runs: its ``--model`` (a card's ``--provider`` never comes
     without one); else the profile's own (``model.default``, the claimed welcome trial), the named
-    endpoint's model, then the provider's catalog default. ``auto`` and a loopback server stay ``''``
-    for the turn to resolve, as the gateway does, before any catalog default: nothing here probes a
-    credential or a server."""
+    endpoint's model, then the provider's catalog default. ``auto`` and a self-hosted (loopback, LAN)
+    server stay ``''`` for the turn to resolve, as the gateway does, before any catalog default, and a
+    fallback chain answers an empty primary: nothing here probes a credential or a server."""
     from gateway.session_route_identity import profile_route_identity
     from hermes_cli.anon_auth import trial_model
+    from hermes_cli.fallback_config import get_fallback_chain
     from hermes_cli.models import get_default_model_for_provider
-    from hermes_cli.runtime_provider import _loopback_hostname
     from hermes_cli.runtime_provider_custom import _get_named_custom_provider
-    from utils import base_url_hostname
 
     if task.model_override:
         return task.model_override, False
@@ -34,11 +32,20 @@ def task_model(task, config) -> tuple[str, bool]:
              if identity.startswith('custom:') else None) or {}
     if str(entry.get('model') or '').strip():
         return str(entry['model']).strip(), False
-    base_url = str(held.get('base_url') or entry.get('base_url') or '')
-    if identity == 'auto' or (base_url and _loopback_hostname(base_url_hostname(base_url))):
+    # A named entry runs on its own URL (runtime_provider_custom), whatever model.base_url still says.
+    base_url = str(entry.get('base_url') or held.get('base_url') or '')
+    if identity == 'auto' or (base_url and _self_hosted(base_url)):
         return '', False
     model = '' if entry else get_default_model_for_provider(identity)
-    return model, not model
+    return model, not model and not get_fallback_chain(config)
+
+
+def _self_hosted(base_url) -> bool:
+    """A loopback (``localhost.`` too) or private-network server, which may pick its own model."""
+    from agent.model_metadata import is_local_endpoint  # loads the provider registry: only a model-less URL pays
+    from hermes_cli.runtime_provider import _loopback_hostname
+    from utils import base_url_hostname
+    return bool(_loopback_hostname(base_url_hostname(base_url))) or is_local_endpoint(base_url)
 
 
 class ProfileConfigUnavailable(RuntimeError):
@@ -78,10 +85,10 @@ def refuse_unresolved_model(task, workspace: str, board: str | None) -> None:
 
 
 def missing_model_detail(profile, home):
-    """The refusal text, its remedy pinned to the assignee's root so any shell edits this profile."""
+    """The refusal text: the card's own remedy first (the owner clips ``detail`` at 160 characters),
+    then the profile's, with the assignee's root spelled out rather than in one shell's syntax."""
     from hermes_cli.profiles import profile_root_for_env_home
     from pathlib import Path
-    root = Path(home) if profile == 'default' else Path(home).parent.parent
-    del profile_root_for_env_home  # same root resolve_profile_env used for ``home``
-    return (f"No model configured for profile {profile}; run `HERMES_HOME={shlex.quote(str(root))} hermes -p {profile} model` "
-            "or create the task with --model")
+    root = profile_root_for_env_home(str(home), Path(home))
+    return (f"No model configured for profile {profile}; pin one on this card with `hermes kanban set-model`, "
+            f"or run `hermes -p {profile} model` with HERMES_HOME={root}")

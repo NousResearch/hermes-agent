@@ -60,6 +60,24 @@ def _terminal_columns(default: int = 80) -> int:
     return _terminal_dims((default, 24))[0]
 
 
+def _read_phase_tools() -> frozenset:
+    return frozenset({"read_file", "search_files", "web_search", "web_extract", "vision_analyze",
+                      "skill_view", "skills_list", "session_search", "process_manage"})
+
+
+def _write_phase_tools() -> frozenset:
+    return frozenset({"write_file", "patch", "execute_code", "terminal", "skill_manage", "browser_navigate"})
+
+
+def _tool_phase(function_name: str) -> str:
+    """Phase word for the busy spinner (T5.2): reading / writing / waiting by tool class."""
+    if function_name in _read_phase_tools():
+        return t("cli.stream.phase_reading")
+    if function_name in _write_phase_tools():
+        return t("cli.stream.phase_writing")
+    return t("cli.stream.phase_waiting")
+
+
 class CLIStreamMixin:
     """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI"""
 
@@ -625,14 +643,14 @@ class CLIStreamMixin:
         Most sync slash commands reserve the composer (their completion changes session state);
         manual compression is safe to draft through (queued input runs against compacted history).
         """
-        from cli import _cprint
         previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
         self._command_blocks_input = blocks_input
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            _cprint(f"⏳ {status}")
+            # Single busy ack: the prompt hint row paints "<spinner frame> <status>"
+            # (cli_tui_mixin); echoing "⏳ status" into scrollback duplicated it on every run.
             yield
         finally:
             self._command_running = False
@@ -830,7 +848,7 @@ class CLIStreamMixin:
             if _pl > 0:
                 # Cell-based clip: a CJK preview sliced by chars overshoots the spinner row.
                 label = _clip_cells(label, _pl)
-            self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
+            self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {_tool_phase(function_name)} · {label}"
             self.__dict__.setdefault("_running_tool_labels", {}).setdefault(function_name, []).append(self._spinner_text)
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion

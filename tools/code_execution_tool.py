@@ -37,8 +37,14 @@ from tools.tool_output_truncate import head_tail_split, truncation_notice
 logger = logging.getLogger(__name__)
 
 # Tools allowed inside the sandbox; ∩ the session's enabled tools decides which stubs are generated.
+# Only tools safe to call programmatically belong here: read-only / idempotent
+# tools, plus file/terminal primitives already gated by approval rules.
+# Tools mixing reads and writes behind one name (memory, todo_list,
+# cronjob_manage) cannot be filtered by action in the sandbox, and
+# interactive/stateful tools (browser, vision, clarify) need direct calls.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
+    "skills_list", "skill_view", "session_search",
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
@@ -145,6 +151,15 @@ _TOOL_STUBS = {
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}'),
+    "skills_list": ("category: str = None",
+        '"""List available skills (read-only). Returns dict with skills list."""',
+        '{"category": category}'),
+    "skill_view": ("name: str, file_path: str = None",
+        '"""Load a skill SKILL.md or one linked file (read-only). Returns dict with content."""',
+        '{"name": name, "file_path": file_path}'),
+    "session_search": ('query: str = "", limit: int = None, sort: str = None, detail: str = "adaptive", after: str = None, before: str = None, exclude_session_ids: list = None, session_id: str = None, around_message_id: int = None, window: int = 5, role_filter: str = None, profile: str = None',
+        '"""Search or read past conversations (read-only). Returns dict with matches."""',
+        '{"query": query, "limit": limit, "sort": sort, "detail": detail, "after": after, "before": before, "exclude_session_ids": exclude_session_ids, "session_id": session_id, "around_message_id": around_message_id, "window": window, "role_filter": role_filter, "profile": profile}'),
 }
 
 
@@ -858,6 +873,12 @@ _TOOL_DOC_LINES = [
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False)"),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None)\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+    ("skills_list", "  skills_list(category=None)\n"
+     "    Lists available skills (read-only)"),
+    ("skill_view", "  skill_view(name, file_path=None)\n"
+     "    Loads a skill SKILL.md or linked file (read-only)"),
+    ("session_search", "  session_search(query=\"\", limit=None, sort=None, detail=\"adaptive\", after=None, before=None, exclude_session_ids=None, session_id=None, around_message_id=None, window=5, role_filter=None, profile=None)\n"
+     "    Searches or reads past conversations (read-only, no LLM)"),
 ]
 
 

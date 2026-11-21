@@ -9,6 +9,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Generic, Literal, TypeVar
 
 Kind = Literal["explicit_path", "path_executable", "known_path", "package_runner", "missing"]
@@ -138,6 +139,15 @@ def locate_command(name: str, ctx: LookupContext | None = None, *, known_dirs: t
             kind = "path_executable" if c.source == "PATH" else "known_path"
             break
     return Resolution(kind, tuple(candidates))
+
+
+def windows_system_executable(name: str) -> str:
+    """Absolute path of a Windows system executable under SystemRoot's System32.
+
+    Windows resolution of a bare name can select a PATH entry (the Desktop app bundles Git's
+    coreutils ahead of System32), and System32's copy is the one with Windows semantics.
+    """
+    return str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name)
 
 
 def _known_dir_variants(base: str) -> tuple[str, ...]:

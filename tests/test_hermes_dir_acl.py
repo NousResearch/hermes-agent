@@ -372,3 +372,33 @@ def test_repair_user_dir_grants_an_existing_dir_once_and_never_creates(tmp_path,
     ungranted.mkdir()
     hermes_dir_acl.repair_user_dir(ungranted)
     assert len(granted) == 1
+
+
+def test_whoami_sid_resolves_system32_instead_of_path(tmp_path, monkeypatch):
+    """Regression for #157671 / #157356: the home ACL grant also resolves whoami.exe
+    through System32, so a PATH that puts the bundled Git coreutils first cannot
+    break _whoami_sid with CalledProcessError."""
+    from types import SimpleNamespace
+
+    system_root = tmp_path / "Windows"
+    whoami = system_root / "System32" / "whoami.exe"
+    shadow = tmp_path / "Git" / "usr" / "bin" / "whoami.exe"
+    for executable in (whoami, shadow):
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"")
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    monkeypatch.setenv("PATH", os.pathsep.join((str(shadow.parent), str(whoami.parent))))
+    hermes_dir_acl._whoami_sid.cache_clear()
+
+    calls = []
+
+    def run(argv, *_args, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout='"DESKTOP-1\\owner","S-1-5-21-123"\r\n', returncode=0)
+
+    monkeypatch.setattr(hermes_dir_acl.subprocess, "run", run)
+    try:
+        assert hermes_dir_acl._whoami_sid() == "S-1-5-21-123"
+        assert calls == [[str(whoami), "/user", "/fo", "csv", "/nh"]]
+    finally:
+        hermes_dir_acl._whoami_sid.cache_clear()

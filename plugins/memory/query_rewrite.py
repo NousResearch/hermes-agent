@@ -23,7 +23,7 @@ _QUESTION_START_RE = re.compile(
     r"has|have|had|can|could|would|should|may|might)\b", re.IGNORECASE,
 )
 _MEMORY_GROUNDING_RE = re.compile(
-    r"\b(?:user|their|they|them|previous|prior|past|history|preference|"
+    r"\b(?:user|their|they|them|previous|previously|prior|past|history|preference|"
     r"preferences|context|known|remembered|earlier)\b", re.IGNORECASE,
 )
 _INSTRUCTION_LEAK_RE = re.compile(

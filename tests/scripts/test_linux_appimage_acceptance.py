@@ -160,8 +160,9 @@ def test_sandbox_check_refuses_root_active_addressed_routed_and_unreadable_netwo
     def fail_ioctl(_fd, _request, _arg):
         raise PermissionError("blocked")
 
+    _write_proc_net(tmp_path)
     monkeypatch.setattr(fcntl, "ioctl", fail_ioctl)
-    assert "cannot verify" in (appimage_checks._sandbox_problem(tmp_path) or "")
+    assert appimage_checks._sandbox_problem(tmp_path) == "cannot verify network isolation: blocked"
 
 
 def _engine(backend):

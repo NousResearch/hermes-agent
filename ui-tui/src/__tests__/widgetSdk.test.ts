@@ -69,8 +69,12 @@ describe('widget SDK host', () => {
 
     launchWidget('crash-test', 'x')
 
-    // Renders the boundary chip instead of propagating the throw.
-    expect(() => renderToScreen(createElement(AmbientDock, { placement: 'dock-bottom' }), 60)).not.toThrow()
+    // A faulty user widget must not blank the whole TUI; render its error chip.
+    const { screen } = renderToScreen(createElement(AmbientDock, { placement: 'dock-bottom' }), 60)
+    const painted = Array.from({ length: screen.height }, (_, y) =>
+      Array.from({ length: screen.width }, (_, x) => screen.charPool.get(screen.cells[2 * (y * screen.width + x)]!)).join('')
+    ).join('\n')
+    expect(painted).toContain('/crash-test: boom')
   })
 
   it('openWidget is a typed direct launch', () => {

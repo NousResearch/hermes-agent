@@ -22,10 +22,13 @@ logger = logging.getLogger(__name__)
 # HERMES_HOME, so one unkeyed global would leak the first profile's timezone into later
 # profile-scoped work (e.g. the desktop multiplex cron ticker persisting another profile's
 # ``next_run_at``). Entries are published atomically under ``_cache_lock`` as one
-# ``identity -> (name, ZoneInfo | None)`` value, so racing resolvers can never publish a mixed
-# identity/value pair. Call reset_cache() after in-place config changes.
+# ``identity -> (config version, (name, ZoneInfo | None))`` value, so racing resolvers can never
+# publish a mixed identity/value pair. The config version is the effective config's file
+# signature: the config path alone stays equal across an in-place edit, and the usual edit comes
+# from another process (``hermes config set timezone`` while a gateway runs), so no write seam in
+# this process can invalidate the entry. A stale version re-resolves on the next read.
 _cache_lock = threading.Lock()
-_tz_cache: dict[tuple[str, str], tuple[str, Optional[ZoneInfo]]] = {}
+_tz_cache: dict[tuple[str, str], tuple[object, tuple[str, Optional[ZoneInfo]]]] = {}
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 # ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
@@ -107,15 +110,30 @@ def _resolve_timezone_name() -> str:
     return ""
 
 
+def _config_version(identity: tuple[str, str]) -> object:
+    """The version a cached entry for *identity* is valid for. Environment entries never change
+    within a process; config entries follow the effective config's file signature."""
+    if identity[0] != "config":
+        return None
+    try:
+        from hermes_cli.config_effective import effective_config_version
+        return effective_config_version(get_config_path())
+    except (ImportError, OSError):
+        return None  # an unreadable config keeps the entry valid; resolution has its own fallback
+
+
 def _timezone_entry() -> tuple[str, Optional[ZoneInfo]]:
     """Cached ``(configured name, ZoneInfo | None)`` for the active profile."""
     cache_identity = _timezone_cache_identity()
+    # Read the version BEFORE the config: an edit landing mid-resolve then publishes under the
+    # older version, and the next read sees the newer one and re-resolves.
+    version = _config_version(cache_identity)
     with _cache_lock:
-        entry = _tz_cache.get(cache_identity)
-        if entry is not None:
-            return entry
+        cached = _tz_cache.get(cache_identity)
+        if cached is not None and cached[0] == version:
+            return cached[1]
     # Resolve outside the lock (config file I/O); first writer wins so concurrent resolvers of the
-    # same identity converge on one ZoneInfo object.
+    # same identity and version converge on one ZoneInfo object.
     name = _resolve_timezone_name()
     tz = None
     if name:
@@ -124,7 +142,11 @@ def _timezone_entry() -> tuple[str, Optional[ZoneInfo]]:
         except Exception as exc:
             logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
     with _cache_lock:
-        return _tz_cache.setdefault(cache_identity, (name, tz))
+        cached = _tz_cache.get(cache_identity)
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        _tz_cache[cache_identity] = (version, (name, tz))
+        return name, tz
 
 
 def get_timezone() -> Optional[ZoneInfo]:
@@ -139,7 +161,8 @@ def get_timezone_name() -> str:
 
 
 def reset_cache() -> None:
-    """Clear the cached timezone so the next call re-resolves it (after config/env changes)."""
+    """Clear the cached timezone so the next call re-resolves it. Config edits need no reset (the
+    cache follows the file signature); a changed ``HERMES_TIMEZONE`` or test seams do."""
     with _cache_lock:
         _tz_cache.clear()
 

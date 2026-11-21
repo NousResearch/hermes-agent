@@ -50,6 +50,16 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> dict[
     return copy.deepcopy(raw) if raw is not None else {}
 
 
+def effective_config_version(config_path: Optional[Path] = None) -> Optional[tuple[Any, ...]]:
+    """The file signature :func:`load_user_config_effective` caches on (user ``config.yaml`` plus
+    the managed overlay), or None when neither file exists. It changes on every rewrite of either
+    file, including one made by another process, so a cache of a derived value can key on it."""
+    if config_path is None:
+        config_path = _config.get_config_path()
+    with _config._CONFIG_LOCK:
+        return _config._load_config_cache_sig(config_path)[1]
+
+
 def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False) -> dict[str, Any]:
     """User ``config.yaml`` → ``${VAR}`` expansion → managed overlay → model-key canonicalization.
     NO ``DEFAULT_CONFIG`` merge: a key absent from the file (and from the managed layer) is absent

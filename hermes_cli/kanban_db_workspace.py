@@ -14,7 +14,7 @@ import subprocess
 import time
 import unicodedata
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 from typing import TYPE_CHECKING
 import contextlib
 
@@ -836,6 +836,20 @@ def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str)
 
 def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) -> None:
     _set_task_column(conn, task_id, "branch_name", str(branch_name))
+
+
+# Attachment blobs a hard delete leaves unreferenced (kanban_db.delete_attachment / delete_task).
+def _unreferenced_blobs(conn: sqlite3.Connection, stored_paths: Iterable[str]) -> list[str]:
+    """Those of ``stored_paths`` (rows already deleted in the caller's txn) no attachment row still names."""
+    sql = "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1"
+    return [path for path in dict.fromkeys(stored_paths) if conn.execute(sql, (path,)).fetchone() is None]
+
+
+def _unlink_blobs(paths: Iterable[str]) -> None:
+    """Best-effort blob removal, after the deleting txn has committed (a directory is never unlinked)."""
+    for path in (p for p in map(Path, paths) if p.is_file()):
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

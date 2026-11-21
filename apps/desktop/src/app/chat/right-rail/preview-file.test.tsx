@@ -1,10 +1,28 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as DesktopFs from '@/lib/desktop-fs'
 import { setAlwaysExternalLinks } from '@/store/external-links'
-import { $previewTabs } from '@/store/preview'
+import { $previewTabs, type PreviewTarget } from '@/store/preview'
 
-import { MarkdownPreview } from './preview-file'
+import { LocalFilePreview, MarkdownPreview } from './preview-file'
+
+const { mockDesktopFileDiff, mockDesktopGitRoot, mockReadDesktopFileText } = vi.hoisted(() => ({
+  mockDesktopFileDiff: vi.fn(),
+  mockDesktopGitRoot: vi.fn(),
+  mockReadDesktopFileText: vi.fn()
+}))
+
+vi.mock('@/lib/desktop-fs', async importOriginal => {
+  const actual = await importOriginal<typeof DesktopFs>()
+
+  return {
+    ...actual,
+    desktopFileDiff: mockDesktopFileDiff,
+    desktopGitRoot: mockDesktopGitRoot,
+    readDesktopFileText: mockReadDesktopFileText
+  }
+})
 
 // Behavior tests for the .md file preview renderer: input markdown goes
 // through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
@@ -115,5 +133,88 @@ describe('MarkdownPreview', () => {
 
     expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
     expect($previewTabs.get()).toEqual([])
+  })
+})
+
+// A delivered file (MEDIA: card) is content to read, but these scratch dirs
+// are git repos, so the file almost always carries uncommitted changes and the
+// pane's diff-first auto default swallowed the content view. Delivery card
+// targets therefore carry an `initialViewMode` that must beat the auto default
+// (while an explicit user pick in the switcher still wins).
+describe('LocalFilePreview initial view mode', () => {
+  const FILE_TEXT = 'alpha\nbeta\ngamma\n'
+  const FILE_DIFF = '@@ -1,3 +1,4 @@\n alpha\n+beta revised\n beta\ngamma\n'
+
+  beforeEach(() => {
+    mockReadDesktopFileText.mockResolvedValue({
+      binary: false,
+      byteSize: FILE_TEXT.length,
+      path: '/work/notes.txt',
+      text: FILE_TEXT
+    })
+    mockDesktopGitRoot.mockResolvedValue('/work')
+    mockDesktopFileDiff.mockResolvedValue(FILE_DIFF)
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  function fileTarget(overrides: Record<string, unknown> = {}): PreviewTarget {
+    return {
+      kind: 'file',
+      label: 'notes.txt',
+      path: '/work/notes.txt',
+      previewKind: 'text',
+      source: 'file:///work/notes.txt',
+      url: 'file:///work/notes.txt',
+      ...overrides
+    }
+  }
+
+  it('keeps the diff-first auto default when no initial view is requested', async () => {
+    const { container } = render(<LocalFilePreview reloadKey={1} target={fileTarget()} />)
+
+    // The uncommitted change lands on the diff view once the working-tree
+    // diff resolves (the diff panel never mounts for a source view).
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="file-diff-panel"]')).not.toBeNull()
+    })
+  })
+
+  it('opens on the source view when the delivery card requests it', async () => {
+    const { container } = render(<LocalFilePreview reloadKey={1} target={fileTarget({ initialViewMode: 'source' })} />)
+
+    // The content view renders the file's text...
+    await waitFor(() => {
+      expect(container.textContent).toContain('alpha')
+    })
+    // ...and never mounts the diff panel for the uncommitted change.
+    expect(container.querySelector('[data-slot="file-diff-panel"]')).toBeNull()
+  })
+
+  it('opens a markdown document on its rendered view when requested', async () => {
+    mockReadDesktopFileText.mockResolvedValue({
+      binary: false,
+      byteSize: 20,
+      path: '/work/notes.md',
+      text: '# Delivery\n\nhello body'
+    })
+
+    render(
+      <LocalFilePreview
+        reloadKey={1}
+        target={fileTarget({
+          initialViewMode: 'rendered',
+          label: 'notes.md',
+          language: 'markdown',
+          path: '/work/notes.md',
+          source: 'file:///work/notes.md'
+        })}
+      />
+    )
+
+    const heading = await screen.findByRole('heading', { name: 'Delivery' })
+    expect(heading.tagName).toBe('H1')
   })
 })

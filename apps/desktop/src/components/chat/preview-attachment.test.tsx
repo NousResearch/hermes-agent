@@ -153,4 +153,30 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     expect(notifyError).toHaveBeenCalled()
     expect(openPreview).not.toHaveBeenCalled()
   })
+
+  it('opens a delivered markdown document on its rendered view', async () => {
+    mountDesktopStub(() => fileTarget('/work/segment-1.md'))
+
+    render(<PreviewAttachment target="/work/segment-1.md" />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    })
+
+    expect(openPreview).toHaveBeenCalledTimes(1)
+    expect(openPreview).toHaveBeenCalledWith(expect.objectContaining({ initialViewMode: 'rendered' }))
+  })
+
+  it('opens a delivered non-markdown file on its source view', async () => {
+    mountDesktopStub(() => fileTarget('/work/segment-1.txt'))
+
+    render(<PreviewAttachment target="/work/segment-1.txt" />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    })
+
+    expect(openPreview).toHaveBeenCalledTimes(1)
+    expect(openPreview).toHaveBeenCalledWith(expect.objectContaining({ initialViewMode: 'source' }))
+  })
 })

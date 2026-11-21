@@ -61,6 +61,11 @@ export interface PreviewTarget {
   label: string
   large?: boolean
   language?: string
+  /** Content view to land on first, set by the transcript's delivery card:
+   *  a delivered file is content to read, so it must not fall into the
+   *  diff-first auto default when it carries uncommitted changes. The
+   *  switcher can still move to the diff from there. */
+  initialViewMode?: 'diff' | 'rendered' | 'source'
   mimeType?: string
   path?: string
   /** `directory`/`missing` are typed non-previewable results from main-process

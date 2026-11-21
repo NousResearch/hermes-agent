@@ -1,0 +1,60 @@
+# Proposed catalog entry; listing requires Nous maintainer review and merge.
+manifest_version: 1
+
+name: intakra
+description: >-
+  Prioritize tracked accounts from saved signals and review supplied buying evidence.
+source: https://intakra.com/mcp-guide
+
+transport:
+  type: http
+  url: https://intakra.com/mcp
+
+auth:
+  type: oauth
+  oauth:
+    scope: accounts:read
+
+# Read saved workspace evidence without adding accounts or changing the offering.
+tools:
+  default_enabled:
+    - score_buying_signal_evidence
+    - prepare_why_now_review
+    - list_accounts
+    - prioritize_accounts
+    - get_account_changes
+    - list_opportunities
+    - get_account
+    - get_project_updates
+    - get_daily_brief
+    - get_best_contact
+    - list_suggestions
+
+suggest:
+  keywords:
+    - intakra
+  hosts:
+    - intakra.com
+  examples:
+    - Show which of my tracked accounts have saved signals worth reviewing.
+    - Review changes on my account list with event dates and source links.
+    - Score these supplied account-fit facts and buying signals without contacting anyone.
+
+post_install: |
+  Sign in to Intakra through Hermes's OAuth flow for saved workspace records:
+    hermes mcp login intakra
+  Start a new session or run /reload-mcp after connecting.
+
+  The default tools read saved workspace records or score caller-supplied evidence.
+  They do not run fresh research or contact anyone. Saved findings can describe older
+  events; retain both event and recorded dates. A public signal is a reason to review,
+  not proof of need, budget, authority, or purchase intent. Public evidence tools can
+  work without an account; saved records require the connected owner's accounts:read
+  authorization and applicable workspace access.
+
+  Adding or requesting accounts and changing the offering are optional writes. To
+  enable a requested write workflow, add its accounts:write or offering:write scope,
+  sign in again, and review `hermes mcp configure intakra`. Product account limits and
+  plan entitlements continue to apply; adding accounts schedules later product checks.
+
+  Documentation: https://intakra.com/mcp-guide

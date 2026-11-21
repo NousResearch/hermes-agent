@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -186,3 +187,61 @@ def test_deprecated_alias_keeps_a_frozen_out_of_tree_subclass_working(tmp_path):
     assert result["is_acp_client"] and result["base_url"] == "acp://frozen"
     assert result["models"] == ["open-model", "policy-blocked"]  # the alias keeps its enablement filter
     assert result["reply"] == "HELLO"
+
+
+def test_cli_that_exits_before_the_first_write_closes_stdin_without_unraisable_broken_pipe(tmp_path, monkeypatch):
+    """A CLI that dies before Hermes writes (VS Code's ``copilot`` shim without the real CLI, a
+    crashed agent) makes the first ``initialize`` flush fail with EPIPE. The rejected frame then
+    sits in ``stdin``'s text buffer; finalized at interpreter shutdown, that buffer was flushed
+    again against the dead pipe and CPython printed "Exception ignored while finalizing file
+    <_io.TextIOWrapper ...>: BrokenPipeError" outside any try/except — once per startup."""
+    import gc
+
+    client = ACPClient(command=sys.executable, args=["-c", "pass"], acp_cwd=str(tmp_path))
+    spawned: list[subprocess.Popen[str]] = []
+    real_spawn = client._spawn
+
+    def _spawn_and_wait_for_exit():
+        proc = real_spawn()
+        proc.wait(timeout=30)  # deterministic: the CLI is gone before the first write
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(client, "_spawn", _spawn_and_wait_for_exit)
+    unraisable: list = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+
+    with pytest.raises(RuntimeError, match="exited early"):
+        with client._session(30, allow_file_requests=False):
+            pass
+
+    assert spawned and spawned[0].stdin is not None and spawned[0].stdin.closed
+    spawned.clear()  # drop the last reference so the GC finalizes the wrapper inside this test
+    gc.collect()
+    assert not [u for u in unraisable if isinstance(u.exc_value, BrokenPipeError)]
+
+
+def test_a_reply_to_a_cli_that_died_mid_session_fails_loud_instead_of_a_bare_epipe(tmp_path):
+    """Answering a server request is the second place Hermes writes to the child. On a dead CLI
+    that write used to escape as a raw BrokenPipeError, which callers read as a transport accident
+    rather than "the agent is gone" (CONTRIBUTING: fail loud at integration boundaries)."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "pass"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
+    )
+    proc.wait(timeout=30)
+    client = ACPClient(command=sys.executable, args=["-c", "pass"], acp_cwd=str(tmp_path))
+    try:
+        with pytest.raises(RuntimeError, match="stopped accepting input"):
+            client._handle_server_message(
+                {"jsonrpc": "2.0", "id": 7, "method": "session/request_permission", "params": {}},
+                process=proc, cwd=str(tmp_path), text_parts=None, reasoning_parts=None,
+            )
+    finally:
+        # Closing stdin re-raises the EPIPE this test provoked: the rejected frame is still in the
+        # buffer, which is exactly what the client's teardown has to swallow (contextlib.suppress).
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.close()
+

@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "Réamhamharc giorraithe: tá an jab iomlán ({total} carachtar) sa teachtaireacht thuas."
     schedule_truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an jab iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip deisce."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "fuaime"

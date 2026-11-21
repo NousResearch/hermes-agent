@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "Предпросмотр сокращён: полная задача ({total} символов) — в сообщении выше."
     schedule_truncated_deny_only: "Предпросмотр сокращён ({total} символов), а полную задачу здесь показать не удалось, поэтому доступно только «Отклонить». Проверьте её в CLI или настольном приложении."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "аудио"

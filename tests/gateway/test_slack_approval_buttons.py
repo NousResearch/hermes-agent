@@ -839,3 +839,29 @@ class TestSlackReactionAuthorizationGate:
         assert "U_RANDO" in runner.auth_checked
         assert runner.handled == []
         adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 0])
+async def test_a_clicked_schedule_card_keeps_the_schedule_wording(count):
+    """The click runs outside the runner's kind binding: the resolved schedule card must still drop the
+    schedule deadline line, and an expired one must not say a command was not run."""
+    from gateway.platforms.base_exec_approval import with_approval_kind
+    adapter = _make_adapter()
+    _attach_auth_runner(adapter)
+    client = adapter._team_clients["T1"]
+    client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+    client.chat_update = AsyncMock()
+    plan = 'Schedule "check-in" (tomorrow at 09:00): remind me to check in'
+    with patch("gateway.platforms.base_exec_approval.approval_timeout_seconds", return_value=300):
+        await with_approval_kind("schedule", adapter.send_exec_approval(
+            chat_id="C1", command=plan, session_key="sk", description=plan, request_id="req-job"))
+        sent = client.chat_postMessage.call_args.kwargs["blocks"][0]["text"]["text"]
+        body = {"message": {"ts": "1.2", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": sent}}]},
+                "channel": {"id": "C1"}, "user": {"name": "alice", "id": "U_ALICE"}}
+        with patch("tools.approval.resolve_gateway_approval_card", return_value=count):
+            await adapter._handle_approval_action(AsyncMock(), body, {"action_id": "hermes_approve_once", "value": "sk"})
+    update = client.chat_update.call_args.kwargs
+    final = update["blocks"][0]["text"]["text"] + update["text"]
+    assert "the job will NOT be created" in sent and "the job will NOT be created" not in final
+    assert "command was not run" not in final

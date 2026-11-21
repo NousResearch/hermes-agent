@@ -59,8 +59,8 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
         instructions = (t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
                         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])) if choices[1:] else f"{choices[0]}.\n"
         deadline = format_approval_deadline_line(approval_timeout_seconds())
-        if schedule:  # the body is the job description: no command fence, nothing "flagged"
-            return f"{heading}\n\n{instructions}{notice}{deadline}\n\n{shown}"
+        if schedule:  # the body is the model-written job description: fenced like a command, nothing "flagged"
+            return f"{heading}\n\n{instructions}{notice}{deadline}\n{fence}\n{shown}\n{fence}"
         return (f"{heading}\n\n{instructions}{notice}{deadline}"
                 f"\n\n{ea_reason_label_text()}: {description}\n{fence}\n{shown}\n{fence}")
 

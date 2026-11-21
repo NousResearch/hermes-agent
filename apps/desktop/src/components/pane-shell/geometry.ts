@@ -1,9 +1,9 @@
 /**
  * Pane geometry — AABB INTERSECTION → WINDOW-CONTROL AWARENESS. The native
- * window controls (macOS traffic lights top-left / Windows-WSLg overlay
- * top-right) are a rectangle in viewport pixels. Any region whose rect
- * intersects it must reserve that space and expose a drag strip. One
- * `intersect()` call replaces per-layout inset special cases.
+ * window controls (macOS traffic lights top-left / Windows overlay or Linux
+ * native overlay on either side) are rectangles in viewport pixels. Any region
+ * whose rect intersects one must reserve that space and expose a drag strip.
+ * One `intersect()` call replaces per-layout inset special cases.
  *
  * Also publishes the WORKSPACE zone's edges as CSS vars (see
  * publishWorkspaceGeometry) — chrome that aligns to the main pane (titlebar
@@ -15,6 +15,8 @@ import { type RefObject, useLayoutEffect, useState, useSyncExternalStore } from 
 
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $connection } from '@/store/session'
+
+import { OVERLAY_BUTTON_WIDTH } from '../../../electron/titlebar-overlay-width'
 
 // ---------------------------------------------------------------------------
 // Rects
@@ -54,76 +56,110 @@ const MACOS_FALLBACK_BUTTON_X = 12
 interface ConnectionLike {
   windowButtonPosition?: { x: number; y: number } | null
   nativeOverlayWidth?: number | null
+  linuxWindowButtons?: { left: number; right: number } | null
   isFullscreen?: boolean | null
 }
 
 /**
- * The native window-control rectangle in viewport pixels, or null when there
- * is nothing to dodge (fullscreen, plain browser, secondary windows with
- * hidden controls).
+ * Native window-control rectangles in viewport pixels. Empty when there is
+ * nothing to dodge (fullscreen, plain browser, secondary windows with hidden
+ * controls).
  */
-export function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number): Rect | null {
+export function windowControlsRects(connection: ConnectionLike | null, viewportWidth: number): Rect[] {
   const inElectron = typeof window !== 'undefined' && 'hermesDesktop' in window
 
   if (!inElectron) {
-    return null
+    return []
   }
 
   if (connection?.isFullscreen) {
-    return null
+    return []
   }
 
-  // Windows / WSLg: native overlay on the top-right.
-  const overlayWidth = connection?.nativeOverlayWidth ?? 0
+  const rects: Rect[] = []
+  const buttons = connection?.linuxWindowButtons
 
-  if (overlayWidth > 0) {
-    return { x: viewportWidth - overlayWidth, y: 0, width: overlayWidth, height: CONTROLS_BAND_HEIGHT }
+  if (buttons) {
+    // Plain Linux: GNOME/GTK's button-layout decides which side the native
+    // overlay buttons occupy. Counts come from main's gsettings read.
+    const left = Math.max(0, buttons.left) * OVERLAY_BUTTON_WIDTH
+    const right = Math.max(0, buttons.right) * OVERLAY_BUTTON_WIDTH
+
+    if (left > 0) {
+      rects.push({ x: 0, y: 0, width: left, height: CONTROLS_BAND_HEIGHT })
+    }
+
+    if (right > 0) {
+      rects.push({ x: viewportWidth - right, y: 0, width: right, height: CONTROLS_BAND_HEIGHT })
+    }
+  } else {
+    // Windows / WSLg: the whole native overlay sits on the top-right.
+    const overlayWidth = connection?.nativeOverlayWidth ?? 0
+
+    if (overlayWidth > 0) {
+      rects.push({ x: viewportWidth - overlayWidth, y: 0, width: overlayWidth, height: CONTROLS_BAND_HEIGHT })
+    }
+  }
+
+  if (rects.length > 0) {
+    return rects
   }
 
   // macOS: traffic lights on the top-left. windowButtonPosition === null means
-  // the platform has no left-side controls at all (Windows/Linux w/o overlay).
+  // the platform has no left-side controls at all.
   const pos = connection?.windowButtonPosition
 
   if (pos === null) {
-    return null
+    return []
   }
 
   const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
 
   if (!pos && !isMac) {
-    return null
+    return []
   }
 
   const x = pos?.x ?? MACOS_FALLBACK_BUTTON_X
 
-  return { x: 0, y: 0, width: x + MACOS_LIGHTS_WIDTH, height: CONTROLS_BAND_HEIGHT }
+  return [{ x: 0, y: 0, width: x + MACOS_LIGHTS_WIDTH, height: CONTROLS_BAND_HEIGHT }]
+}
+
+/** Bounding box of two overlapping rectangles. */
+function unionRect(a: Rect, b: Rect): Rect {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  const right = Math.max(a.x + a.width, b.x + b.width)
+  const bottom = Math.max(a.y + a.height, b.y + b.height)
+
+  return { x, y, width: right - x, height: bottom - y }
 }
 
 // ---------------------------------------------------------------------------
 // Live hook
 // ---------------------------------------------------------------------------
 
-let cachedRect: Rect | null = null
+const NO_CONTROLS: Rect[] = []
+let cachedRects: Rect[] = NO_CONTROLS
 let cachedKey = ''
 
-function rectKey(r: Rect | null) {
-  return r ? `${r.x},${r.y},${r.width},${r.height}` : ''
+function rectsKey(rects: Rect[]) {
+  return rects.map(r => `${r.x},${r.y},${r.width},${r.height}`).join('|')
 }
 
-function readControlsRect(): Rect | null {
-  const next = windowControlsRect($connection.get(), typeof window === 'undefined' ? 0 : window.innerWidth)
-  const key = rectKey(next)
+function readControlsRects(): Rect[] {
+  const next = windowControlsRects($connection.get(), typeof window === 'undefined' ? 0 : window.innerWidth)
+  const key = rectsKey(next)
 
   // Referentially stable snapshot for useSyncExternalStore.
   if (key !== cachedKey) {
     cachedKey = key
-    cachedRect = next
+    cachedRects = next
   }
 
-  return cachedRect
+  return cachedRects
 }
 
-function subscribeControlsRect(cb: () => void) {
+function subscribeControlsRects(cb: () => void) {
   const unsubConnection = $connection.subscribe(() => cb())
   window.addEventListener('resize', cb)
 
@@ -133,9 +169,9 @@ function subscribeControlsRect(cb: () => void) {
   }
 }
 
-/** Reactive native window-controls rect (connection + viewport aware). */
-export function useWindowControlsRect(): Rect | null {
-  return useSyncExternalStore(subscribeControlsRect, readControlsRect, () => null)
+/** Reactive native window-control rects (connection + viewport aware). */
+export function useWindowControlsRects(): Rect[] {
+  return useSyncExternalStore(subscribeControlsRects, readControlsRects, () => NO_CONTROLS)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,19 +299,20 @@ export function publishWorkspaceGeometry(): () => void {
 }
 
 /**
- * Intersects an element's live viewport rect with the native window-controls
- * rect. Returns the overlap in ELEMENT-LOCAL coordinates (null when clear), so
- * the consumer can reserve the space and paint a drag strip without knowing
- * anything about platform, fullscreen state, or layout position.
+ * Intersects an element's live viewport rect with the native window-control
+ * rectangles. Returns their combined overlap in ELEMENT-LOCAL coordinates
+ * (null when clear), so the consumer can reserve the space and paint a drag
+ * strip without knowing anything about platform, fullscreen state, side, or
+ * layout position.
  */
 export function useWindowControlsOverlap(ref: RefObject<HTMLElement | null>, enabled = true): Rect | null {
-  const controls = useWindowControlsRect()
+  const controls = useWindowControlsRects()
   const [overlap, setOverlap] = useState<Rect | null>(null)
 
   useLayoutEffect(() => {
     const el = ref.current
 
-    if (!enabled || !controls || !el) {
+    if (!enabled || controls.length === 0 || !el) {
       setOverlap(null)
 
       return
@@ -283,8 +320,20 @@ export function useWindowControlsOverlap(ref: RefObject<HTMLElement | null>, ena
 
     const update = () => {
       const r = el.getBoundingClientRect()
-      const hit = intersect(controls, { x: r.x, y: r.y, width: r.width, height: r.height })
-      const local = hit ? { x: hit.x - r.x, y: hit.y - r.y, width: hit.width, height: hit.height } : null
+      const viewport = { x: r.x, y: r.y, width: r.width, height: r.height }
+      let local: Rect | null = null
+
+      for (const control of controls) {
+        const hit = intersect(control, viewport)
+
+        if (!hit) {
+          continue
+        }
+
+        const next = { x: hit.x - r.x, y: hit.y - r.y, width: hit.width, height: hit.height }
+
+        local = local ? unionRect(local, next) : next
+      }
 
       setOverlap(prev => (sameRect(prev, local) ? prev : local))
     }

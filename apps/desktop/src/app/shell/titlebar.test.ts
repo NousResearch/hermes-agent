@@ -25,6 +25,26 @@ describe('titlebarControlsPosition', () => {
     expect(titlebarControlsPosition(null).left).toBe(TITLEBAR_EDGE_INSET)
   })
 
+  it('offsets from left-side Linux window controls', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    expect(titlebarControlsPosition(null, false, 144).left).toBe(144 + TITLEBAR_EDGE_INSET)
+  })
+
+  it('ignores the left reservation in fullscreen', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    expect(titlebarControlsPosition(null, true, 144).left).toBe(TITLEBAR_EDGE_INSET)
+  })
+
+  it('keeps the previous left inset when the button count is zero', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    expect(titlebarControlsPosition(null, false, 0).left).toBe(TITLEBAR_EDGE_INSET)
+  })
+
+  it('keeps macOS traffic-light positioning even if a left reservation arrives', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    expect(titlebarControlsPosition({ x: 24, y: 10 }, false, 144).left).toBe(24 + TITLEBAR_CONTROL_OFFSET_X)
+  })
+
   it('does not move macOS tools when the native traffic-light position arrives', () => {
     vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
     expect(titlebarControlsPosition(undefined)).toEqual(titlebarControlsPosition({ x: 12, y: 10 }))
@@ -57,8 +77,13 @@ describe('titlebarControlsYNudge', () => {
 })
 
 describe('titlebarToolsRightCss', () => {
-  it('reserves the native overlay width when present', () => {
+  it('reserves the native overlay reservation when present', () => {
     expect(titlebarToolsRightCss(144)).toBe('144px')
+    expect(titlebarToolsRightCss(96)).toBe('96px')
+  })
+
+  it('uses the normal edge inset when no controls are on the right', () => {
+    expect(titlebarToolsRightCss(0)).toBe('0.75rem')
   })
 
   it('matches the left edge inset on macOS fullscreen', () => {

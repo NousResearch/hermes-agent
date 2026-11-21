@@ -1,6 +1,8 @@
 import type { BrowserWindow } from 'electron'
 
 export const OVERLAY_FALLBACK_WIDTH = 144
+/** Width of one native caption button in the fallback three-button footprint. */
+export const OVERLAY_BUTTON_WIDTH = OVERLAY_FALLBACK_WIDTH / 3
 
 export function isHexColor(value: unknown): value is string {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)

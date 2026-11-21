@@ -335,6 +335,8 @@ import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
+import { DEFAULT_LINUX_BUTTON_LAYOUT, type LinuxWindowButtons } from './linux-button-layout'
+import { readLinuxButtonLayout, watchLinuxButtonLayout } from './linux-button-layout-monitor'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
   clearLinuxGpuBootMarker,
@@ -6040,17 +6042,62 @@ function getNativeOverlayWidth() {
   return nativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
+// Plain Linux only: Electron's native overlay follows GNOME/GTK's button-layout,
+// so the renderer must reserve space on whichever side the buttons are. WSLg
+// paints its own controls and Windows/macOS keep their native layout.
+const LINUX_BUTTON_LAYOUT_SUPPORTED = process.platform === 'linux' && !IS_WSL
+
+let linuxWindowButtons: LinuxWindowButtons | null = LINUX_BUTTON_LAYOUT_SUPPORTED
+  ? { ...DEFAULT_LINUX_BUTTON_LAYOUT }
+  : null
+
+let stopLinuxButtonLayoutMonitor: (() => void) | null = null
+
 function getWindowState(win = mainWindow) {
   return {
     isFullscreen: Boolean(win?.isFullScreen?.()),
     isMinimized: Boolean(win?.isMinimized?.()),
     isVisible: Boolean(win?.isVisible?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
+    linuxWindowButtons: linuxWindowButtons ? { ...linuxWindowButtons } : null,
     windowButtonPosition: getWindowButtonPosition(win),
     darwinMajor: IS_MAC ? DARWIN_MAJOR : 0,
     ...windowControlState(win, !IS_WINDOWS && IS_WSL)
   }
 }
+
+function applyLinuxWindowButtons(next: LinuxWindowButtons) {
+  if (
+    !LINUX_BUTTON_LAYOUT_SUPPORTED ||
+    (linuxWindowButtons && linuxWindowButtons.left === next.left && linuxWindowButtons.right === next.right)
+  ) {
+    return
+  }
+
+  linuxWindowButtons = next
+
+  // Same live-push path used by fullscreen/maximize changes in
+  // bindWindowChromeEvents: every full chat window updates its own titlebar.
+  for (const win of BrowserWindow.getAllWindows()) {
+    sendWindowStateChanged(undefined, win)
+  }
+}
+
+function startLinuxButtonLayoutMonitor() {
+  if (!LINUX_BUTTON_LAYOUT_SUPPORTED || stopLinuxButtonLayoutMonitor) {
+    return
+  }
+
+  stopLinuxButtonLayoutMonitor = watchLinuxButtonLayout(applyLinuxWindowButtons)
+  readLinuxButtonLayout(applyLinuxWindowButtons)
+}
+
+function stopLinuxButtonLayoutWatch() {
+  stopLinuxButtonLayoutMonitor?.()
+  stopLinuxButtonLayoutMonitor = null
+}
+
+startLinuxButtonLayoutMonitor()
 
 function sendBackendExit(payload) {
   // Intentional soft re-home (gateway mode apply) kills the child on purpose —
@@ -16237,6 +16284,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  stopLinuxButtonLayoutWatch()
   closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()

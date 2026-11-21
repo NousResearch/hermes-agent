@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.conversation_compression import run_compress_context_with_progress_timeout
+from agent.request_window import RESERVED_OUTPUT_TOKENS, request_exceeds_model_window
 from agent.turn_context import PreflightCompressionTimedOut
 from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
 
@@ -42,6 +43,17 @@ def _preflight(agent, request_tokens):
     ):
         _run_preflight_passes(agent, out, agent.context_compressor, request_tokens, "sys", "t")
     return out
+
+
+def test_model_window_fit_reserves_output_runway_and_keeps_unknown_semantics():
+    agent = _agent(context_length=10_000)
+    runway = min(RESERVED_OUTPUT_TOKENS, agent.context_compressor.context_length // 10)
+
+    assert request_exceeds_model_window(agent, 9_999) is True
+    assert request_exceeds_model_window(agent, 10_000 - runway) is False
+    assert request_exceeds_model_window(_agent(context_length=2_000), 541) is False
+    assert request_exceeds_model_window(_agent(context_length=0), 9_999) is None
+    assert request_exceeds_model_window(agent, None) is None
 
 
 def test_no_progress_preflight_fails_closed_only_when_the_request_exceeds_the_window():

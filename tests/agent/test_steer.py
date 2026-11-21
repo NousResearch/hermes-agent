@@ -756,6 +756,71 @@ class TestPreApiCallSteerDrain:
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
 
+    def test_pre_api_drain_never_injects_into_a_previous_turn(self):
+        """#158385: with no tool result yet this turn, the scan must not fall through to a
+        PREVIOUS turn's tool row (that would place the steer in history before this turn's
+        user message); the steer is requeued for the post-tool drain instead."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "turn1"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+            {"role": "assistant", "content": "done1"},
+            {"role": "user", "content": "turn2_no_tools_yet"},
+        ]
+        agent.steer("urgent steer")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=4
+        )
+        steer_idxs = [i for i, m in enumerate(messages) if STEER_MARKER_OPEN in str(m.get("content", ""))]
+        assert steer_idxs == [], messages
+        assert agent._pending_steer == "urgent steer"
+
+    def test_pre_api_drain_unknown_boundary_stops_at_newest_user_row(self):
+        """Without a turn index the scan still stops at the newest regular user row, so a
+        previous turn's tool result cannot capture the steer."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "turn1"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+            {"role": "assistant", "content": "done1"},
+            {"role": "user", "content": "turn2_no_tools_yet"},
+        ]
+        agent.steer("urgent steer")
+        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        steer_idxs = [i for i, m in enumerate(messages) if STEER_MARKER_OPEN in str(m.get("content", ""))]
+        assert steer_idxs == [], messages
+        assert agent._pending_steer == "urgent steer"
+
+    def test_pre_api_drain_still_injects_after_this_turns_tool_result(self):
+        """A tool result of THIS turn (after the current turn's user row) still receives the
+        steer as a standalone user row."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "turn2 with tools"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "t2", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "t2", "content": "out"},
+        ]
+        agent.steer("focus on error handling")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=0
+        )
+        assert messages[-1]["role"] == "user"
+        assert "focus on error handling" in messages[-1]["content"]
+        assert agent._pending_steer is None
 
 
 

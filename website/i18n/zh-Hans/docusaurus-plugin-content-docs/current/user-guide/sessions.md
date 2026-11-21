@@ -123,7 +123,7 @@ Session ID 在退出 CLI session 时显示，也可通过 `hermes sessions list`
 
 恢复 session 时，Hermes 会在输入提示符前以样式化面板显示之前对话的紧凑摘要：
 
-<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="恢复 Hermes session 时显示的「上次对话」摘要面板的样式化预览。" />
+<img className="docs-terminal-figure" src="/docs/img/docs/session-recap.svg" alt="恢复 Hermes session 时显示的「上次对话」摘要面板的样式化预览。" />
 <p className="docs-figure-caption">恢复模式会在返回实时提示符前显示一个紧凑摘要面板，包含最近的用户和助手轮次。</p>
 
 摘要内容：

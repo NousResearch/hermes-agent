@@ -160,6 +160,19 @@ class TestCodexVocabulary:
         assert clamp_effort("ultra", CODEX_LEGACY_EFFORTS) == "xhigh"
         assert clamp_effort("minimal", CODEX_LEGACY_EFFORTS) == "low"
 
+    @pytest.mark.parametrize("model,request_,wire", [
+        # api.openai.com "Supported values are: …" (live 2026-11-04): these 400 on xhigh, gpt-5/o3 on none too.
+        ("gpt-5.1", "xhigh", "high"), ("openai/gpt-5.1-2025-11-13", "max", "high"), ("gpt-5", "xhigh", "high"),
+        ("o3", "max", "high"), ("o3-pro", "minimal", "low"),
+        ("gpt-5-pro", "medium", "high"), ("gpt-5.5-pro", "low", "medium"),
+        # Wider ladders are untouched.
+        ("gpt-5.2", "xhigh", "xhigh"), ("gpt-5.1-codex-max", "xhigh", "xhigh"), ("gpt-5.6", "max", "max"),
+    ])
+    def test_older_openai_models_get_their_own_narrower_ladder(self, model, request_, wire):
+        from agent.reasoning_effort import codex_supported_efforts
+
+        assert clamp_effort(request_, codex_supported_efforts(model)) == wire
+
     @pytest.mark.parametrize(
         "model",
         ["gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"],

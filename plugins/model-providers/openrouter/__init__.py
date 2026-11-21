@@ -5,7 +5,7 @@ from typing import Any
 
 from agent.portal_tags import get_affinity_scope, get_conversation_context
 from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
-from agent.reasoning_effort import codex_supported_efforts
+from agent.reasoning_effort import codex_supported_efforts, openai_narrow_ladder
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -93,15 +93,17 @@ class OpenRouterProfile(ProviderProfile):
             if disabled:
                 no_disable = (model or "").startswith("openai/") and "none" not in codex_supported_efforts(model)
                 return None if caps.get("mandatory") or no_disable else cfg
-            clamped = clamp_reasoning_effort_to_supported(
-                effort, caps.get("supported_efforts")
-            )
+            # The catalog publishes no ladder for some OpenAI models (openai/o3), which then 400 upstream
+            # on xhigh; their live-verified OpenAI ladder fills the gap.
+            supported = caps.get("supported_efforts") or (
+                openai_narrow_ladder(model) if (model or "").startswith("openai/") else None)
+            clamped = clamp_reasoning_effort_to_supported(effort, supported)
         except Exception:
             return cfg
         if clamped and clamped != effort:
             logger.debug(
                 "openrouter: clamped reasoning effort %r → %r for %s (catalog supported_efforts=%s)",
-                effort, clamped, model, caps.get("supported_efforts"),
+                effort, clamped, model, supported,
             )
             cfg = {**cfg, "effort": clamped}
         return cfg

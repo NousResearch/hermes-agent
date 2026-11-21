@@ -657,9 +657,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
-      // key handler per Terminal, so a second registration overwrites this one.
-      if (ev.key === "Tab") return false;
+      // Let the browser finish IME composition before xterm can send the
+      // pre-edit accent. Tab/Shift+Tab move focus out of the terminal (WCAG 2.1.2).
+      if (ev.isComposing || ev.key === "Tab") return false;
 
       // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only
       // when xterm has a selection; without one Ctrl+C still reaches the TUI

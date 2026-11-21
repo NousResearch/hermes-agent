@@ -803,7 +803,7 @@ Hosted long-term memory where every change to a memory is versioned: recall befo
 | | |
 |---|---|
 | **Best for** | Seeing what the agent remembered, when it changed and why |
-| **Requires** | `hermes plugins install bilinc` (no Python dependencies); Hermes 0.21.6 or newer; [API key](https://bilinc.space) |
+| **Requires** | `hermes plugins install bilinc` (no Python dependencies); Hermes 0.21.6 or newer; [API key](https://bilinc.space/?utm_source=hermes-agent&utm_medium=integration&utm_campaign=docs) |
 | **Data storage** | Bilinc Cloud |
 | **Cost** | Free plan (no card required) / Bilinc pricing; each recall counts as an operation on your plan |
 

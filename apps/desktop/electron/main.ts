@@ -547,7 +547,7 @@ import {
   oauthLoginLoadUrlOptions,
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
-import { enableRendererAccessibility } from './renderer-accessibility'
+import { bridgeRendererAccessibilityConfig, enableRendererAccessibility } from './renderer-accessibility'
 import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle'
 import { applyLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
@@ -1285,14 +1285,9 @@ let desktopSshBudgets: DesktopSshBudgets = {} // desktop.ssh_*_timeout (#132508)
   desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
   desktopSshBudgets = readDesktopSshBudgets(desktopLaunchYaml)
 
-  // `desktop.renderer_accessibility: false` must reach packaged launches too,
+  // `desktop.renderer_accessibility` must reach packaged launches too,
   // not only the `hermes desktop` launcher's env bridge (#118271).
-  if (
-    desktopLaunchConfig.rendererAccessibility === false &&
-    process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY === undefined
-  ) {
-    process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY = '0'
-  }
+  bridgeRendererAccessibilityConfig(desktopLaunchConfig.rendererAccessibility)
 
   applyLaunchSwitches(app.commandLine, desktopLaunchConfig, process.argv.slice(1))
 }
@@ -17420,13 +17415,10 @@ app.whenReady().then(() => {
   // After the store's one-time import: drop a stale route to a removed gateway.
   forgetDesktopGlobalRouteIfRemoved()
 
-  // Expose the renderer's accessibility tree to the OS (#118271, Windows
-  // twin #92607): dictation tools that insert text through the accessibility
-  // APIs don't register as screen readers, so Chromium never builds the tree
-  // and the composer stays invisible to them. Must run after `ready` (the
-  // API's requirement). Opt out with desktop.renderer_accessibility: false
-  // (bridged as HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0); the platform/env
-  // decision lives in the extracted helper.
+  // Opt in to renderer accessibility for dictation tools (#118271/#92607).
+  // Otherwise leave Electron's assistive technology detection in control
+  // to avoid third-party window-manager/accessibility conflicts (#133652).
+  // Must run after `ready`; the platform/env decision lives in the helper.
   enableRendererAccessibility({ appApi: app })
 
   installMediaPermissions()

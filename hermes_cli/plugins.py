@@ -11,6 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.metadata
 import json
 import logging
@@ -1106,7 +1107,18 @@ def fire_pre_command_hook(
         logger.debug("pre_command hook dispatch failed (non-fatal): %s", exc)
 
 
-_thread_tool_whitelist = threading.local()
+# Context-scoped, not thread-local: this restriction must follow a tool call onto the dispatch
+# pool. ``tools.thread_context.propagate_context_to_thread`` copies ContextVars into the worker
+# (the approval callbacks ride the same way); a ``threading.local`` read ``None`` there — "no
+# whitelist, allow" — so a background-review fork denied ``skill_manage`` still reached
+# ``terminal`` and applied its own staged writes (#151307).
+_TOOL_WHITELIST_DENY_FMT = "Tool '{tool_name}' denied: not in this thread's tool whitelist"
+_tool_whitelist_allowed: contextvars.ContextVar[Optional[frozenset[str]]] = contextvars.ContextVar(
+    "hermes_tool_whitelist_allowed", default=None
+)
+_tool_whitelist_fmt: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "hermes_tool_whitelist_fmt", default=_TOOL_WHITELIST_DENY_FMT
+)
 
 
 @dataclass(frozen=True)
@@ -1119,14 +1131,17 @@ class _PreToolCallDirective:
 
 def set_thread_tool_whitelist(
     allowed: Optional[set[str]],
-    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+    deny_msg_fmt: str = _TOOL_WHITELIST_DENY_FMT,
 ) -> None:
-    _thread_tool_whitelist.allowed = allowed
-    _thread_tool_whitelist.fmt = deny_msg_fmt
+    """Restrict this context (and the contexts it spawns or dispatches into) to ``allowed``; ``None``
+    lifts the restriction. A plain ``threading.Thread`` starts with an empty context, so it does not
+    inherit this — that is why the storage is a ContextVar and not a thread-local."""
+    _tool_whitelist_allowed.set(None if allowed is None else frozenset(allowed))
+    _tool_whitelist_fmt.set(deny_msg_fmt)
 
 
 def clear_thread_tool_whitelist() -> None:
-    _thread_tool_whitelist.allowed = None
+    _tool_whitelist_allowed.set(None)
 
 
 def _get_pre_tool_call_directive_details(
@@ -1140,9 +1155,9 @@ def _get_pre_tool_call_directive_details(
     ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
     earlier plugin's request for human confirmation (#87420); among approves the first valid one
     wins. Irrelevant returns are ignored."""
-    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    allowed = _tool_whitelist_allowed.get()
     if allowed is not None and tool_name not in allowed:
-        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        fmt = _tool_whitelist_fmt.get()
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
     hook_results = invoke_lifecycle_hook(

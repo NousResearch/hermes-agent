@@ -20,12 +20,21 @@ auth:
   # like Google. The MCP client triggers the browser flow on the first
   # probe / first connect.
 
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - comfy cloud
+    - comfy credits
+  hosts:
+    - comfy.org
+
 # Tool selection at install time:
-# The server exposes ~37 tools (public beta — surface may grow). At Hermes's
-# measured ~600 tokens/tool schema average, all 37 would add ~16-22k tokens
-# to EVERY API call while enabled — larger than the entire Hermes core
-# toolset. The curated default below (20 tools) keeps the surface to what an
-# agent needs to discover, generate, and fetch results (~9-12k tokens).
+# The server exposes 41 tools as of v0.40.1 (public beta — surface still
+# grows). At Hermes's measured ~600 tokens/tool schema average, all 41 would
+# add ~18-25k tokens to EVERY API call while enabled — larger than the entire
+# Hermes core toolset. The curated default below (23 tools) keeps the surface
+# to what an agent needs to discover, estimate, generate, and fetch results
+# (~11-14k tokens).
 #
 # Deliberately excluded from the default (opt back in any time with
 # `hermes mcp configure comfy-cloud`):
@@ -33,12 +42,20 @@ auth:
 #   - submit_batch, get_batch_status, get_batch_output, wait_for_batch
 #                                     — batch variants of the job lifecycle
 #   - list_saved_workflows, get_saved_workflow, save_workflow,
-#     update_workflow, run_saved_workflow, share_workflow,
-#     import_shared_workflow          — saved/shared workflow management
+#     run_saved_workflow, share_workflow, import_shared_workflow,
+#     get_workflow_upload_url         — saved/shared workflow management and
+#                                       the out-of-band large-graph upload
 #   - create_app, get_app_mode_url    — Comfy App Mode product features
+#   - get_billing_activity            — per-job usage + account event feed;
+#                                       get_usage_report covers the common ask
 #   - submit_feedback                 — beta survey link
-#   - report_session_summary         — outbound telemetry; excluded per
+#   - report_session_summary          — outbound telemetry; excluded per
 #     Hermes policy (no telemetry without explicit user opt-in)
+#
+# NOTE: `get_billing_status` was listed here through v0.40.x and has been
+# REMOVED — the server gates it off by default (it can report a stale balance,
+# so it is opt-in behind an env flag), which means it is not registered and
+# never appears in a probe.
 tools:
   default_enabled:
     # Discovery
@@ -48,13 +65,16 @@ tools:
     - search_models
     - search_nodes
     - get_node
+    - get_catalog_overview
     - get_prompting_guide
+    - get_creative_technique
     # Generation
     - run_template
     - submit_workflow
     - partner_generate
     - upload_file
     - apply_slots
+    - estimate_credits
     # Job lifecycle
     - get_job_status
     - wait_for_job
@@ -63,7 +83,7 @@ tools:
     - cancel_job
     - get_queue
     # Account / handoff
-    - get_billing_status
+    - get_usage_report
     - get_workflow_canvas_url
 
 post_install: |
@@ -74,9 +94,16 @@ post_install: |
   Discovery tools (search_templates / search_models / search_nodes) work with
   any Comfy account. Generation tools run on Comfy Cloud and consume credits,
   so they need a subscription or credit balance — see
-  https://www.comfy.org/cloud for plans.
+  https://www.comfy.org/cloud for plans. `estimate_credits` prices a graph
+  before you run it and never spends.
 
-  A curated 20-tool subset is enabled by default (discovery, generation, job
-  lifecycle, billing). Batch jobs, saved/shared workflow management, and App
-  Mode tools are available but unchecked — enable them any time with:
+  Credit-spending tools are consent-gated. Hermes does not implement MCP
+  elicitation, so the server falls back to its two-step confirm convention:
+  the first call returns a quote and the second call with `confirm: true`
+  runs it. A single call can never spend.
+
+  A curated 23-tool subset is enabled by default (discovery, estimation,
+  generation, job lifecycle, usage). Batch jobs, saved/shared workflow
+  management, and App Mode tools are available but unchecked — enable them
+  any time with:
     hermes mcp configure comfy-cloud

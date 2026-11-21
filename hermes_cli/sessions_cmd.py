@@ -111,7 +111,7 @@ def _print_dry_run_preview(candidates, filters) -> None:
 _FILTER_ARGS = (
     "older_than", "newer_than", "before", "after", "source", "title", "end_reason", "cwd", "min_messages",
     "max_messages", "model", "provider", "user", "chat_id", "chat_type", "branch", "min_tokens", "max_tokens",
-    "min_cost", "max_cost", "min_tool_calls", "max_tool_calls",
+    "min_cost", "max_cost", "min_tool_calls", "max_tool_calls", "archived_only",
 )
 
 
@@ -832,8 +832,15 @@ def _cmd_prune_or_archive(args, action, *, persistence=None):
               "filter (e.g. --newer-than 5h, --source cli, --title codex).")
         return 1
 
-    # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
-    filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
+    if prune and getattr(args, "archived_only", False) and getattr(args, "include_archived", False):
+        print("Error: --archived-only and --include-archived are mutually exclusive; "
+              "pick archived rows only or non-archived plus archived.")
+        return 1
+    # Prune skips archived rows unless --include-archived; --archived-only inverts that to a
+    # strict archived selector (SessionDB's archived filter is already tri-state).
+    filters["archived"] = (True if prune and getattr(args, "archived_only", False)
+                           else None if prune and getattr(args, "include_archived", False)
+                           else False)
     filters["include_pinned"] = getattr(args, "include_pinned", False)
     # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
     # never qualifies); the preview must show the same rows the archive will touch.

@@ -20,7 +20,7 @@ import {
   dropPageRowsOfStoppedTurns,
   dropReceiptTurnsThePageHolds
 } from '@/app/chat/transcript-receipt-turns'
-import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
+import { transcriptRowIds, transcriptUids } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
@@ -291,7 +291,14 @@ function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage
 function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean {
   const rowIds = durableRowIds(first)
 
-  return second.some(message => message.rowId !== undefined && rowIds.has(message.rowId))
+  // Compaction rewrites row ids but keeps each source row's message_uid, so a
+  // page that shares no id can still be a rewrite of rows the window holds.
+  const uids = new Set(first.flatMap(message => transcriptUids(message)))
+
+  return second.some(
+    message =>
+      (message.rowId !== undefined && rowIds.has(message.rowId)) || transcriptUids(message).some(uid => uids.has(uid))
+  )
 }
 
 interface StoredRowSlot {
@@ -326,10 +333,14 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
   const refreshedBySource = new Map<number, ChatMessage>()
+  const refreshedByUid = new Map<string, ChatMessage>()
 
   for (const message of refreshedTail) {
     for (const rowId of transcriptRowIds(message)) {
       refreshedBySource.set(rowId, message)
+    }
+    for (const uid of transcriptUids(message)) {
+      refreshedByUid.set(uid, message)
     }
   }
 
@@ -358,7 +369,18 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
 
     for (const message of messages) {
       const sourceIds = transcriptRowIds(message)
+      const sourceUids = transcriptUids(message)
       const folded = sourceIds.length ? refreshedBySource.get(sourceIds[0]) : undefined
+      // A compaction rewrite renumbers row ids but keeps each source row's
+      // message_uid, so a window bubble whose first uid the page re-emits is
+      // the same rows in a later generation and the page's copy takes the
+      // window's slot (#123294). A uid match names a stored row, so a tool
+      // fold is covered too: its durableComplete is false only because the
+      // fold's first row carries tool calls, not because the copy is live. A
+      // page that cuts the turn re-emits none of the leading uid, so the
+      // window's whole fold stays put; the page's partial copy is dropped in
+      // dropPageFoldsCutByTheBoundary instead.
+      const uidFolded = sourceUids.length ? refreshedByUid.get(sourceUids[0]) : undefined
 
       // A completed live reply is addressed by its final row; hydration can
       // fold that row into an earlier tool bubble. Give both the fold's slot,
@@ -369,12 +391,13 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
         !message.pending &&
         !message.interim &&
         !message.error &&
-        message.durableComplete !== false &&
         message.persistedTurn?.complete !== false &&
-        folded?.role === message.role &&
-        sourceIds.every(id => refreshedBySource.get(id) === folded)
+        ((message.durableComplete !== false &&
+          folded?.role === message.role &&
+          sourceIds.every(id => refreshedBySource.get(id) === folded)) ||
+          uidFolded?.role === message.role)
 
-      const rowId = covered ? (folded?.rowId ?? message.rowId) : message.rowId
+      const rowId = covered ? (folded?.rowId ?? uidFolded?.rowId ?? message.rowId) : message.rowId
 
       if (rowId === undefined) {
         // The fresh page's copy of an unstored row wins over the window's.
@@ -533,8 +556,15 @@ export async function extendRefreshPageToOverlap(
     return refreshedTail
   }
 
+  // Rewritten rows share no id; their uids still name the rows the window holds.
+  const previousUids = new Set(previous.flatMap(message => transcriptUids(message)))
+
   const sharesPrevious = (messages: ChatMessage[]) =>
-    messages.some(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+    messages.some(
+      message =>
+        (message.rowId !== undefined && previousRowIds.has(message.rowId)) ||
+        transcriptUids(message).some(uid => previousUids.has(uid))
+    )
 
   if (sharesPrevious(refreshedTail)) {
     return refreshedTail

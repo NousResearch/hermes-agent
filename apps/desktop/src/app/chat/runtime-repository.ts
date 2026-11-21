@@ -71,12 +71,16 @@ export function displayDedupeKey(message: ChatMessage): string | null {
 
 /**
  * One pass over the settled rows to elect a representative per content key.
- * Rank lattice (review #123294: "select the durable, non-pending
- * representative"): durable+visible (3) > durable+hidden (2) > plain settled
- * (1) > pending streaming residue (0). Keeping the first occurrence had left
- * the live id, dropped the durable row's rowId/reactions and stuck the
- * runtime message in running. Earliest top-rank copy wins ties; the winner
- * renders at the FIRST occurrence's position (swap-in in the render loop).
+ * Additive rank (review #123294: "select the durable, non-pending
+ * representative"): +2 durable rowId, +1 visible, -1 pending. The common
+ * shapes land at durable+visible+settled (3) > durable hidden OR durable
+ * pending (2) > live settled (1) > live pending residue (0) — note the
+ * ties: a durable PENDING row scores 2, above a plain settled live row (1),
+ * because durability outweighs stream state. Keeping the first occurrence
+ * had left the live id, dropped the durable row's rowId/reactions and stuck
+ * the runtime message in running. Earliest top-rank copy wins ties; the
+ * winner renders at the FIRST occurrence's position (swap-in in the render
+ * loop).
  */
 function rankRepresentative(message: ChatMessage): number {
   return (message.rowId !== undefined ? 2 : 0) + (!message.hidden ? 1 : 0) - (message.pending ? 1 : 0)
@@ -116,6 +120,11 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
     const seenIds = new Set<string>()
+    // Holds the ids ALREADY RENDERED — of the elected representatives, not of
+    // the rows iterated: the elected durable copy renders at the first
+    // occurrence's slot, so a later duplicate must skip on the WINNER's id.
+    // Order-dependent by design: whatever lost the election is dropped here,
+    // never re-rendered at its own position.
     // Content-level dedup for settled messages only (#101938): after a
     // context compression, the same logical message can reach this boundary
     // twice with different ids (a streaming copy without a rowId and a

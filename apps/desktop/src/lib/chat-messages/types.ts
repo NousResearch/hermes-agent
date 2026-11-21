@@ -29,6 +29,9 @@ export interface TimelinePartMetadata {
   storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
+  /** The source row's durable message_uid — survives a compaction rewrite that
+   *  changes ids (see ChatMessage.messageUid). */
+  sourceUid?: string
   /** A clarify row's tie to the session's live request, set by the transcript re-arm
    *  (`restorePendingClarifyToolCall`): the id of the request it bound to this row, or `''` on every
    *  other open clarify row it saw. Only the row carrying the live request's id renders it. */
@@ -83,6 +86,10 @@ export type ChatMessage = {
   rowId?: number
   /** The send a stored prompt row holds (`display_metadata.submission_id`); its live copy's id is `user-<it>`. */
   submissionId?: string
+  /** The first source row's durable message_uid. Unlike rowId it survives a
+   *  compaction rewrite, so two bubbles sharing a uid prefix are the same
+   *  logical turn seen across the rewrite (#123294). */
+  messageUid?: string
   /** Backend transcript rows this message represents — the hydration fold
    *  merges a turn's tool rows into the assistant message they belong to, so a
    *  message is not one backend row. The older-page offset (transcript-tail) is

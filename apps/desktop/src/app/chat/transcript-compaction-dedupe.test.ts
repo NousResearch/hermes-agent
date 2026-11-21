@@ -2,7 +2,14 @@ import { renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
+import {
+  type ChatMessage,
+  preserveLocalAssistantErrors,
+  preserveLocalSystemNotices,
+  toChatMessages
+} from '@/lib/chat-messages'
+import type { SessionMessage } from '@/types/hermes'
 
 import { useRuntimeMessageRepository } from './runtime-repository'
 
@@ -74,6 +81,7 @@ describe('compaction generations reaching the transcript', () => {
       chat('w-101', 101, 'assistant', 'A'),
       chat('w-202', 202, 'assistant', 'AFTER')
     ]
+
     const page = [
       chat('p-200', 200, 'user', 'Q'),
       chat('p-201', 201, 'assistant', 'A'),
@@ -100,11 +108,40 @@ describe('compaction generations reaching the transcript', () => {
   })
 
   it('never collapses two rows on an absent timestamp', () => {
-    // The trap: a key that substitutes a placeholder for a missing timestamp
-    // merges two unrelated rows here.
+    // Review #123294 asked which path produces this input. None does today:
+    // every durable write stamps a timestamp (hermes_state_messages.py
+    // _insert_message_rows coerces against now_ts and writes it back), both
+    // read projections pass it through (api_server._message_response,
+    // chat-messages/hydration.ts), and desktop live rows stamp occurredAt
+    // (use-message-stream). A compaction copy arrives with the commit time,
+    // never with an absent timestamp. Expected: 2 rows. Neither row carries a
+    // message_uid, so uid-based generation folding never applies either; the
+    // timestamp-undefined guard is the whole defense. The case stays as a
+    // tripwire — a key that substituted a placeholder for a missing
+    // timestamp would merge two unrelated rows here.
     const messages = [live('a-1', 'assistant', 'same words'), live('a-2', 'assistant', 'same words', null)]
 
     expect(render(messages)).toEqual(['same words', 'same words'])
+  })
+
+  it('keeps a commit-time-stamped compaction copy apart from its original (#123985 on latest main)', () => {
+    // The producing path on latest main: the gateway replay keeps the durable
+    // timestamp on user rows only (gateway/run.py _build_gateway_agent_history,
+    // preserve_timestamp=(role == "user"); tool rows have it stripped), so the
+    // carried tail is written back from timestamp-less dicts;
+    // _carry_parent_timestamps cannot donate (the originals were rewound
+    // before it runs — a documented no-op for a clean compaction), and
+    // _insert_message_rows stamps the copy with the commit time. Original and
+    // copy therefore arrive with DIFFERENT timestamps; the key — which keeps
+    // the timestamp, exactly like the backend's _display_dedupe_key — must
+    // hold both apart (2 rows). Once the backend keeps durable timestamps on
+    // replay (ee8ec14184, bb/desktop-render-wave2, unmerged), the pair shares
+    // one timestamp and case 1's collapse applies. Until then the duplicate
+    // is #123985 and belongs to the backend, not to this key.
+    const original = chat('a-orig', 101, 'assistant', 'the answer', TIMESTAMP)
+    const copy = chat('a-copy', 901, 'assistant', 'the answer', TIMESTAMP + 5_000)
+
+    expect(render([original, copy])).toEqual(['the answer', 'the answer'])
   })
 
   it('keeps two identical replies at different timestamps apart', () => {
@@ -117,4 +154,204 @@ describe('compaction generations reaching the transcript', () => {
 
     expect(render(messages)).toEqual(['same words', 'same words'])
   })
+})
+
+it('does not repeat the end of a rewritten tool turn cut by the refreshed page', () => {
+  const call = (id: string) => ({
+    id,
+    type: 'function' as const,
+    function: { name: 'terminal', arguments: '{"command":"echo"}' }
+  })
+
+  const original: SessionMessage[] = [
+    { id: 100, message_uid: 'm100', role: 'user', content: 'older prompt', timestamp: TIMESTAMP },
+    {
+      id: 101,
+      message_uid: 'm101',
+      role: 'assistant',
+      content: 'look one',
+      timestamp: TIMESTAMP + 1,
+      tool_calls: [call('c1')]
+    },
+    {
+      id: 102,
+      message_uid: 'm102',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 2,
+      tool_call_id: 'c1',
+      tool_name: 'terminal'
+    },
+    {
+      id: 103,
+      message_uid: 'm103',
+      role: 'assistant',
+      content: 'look two',
+      timestamp: TIMESTAMP + 3,
+      tool_calls: [call('c2')]
+    },
+    {
+      id: 104,
+      message_uid: 'm104',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 4,
+      tool_call_id: 'c2',
+      tool_name: 'terminal'
+    },
+    {
+      id: 105,
+      message_uid: 'm105',
+      role: 'assistant',
+      content: 'look three',
+      timestamp: TIMESTAMP + 5,
+      tool_calls: [call('c3')]
+    },
+    {
+      id: 106,
+      message_uid: 'm106',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 6,
+      tool_call_id: 'c3',
+      tool_name: 'terminal'
+    },
+    { id: 107, message_uid: 'm107', role: 'assistant', content: 'older answer', timestamp: TIMESTAMP + 7 }
+  ]
+
+  const newer: SessionMessage[] = [
+    { id: 300, message_uid: 'm300', role: 'user', content: 'newer prompt', timestamp: TIMESTAMP + 20 },
+    { id: 301, message_uid: 'm301', role: 'assistant', content: 'newer answer', timestamp: TIMESTAMP + 21 }
+  ]
+
+  // The window holds the whole turn; the refreshed page starts at its second round,
+  // under the ids the compaction gave the rows (100-107 became 200-207). The
+  // rewrite keeps each row's message_uid, and the projections now ship it
+  // (tui_gateway/session_history.py next to row_id; the REST transcript
+  // whitelist), so the graft recognizes the renumbered rows by uid.
+  const window = toChatMessages([...original, ...newer])
+
+  const page = toChatMessages([
+    ...original.slice(3).map((message, index) => ({ ...message, id: 203 + index })),
+    ...newer
+  ])
+
+  const merged = preserveLocalSystemNotices(
+    preserveLocalAssistantErrors(
+      preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(page, window), window),
+      window
+    ),
+    window
+  )
+
+  const visible = render(merged)
+
+  for (const text of ['look one', 'look two', 'look three', 'older answer', 'newer prompt', 'newer answer']) {
+    expect(
+      visible.filter(item => item === text),
+      text
+    ).toHaveLength(1)
+  }
+})
+
+it('keeps one copy when the page brings the whole turn the window holds cut', () => {
+  const call = (id: string) => ({
+    id,
+    type: 'function' as const,
+    function: { name: 'terminal', arguments: '{"command":"echo"}' }
+  })
+
+  const original: SessionMessage[] = [
+    { id: 100, message_uid: 'm100', role: 'user', content: 'older prompt', timestamp: TIMESTAMP },
+    {
+      id: 101,
+      message_uid: 'm101',
+      role: 'assistant',
+      content: 'look one',
+      timestamp: TIMESTAMP + 1,
+      tool_calls: [call('c1')]
+    },
+    {
+      id: 102,
+      message_uid: 'm102',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 2,
+      tool_call_id: 'c1',
+      tool_name: 'terminal'
+    },
+    {
+      id: 103,
+      message_uid: 'm103',
+      role: 'assistant',
+      content: 'look two',
+      timestamp: TIMESTAMP + 3,
+      tool_calls: [call('c2')]
+    },
+    {
+      id: 104,
+      message_uid: 'm104',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 4,
+      tool_call_id: 'c2',
+      tool_name: 'terminal'
+    },
+    {
+      id: 105,
+      message_uid: 'm105',
+      role: 'assistant',
+      content: 'look three',
+      timestamp: TIMESTAMP + 5,
+      tool_calls: [call('c3')]
+    },
+    {
+      id: 106,
+      message_uid: 'm106',
+      role: 'tool',
+      content: 'ok',
+      timestamp: TIMESTAMP + 6,
+      tool_call_id: 'c3',
+      tool_name: 'terminal'
+    },
+    { id: 107, message_uid: 'm107', role: 'assistant', content: 'older answer', timestamp: TIMESTAMP + 7 }
+  ]
+
+  const newer: SessionMessage[] = [
+    { id: 300, message_uid: 'm300', role: 'user', content: 'newer prompt', timestamp: TIMESTAMP + 20 },
+    { id: 301, message_uid: 'm301', role: 'assistant', content: 'newer answer', timestamp: TIMESTAMP + 21 }
+  ]
+
+  // The window was itself grafted from a page that started inside the turn:
+  // its fold lost the turn's first round ('look one'). The refreshed page
+  // starts above the turn under the compaction's renumbered ids, stamped
+  // with the commit-time timestamps #123985 documents, so its fold is the
+  // whole turn in a later generation. The window fold's first uid is one the
+  // page's fold carries: the page's whole copy takes the slot, the partial
+  // window copy goes, and the lost first round returns.
+  const window = toChatMessages([original[0], ...original.slice(3), ...newer])
+
+  const page = toChatMessages([
+    ...original
+      .slice(1)
+      .map((message, index) => ({ ...message, id: 203 + index, timestamp: TIMESTAMP + 5000 + index })),
+    ...newer
+  ])
+
+  const merged = preserveLocalSystemNotices(
+    preserveLocalAssistantErrors(
+      preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(page, window), window),
+      window
+    ),
+    window
+  )
+
+  const visible = render(merged)
+
+  for (const text of ['look one', 'look two', 'look three', 'older answer', 'newer prompt', 'newer answer']) {
+    expect(
+      visible.filter(item => item === text),
+      text
+    ).toHaveLength(1)
+  }
 })

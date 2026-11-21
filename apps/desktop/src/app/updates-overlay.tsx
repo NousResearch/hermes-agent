@@ -49,6 +49,7 @@ import {
   checkBackendUpdates,
   checkUpdates,
   dismissDiscontinuedNotice,
+  endClientView,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
   sourceUpdateChannel,
@@ -168,6 +169,22 @@ function UpdateChangeList({
   )
 }
 
+// A client apply restarts this app, so its progress stays up. A backend apply restarts the backend,
+// not this window: hiding the progress keeps the chats underneath reachable (the
+// update's drain waits on their approvals and questions), and a failure shows it again.
+function overlayDismissible(phase: ReturnType<typeof overlayPhase>, isBackend: boolean): boolean {
+  return phase !== 'applying' || isBackend
+}
+
+// Closing a finished view clears its state. A live backend apply (its restart stage included) is
+// only hidden: runBackendUpdate's poll still owns that state and reports the outcome.
+function dismissResetsApply(apply: UpdateApplyState): boolean {
+  return (
+    !apply.applying &&
+    (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+  )
+}
+
 function overlayPhase(apply: UpdateApplyState): 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' {
   if (apply.stage === 'manual' || apply.stage === 'guiSkew') {
     return apply.stage
@@ -210,18 +227,26 @@ export function UpdatesOverlay() {
 
   const phase = overlayPhase(apply)
 
+  const dismissible = overlayDismissible(phase, isBackend)
+
   const handleClose = (next: boolean) => {
-    if (phase === 'applying') {
+    if (!dismissible) {
       return
     }
 
-    setUpdateOverlayOpen(next)
+    if (next || !dismissResetsApply(apply)) {
+      setUpdateOverlayOpen(next)
 
-    if (
-      !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
-    ) {
-      resetUpdateApplyState()
+      return
+    }
+
+    // Closing a finished view clears its state; closing a client's hands the overlay to a backend
+    // outcome that waited behind it.
+    if (isBackend) {
+      setUpdateOverlayOpen(false)
+      resetUpdateApplyState('backend')
+    } else {
+      endClientView()
     }
   }
 
@@ -239,7 +264,7 @@ export function UpdatesOverlay() {
         bodyClassName={cn('p-0 gap-0', phase !== 'error' && 'overflow-hidden')}
         className="max-w-sm"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
-        showCloseButton={phase !== 'applying'}
+        showCloseButton={dismissible}
       >
         {phase === 'applying' && (
           <ApplyingView apply={apply} isBackend={isBackend} statusMechanism={status?.mechanism} />
@@ -654,7 +679,7 @@ function ApplyingView({
         </div>
       ) : null}
 
-      <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+      <p className="text-center text-xs text-muted-foreground">{isBackend ? u.applyingStayBackend : u.applyingClose}</p>
     </div>
   )
 }

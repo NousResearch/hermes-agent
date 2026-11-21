@@ -49,7 +49,11 @@ class TestWriteDenyExactPaths:
 
     def test_shell_profiles_are_writable(self):
         home = str(Path.home())
-        for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:
+        for name in [
+            ".bashrc", ".bash_aliases", ".zshenv", ".zshrc", ".zprofile",
+            ".zlogin", ".zlogout", ".profile", ".bash_profile",
+            ".config/fish/config.fish",
+        ]:
             assert _is_write_denied(os.path.join(home, name)) is False, f"{name} should be writable"
 
     def test_credential_config_files_denied(self):

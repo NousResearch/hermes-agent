@@ -17,6 +17,7 @@ import webbrowser
 from agent.i18n import t
 from hermes_cli.callbacks import prompt_for_secret
 from hermes_cli.cli_approval_kinds import approval_card
+from hermes_cli.cli_approval_panel import approval_panel_layout
 from typing import Optional
 
 _TIMED_OUT = object()  # sentinel returned by _poll_modal_queue when the deadline passes
@@ -1067,6 +1068,7 @@ class CLIModalMixin:
         so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from hermes_cli.cli_tui_mixin import _approval_panel_rows
 
         card = approval_card(kind)
         subject = card.subject(command, description)[0]
@@ -1085,8 +1087,10 @@ class CLIModalMixin:
                 "selected": 0,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
-            if card.prints_body_first(subject):
-                # The panel's row budget can cut a long job (a whole gate script); scrollback keeps all of it.
+            # The panel's row budget can cut a long job (a short pane cuts even one long line) and then
+            # says "full job printed above": decide from that same budget, so scrollback holds all of it.
+            if card.prints_body_first(subject) or (card.body_is_description and approval_panel_layout(
+                    self._approval_state, _approval_panel_rows()).body_cut):
                 _cprint(f"\n{subject}\n")
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=subject)
             self._paint_now()

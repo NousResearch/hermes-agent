@@ -3746,6 +3746,7 @@ export interface Translations extends NoticeTranslations {
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string
+    audioUnavailable: string
     largeTitle: string
     largeBody: (label: string, size: string) => string
     previewAnyway: string

@@ -2370,6 +2370,7 @@
     "onboarding.useApiKeyInstead",
     "onboarding.verifyingCode",
     "onboarding.waitingAuthorize",
+    "preview.audioUnavailable",
     "preview.binaryBody",
     "preview.binaryTitle",
     "preview.closePane",

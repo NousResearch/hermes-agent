@@ -4188,6 +4188,7 @@ export const zhOverrides = {
     unknownSize: '大小未知',
     binaryTitle: '这看起来像二进制文件',
     binaryBody: label => `预览 ${label} 可能会显示不可读文本。`,
+    audioUnavailable: '无法加载此音频文件进行播放。',
     largeTitle: '此文件较大',
     largeBody: (label, size) => `${label} 大小为 ${size}。Hermes 只会显示前 512 KB。`,
     previewAnyway: '仍然预览',

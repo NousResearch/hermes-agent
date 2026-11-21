@@ -75,7 +75,7 @@ import {
 import { type ConsoleEntry, type PreviewConsoleState } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
-import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
+import { AudioFilePreview, LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
@@ -281,10 +281,15 @@ export function PreviewLoadError({
   )
 }
 
-/** The body of a tab that is not a web page: a generated artifact or a file. */
+/** The body of a tab that is not a web page: a generated artifact, an audio file (played, never
+ *  read as text), or any other file. */
 function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
-  return props.target.kind === 'artifact' ? (
-    <ArtifactPreview onClose={props.onClose} target={props.target} />
+  if (props.target.kind === 'artifact') {
+    return <ArtifactPreview onClose={props.onClose} target={props.target} />
+  }
+
+  return props.target.previewKind === 'audio' ? (
+    <AudioFilePreview reloadKey={props.reloadKey} sessionId={props.sessionId} target={props.target} />
   ) : (
     <LocalFilePreview {...props} />
   )

@@ -224,6 +224,47 @@ def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
     assert "Triggered job" in triggered.output
 
 
+@pytest.mark.parametrize("disabled_only", [False, True], ids=["paused", "disabled-only"])
+def test_cron_run_refuses_paused_or_disabled_job(_isolate_hermes_home, disabled_only):
+    """Regression for #156575: console run must preserve an operator's pause."""
+    from cron.jobs import create_job, get_job, pause_job, update_job
+    from hermes_constants import get_hermes_home
+
+    job = create_job(prompt="say hello", schedule="every 1h", name="paused-check")
+    if disabled_only:
+        update_job(job["id"], {"enabled": False})
+    else:
+        pause_job(job["id"], reason="paused by owner")
+    before = get_job(job["id"])
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
+    before_bytes = jobs_file.read_bytes()
+
+    result = HermesConsoleEngine().execute(f"cron run {job['id']}", confirmed=True)
+
+    assert result.status == "error"
+    assert result.output == "Job is paused/disabled; resume it before running."
+    assert get_job(job["id"]) == before
+    assert jobs_file.read_bytes() == before_bytes
+
+
+def test_cron_run_surfaces_terminal_refusal_without_mutating_job(_isolate_hermes_home):
+    from cron.jobs import create_job, get_job, mark_job_run
+    from hermes_constants import get_hermes_home
+
+    job = create_job(prompt="done", schedule="in 30m", repeat=1)
+    mark_job_run(job["id"], success=True)
+    before = get_job(job["id"])
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
+    before_bytes = jobs_file.read_bytes()
+
+    result = HermesConsoleEngine().execute(f"cron run {job['id']}", confirmed=True)
+
+    assert result.status == "error"
+    assert "terminal" in result.output
+    assert get_job(job["id"]) == before
+    assert jobs_file.read_bytes() == before_bytes
+
+
 def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
     stdin = io.StringIO("help\nexit\n")
     stdout = io.StringIO()

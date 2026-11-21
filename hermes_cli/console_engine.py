@@ -771,7 +771,7 @@ def _cron_job_action(args: list[str], usage: str, action: str, run) -> str:
     from cron.jobs import AmbiguousJobReference
     try:
         job = run(args[0])
-    except AmbiguousJobReference as exc:
+    except (AmbiguousJobReference, ValueError) as exc:
         raise ConsoleCommandError(str(exc)) from exc
     if not job:
         raise ConsoleCommandError(f"Job not found: {args[0]}")
@@ -802,8 +802,17 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
-    from cron.jobs import trigger_job
-    return _cron_job_action(args, "cron run <job>", "Triggered", trigger_job)
+    from cron.jobs import _jobs_lock, is_job_runnable, is_terminal_job, resolve_job_ref, trigger_job
+
+    def trigger_runnable_job(ref: str) -> dict | None:
+        # Keep an operator's concurrent pause between the check and scheduling from being lost.
+        with _jobs_lock():
+            job = resolve_job_ref(ref)
+            if job is not None and not is_terminal_job(job) and not is_job_runnable(job):
+                raise ConsoleCommandError("Job is paused/disabled; resume it before running.")
+            return trigger_job(ref)
+
+    return _cron_job_action(args, "cron run <job>", "Triggered", trigger_runnable_job)
 
 
 # (path, usage, summary, handler, confirmation prompt) — a non-empty prompt marks it mutating.

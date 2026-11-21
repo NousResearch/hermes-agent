@@ -12,20 +12,21 @@
  * Best-effort, like ChatSidebar: a failed fetch surfaces a small inline
  * error with a retry affordance and the terminal pane keeps working.
  *
- * This is a navigation surface, NOT a session-management one — delete,
- * rename, export, and bulk actions live on the Sessions page. Keeping this
- * panel read-only (plus select / new) avoids duplicating that machinery and
- * keeps the chat context focused on switching conversations quickly.
+ * This stays a lightweight navigation surface, but exposes the one lifecycle
+ * action users need while chatting: delete with an explicit confirmation.
+ * Rename, export, and bulk actions remain on the full Sessions page.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, MessageSquarePlus, RefreshCw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { ChatWorkspacePicker } from "@/components/ChatWorkspacePicker";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
@@ -82,6 +83,7 @@ export function ChatSessionList({
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   // Bumped to force a refetch (after switching, on Refresh, on mount).
   const [reloadNonce, setReloadNonce] = useState(0);
 
@@ -94,6 +96,14 @@ export function ChatSessionList({
   // commit state, so a fast profile switch (or Refresh spam) can't land a
   // stale list out of order.
   const reqRef = useRef(0);
+  // Async deletion must consult the latest navigation state when it resolves.
+  // Otherwise deleting the formerly active row can start a fresh chat after
+  // the user has already switched to another conversation.
+  const activeSessionIdRef = useRef(activeSessionId);
+
+  useLayoutEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   const load = useCallback(() => {
     const myReq = ++reqRef.current;
@@ -160,8 +170,7 @@ export function ChatSessionList({
   // "New chat" prefers ChatPage's robust handler (clears resume + forces a
   // PTY respawn even from an already-fresh session). Fallback: clear the
   // resume param ourselves, which spawns a fresh PTY whenever one was being
-  // resumed. Session management (delete/rename/export) lives on the Sessions
-  // page; this panel only switches and starts conversations.
+  // resumed.
   const startNew = useCallback(() => {
     onPicked?.();
     if (onNewChat) {
@@ -177,6 +186,24 @@ export function ChatSessionList({
       { replace: false },
     );
   }, [onNewChat, onPicked, setSearchParams]);
+
+  const sessionDelete = useConfirmDelete<string>({
+    onDelete: useCallback(
+      async (id: string) => {
+        const target = sessions?.find((session) => session.id === id);
+        setActionError(null);
+        try {
+          await api.deleteSession(id, target?.profile ?? scopeKey);
+          setSessions((prev) => prev?.filter((session) => session.id !== id) ?? null);
+          if (activeSessionIdRef.current === id) startNew();
+        } catch (e) {
+          setActionError(e instanceof Error && e.message ? e.message : t.sessions.failedToDelete);
+          throw e;
+        }
+      },
+      [scopeKey, sessions, startNew, t.sessions.failedToDelete],
+    ),
+  });
 
   const content = useMemo(() => {
     if (loading && sessions === null) {
@@ -210,51 +237,69 @@ export function ChatSessionList({
       <div className="flex flex-col gap-0.5">
         {sessions.map((s) => {
           const isActive = s.id === activeSessionId;
+          const label = rowLabel(s, t.sessions.untitledSession);
           return (
-            <ListItem
-              key={s.id}
-              onClick={() => pick(s.id)}
-              aria-current={isActive ? "true" : undefined}
-              className={cn(
-                "flex-col items-start gap-0.5 rounded px-2 py-1.5",
-                "normal-case tracking-normal",
-                isActive
-                  ? "bg-primary/10 text-foreground border-l-2 border-primary"
-                  : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
-              )}
-            >
-              <span className="w-full truncate text-sm font-medium">
-                {rowLabel(s, t.sessions.untitledSession)}
-              </span>
-              <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
-                <span>{timeAgo(s.last_active)}</span>
-                {s.message_count > 0 && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span>{s.message_count} msgs</span>
-                  </>
+            <div className="group relative" key={s.id}>
+              <ListItem
+                onClick={() => pick(s.id)}
+                aria-current={isActive ? "true" : undefined}
+                className={cn(
+                  "w-full flex-col items-start gap-0.5 rounded py-1.5 pl-2 pr-9",
+                  "normal-case tracking-normal",
+                  isActive
+                    ? "bg-primary/10 text-foreground border-l-2 border-primary"
+                    : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
                 )}
-                {s.source && s.source !== "cli" && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span className="truncate">{s.source}</span>
-                  </>
+              >
+                <span className="w-full truncate text-sm font-medium">{label}</span>
+                <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
+                  <span>{timeAgo(s.last_active)}</span>
+                  {s.message_count > 0 && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span>{s.message_count} msgs</span>
+                    </>
+                  )}
+                  {s.source && s.source !== "cli" && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span className="truncate">{s.source}</span>
+                    </>
+                  )}
+                </span>
+              </ListItem>
+              <Button
+                ghost
+                size="icon"
+                disabled={sessionDelete.isDeleting}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  sessionDelete.requestDelete(s.id);
+                }}
+                aria-label={`${t.sessions.deleteSession}: ${label}`}
+                title={t.sessions.deleteSession}
+                className={cn(
+                  "absolute right-0.5 top-1/2 -translate-y-1/2 text-text-tertiary",
+                  "opacity-70 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100",
                 )}
-              </span>
-            </ListItem>
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           );
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, loading, pick, reload, sessionDelete, sessions, t]);
 
   return (
-    <aside
-      className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden",
-        className,
-      )}
-    >
+    <>
+      <aside
+        className={cn(
+          "flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden",
+          className,
+        )}
+      >
       <div className="flex items-center justify-between gap-2 px-2 pb-2">
         <span className="text-display text-xs tracking-wider text-text-tertiary">
           {t.sessions.title}
@@ -270,6 +315,13 @@ export function ChatSessionList({
           <RefreshCw className={cn(loading && "animate-spin")} />
         </Button>
       </div>
+
+      {actionError && (
+        <div className="mx-2 mb-2 flex items-start gap-2 text-xs text-destructive" role="alert">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="wrap-break-word">{actionError}</span>
+        </div>
+      )}
 
       {onWorkspaceChange && (
         <ChatWorkspacePicker
@@ -292,6 +344,15 @@ export function ChatSessionList({
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
         {content}
       </div>
-    </aside>
+      </aside>
+      <DeleteConfirmDialog
+        open={sessionDelete.isOpen}
+        onCancel={sessionDelete.cancel}
+        onConfirm={sessionDelete.confirm}
+        title={t.sessions.confirmDeleteTitle}
+        description={t.sessions.confirmDeleteMessage}
+        loading={sessionDelete.isDeleting}
+      />
+    </>
   );
 }
